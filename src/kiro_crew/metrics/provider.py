@@ -84,29 +84,22 @@ if TYPE_CHECKING:  # real types for annotations; never imported at runtime
     from kiro_crew.config.loader import TelemetryConfig
     from kiro_crew.platform.interfaces import OtlpDestination
 
-# KiroCrew declares opentelemetry-sdk as a required dependency, so
-# the availability probe below is defense-in-depth — not for a genuinely
-# optional dep, but for a partial / --no-deps / broken env-closure install where
-# the SDK is absent. This module is on the eager boot chain (cli.py -> dashboard
-# -> ... -> history.py -> skills.py -> get_recorder), so an unconditional
-# top-level import here would brick the ENTIRE gateway (and `kirocrew
-# --version`) even though telemetry defaults off. Degrade to the existing no-op
-# MetricsRecorder(None) path instead of crashing at import time.
+# opentelemetry-sdk is a required dependency; the probe below covers a broken
+# install (partial, --no-deps) where it is missing. This module is on the eager
+# boot chain (cli.py -> dashboard -> ... -> skills.py -> get_recorder), so a hard
+# import would break the whole gateway (and `kirocrew --version`) though
+# telemetry defaults off. Instead it degrades to the no-op MetricsRecorder(None).
 #
-# The SDK is NOT imported at module scope: executing
-# ``opentelemetry.sdk.metrics`` + ``.export`` + ``.view`` + ``.resources`` costs
-# ~57ms and ~120 extra modules on EVERY entry point (CLI invocations, MCP stdio
-# subprocesses, `kirocrew --version`) while telemetry is off by default and the
-# SDK is never used. ``importlib.util.find_spec`` answers the availability
-# question for ~0.9ms without executing the package, so the eager cost is paid
-# only by hosts that actually opt in. The real imports happen in ``_load_otel``,
-# called from ``_build_recorder`` after the consent gate.
+# The SDK is NOT imported at module scope: its metrics, export, view and
+# resources modules cost ~57ms and ~120 modules on EVERY entry point (CLI, MCP
+# stdio subprocesses). ``importlib.util.find_spec`` checks availability in
+# ~0.9ms without running the package; the real imports happen in ``_load_otel``,
+# called from ``_build_recorder`` after the consent gate, so only opted-in hosts
+# pay.
 #
-# local_exporter is loaded in the same lazy step: its JsonlMetricExporter
-# subclasses the OTel SDK's MetricExporter base class, so the module itself
-# cannot load without opentelemetry. It is only used on the enabled path, so
-# deferring it preserves the degrade contract. recorder.py is annotation-only on
-# OTel symbols (TYPE_CHECKING import) and stays loadable either way.
+# local_exporter loads in the same lazy step: its JsonlMetricExporter subclasses
+# the SDK's MetricExporter. recorder.py uses OTel names only under TYPE_CHECKING,
+# so it loads either way.
 
 
 def _otel_importable() -> bool:
@@ -418,14 +411,10 @@ _HISTOGRAM_BUCKETS_MS: dict[str, list[float]] = {
     "kirocrew.tool.call.duration": _TOOL_CALL_BUCKETS_MS,
     "kirocrew.session.duration": _SESSION_BUCKETS_MS,
     "kirocrew.watchdog.idle.duration": _WATCHDOG_IDLE_BUCKETS_MS,
-    # Embedding queue wait + inference time. Both are ms and both predate this
-    # map; neither name ends in `.duration`, which is precisely why the guard
-    # test's old name-suffix scan could not see them and they have been running
-    # on OTEL's default 0..10000 boundaries. The guard now finds histograms by
-    # reading their emit calls, so they are registered here. _FAST_BUCKETS_MS
-    # because they behave like the other sub-ms-to-seconds work: a warm local
-    # embed is single-digit ms, a cold model load or a long batch reaches
-    # seconds.
+    # Embedding queue wait + inference time, both ms. Neither name ends in
+    # `.duration`; the guard test finds histograms by their emit calls, not by
+    # name. _FAST_BUCKETS_MS because a warm local embed is single-digit ms and
+    # a cold model load or a long batch reaches seconds.
     "kirocrew.embed.queue_wait": _FAST_BUCKETS_MS,
     "kirocrew.embed.inference": _FAST_BUCKETS_MS,
     # Event-loop lag per adaptive-controller sample. Healthy is sub-millisecond
@@ -895,14 +884,11 @@ def _build_recorder() -> _Build:
         )
         destinations = ()
 
-    # PeriodicExportingMetricReader starts its daemon ticker thread inside
-    # __init__, so if any later step (MeterProvider construction, etc.) raises,
-    # the reader is already ticking. This list is bound BEFORE the try — binding
-    # it inside would leave it unbound when the first reader's constructor
-    # raises, and the except would then fail on the reap instead of degrading —
-    # and each reader joins it once constructed, so the except reaps every one.
-    # Otherwise an orphaned thread keeps running and spamming export WARNINGs for
-    # the life of the process even though metrics are "disabled".
+    # PeriodicExportingMetricReader starts its ticker thread in __init__, so a
+    # later raise (e.g. in MeterProvider) leaves it running and logging export
+    # WARNINGs forever while metrics read as "disabled". Each reader joins this
+    # list once built, and the except reaps them all. Bound BEFORE the try so
+    # the except can still read it when the first constructor raises.
     started_readers: list = []
     try:
         directory = Path(cfg.local_dir).expanduser() if cfg.local_dir else _default_metrics_dir()
@@ -928,16 +914,13 @@ def _build_recorder() -> _Build:
                 started_readers.append(reader)
                 otlp_names.append(dest.name)
         otlp_active = bool(otlp_names)
-        # Mint the persisted install id HERE, in the live branch, so the
-        # resource below is labelled from the very first export instead of
-        # acquiring its identity mid-life. This is the one write on this path:
-        # mkdir + mkstemp + link, race-safe per ``beacon.install_id``, once per
-        # install ever, and only ever under consent True (a disabled build
-        # returns before reaching this branch, so turning telemetry OFF still
-        # creates nothing). It is noise against what this same path already
-        # pays synchronously -- ~14ms for a changed-config load plus ~57ms of
-        # SDK import, both documented in docs/system-specs/modules/metrics.md
-        # -- and a failed mint costs only the attribute, never the recorder.
+        # Mint the persisted install id HERE, so the resource is labelled from
+        # the first export. The one write on this path (mkdir + mkstemp + link,
+        # race-safe per ``beacon.install_id``), once per install, and only with
+        # consent: a disabled build returns earlier and creates nothing. Its
+        # cost is noise beside this path's config load and ~57ms SDK import
+        # (docs/system-specs/modules/metrics.md); a failed mint loses only the
+        # attribute, never the recorder.
         try:
             beacon.install_id(create=True)
         except Exception:
