@@ -48,6 +48,7 @@ from typing import Any, Sequence, TypedDict, cast
 from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
+from yarl import URL
 
 from kiro_crew.connections import l0_drift
 from kiro_crew.connections.l0_record import ObservedBaseline, RecordError, record_baselines
@@ -62,6 +63,7 @@ from kiro_crew.connections.registry import (
     stale_l0_baselines,
     utc_today,
 )
+from kiro_crew.http_proxy import resolve_proxy
 
 DEFAULT_CONCURRENCY = 4
 DEFAULT_TIMEOUT_SECONDS = 10.0
@@ -204,7 +206,7 @@ def _authorization_metadata_url(issuer: str) -> str:
 
 
 async def _get_json(
-    session: aiohttp.ClientSession, url: str, timeout_seconds: float
+    session: aiohttp.ClientSession, url: str, timeout_seconds: float, *, proxy: str | None = None
 ) -> dict[str, Any]:
     """GET a JSON metadata document under a hard size bound.
 
@@ -214,6 +216,13 @@ async def _get_json(
     .github/workflows/connections-l0.yml for why, and what to do about it.
     """
 
+    proxy_url = None
+    if proxy is not None:
+        try:
+            proxy_url = URL(proxy)
+        except ValueError:
+            raise ValueError("invalid metadata proxy URL") from None
+
     timeout = aiohttp.ClientTimeout(total=timeout_seconds)
     async with session.get(
         url,
@@ -221,6 +230,7 @@ async def _get_json(
         allow_redirects=False,
         auto_decompress=False,
         timeout=timeout,
+        proxy=proxy_url,
     ) as response:
         if response.status != 200:
             raise ValueError(f"{url} returned HTTP {response.status}, expected 200")
@@ -378,7 +388,9 @@ async def probe_provider(
     advertised: str | None = None
     for candidate in _resource_metadata_urls(provider["mcp_url"]):
         try:
-            metadata = await _get_json(session, candidate, timeout_seconds)
+            metadata = await _get_json(
+                session, candidate, timeout_seconds, proxy=resolve_proxy(candidate)
+            )
             advertised = _read_resource_metadata(metadata, provider["mcp_url"])
             checks["protected_resource_metadata"] = True
             # A later candidate succeeding means the earlier miss was the
@@ -410,8 +422,9 @@ async def probe_provider(
 
     if checks["protected_resource_metadata"]:
         try:
+            issuer_url = _authorization_metadata_url(committed_issuer)
             metadata = await _get_json(
-                session, _authorization_metadata_url(committed_issuer), timeout_seconds
+                session, issuer_url, timeout_seconds, proxy=resolve_proxy(issuer_url)
             )
             dcr, pkce = _read_authorization_metadata(metadata, committed_issuer)
             checks["authorization_server_metadata"] = True
