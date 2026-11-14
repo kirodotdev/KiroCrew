@@ -542,6 +542,10 @@ async def _hand_off_queue(
     cancellable) and the cycle ends with its terminal ``chat_done``. The
     ``predecessor_*`` pair names the ending turn, so the drain marks its end
     unless the head is that turn's own recovery."""
+    from kiro_crew.tracing import work as trace_work
+
+    # Whatever comes next is not the work-ledger watch's turn, whether or not it bound.
+    trace_work.end_patrol_turn()
     # Steers outrank queued messages, so they go to the head before the drain.
     _requeue_unconsumed_steers(state, slot)
     if drain and slot._queue:

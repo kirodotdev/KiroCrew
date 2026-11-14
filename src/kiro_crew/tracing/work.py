@@ -49,16 +49,28 @@ acting turn when there is one (the turn that opens a round was bound before it, 
 person's steer or a remote report has none). With no round it is in the acting turn,
 else in a one-span trace of its own. Its attributes are ids, closed-vocabulary values and counts only: never the
 goal, a title, acceptance, decision, summary or artifact text.
+
+**Patrol turns.** A turn the conductor's work-ledger watch delivers runs inside
+:func:`patrol_turn`. It takes one link per report span (and per
+``kirocrew.work.report_undelivered`` event) written on its board since the last such
+turn (:func:`answered_links`), so a wake that answers a batch of reports names each one.
+The conductor's own ``work_ledger_read`` in a turn puts the board's health on that turn's
+span as counts (:func:`note_board_health`). shortcut: a wake steered into a turn already
+running adds no links, since a span's links are fixed at its start; the reports wait for
+the next patrol turn.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import threading
 from collections import OrderedDict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from kiro_crew.tracing import provider, runs, turns
 
@@ -68,6 +80,28 @@ logger = logging.getLogger(__name__)
 _cont_items: "OrderedDict[str, None]" = OrderedDict()
 _cont_lock = threading.Lock()
 _MAX_CONT_ITEMS = 4096
+
+#: Report spans a board's next patrol turn answers, by conductor ledger key (bounded).
+_answerable: "OrderedDict[str, list[tuple[str, str]]]" = OrderedDict()
+_MAX_BOARDS = 4096
+#: Links one patrol turn takes at most: the newest reports win.
+MAX_ANSWERED_LINKS = 64
+
+
+class _Patrol:
+    """The mark of a work-ledger watch's turn: a one-shot holder the first turn to bind
+    claims. It survives a hop to a new task (fair admission runs the turn in one), and a
+    queued successor, started after the watch's turn bound, finds it already taken."""
+
+    __slots__ = ("taken",)
+
+    def __init__(self) -> None:
+        self.taken = False
+
+
+_PATROL: contextvars.ContextVar[_Patrol | None] = contextvars.ContextVar(
+    "kirocrew_trace_patrol_turn", default=None
+)
 
 KIND_ROUND = "conductor_mode"
 KIND_ITEM = "work_item"
@@ -390,15 +424,33 @@ def _write_span(
             if conductor
             else {}
         )
+    span_id = ids.span_id(state.namespace, *parts)
     provider.start_span(
         state,
         SPAN_PREFIX + action,
         trace_id=trace_id,
-        span_id=ids.span_id(state.namespace, *parts),
+        span_id=span_id,
         parent=parent,
         attributes={**common, **attrs},
         links=links,
     ).end()
+    if action in _ANSWERABLE and conductor:
+        _note_answerable(conductor, trace_id, span_id)
+
+
+#: The writes a patrol turn answers with a link.
+ACTION_UNDELIVERED = "report_undelivered"
+_ANSWERABLE = frozenset({"report", ACTION_UNDELIVERED})
+
+
+def _note_answerable(conductor: str, trace_id: str, span_id: str) -> None:
+    with _cont_lock:
+        pending = _answerable.setdefault(conductor, [])
+        pending.append((trace_id, span_id))
+        del pending[:-MAX_ANSWERED_LINKS]
+        _answerable.move_to_end(conductor)
+        while len(_answerable) > _MAX_BOARDS:
+            _answerable.popitem(last=False)
 
 
 def _recorded(
@@ -579,6 +631,120 @@ def binding(
 
 
 def reset_for_testing() -> None:
-    """Forget which continuations hold which item anchors. Test isolation only."""
+    """Forget which continuations hold which item anchors, and pending report links.
+    Test isolation only."""
     with _cont_lock:
         _cont_items.clear()
+        _answerable.clear()
+
+
+@contextmanager
+def patrol_turn(active: bool = True) -> Iterator[None]:
+    """Around starting a turn the conductor's work-ledger watch delivered."""
+    token = _PATROL.set(_Patrol() if active else None)
+    try:
+        yield
+    finally:
+        _PATROL.reset(token)
+
+
+def in_patrol_turn() -> bool:
+    """Whether a turn bound now would be the watch's turn: marked, and not yet taken."""
+    marked = _PATROL.get()
+    return marked is not None and not marked.taken
+
+
+def _take_patrol() -> bool:
+    """Claim the mark for the turn binding now; only the first turn to bind gets it."""
+    marked = _PATROL.get()
+    with _cont_lock:
+        if marked is None or marked.taken:
+            return False
+        marked.taken = True
+    return True
+
+
+def end_patrol_turn() -> None:
+    """At a turn's queue hand-off: spend a mark the turn never claimed (it ended before
+    binding, or bound with tracing off), so the turn it hands off to cannot take it."""
+    _take_patrol()
+
+
+def answered_links(conductor_slot: str) -> tuple[Any, ...]:
+    """One link per report written on *conductor_slot*'s board since its last patrol
+    turn, for a patrol turn only; taken once."""
+    if not conductor_slot or provider.peek() is None or not _take_patrol():
+        return ()
+    from kiro_crew import session_ledger
+
+    with _cont_lock:
+        pending = _answerable.pop(session_ledger.ledger_key(conductor_slot), [])
+    return tuple(runs.link(trace_id, span_id) for trace_id, span_id in pending)
+
+
+def _undelivered(state: provider.TraceState, conductor: str, item_id: str, at: str) -> None:
+    from kiro_crew import work_ledger
+
+    header = work_ledger.read_conductor(conductor)
+    rnd = round_of(conductor, header)
+    run = provider.conductor_mode_shape() == provider.CONDUCTOR_MODE_RUN
+    _write_span(
+        state,
+        "",
+        conductor,
+        rnd if run else None,
+        ACTION_UNDELIVERED,
+        "worker",
+        item_id,
+        header,
+        at,
+        "",
+    )
+
+
+async def report_undelivered(noted: Mapping[str, Any] | None) -> None:
+    """A worker's report never reached its item (``work_ledger.note_undelivered``'s
+    record): a ``kirocrew.work.report_undelivered`` span under the item, which the
+    conductor's next patrol turn links to. Never raises."""
+    state = provider.peek()
+    if state is None or not noted:
+        return
+    conductor = str(noted.get("conductor_slot_key") or "")
+    item_id = _item_id(str(noted.get("item_id") or ""))
+    if not conductor or not item_id:
+        return
+    try:
+        await asyncio.to_thread(_undelivered, state, conductor, item_id, str(noted.get("at") or ""))
+    except Exception:
+        logger.debug("undelivered report trace failed", exc_info=True)
+
+
+def note_board_health(sessions: Any, conductor: str, rows: Sequence[Mapping[str, Any]]) -> None:
+    """Put the board's health on the turn reading it: counts of the read's flags.
+
+    *rows* are the read's item rows with their derived flags, the whole board. Never
+    raises; nothing happens while tracing is off or with no traced turn reading.
+    """
+    if provider.peek() is None or not conductor:
+        return
+    try:
+        from kiro_crew.crew_log.resolve import unit_for_session_key
+        from kiro_crew.tracing import correlation
+
+        turn = turns.open_turn(unit_for_session_key(sessions, conductor))
+        if turn is None:
+            return
+        counts = {
+            "kirocrew.work.open_items": sum(row.get("state") == _OPEN for row in rows),
+            "kirocrew.work.stale_items": sum(bool(row.get("stale")) for row in rows),
+            "kirocrew.work.orphaned_items": sum(bool(row.get("orphaned")) for row in rows),
+            "kirocrew.work.pending_overdue_items": sum(
+                bool(row.get("pending_overdue")) for row in rows
+            ),
+            "kirocrew.work.undelivered_items": sum(
+                bool(row.get("report_undelivered")) for row in rows
+            ),
+        }
+        turn.turn_span.set_attributes(correlation.clean(counts))
+    except Exception:
+        logger.debug("board health trace failed", exc_info=True)

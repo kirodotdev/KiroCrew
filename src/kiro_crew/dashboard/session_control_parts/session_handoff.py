@@ -250,4 +250,18 @@ async def hand_back_on_close(state: "DashboardState", departed: "_ChatSlot") -> 
         logger.warning("session_handoff: hand-back from %s failed: %s", departed.key, exc)
         return []
     logger.info("session_handoff: %s closed; %d session(s) handed up", departed.key, len(changes))
+    # Imported here: a module-level name would be served by the session_control facade.
+    from kiro_crew.tracing import workers as trace_workers
+
+    for key, held in changes.items():
+        # Removing an override returns management to the open slot's creator.
+        manager = (
+            held[0]
+            if held is not None
+            else str(getattr(state._slots.get(key), "_created_by", "") or "")
+        )
+        # No turn made this move (a close did), so each is a span of its own.
+        trace_workers.manager_changed(
+            None, "", trace_workers.OP_HAND_BACK, key, departed.key, manager
+        )
     return sorted(changes)
