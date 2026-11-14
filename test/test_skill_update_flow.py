@@ -544,7 +544,7 @@ async def test_staged_update_body_is_sanitized():
     assert "version: 9" not in body
 
 
-# ── Regression: validated scripts must survive the UPDATE route ──────────────
+# ── Validated scripts must survive the UPDATE route ──────────────
 
 
 @pytest.mark.asyncio

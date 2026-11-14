@@ -244,7 +244,7 @@ class TestMemoryInjectionAllAgents:
     def test_refresh_materialized_agents_invalidates_flag_cache(self, monkeypatch) -> None:
         # Wiring: rescanning the materialized-agent snapshot MUST invalidate the
         # flag cache, so a flipped includeCrewContext takes effect without a
-        # gateway restart (the restart-heals class this PR removes).
+        # gateway restart (a fix that only a restart heals is a bug).
         import kiro_crew.context as ctx
         from kiro_crew.config import loader
 

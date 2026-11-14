@@ -232,7 +232,7 @@ class TestDiscoverInstall:
     async def test_install_overwrite_replaces_symlinked_skill_dir(
         self, fake_home, reset_registry, tmp_path
     ):
-        # Security regression: a pre-planted symlink at the skill dir must be
+        # A pre-planted symlink at the skill dir must be
         # REMOVED, never followed — otherwise the bundle (incl. nested paths
         # whose not-yet-existing parents dodge the parent-symlink guard) would
         # be written outside the skills root at the symlink target.

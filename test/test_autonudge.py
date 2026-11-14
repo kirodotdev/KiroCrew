@@ -683,7 +683,7 @@ class TestAutonudgeUpdateConcurrency:
 
             svc._write_state = _gated  # type: ignore[method-assign]
             # The UPDATE parks inside its write while HOLDING _lock. That is the
-            # window GPT described: the fire then completes, and if the fire
+            # window: the fire then completes, and if the fire
             # window closed early the update would cancel the timer that is
             # waiting for the lock inside _persist_locked().
             upd = asyncio.ensure_future(svc.update(loop_obj.id, message="revised"))
