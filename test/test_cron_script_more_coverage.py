@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -1083,7 +1084,14 @@ def script_run(monkeypatch, tmp_path):
     monkeypatch.setattr(cron_script, "cgroup_scope_argv", lambda argv: list(argv))
     monkeypatch.setattr(cron_script, "_resolve_internal_secret", lambda port: "unit-secret")
     restricted: list[str] = []
-    monkeypatch.setattr(cron_script.platform_compat, "restrict_to_owner", restricted.append)
+    test_thread = threading.get_ident()
+
+    def _restrict(path):
+        # This thread only: the SEL writer thread re-locks its non-empty log per append.
+        if threading.get_ident() == test_thread:
+            restricted.append(path)
+
+    monkeypatch.setattr(cron_script.platform_compat, "restrict_to_owner", _restrict)
     state = SimpleNamespace(
         script=script,
         proc=None,

@@ -16,6 +16,7 @@ import os
 import stat
 import subprocess
 import sys
+import threading
 import types
 from typing import Any
 
@@ -483,12 +484,19 @@ class TestRestrictToOwner:
     def test_make_owner_only_dir_uses_the_dacl_on_windows(self, monkeypatch, tmp_path):
         called: list[Any] = []
         wrong: list[Any] = []
+        test_thread = threading.get_ident()
+
+        def _file_helper(p):
+            # This thread only: the SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                wrong.append(p)
+
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         # Must be the DIRECTORY helper: restrict_to_owner's grants are
         # file-shaped (no (OI)(CI)), so files created inside would not inherit
         # the lockdown.
         monkeypatch.setattr(pc, "restrict_dir_to_owner", lambda p: called.append(p))
-        monkeypatch.setattr(pc, "restrict_to_owner", lambda p: wrong.append(p))
+        monkeypatch.setattr(pc, "restrict_to_owner", _file_helper)
         target = tmp_path / "secrets"
         pc.make_owner_only_dir(target)
         assert called and str(called[0]) == str(target)

@@ -517,6 +517,7 @@ class TestWriteConfigAtomically:
         import kiro_crew.config.loader as loader
 
         order: list[str] = []
+        test_thread = threading.get_ident()
         monkeypatch.setattr(platform_compat, "IS_POSIX", False)
         monkeypatch.setattr(
             loader.windows_acl,
@@ -525,16 +526,19 @@ class TestWriteConfigAtomically:
         )
         real_mkdir = loader.Path.mkdir
 
+        # This thread only, for both: the SEL writer thread creates its directory
+        # and re-locks its non-empty log on every append.
         def _tracking_mkdir(self, *a, **k):
-            order.append("mkdir")
+            if threading.get_ident() == test_thread:
+                order.append("mkdir")
             return real_mkdir(self, *a, **k)
 
+        def _tracking_lockdown(_p):  # pragma: no cover - must not run
+            if threading.get_ident() == test_thread:
+                order.append("lockdown")
+
         monkeypatch.setattr(loader.Path, "mkdir", _tracking_mkdir)
-        monkeypatch.setattr(
-            platform_compat,
-            "restrict_to_owner",
-            lambda _p: order.append("lockdown"),  # pragma: no cover - must not run
-        )
+        monkeypatch.setattr(platform_compat, "restrict_to_owner", _tracking_lockdown)
 
         path = tmp_path / "config.json"
         _inline_on_the_loop(
@@ -555,9 +559,16 @@ class TestWriteConfigAtomically:
         import kiro_crew.config.loader as loader
 
         locked: list[str] = []
+        test_thread = threading.get_ident()
+
+        def _lockdown(p):
+            # This thread only: the SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                locked.append(str(p))
+
         monkeypatch.setattr(platform_compat, "IS_POSIX", False)
         monkeypatch.setattr(loader.windows_acl, "volume_is_local", lambda _p: True)
-        monkeypatch.setattr(platform_compat, "restrict_to_owner", lambda p: locked.append(str(p)))
+        monkeypatch.setattr(platform_compat, "restrict_to_owner", _lockdown)
 
         path = tmp_path / "config.json"
         _inline_on_the_loop(
@@ -594,13 +605,20 @@ class TestWriteConfigAtomically:
 
         locked: list[str] = []
         classified: list[str] = []
+
+        def _lockdown(p):
+            # This directory only: the write runs on a worker thread, and the SEL
+            # writer thread re-locks its non-empty log on every append.
+            if Path(p).parent == tmp_path:
+                locked.append(str(p))
+
         monkeypatch.setattr(platform_compat, "IS_POSIX", False)
         monkeypatch.setattr(
             loader.windows_acl,
             "volume_is_local",
             lambda p: classified.append(str(p)) or False,  # a network-homed data home
         )
-        monkeypatch.setattr(platform_compat, "restrict_to_owner", lambda p: locked.append(str(p)))
+        monkeypatch.setattr(platform_compat, "restrict_to_owner", _lockdown)
 
         path = tmp_path / "config.json"
         _offloaded(loader.write_config_atomically, path, {"slack": {"bot_token": "xoxb-secret"}})
@@ -626,9 +644,16 @@ class TestWriteConfigAtomically:
         import kiro_crew.config.loader as loader
 
         locked: list[str] = []
+        test_thread = threading.get_ident()
+
+        def _lockdown(p):
+            # This thread only: the SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                locked.append(str(p))
+
         monkeypatch.setattr(platform_compat, "IS_POSIX", False)
         monkeypatch.setattr(loader.windows_acl, "volume_is_local", lambda _p: False)
-        monkeypatch.setattr(platform_compat, "restrict_to_owner", lambda p: locked.append(str(p)))
+        monkeypatch.setattr(platform_compat, "restrict_to_owner", _lockdown)
 
         path = tmp_path / "config.json"
         loader.write_config_atomically(path, {"slack": {"bot_token": "xoxb-secret"}})

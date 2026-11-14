@@ -7,6 +7,7 @@ for, and which messaging channels ``setup`` configures.
 """
 
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -634,13 +635,16 @@ class TestConfigDirOverride:
         monkeypatch.setattr("builtins.input", lambda _: next(inputs))
 
         seen: list[tuple[Path, bool]] = []
+        test_thread = threading.get_ident()
         real = pc.restrict_to_owner
 
         def _spy(path):
             # Record what the lockdown saw: the path, and whether the tokens
-            # were already readable there at that moment.
-            p = Path(path)
-            seen.append((p.parent, "xoxb-test" in p.read_text(encoding="utf-8")))
+            # were already readable there at that moment. This thread only: the
+            # SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                p = Path(path)
+                seen.append((p.parent, "xoxb-test" in p.read_text(encoding="utf-8")))
             return real(path)
 
         monkeypatch.setattr(pc, "restrict_to_owner", _spy)
