@@ -1647,6 +1647,18 @@ class WorkflowService:
             # gateway stop froze, whose driver task has already finished.
             if runner is not None and hasattr(runner, "cancel"):
                 runner.cancel(handle.task_id, exact=True)
+        elif (
+            not cancelled
+            and handle is not None
+            and handle.status == STATUS_PAUSED
+            and handle.driver == "taskrunner"
+            and handle.task_id
+            and runner is not None
+            and hasattr(runner, "cancel_paused")
+        ):
+            # A paused run has no driver task, so the registry has nothing to cancel;
+            # the TaskRunner ends it and says whether it did.
+            return bool(await runner.cancel_paused(handle.task_id))
         return cancelled
 
     @admission_errors

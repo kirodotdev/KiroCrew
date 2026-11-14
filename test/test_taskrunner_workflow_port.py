@@ -9,14 +9,16 @@ until the service is attached.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from kiro_crew.taskrunner import Project, Task, TaskRunner, WorkflowInitializing
+from kiro_crew.testing.wait import await_until
 from kiro_crew.workflow_memory import TaskSnapshotError
 
 
@@ -200,3 +202,111 @@ def test_new_work_waits_for_attachment_and_a_failed_host_says_restart(tmp_path: 
 
     runner.attach_workflow_service(None)
     runner._require_workflow_ready()
+
+
+def _paused(tmp_path: Path, service: _Service) -> tuple[TaskRunner, Project]:
+    runner = _runner(tmp_path, service)
+    run = _run(tmp_path, "paused")
+    runner._runs = {"r1": run}
+    return runner, run
+
+
+@pytest.mark.asyncio
+async def test_a_named_paused_run_is_cancelled_and_reaches_the_service(tmp_path: Path) -> None:
+    service = _Service()
+    runner, run = _paused(tmp_path, service)
+    other = _run(tmp_path, "paused")
+    other.task_id = "r2"
+    runner._runs["r2"] = other
+
+    assert await runner.cancel_paused("r1") is True
+    assert run.status == "cancelled"
+    assert [t.status.value for t in run.tasks] == [
+        "cancelled"
+    ]  # unfinished steps end cancelled too
+    assert ("cancel_host_run", ("wf-1", "cancelled"), {}) in service.calls
+    # Only the run that was named: another paused run stays resumable, whether
+    # the cancel names no run or names one without asking for an exact match.
+    runner.cancel()
+    runner.cancel("r2")
+    assert other.status == "paused"
+    assert [t.status.value for t in other.tasks] == ["pending"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["planned", "running", "cancelled", "completed"])
+async def test_only_a_paused_run_is_cancelled_by_cancel_paused(tmp_path: Path, status) -> None:
+    runner = _runner(tmp_path, _Service())
+    run = _run(tmp_path, status)
+    runner._runs = {"r1": run}
+
+    assert await runner.cancel_paused("r1") is False
+    assert await runner.cancel_paused("missing") is False
+    assert run.status == status
+
+
+@pytest.mark.asyncio
+async def test_a_restart_waits_while_a_paused_run_is_still_being_cancelled(tmp_path: Path) -> None:
+    runner, run = _paused(tmp_path, _Service())
+    persisting = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _persist() -> None:
+        persisting.set()
+        await release.wait()
+
+    runner._apersist_runs = _persist  # type: ignore[method-assign]
+    cancelling = asyncio.ensure_future(runner.cancel_paused("r1"))
+    await await_until(persisting, what="the cancel to reach its persist step")
+    # The cleanup that removes the worktree has not run yet: a restart now would
+    # validate a workspace that cleanup is about to delete.
+    with pytest.raises(ValueError, match="still finishing"):
+        await runner._reserve_start("r1")
+    release.set()
+    assert await cancelling is True
+    assert run.status == "cancelled"
+    await runner._reserve_start("r1")  # the reservation was released
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_loses_to_a_start_that_is_already_reserved(tmp_path: Path) -> None:
+    runner, run = _paused(tmp_path, _Service())
+    await runner._reserve_start("r1")  # a resume got there first
+
+    assert await runner.cancel_paused("r1") is False
+    assert run.status == "paused"
+    assert [t.status.value for t in run.tasks] == ["pending"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_write_leaves_the_run_paused_and_cancellable_again(tmp_path: Path) -> None:
+    runner, run = _paused(tmp_path, _Service())
+    calls: list[int] = []
+
+    async def _persist() -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("disk full")
+
+    runner._apersist_runs = _persist  # type: ignore[method-assign]
+    with pytest.raises(OSError, match="disk full"):
+        await runner.cancel_paused("r1")
+    assert run.status == "paused"
+    assert [t.status.value for t in run.tasks] == ["pending"]
+
+    assert await runner.cancel_paused("r1") is True  # the operator can try again
+    assert run.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_paused_run_never_removes_a_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finalize = AsyncMock()
+    monkeypatch.setattr("kiro_crew.taskrunner_parts.run_lifecycle.git_coord.finalize", finalize)
+    runner, run = _paused(tmp_path, _Service())
+    run.branch_name = "crew/r1"
+    run.worktree_path = str(tmp_path / "wt")
+
+    assert await runner.cancel_paused("r1") is True
+    finalize.assert_not_awaited()
