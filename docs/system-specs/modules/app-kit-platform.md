@@ -4958,8 +4958,14 @@ holds. In the app's place it shows a "reload to open the new version" notice wit
 Reload page button, so a reload that a page's unsaved-changes prompt cancels leaves
 a way to retry rather than an empty host. A host reads that record once per bundle
 it loads, never on a later render, so a host already showing the app keeps showing
-it when the user cancels the reload its own handler started. An announcement for an
-app the document never imported changes nothing.
+it when the user cancels the reload its own handler started. A view that says the
+app is not installed (`AppPage` after a 404, `BuiltinAppRoute`'s released state) has
+no host to reload, so it listens too, through `useAppInstalledElsewhere`: an
+announcement naming its app fires `mc:apps-changed`, so the shell re-reads the
+installed-apps list, and `AppPage` also re-reads the app's record. An install made
+from the CLI or another tab then shows there without a reload or a focus change.
+Apart from those views, an announcement for an app the document never imported
+changes nothing.
 The boot-time adoption swap (§33) sends no frame: it runs
 before any route is registered, so no dashboard socket is open to hear one.
 
@@ -4986,7 +4992,9 @@ the response CSP. §13 covers their token scoping;
 
 Writers: `website/src/components/AppHost.tsx`,
 `website/src/components/appBundleFreshness.ts` (the bundles a document imported
-and the ones replaced since), `apps/manifest_sections.py` (the manifest `entry`
+and the ones replaced since), `website/src/hooks/useAppInstalledElsewhere.ts`
+with its callers `website/src/pages/AppPage.tsx` and
+`website/src/apps/BuiltinAppRoute.tsx` (the not-installed views), `apps/manifest_sections.py` (the manifest `entry`
 field), `apps/routes_static.py` (static UI serving),
 `apps/routes_lifecycle.py::_announce_app_ui_changed` with its callers in
 `apps/routes_install.py` and `apps/routes_registry.py` (the `app_reload`
