@@ -185,6 +185,23 @@ def test_a_thrown_primitive_still_yields_a_message():
     assert c.errors[0].message == "Uncaught boom"
 
 
+@pytest.mark.parametrize(
+    ("thrown", "expected"),
+    [
+        ({"type": "object", "subtype": "null", "value": None}, "Uncaught null"),
+        ({"type": "boolean", "value": False}, "Uncaught false"),
+        ({"type": "boolean", "value": True}, "Uncaught true"),
+    ],
+)
+def test_a_thrown_null_or_boolean_reads_as_javascript_spells_it(thrown, expected):
+    c = _Collector()
+    params = _exception("", 1)
+    params["exceptionDetails"]["exception"] = thrown
+    c.on_event("Runtime.exceptionThrown", params)
+
+    assert c.errors[0].message == expected
+
+
 def test_an_error_from_a_script_that_is_not_the_page_has_no_position():
     """A line number inside someone else's file would point at the wrong place."""
     c = _Collector()
