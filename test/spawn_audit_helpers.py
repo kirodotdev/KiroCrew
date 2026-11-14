@@ -11,6 +11,8 @@ from __future__ import annotations
 
 BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
     {
+        # asyncio.run drives the in-process 1Password SDK client, not a child spawn.
+        "secrets/onepassword.py::_call",
         # boxd lifecycle: resolved operator CLI, fixed machine verbs, validated
         # generated names, saved snapshot/CPU and retention duration; no shell or
         # agent cwd, stdin DEVNULL. Needs the host login.

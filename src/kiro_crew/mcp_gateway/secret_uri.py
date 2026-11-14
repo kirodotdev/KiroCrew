@@ -1,7 +1,9 @@
 """Resolve ``secret://NAME`` and ``secret://NAME#FIELD`` URIs in MCP server env.
 
 At spawn time, env values matching the ``secret://`` scheme are resolved
-against the local :class:`~kiro_crew.secrets.SecretVault`. Resolution is
+against the local :class:`~kiro_crew.secrets.SecretVault`, and a name it does
+not hold against the connected third-party backends, read-only
+(:mod:`kiro_crew.secrets.backend`, behind the ``secrets_vault`` preview). Resolution is
 in-memory only — the sidecar file on disk retains the raw URI template so
 the secret is never persisted in plaintext outside the vault. The optional
 ``#FIELD`` picks one field of a typed item (:mod:`kiro_crew.secrets.items`);
@@ -11,13 +13,48 @@ secret reads as it always did.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Optional
 
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.secrets import SecretVault
+from kiro_crew.secrets import backend as secret_backends
 from kiro_crew.secrets.items import ItemError, parse_reference, resolve_field
+from kiro_crew.secrets.vault import SecretValue
+
+logger = logging.getLogger(__name__)
+
+
+def _backend_split(whole: str) -> tuple[str, Optional[str]]:
+    """``(title, field)`` of a reference read against a backend: split at the LAST ``#``.
+
+    A field name never holds ``#``, a provider title may. The local vault keeps
+    :func:`parse_reference`'s first-``#`` split, which its stored names rely on.
+    """
+    title, sep, field = whole.rpartition("#")
+    return (title, field) if sep else (whole, None)
+
+
+def _audit_remote(
+    backend: secret_backends.SecretBackend, names: list[str], outcome: str, error: str
+) -> None:
+    """One SEL row per backend a resolve asked: the names asked, never a value."""
+    try:
+        from kiro_crew.sel import sel
+
+        sel().log_api_access(
+            caller="gateway",
+            operation="secrets_backend_resolve",
+            outcome=outcome,
+            source="gateway",
+            resources=f"{backend.id}:" + ",".join(names),
+            error=error,
+        )
+    except Exception:  # noqa: BLE001 -- the audit must never change the outcome
+        logger.debug("SEL audit for a password manager resolve failed", exc_info=True)
+
 
 #: Scheme prefix for a vault secret reference. Single source of truth: the
 #: importer (``kiro_crew.secrets.migrate``) writes references with this prefix
@@ -176,14 +213,73 @@ def resolve_secret_uris(
     if fallback:
         fetched.update(vault.get_items_many(sorted(fallback)))
 
-    for key, (whole, secret_name, field) in pending.items():
+    def local_item(whole: str, secret_name: str, field: Optional[str]):
         # An entry stored under the whole text wins: a name holding ``#`` from
         # before field references existed keeps resolving as it always did.
+        if secret_backends.is_connection_item(whole) or secret_backends.is_connection_item(
+            secret_name
+        ):
+            return None, field
         item = fetched.get(whole)
         if item is not None:
-            field = None
-        elif field is not None:
-            item = fetched.get(secret_name)
+            return item, None
+        return (fetched.get(secret_name) if field is not None else None), field
+
+    # The local vault first; a name it does not hold is asked of the connected
+    # backends, by the NAME part alone (a backend has no pre-field names to
+    # keep). Asked only when a reference missed locally, so a person who
+    # connected nothing pays nothing; protected names are never asked.
+    # A provider title may hold ``#`` too (its pane offers
+    # ``secret://TITLE#username`` for a title like ``AWS#work``), and a field
+    # name never does. So the whole text is asked first and wins there as it
+    # does locally; only when it missed is the title before the LAST ``#``
+    # asked, in a second pass, so a duplicate base title cannot fail a
+    # reference whose whole title is unique.
+    misses = [
+        whole
+        for whole, name, field in pending.values()
+        if local_item(whole, name, field)[0] is None
+    ]
+    remote: dict[str, tuple[str, SecretValue]] = {}
+    if misses:
+        try:
+            remote = secret_backends.resolve_missing(vault, set(misses), _audit_remote)
+            bases = (
+                {
+                    _backend_split(whole)[0]
+                    for whole in misses
+                    if whole not in remote
+                    and "#" in whole
+                    and not secret_backends.is_connection_item(whole)
+                }
+                - set(remote)
+                - set(misses)
+            )
+            if bases:
+                remote.update(secret_backends.resolve_missing(vault, bases, _audit_remote))
+        except secret_backends.ResolveFailure as failure:
+            # The env-var keys only, as everywhere here; never the names.
+            asked = set(failure.names)
+            keys = sorted(
+                key for key, (w, n, f) in pending.items() if {w, _backend_split(w)[0]} & asked
+            )
+            name = failure.backend.display_name
+            raise ValueError(
+                f"{subject} env var(s) {', '.join(repr(k) for k in keys)} reference "
+                f"a secret that is not in the local vault, and {name} could not be "
+                f"read ({failure.error.code}): {failure.error} Check {name} under "
+                f"Settings > Secrets."
+            ) from None
+
+    for key, (whole, secret_name, field) in pending.items():
+        item, field = local_item(whole, secret_name, field)
+        if item is None and not secret_backends.is_connection_item(secret_name):
+            item = remote.get(whole)
+            if item is not None:
+                field = None
+            elif "#" in whole and not secret_backends.is_connection_item(whole):
+                title, field = _backend_split(whole)
+                item = None if secret_backends.is_connection_item(title) else remote.get(title)
         if item is None:
             raise ValueError(
                 f"{subject} env var {key!r} references a secret that does not "

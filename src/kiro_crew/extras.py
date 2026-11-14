@@ -45,6 +45,10 @@ REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "voice-aws": ("boto3>=1.34,<2", "amazon-transcribe>=0.6.3,<1"),
     "voice-codex": ("aiortc>=1.15,<2",),
     "voice": ("boto3>=1.34,<2", "amazon-transcribe>=0.6.3,<1", "pywhispercpp>=1.5,<2"),
+    "1password": (
+        "onepassword-sdk==0.4.2; python_version < '3.14' and "
+        "(sys_platform != 'win32' or platform_machine != 'ARM64')",
+    ),
 }
 
 

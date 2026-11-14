@@ -1265,6 +1265,133 @@ install's key beside a restored store), is not a per-item failure: the listing a
 `500 vault_unreadable` and marks nothing corrupt, because every entry is intact
 and restoring the key is the fix.
 
+**Backends (`secrets/backend.py`, `secrets/onepassword.py`,
+`dashboard/handlers/secret_backends.py`).** The local vault is the root and the
+default; a backend is a third-party password manager a person connects beside
+it, read-only. One reference spelling serves both: `secret://NAME#field`
+reads the local vault first and asks a backend only for a NAME the local vault
+does not hold. A person who connects nothing sees today's panel and pays
+nothing. Everything person-facing is behind the `secrets_vault` feature
+preview, server side too: with it off the backend routes answer
+`404 preview_off`, `GET /api/secrets` is main's names-only answer with every
+connection entry left out and no `backends` block, the resolver asks no
+backend, and no provider package is imported. One function reads the preview,
+`backend.preview_on`, which the gateway resolver can import without the
+dashboard; the dashboard's `_secrets_vault_preview_on` is that same function,
+and a test pins the two names to agree.
+
+- **The contract.** A provider subclasses `SecretBackend` and declares, as
+  data: `id` (route segment and stored name, `[a-z0-9][a-z0-9_-]{0,31}`),
+  `display_name` (its brand, shown as is), `capabilities` (`item_types` only:
+  every backend is read-only, and a new capability lands with its first
+  reader), `connect_form` (`FormField`s: name,
+  `label_key`, `secret`, `required`, `placeholder_key`), `help_url` (https) with
+  `help_label_key`, and `extra` (the `setup.cfg` extra that installs its
+  package). It implements `availability()` (why it cannot run on this install,
+  or `None`), `connect(values) -> Connection(account, data)`,
+  `list_items(conn)` (name, type and `items.public_view` fields only) and
+  `get_items_many(conn, names)` (`(item_type, SecretValue)` in the local
+  vault's encoding, `None` when absent, `ambiguous` when two provider items
+  share a name). `disconnect(conn)` is optional. It never sees a request, the
+  vault or another provider.
+- **The registry.** `registered()` is the built-ins (1Password) then every
+  `register_secret_backend(...)` call, in that order, which is also the order a
+  reference asks them. Registration refuses a duplicate or malformed id, a
+  missing name, an empty or duplicated form, a non-Secrets i18n key, a non-https
+  help link, and an item type the vault does not have. A downstream edition registers from its
+  composition root, the same seam `register_source_provider` uses.
+- **What the core does for every provider.** The panel renders the connect
+  form, status and items from the listing's data alone; there is no
+  per-provider route, React component or core branch. The connection is stored
+  as one `note` in the LOCAL vault under `kirocrew#backend:<id>`
+  (`{account, data}`). The name holds `#`, which `POST /api/secrets` refuses
+  in a name, so no item a person stored can collide with it and the entry is
+  always one Kiro Crew wrote. The generic `/api/secrets` routes do not list it and
+  refuse to write it (`400 invalid_name`, for the `#`) or delete it
+  (`409 managed_by_backend`), a reference to it
+  resolves to nothing, and a cron grant cannot name it. Its secret fields reach
+  the provider in the gateway process only. Every provider call runs through
+  `backend.call`: on a worker thread, bounded by `CALL_TIMEOUT_SECS`, with any
+  untyped exception turned into `unreachable` and logged by type name only.
+  A listing keeps only rows of the backend's declared item types, one per
+  name: a name the provider gives several items is one row marked `ambiguous`
+  with no item's fields (a reference to it fails closed), and a name with
+  leading or trailing space is not listed, since a reference cannot spell it.
+  A stored connection that fails to decrypt or does not parse raises
+  `connection_unreadable`: the listing shows that backend alone as
+  unavailable (still connected, so Disconnect is offered), a resolve through it
+  fails closed, and Disconnect deletes the entry without calling the provider.
+- **Degrading.** A provider that fails, times out, rate-limits or lost its
+  package shows as its own row with `status: "unavailable"` and an `error`
+  (`{code, message, message_key?, params?, install_command?}`); the local list
+  and every local reference are unaffected. A kept connection whose package
+  went missing keeps its token, so adding the package back restores it.
+  `install_command` is set for `sdk_missing` only where
+  `extras.pip_install_channel_available` says pip can install into this
+  interpreter. Generic codes (`sdk_missing`, `sdk_unsupported`, `unreachable`,
+  `unauthorized`, `rate_limited`, `timeout`, `invalid_input`, `ambiguous`) are
+  worded by the panel; a provider's own code carries `message_key`.
+- **Resolution.** `backend.resolve_missing` asks the connected backends in
+  registry order, each only for the names still unanswered, and never for a
+  protected name (`local_only`: a connection entry, `WAKATIME_OAUTH_TOKENS`,
+  anything `CONNECTIONS_*`), which only the local vault answers. A
+  `NAME#FIELD` reference asks for its whole text first, and a provider item
+  titled with that whole text wins, as a local one does; its NAME part is asked
+  in a second pass only when the whole text missed. The Used by card is not
+  shown for a backend item, because the usage scan matches local names only. A backend that
+  fails raises with the env-var keys, the provider's name, a stable code and a
+  plain cause, never a NAME or value, and never falls back to another item or
+  backend. Values are read on demand; nothing is cached or copied.
+- **Listing.** `GET /api/secrets` adds `backends`, a list in registry order:
+  `{id, name, status, connected, account?, items?, error?, form, capabilities,
+  help_url, help_label_key}`. An item whose name a local item, an earlier
+  backend or a protected name already answers is marked `shadowed`. That
+  includes a title whose part before the first `#` is a local name
+  (`backend.taken_locally`): the local vault reads `secret://AWS#work#username`
+  as its own `AWS`, so a provider `AWS#work` is listed as taken rather than
+  offered as usable.
+- **Audit.** SEL `api_access` rows: `secrets_backend_connect` (`<id>:<account>`,
+  or `<id>:<code>` on failure), `secrets_backend_disconnect` (`<id>`), and one
+  `secrets_backend_resolve` per backend a resolve asked (`<id>:<names>`,
+  outcome, failure code). Never a value.
+
+*1Password.* `OnePasswordBackend` reads ONE vault through a Service Account
+token with 1Password's official Python SDK, `onepassword-sdk==0.4.2` (MIT),
+in-process, calling only `vaults.list`, `items.list` and `items.get_all`. The
+SDK is the optional `1password` extra, never an `install_requires` entry, and is
+imported lazily. `availability()` answers `sdk_missing` where a wheel exists
+(`_wheel_platform`: Linux x86_64/aarch64 on glibc 2.32+, macOS, Windows x64,
+CPython below 3.14) and `sdk_unsupported` elsewhere (musl, older glibc, Windows
+arm64, Python 3.14+). The token must start `ops_` with no whitespace. An empty
+vault choice is allowed only when the token reads exactly one vault; several and
+no choice, no match, or several matches fail closed with the vault names (not
+secret) to choose from. The SDK's measured refusal text
+(`invalid service account token ...`) reads as `unauthorized` and its
+`RateLimitExceededException` as `rate_limited`. Mapping: Login -> `login`,
+SecureNote -> `note`, Password and ApiCredentials -> `secret`; every other
+category reads as absent. Measured with made-up tokens against the real
+service, the SDK wrote nothing under `HOME` or `TMPDIR` and talks only to the
+sign-in host named inside the token.
+
+*Adding a provider.* (1) Subclass `SecretBackend` in `secrets/<provider>.py`
+and declare the fields above; import its package lazily inside the methods,
+and make `availability()` say why it cannot run. (2) Add its catalog keys
+under `settings.secrets.backend_<short>_*` in all twelve catalogs. (3) If it
+ships an optional package, add the extra to `setup.cfg` and `extras.py`
+exact-pinned, and set `extra`. (4) Register it: append it to `_builtin()` for a
+core provider, or call `register_secret_backend` from a downstream composition
+root. (5) Subclass `SecretBackendContract` (`test/secret_backend_contract.py`)
+with a `Harness` over a stub of the provider's package, the way
+`test/test_secret_onepassword.py` does, and pass it. Nothing in the panel, the
+routes or the resolver changes. A provider that needs a capability
+`Capabilities` does not carry (writing, one-time codes, server-side search or
+paging) adds that field in the same change as its first reader in the core or
+the panel, never ahead of one.
+
+Pinned by `test/test_secret_backends.py` (the core, a fake provider on the
+contract) and `test/test_secret_onepassword.py` (1Password on the contract,
+with a stubbed SDK).
+
 Security properties:
 
 - **Write-only surface.** The vault is stored (`POST /api/secrets`, a plain

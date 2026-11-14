@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Check, Copy, ExternalLink, Globe, KeyRound, LogIn, Pencil, Plus, ShieldCheck, StickyNote, Trash2 } from 'lucide-react'
+import { Check, Copy, ExternalLink, Globe, KeyRound, LogIn, Pencil, Plus, ShieldCheck, StickyNote, Trash2, Vault } from 'lucide-react'
 import { useQuery, useMutation, useMutationState, useQueryClient } from '@tanstack/react-query'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 
@@ -17,6 +17,8 @@ import {
   type SecretListItem,
   type SecretLoginPublicFields,
   type SecretsListResponse,
+  type SecretBackendItem,
+  type SecretBackendView,
 } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { fmtDateTime } from '../../i18n/format'
@@ -27,6 +29,7 @@ import { PREVIEW_SECRETS_VAULT } from '../../utils/previewFlags'
 import { SECRETS_GUIDE_URL as SECRETS_SETUP_GUIDE } from '../../utils/docsLink'
 import { copyToClipboard } from '../../utils/clipboard'
 import { SECRETS_AUTHORIZE_COMMAND, SECRETS_SERVER_GRANT } from './secretsAuthorizeCommand'
+import { SecretsBackendPane, backendStatusText } from './SecretsBackendPane'
 import { SecretInUseNote, SecretUsageCard, useReferencedNames } from './SecretUsage'
 
 const UNUSED_REASON_KEYS = {
@@ -40,6 +43,19 @@ const UNUSED_REASON_KEYS = {
  *  `POST /api/secrets` refuses a name holding `#` (it separates the field in
  *  `secret://NAME#FIELD`), so a name saved here can never collide with it. */
 const ADD_KEY = '#'
+/** A password manager's pane is `#backend:<id>`; one of its items is
+ *  `#backend:<id>:<name>`. Both start with `#` for the same reason as ADD_KEY,
+ *  so a backend item never collides with a local item of the same name. A
+ *  backend id holds no `:` (the gateway's registry refuses one). */
+const BACKEND_PREFIX = '#backend:'
+const backendKey = (id: string) => BACKEND_PREFIX + id
+const backendItemKey = (id: string, name: string) => `${BACKEND_PREFIX}${id}:${name}`
+/** Why a backend item's reference cannot read it, or undefined when it can. */
+function backendItemWarning(item: SecretBackendItem): string | undefined {
+  if (item.ambiguous) return i18nT('settings.secrets.backend_ambiguous')
+  if (item.shadowed) return i18nT('settings.secrets.backend_shadowed')
+  return undefined
+}
 /** The settingsManual ids of managed slots, by the slot kind whose pane they open. */
 const SEARCH_PANE_KINDS: Readonly<Record<string, string>> = {
   'secrets.wakatime-api-key': 'wakatime_api_key',
@@ -698,9 +714,17 @@ function ItemPane({
   onDraftChange,
   onDeleted,
   lockedNames,
+  readOnlySource,
+  warning,
 }: {
   item: SecretListItem
   unusedReason: keyof typeof UNUSED_REASON_KEYS | undefined
+  /** The password manager a read-only item comes from (its own name): it has
+   *  no edit or delete control here. Unset for a local item. */
+  readOnlySource?: string
+  /** Why a reference to this backend item's name cannot read it (another
+   *  item answers the name, or the provider has several of that name). */
+  warning?: string
   allowAgentHandoff: boolean
   onDraftChange: (name: string, hasDraft: boolean) => void
   onDeleted: () => void
@@ -758,16 +782,20 @@ function ItemPane({
         </span>
         <div className="min-w-0 flex-1">
           <h4 className="truncate font-mono text-[17px] font-semibold text-text-strong">{item.name}</h4>
-          <div className="mt-0.5 text-[12.5px] text-muted">{typeLabel(item.type)}</div>
+          <div className="mt-0.5 text-[12.5px] text-muted">
+            {readOnlySource
+              ? i18nT('settings.secrets.backend_item_subtitle', { type: typeLabel(item.type), source: readOnlySource })
+              : typeLabel(item.type)}
+          </div>
         </div>
         {/* Two controls, per the row budget: Edit and Delete. */}
-        {!editing && !item.corrupt && (
+        {!readOnlySource && !editing && !item.corrupt && (
           <Btn onClick={() => setEditing(true)} disabled={locked || deleteConfirm}>
             <Pencil className="lucide-inline mr-1" aria-hidden />
             {i18nT('settings.secrets.edit')}
           </Btn>
         )}
-        {!editing && (
+        {!readOnlySource && !editing && (
           <IconButton
             ref={deleteButtonRef}
             variant="danger"
@@ -780,6 +808,7 @@ function ItemPane({
         )}
       </div>
       {unusedReason && <p className="text-[12px] text-warn">{i18nT(UNUSED_REASON_KEYS[unusedReason])}</p>}
+      {warning && <p className="text-[12px] text-warn">{warning}</p>}
 
       {deleteConfirm && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-danger-subtle bg-danger-subtle px-3 py-2">
@@ -856,7 +885,8 @@ function ItemPane({
         </FieldCard>
       )}
 
-      <SecretUsageCard name={item.name} allowAgentHandoff={allowAgentHandoff} />
+      {/* The usage scan matches local names only, so a backend item has no honest answer yet. */}
+      {!readOnlySource && <SecretUsageCard name={item.name} allowAgentHandoff={allowAgentHandoff} />}
 
       <FieldCard title={i18nT('settings.secrets.reference_title')}>
         <p className="pb-2 text-[13px] text-muted">{i18nT('settings.secrets.reference_hint')}</p>
@@ -870,16 +900,20 @@ function ItemPane({
         ))}
         {/* Hand-off withheld only while a draft is open (allowAgentHandoff). */}
         {copyFailed && <ErrorNotice variant="inline" askAgent={allowAgentHandoff} message={i18nT('settings.secrets.copy_failed')} />}
-        <p className="border-t border-border pt-2 text-[13px] text-muted">
-          {i18nT('settings.secrets.custom_authorize', { server: SECRETS_SERVER_GRANT })}
-          <code className="block mt-1.5 rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 font-mono text-[12px] text-accent overflow-x-auto">
-            {SECRETS_AUTHORIZE_COMMAND}
-          </code>
-        </p>
+        {/* `kirocrew secrets authorize` binds a LOCAL secret, so a backend item does not offer it. */}
+        {!readOnlySource && (
+          <p className="border-t border-border pt-2 text-[13px] text-muted">
+            {i18nT('settings.secrets.custom_authorize', { server: SECRETS_SERVER_GRANT })}
+            <code className="block mt-1.5 rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 font-mono text-[12px] text-accent overflow-x-auto">
+              {SECRETS_AUTHORIZE_COMMAND}
+            </code>
+          </p>
+        )}
       </FieldCard>
 
       <div className="mt-auto flex items-center justify-between gap-4 pt-2 text-[12px] text-muted">
-        <span>{item.updated_at ? i18nT('settings.secrets.updated_at', { when: fmtDateTime(item.updated_at) }) : ''}</span>
+        {/* A read-only item is read on demand, never synced: no date to show. */}
+        <span>{!readOnlySource && item.updated_at ? i18nT('settings.secrets.updated_at', { when: fmtDateTime(item.updated_at) }) : ''}</span>
         <a href={SECRETS_SETUP_GUIDE} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
           {i18nT('settings.secrets.how_it_works')}
         </a>
@@ -956,6 +990,17 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
     for (const name of names) if (!map.has(name)) map.set(name, { name, type: 'secret', revision: '' })
     return map
   }, [data?.items, names])
+  // Present only with the Secrets vault preview on (the gateway leaves it out otherwise).
+  const backends = useMemo(() => data?.backends ?? [], [data?.backends])
+  const backendItems = useMemo(() => {
+    const map = new Map<string, { view: SecretBackendView; item: SecretListItem; warning?: string }>()
+    for (const view of backends) {
+      for (const item of view.items ?? []) {
+        map.set(backendItemKey(view.id, item.name), { view, item: { ...item, revision: '' }, warning: backendItemWarning(item) })
+      }
+    }
+    return map
+  }, [backends])
   const managedNames = useMemo(() => new Set(managed.map(secret => secret.name)), [managed])
   const otherNames = names.filter(name => !managedNames.has(name))
 
@@ -995,6 +1040,29 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
       label: i18nT('settings.secrets.add_secret'),
       icon: <Plus className="lucide-inline text-accent" aria-hidden />,
     },
+    ...backends.map(view => ({
+      key: backendKey(view.id),
+      label: view.name,
+      icon: <Vault className="lucide-inline text-muted" aria-hidden />,
+      group: i18nT('settings.secrets.backend_group'),
+      summary: view.status === 'not_connected'
+        ? <span className="text-[11.5px] text-muted">{backendStatusText(view)}</span>
+        : <StatusLine tone={view.status === 'connected' ? 'ok' : 'warn'} text={backendStatusText(view)} />,
+    })),
+    ...[...backendItems.entries()].map(([key, { view, item, warning }]) => {
+      const pub = loginPublic(item)
+      return {
+        key,
+        label: item.name,
+        labelOpaque: true,
+        icon: <TypeIcon type={item.type} />,
+        group: i18nT('settings.secrets.backend_items_group', { name: view.name, account: view.account ?? '' }),
+        // The marker is the only sign a reference reads another item, so it outranks the username.
+        summary: warning
+          ? <StatusLine tone="warn" text={warning} />
+          : pub?.username ? <span className="text-[11.5px] text-muted">{pub.username}</span> : undefined,
+      }
+    }),
     ...managed.map(secret => {
       const configured = stored.has(secret.name)
       const reason = unusedReasons.get(secret.name)
@@ -1072,6 +1140,35 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
                 // The user may have opened another pane while the save ran.
                 if (stillMounted()) select(name)
               }}
+            />
+          )
+        }
+        const backendView = backends.find(view => backendKey(view.id) === active)
+        if (backendView) {
+          return (
+            <SecretsBackendPane
+              key={active}
+              view={backendView}
+              allowAgentHandoff={!hasAnyDraft}
+              onDraftChange={has => handleManagedDraftChange(active, has)}
+            />
+          )
+        }
+        if (active.startsWith(BACKEND_PREFIX)) {
+          const found = backendItems.get(active)
+          if (!found) return <p className="text-sm italic text-muted">{i18nT('settings.secrets.not_found')}</p>
+          return (
+            <ItemPane
+              key={active}
+              item={found.item}
+              readOnlySource={found.view.name}
+              warning={found.warning}
+              // "Unused" describes a stored local name the gateway ignores; a backend item has none.
+              unusedReason={undefined}
+              allowAgentHandoff={!hasAnyDraft}
+              onDraftChange={handleManagedDraftChange}
+              onDeleted={() => select(ADD_KEY)}
+              lockedNames={lockedNames}
             />
           )
         }

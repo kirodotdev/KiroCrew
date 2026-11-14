@@ -270,6 +270,38 @@ async def test_preview_off_lists_names_only_without_decrypting(
 
 
 @pytest.mark.asyncio
+async def test_preview_off_lists_nothing_of_a_backend_and_never_imports_its_sdk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A connection stored while the preview was on stays out of the answer, and
+    # neither 1Password nor its SDK is touched to build it.
+    import sys
+
+    import kiro_crew.dashboard.handlers.secrets as handlers
+    from kiro_crew.secrets import backend
+
+    monkeypatch.setattr(handlers, "_secrets_vault_preview_on", lambda: False)
+    monkeypatch.setattr(handlers, "config_dir", lambda: str(tmp_path))
+    monkeypatch.delitem(sys.modules, "onepassword", raising=False)
+    monkeypatch.delitem(sys.modules, "onepassword.client", raising=False)
+    vault = SecretVault(tmp_path)
+    await vault.set("PLAIN", "sk-1")
+    vault._set_item_sync(
+        backend.connection_item("1password"),
+        "note",
+        backend.connection_fields(
+            backend.Connection(account="Personal", data={"token": "ops_x", "vault_id": "v1"})
+        ),
+    )
+    async with TestClient(TestServer(_app())) as client:
+        body = await (await client.get("/api/secrets")).json()
+        refused = await client.post("/api/secrets/backends/1password", json={"token": "ops_x"})
+    assert set(body) == {"names", "managed"} and body["names"] == ["PLAIN"]
+    assert refused.status == 404
+    assert "onepassword" not in sys.modules and "onepassword.client" not in sys.modules
+
+
+@pytest.mark.asyncio
 async def test_post_typed_item_then_list_shows_public_fields_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, vault_preview_on: None
 ) -> None:
