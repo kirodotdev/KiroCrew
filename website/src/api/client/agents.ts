@@ -97,6 +97,9 @@ export interface MemberRosterRow {
   worker_model?: string
   /** Same for the reasoning effort; '' = the crewmate's own level. */
   worker_reasoning_effort?: string
+  /** The crewmate's "Auto-compact at", in percent; 0 inherits the global
+   *  `session.autocompact_pct`. A thread's own override still wins. */
+  autocompact_pct?: number
   /** The per-crewmate Dynamic capabilities preview (default off). */
   dynamic_capabilities?: boolean
   /** Optional presentation label shown in place of `name`. `name` stays the

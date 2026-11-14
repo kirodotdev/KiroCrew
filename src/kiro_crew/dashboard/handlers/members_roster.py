@@ -441,6 +441,9 @@ async def api_members(request: web.Request) -> web.Response:
                 # crewmate's own model; the effort is load-time coerced.
                 "worker_model": _roster_mask(agent_cfg.worker_model),
                 "worker_reasoning_effort": agent_cfg.worker_reasoning_effort,
+                # The profile card's "Auto-compact at": 0 inherits the global
+                # session.autocompact_pct; load-time held to its range.
+                "autocompact_pct": float(getattr(agent_cfg, "autocompact_pct", 0.0) or 0.0),
                 # The per-crewmate Dynamic capabilities preview, the profile
                 # card's switch (``kiro_crew.crewmate_dynamic_capabilities``).
                 "dynamic_capabilities": bool(getattr(agent_cfg, "dynamic_capabilities", False)),

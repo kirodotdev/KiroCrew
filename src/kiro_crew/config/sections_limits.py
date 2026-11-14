@@ -145,8 +145,8 @@ class AutocompactPctError(ValueError):
 def parse_autocompact_pct(value: int | float, *, name: str = "pct") -> float:
     """``value`` as a per-session threshold, or :class:`AutocompactPctError`.
 
-    The one finite and range check shared by the slot's "Auto-compact at" route
-    and ``session_create``. The caller has already refused a non-number (and a
+    The one finite and range check shared by the slot's "Auto-compact at" route,
+    ``session_create`` and a crew's ``PUT /api/agents/{name}``. The caller has already refused a non-number (and a
     bool) with its own code. Refused rather than clamped: a caller that asked
     for 95 learns it instead of silently running at 90.
     """

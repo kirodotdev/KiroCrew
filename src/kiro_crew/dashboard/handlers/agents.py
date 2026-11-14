@@ -243,6 +243,7 @@ from kiro_crew.dashboard.agent_admin.crew_removal import (  # noqa: F401
 )
 from kiro_crew.dashboard.agent_admin.crew_update import (  # noqa: F401
     _apply_member_approval_to_live_thread,
+    _autocompact_pct_refusal,
     _effort_inputs,
     api_kirocrew_agent_update,
 )
