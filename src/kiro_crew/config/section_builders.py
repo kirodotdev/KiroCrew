@@ -1056,6 +1056,7 @@ def _build_stt_config(stt_data: dict) -> SttConfig:
         timeout_secs=section.read(
             "timeout_secs", _safe_int, lo=_STT_MIN_TIMEOUT_SECS, hi=_STT_MAX_TIMEOUT_SECS
         ),
+        openai_model=_sections._validated_stt_openai_model(section.get("openai_model")),
         transcribe_region=section.get("transcribe_region"),
         transcribe_profile=section.get("transcribe_profile"),
         transcribe_vocabulary=_sections._validated_transcribe_vocabulary(

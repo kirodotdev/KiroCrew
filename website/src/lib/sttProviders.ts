@@ -20,6 +20,17 @@ export const PROVIDER_APPLE = 'apple'
 export const PROVIDER_TRANSCRIBE = 'transcribe'
 /** Codex's experimental hosted voice transport, using its own ChatGPT login. */
 export const PROVIDER_CODEX = 'codex'
+/** Any OpenAI-compatible speech server; its address and key are vault secrets. */
+export const PROVIDER_OPENAI_COMPATIBLE = 'openai_compatible'
+
+/**
+ * Providers that detect the spoken language themselves, so the Language picker
+ * offers `auto`. Mirrors the backend's `stt_provider_detects_language`.
+ */
+export const AUTO_LANGUAGE_PROVIDERS: readonly string[] = [
+  PROVIDER_LOCAL,
+  PROVIDER_OPENAI_COMPATIBLE,
+]
 
 /**
  * What the picker offers when the backend serves no provider list. `local` and
@@ -40,6 +51,7 @@ export const FALLBACK_STREAMING_PROVIDERS = [
   PROVIDER_APPLE,
   PROVIDER_TRANSCRIBE,
   PROVIDER_CODEX,
+  PROVIDER_OPENAI_COMPATIBLE,
 ]
 
 /**
@@ -75,6 +87,7 @@ export const PROVIDER_LABEL_KEY: Record<string, string> = {
   apple: 'pages.settings.sttSettings.provider_apple',
   transcribe: 'pages.settings.sttSettings.provider_transcribe',
   codex: 'pages.settings.sttSettings.provider_codex',
+  openai_compatible: 'pages.settings.sttSettings.provider_openai_compatible',
   // No recogniser; also where the backend lands an unknown stored provider.
   off: 'pages.settings.sttSettings.provider_off',
 }
@@ -118,6 +131,9 @@ export const UNAVAILABLE_CODE_KEY: Record<string, string> = {
   stt_codex_failed: 'pages.settings.sttSettings.unavailable_codex_failed',
   stt_codex_sandbox_unavailable: 'pages.settings.sttSettings.unavailable_codex_sandbox',
   stt_codex_cli_unresolved: 'pages.settings.sttSettings.unavailable_codex_cli_unresolved',
+  stt_openai_not_configured: 'pages.settings.sttSettings.unavailable_openai_not_configured',
+  stt_openai_auth_failed: 'pages.settings.sttSettings.unavailable_openai_auth_failed',
+  stt_openai_failed: 'pages.settings.sttSettings.unavailable_openai_failed',
 }
 
 /**
@@ -143,6 +159,9 @@ export const INSTALLED_BUT_REFUSED_CODES: ReadonlySet<string> = new Set([
   'stt_codex_failed',
   'stt_codex_sandbox_unavailable',
   'stt_codex_cli_unresolved',
+  'stt_openai_not_configured',
+  'stt_openai_auth_failed',
+  'stt_openai_failed',
 ])
 
 /**
@@ -195,6 +214,9 @@ const MODAL_SAFE_UNAVAILABLE_CODES = new Set([
   'stt_codex_failed',
   'stt_codex_sandbox_unavailable',
   'stt_codex_cli_unresolved',
+  'stt_openai_not_configured',
+  'stt_openai_auth_failed',
+  'stt_openai_failed',
 ])
 
 export function modalUnavailableMessage(code: string): string {

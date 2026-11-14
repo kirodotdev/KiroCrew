@@ -22,6 +22,9 @@ from kiro_crew.stt.models import DEFAULT_MODEL as _STT_DEFAULT_MODEL
 from kiro_crew.stt.models import resolve as _resolve_stt_model
 from kiro_crew.stt.models import valid_custom_path as _valid_stt_custom_path
 from kiro_crew.stt.models import valid_custom_sha256 as _valid_stt_custom_sha256
+from kiro_crew.stt.openai_compat import OPENAI_MODEL_DEFAULT as _OPENAI_MODEL_DEFAULT
+from kiro_crew.stt.openai_compat import PROVIDER as _STT_PROVIDER_OPENAI_COMPATIBLE
+from kiro_crew.stt.openai_compat import openai_model_name as _openai_model_name
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -55,9 +58,28 @@ STT_LANGUAGE_FALLBACK = "en-US"
 #: to AWS Transcribe (billed, and gated on the AWS consent prompt). All three
 #: produce partial results. ``codex`` adapts Codex's experimental voice transport
 #: using an existing ChatGPT login and the optional ``voice-codex`` extra.
+#: ``openai_compatible`` streams to any OpenAI-compatible server (Realtime
+#: transcription for live audio, ``/audio/transcriptions`` for files); its
+#: endpoint and key are vault entries, never config.
 #: ``off`` selects no recogniser; it is deliberately absent from
 #: ``stt_stream._STREAMING_PROVIDERS``, which grants by positive membership.
-_VALID_STT_PROVIDERS = (STT_PROVIDER_LOCAL, "apple", "transcribe", "codex", STT_PROVIDER_OFF)
+_VALID_STT_PROVIDERS = (
+    STT_PROVIDER_LOCAL,
+    "apple",
+    "transcribe",
+    "codex",
+    _STT_PROVIDER_OPENAI_COMPATIBLE,
+    STT_PROVIDER_OFF,
+)
+
+
+def stt_provider_detects_language(provider: object) -> bool:
+    """Whether *provider* can pick the spoken language itself, so ``auto`` is meaningful.
+
+    ``local`` (multilingual Whisper) and ``openai_compatible`` (the request simply
+    omits the language). Apple and Transcribe need an explicit locale.
+    """
+    return provider in (STT_PROVIDER_LOCAL, _STT_PROVIDER_OPENAI_COMPATIBLE)
 
 
 def valid_stt_providers() -> tuple[str, ...]:
@@ -260,6 +282,35 @@ def _validated_stt_model(
         )
         return field_default(SttConfig, "model")
     return _resolve_stt_model(value).name
+
+
+_LAST_WARNED_OPENAI_MODEL: str | None = None
+
+
+def _validated_stt_openai_model(value: object) -> str:
+    """``stt.openai_model`` as stored: a usable model id, else the default, logged once.
+
+    Degrades rather than failing the load, like the provider and model above. A
+    ``null`` is the absent key and says nothing. The rejected value is described by
+    its length, never quoted.
+    """
+    global _LAST_WARNED_OPENAI_MODEL
+
+    if value is None:
+        return _OPENAI_MODEL_DEFAULT
+    name = _openai_model_name(value)
+    if name is not None:
+        return name
+    shape = f"str of length {len(value)}" if isinstance(value, str) else type(value).__name__
+    if shape != _LAST_WARNED_OPENAI_MODEL:
+        _LAST_WARNED_OPENAI_MODEL = shape
+        logger.warning(
+            "Unusable stt.openai_model (%s); using %r. A model id is up to 128 letters, "
+            "digits and . _ : / @ + -.",
+            shape,
+            _OPENAI_MODEL_DEFAULT,
+        )
+    return _OPENAI_MODEL_DEFAULT
 
 
 def _validated_stt_threads(value: object) -> int:
@@ -478,6 +529,9 @@ class SttConfig:
             "`transcribe` sends your audio to AWS Transcribe, which bills your AWS "
             "account. `codex` sends audio to OpenAI through an existing Codex "
             "ChatGPT login (experimental; requires voice access and voice-codex). "
+            "`openai_compatible` sends audio to an OpenAI-compatible speech server "
+            "whose address and API key you store under Settings > Secrets as "
+            "OPENAI_STT_BASE_URL and OPENAI_STT_API_KEY. "
             "`off` runs no recogniser at all, the same as turning speech "
             "input off.",
             enum=list(_VALID_STT_PROVIDERS),
@@ -660,6 +714,17 @@ class SttConfig:
             "for pending audio after recording stops.",
         ),
     )
+    openai_model: str = field(
+        default=_OPENAI_MODEL_DEFAULT,
+        metadata=_meta(
+            "OpenAI-compatible Model",
+            "The speech model the `openai_compatible` provider asks for, both for live "
+            "audio and for files, such as `gpt-4o-transcribe`, `whisper-1`, or the id "
+            "your own server serves. The server address and API key are not settings: "
+            "store them under Settings > Secrets as OPENAI_STT_BASE_URL (empty for "
+            "OpenAI itself) and OPENAI_STT_API_KEY.",
+        ),
+    )
     transcribe_region: str = field(
         default="us-east-1",
         metadata=_meta("Transcribe Region", "AWS region for Transcribe API."),
@@ -704,7 +769,9 @@ class SttConfig:
     @property
     def effective_language_code(self) -> str:
         """Resolve a provider locale without changing the stored preference."""
-        if self.language_code == STT_LANGUAGE_AUTO and self.provider != STT_PROVIDER_LOCAL:
+        if self.language_code == STT_LANGUAGE_AUTO and not stt_provider_detects_language(
+            self.provider
+        ):
             return STT_LANGUAGE_FALLBACK
         return self.language_code
 

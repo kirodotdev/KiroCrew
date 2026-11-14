@@ -207,6 +207,10 @@ def find_brew() -> str | None:
 #: distinction between "you turned this off" and "this cannot run here".
 CODE_DISABLED = "stt_disabled"
 
+#: The ``stt.provider`` value that selects the OpenAI-compatible server. Pinned
+#: equal to ``stt.openai_compat.PROVIDER`` by ``test_openai_compat_stt``.
+STT_PROVIDER_OPENAI = "openai_compatible"
+
 #: The ``stt.provider`` value that selects no recogniser.
 #: ``test_stt_provider_off`` pins it equal to ``config.sections.STT_PROVIDER_OFF``.
 STT_PROVIDER_OFF = "off"
@@ -296,6 +300,11 @@ def availability_detail(stt_config=None) -> stt.Availability:  # type: ignore[no
         from kiro_crew.stt import codex
 
         return codex.availability()
+    if provider == STT_PROVIDER_OPENAI:
+        from kiro_crew.stt import openai_compat
+
+        # Reads the vault, which is why every caller of this function is off the loop.
+        return openai_compat.availability()
     registered = _registered_provider(provider)
     if registered is not None:
         # An edition-registered provider: its own check() answers. BLOCKING, like
@@ -505,6 +514,10 @@ async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # t
         from kiro_crew.stt import codex
 
         result = await codex.transcribe_file(audio_path)
+    elif provider == STT_PROVIDER_OPENAI:
+        from kiro_crew.stt import openai_compat
+
+        result = await openai_compat.transcribe_file(audio_path, stt_config)
     elif (registered := _registered_provider(provider)) is not None:
         # An edition-registered provider. Same contract as every branch here:
         # text, "" for silence, or None -- never an exception. Called on this
@@ -563,7 +576,12 @@ def batch_duration_cap_secs(stt_config=None) -> int | None:  # type: ignore[no-u
         from kiro_crew.stt.codex import MAX_AUDIO_SECS
 
         return MAX_AUDIO_SECS
-    if provider == "transcribe" or _registered_provider(provider) is not None:
+    # The OpenAI-compatible provider is bounded by upload size, and fails loudly
+    # past it (``transcribe_file`` returns None), so it has no silent ceiling either.
+    if (
+        provider in ("transcribe", STT_PROVIDER_OPENAI)
+        or _registered_provider(provider) is not None
+    ):
         return None
     return _MAX_AUDIO_SECS
 
@@ -592,7 +610,7 @@ def provider_splits_oversized(stt_config) -> bool:  # type: ignore[no-untyped-de
     (its ``needs_pcm_wav`` copy refuses past the ceiling instead of truncating).
     """
     provider = stt_config.provider
-    if provider in ("transcribe", "apple", "codex"):
+    if provider in ("transcribe", "apple", "codex", STT_PROVIDER_OPENAI):
         return False
     return _registered_provider(provider) is None
 

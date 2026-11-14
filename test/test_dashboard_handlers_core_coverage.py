@@ -832,7 +832,13 @@ class TestSttConfigEndpoint:
         # Streaming capability is served from the backend's own set so the
         # Settings UI gates on a CAPABILITY rather than a provider name. `local`
         # streams too, so every advertised provider is in it.
-        assert body["streaming_providers"] == ["local", "apple", "transcribe", "codex"]
+        assert body["streaming_providers"] == [
+            "local",
+            "apple",
+            "transcribe",
+            "codex",
+            "openai_compatible",
+        ]
         assert body["language_identification_providers"] == ["transcribe"]
         # Tracks _STT_MODEL_SIZES (the PUT allowlist) rather than pinning one
         # literal, so a catalog entry added or resized cannot make the picker
