@@ -384,13 +384,12 @@ def reconcile_enabled_app_resources() -> dict[str, int]:
         counts["skills"] += len(result.skills)
         counts["errors"] += len(result.errors)
         # Finish the shared-file migration for apps that are ALREADY enabled.
-        # Registration now targets the agent config, but an older build wrote
-        # this app's servers into the shared ``~/.kiro/settings/mcp.json``, and
-        # re-registering does not remove what is already there. Scrubbing only
-        # on deregister meant the leak this change exists to fix (one app's
-        # private tools visible to Kiro IDE and every other kiro-cli agent, plus
-        # dead-port entries that break unrelated sessions) survived until the
-        # user happened to disable the app. Best-effort and idempotent.
+        # Registration targets the agent config, but an install may still have
+        # this app's servers in the shared ``~/.kiro/settings/mcp.json``, and
+        # re-registering does not remove them. Scrubbing only on deregister would
+        # leave one app's private tools visible to Kiro IDE and every other
+        # kiro-cli agent, plus dead-port entries that break unrelated sessions,
+        # until the user disables the app. Best-effort and idempotent.
         scrubbed = _scrub_legacy_shared_mcp(name)
         if scrubbed:
             logger.info(

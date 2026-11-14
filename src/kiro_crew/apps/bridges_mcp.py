@@ -506,7 +506,7 @@ def resolve_stdio_command(cfg: dict, app_root: Path | None = None) -> dict:
                 else:
                     # A native exe a wheel shipped as data - not a launcher
                     # at all; shimming it would hand a binary to the ZIP
-                    # reader. Direct launch, exactly as before the shim.
+                    # reader. Launched directly.
                     _shim_script = ""
             elif not _has_python_shebang(venv_cmd):
                 _shim_script = ""
