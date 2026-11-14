@@ -992,7 +992,7 @@ class TestSpawnCliAuth:
         with pytest.raises(SystemExit) as excinfo:
             _spawn(args)
         assert excinfo.value.code == 1
-        out = capsys.readouterr().out
+        out = capsys.readouterr().err
         assert "Error" in out
         assert "gateway not running" not in out
 
@@ -1009,7 +1009,7 @@ class TestSpawnCliAuth:
         with pytest.raises(SystemExit) as excinfo:
             _spawn(argparse.Namespace(spawn_action="list", port=5476))
         assert excinfo.value.code == 1
-        out = capsys.readouterr().out
+        out = capsys.readouterr().err
         assert "busy" in out
         assert "gateway not running" not in out
 
@@ -1029,7 +1029,7 @@ class TestSpawnCliAuth:
         with pytest.raises(SystemExit) as excinfo:
             _spawn_run(args, "http://localhost:5476")
         assert excinfo.value.code == 1
-        out = capsys.readouterr().out
+        out = capsys.readouterr().err
         assert "busy" in out
         assert "spawn list" in out
         assert "gateway not running" not in out

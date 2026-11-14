@@ -106,7 +106,7 @@ class TestSpawnRunBody:
             )
         assert exc.value.code == 1
         assert uo.call_count == 0
-        assert f"Error: --{flag} needs a value" in capsys.readouterr().out
+        assert f"Error: --{flag} needs a value" in capsys.readouterr().err
 
 
 class TestSpawnRunRefusals:
@@ -141,7 +141,7 @@ class TestSpawnRunRefusals:
             cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=False, **kw))
         assert exc.value.code == 1
         assert uo.call_count == 1
-        assert payload["error"] in capsys.readouterr().out
+        assert payload["error"] in capsys.readouterr().err
 
 
 class TestCliBodyThroughTheGateway:

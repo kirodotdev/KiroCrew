@@ -106,7 +106,9 @@ class TestSpawnSendsThroughThePeerProof:
         ):
             cc._spawn(_ns(spawn_action=action, port=_PORT, task="t", fire_and_forget=True))
         assert exc.value.code == 1
-        assert "gateway ownership not verified: peer not proven" in capsys.readouterr().out
+        captured = capsys.readouterr()
+        assert "gateway ownership not verified: peer not proven" in captured.err
+        assert captured.out == ""
         assert len(sender.sent) == 1
 
 
