@@ -40,7 +40,7 @@ SIGNER = "acme"
 SECRET = "publisher-trust-key"
 APP = "signed-demo"
 
-#: The six field groups this change adds to the signed bytes, each as a publisher
+#: The six field groups in the signed bytes, each as a publisher
 #: would plausibly declare it.
 DECLARATIONS: dict[str, dict[str, Any]] = {
     "ui": {

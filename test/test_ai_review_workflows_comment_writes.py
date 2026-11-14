@@ -1239,7 +1239,7 @@ class TestNoticeSlotLookupLicensesEveryCreate:
     def test_no_notice_body_is_staged_at_a_hardcoded_host_path(
         self, workflow: str, step: str, defines: bool, creates: bool
     ) -> None:
-        # Every body a lane this change touches stages goes under the runner's own
+        # Every body a covered lane stages goes under the runner's own
         # temp dir. A hardcoded `/tmp/...` path is shared state three ways: two
         # lanes on one runner write the same file, a self-hosted runner keeps it
         # between jobs, and a test that executes the arm writes it on the host.
@@ -1257,7 +1257,7 @@ class TestNoticeSlotLookupLicensesEveryCreate:
             if re.search(r"(?:>|--body-file|\bcat)\s+/tmp/", line)
         ]
         if defines:
-            # The five lanes this change owns: the rule holds outright.
+            # The five lanes that define the notice: the rule holds outright.
             assert not offenders, (workflow, offenders)
             return
         # Outside them, the current answer is recorded rather than assumed clean, so

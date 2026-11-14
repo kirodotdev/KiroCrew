@@ -408,12 +408,11 @@ class TestDisableBranches:
                 "failed": True,
             }
 
-        # Patched on the SHARED teardown, not on `routes`: this PR routes the
-        # disable path's hook/backend/onDisable work through
+        # Patched on the SHARED teardown, not on `routes`: the disable path's
+        # hook/backend/onDisable work runs in
         # `apps/teardown.py::teardown_app_runtime`, the one implementation the
         # trust-revocation path also calls, so `routes` does not hold these
-        # symbols. The behaviour these tests pin is unchanged — the warnings still
-        # surface on the disable response — only the module that owns the step moved.
+        # symbols. The warnings still surface on the disable response.
         from kiro_crew.apps import teardown as teardown_mod
 
         # Patched on `teardown`, NOT on `lifecycle_scripts`: teardown does
@@ -446,12 +445,11 @@ class TestDisableBranches:
         async def _boom(*args: Any, **kwargs: Any) -> dict[str, Any]:
             raise RuntimeError("disable hook exploded")
 
-        # Patched on the SHARED teardown, not on `routes`: this PR routes the
-        # disable path's hook/backend/onDisable work through
+        # Patched on the SHARED teardown, not on `routes`: the disable path's
+        # hook/backend/onDisable work runs in
         # `apps/teardown.py::teardown_app_runtime`, the one implementation the
         # trust-revocation path also calls, so `routes` does not hold these
-        # symbols. The behaviour these tests pin is unchanged — the warnings still
-        # surface on the disable response — only the module that owns the step moved.
+        # symbols. The warnings still surface on the disable response.
         from kiro_crew.apps import teardown as teardown_mod
 
         monkeypatch.setattr(teardown_mod, "on_app_disable", _boom)
@@ -473,12 +471,11 @@ class TestDisableBranches:
             assert kwargs["bounded_startup_cleanup"] is False
             return {"cron_cleanup": "2 job(s) left enabled", "other": 1}
 
-        # Patched on the SHARED teardown, not on `routes`: this PR routes the
-        # disable path's hook/backend/onDisable work through
+        # Patched on the SHARED teardown, not on `routes`: the disable path's
+        # hook/backend/onDisable work runs in
         # `apps/teardown.py::teardown_app_runtime`, the one implementation the
         # trust-revocation path also calls, so `routes` does not hold these
-        # symbols. The behaviour these tests pin is unchanged — the warnings still
-        # surface on the disable response — only the module that owns the step moved.
+        # symbols. The warnings still surface on the disable response.
         from kiro_crew.apps import teardown as teardown_mod
 
         monkeypatch.setattr(teardown_mod, "on_app_disable", _hooks)

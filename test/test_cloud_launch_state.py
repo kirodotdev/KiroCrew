@@ -196,8 +196,8 @@ class TestResumeStillReattachesAfterTheMove:
 
     def test_a_legacy_pointer_is_still_found(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-        # Exactly what an install that launched under the old code has on disk: the pointer in
-        # cloud.json, and no launch record at all.
+        # Exactly what a legacy install has on disk: the pointer in cloud.json,
+        # and no launch record at all.
         (tmp_path / "cloud.json").write_text(
             json.dumps({"profile": "work", "region": "eu-west-1", "last_tag": "kc-legacy"})
         )

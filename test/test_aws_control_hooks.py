@@ -255,7 +255,7 @@ class TestClaimsTheRunThroughTheSdk:
 
     def test_no_drive_yet_claims_no_run(self, hook_logs):
         # The drive is tag-discovered per wake. Until one exists there is nowhere to
-        # push, so the loop claims NOTHING -- as it did before this change. Claiming
+        # push, so the loop claims NOTHING. Claiming
         # a run anyway would leave a `done` SDK run on the Backup row every wake for
         # a backup that uploaded nothing, and that newest `done` run would clear an
         # owner's earlier `lastFailed`. A missing drive is "nothing to attempt yet".

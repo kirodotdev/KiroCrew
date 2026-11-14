@@ -505,9 +505,9 @@ class TestNightlyRetryBackoff:
         # A run record reaches the document by TWO paths and the clear has to sit on
         # both. `_record_run_locked` clears beside its own write, but a run whose state
         # write raised is held in memory and arrives through `_merge_pending` instead --
-        # carrying the run and, before the fix, not the clear. The stale count then
-        # outlived the success that should have ended it, and after a restart withheld one
-        # nightly for up to the ceiling on an account that had already backed up.
+        # carrying the run. Without the clear there too, the stale count outlives the
+        # success that should end it, and after a restart withholds one nightly for up
+        # to the ceiling on an account that has already backed up.
         backup.set_nightly(ACCOUNT, True)
         for _ in range(4):
             _fail(ACCOUNT, backup.KIND_SNAPSHOT, "eio")
