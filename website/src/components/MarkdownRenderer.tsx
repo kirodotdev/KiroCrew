@@ -914,7 +914,8 @@ const TABLE_DELIM_RE = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/
  * non-blank lines whose FIRST line is a bordered table header (starts with `|`)
  * is a candidate, and only when that run does NOT yet contain a delimiter row
  * (a `---` row that actually carries a `|`). A run that already has such a
- * delimiter is a real (possibly still growing) table and is left to render.
+ * delimiter is a real (possibly still growing) table: it renders, minus a
+ * half-typed last row, which is held until its line break arrives.
  *
  * Scoping choices (both close known edge cases):
  *  - Require the first line to START with `|`. A looser "≥2 pipes" test also
@@ -928,7 +929,7 @@ const TABLE_DELIM_RE = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/
  *    cells), so counting it as "already a table" would wrongly skip deferral and
  *    let the snap happen.
  */
-function deferIncompleteStreamingTable(content: string): string {
+function deferIncompleteStreamingTable(content: string, holdLastRow: boolean): string {
   const lines = content.split('\n')
   let start = lines.length
   while (start > 0 && lines[start - 1].trim() !== '') start--
@@ -936,14 +937,23 @@ function deferIncompleteStreamingTable(content: string): string {
   const run = lines.slice(start)
   if (!/^\s*\|/.test(run[0])) return content // not a bordered table header
   // A real GFM delimiter row carries at least one pipe; a bare `---` does not.
-  if (run.some((l) => l.includes('|') && TABLE_DELIM_RE.test(l))) return content
-  return lines.slice(0, start).join('\n')
+  const delim = run.findIndex((l) => l.includes('|') && TABLE_DELIM_RE.test(l))
+  if (delim < 0) return lines.slice(0, start).join('\n')
+  // A real table: hold back its half-typed last row until the line break
+  // arrives (#37358). The run ends at the text's end, so a last line after the
+  // delimiter has no line break yet. Without this every character typed into
+  // that row changes the block's text and re-parses the whole table. Only
+  // while the row is still being typed (see `holdRow` in MarkdownBlock): a
+  // row the stream paused on, or one a fence was opened after, is final.
+  const last = run.length - 1
+  if (holdLastRow && last > delim && /^\s*\|/.test(run[last])) return lines.slice(0, start + last).join('\n') + '\n'
+  return content
 }
 
 const noSubscribe = () => () => {}
 
 const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLine, glow, smooth, softBreaks, live, typing, unfurl, markers }: { content: string; sourcePos?: boolean; startLine?: number; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; typing?: boolean; unfurl?: boolean; markers?: RedactionMarkers }) {
-  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  const langGen = useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const textPreviews = useContext(TextPreviewsCtx) > 0 && !sourcePos
   // Declared before the early return below — Rules of Hooks.
   //
@@ -977,8 +987,18 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   // `glow` marks the live streaming tail block: while streaming, hold back an
   // incomplete trailing table so it doesn't paint as pipe text then snap into a
   // <table> when the delimiter row arrives.
-  if (glow) clean = deferIncompleteStreamingTable(clean)
-  if (!clean.trim()) return null
+  // Release a held table row once the text stops changing (a tool call or an
+  // approval wait mid-reply) and whenever the block is no longer the text
+  // being typed (a fence opened right after the table).
+  const [settledContent, setSettledContent] = useState<string | null>(null)
+  useEffect(() => {
+    if (!glow || !typing) return
+    const t = setTimeout(() => setSettledContent(content), REVEAL_IDLE_SETTLE_MS)
+    return () => clearTimeout(t)
+  }, [content, glow, typing])
+  const holdRow = !!typing && settledContent !== content
+  if (glow) clean = deferIncompleteStreamingTable(clean, holdRow)
+  const empty = !clean.trim()
   const baseRehype = sourcePos ? REHYPE_PLUGINS_WITH_SOURCEPOS : REHYPE_PLUGINS
   // Streaming tail block only (see MarkdownRenderer's `glow` prop):
   //   - in immediate mode: append the glow plugin for trailing-word shimmer;
@@ -1022,13 +1042,23 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   // the broken one. Both passes shift columns, so both are gated off in
   // sourcePos mode together.
   const prepared = sourcePos ? fenced : fixCjkAutolinkBoundaries(fixUnencodedLinkDestinations(fenced))
-  const md = (
-    <MdSourceCtx.Provider value={prepared}>
-      <ReactMarkdown remarkPlugins={textPreviews ? (softBreaks ? REMARK_PLUGINS_WITH_BREAKS_TEXT_PREVIEWS : REMARK_PLUGINS_TEXT_PREVIEWS) : (softBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS)} rehypePlugins={rehypePlugins} urlTransform={urlTransform} components={MD_COMPONENTS}>
-        {prepared}
-      </ReactMarkdown>
-    </MdSourceCtx.Provider>
+  const remarkPlugins = textPreviews ? (softBreaks ? REMARK_PLUGINS_WITH_BREAKS_TEXT_PREVIEWS : REMARK_PLUGINS_TEXT_PREVIEWS) : (softBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS)
+  // Reuse the element while the prepared text and plugins are unchanged, so
+  // React skips the parse (#37358): a held-back streaming table row changes
+  // `content` on every frame but not `prepared`. `rehypePlugins` is rebuilt
+  // each render from exactly these inputs, so it is keyed by them.
+  const md = useMemo(
+    () => (
+      <MdSourceCtx.Provider value={prepared}>
+        <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} urlTransform={urlTransform} components={MD_COMPONENTS}>
+          {prepared}
+        </ReactMarkdown>
+      </MdSourceCtx.Provider>
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- rehypePlugins is derived from sourcePos, glow, smooth and markers; langGen re-renders translated element text
+    [prepared, remarkPlugins, sourcePos, glow, smooth, markers, langGen],
   )
+  if (empty) return null
   const body = sourcePos
     ? <div data-block-start={startLine ?? 1}><MdBlockStartCtx.Provider value={startLine ?? 1}>{md}</MdBlockStartCtx.Provider></div>
     : md
