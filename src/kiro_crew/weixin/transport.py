@@ -437,7 +437,11 @@ class WeixinTransport(MessagingTransport):
                     # nothing about whether the session is still expired.
                     expired = False
                     self._report_state(True, "")
-                self._sync_buf = resp.get("get_updates_buf", self._sync_buf)
+                # Only a non-empty cursor replaces the saved one: an empty or
+                # null one would restart the sync and redeliver recent messages.
+                cursor = resp.get("get_updates_buf")
+                if isinstance(cursor, str) and cursor:
+                    self._sync_buf = cursor
                 for msg in resp.get("msgs") or []:
                     task = asyncio.current_task()
                     if task is not None:
