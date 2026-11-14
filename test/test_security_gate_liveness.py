@@ -811,7 +811,10 @@ def _url_payload_command(n: int) -> str:
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
 #: Raised by 18, from 36,000, to 36,018, for ``paths.py``'s scratch tree-index fence:
 #: artifact reads refuse the canonical index path even during replacement.
-_PACKAGE_LINE_BUDGET = 36_018
+#: Covers the deny view's Windows program-suffix view (at the program word, past
+#: ``sudo``-style wrappers and ``cmd /c``), its in-word ``^``/backtick view, and the
+#: ``.exe``/``.cmd``/``.bat`` spellings the s3 download reader and scratch ``rm`` view accept.
+_PACKAGE_LINE_BUDGET = 36_059
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

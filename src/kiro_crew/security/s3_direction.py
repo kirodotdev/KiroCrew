@@ -114,6 +114,8 @@ def _s3_download_only(command: str, raw: str = "") -> bool:
         words = words[1:]
     # A ``file://`` / ``fileb://`` value makes the aws CLI READ a local file and
     # send it (``--sse-c-key fileb://...`` goes out in a request header).
+    if words and words[0] in ("aws.exe", "aws.cmd", "aws.bat"):  # WSL interop, same CLI
+        words[0] = "aws"
     if not words or words[0] != "aws" or any(("file://" in w or "fileb://" in w) for w in words):
         return False
     stage, operands, i = 0, [], 1  # stage 0 wants ``s3``, 1 the verb, 2 operands
