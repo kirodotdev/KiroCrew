@@ -13,10 +13,11 @@ export interface ListLineBreakEdit {
   start: number
   end: number
   insert: string
-  /** Number rewrites on the ordered items below the new one, each a span of
-   *  digits in the ORIGINAL value after `end`, in document order. Present only
-   *  when a number changes. Apply them last to first, then the edit itself, so
-   *  no offset moves under a later write. */
+  /** Rewrites below the new item, each a span of the ORIGINAL value after
+   *  `end`, in document order: the number of an ordered item, and the
+   *  indentation of the lines nested under an item whose number changed width.
+   *  Present only when a number changes. Apply them last to first, then the
+   *  edit itself, so no offset moves under a later write. */
   renumber?: ListLineBreakEdit[]
 }
 
@@ -35,7 +36,7 @@ export interface ProtectedRange {
   end: number
 }
 
-interface ListMarker {
+export interface ListMarker {
   indent: string
   bullet: string | null
   digits: string | null
@@ -67,7 +68,7 @@ export function listContentColumn(line: string): number | null {
   return match ? match[0].length : null
 }
 
-function parseMarker(line: string): ListMarker | null {
+export function parseMarker(line: string): ListMarker | null {
   const match = MARKER_RE.exec(line)
   if (!match) return null
   const [whole, indent, bullet, digits, delimiter, gap] = match
@@ -85,7 +86,7 @@ function parseMarker(line: string): ListMarker | null {
 }
 
 /** `9` → `10`, `09` → `10`, `007` → `008`; unsafe integers repeat unchanged. */
-function nextOrdinal(digits: string): string {
+export function nextOrdinal(digits: string): string {
   const current = Number(digits)
   if (!Number.isSafeInteger(current) || !Number.isSafeInteger(current + 1)) return digits
   const next = String(current + 1)
@@ -189,9 +190,11 @@ function withRenumber(
  * first sibling off that count (a `1.` / `1.` / `1.` list, a deliberate jump),
  * a blank line, or a line at a shallower or equal indent that is not a sibling
  * ends the run, and nothing past it changes. Deeper lines (nested items, wrapped
- * text) are passed over untouched.
+ * text) are never renumbered. When a rewritten number gains or loses a digit,
+ * the lines nested under that item move by as many columns (`nestedShifts`),
+ * so they stay under it.
  */
-function renumberFollowing(
+export function renumberFollowing(
   value: string,
   lineEnd: number,
   marker: ListMarker,
@@ -217,12 +220,59 @@ function renumberFollowing(
       const digitsStart = start + sibling.indent.length
       const digitsEnd = digitsStart + sibling.digits.length
       if (protectedRanges.some(range => range.start < digitsEnd && digitsStart < range.end)) break
-      if (sibling.digits !== assigned) writes.push({ start: digitsStart, end: digitsEnd, insert: assigned })
+      if (sibling.digits !== assigned) {
+        writes.push({ start: digitsStart, end: digitsEnd, insert: assigned })
+        const grown = assigned.length - sibling.digits.length
+        // The text column as typed: indent, digits, one delimiter character, gap.
+        const column = digitsEnd - start + 1 + sibling.gap.length
+        if (grown) writes.push(...nestedShifts(value, end, sibling.indent.length, column, grown))
+      }
       assigned = nextOrdinal(assigned)
       continue
     }
     const indent = /^[ \t]*/.exec(line)![0]
     if (indent.length <= marker.indent.length) break
+  }
+  return writes
+}
+
+/**
+ * The edit that moves a nested line `columns` further in, or back out when
+ * negative, at `at`, the end of its indentation: that many spaces added there,
+ * or up to that many of the spaces in front of it removed.
+ */
+export function indentShift(value: string, at: number, columns: number): ListLineBreakEdit {
+  if (columns >= 0) return { start: at, end: at, insert: ' '.repeat(columns) }
+  let spare = 0
+  while (spare < -columns && value[at - spare - 1] === ' ') spare += 1
+  return { start: at - spare, end: at, insert: '' }
+}
+
+/**
+ * The moves that keep the lines nested under an item on its text column when
+ * its number changes width by `columns`. The item's line ends at `lineEnd`, its
+ * marker is indented `floor` characters and its text started at `column`. A
+ * line indented to `column` or past it is nested and moves. A blank line and a
+ * line short of `column` stay. The first line indented `floor` or less ends
+ * the item.
+ */
+function nestedShifts(value: string, lineEnd: number, floor: number, column: number, columns: number): ListLineBreakEdit[] {
+  const writes: ListLineBreakEdit[] = []
+  let pos = lineEnd
+  while (pos < value.length) {
+    const start = pos + 1
+    const newline = value.indexOf('\n', start)
+    const end = newline === -1 ? value.length : newline
+    pos = end
+    const line = value.slice(start, end)
+    if (line.trim() === '') continue
+    let indent = 0
+    while (line[indent] === ' ' || line[indent] === '\t') indent += 1
+    if (indent <= floor) break
+    if (indent < column) continue
+    const move = indentShift(value, start + indent, columns)
+    // A tab-indented line has no space to give back.
+    if (move.start < move.end || move.insert) writes.push(move)
   }
   return writes
 }
