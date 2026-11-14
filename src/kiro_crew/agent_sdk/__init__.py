@@ -222,6 +222,15 @@ def mcp_call_arguments(event: Any, server: str, tool: str) -> dict[str, Any]:
     return _mcp_arguments(event, server, tool)
 
 
+def harness_id_tool_name(tool_id: str) -> str:
+    """The tool name a backend-qualified harness tool id states (``claude#Read`` is
+    ``Read``), or ``""`` for any other id. Imported lazily, as above."""
+    from kiro_crew.acp.harness_tool_names import split_harness_tool_id
+
+    parts = split_harness_tool_id(tool_id)
+    return parts[1] if parts else ""
+
+
 def watch_agent_turns(provider: object, callback: Callable[[], None] | None) -> bool:
     """Call *callback* when *provider*'s agent starts a turn between prompts; ``None`` stops it.
 
@@ -257,6 +266,7 @@ __all__ = [
     "take_batch_guard_refusal",
     "batch_guard_refusal_outcome",
     "mcp_call_arguments",
+    "harness_id_tool_name",
     "watch_agent_turns",
     "tool_row_text",
     "agents_dir_competing_claim",

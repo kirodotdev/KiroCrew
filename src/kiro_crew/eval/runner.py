@@ -18,8 +18,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.agent_sdk import harness_id_tool_name, mcp_call_arguments
 from kiro_crew.constants import DENY_CAUSE_POLICY, DENY_CAUSE_SURFACE_POLICY
-from kiro_crew.eval.scenario import Assertion, AssertionType, Scenario, SeedProfile, Session, Turn
+from kiro_crew.eval.scenario import (
+    Assertion,
+    AssertionType,
+    Scenario,
+    SeedProfile,
+    Session,
+    ToolCall,
+    Turn,
+)
 from kiro_crew.llm_helpers import _steer_host_deny
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
@@ -33,6 +42,7 @@ from kiro_crew.providers.base import (
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
+    EVENT_TOOL_CALL_UPDATE,
     LLMProvider,
 )
 from kiro_crew.sel import sel
@@ -74,7 +84,12 @@ class TurnResult:
     user_message: str
     agent_response: str
     tool_calls: list[str] = field(default_factory=list)
+    #: The same calls with their server and arguments, which the tool assertions read.
+    tool_call_records: list[ToolCall] = field(default_factory=list)
     assertion_results: list[tuple[Assertion, bool]] = field(default_factory=list)
+    #: One entry per ``assertion_results`` entry: why a tool assertion failed when the
+    #: turn's calls could not show the answer, else "".
+    assertion_notes: list[str] = field(default_factory=list)
     elapsed_secs: float = 0.0
     error: str = ""
 
@@ -199,6 +214,102 @@ def score_by_dimension(results: list[ScenarioResult]) -> dict[str, dict[str, Any
         }
         for dim, s in dim_stats.items()
     }
+
+
+# ── Tool calls ──
+
+#: What the report prints for a call no frame named.
+UNNAMED_TOOL_LABEL = "(unnamed tool)"
+
+
+def _event_identity(event: Any) -> tuple[str, str]:
+    """``(tool, server)`` from fields the adapter wrote, never a title; ``tool`` is "" when
+    none names it. An event that sets ``text`` is named by it, as a scripted one is.
+
+    A harness id names the tool its backend states (``claude#Read``), or an MCP tool as
+    ``@server/tool`` (opencode). Several splits (``|``) or claude's fused ``mcp__s__t``
+    name no single tool.
+    """
+    name = event.text or event.tool_name
+    server = event.mcp_server_name or ""
+    stated = "" if name else harness_id_tool_name(event.harness_tool_id)
+    if "|" in stated or stated.startswith("mcp__"):
+        stated = ""
+    if stated.startswith("@") and "/" in stated:
+        stated_server, _, stated = stated[1:].partition("/")
+        server = server or stated_server
+    return name or stated, server
+
+
+def _states_params(event: Any) -> bool:
+    """Whether the event carries raw arguments, not the ``{}`` a call opens with."""
+    return isinstance(event.raw_tool_params, dict) and bool(event.raw_tool_params)
+
+
+@dataclass
+class _OpenCall:
+    """One call while its turn streams: ``name`` is "" until a frame names it, and
+    ``source`` is the latest event that stated its arguments."""
+
+    name: str
+    server: str
+    source: Any = None
+
+    def record(self) -> ToolCall:
+        args = None
+        if self.source is not None:
+            # An MCP call's transport envelope is unwrapped only when it names this call.
+            args = (
+                mcp_call_arguments(self.source, self.server, self.name)
+                if self.name and self.server
+                else self.source.raw_tool_params
+            )
+        return ToolCall(self.name or None, self.server, args)
+
+
+class _TurnCalls:
+    """The tool calls one turn made, in order. A ``tool_call_update`` or permission request
+    with the same ``tool_call_id`` refines its call in place, never adding one."""
+
+    def __init__(self) -> None:
+        self._calls: list[_OpenCall] = []
+        self._by_id: dict[str, _OpenCall] = {}
+
+    def add(self, event: Any) -> str:
+        """Record a ``tool_call`` event; return the name it states, "" when none."""
+        call = _OpenCall(*_event_identity(event), event if _states_params(event) else None)
+        self._calls.append(call)
+        if event.tool_call_id:
+            self._by_id[event.tool_call_id] = call
+        return call.name
+
+    def refine(self, event: Any) -> None:
+        call = self._by_id.get(event.tool_call_id) if event.tool_call_id else None
+        if call is None:
+            return
+        if not call.name:
+            name, server = _event_identity(event)
+            if name:
+                call.name, call.server = name, call.server or server
+        # An update restates the whole input as streamed so far, so the latest one wins.
+        latest = event.kind == EVENT_TOOL_CALL_UPDATE or call.source is None
+        if latest and _states_params(event):
+            call.source = event
+
+    def records(self) -> list[ToolCall]:
+        return [call.record() for call in self._calls]
+
+
+def _redacted(text: str) -> str:
+    """*text* without credentials or exfiltration URLs, as the parsers treat a title."""
+    from kiro_crew.security import redact
+
+    return redact(text) if text else ""
+
+
+def _tool_label(name: str) -> str:
+    """A tool name as the report prints it: redacted, one line, no terminal controls."""
+    return safe_terminal_line(_redacted(name)) if name else UNNAMED_TOOL_LABEL
 
 
 # ── Tool permission ──
@@ -567,20 +678,23 @@ class EvalRunner:
         """Send a message and collect the response."""
         t0 = time.monotonic()
         chunks: list[str] = []
-        tool_calls: list[str] = []
+        calls = _TurnCalls()
 
         async for event in provider.stream(turn_def.user):
             if event.kind == EVENT_TEXT_CHUNK:
                 chunks.append(event.text)
             elif event.kind == EVENT_TOOL_CALL:
-                tool_calls.append(event.text)
+                name = calls.add(event)
                 sel().log_tool_invocation(
                     session_key=session_key,
-                    tool_name=event.text,
+                    tool_name=_redacted(name),
                     outcome="invoked",
                     source="eval_runner",
                 )
+            elif event.kind == EVENT_TOOL_CALL_UPDATE:
+                calls.refine(event)
             elif event.kind == EVENT_PERMISSION_REQUEST:
+                calls.refine(event)
                 reason = await asyncio.to_thread(
                     refusal_for,
                     event,
@@ -704,8 +818,9 @@ class EvalRunner:
         response = strip_steering_markers("".join(chunks)).strip()
         elapsed = time.monotonic() - t0
 
-        assertion_results = [
-            (a, a.check(response))
+        records = calls.records()
+        verdicts = [
+            (a, a.verdict(response, records))
             for a in turn_def.assertions
             if self.judge_enabled or a.type != AssertionType.JUDGE
         ]
@@ -713,8 +828,10 @@ class EvalRunner:
         return TurnResult(
             user_message=turn_def.user,
             agent_response=response,
-            tool_calls=tool_calls,
-            assertion_results=assertion_results,
+            tool_calls=[r.name or "" for r in records],
+            tool_call_records=records,
+            assertion_results=[(a, ok) for a, (ok, _) in verdicts],
+            assertion_notes=[note for _, (_, note) in verdicts],
             elapsed_secs=elapsed,
         )
 
@@ -767,12 +884,15 @@ def format_results(results: list[ScenarioResult]) -> str:
                 t_status = "✅" if tr.passed else "❌"
                 lines.append(f"  {t_status} Turn {ti + 1}: `{tr.user_message[:60]}`")
                 if tr.tool_calls:
-                    lines.append(f"     Tools: {', '.join(tr.tool_calls[:5])}")
-                for assertion, ok in tr.assertion_results:
+                    names = ", ".join(_tool_label(n) for n in tr.tool_calls[:5])
+                    lines.append(f"     Tools: {names}")
+                for i, (assertion, ok) in enumerate(tr.assertion_results):
                     a_status = "✅" if ok else "❌"
+                    label = safe_terminal_line(_redacted(assertion.label))[:50]
+                    note = tr.assertion_notes[i] if i < len(tr.assertion_notes) else ""
                     lines.append(
                         f"     {a_status} {assertion.type.value}: "
-                        f"`{assertion.value[:50]}`"
+                        f"`{label}`" + (f" ({note})" if note else "")
                     )
                 if not tr.passed:
                     snippet = tr.agent_response[:200].replace("\n", " ")
