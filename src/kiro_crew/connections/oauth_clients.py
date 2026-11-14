@@ -42,6 +42,12 @@ skips DCR when a client id is present and pins the loopback listener to the
 given host, port and path). The redirect URI is derived from the registry so
 the runbook the operator followed and the listener kiro-cli opens can never
 name different strings.
+
+One provider is never projected
+-------------------------------
+Slack's client stays in the vault (:func:`keeps_user_client`). Kiro Crew's own
+sign-in reads it there, and no agent spec and no ``mcp.json`` is ever written
+with it, so a client found on a ``slack`` entry is one the user wrote.
 """
 
 from __future__ import annotations
@@ -365,6 +371,31 @@ def strip_preregistered_oauth_client(entry: dict[str, Any]) -> dict[str, Any]:
     else:
         out.pop(KIRO_OAUTH_KEY, None)
     return out
+
+
+#: Providers whose operator client is never written into an MCP entry.
+_VAULT_ONLY_CLIENT = frozenset({"slack"})
+
+
+def keeps_user_client(slug: str) -> bool:
+    """Whether a client on an entry for ``slug`` is the user's own.
+
+    True for a provider whose operator client never leaves the vault: nothing
+    Kiro Crew writes puts a client on such an entry, so nothing strips one.
+    """
+    return slug in _VAULT_ONLY_CLIENT
+
+
+def projected_provider_for_server(name: str, entry: Mapping[str, Any] | None) -> Provider | None:
+    """:func:`provider_for_server`, for a provider whose client is projected into the entry.
+
+    ``None`` for a provider whose client stays in the vault, so a caller that
+    strips a projected client leaves the user's own alone.
+    """
+    provider = provider_for_server(name, entry)
+    if provider is None or keeps_user_client(str(provider["slug"])):
+        return None
+    return provider
 
 
 def provider_for_server(name: str, entry: Mapping[str, Any] | None) -> Provider | None:

@@ -13,7 +13,7 @@
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { OverlayPortal } from '../../components/overlayRoot'
-import { useTranslation } from 'react-i18next'
+import { Trans, useTranslation } from 'react-i18next'
 import { motion, useReducedMotion } from 'framer-motion'
 import {
   AlertTriangle,
@@ -37,7 +37,13 @@ import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import ProviderLogo, { PROVIDER_LOGO_SLUGS } from './ProviderLogo'
 import type { ConnectionProvider } from './registry'
-import { isGoogleSlug } from './connectionsLinks'
+import { isGoogleSlug, MCP_SERVERS_HREF } from './connectionsLinks'
+import { Link } from 'react-router-dom'
+import { settingsPath } from '../../components/settingsPath'
+
+/** The Settings entry of the preview that turns on Crew's own sign-in
+ *  (its id in `settingsRegistry.gen.ts`). */
+const CREW_SIGN_IN_SETTING_ID = 'developer.mcp-sign-in-by-kiro-crew'
 // The loopback pre-check lives in `utils/loopbackReturnAddress` (shared with
 // the chat banner's relay affordance).
 import { isValidLoopbackReturnAddress, normalizeLoopbackReturnAddress } from '../../utils/loopbackReturnAddress'
@@ -100,6 +106,12 @@ interface ConnectionCardProps {
    *  on the connected row; it never removes an action, because the sign-in runs
    *  on Kiro CLI and its grant is real for Kiro CLI chats. */
   backendLacksOauth?: boolean
+  /** The `needs-configuration` card is waiting for Crew's own sign-in, not for an
+   *  OAuth app: its instruction and its link point at that setting. */
+  needsCrewSignIn?: boolean
+  /** The `needs-configuration` card whose configured entry Crew's sign-in does not
+   *  serve: no Connect, no OAuth app step and no step to turn that sign-in on. */
+  crewSignInNotOwned?: boolean
   /** True on a connected row while chats run on KAS: a KAS chat signs in once
    *  when the user names the server, so the row says which word to type. */
   signInInChat?: boolean
@@ -164,6 +176,7 @@ const PREREQUISITE_KEYS = {
   'google-sheets': 'pages.connectionsPage.prerequisite_google_sheets',
   'google-docs': 'pages.connectionsPage.prerequisite_google_docs',
   'google-slides': 'pages.connectionsPage.prerequisite_google_slides',
+  slack: 'pages.connectionsPage.prerequisite_slack',
 } as const
 
 /**
@@ -185,7 +198,8 @@ const PREREQUISITE_KEYS = {
 function PrerequisiteTip({ label, heading, text, redirect }: {
   label: string
   heading: string
-  text: string
+  /** A plain string, or a `Trans` when a step links somewhere. */
+  text: ReactNode
   /** Where this card's sign-in returns, shown as selectable lines an org admin
    *  can be handed (`signInRedirect` on the status row). */
   redirect?: { caption: string; values: string[] }
@@ -370,6 +384,8 @@ function ConnectionCard({
   grantSharedWith,
   grantSharedUnconfirmed,
   backendLacksOauth = false,
+  needsCrewSignIn = false,
+  crewSignInNotOwned = false,
   signInInChat = false,
   crewHeld = false,
   signInRedirect,
@@ -932,7 +948,44 @@ function ConnectionCard({
               {/* Not on a Google product row: its OAuth app is the shared part
                   below the rows, and this tip names a Configure button the row
                   does not have. */}
-              {expand && !open && (
+              {/* An entry Crew's sign-in does not own gets none of the blocks
+                  below: the mint refuses it, and its sign-in is already on. One
+                  line says why there is no Connect and links to the entry. */}
+              {crewSignInNotOwned && (
+                <span className="text-[12px] text-muted" data-testid="crew-sign-in-not-owned">
+                  <Trans
+                    i18nKey="pages.connectionsPage.crew_sign_in_not_owned_help"
+                    values={{ provider: provider.name }}
+                    components={{ mcpLink: <Link to={MCP_SERVERS_HREF} className="underline hover:text-accent" /> }}
+                  />
+                </span>
+              )}
+              {needsCrewSignIn && !crewSignInNotOwned && (
+                /* No Connect and no OAuth app step yet: this provider's client
+                   never leaves the vault, so the card can connect only once Crew
+                   does the sign-in. The link opens the switch that turns that on. */
+                <>
+                  <PrerequisiteTip
+                    label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
+                    heading={t('pages.connectionsPage.before_you_connect')}
+                    text={(
+                      <Trans
+                        i18nKey="pages.connectionsPage.needs_crew_sign_in_help"
+                        values={{ provider: provider.name }}
+                        components={{ settingsLink: <Link to={settingsPath({ tab: 'agent' })} className="underline hover:text-accent" /> }}
+                      />
+                    )}
+                  />
+                  <Link
+                    to={settingsPath({ tab: 'developer', sub: 'feature-previews', highlight: CREW_SIGN_IN_SETTING_ID })}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-[12px] font-medium text-accent-fg hover:opacity-90"
+                  >
+                    <Settings2 className="w-3.5 h-3.5" aria-hidden="true" />
+                    {t('pages.connectionsPage.open_crew_sign_in_setting')}
+                  </Link>
+                </>
+              )}
+              {!needsCrewSignIn && !crewSignInNotOwned && expand && !open && (
                 <PrerequisiteTip
                   label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
                   heading={t('pages.connectionsPage.before_you_connect')}
@@ -943,7 +996,7 @@ function ConnectionCard({
                   which opens in place on this card. Only the owner can save it. */}
               {/* Shown only while closed: once open, the form below is the
                   next step and the name toggle closes the card. */}
-              {expand && !open && oauthPanel !== undefined && (
+              {!needsCrewSignIn && !crewSignInNotOwned && expand && !open && oauthPanel !== undefined && (
                 <Btn
                   primary
                   onClick={expand.onToggle}

@@ -131,6 +131,19 @@ class ConnectionStatus(TypedDict, total=False):
     #: registration error no user can act on, so the row says what the missing step
     #: is and where it lives (Settings → Connections).
     needsClientConfig: bool
+    #: True for a provider whose client never leaves the vault
+    #: (``oauth_clients.keeps_user_client``, Slack) while Crew's own sign-in is not
+    #: serving chats: the preview is off, or chats run on a backend it does not
+    #: bridge. Present only when true and never alongside a held grant. The card
+    #: renders an instruction with a link to the setting instead of Connect,
+    #: because no other sign-in can present that client.
+    needsCrewSignIn: bool
+    #: True for such a provider while Crew's sign-in is on but does not serve its
+    #: configured entry (``crew_oauth.owns`` is False: the entry sends its own
+    #: credential header or points at another url). Present only when true and
+    #: never alongside a held grant. The card hides Connect, which the mint would
+    #: refuse, and shows no step to turn on a sign-in that is already on.
+    crewSignInNotOwned: bool
     #: True on a connected row while chats run on KAS (and the row has no
     #: ``backendLacksOauth``) whose grant no KAS chat reads from the vault: a
     #: kiro-cli mint wrote it, or the entry is one the engine is not sent bare. It is
@@ -596,6 +609,58 @@ def _crew_managed_slugs(providers: list[Provider]) -> frozenset[str]:
     return frozenset(s for s in slugs if crew_oauth.owns(s))
 
 
+def _crew_sign_in_off_slugs(providers: list[Provider]) -> frozenset[str]:
+    """The vault-only providers Crew's own sign-in is not serving right now. Blocking."""
+    from kiro_crew.connections import crew_oauth
+    from kiro_crew.connections.oauth_clients import keeps_user_client
+
+    slugs = {str(p["slug"]) for p in providers}
+    return frozenset(s for s in slugs if keeps_user_client(s) and not crew_oauth.manages(s))
+
+
+def card_url(value: str) -> str:
+    """*value* as the Connections card compares it (``normalizedUrl`` in registry.ts)."""
+    return value.strip().rstrip("/").lower()
+
+
+def _keeps_own_sign_in(provider: Provider) -> bool:
+    """Whether *provider*'s configured entry signs in by itself, not through the card. Blocking.
+
+    It sends its own credential header, or its url is not the registry url even
+    after the card's normalisation. A trailing-slash or letter-case variant is the
+    card's: its Connect writes the registry url onto the entry before minting.
+    """
+    from kiro_crew.connections import crew_oauth
+    from kiro_crew.mcp_discovery import list_servers
+
+    for server in list_servers():
+        if server.name == provider["slug"] and server.url:
+            return crew_oauth.has_credential_header(server.headers) or card_url(
+                server.url
+            ) != card_url(str(provider["mcp_url"]))
+    return False
+
+
+def _crew_sign_in_not_owned_slugs(providers: list[Provider]) -> frozenset[str]:
+    """The vault-only providers whose configured entry Crew's sign-in does not serve. Blocking.
+
+    Crew's sign-in is on (``manages``) but ``owns`` is False, the check the mint
+    refuses on (``crew_sign_in_required``), and the card's Connect cannot fix that
+    (:func:`_keeps_own_sign_in`).
+    """
+    from kiro_crew.connections import crew_oauth
+    from kiro_crew.connections.oauth_clients import keeps_user_client
+
+    return frozenset(
+        str(p["slug"])
+        for p in providers
+        if keeps_user_client(str(p["slug"]))
+        and crew_oauth.manages(str(p["slug"]))
+        and not crew_oauth.owns(str(p["slug"]))
+        and _keeps_own_sign_in(p)
+    )
+
+
 def _kas_sign_in_slugs(providers: list[Provider]) -> frozenset[str]:
     """The slugs whose Connect signs in on the KAS engine (``connections.mint_kas``). Blocking.
 
@@ -654,6 +719,8 @@ async def collect_connection_statuses(
     # Crew holds these grants itself, so the KAS caveat does not apply to them.
     crew_managed = await asyncio.to_thread(_crew_managed_slugs, providers)
     redirects = await asyncio.to_thread(_sign_in_redirects, providers, crew_managed)
+    crew_sign_in_off = await asyncio.to_thread(_crew_sign_in_off_slugs, providers)
+    crew_not_owned = await asyncio.to_thread(_crew_sign_in_not_owned_slugs, providers)
     client_configured = await asyncio.to_thread(_client_config_map, providers)
     backend_oauth = (
         await asyncio.to_thread(chat_backend_honors_preregistered_oauth)
@@ -684,7 +751,14 @@ async def collect_connection_statuses(
             entry["crewHeld"] = True
         if slug in redirects:
             entry["signInRedirect"] = redirects[slug]
-        if not backend_oauth and is_preregistered(provider) and slug not in crew_managed:
+        if slug in crew_sign_in_off:
+            # Nothing to caveat: Connect is not offered until Crew's sign-in serves chats.
+            if granted is not True and status != STATUS_AWAITING_CONSENT:
+                entry["needsCrewSignIn"] = True
+        elif slug in crew_not_owned and granted is not True and status != STATUS_AWAITING_CONSENT:
+            # The mint refuses this entry, so no Connect and no caveat beside one.
+            entry["crewSignInNotOwned"] = True
+        elif not backend_oauth and is_preregistered(provider) and slug not in crew_managed:
             # A caveat, not a refusal: the mint runs on kiro-cli, so the grant it
             # writes is real for kiro-cli chats. Whether a KAS chat can use it is
             # not established, so the flag rides every pre-registered row,
@@ -702,6 +776,8 @@ async def collect_connection_statuses(
         if (
             slug in client_configured
             and not client_configured[slug]
+            and "needsCrewSignIn" not in entry
+            and "crewSignInNotOwned" not in entry
             and granted is not True
             and status != STATUS_AWAITING_CONSENT
         ):

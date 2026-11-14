@@ -14579,6 +14579,7 @@
       "connection_unreachable": "无法访问 {{provider}} 以检查此连接。",
       "connections": "连接",
       "could_not_load_status": "无法加载连接状态。卡片信息可能已过期。",
+      "crew_sign_in_not_owned_help": "你在<mcpLink>MCP 服务器</mcpLink>中自己添加的 {{provider}} 条目会自行登录，所以 {{productName}} 无法在这里连接它。",
       "disconnect": "断开连接",
       "disconnect_census_incomplete": "由于无法读取某个配置源以排除其他服务器正在使用该授权，已保留存储的授权。请检查服务器配置后再次断开连接。",
       "disconnect_census_incomplete_source": "由于无法读取 {{source}} 以排除其他服务器正在使用该授权，已保留存储的授权。请修复或删除该文件后再次断开连接。",
@@ -14666,6 +14667,8 @@
       "chat_use_lacks_oauth": "已为支持它的聊天保存。部分聊天暂时无法使用这类登录。",
       "chat_use_kas_sign_in": "聊天需要单独登录：在聊天中输入一次 {{word}}。",
       "set_up_provider": "设置 {{provider}}",
+      "needs_crew_sign_in_help": "{{provider}} 通过 {{productName}} 登录。要连接它：(1) 开启“由 {{productName}} 登录 MCP”，(2) 在<settingsLink>设置 → 代理运行框架</settingsLink>中选择 Kiro Agent。",
+      "open_crew_sign_in_setting": "打开 MCP 登录设置",
       "google_entry_name": "Google",
       "choose_google_products": "选择 Google 产品",
       "google_entry_step_set_up": "请先在下方设置 Google OAuth 应用，然后在每个需要的产品上点击“连接”。",
@@ -14680,7 +14683,8 @@
       "prerequisite_google_calendar": "Google 不支持动态客户端注册，因此“连接”会使用在设置 → 连接中注册的 Google OAuth 应用。Google 授权页面显示的是此应用；同意后即可继续。",
       "prerequisite_google_sheets": "Google 不支持动态客户端注册，因此“连接”会使用在设置 → 连接中注册的 Google OAuth 应用。Google 授权页面显示的是此应用；同意后即可继续。",
       "prerequisite_google_docs": "Google 不支持动态客户端注册，因此“连接”会使用在设置 → 连接中注册的 Google OAuth 应用。Google 授权页面显示的是此应用；同意后即可继续。",
-      "prerequisite_google_slides": "Google 不支持动态客户端注册，因此“连接”会使用在设置 → 连接中注册的 Google OAuth 应用。Google 授权页面显示的是此应用；同意后即可继续。"
+      "prerequisite_google_slides": "Google 不支持动态客户端注册，因此“连接”会使用在设置 → 连接中注册的 Google OAuth 应用。Google 授权页面显示的是此应用；同意后即可继续。",
+      "prerequisite_slack": "Slack 不支持动态客户端注册，因此“连接”会使用在设置 → 连接中注册的 Slack 应用，并同时使用它的客户端 ID 和客户端密钥。Slack 授权页面显示的是此应用；同意后即可继续。"
     },
     "contextBreakdown": {
       "axis_turn_n": "第 {{n}} 轮",
@@ -16594,6 +16598,7 @@
         "sign_in_kas_chat_again_note": "Kiro Agent 上的聊天还不会使用这个登录。请重新登录，为这些聊天保存它。",
         "sign_in_unsupported_on_kas": "这个服务器暂时无法通过 Kiro Agent 引擎登录。它使用了自己的登录设置，而 Kiro Agent 无法使用这些设置。",
         "sign_in_unavailable": "无法登录",
+        "sign_in_needs_oauth_app": "需要先为 {{provider}} 设置 OAuth 应用，之后才能登录。",
         "oauth_not_a_static_token": "此服务器通过 OAuth 登录，因此静态 Authorization 标头无法满足它。请移除此服务器，在不含该标头的情况下重新添加并启用它，然后启动新的聊天会话以登录。",
         "sign_in_required_next": "批准后，使用此表上方的“探测 MCP 服务器”按钮；该行随后会显示“已登录”。",
         "signed_in": "已登录",

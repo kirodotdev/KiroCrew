@@ -195,7 +195,7 @@ def _scrub_preregistered_oauth_copies(slug: str) -> dict[str, str]:
     retired secret.
     """
     from kiro_crew.connections.oauth_clients import (  # noqa: PLC0415
-        provider_for_server,
+        projected_provider_for_server,
         strip_preregistered_oauth_client,
     )
 
@@ -222,7 +222,7 @@ def _scrub_preregistered_oauth_copies(slug: str) -> dict[str, str]:
             actions[label] = "noop"
             continue
         entry = servers.get(slug)
-        if not isinstance(entry, dict) or provider_for_server(slug, entry) is None:
+        if not isinstance(entry, dict) or projected_provider_for_server(slug, entry) is None:
             actions[label] = "noop"
             continue
         stripped = strip_preregistered_oauth_client(entry)

@@ -78,6 +78,10 @@ EXPECTED_LAUNCH_REGISTRY = {
     # Quo's own hosted server (mcp.quo.com/mcp), listed by both connector
     # directories; launch-gated until the manual gate, like TickTick.
     "quo",
+    # Slack's hosted server (mcp.slack.com/mcp): pre-registered (Slack refuses
+    # DCR) with a client secret, so visible as "needs configuration" while
+    # launch-gated, like the Google cards.
+    "slack",
 }
 # Tier 3: the vendor admits OAuth clients from an allowlist or waitlist, so no
 # amount of local verification can pass the gate until Kiro is admitted. They
@@ -115,6 +119,7 @@ LAUNCH_GATED = {
     "google-slides",
     "railway",
     "quo",
+    "slack",
 } | VENDOR_APPROVAL_PENDING
 
 
@@ -146,6 +151,7 @@ PREREGISTERED = {
     "google-sheets",
     "google-docs",
     "google-slides",
+    "slack",
 }
 
 
@@ -175,6 +181,7 @@ def test_every_registry_mcp_authorization_server_is_banner_allowlisted():
     consent_host_for_issuer_host = {
         "api.figma.com": "www.figma.com",
         "auth.mixpanel.com": "mixpanel.com",
+        "mcp.slack.com": "slack.com",
     }
     allowlisted_hosts = {host for host, _path in _OAUTH_AUTHORIZATION_ENDPOINTS}
     for provider in get_all_registry_providers():
@@ -265,7 +272,13 @@ def test_ticktick_requests_both_scopes_and_admits_the_grant_can_write():
     assert ticktick["recommended_scopes"] == ["tasks:read", "tasks:write"]
     assert "no read-only scope" in ticktick["gotcha_copy"]
     assert "can write" in ticktick["gotcha_copy"]
-    for tool in ("delete_task", "delete_tag", "delete_project_group", "delete_focus", "delete_comment"):
+    for tool in (
+        "delete_task",
+        "delete_tag",
+        "delete_project_group",
+        "delete_focus",
+        "delete_comment",
+    ):
         assert tool in ticktick["gotcha_copy"], tool
     assert ticktick["tool_aliases"] == {
         "search": "ticktick_search",
@@ -502,9 +515,7 @@ def test_l0_baseline_cannot_be_stamped_in_the_future(tmp_path):
     """A future stamp is the one way a hand-typed baseline could evade the gate."""
 
     payload = get_all_registry_providers()
-    payload[0]["l0_expectations"]["verified_on"] = (
-        utc_today() + timedelta(days=1)
-    ).isoformat()
+    payload[0]["l0_expectations"]["verified_on"] = (utc_today() + timedelta(days=1)).isoformat()
     registry_path = tmp_path / "registry.json"
     registry_path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -605,12 +616,8 @@ def test_the_hard_tier_cannot_fire_on_a_dark_provider():
     """
     far_future = utc_today() + timedelta(days=10_000)
 
-    everything = stale_l0_baselines(
-        get_all_registry_providers(), as_of=far_future, max_age_days=1
-    )
-    visible_only = stale_l0_baselines(
-        get_visible_providers(), as_of=far_future, max_age_days=1
-    )
+    everything = stale_l0_baselines(get_all_registry_providers(), as_of=far_future, max_age_days=1)
+    visible_only = stale_l0_baselines(get_visible_providers(), as_of=far_future, max_age_days=1)
 
     assert "superhuman" in everything
     assert "superhuman" not in visible_only

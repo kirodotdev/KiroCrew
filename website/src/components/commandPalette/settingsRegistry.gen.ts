@@ -2163,6 +2163,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },
   {
+    "id": "connections.oauth-client-slack",
+    "labelKey": "pages.settings.connectionsPanel.oauth_app",
+    "labelSuffix": "Slack",
+    "tab": "connections",
+    "type": "input",
+    "occurrence": 1,
+    "settingId": "connections-oauth-client-slack",
+    "label": "OAuth app",
+    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+  },
+  {
     "id": "connections.oauth-client-google",
     "labelKey": "pages.settings.connectionsPanel.oauth_app",
     "labelSuffix": "Google",

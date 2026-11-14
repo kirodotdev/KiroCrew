@@ -322,7 +322,6 @@ test/test_computer_use_skylight.py
 test/test_config_meta_stamp.py
 test/test_connections_kiro_spec_fields.py
 test/test_connections_l0_probe.py
-test/test_connections_registry.py
 test/test_connections_tool_aliases.py
 test/test_consolidate_cmd.py
 test/test_continuable_followups.py

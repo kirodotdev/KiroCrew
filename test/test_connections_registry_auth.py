@@ -286,7 +286,7 @@ def test_duplicate_redirect_port_across_two_providers_is_rejected_at_load(tmp_pa
 def test_two_preregistered_providers_on_distinct_ports_both_load(tmp_path):
     loaded = _load(tmp_path, _payload_with_auth("notion", dict(VALID_AUTH)))
     ports = {slug: p["auth"]["redirect_port"] for slug, p in loaded.items() if is_preregistered(p)}
-    assert ports == {**dict(SHIPPED_PORTS), "notion": 48200}
+    assert ports == {**dict(SHIPPED_PORTS), **dict(LOCALHOST_SHIPPED_PORTS), "notion": 48200}
 
 
 def test_a_dcr_provider_does_not_occupy_a_port(tmp_path):
@@ -350,8 +350,8 @@ def test_visible_providers_are_copies():
 
 
 # Ports are permanent once shipped: each one is a redirect URI a user registered
-# in a vendor console. 48106-48108 are reserved by the Slack, HubSpot and Box
-# runbooks, so Google Sheets, Docs and Slides start at 48109.
+# in a vendor console. 48106-48108 belong to the Slack, HubSpot and Box
+# runbooks (Slack's is pinned below), so Google Sheets, Docs and Slides start at 48109.
 SHIPPED_PORTS = (
     ("github", 48101),
     ("asana", 48102),
@@ -362,11 +362,14 @@ SHIPPED_PORTS = (
     ("google-docs", 48110),
     ("google-slides", 48111),
 )
+# A ``localhost`` redirect because that is the only plain-http host the vendor
+# accepts (Slack's runbook, section 2); still a client with a secret.
+LOCALHOST_SHIPPED_PORTS = (("slack", 48106),)
 
 
 def test_shipped_registry_preregisters_providers_on_pinned_ports():
     by_slug = {p["slug"]: p for p in get_preregistered_providers()}
-    assert set(by_slug) == {slug for slug, _ in SHIPPED_PORTS}
+    assert set(by_slug) == {slug for slug, _ in SHIPPED_PORTS + LOCALHOST_SHIPPED_PORTS}
     for slug, port in SHIPPED_PORTS:
         auth = by_slug[slug]["auth"]
         assert auth["mode"] == AUTH_MODE_PREREGISTERED
@@ -377,6 +380,18 @@ def test_shipped_registry_preregisters_providers_on_pinned_ports():
         guide = "google" if slug == "gmail" or slug.startswith("google-") else slug
         assert auth["registration_guide"] == f"oauth-app-registration/{guide}.md"
         assert redirect_uri(by_slug[slug]) == f"http://127.0.0.1:{port}/callback"
+
+
+def test_shipped_registry_preregisters_localhost_providers_with_a_secret():
+    by_slug = {p["slug"]: p for p in get_preregistered_providers()}
+    for slug, port in LOCALHOST_SHIPPED_PORTS:
+        auth = by_slug[slug]["auth"]
+        assert auth["mode"] == AUTH_MODE_PREREGISTERED
+        assert auth["confidential"] is True
+        assert auth["redirect_host"] == "localhost"
+        assert auth["redirect_port"] == port
+        assert auth["registration_guide"] == f"oauth-app-registration/{slug}.md"
+        assert redirect_uri(by_slug[slug]) == f"http://localhost:{port}/callback"
 
 
 def test_shipped_registry_redirect_ports_are_unique():

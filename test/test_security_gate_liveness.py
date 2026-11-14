@@ -811,7 +811,10 @@ def _url_payload_command(n: int) -> str:
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
 #: Raised by 18, from 36,000, to 36,018, for ``paths.py``'s scratch tree-index fence:
 #: artifact reads refuse the canonical index path even during replacement.
-_PACKAGE_LINE_BUDGET = 36_018
+#: Raised by 1, from 36,018, to 36,019, for the exact Slack consent pair
+#: ``("slack.com", "/oauth/v2_user/authorize")`` in ``exfil_oauth``'s endpoint set.
+#: Re-measured.
+_PACKAGE_LINE_BUDGET = 36_019
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

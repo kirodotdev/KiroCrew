@@ -15345,6 +15345,7 @@
       "connection_unreachable": "Não foi possível contactar {{provider}} para verificar esta conexão.",
       "connections": "Conexões",
       "could_not_load_status": "Não foi possível carregar o status das conexões. Os cartões podem estar desatualizados.",
+      "crew_sign_in_not_owned_help": "A sua própria entrada do {{provider}} em <mcpLink>Servidores MCP</mcpLink> faz login sozinha, então o {{productName}} não pode conectá-la aqui.",
       "disconnect": "Desconectar",
       "disconnect_census_incomplete": "A autorização armazenada foi mantida porque não foi possível ler uma fonte de configuração para descartar que outro servidor a use. Verifique a configuração do seu servidor e desconecte novamente.",
       "disconnect_census_incomplete_source": "A autorização armazenada foi mantida porque não foi possível ler {{source}} para descartar que outro servidor a use. Corrija ou remova esse arquivo e desconecte novamente.",
@@ -15432,6 +15433,8 @@
       "chat_use_lacks_oauth": "Salvo para os chats que o suportam. Alguns chats ainda não podem usar esse tipo de login.",
       "chat_use_kas_sign_in": "Os chats entram por conta própria: digite {{word}} uma vez em um chat.",
       "set_up_provider": "Configurar {{provider}}",
+      "needs_crew_sign_in_help": "{{provider}} faz login por meio do {{productName}}. Para conectar: (1) ative “Login MCP pelo {{productName}}”, (2) escolha o Kiro Agent em <settingsLink>Configurações → Harness do agente</settingsLink>.",
+      "open_crew_sign_in_setting": "Abrir as configurações de login MCP",
       "google_entry_name": "Google",
       "choose_google_products": "Escolher produtos do Google",
       "google_entry_step_set_up": "Primeiro configure abaixo o app OAuth do Google. Depois clique em Conectar em cada produto que quiser.",
@@ -15446,7 +15449,8 @@
       "prerequisite_google_calendar": "Google não oferece registro dinâmico de clientes, então Conectar usa o app OAuth do Google registrado em Configurações → Conexões. A página de consentimento do Google mostra esse app; aprove-o para continuar.",
       "prerequisite_google_sheets": "Google não oferece registro dinâmico de clientes, então Conectar usa o app OAuth do Google registrado em Configurações → Conexões. A página de consentimento do Google mostra esse app; aprove-o para continuar.",
       "prerequisite_google_docs": "Google não oferece registro dinâmico de clientes, então Conectar usa o app OAuth do Google registrado em Configurações → Conexões. A página de consentimento do Google mostra esse app; aprove-o para continuar.",
-      "prerequisite_google_slides": "Google não oferece registro dinâmico de clientes, então Conectar usa o app OAuth do Google registrado em Configurações → Conexões. A página de consentimento do Google mostra esse app; aprove-o para continuar."
+      "prerequisite_google_slides": "Google não oferece registro dinâmico de clientes, então Conectar usa o app OAuth do Google registrado em Configurações → Conexões. A página de consentimento do Google mostra esse app; aprove-o para continuar.",
+      "prerequisite_slack": "Slack não oferece registro dinâmico de clientes, então Conectar usa o app do Slack registrado em Configurações → Conexões, com o ID do cliente e o segredo do cliente. A página de consentimento do Slack mostra esse app; aprove-o para continuar."
     },
     "contextBreakdown": {
       "axis_turn_n": "Turno {{n}}",
@@ -17466,6 +17470,7 @@
         "sign_in_kas_chat_again_note": "Os chats no Kiro Agent ainda não usam este login. Entre novamente para salvá-lo para eles.",
         "sign_in_unsupported_on_kas": "Este servidor ainda não consegue fazer login com o motor Kiro Agent. Ele foi configurado com as próprias configurações de login, que o Kiro Agent não consegue usar.",
         "sign_in_unavailable": "Login indisponível",
+        "sign_in_needs_oauth_app": "{{provider}} precisa do app OAuth dele antes que alguém possa fazer login.",
         "oauth_not_a_static_token": "Este servidor inicia sessão com OAuth, por isso um cabeçalho Authorization estático não é suficiente. Remova e volte a adicionar este servidor sem o cabeçalho, ative-o e depois inicie uma nova sessão de chat para iniciar sessão.",
         "sign_in_required_next": "Depois de aprovar, use o botão Testar servidores MCP acima desta tabela; a linha passará então a Sessão iniciada.",
         "signed_in": "Sessão iniciada",

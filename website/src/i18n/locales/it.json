@@ -15345,6 +15345,7 @@
       "connection_unreachable": "Impossibile raggiungere {{provider}} per verificare questa connessione.",
       "connections": "Connessioni",
       "could_not_load_status": "Impossibile caricare lo stato delle connessioni. Le schede potrebbero non essere aggiornate.",
+      "crew_sign_in_not_owned_help": "La tua voce {{provider}} in <mcpLink>Server MCP</mcpLink> accede da sola, quindi {{productName}} non può collegarla qui.",
       "disconnect": "Disconnetti",
       "disconnect_census_incomplete": "L'autorizzazione memorizzata è stata conservata perché non è stato possibile leggere una fonte di configurazione per escludere che un altro server la utilizzi. Controlla la configurazione del server e disconnetti di nuovo.",
       "disconnect_census_incomplete_source": "L'autorizzazione memorizzata è stata conservata perché non è stato possibile leggere {{source}} per escludere che un altro server la utilizzi. Correggi o rimuovi quel file e disconnetti di nuovo.",
@@ -15432,6 +15433,8 @@
       "chat_use_lacks_oauth": "Salvato per le chat che lo supportano. Alcune chat non possono ancora usare questo tipo di accesso.",
       "chat_use_kas_sign_in": "Le chat accedono a parte: scrivi {{word}} una volta in una chat.",
       "set_up_provider": "Configura {{provider}}",
+      "needs_crew_sign_in_help": "{{provider}} accede tramite {{productName}}. Per collegarlo: (1) attiva «Accesso MCP tramite {{productName}}», (2) scegli Kiro Agent in <settingsLink>Impostazioni → Harness dell’agente</settingsLink>.",
+      "open_crew_sign_in_setting": "Apri le impostazioni di accesso MCP",
       "google_entry_name": "Google",
       "choose_google_products": "Scegli i prodotti Google",
       "google_entry_step_set_up": "Prima configura qui sotto l'app OAuth di Google. Poi premi Connetti su ogni prodotto che vuoi.",
@@ -15446,7 +15449,8 @@
       "prerequisite_google_calendar": "Google non supporta la registrazione dinamica dei client, quindi Connetti usa l’app OAuth Google registrata in Impostazioni → Connessioni. La pagina di consenso di Google mostra quell’app; approvala per continuare.",
       "prerequisite_google_sheets": "Google non supporta la registrazione dinamica dei client, quindi Connetti usa l’app OAuth Google registrata in Impostazioni → Connessioni. La pagina di consenso di Google mostra quell’app; approvala per continuare.",
       "prerequisite_google_docs": "Google non supporta la registrazione dinamica dei client, quindi Connetti usa l’app OAuth Google registrata in Impostazioni → Connessioni. La pagina di consenso di Google mostra quell’app; approvala per continuare.",
-      "prerequisite_google_slides": "Google non supporta la registrazione dinamica dei client, quindi Connetti usa l’app OAuth Google registrata in Impostazioni → Connessioni. La pagina di consenso di Google mostra quell’app; approvala per continuare."
+      "prerequisite_google_slides": "Google non supporta la registrazione dinamica dei client, quindi Connetti usa l’app OAuth Google registrata in Impostazioni → Connessioni. La pagina di consenso di Google mostra quell’app; approvala per continuare.",
+      "prerequisite_slack": "Slack non supporta la registrazione dinamica dei client, quindi Connetti usa l’app Slack registrata in Impostazioni → Connessioni, con il suo ID client e il suo segreto client. La pagina di consenso di Slack mostra quell’app; approvala per continuare."
     },
     "contextBreakdown": {
       "axis_turn_n": "Turno {{n}}",
@@ -17466,6 +17470,7 @@
         "sign_in_kas_chat_again_note": "Le chat su Kiro Agent non usano ancora questo accesso. Accedi di nuovo per salvarlo per loro.",
         "sign_in_unsupported_on_kas": "Questo server non può ancora accedere con il motore Kiro Agent. È configurato con impostazioni di accesso proprie, che Kiro Agent non può usare.",
         "sign_in_unavailable": "Accesso non disponibile",
+        "sign_in_needs_oauth_app": "{{provider}} ha bisogno della sua app OAuth prima che qualcuno possa accedere.",
         "oauth_not_a_static_token": "Questo server accede tramite OAuth, quindi un header Authorization statico non è sufficiente. Rimuovi e aggiungi di nuovo il server senza l’header, attivalo, poi avvia una nuova sessione di chat per accedere.",
         "sign_in_required_next": "Dopo l’approvazione, usa il pulsante Sonda i server MCP sopra questa tabella; la riga mostrerà quindi Accesso effettuato.",
         "signed_in": "Accesso effettuato",

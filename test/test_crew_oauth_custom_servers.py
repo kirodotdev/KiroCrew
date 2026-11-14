@@ -16,13 +16,13 @@ from kiro_crew.connections import crew_oauth, crew_oauth_dcr
 from kiro_crew.connections.crew_oauth import CrewOAuthError, TokenStore
 from kiro_crew.connections.crew_oauth_dcr import ClientStore
 
-MCP = "https://mcp.slack.com/mcp"
-ISS = "https://mcp.slack.com"
-RM = "https://mcp.slack.com/.well-known/oauth-protected-resource"
+MCP = "https://mcp.acme.example/mcp"
+ISS = "https://mcp.acme.example"
+RM = "https://mcp.acme.example/.well-known/oauth-protected-resource"
 AS_DOC = {
     "issuer": ISS,
-    "authorization_endpoint": "https://slack.com/oauth/v2_user/authorize",
-    "token_endpoint": "https://slack.com/api/oauth.v2.user.access",
+    "authorization_endpoint": "https://acme.example/oauth/v2_user/authorize",
+    "token_endpoint": "https://acme.example/api/oauth.v2.user.access",
     "token_endpoint_auth_methods_supported": ["client_secret_post"],
     "code_challenge_methods_supported": ["S256"],
 }
@@ -66,17 +66,17 @@ def vendor(tmp_path, monkeypatch):
 
 
 def test_the_key_binds_name_and_url_and_never_collides_with_a_card():
-    key = crew_oauth.custom_key("slack", MCP)
-    assert crew_oauth.is_custom_key(key) and key == crew_oauth.custom_key("slack", MCP)
-    assert key != crew_oauth.custom_key("slack", MCP + "/other")
-    assert key != crew_oauth.custom_key("slack2", MCP)
+    key = crew_oauth.custom_key("acme", MCP)
+    assert crew_oauth.is_custom_key(key) and key == crew_oauth.custom_key("acme", MCP)
+    assert key != crew_oauth.custom_key("acme", MCP + "/other")
+    assert key != crew_oauth.custom_key("acme2", MCP)
     assert not any(crew_oauth.is_custom_key(s) for s in crew_oauth.SUPPORTED_SLUGS)
     assert not crew_oauth.is_custom_key("custom-xyz")
     assert crew_oauth.token_entry_name(key).startswith("CONNECTIONS_CUSTOM_")
 
 
 def test_an_owner_public_client_is_used_as_given_with_discovered_endpoints(vendor):
-    key = crew_oauth.custom_key("slack", MCP)
+    key = crew_oauth.custom_key("acme", MCP)
     redirect = "http://localhost:48106/callback"
     oauth = {"clientId": "123.456", "redirectUri": redirect, "oauthScopes": ["search:read.public"]}
     plan = asyncio.run(crew_oauth_dcr.prepare_custom(key, MCP, oauth))
@@ -118,9 +118,9 @@ def test_an_owner_secret_goes_to_the_vault_and_the_form_post(vendor):
 
 def test_without_a_client_id_crew_registers_by_dcr(vendor):
     doc = vendor.docs[f"{ISS}/.well-known/oauth-authorization-server"]
-    doc["registration_endpoint"] = "https://slack.com/register"
+    doc["registration_endpoint"] = "https://acme.example/register"
     doc["token_endpoint_auth_methods_supported"] = ["none"]
-    vendor.posts["https://slack.com/register"] = [(201, {"client_id": "dcr-1"}, "")]
+    vendor.posts["https://acme.example/register"] = [(201, {"client_id": "dcr-1"}, "")]
     key = crew_oauth.custom_key("x", MCP)
     plan = asyncio.run(crew_oauth_dcr.prepare_custom(key, MCP, {}))
     assert plan.client.client_id == "dcr-1"
@@ -169,7 +169,7 @@ def test_a_custom_sign_in_runs_end_to_end_on_the_owners_port_and_refreshes(vendo
         await real_bind(self, 0, path)
 
     monkeypatch.setattr(crew_oauth.SignIn, "_bind", _bind)
-    name = "slack"
+    name = "acme"
     key = crew_oauth.custom_key(name, MCP)
     custom = {
         "slug": name,
@@ -215,12 +215,12 @@ def test_a_custom_connect_is_keyed_by_name_and_its_consent_host_is_the_discovere
 
     monkeypatch.setattr(crew_oauth_dcr, "DCR_CALLBACK_PORT", 0)
     monkeypatch.setattr(mint, "_mints", {})
-    # The real banner gate: slack.com's user consent page is on no builtin list.
-    custom = {"slug": "slack", "mcp_url": MCP, "entry": {"url": MCP, "oauth": {"clientId": "c1"}}}
+    # The real banner gate: acme.example's user consent page is on no builtin list.
+    custom = {"slug": "acme", "mcp_url": MCP, "entry": {"url": MCP, "oauth": {"clientId": "c1"}}}
 
     async def _run():
-        await crew_oauth.start_mint_row(crew_oauth.custom_key("slack", MCP), (), custom)
-        row = mint._mints["slack"]
+        await crew_oauth.start_mint_row(crew_oauth.custom_key("acme", MCP), (), custom)
+        row = mint._mints["acme"]
         assert row["state"] == "waiting", row.get("reason")
         assert row["oauth_url"].startswith(AS_DOC["authorization_endpoint"] + "?")
         row["watcher"].cancel()
@@ -243,11 +243,11 @@ def test_a_query_string_never_reaches_the_resource_or_the_audit(vendor, monkeypa
     exfil_oauth._OAUTH_DISCOVERED_ENDPOINTS.clear()
     raw = MCP + "?api_key=SECRET"
     vendor.posts[raw] = vendor.posts[MCP]
-    custom = {"slug": "slack", "mcp_url": raw, "entry": {"url": raw, "oauth": {"clientId": "c1"}}}
+    custom = {"slug": "acme", "mcp_url": raw, "entry": {"url": raw, "oauth": {"clientId": "c1"}}}
 
     async def _run():
-        await crew_oauth.start_mint_row(crew_oauth.custom_key("slack", raw), (), custom)
-        row = mint._mints["slack"]
+        await crew_oauth.start_mint_row(crew_oauth.custom_key("acme", raw), (), custom)
+        row = mint._mints["acme"]
         assert row["state"] == "waiting", row.get("reason")
         assert "SECRET" not in row["oauth_url"]
         assert row["client"]._dcr.client.resource == MCP
@@ -261,12 +261,12 @@ def test_a_query_string_never_reaches_the_resource_or_the_audit(vendor, monkeypa
 
 @pytest.fixture()
 def owner(monkeypatch):
-    """An owner-recorded ``slack`` at :data:`MCP`, flag on, KAS chats."""
+    """An owner-recorded ``acme`` at :data:`MCP`, flag on, KAS chats."""
     import kiro_crew.config.loader as loader
     from kiro_crew.connections.owner_servers import CONFIG_ROOT_KEY, CONFIG_SERVERS_KEY
 
     held: set[str] = set()
-    config = {CONFIG_ROOT_KEY: {CONFIG_SERVERS_KEY: {"slack": {"url": MCP}}}}
+    config = {CONFIG_ROOT_KEY: {CONFIG_SERVERS_KEY: {"acme": {"url": MCP}}}}
     monkeypatch.setattr(loader, "read_config_for_update", lambda: config)
     monkeypatch.setattr(crew_oauth, "holds_grant", lambda slug: slug in held)
     monkeypatch.setattr(crew_oauth, "enabled", lambda: True)
@@ -276,23 +276,23 @@ def owner(monkeypatch):
 
 def test_an_owner_server_is_bridged_only_once_crew_holds_its_grant(owner):
     entry = {"url": MCP}
-    assert crew_oauth.routed_slug("slack", entry, None, backend="kas") == ""
-    owner.add(crew_oauth.custom_key("slack", MCP))
-    assert crew_oauth.routed_slug("slack", entry, None, backend="kas") == crew_oauth.custom_key(
-        "slack", MCP
+    assert crew_oauth.routed_slug("acme", entry, None, backend="kas") == ""
+    owner.add(crew_oauth.custom_key("acme", MCP))
+    assert crew_oauth.routed_slug("acme", entry, None, backend="kas") == crew_oauth.custom_key(
+        "acme", MCP
     )
     # kiro-cli keeps its native path.
-    assert crew_oauth.routed_slug("slack", entry, None, backend="kiro") == ""
+    assert crew_oauth.routed_slug("acme", entry, None, backend="kiro") == ""
     # Its own credential header keeps its own path.
     assert (
-        crew_oauth.routed_slug("slack", {"url": MCP, "headers": {"Authorization": "x"}}, None) == ""
+        crew_oauth.routed_slug("acme", {"url": MCP, "headers": {"Authorization": "x"}}, None) == ""
     )
 
 
 def test_a_re_pointed_or_unrecorded_server_is_never_bridged(owner):
-    owner.add(crew_oauth.custom_key("slack", MCP + "x"))
+    owner.add(crew_oauth.custom_key("acme", MCP + "x"))
     owner.add(crew_oauth.custom_key("other", MCP))
-    assert crew_oauth.routed_slug("slack", {"url": MCP + "x"}, None, backend="kas") == ""
+    assert crew_oauth.routed_slug("acme", {"url": MCP + "x"}, None, backend="kas") == ""
     assert crew_oauth.routed_slug("other", {"url": MCP}, None, backend="kas") == ""
 
 
@@ -309,15 +309,15 @@ def test_the_dashboard_sign_in_goes_to_crew_only_with_the_flag_and_a_bridged_cha
 
 
 def test_a_legacy_sse_server_keeps_its_own_path(owner):
-    owner.add(crew_oauth.custom_key("slack", MCP))
+    owner.add(crew_oauth.custom_key("acme", MCP))
     entry = {"url": MCP, "type": "sse"}
-    assert crew_oauth.routed_slug("slack", entry, None, backend="kas") == ""
+    assert crew_oauth.routed_slug("acme", entry, None, backend="kas") == ""
     assert not crew_oauth.signs_in_custom(entry)
-    assert crew_oauth.routed_slug("slack", {"url": MCP, "type": "http"}, None, backend="kas")
+    assert crew_oauth.routed_slug("acme", {"url": MCP, "type": "http"}, None, backend="kas")
 
 
 def test_a_declined_switch_keeps_the_client_that_issued_the_pair(vendor):
-    key = crew_oauth.custom_key("slack", MCP)
+    key = crew_oauth.custom_key("acme", MCP)
     first = asyncio.run(crew_oauth_dcr.prepare_custom(key, MCP, {"clientId": "A"})).client
     crew_oauth_dcr.keep_client(key, first, crew_oauth.Tokens("at", "rt", None, "", client="A"))
     # The owner switches to client B, then declines consent: nothing is stored.
@@ -331,7 +331,7 @@ def test_a_grant_runs_the_post_grant_hook_once_and_a_failure_does_not(monkeypatc
     calls: list[str] = []
 
     class _SignIn:
-        slug = crew_oauth.custom_key("slack", MCP)
+        slug = crew_oauth.custom_key("acme", MCP)
 
         def __init__(self, error=None):
             self.error = error
@@ -343,15 +343,15 @@ def test_a_grant_runs_the_post_grant_hook_once_and_a_failure_does_not(monkeypatc
         async def shutdown(self):
             pass
 
-    monkeypatch.setattr(mint, "_mints", {"slack": {"token": "t"}})
-    asyncio.run(crew_oauth._await_consent("slack", "t", _SignIn(), lambda: calls.append("x")))
-    assert calls == ["x"] and mint._mints["slack"]["state"] == "granted"
+    monkeypatch.setattr(mint, "_mints", {"acme": {"token": "t"}})
+    asyncio.run(crew_oauth._await_consent("acme", "t", _SignIn(), lambda: calls.append("x")))
+    assert calls == ["x"] and mint._mints["acme"]["state"] == "granted"
     asyncio.run(
         crew_oauth._await_consent(
-            "slack", "t", _SignIn("consent_declined"), lambda: calls.append("y")
+            "acme", "t", _SignIn("consent_declined"), lambda: calls.append("y")
         )
     )
-    assert calls == ["x"] and mint._mints["slack"]["state"] == "failed"
+    assert calls == ["x"] and mint._mints["acme"]["state"] == "failed"
 
 
 def test_the_post_grant_hook_marks_every_live_session_without_a_reset():
@@ -411,10 +411,10 @@ def test_the_editors_top_level_scopes_are_the_ones_asked_for(vendor, monkeypatch
     monkeypatch.setattr(crew_oauth_dcr, "DCR_CALLBACK_PORT", 0)
     vendor.posts[MCP] = [(401, {}, f'Bearer resource_metadata="{RM}", scope="chat:write"')]
     entry = {"url": MCP, "scopes": ["search:read.public"], "oauth": {"clientId": "c1"}}
-    custom = {"slug": "slack", "mcp_url": MCP, "entry": entry}
+    custom = {"slug": "acme", "mcp_url": MCP, "entry": entry}
 
     async def _run():
-        sign_in = crew_oauth.SignIn(crew_oauth.custom_key("slack", MCP), (), custom)
+        sign_in = crew_oauth.SignIn(crew_oauth.custom_key("acme", MCP), (), custom)
         url = await sign_in.start()
         await sign_in.shutdown()
         return urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["scope"]
@@ -427,14 +427,14 @@ def _signed_in_with(vendor, client_id, token_answer):
     import aiohttp
 
     custom = {
-        "slug": "slack",
+        "slug": "acme",
         "mcp_url": MCP,
         "entry": {"url": MCP, "oauth": {"clientId": client_id}},
     }
     vendor.posts[TOKEN_URL] = [token_answer]
 
     async def _run():
-        sign_in = crew_oauth.SignIn(crew_oauth.custom_key("slack", MCP), (), custom)
+        sign_in = crew_oauth.SignIn(crew_oauth.custom_key("acme", MCP), (), custom)
         url = await sign_in.start()
         state = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["state"][0]
         async with aiohttp.ClientSession() as s:
@@ -454,7 +454,7 @@ def _signed_in_with(vendor, client_id, token_answer):
 
 def test_a_refused_replacement_client_keeps_the_working_one(vendor, monkeypatch):
     monkeypatch.setattr(crew_oauth_dcr, "DCR_CALLBACK_PORT", 0)
-    key = crew_oauth.custom_key("slack", MCP)
+    key = crew_oauth.custom_key("acme", MCP)
     ok = (200, {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}, "")
     assert _signed_in_with(vendor, "A", ok) is None
     refused = (400, {"error": "invalid_client"}, "")
@@ -470,7 +470,7 @@ def test_a_failed_write_keeps_both_previous_entries(vendor, monkeypatch):
     from kiro_crew.secrets import SecretVault
 
     monkeypatch.setattr(crew_oauth_dcr, "DCR_CALLBACK_PORT", 0)
-    key = crew_oauth.custom_key("slack", MCP)
+    key = crew_oauth.custom_key("acme", MCP)
     ok = (200, {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}, "")
     assert _signed_in_with(vendor, "A", ok) is None
     real = SecretVault._write_store
@@ -490,9 +490,9 @@ def test_a_failed_write_keeps_both_previous_entries(vendor, monkeypatch):
 def test_a_moved_dcr_redirect_stages_the_new_client_and_keeps_the_grant(vendor, monkeypatch):
     """Registering again is staged: the working client and pair stay until a swap succeeds."""
     doc = vendor.docs[f"{ISS}/.well-known/oauth-authorization-server"]
-    doc["registration_endpoint"] = "https://slack.com/register"
+    doc["registration_endpoint"] = "https://acme.example/register"
     doc["token_endpoint_auth_methods_supported"] = ["none"]
-    vendor.posts["https://slack.com/register"] = [
+    vendor.posts["https://acme.example/register"] = [
         (201, {"client_id": "old"}, ""),
         (201, {"client_id": "new"}, ""),
     ]

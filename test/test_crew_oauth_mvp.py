@@ -126,7 +126,7 @@ def test_the_flag_is_off_unless_config_says_true(home, monkeypatch):
     assert crew_oauth.enabled() is False
     _write_config(home, _PREVIEW_ON)
     assert crew_oauth.enabled() is True
-    assert crew_oauth.manages("slack") is False
+    assert crew_oauth.manages("hubspot") is False
 
 
 @pytest.mark.parametrize(
@@ -716,7 +716,7 @@ def test_a_stored_pair_is_found_whatever_the_flag_says(tmp_path, monkeypatch):
     assert crew_oauth.holds_grant("github") is False
     TokenStore(vault).replace("github", Tokens("a", "r", None, ""))
     assert crew_oauth.holds_grant("github") is True
-    assert crew_oauth.holds_grant("slack") is False
+    assert crew_oauth.holds_grant("hubspot") is False
 
 
 def test_the_warm_universe_leaves_a_crew_owned_provider_out(monkeypatch):
