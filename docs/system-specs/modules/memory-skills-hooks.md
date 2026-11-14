@@ -5505,6 +5505,31 @@ re-walked list, so a change made before the send is in that turn's context. A tu
 that takes a session already started has a claim too short to hide a re-walk; the
 frame is what covers that chat.
 
+**An on-disk drop is seen by the next read, not after the TTL.** Agents install a
+skill by unpacking it straight into the skills dir and searching at once, so tiers 1
+and 2 first compare a cheap stamp of the unconfined roots (`_catalog_tree_stamp` over
+`skills_discovery._skill_roots_stamp`: the
+skills dir and every `extra_paths` entry) with the one taken BEFORE the walk that
+produced the served list (`_catalog_stamps`; a list adopted from the stored snapshot
+is stamped by its first served read). The stamp is `(dev, ino, mtime, ctime)` of each
+root (followed, as the walk follows it) and of each top-level CONTAINER dir, one with
+no `SKILL.md` of its own (`pack/`; symlinked children are skipped): adding or
+removing a top-level skill dir moves its root, and adding `pack/new` moves `pack/`.
+ctime is in the key because `unzip` restores archive mtimes. Which children are
+containers is decided when the stamp is CAPTURED (one `scandir` plus one `lstat` per
+child, beside the walk), so a per-read check is one `stat` per root and per container,
+whatever the skill count. A mismatch is a known-changed tree: that read waits, at most
+`_COLD_CATALOG_WAIT_SECS`, on the worker's re-walk (looping past a walk that started
+before the change and so published the old stamp) and gets the new list. A walk that
+outlasts the budget serves the cached list and records the new stamp, so it charges
+one read, not every read until it publishes. An unchanged stamp keeps the
+stale-while-revalidate tiers exactly as above. A plain file written into a root also
+moves it and costs one re-walk; nothing in Crew writes files there. Not covered, and
+still converging on the TTL re-walk: an in-place `SKILL.md` edit (covering it would
+cost one `stat` per skill per read; Crew's own edit path invalidates), a change deeper
+than one container, and a trusted project's confined `.kiro/skills`, which must never
+be probed by path.
+
 The scope key is a digest of the skills root, the resolved `extra_paths` and the
 trusted project key (`_catalog_scope_id`), because two loaders can share a project
 and still enumerate different trees. Stored rows keep their **ordinal**: enumeration
@@ -5584,7 +5609,9 @@ already goes through.
 filesystem watcher: an app-side mutation (`_invalidate_iter_cache`) is the immediate
 path, and so is an app's skill links changing (the app bridge calls
 `skill_live_loaders.invalidate_loaders_of`, which invalidates every open loader
-of that skills root; app-kit-platform.md section 5.2). Everything else converges within `_ITER_CACHE_TTL_SECS` /
+of that skills root; app-kit-platform.md section 5.2). So is a top-level change made
+straight on disk, through the root stamp (see *An on-disk drop is seen by the next
+read* above). Everything else converges within `_ITER_CACHE_TTL_SECS` /
 `_CATALOG_REVALIDATE_AFTER_SECS` through a full re-walk on the worker. A watcher plus
 per-file updates would buy a smaller refresh, not a faster turn — the whole walk is
 already off the request path — at the cost of a new dependency and a second source of
@@ -5760,7 +5787,8 @@ exclude). To keep it off the per-message filesystem/config hot path:
   than a walk (`_iter`; see *The catalog snapshot* above). Expiry of
   `_ITER_CACHE_TTL_SECS` SCHEDULES a re-walk and keeps serving the previous list,
   so no message is ever the one that pays for discovery; it is invalidated
-  immediately by `create_auto_skill`;
+  immediately by `create_auto_skill`, and a top-level change made straight on disk
+  re-walks on the next read (the root stamp);
 - the walk that rebuilds it (`_iter_skill_files`, on a worker thread) asks the
   sensitive-path fence through `is_sensitive_resolved_path` against the
   `realpath` it has already computed for loop detection and containment, with

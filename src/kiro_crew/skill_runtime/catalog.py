@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
     from kiro_crew.skills import SkillsLoader, _ScopedSkillEntry
+    from kiro_crew.skills_discovery import SkillRootsStamp
 
 logger = logging.getLogger("kiro_crew.skills")
 
@@ -344,7 +345,13 @@ def _iter_rows(
        and every short-lived loader (the unsigned MCP fallback builds one per
        call), lands here rather than walking.
 
-    Only a scope with no snapshot to serve waits, and then for at most
+    Tiers 1 and 2 first compare a cheap stamp of the unconfined roots
+    (:func:`_catalog_tree_stamp`) with the one taken before the list was walked:
+    a skill dir added or removed straight on disk is a known-changed tree,
+    so that read waits (bounded like a cold read) on a re-walk instead of being
+    served the outdated list for a TTL.
+
+    Apart from that, only a scope with no snapshot to serve waits, for at most
     ``_COLD_CATALOG_WAIT_SECS`` on a background build: a machine's first run,
     one whose index file was deleted, and the post-mutation cold window, where
     an invalidation has dropped the stored rows (or could not, and so stopped
@@ -369,9 +376,17 @@ def _iter_rows(
         generation = loader._catalog_generation
         trusted = _snapshot_trusted_locked(loader)
     if cached is not None:
-        if stale:
-            loader._request_catalog_refresh(key)
-        return cached[1]
+        changed, rows = _serve_changed_tree(loader, key)
+        if rows is not None:
+            return rows
+        if not changed:
+            if stale:
+                loader._request_catalog_refresh(key)
+            return cached[1]
+        # Changed on disk AND invalidated meanwhile: answer as a miss.
+        with loader._catalog_lock:
+            generation = loader._catalog_generation
+            trusted = _snapshot_trusted_locked(loader)
 
     snapshot = loader._load_catalog_snapshot(key) if trusted else None
     if snapshot is not None:
@@ -844,6 +859,7 @@ def _run_catalog_build(loader: SkillsLoader, project_key: str, generation: int) 
         # key — publishing a catalog that names neither configuration's tree.
         epoch = index.catalog_epoch() if index is not None else None
         scope_id = loader._catalog_scope_id(project_key)
+        stamp = _catalog_tree_stamp(loader)
         rows = loader._iter_uncached(project_key or None)
         fingerprints = loader._catalog_fingerprints_for(rows)
         # PERSIST BEFORE PUBLISHING. The store is where a cross-process
@@ -903,6 +919,7 @@ def _run_catalog_build(loader: SkillsLoader, project_key: str, generation: int) 
             # `_adopt_snapshot`.
             _publish_locked(loader, project_key, rows)
             loader._catalog_fingerprints[project_key] = fingerprints
+            loader._catalog_stamps[project_key] = stamp
             # Exactly the paths THIS walk returned are vetted, replacing every
             # earlier walk's set and every path a check admitted: a row the newest
             # walk rejected, or a skill deleted since, is checked again if a reader
@@ -968,6 +985,70 @@ def _catalog_fingerprints_for(
             f"{st.st_dev}:{st.st_ino}:{st.st_ctime_ns}:{st.st_mtime_ns}:{st.st_size}"
         )
     return fingerprints
+
+
+def _catalog_tree_stamp(
+    loader: SkillsLoader, known: SkillRootsStamp | None = None
+) -> SkillRootsStamp:
+    """The stamp of this loader's unconfined roots (``_skill_roots_stamp``).
+
+    The skills dir and every ``extra_paths`` entry; a trusted project's confined
+    root is never passed, since probing it by path is what confinement forbids.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    return sk._skill_roots_stamp((loader._dir, *loader._extra_paths), known)
+
+
+def _serve_changed_tree(
+    loader: SkillsLoader, key: str
+) -> tuple[bool, list[tuple[str, Path, str | None]] | None]:
+    """Re-walk *key* when its roots changed on disk since its list was walked.
+
+    Returns ``(False, None)`` when the stamp matches, so the caller keeps the
+    stale-while-revalidate tiers. A list adopted from the stored snapshot has no
+    stamp yet: its first read captures one and is served as is. Otherwise it
+    waits, at most ``_COLD_CATALOG_WAIT_SECS``, on the background walk of the
+    changed tree, and returns ``(True, rows)``: the new list, or whatever is
+    cached when the budget ran out (``None`` when an invalidation emptied it).
+    On a timeout the new stamp is recorded as known, so a tree whose walk
+    outlasts the budget charges one read, not every read, until the walk
+    publishes its own.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    with loader._catalog_lock:
+        known = loader._catalog_stamps.get(key)
+    if known is None:
+        stamp = _catalog_tree_stamp(loader)
+        with loader._catalog_lock:
+            loader._catalog_stamps.setdefault(key, stamp)
+        return False, None
+    stamp = _catalog_tree_stamp(loader, known)
+    if stamp == known:
+        return False, None
+    logger.debug("skill catalog: roots of %r changed on disk; re-walking", key or "<global>")
+    deadline = time.monotonic() + sk._COLD_CATALOG_WAIT_SECS
+    while True:
+        done = loader._request_catalog_refresh(key)
+        remaining = deadline - time.monotonic()
+        if done is None or remaining <= 0:
+            break
+        done.wait(timeout=remaining)
+        with loader._catalog_lock:
+            entry = loader._iter_cache.get(key)
+            published = loader._catalog_stamps.get(key)
+        # A walk that started before the change published the old stamp, so its
+        # rows are not the answer; the loop queues one that sees the change.
+        if entry is not None and published is not None and published != known:
+            if _catalog_tree_stamp(loader, published) == published:
+                return True, entry[1]
+            known = published
+    with loader._catalog_lock:
+        if loader._catalog_stamps.get(key) == known:
+            loader._catalog_stamps[key] = stamp
+        entry = loader._iter_cache.get(key)
+    return True, entry[1] if entry is not None else None
 
 
 def _get_disabled_app_names(loader: SkillsLoader) -> frozenset[str]:
@@ -1477,6 +1558,7 @@ def _invalidate_iter_cache(loader: SkillsLoader) -> None:
         # Cleared here, with the generation, so a cold read that serves a
         # partial answer while the drop waits keeps its "still building" mark.
         loader._catalog_fingerprints = {}
+        loader._catalog_stamps = {}
         loader._catalog_incomplete.clear()
         listed = dict(loader._iter_cache)
     loader._fm_cache.clear()

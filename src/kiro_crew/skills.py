@@ -229,6 +229,7 @@ from kiro_crew.skills_discovery import (  # noqa: F401
     _SKILL_FILE,
     _VETTED_READS_MAX,
     SKILLS_DIR_NAME,
+    SkillRootsStamp,
     _iter_skill_files,
     _open_project_dir_chain,
     _package_record_cache,
@@ -236,6 +237,7 @@ from kiro_crew.skills_discovery import (  # noqa: F401
     _read_package_record,
     _record_stamp,
     _recorded_skill_digests,
+    _skill_roots_stamp,
     _trusted_skill_roots,
     _walk_confined_skill_fd,
     _walk_confined_skill_tree,
@@ -381,6 +383,10 @@ class SkillsLoader:
         # WITHOUT re-stat'ing every skill. Keyed scope key → path → fingerprint;
         # an absent entry simply means "stat it yourself".
         self._catalog_fingerprints: dict[str, dict[str, str]] = {}
+        # `_catalog_tree_stamp` of the roots, taken before the walk (or snapshot
+        # read) that produced each scope's list. A served read whose fresh stamp
+        # differs re-walks instead of serving a list an on-disk drop outdated.
+        self._catalog_stamps: dict[str, SkillRootsStamp] = {}
         # Scope keys whose served list is known to be partial, because the first
         # build outran `_COLD_CATALOG_WAIT_SECS`. Read by `catalog_status` so a
         # search, a list or a directory build can say "still discovering" instead
