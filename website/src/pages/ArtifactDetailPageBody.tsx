@@ -533,6 +533,9 @@ export function ArtifactDetailPageBody({
               ref={bodyRef}
               className="relative"
               style={contentWidthStyle}
+              // cli-mode.css anchors its chat rules here when the reading-width
+              // style is set (see its header).
+              data-chat-scope={contentWidthStyle ? '' : undefined}
             >
               <CodeCommentsScope
                 commentable={commentable} isMarkdown={artifact.kind === 'markdown'}

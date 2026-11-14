@@ -230,5 +230,7 @@ export const ContentRenderer = memo(function ContentRenderer({
       )}
     </>
   )
-  return previewStyle ? <div className="h-full" style={previewStyle}>{inner}</div> : inner
+  // `data-chat-scope`: every previewStyle names `--mc-content-width`, and
+  // cli-mode.css anchors its chat rules on this attribute (see its header).
+  return previewStyle ? <div className="h-full" style={previewStyle} data-chat-scope="">{inner}</div> : inner
 })
