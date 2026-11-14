@@ -89,11 +89,60 @@ describe('ProjectAwsProfileStatus read failure', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
-  it('says the gateway is busy when the read times out', async () => {
-    read.mockRejectedValue(Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }))
-    renderWithProviders(<ProjectAwsProfileStatus project={PROJECT} />)
+  it.each([
+    ['our deadline', Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })],
+    ['a dropped connection', new TypeError('Failed to fetch')],
+    ['a proxy timeout', new ApiError(504, 'gateway timeout')],
+  ])('stays quiet in the composer when the gateway did not answer (%s)', async (_label, err) => {
+    read.mockRejectedValue(err)
+    const { container, queryClient } = renderWithProviders(<ProjectAwsProfileStatus project={PROJECT} />, NO_RETRY_DELAY)
+    // Settled failure, retries done: the branch under test, not the pending render.
+    await waitFor(() => {
+      const state = queryClient.getQueryState(['project-aws-profile', PROJECT])
+      expect(state?.status).toBe('error')
+      expect(state?.fetchStatus).toBe('idle')
+    })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(container.querySelector('[data-aws-status]')).toBeNull()
+  })
+
+  it('reports an unanswered read when a second settled read also fails', async () => {
+    read.mockRejectedValue(new TypeError('Failed to fetch'))
+    const { queryClient } = renderWithProviders(<ProjectAwsProfileStatus project={PROJECT} />, NO_RETRY_DELAY)
+    await waitFor(() => {
+      const state = queryClient.getQueryState(['project-aws-profile', PROJECT])
+      expect(state?.status).toBe('error')
+      expect(state?.fetchStatus).toBe('idle')
+      expect(state?.errorUpdateCount).toBe(1)
+    })
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['project-aws-profile', PROJECT] }) })
+    await waitFor(() => {
+      const state = queryClient.getQueryState(['project-aws-profile', PROJECT])
+      expect(state?.status).toBe('error')
+      expect(state?.fetchStatus).toBe('idle')
+      expect(state?.errorUpdateCount).toBe(2)
+    })
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toContain('The gateway is busy and did not answer')
+  })
+
+  it('keeps showing the last known profile when later re-reads get no answer', async () => {
+    read.mockResolvedValueOnce(bound('expired')).mockRejectedValue(new TypeError('Failed to fetch'))
+    const { container, queryClient } = renderWithProviders(<ProjectAwsProfileStatus project={PROJECT} />, NO_RETRY_DELAY)
+    await screen.findByText('billing-prod')
+    for (const errorUpdateCount of [1, 2]) {
+      await act(async () => { await queryClient.refetchQueries({ queryKey: ['project-aws-profile', PROJECT] }) })
+      await waitFor(() => {
+        const state = queryClient.getQueryState(['project-aws-profile', PROJECT])
+        expect(state?.status).toBe('error')
+        expect(state?.fetchStatus).toBe('idle')
+        expect(state?.errorUpdateCount).toBe(errorUpdateCount)
+      })
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(container.querySelector('[data-aws-status]')!.getAttribute('data-aws-status')).toBe('expired')
+    }
   })
 })
 
