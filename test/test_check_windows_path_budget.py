@@ -4,6 +4,7 @@ cannot move out of the way abandons the update, so the budget fails the build.""
 from __future__ import annotations
 
 import importlib.util
+import ntpath
 import re
 import sys
 from pathlib import Path
@@ -99,6 +100,70 @@ def test_the_unpruned_test_bytecode_file_is_over_budget(tmp_path: Path) -> None:
 
 def test_an_empty_root_fails(tmp_path: Path) -> None:
     assert MODULE.main(["--root", str(tmp_path)]) == 1
+
+
+# The cache from the field report, which the release build's precompile pass
+# wrote and 0.12.1 and 0.12.2 shipped: 201 characters below the install root.
+LARK_MODEL = ntpath.join(
+    "Lib", "site-packages", "lark_oapi", "api", "security_and_compliance", "v2", "model"
+)
+LARK_STEM = "p2_security_and_compliance_device_apply_record_device_apply_event_v2"
+LARK_CACHE = ntpath.join(LARK_MODEL, "__pycache__", f"{LARK_STEM}.cpython-312.pyc")
+LARK_SOURCE = ntpath.join(LARK_MODEL, f"{LARK_STEM}.py")
+
+
+def test_prune_caches_drops_an_over_budget_cache_and_keeps_its_source(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert len(ntpath.join(PREFIX, LARK_CACHE)) == 201
+    assert len(ntpath.join(PREFIX, LARK_SOURCE)) <= MODULE.RELATIVE_PATH_BUDGET
+    deep_cache = _file_at(tmp_path, LARK_CACHE)
+    source = _file_at(tmp_path, LARK_SOURCE)
+    shallow_cache = _file_at(tmp_path, ntpath.join("Lib", "__pycache__", "os.cpython-312.pyc"))
+
+    assert MODULE.main(["--root", str(tmp_path), "--prefix", PREFIX]) == 1
+    assert deep_cache.exists(), "measuring alone must not delete anything"
+
+    assert MODULE.main(["--root", str(tmp_path), "--prefix", PREFIX, "--prune-caches"]) == 0
+    assert not deep_cache.exists()
+    assert source.exists() and shallow_cache.exists()
+    assert f"201: {PREFIX}\\{LARK_CACHE}" in capsys.readouterr().out
+
+
+def test_prune_caches_still_fails_on_any_other_over_budget_file(tmp_path: Path) -> None:
+    # Over budget and named .pyc, but not inside __pycache__: not a cache Python
+    # can rebuild, so it stays and fails the build like any other file.
+    deep = _file_at(
+        tmp_path, _relative_of_length(MODULE.RELATIVE_PATH_BUDGET + 1)[: -len(".py")] + ".pyc"
+    )
+    assert MODULE.main(["--root", str(tmp_path), "--prefix", PREFIX, "--prune-caches"]) == 1
+    assert deep.exists()
+
+
+@pytest.mark.parametrize(
+    ("relative", "expected"),
+    [
+        (LARK_CACHE, True),
+        (ntpath.join("a", "__PYCACHE__", "m.cpython-312.PYC"), True),
+        (LARK_SOURCE, False),
+        (ntpath.join("a", "__pycache__", "notes.txt"), False),
+        (ntpath.join("a", "pycache", "m.pyc"), False),
+        ("m.pyc", False),
+    ],
+)
+def test_is_bytecode_cache(relative: str, expected: bool) -> None:
+    assert MODULE.is_bytecode_cache(relative) is expected
+
+
+def test_the_release_build_prunes_and_checks_after_precompiling() -> None:
+    release = BUILD_DESKTOP.read_text(encoding="utf-8")
+    start = release.index("build_backend_windows() {")
+    release = release[start : release.index("\n}\n", start)]
+    check = release.index(
+        'check_windows_path_budget.py" \\\n'
+        "    --root \"$out\" --prefix 'resources\\backend-dist\\kirocrew-backend' --prune-caches"
+    )
+    assert release.index("precompile_windows.py") < check
 
 
 def test_the_windows_jobs_run_the_gate() -> None:
