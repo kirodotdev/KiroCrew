@@ -1643,16 +1643,17 @@ decision as `(tool_title, approved, security_blocked, reason)`, where `reason`
 is the refusal text the audit row recorded (for a deny pattern, the rule that
 matched). Both cron agent paths
 (single-agent and the sequential `agent_sequence` loop) tally those decisions
-per run and route the outcome through one shared verdict with three arms:
+per run and route the outcome through one shared verdict with four arms:
 
 | Run's gate outcomes | `last_status` | Failure budget | Delivery |
 |---|---|---|---|
 | Every attempted call **security-blocked**, none approved | `error`, reason names the refused calls | `record_failure()` — the job's `auto_pause_limit()` applies (default 5, `0` = never) | unchanged |
 | Failure due to credential/auth expiry: an `AcpAuthRequired`, or an `AcpError` whose `auth_required` tag is `True` or whose `auth_error_code` is an expired token (typed data, not error text) | `error`, error text preserved | counted like any failure, but `record_failure(auth_expiry=True)` never auto-pauses; past the default threshold the never-pause backoff applies | unchanged; the alert skips the "run at the pause limit alerts" rule, so only `alert_after_failures` decides |
 | **Some** call security-blocked (another ran, or another refusal left capability unknown) | `error`, reason names the refused calls | neither counter moves | result prefixed with the same reason |
-| No security block at all | `ok` | `record_success()` | unchanged |
+| **No** call approved and none security-blocked, at least one refused another way (a governance `policy_deny`, a `spec_hook` refusal, a rejected or timed-out approval) | `error`, reason names the refused calls with their refusal text, or "not approved" | neither counter moves | result prefixed with the same reason |
+| No security block, and at least one approved call or no tool call at all | `ok` | `record_success()` | unchanged |
 
-The middle arm exists because the model's prose is its own account of the run:
+The some-blocked arm exists because the model's prose is its own account of the run:
 a turn whose final write was refused still reports the write as done. Without
 the arm such a run records `ok`, alerts nobody, and leaves the refusal only in
 the SEL audit row, so the user learns the document was lost by reading the audit
@@ -1666,7 +1667,17 @@ carries the first line of its refusal in parentheses (`spawn_run (Blocked by
 security policy: <pattern>)`), so the reader sees which rule fired rather than
 a bare refusal.
 
-The Schedule page shows the middle arm as its own state, **Partial** (amber),
+The no-approved arm covers a run whose every call was refused outside the
+security gate, for example an agent spec's PreToolUse hooks under a profile
+that turns hooks off. Nothing ran, so it does not read as `ok`. A policy state
+or an absent approver is not evidence the job is broken, so neither counter
+moves, and a `delete_after_run` one-shot is kept and auto-paused like any run
+that ends in `error`. `_GateTally` keeps each unresolved call's title and the
+first line of its reason, and `refusal_summary()` names at most three of them,
+with "not approved" for a rejected or timed-out approval, under the head
+`none of N tool call(s) ran, all refused or not approved: `.
+
+The Schedule page shows the some-blocked arm as its own state, **Partial** (amber),
 not **Error**: a run that did all but one call must not look like one that
 died (#20514). The label is one short word so it fits the Status column's
 default width in every locale; its hover text says the run finished but the
@@ -1679,8 +1690,8 @@ of its reason, `N of M tool call(s) blocked by the security gate: `, a pattern
 kept in `website/src/lib/backendPhrases.json` and pinned against
 `refusal_summary()` by
 `test_cron_refusal_status.py::TestPartialBlock::test_the_schedule_page_tells_a_partial_block_from_a_total_one`.
-An all-blocked reason (`all N ...`) and any script or command job keep
-**Error**.
+An all-blocked reason (`all N ...`), a no-approved reason (`none of N ...`)
+and any script or command job keep **Error**.
 
 The run's history rows, in the Executions tab and the job's Logs tab, show the
 same **Partial** badge (#24616). The record keeps `status: "failure"`;

@@ -59,13 +59,17 @@ def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
     failed would otherwise reach the auto-pause threshold in three runs rather
     than five — pausing on arithmetic instead of on evidence.
 
-    Three outcomes, not two. A run with every call refused is a failure and
-    is counted. A run with SOME call refused keeps ``last_status = "error"``
-    with the refusal as its reason but is counted in neither direction: the
-    approved calls prove the job can work, so it must not march toward
-    auto-pause, and the lost call means it did not succeed, so it must not
-    read as ``ok`` and must not reset a failure streak or the failure-alert
-    dedup the way a success does. Only a run with no refusal at all records a
+    Four outcomes, not two. A run with every call security-blocked is a
+    failure and is counted. A run with SOME call security-blocked keeps
+    ``last_status = "error"`` with the refusal as its reason but is counted in
+    neither direction: the approved calls prove the job can work, so it must
+    not march toward auto-pause, and the lost call means it did not succeed, so
+    it must not read as ``ok`` and must not reset a failure streak or the
+    failure-alert dedup the way a success does. A run with no approved call and
+    no security block, but at least one call refused another way, is recorded
+    the same way: nothing ran, so it did not succeed, and a policy state or an
+    absent approver is not evidence the job is broken. Only a run with at least
+    one approved call and no security block, or no tool call at all, records a
     success.
     """
     if tally.all_blocked:
@@ -83,13 +87,15 @@ def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
                 job.consecutive_failures,
             )
         return True
-    if tally.partially_blocked:
-        # The run did work AND lost work. "error" is the one non-ok status the
+    if tally.partially_blocked or tally.none_approved:
+        # The run did work AND lost work, or every call it tried was refused
+        # by policy or left unapproved. "error" is the one non-ok status the
         # row, cron_list and the history record understand, and the reason
-        # names the refused call. Neither counter moves: not record_failure(),
-        # because the approved calls are evidence the job can work; not
-        # record_success(), because that would reset a failure streak and the
-        # failure-alert dedup on a run that did not fully succeed.
+        # names the refused calls. Neither counter moves: not record_failure(),
+        # because approved calls, a policy state or an absent approver are not
+        # evidence the job is broken; not record_success(), because that would
+        # reset a failure streak and the failure-alert dedup on a run that did
+        # not succeed.
         job.last_status = "error"
         job.last_error = tally.refusal_summary()
         return False
