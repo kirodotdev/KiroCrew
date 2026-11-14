@@ -339,8 +339,9 @@ async def test_a_non_object_body_reads_as_empty(monkeypatch, audit, body) -> Non
     fetch = AsyncMock(return_value={})
     monkeypatch.setattr(sp, "fetch_pull_request", fetch)
 
-    await sp.api_pull_request_source(_Request(body))
+    response = await sp.api_pull_request_source(_Request(body))
 
+    assert (response.status, _body(response)) == (200, {})
     fetch.assert_awaited_once_with("", refresh=False)
 
 

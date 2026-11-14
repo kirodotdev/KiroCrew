@@ -465,6 +465,9 @@ def test_an_unpinned_bind_on_a_client_with_no_launch_effort_does_not_raise() -> 
     provider._client = SimpleNamespace(backend="", _model="")
     with patch.object(AcpProvider, "served_model", new=""):
         asyncio.run(provider._bind_unbound_effort())
+    # No model is serving yet, so there is nothing to key the level to.
+    assert provider._effort_per_model == {}
+    assert provider._unbound_effort == "high"
 
 
 def test_an_auto_fallback_records_the_model_it_launched_and_restores_the_primary() -> None:

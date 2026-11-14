@@ -196,7 +196,12 @@ def test_registry_records_a_reason_even_when_none_is_supplied() -> None:
 
 
 def test_record_agent_result_for_unknown_run_is_a_noop() -> None:
-    RunRegistry().record_agent_result("nope", 0, result="x")  # must not raise
+    registry = RunRegistry()
+    registry.register(RunHandle(run_id="wf_r", name="r"))
+    registry.record_agent_result("nope", 0, result="x")
+    assert registry.get("nope") is None, "a result for an unknown run must not mint one"
+    handle = registry.get("wf_r")
+    assert handle is not None and not handle.agent_errors
 
 
 def test_record_agent_result_does_not_write_to_the_store_per_call() -> None:

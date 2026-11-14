@@ -761,7 +761,7 @@ def test_no_file_gains_a_short_fixed_wait() -> None:
                             f"  test/{rel}: baseline {a} is below real count {b} "
                             f"(would red main; lower to {b} by removing those {b - a} site(s))"
                         )
-                raise AssertionError(
+                pytest.fail(
                     f"{len(bv)} baseline entry change(s) in this PR "
                     f"violate the lowered_baseline contract:\n"
                     + "\n".join(bv_lines)
@@ -775,7 +775,7 @@ def test_no_file_gains_a_short_fixed_wait() -> None:
             for rel, (was, now, sites) in sorted(risen.items()):
                 report.append(f"  test/{rel}: {was} -> {now}")
                 report.extend(f"      {site}" for site in sites)
-            raise AssertionError(
+            pytest.fail(
                 f"{len(risen)} file(s) the PR touches gained a short fixed wait "
                 f"compared to their count at the PR base (a wait_for, "
                 f"asyncio.timeout or .result(timeout) under "
@@ -799,7 +799,7 @@ def test_no_file_gains_a_short_fixed_wait() -> None:
         for rel, (was, now) in sorted(risen_main.items()):
             report_main.append(f"  test/{rel}: {was} -> {now}")
             report_main.extend(f"      {site}" for site in found[rel])
-        raise AssertionError(
+        pytest.fail(
             f"{len(risen_main)} file(s) gained a short fixed wait (a wait_for, "
             f"asyncio.timeout or .result(timeout) under {LOST_RUN_FLOOR_SECS:g}s, "
             f"or a sleep under {SHORT_POLL_SLEEP_SECS:g}s inside a loop):\n"

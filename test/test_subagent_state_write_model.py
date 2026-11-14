@@ -309,13 +309,12 @@ def test_no_new_whole_file_state_write_site() -> None:
             problems.append(f"  NEW SITE     {where}")
         elif expected[0] != count:
             problems.append(f"  COUNT {expected[0]} -> {count}  {where}")
-    if problems:
-        raise AssertionError(
-            "Unrecorded whole-file `state.json` write site(s).\n"
-            f"{_REMEDY}\n"
-            "If the write is genuinely fenced, add it to _WRITE_SITES with its "
-            "count and the fence named.\n" + "\n".join(problems)
-        )
+    assert not problems, (
+        "Unrecorded whole-file `state.json` write site(s).\n"
+        f"{_REMEDY}\n"
+        "If the write is genuinely fenced, add it to _WRITE_SITES with its "
+        "count and the fence named.\n" + "\n".join(problems)
+    )
 
 
 def test_no_state_write_directly_in_a_coroutine_body() -> None:
