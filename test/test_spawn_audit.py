@@ -992,8 +992,8 @@ _GATEWAY_REL = "slack/gateway.py + slack/gateway_runtime/*.py"
 
 #: Functions that own the kill-the-tree + bounded-reap contract. The shared
 #: helper is `platform_compat.kill_and_reap` (`_kill_and_reap` is its delegate
-#: in `platform/update_provider.py`); the two `_startup_child` methods are the
-#: boot-path equivalent (kill and reap split in two).
+#: in `platform/update_provider.py`); `_kill_startup_child` and
+#: `_reap_startup_child` are the boot-path equivalent (kill and reap split in two).
 _TREE_KILL_FUNCS = frozenset({"kill_and_reap", "_kill_and_reap", "_kill_startup_child"})
 
 

@@ -457,17 +457,16 @@ class TestTheLiteralFoldTheSkillEditorSimulates:
             assert fold_block_scalar("|", body) == expected, label
 
     def test_a_leading_blank_line_survives_the_way_a_parser_keeps_it(self):
-        # Was `test_a_leading_blank_line_is_lost_where_a_parser_keeps_it`, asserting the
-        # loss. A leading break is CONTENT under every chomping mode, so keeping it is
-        # what removes the content-dependence from the editor's comparison.
+        # A leading break is CONTENT under every chomping mode, so keeping it is what
+        # removes the content-dependence from the editor's comparison.
         assert fold_block_scalar("|", ["", "  true"]) == "\ntrue\n"
         assert fold_block_scalar("|", ["  true"]) == "true\n"
         # Strip chomping is how a caller asks for neither break.
         assert fold_block_scalar("|-", ["", "  true"]) == "\ntrue"
 
     def test_the_keep_forms_preserve_what_keep_chomping_preserves(self):
-        # `|+`/`>+` tell YAML to KEEP the trailing blank lines, and now so does this
-        # reader. Was `test_the_keep_forms_discard_what_keep_chomping_preserves`.
+        # `|+`/`>+` tell YAML to KEEP the trailing blank lines, and so does this
+        # reader.
         for indicator in ("|+", ">+"):
             assert fold_block_scalar(indicator, ["  true", "", ""]) == "true\n\n\n", indicator
 
