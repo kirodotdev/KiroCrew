@@ -935,6 +935,23 @@ class TestOnEventDispatch:
         assert _audit_rows(_real_sel, "slack.home_tab") == [("U_OWNER", "allowed", "", "")]
 
     @pytest.mark.asyncio
+    async def test_home_tab_builtin_off_publishes_nothing_but_still_audits(
+        self, _mock_sel, _real_sel
+    ):
+        orch = _socket_orch()
+        orch._cfg.slack.home_tab_builtin = False
+        on_event = await _install_on_event(orch, ev.SeenCache())
+        payload = {"event": {"type": "app_home_opened", "tab": "home", "user": "U_OWNER"}}
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch(
+                "kiro_crew.slack.events._publish_home_tab", new_callable=AsyncMock
+            ) as publish:
+                await on_event(_client(), _req("events_api", payload))
+                await asyncio.gather(*list(ev._background_tasks), return_exceptions=True)
+        publish.assert_not_called()
+        assert _audit_rows(_real_sel, "slack.home_tab") == [("U_OWNER", "allowed", "", "")]
+
+    @pytest.mark.asyncio
     async def test_home_tab_denied_for_unauthorized_user(self, _mock_sel, _real_sel):
         orch = _socket_orch()
         on_event = await _install_on_event(orch, ev.SeenCache())

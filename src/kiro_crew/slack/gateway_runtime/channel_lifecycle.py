@@ -604,7 +604,7 @@ async def _on_slack_config_change(self: GatewayOrchestrator, change: ConfigChang
       so the Slack-native modal (which edits the same set objects) and a CLI
       write converge on one set.
     * ``slack.channels`` / ``slack.dm_activation`` / ``messaging.*`` /
-      ``trusted_bot_*`` / ``home_tab_sessions_per_kind`` /
+      ``trusted_bot_*`` / ``home_tab_builtin`` / ``home_tab_sessions_per_kind`` /
       ``forward_to_agent_callback`` -> the shared config object every Slack
       read goes through (``handler.slack_cfg()``), updated section-by-section
       in place so ``orch._cfg`` and ``handler._orch_cfg`` cannot diverge.

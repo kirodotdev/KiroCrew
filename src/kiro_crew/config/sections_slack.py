@@ -219,6 +219,17 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    home_tab_builtin: bool = field(
+        default=True,
+        metadata=_meta(
+            "Built-in Home Tab",
+            "Publish the Kiro Crew status page to the bot's Slack Home tab each "
+            "time an allowed user opens it. Turn it off to keep a Home view you "
+            "publish yourself with the same bot: the tab then stays as you "
+            "published it. Read at each open, so a change needs no restart.",
+            tags=["slack"],
+        ),
+    )
     home_tab_sessions_per_kind: int = field(
         default=5,
         metadata=_meta(
