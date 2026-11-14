@@ -21,9 +21,9 @@ The rule, in order:
 4. kiro-cli resolves, and is not the operator's own ``KIROCREW_KIRO_BIN`` (that
    binary is never second-guessed), but cannot run a session: kiro-cli's own sign-in is proven
    absent (its store read and empty, no ``KIRO_API_KEY``), and the relay cannot
-   use Kiro Crew's sign-in in its place (no vault identity, or no
-   ``kiro-cli-chat`` entry that skips the launcher's own sign-in check). The
-   bundle route.
+   use Kiro Crew's sign-in in its place (no vault identity, or an entry that
+   passes the launcher's own sign-in check: a ``kiro-cli`` below 3.0.0 with no
+   ``kiro-cli-chat`` beside it). The bundle route.
 5. Otherwise the relay.
 
 The switch is never silent: the harness logs it at each change of route, and the
@@ -174,8 +174,8 @@ def relay_unusable_reason(
 ) -> str:
     """Why the relay cannot run a session here (rules 3 and 4), or ``""``.
 
-    *crew_entry_skips_launcher* is whether a Crew-owned relay spawn enters
-    through ``kiro-cli-chat`` and so skips the launcher's own sign-in check.
+    *crew_entry_skips_launcher* is whether a Crew-owned relay spawn skips the
+    launcher's own sign-in check (:func:`crew_entry_skips_launcher`).
     """
     if not kiro_bin:
         return REASON_NO_KIRO_CLI
@@ -285,23 +285,36 @@ def is_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
 
 
 def crew_entry_skips_launcher(kiro_bin: str, environ: Mapping[str, str]) -> bool:
-    """Whether a Crew-owned relay spawn of *kiro_bin* enters through ``kiro-cli-chat``.
+    """Whether a Crew-owned relay spawn of *kiro_bin* skips a launcher's own sign-in check.
 
     True when *kiro_bin* already is the chat binary (the desktop's bundled entry,
-    or Windows's one ``kiro-cli.exe``), or when the harness swaps the launcher for
-    its ``kiro-cli-chat`` sibling; never for the operator's ``KIROCREW_KIRO_BIN``.
-    Blocking (a stat).
+    Windows's one ``kiro-cli.exe``, or a standalone ``kiro-cli`` 3.0.0 or later,
+    :func:`kiro_cli.standalone_kiro_cli`), or when the harness swaps the launcher
+    for its ``kiro-cli-chat`` sibling; never for the operator's ``KIROCREW_KIRO_BIN``.
+    Blocking: a stat, then for a ``kiro-cli`` with no sibling its version
+    (:func:`kiro_cli.resolved_kiro_cli_version`: the pin's own read, or the
+    sandboxed read of a file found only through ``PATH``); an unread version
+    keeps it a launcher.
     """
     if is_operator_override(kiro_bin, environ):
         return False
-    from kiro_crew.kiro_cli import chat_sibling
+    from kiro_crew.kiro_cli import (
+        KIRO_CLI_NAME,
+        chat_sibling,
+        resolved_kiro_cli_version,
+        standalone_kiro_cli,
+    )
     from kiro_crew.kiro_cli_bundle import BUNDLED_KIRO_CLI_ENTRY
 
     # Already the chat binary (the desktop's bundled entry), or Windows, whose one
     # ``kiro-cli.exe`` is the chat binary itself: there is no launcher to skip.
     if sys.platform == "win32" or os.path.basename(kiro_bin) == BUNDLED_KIRO_CLI_ENTRY:
         return True
-    return chat_sibling(kiro_bin) is not None
+    if chat_sibling(kiro_bin) is not None:
+        return True
+    return os.path.basename(kiro_bin) == KIRO_CLI_NAME and standalone_kiro_cli(
+        resolved_kiro_cli_version(kiro_bin)
+    )
 
 
 def crew_sign_in_starts_spawn(
