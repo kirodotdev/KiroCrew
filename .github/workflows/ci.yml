@@ -1515,7 +1515,7 @@ jobs:
       # this job to the cross-surface subset on a frontend-only diff was
       # measured as a PESSIMISATION: 4 shards x ~18 min = 70 job-min for the
       # subset, against 62-67 job-min for the whole suite (runs 33412618648 vs
-      # 33406565382). `-n auto` already saturates each runner, so a smaller
+      # 33406565382). The shard's workers already saturate each runner, so a smaller
       # file list does not shorten a shard, and the cross-surface files are not
       # the cheap ones. Running everything is both cheaper and strictly more
       # coverage, so there is nothing to select.
@@ -1556,9 +1556,11 @@ jobs:
           # traceback in the log, including one printed inside a warning, and
           # never matches a pytest failure.
           echo "::remove-matcher owner=python::"
+          # An explicit -n 4, not the xdist budget: at 5 GiB per worker the
+          # budget grants this 15 GiB runner 2 workers, and a file shard runs at 4.
           python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards \
             --ci-progress-dir "$RUNNER_TEMP/pytest-progress" \
-            -q -n auto --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
+            -q -n 4 --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }}
         # Ordinary shards plus backend-test-ipv6 retain every Windows test.
         # Windows has no namespace sandbox, so `userns_available()` is False and every
