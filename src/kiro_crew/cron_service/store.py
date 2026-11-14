@@ -338,6 +338,8 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         ),
         channel=_guard_opt_str("channel"),
         thread_ts=_guard_opt_str("thread_ts"),
+        channel_type=_guard_str("channel_type"),
+        target_id=_guard_str("target_id"),
         # Derived from user_paused/auto_paused, not the stored `enabled`, so
         # an auto-pause survives a restart (a recurring job's `enabled` is
         # not persisted on failure).
@@ -622,6 +624,10 @@ def job_record(j: CronJob) -> dict[str, Any]:
         record["new_chat_per_run"] = True
     if j.secret_env_resurfaced_pin:
         record["secret_env_resurfaced_pin"] = j.secret_env_resurfaced_pin
+    # The pinned channel destination, as a pair, by the same rule.
+    if j.channel_type or j.target_id:
+        record["channel_type"] = j.channel_type
+        record["target_id"] = j.target_id
     return record
 
 
@@ -629,11 +635,12 @@ def job_record(j: CronJob) -> dict[str, Any]:
 #: cannot drift: a job that sets each conditionally written key
 #: (``user_pause_generation``, ``user_pause_requested``, ``managed_by``, ``app_manifest_digest``,
 #: ``person_owner_key``, ``acked_item_ids`` with ``acked_item_ids_digest``,
-#: ``project_path``, ``new_chat_per_run``, ``secret_env_resurfaced_pin``, and a
-#: non-default ``auto_pause_after_failures`` and ``alert_after_failures``, which
-#: are omitted at the default). A record key outside this set came from a newer
-#: build. A key inside it is this build's to write or to omit, so a value this
-#: build cleared stays cleared.
+#: ``project_path``, ``new_chat_per_run``, ``secret_env_resurfaced_pin``,
+#: ``channel_type`` with ``target_id``, and a non-default
+#: ``auto_pause_after_failures`` and ``alert_after_failures``, which are omitted
+#: at the default). A record key outside this set came from a newer build. A key
+#: inside it is this build's to write or to omit, so a value this build cleared
+#: stays cleared.
 _KNOWN_JOB_KEYS = frozenset(
     job_record(
         CronJob(
@@ -649,6 +656,8 @@ _KNOWN_JOB_KEYS = frozenset(
             project_path="-",
             new_chat_per_run=True,
             secret_env_resurfaced_pin="-",
+            channel_type="-",
+            target_id="-",
             auto_pause_after_failures=0,
             alert_after_failures=2,
             acked_item_ids=["-"],

@@ -77,6 +77,9 @@ _FALLBACK_MAX_MESSAGE_CHARS = 4096
 # keeps the request inside a browser fetch timeout.
 _MAX_INLINE_BACKFILL_UNITS = 12
 
+#: The one transport whose private topics have a target grammar of their own.
+_TOPIC_CHANNEL = "telegram"
+
 
 async def api_channel_targets(request: web.Request) -> web.Response:
     """GET /api/chat/channel-targets — list configured outbound destinations."""
@@ -107,6 +110,43 @@ async def api_channel_targets(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("channel-targets: failed to enumerate %s", channel_type, exc_info=True)
     return web.json_response(targets)
+
+
+async def api_channel_topics(request: web.Request) -> web.Response:
+    """GET /api/chat/channel-topics — the private Telegram topics the bot already talks in.
+
+    The Bot API cannot list a chat's topics, so they are read from the persisted
+    mirror link of each open dashboard conversation: a Telegram link with a thread is
+    a topic, kept only when the transport's own allow-list resolves its
+    ``topic:<user id>:<topic id>`` target, and labelled with the conversation's
+    title. They are not configured targets: listing them as such would offer
+    them to the mirror-link picker as well.
+    """
+    # Function-local, like the cron routes' owner gate: ``source_providers``
+    # reaches back into chat-state modules this one is imported by.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, "chat.channel_topics")
+    if owner_denied is not None:
+        return owner_denied
+    state: DashboardState = request.app["state"]
+    transport = state.channel_transports.get(_TOPIC_CHANNEL)
+    if transport is None:
+        return web.json_response([])
+    topics: dict[str, str] = {}
+    for slot in list(state._slots.values()):
+        link = state.sessions.get_mirror_link(effective_session_key(slot))
+        if link is None or link.channel_type != _TOPIC_CHANNEL or not link.thread_id:
+            continue
+        target_id = f"topic:{link.channel_id}:{link.thread_id}"
+        if target_id not in topics and await transport.resolve_configured_target(target_id):
+            topics[target_id] = slot.title or target_id
+    return web.json_response(
+        [
+            {"channel_type": _TOPIC_CHANNEL, "target_id": target_id, "label": label}
+            for target_id, label in topics.items()
+        ]
+    )
 
 
 def _resumes_inbound(

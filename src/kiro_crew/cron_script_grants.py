@@ -436,25 +436,30 @@ def delivery_fingerprint(
     silent: bool = False,
     channel: str = "",
     thread_ts: str = "",
+    channel_type: str = "",
+    target_id: str = "",
 ) -> str:
     """Canonical fingerprint of a job's DELIVERY controls, for pin binding.
 
-    Covers every agent-mutable field that decides where (session_key,
-    channel, thread_ts) or whether (silent) a run's output is delivered:
+    Covers every field that decides where (session_key, channel, thread_ts,
+    channel_type, target_id) or whether (silent) a run's output is delivered:
     binding them one by one invites the next omission, so the pin binds
     this single canonical blob instead. Rewiring ANY of them under a
     still-valid pin fails the run closed and asks for re-approval.
+
+    The channel pair joins the blob only when set, so every pin minted
+    before it existed still verifies.
     """
-    return json.dumps(
-        {
-            "channel": channel or "",
-            "session_key": session_key or "",
-            "silent": bool(silent),
-            "thread_ts": thread_ts or "",
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    blob: dict[str, object] = {
+        "channel": channel or "",
+        "session_key": session_key or "",
+        "silent": bool(silent),
+        "thread_ts": thread_ts or "",
+    }
+    if channel_type or target_id:
+        blob["channel_type"] = channel_type
+        blob["target_id"] = target_id
+    return json.dumps(blob, sort_keys=True, separators=(",", ":"))
 
 
 def _pin_payload(

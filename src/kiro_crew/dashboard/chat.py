@@ -111,6 +111,7 @@ from kiro_crew.dashboard.chat_merge_back import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_mirror import (  # noqa: F401
     api_channel_targets,
+    api_channel_topics,
     api_chat_slot_mirror_link,
     api_chat_slot_mirror_pause,
     api_chat_slot_mirror_unlink,

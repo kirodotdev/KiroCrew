@@ -357,7 +357,8 @@ async def _alert_cron_failure(
             # does not read "none" for a run answered on Discord.
             surfaces = ["slack"] if slack_delivered else []
             if channel_delivered:
-                surfaces.append(channel_namespace_of(job.session_key))
+                # A pinned job's channel leg sent to its pin, not its origin.
+                surfaces.append(job.channel_type or channel_namespace_of(job.session_key))
             sel().log_tool_invocation(
                 session_key=f"cron:{job.id}",
                 tool_name="cron_run_failure_alert",
@@ -699,7 +700,8 @@ async def _cron_single_failure(
             # trail does not read "none" for a crash sent to Discord.
             surfaces = ["slack"] if slack_delivered else []
             if channel_delivered:
-                surfaces.append(channel_namespace_of(job.session_key))
+                # A pinned job's channel leg sent to its pin, not its origin.
+                surfaces.append(job.channel_type or channel_namespace_of(job.session_key))
             sel().log_tool_invocation(
                 session_key=f"cron:{job.id}",
                 tool_name="cron_failure_alert",

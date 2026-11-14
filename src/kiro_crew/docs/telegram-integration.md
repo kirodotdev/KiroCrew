@@ -206,6 +206,14 @@ wherever a Telegram target id is accepted (for example, ask the agent to send a
 job's report there). Only a topic in the private chat of a user in
 `allowed_user_ids` is accepted.
 
+On the **Schedule** page, a job's **Telegram destination** sends its results to
+your private chat or one of its topics instead of the conversation that created
+it. Editing the destination keeps the job's id, history and times. Telegram does
+not let the bot list your topics, so the list shows the topics that have a
+conversation open on the dashboard: create the topic in Telegram, send one message
+there, and it appears. A job has one destination, so picking one empties its Slack
+**Channel ID**, and filling in a Channel ID turns the Telegram destination off.
+
 Proactive messages (a cron's report, an agent's `send_message`) are plain text by
 default, so `**bold**` arrives with its asterisks. Pass `format="markdown"` to
 `send_message`, or to `ctx.notify(...)` in a cron script, to get bold, italics,

@@ -49,7 +49,9 @@ def _quiet_sel(_floor_monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     return sel_obj
 
 
-def _pin(spec: str, job_id: str, body: bytes, *, domain: str, grant=None) -> str:
+def _pin(
+    spec: str, job_id: str, body: bytes, *, domain: str, grant=None, delivery: str = ""
+) -> str:
     return compute_secret_env_pin(
         spec,
         "",
@@ -58,7 +60,7 @@ def _pin(spec: str, job_id: str, body: bytes, *, domain: str, grant=None) -> str
         grant=dict(grant or _GRANT),
         domain=domain,
         body=body,
-        delivery=delivery_fingerprint(_SESSION),
+        delivery=delivery or delivery_fingerprint(_SESSION),
     )
 
 
@@ -163,6 +165,19 @@ class TestResurfaceStaleGrant:
             delivery=delivery_fingerprint(_SESSION),
         )
         assert resolved == {} and err == GRANT_PIN_STALE_ERROR
+
+    @pytest.mark.asyncio
+    async def test_the_request_binds_a_pinned_channel_destination(self, cron_home):
+        svc = CronService(base_dir=cron_home() / "store")
+        jid, spec = _approved_job(svc, cron_home)
+        svc.update_job(jid, channel_type="telegram", target_id="topic:42:7")
+        new_body = _edit_script(cron_home)
+
+        assert await resurface_stale_grant(svc, jid, _fresh(svc, jid).secret_env_pin) is True
+        pinned = delivery_fingerprint(_SESSION, False, "", "", "telegram", "topic:42:7")
+        assert _fresh(svc, jid).secret_env_pending_pin == _pin(
+            spec, jid, new_body, domain="pending", delivery=pinned
+        )
 
     @pytest.mark.asyncio
     async def test_leaves_an_agents_different_request_alone(self, cron_home):

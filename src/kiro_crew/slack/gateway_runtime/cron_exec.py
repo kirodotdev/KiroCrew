@@ -620,6 +620,8 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
                 job.silent,
                 job.channel or "",
                 job.thread_ts or "",
+                job.channel_type,
+                job.target_id,
             ),
             self._live_internal_secret,
             timeout=_claim_backstop(job, script_timeout),

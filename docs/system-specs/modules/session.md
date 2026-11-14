@@ -5263,6 +5263,10 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
   Enforcement lives at the send sites, not in storage — see
   [messaging](messaging.md) for the `SilentRenderer` substitution that stops a
   disconnected non-Slack conversation being written to.
+- `GET /api/chat/channel-topics` — owner-only list of the private Telegram topics
+  the open dashboard conversations are mirrored to, for the Schedule form's
+  destination picker; deliberately not part of `channel-targets` (see
+  [messaging](messaging.md)).
 - `GET /api/chat/channel-targets` — owner-authenticated union of Slack
   destinations and every registered transport's configured targets. The
   dashboard session menu renders this list with per-channel brand icons.

@@ -385,6 +385,8 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
      *  both, and they mute independently, so the row has to say which it is. */
     pauseMirror: (slot: string, paused: boolean, origin = false) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/mirror-pause', { paused, origin }).then(j),
     channelTargets: () => fetch('/api/chat/channel-targets').then(j),
+    /** The private Telegram topics the bot already has a conversation in. */
+    channelTopics: () => fetch('/api/chat/channel-topics').then(j),
     linkMirror: (slot: string, channelType: string, targetId: string) => post(
       '/api/chat/slots/' + encodeURIComponent(slot) + '/mirror-link',
       { channel_type: channelType, target_id: targetId },

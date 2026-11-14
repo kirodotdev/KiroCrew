@@ -756,10 +756,12 @@ _AUTO_APPROVAL_OWNER_ONLY = (
 )
 
 
-#: ``cron_update`` fields (as ``update_job`` kwargs) that change what a job does or
-#: where it reports. Changing one through a tool turns the owner's auto-approve off.
+#: ``update_job`` kwargs that change what a job does or where it reports. Changing
+#: one through a tool turns the owner's auto-approve off. The second set only the
+#: Schedule page writes; it is here so the dashboard's app twin stays this set.
 _AUTO_RESETTING_FIELDS = frozenset(
     {"message", "agent_id", "model", "cron_expr", "every_secs", "channel", "thread_ts"}
+    | {"channel_type", "target_id"}
 )
 
 _AUTO_APPROVAL_RESET_NOTE = (
@@ -1389,7 +1391,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 grant=secrets,
                 domain="pending",
                 delivery=delivery_fingerprint(
-                    sjob.session_key, sjob.silent, sjob.channel or "", sjob.thread_ts or ""
+                    sjob.session_key,
+                    sjob.silent,
+                    sjob.channel or "",
+                    sjob.thread_ts or "",
+                    sjob.channel_type,
+                    sjob.target_id,
                 ),
             )
         except (ValueError, FileNotFoundError, PermissionError, RuntimeError) as exc:

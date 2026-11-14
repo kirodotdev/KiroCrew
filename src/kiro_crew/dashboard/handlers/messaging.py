@@ -131,6 +131,7 @@ from kiro_crew.dashboard.messaging_api.channel_config_writes import (  # noqa: F
 )
 from kiro_crew.dashboard.messaging_api.channel_delivery import (  # noqa: F401
     _channel_delivery_key,
+    _channel_target_transport,
     _ChannelSendFailed,
     _cron_job_for,
     _deliver_channel_dm,
@@ -141,6 +142,7 @@ from kiro_crew.dashboard.messaging_api.channel_delivery import (  # noqa: F401
     _send_to_channel_target,
     _vet_app_messaging,
     _vet_channel_send,
+    _vet_channel_target,
 )
 from kiro_crew.dashboard.messaging_api.channel_folder_backfill import (  # noqa: F401
     api_channel_folder_backfill,
