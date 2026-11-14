@@ -187,7 +187,9 @@ _SCANNED_MODULES = (
     "src/kiro_crew/acp/skill_projection_parts/preparation.py",
 )
 
-_LOCK_CALL = "workspace_cli_settings_lock"
+#: Both entry points to the workspace settings lock: the context manager the
+#: writers take, and the path-only wrapper over it.
+_LOCK_CALLS = frozenset({"locked_workspace_cli_settings", "workspace_cli_settings_lock"})
 
 #: The module holding the one ``ChatRuntimeKey.build`` call site in the tree.
 _BUILD_CALL_SITE = "src/kiro_crew/providers/chat_share.py"
@@ -209,7 +211,7 @@ def _functions_taking_the_settings_lock(rel_path: str) -> set[str]:
                 continue
             func = sub.func
             called = getattr(func, "id", None) or getattr(func, "attr", None)
-            if called == _LOCK_CALL:
+            if called in _LOCK_CALLS:
                 names.add(node.name)
                 break
     return names

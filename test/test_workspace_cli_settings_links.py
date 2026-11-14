@@ -2,8 +2,9 @@
 
 ``<kiro home>/settings/cli.json`` holds the user's own kiro-cli defaults. A work dir
 whose ``.kiro`` or ``.kiro/settings`` is a link into that folder would otherwise have
-every overlay writer edit the global file. Any other link, such as a ``.kiro`` shared
-across git worktrees, is still followed.
+every overlay writer edit the global file. A link that leaves the work dir is refused
+whatever it points at, so a home outside the work dir is refused as an escape and a
+home inside it by name.
 """
 
 from __future__ import annotations
@@ -49,14 +50,33 @@ def test_a_link_into_the_kiro_home_is_refused(
     platform_compat.symlink_or_junction(home / target_name, link)
     before = _tree(home)
 
-    with pytest.raises(OSError, match="global kiro settings"):
+    with pytest.raises(OSError, match="outside the work directory|global kiro settings"):
         _write_cli_overlay(tmp_path / "work", _MODEL, "high")
     assert _clear_cli_overlay_effort(tmp_path / "work", _MODEL) is False
 
     assert _tree(home) == before
 
 
-def test_a_kiro_shared_across_worktrees_is_still_followed(
+def test_a_kiro_home_inside_the_work_dir_is_refused_by_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = tmp_path / "work"
+    home = work / "tools" / ".kiro"
+    (home / "settings").mkdir(parents=True)
+    own = {"chat.modelDefaults": {_MODEL: {"output_config": {"effort": "low"}}}}
+    (home / "settings" / "cli.json").write_text(json.dumps(own), encoding="utf-8")
+    monkeypatch.setenv("KIRO_HOME", str(home))
+    platform_compat.symlink_or_junction(home, work / ".kiro")
+    before = _tree(home)
+
+    with pytest.raises(OSError, match="global kiro settings"):
+        _write_cli_overlay(work, _MODEL, "high")
+    assert _clear_cli_overlay_effort(work, _MODEL) is False
+
+    assert _tree(home) == before
+
+
+def test_a_kiro_shared_across_worktrees_is_refused_and_left_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("KIRO_HOME", str(tmp_path / "fakehome" / ".kiro"))
@@ -66,7 +86,7 @@ def test_a_kiro_shared_across_worktrees_is_still_followed(
     work.mkdir()
     platform_compat.symlink_or_junction(shared, work / ".kiro")
 
-    _write_cli_overlay(work, _MODEL, "high")
+    with pytest.raises(OSError, match="outside the work directory"):
+        _write_cli_overlay(work, _MODEL, "high")
 
-    written = json.loads((shared / "settings" / "cli.json").read_text(encoding="utf-8"))
-    assert written["chat.modelDefaults"][_MODEL]["output_config"]["effort"] == "high"
+    assert not (shared / "settings").exists()
