@@ -243,7 +243,7 @@ class TestApprovalYoloSafetyRail:
         assert "main gateway home" in captured.err
 
     def test_yolo_refused_when_resolves_to_legacy_home(self, monkeypatch, capsys):
-        # GPT 5.6 HIGH regression: after the data-home move, the rail must reject the
+        # After the data-home move, the rail must reject the
         # LEGACY ~/.kirocrew too, not just ~/.kiro/crew. On an unmigrated/downgraded
         # install the legacy home still holds the LIVE data, so yolo against it is
         # exactly as destructive as against the new home.

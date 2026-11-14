@@ -900,8 +900,8 @@ class TestSetupCliLoggingDetached:
         assert "[PID" in text
 
     def test_third_party_warning_still_lands_in_file(self):
-        # Before the fix these reached the file only via the accidental
-        # stderr echo; the root-attached handler must keep them flowing.
+        # The root-attached handler must carry these to the file; the stderr
+        # echo is not a path to rely on.
         _setup_cli_logging("gateway", 1)
         logging.getLogger("somelib.test_doublewrite").warning("thirdparty-record")
         _stop_log_queue_listener()  # deterministic drain to disk

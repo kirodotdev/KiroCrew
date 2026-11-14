@@ -110,8 +110,9 @@ def member_also_a_materialized_template(tmp_path, monkeypatch):
     )
     provision_member_memory(cfg, "kirocrew-conductor")
     cfg.save()
-    # Materialize a kiro agent spec of the SAME name (warm snapshot). Under the
-    # pre-fix precedence this would have forced a template; alias-first keeps it
+    # Materialize a kiro agent spec of the SAME name (warm snapshot). Checking the
+    # materialized spec before the config.agents alias would force a template;
+    # loader_agents._resolve_agent_selection checks the alias first, so it stays
     # a member. Restore the snapshot after the test so it does not leak.
     saved = (loader._MATERIALIZED_AGENTS, loader._MATERIALIZED_AGENTS_READY)
     loader._MATERIALIZED_AGENTS = frozenset({"kirocrew-conductor"})
