@@ -567,11 +567,11 @@ def main(argv: list[str] | None = None) -> int:
                     # Every item that is not COVERED, so a mention-only item is
                     # LISTED HERE as well as under `mentioned`. `uncovered` keeps
                     # its contract meaning -- "no coverage was found, it stays a
-                    # candidate" -- which is what makes a consumer that subtracts
-                    # `covered` inherit this fix without knowing `mentioned`
-                    # exists. Redefining it as "no reference at all" would leave
-                    # mention-only items out of both lists and silently restore
-                    # the old suppression for every caller not updated in step.
+                    # candidate" -- so a consumer that subtracts `covered` keeps
+                    # mention-only items without knowing `mentioned` exists.
+                    # Redefining it as "no reference at all" would leave
+                    # mention-only items out of both lists and suppress them
+                    # for every caller not updated in step.
                     "uncovered": [item for item in items if str(item) not in covered],
                     "open_prs_read": len(pulls),
                 },
