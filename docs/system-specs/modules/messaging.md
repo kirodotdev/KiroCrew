@@ -448,7 +448,7 @@ refusal code, and `tier=hook_auto_approve`. On Windows the check models the
 shell's lookup and returns per-command verdicts as it does on POSIX, except in
 two host states that still decline every name grant:
 `windows_lookup_not_modelled` when Windows cannot report where the user's
-Documents folder is, and `ambiguous_env` when a per-user PowerShell profile sits
+Documents folder is, and `inherited_env_can_redefine_programs` when a per-user PowerShell profile sits
 at one of the paths derived from it. In those two states a channel turn without
 a decider falls to deny-by-default for shell tools its `auto_approve_tools`
 would otherwise grant. Non-shell verdicts and the two
@@ -1655,7 +1655,7 @@ Five properties are load-bearing:
   binds it from inside — the origin bind on an inbound turn
   (`link.bind_origin_mirror`), the in-channel link (`link.rebind_conversation_location`
   and the Webex and WeCom link handlers) — as well as by the two creation paths above.
-  The ladder (`chat_runner._key_named_row_admitted`) sends to a key-named link only when
+  The ladder (`chat_turn.recipient._key_named_row_admitted`) sends to a key-named link only when
   its admission verifies, when it IS the conversation the gateway saw the session read
   in (`SessionManager.get_origin_link`, held in gateway memory), or when it addresses
   the key's own peer by id, on the key's own channel, with no thread (Telegram's DM
@@ -1693,7 +1693,7 @@ Five properties are load-bearing:
   agent-writable file and a credential planted in one must not reach the append-only
   log unredacted. "Once" is kept by a set that is bounded in both dimensions: it is
   cleared when it reaches 512 entries, and each entry is a fixed-length digest of the
-  marker (`chat_runner._marker_digest`), never the conversation id itself, so 512
+  marker (`chat_turn.recipient._marker_digest`), never the conversation id itself, so 512
   refusals with successively larger agent-written ids hold bounded memory. The transport's
   pairing is defense in depth over that: a disagreement refuses (`contradicted`), and a
   transport that knows nothing — the ordinary state right after a restart, before the
@@ -1837,7 +1837,6 @@ the facade reaches moved code. New work goes to the owner of its responsibility:
 | `channel_config_writes.py` | the channel-config transaction every channel saver commits through: `_LockedSectionWrite`, and `_write_env_or_roll_back`, the one `.env` write, rollback and environment sync (its off-loop drain, `_write_env_off_loop`, stays in `handlers/messaging.py`); plus `_mask_secret`, `_clean_id_list` and `_threshold_pct_rejection` |
 | `slack_workspace.py` | the Slack pin, reaction, history, profile and manifest routes |
 | `channel_folder_backfill.py` | `POST /api/channel-folders/backfill`, filing a channel's existing sessions |
-| `browser_routes.py` | the browser routes: attach token, the native panel's command bus, the Playwright CLI install, the browser view and open |
 
 An owner route that parses its body with `await request.json()` and then reads it
 with `body.get()` returns `body_not_object_error(body)` right after the parse:
@@ -2708,7 +2707,7 @@ message to the dashboard slot instead (`_handle_resumed_busy` →
   A merged row keeps an address only
   when every entry it merges carries that same address, since the notice quotes the whole row.
   When the drain's re-validation drops the entry
-  (`chat_runner._drop_stale_admissions`), `notify_channel_recipient_dropped`
+  (`chat_turn.steer_queue._drop_stale_admissions`), `notify_channel_recipient_dropped`
   schedules a notice into that conversation — the DM was told "queued" and reads
   neither the target's transcript nor the SEL — through the same cross-surface
   send ladder every proactive channel delivery takes (channels governance, a

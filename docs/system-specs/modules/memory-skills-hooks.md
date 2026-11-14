@@ -2936,13 +2936,13 @@ calls `back_up_all_stores` with `force=True` (the retention interval is bypassed
 `memory.backup_keep`. On a managed venv it is the shadow engine's last step before
 promotion, for the gateway's automatic update, an approved in-app update and
 `kirocrew update` alike; `kirocrew update`'s other updaters run it before they start.
-`POST /api/update` runs it after its last refusal and before the fast-forward or a
-policy apply that can apply, and the git-checkout auto-update runs it just before its
-`reset --hard`. A copy that did not land refuses the update: the CLI exits 1, the
-dashboard answers 500 `memory_snapshot_failed`, and the unattended auto-update skips
-this update with a warning and one dashboard notice, never exiting the gateway, and
-retries on its next check. `test/test_update_memory_copy_placement.py` pins the
-placement in each applier file.
+The dashboard's Update only arms the update for the next start, and the boot-time
+apply (`update_boot_apply.py`) runs it as a `kirocrew update` child, so that copy is
+the CLI's. A copy that did not land refuses the update: the CLI exits 1, and the
+gateway's unattended managed-venv apply treats `snapshot_failed` as an ordinary
+failure, pushes the refusal onto the update progress feed without exiting the
+gateway, and retries on its normal cadence. `test/test_update_memory_copy_placement.py`
+pins the placement in each applier file.
 
 `kirocrew memory backup` / `backups` / `restore` are dispatched **before** the vector
 store is opened, and that ordering is the point: `store.init()` runs
@@ -6349,10 +6349,10 @@ Auto-sync runs at startup and on demand from the dashboard. `mcp_discovery.py` i
 
 **On-demand discovery** (dashboard): `sync_discovered_servers()` triggered by "Discover & Sync" button.
 
-**Command divergence** (`_commands_diverged`): an existing server is only re-synced when its `mcp.json` command differs from the one recorded in the agent config. The two legitimately differ in spelling because `agent._resolve_command` stores the `shutil.which` result while `mcp.json` keeps the bare name, so the comparison folds path resolution:
+**Command divergence** (`_commands_diverged`): an existing server is only re-synced when its `mcp.json` command differs from the one recorded in the agent config. The two legitimately differ in spelling because the agent-config rebuild's `_resolve_command` (nested in `agent_parts/spec_rebuild.py`) stores the `shutil.which` result while `mcp.json` keeps the bare name, so the comparison folds path resolution:
 
 - A basename match is only accepted when one side is a **rooted path** and the other a **bare name** (no separator), since PATH lookup is what produced the rooted form. Two distinct rooted paths sharing a basename (`/opt/a/srv` vs `/opt/b/srv`) and a CWD-relative path (`bin/srv` vs `/usr/bin/srv`) each name a specific different file, so both stay divergent.
-- The basename acceptance holds only while the rooted side still names a **runnable file**; a pin that does not resolve is divergence, so a re-sync is proposed instead of leaving the server to fail at spawn time. The probe is `isfile` + `X_OK`, the predicate `agent._resolve_command` applies to an absolute command, not `shutil.which`, which can report a good file as unresolvable inside a user-namespace sandbox. Only the **agent side** is probed: `mcp.json` holds what the user authored, while the agent entry holds what a past resolution pinned, so only the pin can go stale on its own. A path not rooted in a named volume on this host (the other OS's spelling, a driveless Windows root) is never probed, so a portable `mcp.json` is never called stale.
+- The basename acceptance holds only while the rooted side still names a **runnable file**; a pin that does not resolve is divergence, so a re-sync is proposed instead of leaving the server to fail at spawn time. The probe is `isfile` + `X_OK`, the predicate the rebuild's `_resolve_command` applies to an absolute command, not `shutil.which`, which can report a good file as unresolvable inside a user-namespace sandbox. Only the **agent side** is probed: `mcp.json` holds what the user authored, while the agent entry holds what a past resolution pinned, so only the pin can go stale on its own. A path not rooted in a named volume on this host (the other OS's spelling, a driveless Windows root) is never probed, so a portable `mcp.json` is never called stale.
 - On Windows the keys are `normcase`+`normpath` folded (paths are case-insensitive and accept either separator), and a trailing `PATHEXT` suffix is stripped from the **rooted side only** — `shutil.which("npx")` returns `...\npx.CMD`, which would otherwise read as divergent from `npx` on every cycle and re-sync + reset every session at each startup. Stripping both sides would wrongly collapse distinct executables (`foo.bat` vs `foo.cmd`).
 - A leading separator with no drive letter (`/usr/bin/srv`) counts as rooted on Windows even though `ntpath.isabs` rejects it, so an `mcp.json` authored on macOS/Linux is read identically on every host.
 
@@ -7013,10 +7013,10 @@ re-reads the board. A subscriber that can
 tolerate a missed transition can drop its timer; one doing irreversible work
 cannot, and gains only latency.
 
-**What counts as a status tag, stated once.** `_is_status_tag` is
-`bool(isinstance(tag, dict) and tag.get("status"))` — plain truthiness — and every reader asks
-it: the drop path's mutual-exclusion strip, the delete path, the auto-tagger, and this event's
-dispatch filter. One rule rather than two, and deliberately the rule the board ALREADY uses:
+**What counts as a status tag, stated once.** `_status_tag_ids`
+(`hook_runtime/hook_dispatch.py`) resolves each id in the live vocabulary and keeps it when
+`tag.get("status")` is truthy — plain truthiness — the same test the drop path's
+mutual-exclusion strip in `dashboard/chat_tags.py` uses. The rule is deliberately the rule the board ALREADY uses:
 the tag manager's lightning toggle reads `!!t.status`, and `GET /api/chat/tags` serves the
 field as stored. So any value Python calls truthy is a lane, including a hand-edited
 `"status": "false"` (a non-empty string), and only an absent field, `false`, `0` or `""` is
@@ -7200,14 +7200,12 @@ rows-per-day number would be an estimate rather than a contract.
 **Known deferral (partially mitigated here).** Resolving the `capabilities.script_hooks`
 gate walks `profiles/` synchronously, so any `async` caller resolving it inline stalls the
 event loop for that walk — a `no-blocking-call-on-event-loop` violation reachable from lane
-dispatch. Both `async` call sites in `hooks.py` therefore await ONE seam,
-`_script_hooks_capability_denied_async`, which hops to a thread. Unconditional, not keyed on
+dispatch. Both `async` call sites in `hook_runtime/script_hooks.py` therefore resolve
+`_script_hooks_capability_denied` through `asyncio.to_thread`. Unconditional, not keyed on
 the event: scoping it to `SessionLaneChanged` was tried and withdrawn, because it put an
 equality branch in shared dispatch that every future event would grow while leaving the
-other events stalling anyway. Centralised in one wrapper rather than a hop at each call
-site, because it remains a CALLER-side workaround: the cause-level remedy is non-blocking
-resolution, or a cached fingerprint, in the owning module — and when that lands there is one
-seam to delete instead of a hop per caller. Synchronous callers outside this module still
+other events stalling anyway. It remains a CALLER-side workaround: the cause-level remedy is non-blocking
+resolution, or a cached fingerprint, in the owning module. Synchronous callers outside this module still
 resolve inline and still stall.
 
 ### User kiro-cli Hooks (`agent.kiro_hooks` in `config.json`)

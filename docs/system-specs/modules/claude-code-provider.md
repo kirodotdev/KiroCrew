@@ -27,8 +27,8 @@ PATCH allowlist, and `GET /api/config/schema` together
 this deployment cannot select to the Kiro harness. This boundary is load-bearing:
 `AcpProvider` rejects unknown harnesses, so normalization prevents a persisted or
 hand-edited value from becoming a startup failure.
-`TestConfigRoundTrip.test_unselectable_values_degrade_to_the_default` exercises
-that path, and `test_harness_parity.test_unselectable_backend_degrades_to_kiro`
+`TestConfigRoundTrip.test_unselectable_explicit_values_degrade_to_the_kiro_floor` exercises
+that path, and `test_harness_parity.test_unselectable_backend_degrades_to_default`
 asserts the outcome against the live registry rather than a hardcoded verdict —
 which is why `claude` *survives* that gate instead of degrading.
 
@@ -533,7 +533,7 @@ live tenancy: the successor cannot re-write the file).
 Two sessions of the same agent in the same `work_dir` render the same permissions,
 and refusing the second one bought nothing — it ran with the whole `mcpServers` array
 withheld, so only one session per project directory ever had Crew's tools
-(`spawn_run`, `cron_*`, `session_checkpoint`). When the file on disk is a live
+(`spawn_run`, `cron_*`, `session_ledger_record`). When the file on disk is a live
 sibling's seed whose bytes are the ones Crew's durable record names
 (`seed_provenance.share`, checked ignoring the live holder) and that carries this
 session's permission keys, the client takes a shared-reader state

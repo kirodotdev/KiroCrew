@@ -2956,7 +2956,7 @@ needed because a same-day backfill's 23:59 is in the future and
 **Model CDN.** `embeddings_settings.py::_DEFAULT_MODEL_URL` points at
 `kirocrew-models` (distribution E2UX23B48LKM6V, OAC-only bucket access). The
 `_GGUF_SHA256` pin remains the sole integrity gate, so a tampered CDN object can
-only fail verification. Because `_ensure_downloaded()` returns early when
+only fail verification. Because `ModelDownloadManager.ensure_model()` (`embeddings_download.py`) returns early when
 `model_ready()`, a CDN request is a **first-install** signal, not a DAU signal —
 the dashboard shows it as "downloads", deliberately separate from DAI.
 

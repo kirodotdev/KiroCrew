@@ -32,8 +32,10 @@ Caveats worth knowing before you copy one:
   once a finder actually returns bugs. Treat the loop-until-dry and budget-guard
   structure as the lesson, not that line.
 - `03_scheduled_triage_native.py` references `ctx.memory`, `ctx.cron` and
-  `ctx.send_slack`. The shipped gateway wires only the `nudge` port, so the
-  runner's host-aware surface check rejects this script before exec with
+  `ctx.send_slack`. The shipped gateway wires the `nudge` port and the
+  session-control ports (`open_session`, `send_to_session`, `set_session_mode`)
+  but not the `memory`, `cron` or `send_slack` ports, so the runner's host-aware surface check rejects this
+  script before exec with
   `where="validate"`. It documents the intended native-port surface, and it needs a
   host that wires those ports.
 - The two `ctx.budget.remaining()` early stops read a counter nothing currently

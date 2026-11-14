@@ -103,11 +103,11 @@ import too, spelled out even when it is every type: the kernel skips the copy an
 step for an entry a fold does not name, and `None` would leave a reader unable to tell
 "all of them" from "not decided".
 
-**Every fold is eager today, and `LAZY_FOLD_REASONS` is empty.** The two families each
-have their own warm path (section 5.1): the eleven SLOT folds -- `ledger`, `radar`, `work`,
-`panel`, `agentic`, `mistakes`, `workstreams`, `goal`, `waiting`, `custom` and `workers` -- are continued in the slot memo, and the seven SESSION folds -- the six the
-crew-log panel draws plus the internal `class` -- in the session memo. The internal slot
-fold `worker` is the exception, LAZY with its reason: it is a part of `workers`, folded
+**Every fold but two is eager, and `LAZY_FOLD_REASONS` names those two.** The two families each
+have their own warm path (section 5.1): the twelve SLOT folds -- `ledger`, `radar`, `work`,
+`panel`, `agentic`, `mistakes`, `workstreams`, `goal`, `waiting`, `custom`, `objects` and `workers` -- are continued in the slot memo, and the ten SESSION folds -- the six the
+crew-log panel draws plus the internal `class`, `outline`, `otel_usage` and `otel_session_tree` -- in the session memo. The tree-keyed `worktree` fold is LAZY (a tree's value goes stale when any member's log grows, and no publisher raises that), and the internal slot
+fold `worker` is LAZY with its reason: it is a part of `workers`, folded
 only when `workers` is read, in a slot-memo cell of its own per worker.
 `EAGER_SLOT_FOLD_NAMES` and `EAGER_SESSION_FOLD_NAMES` name the two halves, and an eager
 fold in neither is refused at import, because it would be woken for and then have
@@ -984,7 +984,7 @@ the history.
 
 **One worker, one wake, both families.** The wake names the unit. A slot fold is
 advanced for the slot that unit's entry belongs to (`read_slot_projection`); the unit's
-session folds are advanced for the unit itself (`fold_session_warm`), all seven in one
+session folds are advanced for the unit itself (`fold_session_warm`), all ten in one
 pass over its one file. Slot folds go first and drop before they advance on a closer;
 session folds advance first and drop after, because they READ the closer -- `status`
 reports the session closed -- so the closing value is one a dashboard must be handed.
@@ -1166,7 +1166,7 @@ what is being bounded is resident bytes and not cell count.
 
 **The warm SESSION memos have a ceiling of their own**, `session_fold_cache_bytes()`,
 64 MiB by default, lowered with `KIROCREW_SESSION_FOLD_CACHE_BYTES`. A session cell is
-charged its SERIALIZED size, summed over its seven folds and weighed only for the folds
+charged its SERIALIZED size, summed over its ten folds and weighed only for the folds
 a pass changed. That is affordable here for a reason the slot table does not have: a
 session fold's state is flat and small, and the fold already copies it for every entry
 that moves it (`copy_state`), so weighing it once per pass is the same order of work.

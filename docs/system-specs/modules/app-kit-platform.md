@@ -6641,7 +6641,7 @@ its block is read from the adopted record's own `app.json`, and a tool lists onl
 equals, route included, one its wheel copy's shipped block declares. Any other installed
 or registry app's `agentTools` block lists nothing: it still validates and installs, and
 the app can ship its own `mcpServers` entry, whose calls are approved one by one
-(`register_app_mcp_servers` strips its `autoApprove`). Listing such an app's tools needs a
+(`_register_mcp_servers` strips its `autoApprove`). Listing such an app's tools needs a
 path that asks before each call (a server of its own outside `allowedTools`, or a
 per-tool approval); that is a maintainer's decision, not this seam's.
 

@@ -272,8 +272,7 @@ wire registers and activates it as `agent_files.kas_wire_agent_id(id)`
 (`<id>-crewmate`), and every Crew-side record keeps the Bot's id
 ([acp-client](acp-client.md), Guard (C)). The dashboard renders the
 refusal in the user's language inside the dialog that sent the name
-(`components.agentTemplateDetail.publish_name_reserved`,
-`pages.overview.agentTemplatesTab.err_name_reserved`), naming the typed name.
+(`pages.overview.agentTemplatesTab.err_name_reserved`), naming the typed name.
 
 ## Custom agents tab
 

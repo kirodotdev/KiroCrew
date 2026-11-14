@@ -41,8 +41,9 @@ git diff "$(git merge-base origin/main HEAD)" HEAD > /tmp/pr.diff
 PR_BODY="$(cat pr-body.md)" python3 .github/scripts/take_away_check.py /tmp/pr.diff
 ```
 
-`diff_signals.py --check-body` in the prepare-pr skill runs only
-`pr-description-check.sh`, not this check.
+`diff_signals.py --check-body` in the prepare-pr skill runs its own body checks
+(`pr-description-check.sh`, the sibling-sweep and proof-line checks, and
+others), not this one.
 
 Design Review also runs a TAKE-AWAY CHECK and blocks on a reader it finds broken
 and unlisted; a reader a `Breaking:` line names counts as listed. That lane is
