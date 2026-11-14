@@ -19,6 +19,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
+from kiro_crew.apps.app_hosts import frame_origin_refusal
 from kiro_crew.apps.manifest_names import KEBAB_RE
 from kiro_crew.apps.user_session_reach import declared_verbs
 
@@ -372,10 +373,34 @@ class UIConfig:
     # supplies markup or styles. Empty means undeclared, which the dashboard
     # renders as "page", the skeleton every app had before the field existed.
     loading_layout: str = ""
+    # Exact ``https://host`` origins the app's pages may frame, from
+    # ``"frameSources"``. The gateway adds them to the dashboard ``frame-src`` while
+    # the app is enabled and trusted (``apps/frame_sources.py``).
+    frameSources: list[str] = field(default_factory=list)  # noqa: N815
+    #: ``frameSources`` present but not a list of strings. Not serialized.
+    bad_frame_sources: bool = False
 
     # Names `ui.loading.layout` may take. Mirrors ``APP_LOADING_LAYOUTS`` in
     # ``website/src/components/AppLoadingFallback.tsx``.
     LOADING_LAYOUTS: ClassVar[frozenset[str]] = frozenset({"page", "rail", "centered", "split"})
+    MAX_FRAME_SOURCES: ClassVar[int] = 8
+
+    def frame_source_errors(self) -> list[str]:
+        """Validation errors of ``ui.frameSources``; empty when it is valid or absent."""
+        if self.bad_frame_sources:
+            return ["ui.frameSources must be an array of https origins"]
+        errors: list[str] = []
+        if len(self.frameSources) > self.MAX_FRAME_SOURCES:
+            errors.append(
+                f"ui.frameSources: {len(self.frameSources)} entries exceeds the limit of "
+                f"{self.MAX_FRAME_SOURCES}"
+            )
+        for origin in self.frameSources:
+            if refusal := frame_origin_refusal(origin):
+                errors.append(f"ui.frameSources entry is {refusal}: {origin!r}")
+        if len(set(self.frameSources)) != len(self.frameSources):
+            errors.append("ui.frameSources repeats an entry")
+        return errors
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -389,6 +414,8 @@ class UIConfig:
             d["pages"] = [p.to_dict() for p in self.pages]
         if self.overlays:
             d["overlays"] = [o.to_dict() for o in self.overlays]
+        if self.frameSources:
+            d["frameSources"] = list(self.frameSources)
         sidebar_d = self.sidebar.to_dict()
         if sidebar_d:
             d["sidebar"] = sidebar_d
@@ -415,12 +442,16 @@ class UIConfig:
         )
         sidebar_raw = data.get("sidebar", {})
         sidebar = UISidebar.from_dict(sidebar_raw) if isinstance(sidebar_raw, dict) else UISidebar()
+        raw_frames = data.get("frameSources", [])
+        frames_ok = isinstance(raw_frames, list) and all(isinstance(o, str) for o in raw_frames)
         return cls(
             entry=str(data.get("entry", "")),
             pages=pages,
             overlays=overlays,
             sidebar=sidebar,
             loading_layout=cls._parse_loading_layout(data.get("loading")),
+            frameSources=list(raw_frames) if frames_ok else [],
+            bad_frame_sources=not frames_ok,
         )
 
     @classmethod
