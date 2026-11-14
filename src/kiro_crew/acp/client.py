@@ -191,6 +191,7 @@ from kiro_crew.acp.client_start import _PROTOCOL_VERSION_BY_BACKEND  # noqa: F40
 from kiro_crew.acp.client_start import CLIENT_NAME  # noqa: F401
 from kiro_crew.acp.client_start import CLIENT_VERSION  # noqa: F401
 from kiro_crew.acp.client_start import PROTOCOL_VERSION  # noqa: F401
+from kiro_crew.acp.client_start import PROTOCOL_VERSION_ANTIGRAVITY  # noqa: F401
 from kiro_crew.acp.client_start import PROTOCOL_VERSION_CLAUDE  # noqa: F401
 from kiro_crew.acp.client_start import PROTOCOL_VERSION_DEEPSEEK  # noqa: F401
 from kiro_crew.acp.client_start import PROTOCOL_VERSION_GOOSE  # noqa: F401
@@ -936,6 +937,7 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_deepseek_session",
     "kiro_crew.acp.client_mimocode_session",
     "kiro_crew.acp.client_elicitation",
+    "kiro_crew.acp.client_antigravity",
     "kiro_crew.acp.client_copilot",
     "kiro_crew.acp.client_claude_session",
     "kiro_crew.acp.client_claude_seed",
