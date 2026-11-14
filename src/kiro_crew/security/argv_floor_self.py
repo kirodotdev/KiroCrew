@@ -47,6 +47,7 @@ from .shell_normalizer import (
     _decode_printf_escapes,
     _ends_argv,
     _glob_could_expand_to,
+    _is_directory_only_glob,
     _is_mint_verb,
     _is_self_program,
     _iter_shell_chars,
@@ -176,6 +177,8 @@ def _is_kill_by_name_program(token: str) -> bool:
     base = _shell_normalizer._program_basename(token)
     if base in _KILL_BY_NAME_PROGRAMS:
         return True
+    if _is_directory_only_glob(token):
+        return False
     return _glob_could_expand_to(base, _KILL_BY_NAME_PROGRAMS)
 
 

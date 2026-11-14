@@ -131,11 +131,11 @@ _GLOB_CHARS_RE = re.compile(r"[\[\]?*{}]")
 
 
 @once_per_call()
-def _program_basename(token: str) -> str:
-    """The program name a token invokes, with shell wrappers stripped.
+def _program_word(token: str) -> str:
+    """The program word a token invokes, retaining its path and trailing slash.
 
-    Strips quoting, command-substitution wrappers and any attached redirection
-    before taking the basename, so an expansion-produced program name
+    Strips quoting, command-substitution wrappers and any attached redirection,
+    so an expansion-produced program name
     (``$(which pkill)``, ``"$(command -v bash)"``) or a redirect-glued one
     (``kirocrew>/tmp/out``) is compared as the program it resolves to rather than as
     literal punctuation.  Every program check goes through this -- comparing a raw
@@ -177,7 +177,13 @@ def _program_basename(token: str) -> str:
     segments = [s for s in _CONTROL_OPERATOR_RE.split(token) if s]
     if segments:
         token = segments[-1]
-    return os.path.basename(token.rstrip("/"))
+    return token
+
+
+@once_per_call()
+def _program_basename(token: str) -> str:
+    """The normalized program word's basename, without a directory-only slash."""
+    return os.path.basename(_program_word(token).rstrip("/"))
 
 
 def _glob_could_expand_to(base: str, names: "tuple[str, ...] | frozenset[str]") -> bool:
@@ -195,6 +201,18 @@ def _glob_could_expand_to(base: str, names: "tuple[str, ...] | frozenset[str]") 
     except re.error:
         return False
     return any(expandable.fullmatch(name) for name in names)
+
+
+_DIR_GLOB_TRAILERS = "\"';&|"
+
+
+def _is_directory_only_glob(token: str) -> bool:
+    """True if *token* ends in ``/``, so any glob in it expands only to directories.
+
+    A directory cannot be executed, but ``_program_basename`` drops that slash, so
+    ``for w in /a/*/; do …`` would otherwise read as the program ``*``.
+    """
+    return _program_word(token).rstrip(_DIR_GLOB_TRAILERS).endswith("/")
 
 
 #: How deep a nested brace group is read before it is treated as "anything".  Bash
@@ -972,6 +990,8 @@ def _is_self_program(token: str) -> bool:
     base = _program_basename(token)
     if _SELF_PROGRAM_RE.match(base):
         return True
+    if _is_directory_only_glob(token):
+        return False
     return _glob_could_expand_to(base, _SELF_PROGRAM_SPELLINGS)
 
 

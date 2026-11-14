@@ -811,7 +811,12 @@ def _url_payload_command(n: int) -> str:
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
 #: Raised by 18, from 36,000, to 36,018, for ``paths.py``'s scratch tree-index fence:
 #: artifact reads refuse the canonical index path even during replacement.
-_PACKAGE_LINE_BUDGET = 36_018
+#: Raised by 23, from 36,018, for the directory-glob read shared by the kill floor
+#: (``argv_floor_self._is_kill_by_name_program``) and the mint floor
+#: (``shell_normalizer._is_self_program``): a glob word ending in ``/`` names only
+#: directories, so it is never a program. Program recognition and the slash check
+#: share the same redirect-stripped word. Re-measured.
+_PACKAGE_LINE_BUDGET = 36_041
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
