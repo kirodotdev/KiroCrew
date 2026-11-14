@@ -7,6 +7,7 @@ import { useTheme } from '../hooks/useTheme'
 import { AGENT_PAGE_SANDBOX, buildSrcdoc, popoutLinkBridgeScript, readThemeVars } from '../lib/widgetSrcdoc'
 import { analyzeWidgetComplexity } from '../lib/widgetComplexity'
 import { useWidgetArtifact, WidgetArtifactTitle, WidgetStarButton } from './WidgetArtifact'
+import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
@@ -119,6 +120,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState(false)
+  const [popoutBlocked, setPopoutBlocked] = useState(false)
   // Two-stage reveal. The IntersectionObserver marks the widget "near" the
   // viewport; the expensive iframe build (Tailwind CDN runtime + JIT, on the
   // parent's main thread) is normally done as soon as it's near — cheap for a
@@ -325,7 +327,9 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
     const html = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
     const url = URL.createObjectURL(blob)
-    window.open(url, '_blank')
+    // A null return is a refused popout (a popup blocker, or a desktop shell
+    // that denies the window): without this the click does nothing visible.
+    setPopoutBlocked(window.open(url, '_blank') === null)
     setTimeout(() => URL.revokeObjectURL(url), 60_000)
   }, [srcdoc, title, policy])
 
@@ -372,17 +376,27 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
         <IconButtonGroup reveal={!expanded}>
           {/* A welcome widget is not saved: an artifact page would draw it under the chat profile. */}
           {policy.saveAsArtifact && <WidgetStarButton artifact={artifact} />}
-          <IconButton onClick={downloadAsHtml} title={i18nT('components.widgetFrame.download_as_html')} aria-label={i18nT('components.widgetFrame.download_as_html')}>
+          <IconButton onClick={downloadAsHtml} aria-label={i18nT('components.widgetFrame.download_as_html')}>
             <Download size={12} />
           </IconButton>
-          <IconButton onClick={openInNewTab} title={i18nT('components.widgetFrame.open_in_new_tab')} aria-label={i18nT('components.widgetFrame.open_in_new_tab')}>
+          <IconButton onClick={openInNewTab} aria-label={i18nT('components.widgetFrame.open_in_new_tab')}>
             <ExternalLink size={12} />
           </IconButton>
-          <IconButton onClick={() => setExpanded(!expanded)} title={expanded ? i18nT('components.widgetFrame.minimize') : i18nT('components.widgetFrame.expand')} aria-label={expanded ? i18nT('components.widgetFrame.minimize') : i18nT('components.widgetFrame.expand')}>
+          <IconButton onClick={() => setExpanded(!expanded)} aria-label={expanded ? i18nT('components.widgetFrame.minimize') : i18nT('components.widgetFrame.expand')}>
             {expanded ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
           </IconButton>
         </IconButtonGroup>
       </div>
+
+      {/* A refused popout leaves nothing to destroy, so the hand-off is safe. */}
+      {popoutBlocked && (
+        <ErrorNotice
+          askAgent
+          className="mx-3 my-2"
+          message={i18nT('components.widgetFrame.popout_blocked')}
+          onDismiss={() => setPopoutBlocked(false)}
+        />
+      )}
 
       {mintFailed && <div className="px-3 py-2 flex items-center gap-3 text-text">
         <span>{i18nT('components.widgetFrame.could_not_render')}</span>

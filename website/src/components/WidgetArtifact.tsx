@@ -243,13 +243,9 @@ export function WidgetStarButton({ artifact }: { artifact: WidgetArtifact }) {
       onClick={toggleArtifact}
       disabled={saving || !effectiveSlug}
       className={saving ? 'cursor-wait' : ''}
-      title={
-        !effectiveSlug
-          ? i18nT('components.widgetFrame.cannot_star_widget_has_no_slug_or_message_contex')
-          : savedSlug
-            ? i18nT('components.widgetFrame.starred_as_click_to_remove', { name: savedSlug })
-            : i18nT('components.widgetFrame.star_as_artifact')
-      }
+      // A native title only for the disabled case: a disabled button gets no
+      // pointer events, so the label tip cannot say why the star is off.
+      title={effectiveSlug ? undefined : i18nT('components.widgetFrame.cannot_star_widget_has_no_slug_or_message_contex')}
       aria-label={savedSlug ? i18nT('components.widgetFrame.remove_artifact_from_library', { name: savedSlug }) : i18nT('components.widgetFrame.star_as_artifact')}
     >
       <Star size={12} fill={savedSlug ? 'currentColor' : 'none'} />

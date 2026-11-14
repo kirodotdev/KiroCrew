@@ -615,17 +615,29 @@ function createWindowLifecycle(options) {
       getAppOrigin: () => windowBackendUrl,
       log: glog,
     });
+    // A window opened on the dashboard's own blob: document (a widget's "Open
+    // in new tab", which the window-open handler above allows) has to load it.
+    // A window opened on a dashboard route runs the dashboard and its panes, so
+    // it keeps the strict guard.
+    const blobPopoutNavigationGuard = createNavigationGuard({
+      getAppOrigin: () => windowBackendUrl,
+      allowOwnBlob: true,
+      log: glog,
+    });
     const redirectGuard = createRedirectGuard({
       getAppOrigin: () => windowBackendUrl,
       log: glog,
     });
-    const armWindowOpen = (contents) => {
+    const armWindowOpen = (contents, guard) => {
       contents.setWindowOpenHandler(windowOpenHandler);
-      contents.on("will-navigate", navigationGuard);
+      contents.on("will-navigate", guard);
       contents.on("will-redirect", redirectGuard);
-      contents.on("did-create-window", (child) => armWindowOpen(child.webContents));
+      contents.on("did-create-window", (child, details) => {
+        const openedOnBlob = typeof details?.url === "string" && details.url.startsWith("blob:");
+        armWindowOpen(child.webContents, openedOnBlob ? blobPopoutNavigationGuard : navigationGuard);
+      });
     };
-    armWindowOpen(view.webContents);
+    armWindowOpen(view.webContents, navigationGuard);
 
     // Do not leak the dashboard URL/token as a Referer to resources it embeds.
     // This listener remains attached at the same per-window setup point; moving

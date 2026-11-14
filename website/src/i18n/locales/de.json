@@ -10026,7 +10026,7 @@
       "retry": "Wiederholen",
       "save_failed": "Speichern fehlgeschlagen",
       "star_as_artifact": "Als Artefakt markieren",
-      "starred_as_click_to_remove": "Markiert als „{{name}}“ — klicken, um die Markierung zu entfernen",
+      "popout_blocked": "Dieses Widget konnte nicht in einem neuen Tab geöffnet werden. Das Fenster wurde blockiert.",
       "open_artifact_named": "Artefakt „{{slug}}“ öffnen"
     },
     "widgetPlaceholder": {

@@ -9792,7 +9792,7 @@
       "retry": "再試行",
       "save_failed": "保存に失敗しました",
       "star_as_artifact": "アーティファクトとしてスター付け",
-      "starred_as_click_to_remove": "「{{name}}」としてスター登録済み — クリックで解除",
+      "popout_blocked": "このウィジェットを新しいタブで開けませんでした。ウィンドウがブロックされました。",
       "open_artifact_named": "アーティファクト「{{slug}}」を開く"
     },
     "widgetPlaceholder": {

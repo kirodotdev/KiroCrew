@@ -10260,7 +10260,7 @@
       "retry": "Tentar novamente",
       "save_failed": "falha ao salvar",
       "star_as_artifact": "Marcar como artefato",
-      "starred_as_click_to_remove": "Favoritado como \"{{name}}\" — clique para remover",
+      "popout_blocked": "Não foi possível abrir este widget em uma nova aba. A janela foi bloqueada.",
       "open_artifact_named": "Abrir o artefato “{{slug}}”"
     },
     "widgetPlaceholder": {

@@ -579,11 +579,48 @@ describe("createNavigationGuard pins the exact-origin compare", () => {
 
   it("refuses a match on an opaque app origin", () => {
     // A file: app origin is the opaque "null". The target starts with its text,
-    // yet the guard only lets http(s) through, so nothing can match it.
+    // yet the guard lets only http(s) and blob: through, so nothing can match it.
     assert.equal(navigate("file:///app/index.html", "file:///app/"), true);
   });
 
   it("still allows the app's own origin", () => {
+    assert.equal(navigate("http://localhost:5476/chat?x=1"), false);
+  });
+
+  it("refuses a blob: the app origin minted unless the window is a pop-out", () => {
+    assert.equal(navigate("blob:http://localhost:5476/0388b437-dead-beef"), true);
+  });
+});
+
+// A pop-out the open handler allowed loads its target through this guard, so
+// the two must agree on the dashboard's own blob: document.
+describe("createNavigationGuard with allowOwnBlob", () => {
+  const APP = "http://localhost:5476";
+  const navigate = (url, appOrigin = APP) => {
+    let prevented = false;
+    createNavigationGuard({ getAppOrigin: () => appOrigin, allowOwnBlob: true, log: () => {} })(
+      { preventDefault: () => { prevented = true; } },
+      url,
+    );
+    return prevented;
+  };
+
+  it("allows a blob: the app origin minted", () => {
+    assert.equal(navigate("blob:http://localhost:5476/0388b437-dead-beef"), false);
+  });
+
+  it("refuses a blob: another origin minted", () => {
+    assert.equal(navigate("blob:http://localhost:7780/0388b437-dead-beef"), true);
+    assert.equal(navigate("blob:https://evil.example/abc"), true);
+  });
+
+  it("refuses an opaque blob: even on an opaque app origin", () => {
+    assert.equal(navigate("blob:null/attacker", "blob:null/y"), true);
+    assert.equal(navigate("blob:null/attacker", "file:///app/"), true);
+  });
+
+  it("still refuses another origin and still allows the app's own", () => {
+    assert.equal(navigate("http://localhost:5477/"), true);
     assert.equal(navigate("http://localhost:5476/chat?x=1"), false);
   });
 });

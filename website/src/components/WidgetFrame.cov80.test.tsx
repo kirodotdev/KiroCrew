@@ -101,6 +101,33 @@ describe('WidgetFrame toolbar actions', () => {
     expect(open).toHaveBeenCalledWith('blob:zzq-widget', '_blank')
   })
 
+  it('says so when the new tab is refused, and clears the notice once one opens', async () => {
+    const blocked = i18nT('components.widgetFrame.popout_blocked')
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    const popout = screen.getByRole('button', { name: i18nT('components.widgetFrame.open_in_new_tab') })
+    expect(screen.queryByText(blocked)).toBeNull()
+
+    fireEvent.click(popout)
+    expect(screen.getByText(blocked)).toBeInTheDocument()
+
+    open.mockReturnValue({} as Window)
+    fireEvent.click(popout)
+    expect(screen.queryByText(blocked)).toBeNull()
+  })
+
+  it('leaves the toolbar buttons without a native title, so each shows its label tip', async () => {
+    const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" messageTs="1700000000.002" />)
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    for (const key of ['star_as_artifact', 'download_as_html', 'open_in_new_tab', 'expand'] as const) {
+      const button = screen.getByRole('button', { name: i18nT(`components.widgetFrame.${key}`) })
+      expect(button).not.toHaveAttribute('title')
+    }
+    act(() => { screen.getByRole('button', { name: i18nT('components.widgetFrame.expand') }).focus() })
+    expect(screen.getByRole('tooltip')).toHaveTextContent(i18nT('components.widgetFrame.expand'))
+  })
+
   it('expands, then collapses again from the backdrop', async () => {
     const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
     await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
