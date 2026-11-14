@@ -1,12 +1,12 @@
 ---
 title: Connection cards and OAuth apps on one page, MCP Servers on the rail, sharing up top
-status: accepted
+status: implemented
 author: iamwhatever
 created: 2026-11-10
-last-audited: 2026-11-10
-audited-at: 8f6fe6dbfe
-doc-pr:
-implementation-prs: []
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
+doc-pr: 34287
+implementation-prs: [34353, 36241]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,8 +14,13 @@ superseded-by: []
 
 # RFC: Connection cards and OAuth apps on one page, MCP Servers on the rail, sharing up top
 
-- Status: accepted. These are the product owner's decisions, given
-  2026-11-10, for a personal single-user tool. Claims about today's code were
+- Status: implemented. These are the product owner's decisions, given
+  2026-11-10, for a personal single-user tool. Built by
+  [#34353](https://github.com/kirodotdev/KiroCrew/pull/34353) (one Connections
+  page at `/settings/connections`, MCP Servers page with sharing on top) and
+  [#36241](https://github.com/kirodotdev/KiroCrew/pull/36241) (the 2026-11-12
+  amendment: `McpRedirect` in `website/src/shell/routes.tsx` sends `/mcp` to
+  `/capabilities?tab=mcp-servers`); checked at `1d08e941b3`. Claims about today's code were
   checked at `8f6fe6dbfe` (main).
 - Author: iamwhatever
 - Amended 2026-11-12 (owner decision): MCP Servers is a Customize tab beside Skills (`/capabilities?tab=mcp-servers`), not its own rail row. `/mcp` redirects there and keeps `?view=`. §4 below is superseded on placement only; the page content (§5) is unchanged.

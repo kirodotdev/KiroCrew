@@ -1,12 +1,12 @@
 ---
 title: Crewmate goals — a long-term goal, short-term tracking, and a daily reminder
-status: accepted
+status: implemented
 author: buluoray
 created: 2026-10-12
-last-audited: 2026-10-12
-audited-at: d866dd2607
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr:
-implementation-prs: []
+implementation-prs: [19539, 22962]
 tracking-issues: [19240]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,10 @@ superseded-by: []
 
 # RFC: Crewmate goals
 
-- Status: accepted. This is the product owner's decision, given 2026-10-12 by
+- Status: implemented by [#19539](https://github.com/kirodotdev/KiroCrew/pull/19539)
+  (goals, key results, check-ins and reports; `src/kiro_crew/member_goals.py`,
+  `dashboard/goal_reminder.py`) and [#22962](https://github.com/kirodotdev/KiroCrew/pull/22962)
+  (printable reports), checked at `1d08e941b3`. This is the product owner's decision, given 2026-10-12 by
   rayrayxu. Claims about today's code were checked at `d866dd2607` (main).
 - Author: buluoray
 - Related: [#19240](https://github.com/kirodotdev/KiroCrew/issues/19240) (the

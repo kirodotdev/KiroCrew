@@ -1,10 +1,10 @@
 ---
 title: Crewmate page ambient motion -- a crewmate's own Dashboard page may run subtle, constant ambient motion by default, held still only for a reader who set reduced motion
-status: accepted
+status: implemented
 author: rayrayxu, with kirocrew-worker
 created: 2026-10-21
-last-audited: 2026-10-21
-audited-at: 4533b1eb5b
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
 implementation-prs: [22533]
 tracking-issues: []
@@ -14,9 +14,11 @@ superseded-by: []
 
 # RFC: Crewmate page ambient motion
 
-- Status: accepted. This is the product owner's decision, given 2026-10-21 by
-  rayrayxu. Nothing of it is on main: the text that carries it is in
-  [#22533](https://github.com/kirodotdev/KiroCrew/pull/22533), open. This
+- Status: implemented. This is the product owner's decision, given 2026-10-21 by
+  rayrayxu. The texts that carry it shipped in
+  [#22533](https://github.com/kirodotdev/KiroCrew/pull/22533) (merged
+  2026-10-22: `PAGE_LOOK` in `dashboard_templates/page_look.py` and the
+  dashboard skill's "Make it feel alive"). This
   document lands on its own first, because it changes a rule of an implemented
   document, and the First Principles lane reads that decision off the base.
 - Amends, in this document so that implemented document is not edited:

@@ -108,7 +108,8 @@ network as the user. A frame does not make that app safe; it makes sure the
 ### 2.2 The frame
 
 **Shipped in #26479** (`website/src/linkPreview/linkPreviewFrames.ts`,
-`src/kiro_crew/apps/link_preview_frame.py`):
+`src/kiro_crew/apps/link_preview_frame.py`, renamed to
+`src/kiro_crew/apps/app_frame.py` by #26875):
 
 - **Element.** `sandbox="allow-scripts"` and nothing else, so the origin is
   opaque; `credentialless`, `referrerpolicy="no-referrer"`, and an empty `allow`

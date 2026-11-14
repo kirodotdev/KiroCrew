@@ -1,12 +1,12 @@
 ---
 title: Agent Plugins standard support on every harness
-status: in-progress
+status: partial
 author: zezhexu
 created: 2026-11-02
-last-audited: 2026-11-07
-audited-at: 752c0b9c89
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: 27719
-implementation-prs: [28461, 28686]
+implementation-prs: [28461, 28686, 33621]
 tracking-issues: [27710, 9212]
 supersedes: [rfc-agent-plugins-load-installed.md]
 superseded-by: []
@@ -40,6 +40,10 @@ superseded-by: []
   Crew as a second writer of `installed.json`. Kiro Crew adds no `POWER.md`
   loader or converter; the `kirodotdev/powers` catalog is asked to republish
   its `POWER.md` Powers as Agent Plugins.
+- Status: partial. Phases 1, 1b and 1c are on main through
+  [#33621](https://github.com/kirodotdev/KiroCrew/pull/33621)
+  (`src/kiro_crew/agent_plugins/`, owner-only `GET /api/agent-plugins`); the
+  draft stack #28461 and #28686 stays open. Phase 2 onward is held.
 
 ## Summary
 

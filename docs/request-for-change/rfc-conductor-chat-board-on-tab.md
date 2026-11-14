@@ -1,10 +1,10 @@
 ---
 title: Conductor chat board -- no second full task board in a chat whose Dashboard tab already shows it
-status: in-progress
+status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-09
-last-audited: 2026-10-09
-audited-at: aee520e7da
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
 implementation-prs: [18608]
 tracking-issues: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Conductor chat board on a board tab
 
-- Status: in-progress. The implementation is [#18608](https://github.com/kirodotdev/KiroCrew/pull/18608). The operator who runs the conductor fleet decided it on 2026-10-09 from Crew Mode user feedback. This document lands on its own first, as GOVERNANCE.md asks of an RFC, so the implementation's First Principles lane can read the decision off the base branch.
+- Status: implemented by [#18608](https://github.com/kirodotdev/KiroCrew/pull/18608), merged 2026-10-13. At `1d08e941b3` the rule is the "When your Dashboard tab already shows the board" paragraph of the conductor prompt, now in `src/kiro_crew/agent_parts/spec_prompts.py`. The operator who runs the conductor fleet decided it on 2026-10-09 from Crew Mode user feedback. This document lands on its own first, as GOVERNANCE.md asks of an RFC, so the implementation's First Principles lane can read the decision off the base branch.
 - Narrows one prompt rule on main, named in section 3: the "Talking to the person" milestone board in `_CONDUCTOR_SYSTEM_PROMPT`.
 - Related: `docs/decisions/2026-10-02-conductor-introduces-itself-in-every-chat.md` (Bolin Chen's decision this keeps, section 5), [rfc-crewmate-dynamic-dashboard.md](rfc-crewmate-dynamic-dashboard.md) (the Dashboard tab and its templates).
 - Measured at `aee520e7da`.

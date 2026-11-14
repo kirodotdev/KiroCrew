@@ -3,8 +3,8 @@ title: Work ledger caps a goal's open items, and its item total becomes an advis
 status: partial
 author: kirocrew agent session, directed by iamwhatever
 created: 2026-10-12
-last-audited: 2026-11-13
-audited-at: 9b32941be6
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
 implementation-prs: [19338]
 tracking-issues: []
@@ -27,11 +27,11 @@ stays for a bound the user sets, and `resource_status` decides each wave. §3 to
 [`rfc-work-ledger-resource-pressure.md`](rfc-work-ledger-resource-pressure.md)
 for the host signal that replaces the fixed 6.
 
-Status: accepted. The maintainer (iamwhatever) accepted this design in the
+Status: partial. The maintainer (iamwhatever) accepted this design in the
 conductor chat on 2026-10-12 at about 06:12 UTC: a hard cap on open items, the
-total cap advisory only. The implementation is open as
-[#19338](https://github.com/kirodotdev/KiroCrew/pull/19338) and rebases onto the
-base that carries this document. Every code reference below was read at
+total cap advisory only. The implementation merged as
+[#19338](https://github.com/kirodotdev/KiroCrew/pull/19338); §7 is not built
+(`DEFAULT_GOAL_CONCURRENCY_CAP` in `work_ledger_records.py` is still 6 at `1d08e941b3`). Every code reference below was read at
 `0a47021090`.
 
 This document lands on its own because it changes what the goal conductor does by

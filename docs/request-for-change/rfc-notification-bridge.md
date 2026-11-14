@@ -1,12 +1,12 @@
 ---
 title: Notification Bridge (bus egress fanout to chat transports)
-status: accepted
+status: partial
 author: zezhexu
 created: 2026-07-28
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: 670
-implementation-prs: []
+implementation-prs: [32384, 32537, 32918]
 tracking-issues: [589]
 supersedes: ["rfc-local-notification-bus.md#resolved-design-questions-1"]
 superseded-by: []
@@ -19,7 +19,7 @@ superseded-by: []
 > `docs/system-specs/modules/app-notifications.md` is the record of what the
 > bus does today.
 
-- Status: accepted — the document is merged (PR #670) with an open tracking issue, but **zero implementation code exists**. `notifications/bridge.py` and `BridgeDispatcher` do not exist; `ChannelSettings` carries only `muted` + `priority`, with no `deliver_to` / `deliver_min_priority`; egress is still the single hardcoded dashboard sink, `NotificationBus(sink=self._deliver_note)` in `DashboardState`. No open PR and no live branch is building B1–B4.
+- Status: partial. At `1d08e941b3` the bridge is on main: egress seam and per-channel routes ([#32384](https://github.com/kirodotdev/KiroCrew/pull/32384)), the Slack owner-DM sink ([#32537](https://github.com/kirodotdev/KiroCrew/pull/32537)), Discord, Telegram, Webex and Feishu sinks (`TRANSPORT_SINKS` in `src/kiro_crew/notifications/bridge_transport.py`) and the Settings routing UI ([#32918](https://github.com/kirodotdev/KiroCrew/pull/32918)). No WeCom sink exists. The rest of this line is the state when the document was written: the document is merged (PR #670) with an open tracking issue, but **zero implementation code exists**. `notifications/bridge.py` and `BridgeDispatcher` do not exist; `ChannelSettings` carries only `muted` + `priority`, with no `deliver_to` / `deliver_min_priority`; egress is still the single hardcoded dashboard sink, `NotificationBus(sink=self._deliver_note)` in `DashboardState`. No open PR and no live branch is building B1–B4.
 - Correction to the Summary below: it says the bus RFC's "Phases 1–5, all shipped". Phases 1/3/4 are complete, but Phase 2 has no producer app and Phase 5's kind-routing cleanup is still present in `NotificationDetailPanel.tsx`. Every dependency **this** RFC actually needs is real; the blanket claim is not.
 - Author: zezhexu
 - Created: 2026-07-28

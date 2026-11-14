@@ -1,12 +1,12 @@
 ---
 title: One work_dispatch call creates, opens, binds and seeds a work item
-status: accepted
+status: implemented
 author: kirocrew agent session, directed by zejiangg
 created: 2026-10-26
-last-audited: 2026-10-28
-audited-at: 47c71cbc9e
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
-implementation-prs: []
+implementation-prs: [25101]
 tracking-issues: [24226]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: One `work_dispatch` call creates, opens, binds and seeds a work item
 
-Status: accepted. [#24231](https://github.com/kirodotdev/KiroCrew/pull/24231) was approved and merged by chenmingwei23, and its amendment [#25380](https://github.com/kirodotdev/KiroCrew/pull/25380) was merged by iamwhatever; acceptance recorded by the maintainer iamwhatever, who owns the conductor patrol. Nothing built. This answers open question Q1 of [rfc-conductor-work-ledger.md](rfc-conductor-work-ledger.md) ("Should `session_create` create and bind the item in one call?"). Tracks [#24226](https://github.com/kirodotdev/KiroCrew/issues/24226). Every code reference below was read at `9d31193afe`.
+Status: implemented by [#25101](https://github.com/kirodotdev/KiroCrew/pull/25101) (`work_dispatch` on `kirocrew-dashboard`, checked at `1d08e941b3`). Accepted: [#24231](https://github.com/kirodotdev/KiroCrew/pull/24231) was approved and merged by chenmingwei23, and its amendment [#25380](https://github.com/kirodotdev/KiroCrew/pull/25380) was merged by iamwhatever; acceptance recorded by the maintainer iamwhatever, who owns the conductor patrol. This answers open question Q1 of [rfc-conductor-work-ledger.md](rfc-conductor-work-ledger.md) ("Should `session_create` create and bind the item in one call?"). Tracks [#24226](https://github.com/kirodotdev/KiroCrew/issues/24226). Every code reference below was read at `9d31193afe`.
 
 ## Summary
 

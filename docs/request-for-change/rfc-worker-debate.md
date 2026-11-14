@@ -1,10 +1,10 @@
 ---
 title: Worker debate — record the protocol, make critics question harder, and keep one model by default
-status: accepted
+status: partial
 author: kirocrew agent session, directed by zejiangg
 created: 2026-11-08
-last-audited: 2026-11-09
-audited-at: b94f8cb3ac
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
 implementation-prs: [33783]
 tracking-issues: [33405]
@@ -14,13 +14,12 @@ superseded-by: []
 
 # RFC: Worker debate — record the protocol, make critics question harder, and keep one model by default
 
-Status: accepted. On 2026-11-09 the repository owner decided, in the conductor
+Status: partial. Phase 1, the skill change [#33783](https://github.com/kirodotdev/KiroCrew/pull/33783), is on main (`92ee944bb2`, verified at `1d08e941b3`); Phase 2 (measure the next real debate) has not run. Accepted: on 2026-11-09 the repository owner decided, in the conductor
 chat, to adopt Option B as amended by the §2.7 debate, together with its
 critic-role rule: "直接改 skill 实现这个方案" (change the skill directly to build
 this design). It takes effect when this document merges; the skill change,
 [#33783](https://github.com/kirodotdev/KiroCrew/pull/33783), rebases onto the
-base that carries it. Nothing built on main yet; this document changes no
-code. Every code reference was read on main at `b94f8cb3ac`.
+base that carries it. This document changes no code. Every code reference was read on main at `b94f8cb3ac`.
 
 ## Summary
 

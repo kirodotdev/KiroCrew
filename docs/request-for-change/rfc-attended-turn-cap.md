@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Cap how many attended chat turns run at once, at the one dispatch every send and Resume reaches
 
-Status: draft. Acceptance requested from a maintainer of dashboard turn dispatch. Part of [#25055](https://github.com/kirodotdev/KiroCrew/issues/25055). Main-side references were read at `d6d40e23a2`. References to the bulk Resume were read on [#27512](https://github.com/kirodotdev/KiroCrew/pull/27512) at head `0dbab773cb`, which is open and not on main.
+Status: draft. Acceptance requested from a maintainer of dashboard turn dispatch. Part of [#25055](https://github.com/kirodotdev/KiroCrew/issues/25055). Main-side references were read at `d6d40e23a2`. References to the bulk Resume were read on [#27512](https://github.com/kirodotdev/KiroCrew/pull/27512) at head `0dbab773cb`, then open; it merged on 2026-11-04 (`src/kiro_crew/dashboard/chat_resume_all.py`).
 
 ## Summary
 

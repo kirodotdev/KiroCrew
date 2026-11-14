@@ -1,10 +1,10 @@
 ---
 title: Wake on a stop signal -- only a worker's explicit report wakes its conductor, and a turn end or a close wakes nobody
-status: in-progress
+status: implemented
 author: Raymond Chen, with kirocrew-worker
 created: 2026-10-10
-last-audited: 2026-10-10
-audited-at: d32c084921
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
 implementation-prs: [18854]
 tracking-issues: [18836]
@@ -14,7 +14,8 @@ superseded-by: []
 
 # RFC: Wake on a stop signal
 
-- Status: in-progress. The decision was made by the product owner on 2026-10-10,
+- Status: implemented in [#18854](https://github.com/kirodotdev/KiroCrew/pull/18854)
+  (merged 2026-10-11; `wake_statuses` gate in `conductor_wake.py`). The decision was made by the product owner on 2026-10-10,
   as the ruling on [#18836](https://github.com/kirodotdev/KiroCrew/issues/18836):
   a worker never wakes its conductor implicitly, and before it stops it states
   why through `work_report`. This document lands on its own first, because the
@@ -182,7 +183,7 @@ before it stops it says where it is. A pause it expects to be resumed from is a
 `progress` report. The `kirocrew-worker` prompt, the conductor charter's patrol
 section, the `goal-conductor` skill, `work_report`'s own tool description, the
 `monitor_start` and `monitor_update` `watch` field descriptions and
-`docs/work-ledger.md` all state it the same way.
+`src/kiro_crew/docs/work-ledger.md` all state it the same way.
 
 Nothing in that text promises a worker that saying it is waiting exempts it from
 the staleness clock, because it does not: an item quiet past the window is

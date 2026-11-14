@@ -1,12 +1,12 @@
 ---
 title: Crewmate heartbeat -- an opt-in wake that keeps the crewmate working on its own, quietly by default
-status: accepted
+status: implemented
 author: buluoray
 created: 2026-10-15
-last-audited: 2026-10-21
-audited-at: 85a081707c
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: 20934
-implementation-prs: [21172]
+implementation-prs: [21172, 25476, 26401]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Crewmate heartbeat
 
-- Status: accepted. See the history below for what was accepted when.
+- Status: implemented. Accepted (see the history below for what was accepted when) and shipped in [#21172](https://github.com/kirodotdev/KiroCrew/pull/21172), merged 2026-10-21 (`member_goals.HEARTBEAT_INTERVALS`, `dashboard/goal_reminder.py`); the 2026-10-29 and 2026-10-31 amendments shipped in #25476 and #26401.
 - Audit: every claim about code was checked on 2026-10-21. Claims about main
   were checked at `85a081707c`. Claims about the implementation were checked
   against [#21172](https://github.com/kirodotdev/KiroCrew/pull/21172), first at
@@ -308,7 +308,7 @@ before this change reads with `heartbeat` off and the default interval.
 | Crew removal removes a crewmate's check-in jobs | `agent_admin/crew_removal._remove_goal_check_ins` |
 | The gateway's stop signal | `kiro_crew.shutdown_event` |
 
-### Added by #21172 only (not on main)
+### Added by #21172 only (not on main at `85a081707c`; merged 2026-10-21)
 
 | Fact | Where |
 |---|---|

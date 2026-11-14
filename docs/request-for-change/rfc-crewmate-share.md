@@ -1,12 +1,12 @@
 ---
 title: Share one crewmate — a `.crewmate` bundle with Export and Import in the owner's crewmate UI
-status: accepted
+status: partial
 author: gjjnn
 created: 2026-10-17
-last-audited: 2026-10-22
-audited-at: b835fe9ca7
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr:
-implementation-prs: [21721]
+implementation-prs: [21721, 23424, 23223]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Share one crewmate — a `.crewmate` bundle with Export and Import in the owner's crewmate UI
 
-- Status: accepted. [#21508](https://github.com/kirodotdev/KiroCrew/pull/21508) was merged on 2026-10-17 by the maintainer iamwhatever, who records the acceptance here. Partly built: [#21721](https://github.com/kirodotdev/KiroCrew/pull/21721) shipped the bundle reader (`crewmate_import_params` in `crewmate_bundle.py`), the `crewmate.import` card kind (`KIND_CREWMATE_IMPORT` in `change_card_catalog_kinds.py`) and an app path (`ctx.crewmate` in `apps/crewmate_sdk.py`) held off by `PREVIEW_ENABLED = False`. No export route and no owner Import entry exist. Every "exists" claim cites a symbol verified against `origin/main` at `b835fe9ca7`.
+- Status: partial. Since this line was written, owner Import ([#23424](https://github.com/kirodotdev/KiroCrew/pull/23424)) and Export from the profile card ([#23223](https://github.com/kirodotdev/KiroCrew/pull/23223); `src/kiro_crew/crewmate_bundle_export.py`, `dashboard/handlers/member_export.py`) merged; [#26601](https://github.com/kirodotdev/KiroCrew/pull/26601) later moved export to `.crewjam` (import still takes `.crewmate`). Checked at `1d08e941b3`. Accepted: [#21508](https://github.com/kirodotdev/KiroCrew/pull/21508) was merged on 2026-10-17 by the maintainer iamwhatever, who records the acceptance here. Partly built: [#21721](https://github.com/kirodotdev/KiroCrew/pull/21721) shipped the bundle reader (`crewmate_import_params` in `crewmate_bundle.py`), the `crewmate.import` card kind (`KIND_CREWMATE_IMPORT` in `change_card_catalog_kinds.py`) and an app path (`ctx.crewmate` in `apps/crewmate_sdk.py`) held off by `PREVIEW_ENABLED = False`. No export route and no owner Import entry exist. Every "exists" claim cites a symbol verified against `origin/main` at `b835fe9ca7`.
 - Author: gjjnn
 - Amended 2026-10-18 on the product owner's ruling, and accepted with the 2026-10-22 amendment below by the maintainer iamwhatever in [this comment](https://github.com/kirodotdev/KiroCrew/pull/21746#issuecomment-6329962507): there is no Crewmate Share app. Export is a button on the crewmate's profile card and Import is an item in the crewmate dropdown, both core owner UI. The `propose_crewmate` App SDK capability, its two permissions and the `app:` card slot are dropped (§5.5). The bundle format and every security rule are unchanged.
 - Amended 2026-10-22 on review ([#21746](https://github.com/kirodotdev/KiroCrew/pull/21746)): an imported crewmate must not arrive hollow. Crons travel by default, each `script` cron with its script file. Skills the sender wrote travel as files. Lessons may travel only as a skill the owner reads and edits. A `user:` dashboard id stays home. Every added file is shown in full on the `crewmate.import` card, the way rules already are.

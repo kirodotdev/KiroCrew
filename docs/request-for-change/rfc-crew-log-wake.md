@@ -18,7 +18,7 @@ superseded-by: []
   the repository takes no standalone RFC pull requests, so `doc-pr` is null and
   the implementation is the one named in `implementation-prs`.
 - Builds on [`rfc-conductor-work-ledger`](rfc-conductor-work-ledger.md) Phase 3
-  (the `work-ledger` probe, in flight on
+  (the `work-ledger` probe, merged in
   [#12781](https://github.com/kirodotdev/KiroCrew/pull/12781)) and on
   [`rfc-append-only-ledger`](rfc-append-only-ledger.md) (the crew log). It adds
   no delivery path and no second loop: it moves one deadline.
