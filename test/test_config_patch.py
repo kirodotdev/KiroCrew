@@ -437,6 +437,22 @@ class TestRoleModels:
         assert data["agent"]["role_efforts"]["subagent"] == "low"
 
     @pytest.mark.asyncio
+    async def test_light_role_pins_nest_beside_the_subagent_pins(self, tmp_config) -> None:
+        app = _make_app()
+        app["state"] = SimpleNamespace(
+            subagents=MagicMock(spec=["update_completion_keep"]),
+            sessions=SimpleNamespace(refresh_defaults=AsyncMock()),
+        )
+        async with TestClient(TestServer(app)) as c:
+            resp = await _patch(c, "agent.role_models.subagent_light", "claude-haiku-4.5")
+            assert resp.status == 200
+            resp = await _patch(c, "agent.role_efforts.subagent_light", "low")
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["agent"]["role_models"]["subagent_light"] == "claude-haiku-4.5"
+        assert data["agent"]["role_efforts"]["subagent_light"] == "low"
+
+    @pytest.mark.asyncio
     async def test_role_effort_invalid_enum_rejected(self, tmp_config) -> None:
         async with TestClient(TestServer(_make_app())) as c:
             resp = await _patch(c, "agent.role_efforts.background", "turbo")
