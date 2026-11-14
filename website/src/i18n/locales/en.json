@@ -6810,6 +6810,7 @@
       "updated_from_its_repository": "Updated {{name}} from its repository.",
       "updated_needs_session_approval_consent": "{{name}} is disabled because it newly asks to control your chats. Review the permission in the app details, then enable it.",
       "update_needs_repository_trust": "{{name}} was not updated, because its newer version comes from a repository you have not trusted yet. Open its details and choose Trust the repository and update.",
+      "open_app_details": "Open {{name}} details",
       "refresh_store": "Refresh the store",
       "refreshing_store": "Refreshing the store…",
       "store_catalog_unreachable": "Could not reach the official app catalog, so the store is showing its offline list. Check that the gateway can reach the internet, then refresh again."

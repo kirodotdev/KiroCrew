@@ -11700,6 +11700,7 @@
       "update_needs_trust": "{{name}} 未更新：需要你的许可。请使用它自己的更新按钮来允许。",
       "updated_needs_session_approval_consent": "{{name}} 已被禁用，因为它新增了控制你对话的请求。请在应用详情中查看该权限，然后启用它。",
       "update_needs_repository_trust": "{{name}} 未更新，因为它的新版本来自你尚未信任的仓库。请打开其详情并选择“信任该仓库并更新”。",
+      "open_app_details": "打开 {{name}} 的详情",
       "refresh_store": "刷新商店",
       "refreshing_store": "正在刷新商店…",
       "store_catalog_unreachable": "无法连接官方应用目录，商店正在显示离线列表。请检查网关能否访问互联网，然后再次刷新。"
