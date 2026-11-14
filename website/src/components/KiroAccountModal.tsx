@@ -157,7 +157,7 @@ function CreditForecastLine({ usage, onClose }: { usage: KiroCreditUsage; onClos
   if (error) {
     return (
       <div className="mt-2">
-        <ErrorNotice message={i18nT('components.kiroAccountModal.forecast_unavailable')} askAgent onHandoff={onClose} />
+        <ErrorNotice impact="minor" message={i18nT('components.kiroAccountModal.forecast_unavailable')} askAgent onHandoff={onClose} />
       </div>
     )
   }
@@ -551,7 +551,7 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
     // stored nothing failed, so that is the passive notice.
     if (signInQuery.data === undefined) {
       return failedWithNoData(signInQuery)
-        ? <ErrorNotice message={i18nT('components.kasLogin.sign_in_status_unavailable')} askAgent onHandoff={onClose} />
+        ? <ErrorNotice impact="partial" message={i18nT('components.kasLogin.sign_in_status_unavailable')} askAgent onHandoff={onClose} />
         : <UsageSkeleton />
     }
     if (signInQuery.data.authenticated) {
@@ -627,6 +627,7 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
           ? refreshNotice
           : (
             <ErrorNotice
+              impact="partial"
               message={i18nT(usage === 'config-unreadable'
                 ? 'components.kiroAccountModal.credit_usage_config_unreadable'
                 : 'components.kiroAccountModal.credit_usage_unavailable')}

@@ -3,7 +3,8 @@
  *
  * Below `sm` (a phone) a beside hand-off squeezes the sentence into a narrow
  * column, so these notices wrap there: the message keeps the row's width and
- * Ask the agent takes the line under it. From `sm` up nothing changes. jsdom
+ * Ask the agent takes the line under it. From `sm` up nothing changes. The
+ * block variant always puts the hand-off in its action row. jsdom
  * cannot lay out a breakpoint, so the pins read the responsive classes; the PR
  * carries 375px and 1024px screenshots for the rendered shape.
  */
@@ -25,19 +26,15 @@ describe('ErrorNotice below-on-phone', () => {
     expect(text.className).toContain('sm:basis-auto')
   })
 
-  it('the block variant keeps the icon and the dismiss on the first line and moves the hand-off under the text', () => {
+  it('the block variant reads no placement: the hand-off is in the action row under the text at every width', () => {
     render(<ErrorNotice message={MSG} askAgent actionPlacement="below-on-phone" onDismiss={() => {}} testId="n" />)
     const notice = screen.getByTestId('n')
-    expect(notice.className).toContain('flex-wrap')
-    expect(notice.className).toContain('sm:flex-nowrap')
-    const column = within(notice).getByText(MSG)
-    expect(column.className).toContain('basis-[calc(100%-3rem)]')
-    expect(column.className).toContain('sm:flex-1')
     const handoff = within(notice).getByRole('button', { name: /ask the agent/i })
-    // Outside the text column, ordered last below sm, back in the row from sm up.
-    expect(column.contains(handoff)).toBe(false)
-    expect(handoff.className).toContain('order-last')
-    expect(handoff.className).toContain('sm:order-none')
+    const row = notice.querySelector('[data-notice-actions]')!
+    expect(row.contains(handoff)).toBe(true)
+    // The message sits above the row; the dismiss stays on the first line, outside the text column.
+    expect(within(notice).getByText(MSG).compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(row.contains(within(notice).getByRole('button', { name: 'Dismiss' }))).toBe(false)
     expect(within(notice).getAllByRole('button', { name: /ask the agent/i })).toHaveLength(1)
   })
 
