@@ -62,13 +62,13 @@ def home(tmp_path, monkeypatch):
     )
 
 
-def _rewrite(home, *, mates=True, pooling=True, approvals=None):
+def _rewrite(home, *, mates=True, pooling=True, approvals=None, stubbed=(SERVER,)):
     return rewriter.rewrite_agents(
         source_dir=home.agents,
         overlay_dir=home.overlay,
         socket_path=home.tmp / "gw.sock",
         work_dir=home.tmp / "work",
-        stub_servers=frozenset({SERVER}),
+        stub_servers=frozenset(stubbed),
         pooling_enabled=pooling,
         approvals=approvals,
         mate_source_dir=home.mates if mates else None,
@@ -95,10 +95,12 @@ class TestTheRewritePass:
         # The daemon is handed the target, or the stub would be rejected.
         assert any(k.startswith("KIROCREW_MCP_TARGET_JIRA") for k in target_env)
 
-    def test_the_worker_and_conductor_specs_are_not_crewmates(self, home):
+    def test_the_worker_spec_gets_one_overlay_under_its_own_name(self, home):
+        """The worker spec is no crewmate's file, so its identity carries no prefix."""
         _rewrite(home)
         listed = sorted(p.name for p in mate_overlays.mate_overlay_dir(home.overlay).iterdir())
-        assert listed == ["pixel.json"]
+        assert listed == [f"{WORKER}.json", "pixel.json"]
+        assert _mate_overlay(home, WORKER)["name"] == WORKER
 
     def test_the_conductor_spec_gets_its_own_overlay_by_name(self, home):
         """A crewmate's chat runs the stock conductor spec and looks its stubs up by name."""
@@ -248,11 +250,13 @@ class TestTheRewritePass:
         assert not stray.exists()
 
 
-def _worker_session(monkeypatch, home, *, merged_servers, member="m-1", base_servers=None):
+def _worker_session(
+    monkeypatch, home, *, merged_servers, member="m-1", base_servers=None, file="pixel"
+):
     """Bind one worker session to crewmate ``pixel`` with the given merged spec."""
     execution = SimpleNamespace(selection_kind="template", template_id=WORKER, member_id=member)
     monkeypatch.setattr("kiro_crew.execution_context.read_session_execution", lambda key: execution)
-    monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member_id: "pixel")
+    monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member_id: file)
     base = {"name": WORKER, "mcpServers": base_servers or {}}
     monkeypatch.setattr(agent_specs, "load_agent_spec", lambda d, a: dict(base))
     monkeypatch.setattr(
@@ -854,7 +858,9 @@ class TestSkippedCrewmateSourcesReadAsAbsent:
         else:
             home.on_record.clear()
         sources = mate_overlays.list_mate_sources(home.mates)
-        assert sources.files == () and sources.complete is True
+        # The worker spec stays a source unless its whole folder is refused.
+        expected = [] if case == "folder" else [f"{WORKER}.json"]
+        assert [p.name for p in sources.files] == expected and sources.complete is True
         approvals = LaunchApprovals()
         _rewrite(home, approvals=approvals)
         assert not (mate_overlays.mate_overlay_dir(home.overlay) / "pixel.json").exists()
@@ -991,3 +997,129 @@ class TestTheSessionStartPathsThreadTheLookup:
         assert seen["lookup"] == (WORKER, "kas", "chat-1")
         assert seen["kas"]["session_key"] == "chat-1"
         assert seen["kas"]["worker_stub_names"] == frozenset({SERVER})
+
+
+BASE = "wiki"
+#: A ``kirocrew-*`` server that is not one of Crew's managed ones, as an edition ships.
+EDITION = "kirocrew-extra"
+
+
+def _worker_spec(home, servers: dict) -> None:
+    _write(home.mates / f"{WORKER}.json", {"name": WORKER, "tools": ["*"], "mcpServers": servers})
+
+
+def _launch() -> dict:
+    return {"command": sys.executable, "args": ["-V"]}
+
+
+class TestTheSharedWorkerOverlay:
+    """Every crewmate's worker shares the base servers' stubs (mcp.md, "Bot overlays")."""
+
+    def test_the_base_servers_get_stubs_under_the_worker_identity(self, home):
+        _worker_spec(home, {BASE: _launch(), EDITION: _launch()})
+        results, _ = _rewrite(home, stubbed=(SERVER, BASE, EDITION))
+        overlay = _mate_overlay(home, WORKER)
+        assert overlay["name"] == WORKER
+        assert _agent_flag(overlay["mcpServers"][BASE]) == WORKER
+        # It may read its session from its own process, so it stays per session.
+        assert EDITION not in overlay["mcpServers"]
+        assert results[f"mates/{WORKER}.json"] == 1
+
+    def test_a_crewmate_with_no_file_gets_the_base_stubs(self, home, monkeypatch):
+        _worker_spec(home, {BASE: _launch()})
+        _rewrite(home, stubbed=(SERVER, BASE))
+        _worker_session(
+            monkeypatch,
+            home,
+            merged_servers={BASE: _launch()},
+            base_servers={BASE: _launch()},
+            file="",
+        )
+        spec = mate_overlays.worker_overlay_spec(home.overlay, "chat-1")
+        assert list(spec["mcpServers"]) == [BASE]
+        assert _agent_flag(spec["mcpServers"][BASE]) == WORKER
+        injected = session_servers.pooled_session_servers(
+            home.overlay, WORKER, kas_worker_session_key="chat-1"
+        )
+        assert [e["name"] for e in injected] == [BASE]
+
+    def test_a_crewmate_file_adds_its_own_stub_beside_the_base_one(self, home, monkeypatch):
+        _worker_spec(home, {BASE: _launch()})
+        _rewrite(home, stubbed=(SERVER, BASE))
+        _worker_session(
+            monkeypatch,
+            home,
+            merged_servers={BASE: _launch(), SERVER: _launch()},
+            base_servers={BASE: _launch()},
+        )
+        servers = mate_overlays.worker_overlay_spec(home.overlay, "chat-1")["mcpServers"]
+        assert sorted(servers) == [SERVER, BASE]
+        assert _agent_flag(servers[BASE]) == WORKER
+        assert _agent_flag(servers[SERVER]) == "crewmate:pixel"
+
+    def test_a_base_server_the_merged_spec_mutes_is_not_injected(self, home, monkeypatch):
+        _worker_spec(home, {BASE: _launch()})
+        _rewrite(home, stubbed=(SERVER, BASE))
+        _worker_session(
+            monkeypatch,
+            home,
+            merged_servers={BASE: {**_launch(), "disabled": True}},
+            base_servers={BASE: _launch()},
+            file="",
+        )
+        assert mate_overlays.worker_overlay_spec(home.overlay, "chat-1")["mcpServers"] == {}
+
+    @pytest.mark.parametrize("pooling", [True, False])
+    def test_the_stub_is_shared_only_while_pooling_is_on(self, home, pooling):
+        _worker_spec(home, {BASE: _launch()})
+        _rewrite(home, pooling=pooling, stubbed=(SERVER, BASE))
+        entry = _mate_overlay(home, WORKER)["mcpServers"][BASE]
+        assert ("--poolable" in expand_stub_flags(entry["args"])) is pooling
+
+    def test_a_host_without_a_kas_key_never_reads_it(self, home, monkeypatch):
+        """claude and codex workers keep the by-name lookup, which skips ``mates/``."""
+        _worker_spec(home, {BASE: _launch()})
+        _rewrite(home, stubbed=(SERVER, BASE))
+        _worker_session(
+            monkeypatch,
+            home,
+            merged_servers={BASE: _launch()},
+            base_servers={BASE: _launch()},
+            file="",
+        )
+        assert session_servers.pooled_session_servers(home.overlay, WORKER) == []
+        assert session_servers.injection_server_names(home.overlay, WORKER) == frozenset()
+
+    def test_a_worker_overlay_with_another_identity_injects_nothing(self, home, monkeypatch):
+        _worker_spec(home, {BASE: _launch()})
+        _rewrite(home, stubbed=(SERVER, BASE))
+        path = mate_overlays.mate_overlay_dir(home.overlay) / f"{WORKER}.json"
+        _write(path, _mate_overlay(home, WORKER) | {"name": "kirocrew"})
+        _worker_session(
+            monkeypatch,
+            home,
+            merged_servers={BASE: _launch(), SERVER: _launch()},
+            base_servers={BASE: _launch()},
+        )
+        assert mate_overlays.worker_overlay_spec(home.overlay, "chat-1") is None
+
+    def test_an_agent_named_like_the_worker_blocks_its_overlay(self, home, monkeypatch):
+        _worker_spec(home, {BASE: _launch()})
+        _write(home.agents / f"{WORKER}.json", {"name": WORKER, "mcpServers": {}})
+        _rewrite(home, stubbed=(SERVER, BASE))
+        assert not (mate_overlays.mate_overlay_dir(home.overlay) / f"{WORKER}.json").exists()
+        _worker_session(
+            monkeypatch,
+            home,
+            merged_servers={BASE: _launch()},
+            base_servers={BASE: _launch()},
+            file="",
+        )
+        assert mate_overlays.worker_overlay_spec(home.overlay, "chat-1") is None
+
+    @pytest.mark.parametrize(
+        ("server", "shared"),
+        [("kirocrew-core", True), ("kirocrew-work", True), (BASE, True), (EDITION, False)],
+    )
+    def test_only_a_server_that_reads_its_caller_per_call_is_shared(self, server, shared):
+        assert mate_overlays._shared_by_every_worker(server) is shared
