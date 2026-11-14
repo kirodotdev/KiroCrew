@@ -2816,8 +2816,8 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   The **Heartbeat** is NOT on this tab (see the Schedules tab above, decided
   2026-10-22): it wakes the Bot to find its own work, which is what Schedules
   lists, where the goal check-ins read on the work. The
-  goal colours are five theme tile hues (`--tile-blue`, `--tile-purple`,
-  `--tile-pink`, `--tile-teal`, `--tile-indigo`), never the ok/warn green and
+  goal colours are five muted hues (`--goal-1` to `--goal-5`,
+  `website/src/styles/liquid-glass.css`), never the ok/warn green and
   yellow, picked by list position and cycling past five; a goal's number always
   goes with its colour. A goal's page edits, saves and removes it and lists the
   milestones that serve it, read-only. Every edit happens on a page pushed over the profile card

@@ -117,13 +117,37 @@ The three hue modifiers also mix the same hue, at the same share, into
 `--glass-band-plain` (the polarity's plain band) and set `--glass-band`, so the
 lit top and bottom edges of a tinted pane are lit in its hue; a white band on
 an accent pane read as a white frame in light mode and a grey edge in dark.
-And
-the `--tile-*` set behind the Settings section icons. They are fixed on purpose —
-the glass must read as a lit pane on any light palette and as smoked glass on any
-dark one, and a section's tile is an identity mark that must look the same in
-every theme — the same reasoning as the neutral `glass-shadow` rest shadow. Adding one
-of these takes a `:root` line plus a `[data-mode="light"]` line and no allowlist
-work; adding a color a pack should be able to change takes the role path below.
+They are fixed on purpose — the glass must read as a lit pane on any light
+palette and as smoked glass on any dark one — the same reasoning as the neutral
+`glass-shadow` rest shadow. Adding one of these takes a `:root` line plus a
+`[data-mode="light"]` line and no allowlist work; adding a color a pack should be
+able to change takes the role path below.
+
+**Settings icon tiles follow a custom theme.** The `--tile-*` set behind the
+Settings section icons (`src/styles/liquid-glass.css`) is not on the allowlist,
+and in a built-in theme it is the fixed system hues with one white glyph ink. In
+a custom theme (`[data-theme^="custom-"]`: an installed pack or an editor theme)
+each hue reads a palette role instead, and its glyph reads that role's own `-fg`
+ink, so a pack recolours the rail through the roles it already sets:
+
+| Tile hue | Fill | Glyph |
+|---|---|---|
+| gray | `--muted` | `--muted-fg` |
+| blue, teal | `--info` | `--info-fg` |
+| green | `--ok` | `--ok-fg` |
+| indigo | `--accent` | `--accent-fg` |
+| orange | `--warn` | `--warn-fg` |
+| pink, purple | `--aim` | `--aim-fg` |
+| red | `--danger` | `--danger-fg` |
+
+The glyph's contrast is the role pair's. A role the pack omits keeps the `:root`
+pair. An ink the pack omits is derived (above): black or white on a saturated
+fill, which clears 4.5:1 on any opaque fill, and `--bg` on the gray tile's
+`--muted`, which reads as well as the pack's own secondary text does on its page.
+An ink the pack declares is used as written, as it already is on that role's
+filled buttons. `src/test/SidePanelLayout.iconTile.test.tsx` pins that every hue
+the Settings tabs use maps onto an allowlisted role and that role's own ink, and
+that sparse packs declaring no ink clear 4.5:1 on every tile.
 
 ## Adding a new color role
 
