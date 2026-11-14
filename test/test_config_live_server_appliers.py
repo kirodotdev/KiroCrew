@@ -277,6 +277,59 @@ class TestServerAppliers:
         rebuild.assert_called_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", ["agent.model", "agent.role_models.background"])
+    async def test_a_lasting_refusal_is_rebuilt_once_per_saved_value(self, key: str) -> None:
+        """Every refused rebuild writes a denied audit row and a refusal can last the
+        whole process, so rebuilding on every retry wrote one row per watcher tick. A
+        retry of a refused value asks the guard read-only and rebuilds only once it stops
+        declining; a newly saved value is rebuilt, and so audited, straight away."""
+        state = SimpleNamespace(
+            workflow_service=None,
+            channel_manager=None,
+            push_refresh=MagicMock(),
+            notify=MagicMock(),
+        )
+        apply = self._register(state)[key].callback()
+
+        def saved(value: str) -> ConfigChange:
+            cfg = KiroCrewConfig()
+            if key == "agent.model":
+                cfg.agent.model = value
+            else:
+                cfg.agent.role_models = {"background": value}
+            return ConfigChange(old=KiroCrewConfig(), new=cfg, changed=frozenset({key}))
+
+        spec = Path("/home/x/.kiro/agents/kirocrew.json")
+        rebuild = MagicMock(return_value=(spec, False))
+        declined = MagicMock(return_value=spec)
+        with (
+            patch("kiro_crew.agent.rebuild_agent_config_reporting", rebuild),
+            patch("kiro_crew.agent._decline_shared_agent_home", declined),
+        ):
+            for _tick in range(3):
+                with pytest.raises(RuntimeError, match="shared agent home"):
+                    await apply(saved("model-a"))
+            assert rebuild.call_count == 1, "a retry of a refused value skips the rebuild"
+            assert declined.call_args_list == [call(audit=False)] * 2
+
+            with pytest.raises(RuntimeError, match="shared agent home"):
+                await apply(saved("model-b"))
+            assert rebuild.call_count == 2, "a newly saved value is rebuilt at once"
+
+            rebuild.side_effect = OSError("spec directory is read-only")
+            with pytest.raises(OSError):
+                await apply(saved("model-c"))
+            rebuild.side_effect = None
+            with pytest.raises(RuntimeError, match="shared agent home"):
+                await apply(saved("model-b"))
+            assert rebuild.call_count == 4, "saving a value again after a raise rebuilds it"
+
+            declined.return_value = None
+            rebuild.return_value = (spec, True)
+            await apply(saved("model-b"))
+            assert rebuild.call_count == 5, "a refusal that clears is rebuilt on the next retry"
+
+    @pytest.mark.asyncio
     async def test_successful_retry_notifies_that_the_saved_model_is_active(self) -> None:
         """Recovery must resolve the operator-visible failure state."""
         state = SimpleNamespace(

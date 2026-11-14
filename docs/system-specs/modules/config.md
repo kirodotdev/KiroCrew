@@ -3571,6 +3571,14 @@ dashboard notification (`_apply_background_model`).
 A failed heartbeat spec install is held like a conductor spec, so the hourly maintenance
 wake (`retry_held_conductor_specs`) re-runs the rebuild until the heartbeat spec carries
 the new model.
+The guard writes an `agent_home_write` denied row on every rebuild it refuses, and a
+refusal can last the whole process (a linked worktree, a data home beside another
+install's specs). So both appliers rebuild through `_rebuild_specs`: a retry of a value
+whose rebuild was refused first asks `_decline_shared_agent_home(audit=False)` and skips
+the rebuild while the guard still declines, which is one denied row per saved value
+rather than one per watcher tick. The retry itself still runs every tick, so a refusal
+that clears (an unreadable spec that reads again, foreign specs removed) is applied on
+the next one, and a newly saved value is rebuilt and audited at once.
 The `wrote=False` refusal is one case of a general ownership guard: every write through
 the shared-spec primitive (`agent_parts/spec_files.py` `_atomic_json_write`) is refused with
 `SharedAgentHomeRefused` when the data home does not own the shared agents directory. The
