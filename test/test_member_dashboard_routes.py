@@ -22,6 +22,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew import members as members_mod
 from kiro_crew.dashboard.handlers import member_dashboard as routes
+from kiro_crew.dashboard.handlers import member_dashboard_names
 from kiro_crew.dashboard_templates import catalog, instance
 from kiro_crew.platform.context import redact_via_context
 
@@ -81,7 +82,9 @@ def _env(tmp_path, _floor_monkeypatch):
     _floor_monkeypatch.setattr(routes.members_mod, "member_slug", lambda name, config=None: SLUG)
     _floor_monkeypatch.setattr(routes.members_mod, "validate_slug", lambda slug: slug)
     _floor_monkeypatch.setattr(routes.members_mod, "is_dispatchable_member_name", bool)
-    _floor_monkeypatch.setattr(routes, "_member_names_for_slug", lambda cfg, slug: [MEMBER])
+    _floor_monkeypatch.setattr(
+        member_dashboard_names, "_member_names_for_slug", lambda cfg, slug: [MEMBER]
+    )
     # No app token, and the owner gate open: both are the sibling routes' boundaries
     # and are asserted structurally below rather than re-tested here.
     _floor_monkeypatch.setattr(routes, "_deny_app_caller", _none)
@@ -195,7 +198,9 @@ async def test_a_name_not_in_config_is_a_404(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_slug_two_crews_share_serves_neither(monkeypatch):
     async with _client() as client:
-        monkeypatch.setattr(routes, "_member_names_for_slug", lambda cfg, slug: [MEMBER, "Other"])
+        monkeypatch.setattr(
+            member_dashboard_names, "_member_names_for_slug", lambda cfg, slug: [MEMBER, "Other"]
+        )
         resp = await client.get(_q(""))
         assert resp.status == 409
         assert (await resp.json())["code"] == "dashboard_slug_ambiguous"
@@ -816,7 +821,7 @@ class TestTheSlugChecks:
     @pytest.mark.asyncio
     async def test_an_invalid_slug_is_refused_before_the_member_is_read(self, monkeypatch):
         def _raise(_slug):
-            raise routes.MemberSlugError("not a slug")
+            raise member_dashboard_names.MemberSlugError("not a slug")
 
         monkeypatch.setattr(routes.members_mod, "validate_slug", _raise)
         async with _client() as c:
@@ -827,7 +832,7 @@ class TestTheSlugChecks:
     @pytest.mark.asyncio
     async def test_a_member_whose_slug_cannot_be_derived_is_a_mismatch(self, monkeypatch):
         def _raise(_name, _config=None):
-            raise routes.MemberSlugError("no slug for this name")
+            raise member_dashboard_names.MemberSlugError("no slug for this name")
 
         monkeypatch.setattr(routes.members_mod, "member_slug", _raise)
         async with _client() as c:
@@ -1273,7 +1278,9 @@ class TestOneCrewmateResolvesToOneSlug:
         _floor_monkeypatch.setattr(routes.members_mod, "member_slug", _REAL_MEMBER_SLUG)
         _floor_monkeypatch.setattr(routes.members_mod, "canonical_member_key", _REAL_CANONICAL_KEY)
         _floor_monkeypatch.setattr(routes.members_mod, "validate_slug", lambda slug: slug)
-        _floor_monkeypatch.setattr(routes, "_member_names_for_slug", lambda cfg, slug: ["Atlas"])
+        _floor_monkeypatch.setattr(
+            member_dashboard_names, "_member_names_for_slug", lambda cfg, slug: ["Atlas"]
+        )
 
         # The member's own write, under the slug its session resolves to.
         instance.adopt(owned, "fixture-board", session_id="")
