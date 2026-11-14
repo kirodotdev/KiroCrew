@@ -66,7 +66,7 @@ import { usePinnedSessionOrder, usePinnedOrderAuthority, usePinnedKeyboardReorde
 import { useManualSessionOrder, useManualKeyboardReorder } from './chat-sidebar/manualOrder'
 import { useRowAnimSettled } from './chat-sidebar/rowAnimSettle'
 import { useStaleCollapse, useStaleMoveWatcher, useStaleNarrowBridge } from './chat-sidebar/stale'
-import { useFolderSort, useFolderVisibility, useFolderFilterReveal, useFolderFilterRows, useFolderMutations, useFolderTree, useRootFolderLanes } from './chat-sidebar/folders'
+import { useFolderSort, useFolderVisibility, useFolderFilterReveal, useFolderFilterRows, useFolderMutations, useFolderTree, useRootFolderLanes, useUnfiledAboveFolders } from './chat-sidebar/folders'
 import { unreadFolderLatest, unreadFirstComparator } from './chat-sidebar/unreadFolderFloat'
 import FolderCleanupPanel from './chat-sidebar/FolderCleanupPanel'
 import { useSidebarResize } from './chat-sidebar/resize'
@@ -372,6 +372,7 @@ function ChatSidebar({
     folderSortRead, folderSortMode, folderCompare: folderModeCompare, folderReorderable: folderModeReorderable,
     folderDragWithheld, folderReorderHint, folderReorderHintRef, showFolderReorderHint, hideFolderReorderHint, folderSortMut,
   } = useFolderSort({ queryClient, mcCfg, mcCfgStatus, mcCfgError, mcCfgErrorUpdatedAt, setFolderActionError })
+  const { unfiledAboveFolders, toggleUnfiledAboveFolders, unfiledAboveFoldersError, dismissUnfiledAboveFoldersError } = useUnfiledAboveFolders({ queryClient, mcCfg })
 
   const {
     folderEditInputRef, folderCancelEscapeRef, editingId, setEditingId, editScope, setEditScope, editName, setEditName,
@@ -596,11 +597,14 @@ function ChatSidebar({
   // flat lane in place of the tree (see `renderedLane`), or the conductor lane, which
   // flattens itself for a query.
   const searchLaneActive = searchActive && (flatLaneActive || conductorLaneActive)
-  // Whether any folder ROW is on screen to drag: the tree, and the board unless
+  // Whether the shown lane draws folder rows: the tree, and the board unless
   // flat view empties its columns of folders (`relevantFolders`). The flat lane
   // explodes chats out of their folders and the conductor lane nests by lineage.
-  // Gates only the copy about DRAGGING (the menu's reorder note) -- the folder
-  // order itself is read and offered in every lane.
+  // A tree with no folders yet counts, because a folder row appears there the
+  // moment one is created. Gates the menu's copy about dragging folders (the
+  // reorder note) and the unfiled-placement checkbox row, which has no effect
+  // where no folder is drawn. The folder order itself is read and offered in
+  // every lane.
   const folderRowsDrawn = shownLane === 'tree' || shownLane === 'board'
 
   // Scroll memory for the session lane. Collapsing the sessions sidebar (or
@@ -1008,7 +1012,7 @@ function ChatSidebar({
     conductorExpanded, conductorMatching, conductorRows, conductorView, connected, createChatInFolder,
     createChatMutation, createEphemeralChatMutation, createFolderMutation, createRemoteChatMutation,
     creatingSlot, crewEnable, cycleLane, defaultAgent, deleteColumnWithConfirm,
-    deleteFolderWithConfirm, deleteHistorySessionWithConfirm, derivedHintCol, disarmHold, dismissSortError, dispatch,
+    deleteFolderWithConfirm, deleteHistorySessionWithConfirm, derivedHintCol, disarmHold, dismissSortError, dismissUnfiledAboveFoldersError, dispatch,
     dndSensors, dropSlotMutation, editingId, editName, editScope, filterCounts, filterHiddenFolders,
     filterSortOpen, filtersPaused, pausedFilters, flatLaneActive, flatSlots, flatView, folderActionError, folderCleanupOpen, folderOfflineNotice,
     folderCompare, folderConductorPin, countSubfolderContents, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef,
@@ -1041,7 +1045,7 @@ function ChatSidebar({
     subagentApprovalCounts, suppressMenuRestore, tagById, tagColumnsEnabled, tagFilterRows, tagsData,
     tagsQueryFailed, tintAgents, toggleCollapse, toggleColumnCollapse, toggleCrewCollapsed, toggleFilter,
     toggleFolderFilter, toggleFoldersShelved, toggleFoldersUnreadFirst, toggleHideFilter, toggleModelFilter, toggleReveal,
-    toggleSaveFailed, toggleSpaceCollapsed, toggleTagFilter, ungroupedSlots, unreadSet, updateColumnMutation,
+    toggleSaveFailed, toggleSpaceCollapsed, toggleTagFilter, toggleUnfiledAboveFolders, unfiledAboveFolders, unfiledAboveFoldersError, ungroupedSlots, unreadSet, updateColumnMutation,
     updateFolderMutation, visibleRootFolders, warmCrews }
   const searchDock = renderSearchDock(scope)
   const laneRows = createLaneRows(scope)

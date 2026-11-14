@@ -14294,6 +14294,7 @@
       "folder_created_unrecorded": "생성일이 기록되지 않았습니다 — 사용자 지정 순서로 표시됩니다",
       "folder_order_unread_first": "읽지 않은 채팅이 있는 폴더를 맨 위로 이동",
       "folder_order_unread_first_note": "켜져 있는 동안에는 폴더를 끌어 정렬할 수 없습니다. 정렬하려면 끄세요",
+      "unfiled_sessions_above_folders": "미분류 세션을 폴더 위에 표시",
       "sort_sessions_by": "세션 정렬 기준",
       "sort_newest": "최신순",
       "sort_oldest": "오래된순",

@@ -14294,6 +14294,7 @@
       "folder_created_unrecorded": "未记录创建日期 — 按你的自定义顺序排列",
       "folder_order_unread_first": "将有未读聊天的文件夹移到顶部",
       "folder_order_unread_first_note": "开启时无法拖动文件夹排序；如需排序请关闭此项",
+      "unfiled_sessions_above_folders": "未归档会话显示在文件夹上方",
       "sort_sessions_by": "会话排序方式",
       "sort_newest": "最新",
       "sort_oldest": "最早",

@@ -15002,6 +15002,7 @@
       "folder_created_unrecorded": "Aucune date de création enregistrée — reste dans ton ordre personnalisé",
       "folder_order_unread_first": "Placer en haut les dossiers avec des discussions non lues",
       "folder_order_unread_first_note": "Les dossiers ne peuvent pas être glissés à une autre place tant que ceci est activé ; désactive-le pour les réordonner",
+      "unfiled_sessions_above_folders": "Sessions non classées au-dessus des dossiers",
       "sort_sessions_by": "Trier les sessions par",
       "sort_newest": "Plus récentes",
       "sort_oldest": "Plus anciennes",
