@@ -5,10 +5,11 @@
 // the same `limit` the Billing card divides by; it is not clamped at 100%; and
 // it is a dash, never "0%", when there is no allowance to divide by.
 //
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, onTestFinished } from 'vitest'
 import { render, screen, waitFor, cleanup, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { NormalizedUsage } from '../providers'
+import { i18next } from '../i18n/all'
 
 type Day = NormalizedUsage['sessions']['dailyHistory'][number]
 
@@ -99,21 +100,21 @@ describe('UsageTab Daily History credits columns (#3371)', () => {
     const headers = within(table).getAllByRole('columnheader').map(h => h.textContent)
     expect(headers).toEqual(['Date', 'Sessions', 'Messages', 'Tool Calls', 'Credits used', 'Credits used (%)'])
     expect(await rows()).toEqual([
-      ['2026-09-22', '1', '3', '0', '300.00', '3.0%'],
-      ['2026-09-21', '2', '10', '4', '12.50', '0.1%'],
+      ['Sep 22, 2026', '1', '3', '0', '300.00', '3.0%'],
+      ['Sep 21, 2026', '2', '10', '4', '12.50', '0.1%'],
     ])
   })
 
   it('divides by the Billing card allowance and does not clamp a day above 100%', async () => {
     current = usage([{ date: '2026-09-22', sessions: 1, messages: 1, toolCalls: 0, credits: 12500 }], plan)
     mount()
-    expect(await rows()).toEqual([['2026-09-22', '1', '1', '0', '12,500.00', '125.0%']])
+    expect(await rows()).toEqual([['Sep 22, 2026', '1', '1', '0', '12,500.00', '125.0%']])
   })
 
   it('shows a dash, not 0%, when there is no billing plan at all', async () => {
     current = usage([{ date: '2026-09-22', sessions: 1, messages: 1, toolCalls: 0, credits: 12.5 }], null)
     mount()
-    expect(await rows()).toEqual([['2026-09-22', '1', '1', '0', '12.50', '\u2014']])
+    expect(await rows()).toEqual([['Sep 22, 2026', '1', '1', '0', '12.50', '\u2014']])
   })
 
   it.each([
@@ -134,13 +135,13 @@ describe('UsageTab Daily History credits columns (#3371)', () => {
   it('shows a dash in both columns for a day with no credits figure', async () => {
     current = usage([{ date: '2026-09-22', sessions: 1, messages: 1, toolCalls: 0 }], plan)
     mount()
-    expect(await rows()).toEqual([['2026-09-22', '1', '1', '0', '\u2014', '\u2014']])
+    expect(await rows()).toEqual([['Sep 22, 2026', '1', '1', '0', '\u2014', '\u2014']])
   })
 
   it('renders a day that cost nothing as 0.00 and 0.0%, not as a dash', async () => {
     current = usage([{ date: '2026-09-22', sessions: 1, messages: 1, toolCalls: 0, credits: 0 }], plan)
     mount()
-    expect(await rows()).toEqual([['2026-09-22', '1', '1', '0', '0.00', '0.0%']])
+    expect(await rows()).toEqual([['Sep 22, 2026', '1', '1', '0', '0.00', '0.0%']])
   })
 
   it('explains the percentage on the header tooltip', async () => {
@@ -187,8 +188,8 @@ describe('UsageTab Daily History cost column (#35250)', () => {
     const headers = within(table).getAllByRole('columnheader').map(h => h.textContent)
     expect(headers).toEqual(['Date', 'Sessions', 'Messages', 'Tool Calls', 'Credits used', 'Credits used (%)', 'Cost'])
     expect(await rows()).toEqual([
-      ['2026-09-22', '1', '3', '0', '\u2014', '\u2014', '$2,395.50'],
-      ['2026-09-21', '2', '10', '4', '12.50', '0.1%', '\u2014'],
+      ['Sep 22, 2026', '1', '3', '0', '\u2014', '\u2014', '$2,395.50'],
+      ['Sep 21, 2026', '2', '10', '4', '12.50', '0.1%', '\u2014'],
     ])
     expect(await phoneLines()).toEqual([
       'Credits used: \u2014 \u00b7 \u2014Cost: $2,395.50',
@@ -201,5 +202,24 @@ describe('UsageTab Daily History cost column (#35250)', () => {
     mount()
     expect(screen.queryByRole('columnheader', { name: 'Cost' })).toBeNull()
     expect(await phoneLines()).toEqual(['Credits used: 1.00 \u00b7 0.0%'])
+  })
+})
+
+describe('UsageTab counts and dates in the app language', () => {
+  it('groups counts, localizes the history date and the average in German', async () => {
+    onTestFinished(async () => { await i18next.changeLanguage('en') })
+    await i18next.changeLanguage('de')
+    const u = usage([{ date: '2026-11-13', sessions: 1234, messages: 56789, toolCalls: 4321, credits: 1 }], null)
+    current = { ...u, sessions: { ...u.sessions, total: 1234, avgMsgsPerSession: 12.5, thisMonth: { sessions: 2048, messages: 56789, toolCalls: 4321 } } }
+    mount()
+    expect(await rows()).toEqual([['13.11.2026', '1.234', '56.789', '4.321', '1,00', '\u2014']])
+    expect(screen.getByText('12,5')).toBeInTheDocument()
+    expect(screen.getByText('2.048')).toBeInTheDocument()
+  })
+
+  it('shows a history day the calendar does not have as it arrived', async () => {
+    current = usage([{ date: '2026-02-30', sessions: 1, messages: 1, toolCalls: 0, credits: 1 }], null)
+    mount()
+    expect((await rows())[0][0]).toBe('2026-02-30')
   })
 })
