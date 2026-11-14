@@ -210,6 +210,15 @@ async def handle_registry_refresh(request: web.Request) -> web.Response:
       fetch on the exact same code path as a cold start, so refresh cannot
       behave differently from the load it is trying to repair.
     """
+    # A dashboard subject must be the owner, as on every sibling registry
+    # write. An app token reaches this path only through an explicit
+    # ``permissions.api`` grant that token auth already checked, so it keeps it.
+    if not request.get("app"):
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        denied = await require_owner_dashboard_request(request, "app_store.refresh")
+        if denied is not None:
+            return denied
     # Off the event loop like every other disk touch on these routes; three
     # unlinks gathered because none depends on another.
     await asyncio.gather(
@@ -947,7 +956,13 @@ async def handle_registries_refresh(request: web.Request) -> web.Response:
     cache-bust + re-fetch is offloaded inside ``refresh_registries`` (async).
     """
     from kiro_crew.apps.registry import refresh_registries
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
+    # Busts every configured registry's cache and re-fetches it: the owner's
+    # call, as on the PUT that configures them.
+    denied = await require_owner_dashboard_request(request, "registries.refresh")
+    if denied is not None:
+        return denied
     caller = request.get("user", "dashboard")
     repo: str | None = None
     body_bytes = await request.read()

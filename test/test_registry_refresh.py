@@ -23,6 +23,7 @@ Three contracts, asserted separately because they fail differently:
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -88,6 +89,15 @@ class _FakeRequest:
     app: dict[str, Any] = {}
 
 
+class _OwnerRequest(dict):
+    """The dashboard owner's request: the refresh is owner-only."""
+
+    app: dict[str, Any] = {"state": SimpleNamespace(owner_id="owner")}
+
+    def __init__(self) -> None:
+        super().__init__(user="owner", app="")
+
+
 @pytest.fixture()
 def _stubbed_lists(monkeypatch):
     """Keep the GET test about read-only-ness: every list source is stubbed."""
@@ -125,7 +135,7 @@ def _body(resp: Any) -> dict[str, Any]:
 @pytest.mark.asyncio
 class TestRegistryRefreshEndpoint:
     async def test_refresh_drops_all_three_document_caches(self, _forget_counter):
-        resp = await routes.handle_registry_refresh(_FakeRequest())  # type: ignore[arg-type]
+        resp = await routes.handle_registry_refresh(_OwnerRequest())  # type: ignore[arg-type]
         assert resp.status == 200
         assert _body(resp) == {"ok": True}
         assert sorted(_forget_counter) == ["catalog", "editorial", "order"]
