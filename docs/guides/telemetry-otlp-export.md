@@ -488,6 +488,27 @@ length are bucket attributes, because the preset takes no histograms.
 | `kirocrew.voice.unavailable` | `reason` (`forbidden_origin` / `stt_disabled` / `provider_off` / `streaming_off` / `provider_not_streaming` / `busy` / `other`) |
 | `kirocrew.voice.tts.replies` | `provider`, `outcome` (`ok` / `cancelled` / `busy` / `invalid` / `unavailable` / `sandbox_refused` / `error`), `first_audio` (`lt_500ms` … `gt_5s` / `none`) |
 
+The chat runtime sharing group (`src/kiro_crew/metrics/chat_runtime_share.py`)
+answers whether the `chat_runtime_sharing` preview is ready to be on by default:
+who turned it on, what it saved, whether a shared chat's turn starts later, and
+how many chats one crash takes down. Adoption is
+`kirocrew.inventory.config.toggle{key=preview_chat_runtime_sharing}`. `tenants` is
+the chat lease count on the process (`0` / `1` / `2` / `3` / `4+`); `2` and up is
+a shared process.
+
+| Metric | Attributes |
+|---|---|
+| `kirocrew.chat_runtime_share.toggled` | `state` (`on` / `off`) |
+| `kirocrew.chat_runtime_share.placed` | `outcome` (`spawned` / `joined` / `refused`), `reason` (a refusal branch name or `none`), `tenants` (after the placement, or `none` on a refusal) |
+| `kirocrew.chat_runtime_share.processes`, `.tenants` | none; gauges over live processes placed by sharing, so `tenants - processes` is processes saved |
+| `kirocrew.chat_runtime_share.rss_sampled` | `tenants`, `rss` (`le_512m` … `gt_8g`); one per shared process per RSS watchdog tick |
+| `kirocrew.chat_runtime_share.reclaimed` | `reason` (`rss`) |
+| `kirocrew.chat_runtime_share.process_died` | `expected` (`true` / `false`), `tenants` |
+| `kirocrew.chat_runtime_share.turn_started` | `tenants`, `delay` (`le_1s` … `gt_60s`, prompt written to first event), `harness` |
+| `kirocrew.chat_runtime_share.turn_ended` | `tenants`, `outcome` (the `kirocrew.turn.completed` outcome set), `harness` |
+| `kirocrew.chat_runtime_share.kas_queued` | `tenants` |
+| `kirocrew.kas.engine_install` | `outcome` (`installed` / `failed` / `host_unsupported`), `caller` (`spawn` / `dashboard` / `other`) |
+
 None carries a tip id, a video id, a timestamp or tip text. `recommended_by` is
 computed on the machine from a 14-day local record and only the label is sent;
 the record itself stays in the owner-only milestones state file. The rules are

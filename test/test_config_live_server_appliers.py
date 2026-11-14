@@ -619,6 +619,7 @@ class TestServerAppliers:
             "agent.crew_mode_agent",
             "dashboard.feature_previews",
             "dashboard.stale_wake",
+            "dashboard.chat_runtime_sharing_toggle",
             "apps",
             "dashboard.command_bar_enabled",
             "dashboard.terminal.enabled",
