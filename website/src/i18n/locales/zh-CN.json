@@ -11365,7 +11365,11 @@
     "settings": "设置",
     "task_runner": "Task Runner",
     "webhooks": "Webhook",
-    "crew_members": "Bot"
+    "crew_members": "Bot",
+    "badge_unread_conversations": "未读对话",
+    "badge_unread_member_threads": "未读成员会话",
+    "badge_notifications": "通知",
+    "badge_approvals_needed": "待审批"
   },
   "pages": {
     "mcpPage": {

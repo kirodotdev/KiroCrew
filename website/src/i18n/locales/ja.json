@@ -11365,7 +11365,11 @@
     "settings": "設定",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Bot"
+    "crew_members": "Bot",
+    "badge_unread_conversations": "未読の会話",
+    "badge_unread_member_threads": "未読のメンバースレッド",
+    "badge_notifications": "通知",
+    "badge_approvals_needed": "承認待ち"
   },
   "pages": {
     "mcpPage": {

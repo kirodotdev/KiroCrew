@@ -5208,7 +5208,11 @@
     "settings": "Settings",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Bots"
+    "crew_members": "Bots",
+    "badge_unread_conversations": "unread conversations",
+    "badge_unread_member_threads": "unread member threads",
+    "badge_notifications": "notifications",
+    "badge_approvals_needed": "approvals needed"
   },
   "pages": {
     "mcpPage": {

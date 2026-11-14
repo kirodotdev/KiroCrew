@@ -12133,7 +12133,11 @@
     "settings": "Настройки",
     "task_runner": "Task Runner",
     "webhooks": "Вебхуки",
-    "crew_members": "Bot"
+    "crew_members": "Bot",
+    "badge_unread_conversations": "непрочитанные разговоры",
+    "badge_unread_member_threads": "непрочитанные ветки участников",
+    "badge_notifications": "уведомления",
+    "badge_approvals_needed": "ожидают одобрения"
   },
   "pages": {
     "mcpPage": {
