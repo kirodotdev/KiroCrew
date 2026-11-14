@@ -809,7 +809,11 @@ def _url_payload_command(n: int) -> str:
 #: ``/`` and ``~`` read the full text. Re-measured.
 #: Raised by 3, from 35,997, for the ``chat_steering_off.json`` leaf on the read-gate
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
-_PACKAGE_LINE_BUDGET = 36_000
+#: Raised by 202, from 36,000, to 36,202, for ``ssh_floor_substitutions``: the
+#: ssh-to-self floor judges each command of an ``echo``/``printf`` substitution list
+#: its splice would erase, and pairs empty backticks left to right beside the
+#: pattern reading. Its two moved patterns are unchanged. Re-measured.
+_PACKAGE_LINE_BUDGET = 36_202
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

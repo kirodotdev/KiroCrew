@@ -216,10 +216,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _BRACE_RANGE_RE,
         _CALL_ASSIGNMENT_RE,
         _CALL_WRAPPER_WORDS,
-        _EMPTY_EXPANSION_RE,
         _ENV_ASSIGN_PREFIX_RE,
         _EXPANSION_DEFAULT_RE,
-        _FLAT_SUBSTITUTION_RE,
         _FUNCTION_BIND_CAP,
         _FUNCTION_DEF_RE,
         _HOSTNAME_SUBSTITUTION_HINTS,
@@ -316,6 +314,13 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _substitution_bodies,
         _substitution_depth_delta,
         _xargs_here_string_rebuild,
+    )
+    from kiro_crew.security.ssh_floor_substitutions import (  # noqa: F401
+        _EMPTY_EXPANSION_RE,
+        _FLAT_SUBSTITUTION_RE,
+        _PAIRED_BACKTICK_CAP,
+        _collapse_paired_empty_expansions,
+        _spliced_command_lists,
     )
     from kiro_crew.security.vocabulary import (  # noqa: F401
         _KILL_BY_NAME_PROGRAMS,

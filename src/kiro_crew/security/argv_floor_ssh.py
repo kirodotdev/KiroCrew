@@ -44,6 +44,13 @@ from .shell_normalizer import (
     _substitution_depth_delta,
     _xargs_here_string_rebuild,
 )
+from .ssh_floor_substitutions import (
+    _EMPTY_EXPANSION_RE,
+    _FLAT_SUBSTITUTION_RE,
+    _PAIRED_BACKTICK_CAP,
+    _collapse_paired_empty_expansions,
+    _spliced_command_lists,
+)
 
 # ── Sandbox-escape floor (ssh back into this same host) ──
 # The agent's shell runs inside a sandbox; sshd does not.  A connection whose
@@ -91,13 +98,6 @@ _HOSTNAME_SUBSTITUTION_HINTS: tuple[str, ...] = ("$(hostname", "`hostname")
 
 
 _HOSTNAME_VARIABLE_FORMS: tuple[str, ...] = ("$hostname", "${hostname}")
-
-
-# A FLAT command substitution -- no nested substitution characters in the
-# body -- is the only shape ``_static_substitution_output`` can decide
-# statically.  Both spellings are matched; group 1 xor group 2 carries the
-# body.
-_FLAT_SUBSTITUTION_RE = re.compile(r"\$\(([^()`$]*)\)|`([^`()$]*)`")
 
 
 def _glob_can_name_ssh_verb(probe: str) -> bool:
@@ -256,16 +256,6 @@ def _unmask_separators(text: str) -> str:
     for sep, sentinel in _QUOTED_SEP_SENTINELS.items():
         text = text.replace(sentinel, sep)
     return text
-
-
-# An EMPTY command substitution expands to nothing, so ``s$()sh`` runs ``ssh``
-# and ``local$()host`` resolves to ``localhost`` -- the same glue-evasion the
-# self-kill floor names for ``p$()kill``, but aimed at the verb gate and at the
-# operand.  Collapsing these in the SOURCE text (before the gate and before
-# tokenization) makes both the substring gate and every resolved operand read
-# the spliced-out spelling.  Only ``$()``/backticks are matched: an empty
-# ``${}`` is a bash syntax error, not an expansion, so it never splices.
-_EMPTY_EXPANSION_RE = re.compile(r"\$\(\s*\)|`\s*`")
 
 
 # ssh options whose VALUE is a forward/bind spec or a login name, not a
@@ -937,7 +927,7 @@ def _reaches_self_over_ssh(text_lower: str) -> bool:
     return any(map(_is_ssh_to_self, [text_lower, *_quoted_assignment_scripts(text_lower)]))
 
 
-def _is_ssh_to_self(text_lower: str) -> bool:
+def _is_ssh_to_self(text_lower: str, *, paired_already: bool = False) -> bool:
     """True if *text_lower* opens an ssh/scp/sftp/rsync channel to THIS host.
 
     Structural for the same reason the other floors are: the target hides
@@ -984,7 +974,27 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     """
     # Collapse empty expansions in the SOURCE so the gate and tokenization both
     # read the spliced-out spelling (``s$()sh localhost`` -> ``ssh localhost``).
-    text_lower = _EMPTY_EXPANSION_RE.sub("", text_lower)
+    #
+    # A line with backticks is also judged with only the empty backtick PAIRS
+    # removed (``_collapse_paired_empty_expansions``): the pattern reads the
+    # gap in ```date` `ssh localhost``` as an empty span.  That second reading
+    # arrives already collapsed and flagged, so it never spawns a third.
+    #
+    # Each command LIST a static splice below would erase is judged here as a
+    # line of its own (``_spliced_command_lists``), read off the paired text
+    # so a gap between two spans never glues a verb into the list.
+    if not paired_already:
+        collapsed = _EMPTY_EXPANSION_RE.sub("", text_lower)
+        paired = _collapse_paired_empty_expansions(text_lower) if "`" in text_lower else collapsed
+        if (
+            paired != collapsed
+            and text_lower.count("`") <= _PAIRED_BACKTICK_CAP
+            and _is_ssh_to_self(paired, paired_already=True)
+        ):
+            return True
+        if any(map(_is_ssh_to_self, _spliced_command_lists(paired))):
+            return True
+        text_lower = collapsed
 
     # A flat command substitution whose output is statically decidable
     # (``$(printf localhost)``, backtick ``echo localhost``) IS its output by
