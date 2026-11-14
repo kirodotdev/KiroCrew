@@ -106,6 +106,7 @@ const NOTICE_FAMILIES = {
   agent_switch_blocked_channel: { role: 'notice', card: 'notice', tone: 'info' },
   channel_message_not_run: { role: 'notice', card: 'notice', tone: 'info' },
   member_rebind_kept_agent: { role: 'notice', card: 'notice', tone: 'info' },
+  agent_no_tools: { role: 'notice', card: 'notice', tone: 'info' },
   crew_name_undispatchable: { role: 'error', card: 'error' },
   code_channel_worktree_not_ready: { role: 'error', card: 'error' },
   remote_crew_read_only: { role: 'error', card: 'error' },
@@ -197,6 +198,7 @@ const COPY_KEY = {
   agent_switch_blocked_channel: 'pages.chat.gatewayNotice.agent_switch_blocked_channel',
   channel_message_not_run: 'pages.chat.gatewayNotice.channel_message_not_run',
   member_rebind_kept_agent: 'pages.chat.gatewayNotice.member_rebind_kept_agent',
+  agent_no_tools: 'pages.chat.gatewayNotice.agent_no_tools',
   crew_name_undispatchable: 'pages.chat.gatewayNotice.crew_name_undispatchable',
   code_channel_worktree_not_ready: 'pages.chat.gatewayNotice.code_channel_worktree_not_ready',
   remote_crew_read_only: 'pages.chat.gatewayNotice.remote_crew_read_only',
@@ -810,4 +812,16 @@ export function resolveGatewayNotice(
 export function resumeProseFor(content: string): string | null {
   const shape = legacyShape(content)
   return shape ? (resumeTextOf(shape) ?? null) : null
+}
+
+/**
+ * The agent a no-tools notice row names, or `null` for any other row. The row is
+ * the `agent_no_tools` family (`dashboard/agent_no_tools_notice.py`): its own
+ * renderer adds the link to that agent's page, so it is matched on the token and
+ * never on its words.
+ */
+export function agentNoToolsAgent(m: ChatMessage): string | null {
+  const shape = m.role === 'notice' ? shapeOf(m) : null
+  if (shape?.token !== 'agent_no_tools') return null
+  return typeof shape.args.agent === 'string' && shape.args.agent ? shape.args.agent : null
 }
