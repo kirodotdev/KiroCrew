@@ -557,10 +557,12 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     print(f"Added job: {job.id} ({job.name}) [{sched_desc}]")
     # Read from its home, not bound here: ``cli_commands`` serves this module's
     # names through a frozen import inventory.
-    from kiro_crew.cron_service.schedule import never_fires_warning
+    from kiro_crew.cron_service.schedule import never_fires_warning, raised_interval_warning
 
     if never_fires := never_fires_warning(job.schedule):
         print(f"Warning: {never_fires}", file=sys.stderr)
+    if raised := raised_interval_warning(every, job.schedule):
+        print(f"Warning: {raised}", file=sys.stderr)
 
 
 def _cron(args: argparse.Namespace) -> None:
