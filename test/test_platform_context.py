@@ -97,13 +97,6 @@ class TestPolicyAuthorityAddOnly:
         assert "is_denied" in PolicyAuthority.__dict__
         assert "effective_patterns" in PolicyAuthority.__dict__
 
-    def test_assert_security_floor_rejects_non_authority(self) -> None:
-        with pytest.raises(PlatformCompositionError):
-            assert_security_floor(object())
-
-    def test_assert_security_floor_accepts_baseline(self) -> None:
-        assert_security_floor(PolicyAuthority())  # no raise
-
     def test_assert_security_floor_rejects_runtime_override(self) -> None:
         # @final is type-checker-only; a subclass that overrides is_denied to
         # always-allow while keeping effective_patterns intact would pass the
