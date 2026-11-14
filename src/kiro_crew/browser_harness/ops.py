@@ -65,6 +65,7 @@ OPS: tuple[str, ...] = (
     "drag",
     "scroll",
     "type",
+    "paste",
     "press_key",
     "hover",
     "select_option",
@@ -852,6 +853,22 @@ async def _type(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     if len(text) > TEXT_CAP:
         return refusal("bad_text", f"text longer than {TEXT_CAP} characters")
     ref = args.get("ref")
+    field = await _focus_field(ctx, ref)
+    if not field["ok"]:
+        return field
+    await _step(ctx, f"Type into {ref or field['tag'] or 'the field'}")
+    await ctx.helper("type_text", text=text)
+    submitted = bool(args.get("submit"))
+    if submitted:
+        await ctx.helper("press_key", key="Enter", modifiers=0)
+    return {"ok": True, "ref": ref, "chars": len(text), "submitted": submitted}
+
+
+async def _focus_field(ctx: OpContext, ref: Any) -> dict[str, Any]:
+    """Focus *ref* when given, then judge whatever holds focus: where input lands.
+
+    Answers ``{"ok": True, "tag"}`` or the refusal ``type`` and ``paste`` share.
+    """
     if ref is not None:
         if not _is_ref(ref):
             return refusal("bad_ref", f"not a valid ref: {ref!r}; call snapshot first")
@@ -882,12 +899,40 @@ async def _type(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
         return _password_refusal(ref)
     if active.get("asked"):
         return _asked_refusal(ref)
-    await _step(ctx, f"Type into {ref or active.get('tag') or 'the field'}")
-    await ctx.helper("type_text", text=text)
-    submitted = bool(args.get("submit"))
-    if submitted:
-        await ctx.helper("press_key", key="Enter", modifiers=0)
-    return {"ok": True, "ref": ref, "chars": len(text), "submitted": submitted}
+    return {"ok": True, "tag": active.get("tag") or ""}
+
+
+async def _paste(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+    text, html = args.get("text"), args.get("html")
+    if not isinstance(text, str):
+        return refusal("bad_text", "paste needs a `text` string (the plain version)")
+    if html is not None and not isinstance(html, str):
+        return refusal("bad_html", "`html` must be a string")
+    if len(text) > TEXT_CAP:
+        return refusal("bad_text", f"text longer than {TEXT_CAP} characters")
+    if len(html or "") > TEXT_CAP:
+        return refusal("bad_html", f"html longer than {TEXT_CAP} characters")
+    ref = args.get("ref")
+    field = await _focus_field(ctx, ref)
+    if not field["ok"]:
+        return field
+    # The walker hands both to the page as a paste event; the clipboard is never written.
+    pasted = await _page(ctx, "paste", ref, html or "", text)
+    if not isinstance(pasted, dict) or not pasted.get("ok"):
+        if isinstance(pasted, dict) and pasted.get("code") == "focus_in_frame":
+            return refusal(
+                "focus_in_frame",
+                "focus is inside a cross-origin frame; pass the field's `ref` from the "
+                "frame (f<n>e<n>) so the paste lands there",
+            )
+        return refusal("ref_stale", f"{ref or 'the focused field'} left the page; re-snapshot")
+    await _step(ctx, f"Paste into {ref or field['tag'] or 'the field'}")
+    handled = bool(pasted.get("handled"))
+    if not handled:
+        # A script's paste event inserts nothing by itself, so a field whose page did
+        # not take it gets the plain text the way ``type`` puts it there.
+        await ctx.helper("type_text", text=text)
+    return {"ok": True, "ref": ref, "chars": len(text), "handled": handled}
 
 
 def _password_refusal(ref: Any) -> dict[str, Any]:
@@ -1366,6 +1411,7 @@ _HANDLERS: dict[str, Callable[[OpContext, dict[str, Any]], Awaitable[dict[str, A
     "drag": _drag,
     "scroll": _scroll,
     "type": _type,
+    "paste": _paste,
     "press_key": _press_key,
     "hover": _hover,
     "select_option": _select_option,
