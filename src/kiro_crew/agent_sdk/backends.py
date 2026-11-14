@@ -360,6 +360,8 @@ with no row here.
      - pre-session registry query (whether a session on this backend reaches a
        Crew-owned Connection through the gateway bridge; read by
        ``connections.crew_oauth`` while the session's MCP array is composed)
+   * - ``ACP_BACKENDS_KIRO_CLI_MCP_GRANTS``
+     - semantic question (``SessionCapabilities.reads_kiro_cli_mcp_grants``)
 
 The two non-set tables ``SessionCapabilities`` also translates are
 :func:`model_registry_namespace` (the model-id namespace) and
@@ -1310,6 +1312,7 @@ from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported 
     ACP_BACKENDS_CREW_OAUTH_BRIDGE,
     ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
+    ACP_BACKENDS_KIRO_CLI_MCP_GRANTS,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
     ACP_BACKENDS_MCP_RELAUNCH_RELOAD,
