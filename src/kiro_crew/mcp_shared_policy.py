@@ -53,9 +53,27 @@ logger = logging.getLogger("kiro_crew.mcp_shared")
 # actually MADE for, which is the same value that rides its ``X-Session-Key``: one
 # entry per session, and a rekeyed or subagent caller misses rather than inheriting.
 # BOUNDED: a long-lived pooled backend serves churning sessions;
-# FIFO-evict the oldest entry past the cap so the dict cannot grow without
-# limit. Eviction only costs a re-fetch on that session's next call.
+# evict past the cap so the dict cannot grow without limit. Eviction only costs a re-fetch on that session's next call, and a re-fetch
+# that times out on a busy gateway refuses every tool, so the entry dropped is the
+# least recently USED one, never a session that is still calling tools.
 _EXCLUDED_TOOLS_CACHE_MAX = 256
+
+
+# Use stamp per cached session, refreshed on every hit and every store. A separate map
+# keeps the cache dicts themselves untouched by a lookup, so a concurrent reader never
+# sees an entry missing mid-refresh.
+_policy_last_used: dict[str, int] = {}
+
+
+# The last good policy of a session the cache evicted. A read that cannot reach the
+# gateway answers from here, so a session that resolved once is not refused for having
+# been pushed out; one that never resolved has no entry and still refuses. BOUNDED like
+# the cache: it only ever receives what the cache evicts, FIFO-drops its oldest entry
+# past the cap, and an entry leaves it as soon as its session resolves again.
+_RETIRED_POLICY_CACHE_MAX = 1024
+
+
+_retired_policy_by_session: dict[str, tuple[set[str], dict[str, frozenset[str]]]] = {}
 
 
 _excluded_tools_by_session: dict[str, set[str]] = {}
@@ -436,6 +454,22 @@ def _http_error_body(exc: urllib.error.HTTPError) -> tuple[str, str]:
     )
 
 
+def _retired_policy(session_key: str | None) -> ToolPolicy | None:
+    """The last good policy of an evicted session, or None when it never resolved.
+
+    An answer that refuses the call on its own (an unreadable policy, a missing
+    attestation, a closed gate) drops the session's entry where it is returned, so a
+    later failed read cannot bring back a policy the gateway has since refused.
+    """
+    entry = _retired_policy_by_session.get(session_key) if session_key else None
+    if entry is None:
+        return None
+    excluded, include = entry
+    if include:
+        return ToolPolicy(frozenset(excluded), "", included=types.MappingProxyType(include))
+    return ToolPolicy(frozenset(excluded), "")
+
+
 def _resolve_tool_policy(
     caller_session: str = "",
     *,
@@ -470,7 +504,7 @@ def _resolve_tool_policy(
     reason the policy could not be read when it could not. Caches on success
     only, so a session that has ever resolved its policy is served from
     ``_excluded_tools_by_session`` and never reaches a failure path again
-    (until FIFO eviction) -- the unresolved states below are reachable only for
+    (until LRU eviction) -- the unresolved states below are reachable only for
     a session whose policy has never been read once.
 
     On failure this returns an EMPTY exclusion set with ``unresolved`` set, and
@@ -501,6 +535,7 @@ def _resolve_tool_policy(
     if session_key:
         _cached = _excluded_tools_by_session.get(session_key)
         if _cached is not None:
+            _policy_last_used[session_key] = time.monotonic_ns()
             _cached_include = _included_tools_by_session.get(session_key)
             if _cached_include:
                 return ToolPolicy(
@@ -551,6 +586,9 @@ def _resolve_tool_policy(
         # treats them differently. Collapsing them into one reason would repeat
         # the very conflation this resolver exists to undo, one level down.
         _reason = "resolution_failed" if _failure_cached else "no_session_key"
+        _retired = _retired_policy(session_key) if _failure_cached else None
+        if _retired is not None:
+            return _retired
         sel().log_api_access(
             caller=session_key or "mcp",
             operation="tool_policy.negative_cache_hit",
@@ -664,6 +702,7 @@ def _resolve_tool_policy(
                 source="mcp_shared",
                 resources=f"session_key={session_key}",
             )
+            _retired_policy_by_session.pop(session_key, None)
             return ToolPolicy(frozenset(), "identity_unattestable")
 
         headers: dict[str, str] = {"X-Internal-Secret": secret, **token_header}
@@ -754,6 +793,7 @@ def _resolve_tool_policy(
                             f"pid={os.getpid()},ppid={os.getppid()}"
                         ),
                     )
+                    _retired_policy_by_session.pop(session_key, None)
                     return ToolPolicy(frozenset(), "identity_unattested")
                 # The gateway read a spec for this session and could not
                 # determine its policy (unparseable, wrong shape, or two specs
@@ -779,6 +819,7 @@ def _resolve_tool_policy(
                     source="mcp_shared",
                     resources=f"session_key={session_key}",
                 )
+                _retired_policy_by_session.pop(session_key, None)
                 return ToolPolicy(frozenset(), "policy_unreadable", _reason)
             from kiro_crew.lts_gate import GATE_CLOSED_CODE
 
@@ -796,6 +837,7 @@ def _resolve_tool_policy(
                     source="mcp_shared",
                     resources=f"session_key={session_key}",
                 )
+                _retired_policy_by_session.pop(session_key, None)
                 return ToolPolicy(frozenset(), "gateway_locked")
             if http_exc.code in (400, 403):
                 # The gateway ANSWERED and declined to tell this caller. 403 is
@@ -884,6 +926,7 @@ def _resolve_tool_policy(
             # its ``detail`` is its own: the refusal then says what is wrong
             # with the policy the gateway answered, the way the gateway's
             # ``reason`` says which file it could not read.
+            _retired_policy_by_session.pop(session_key, None)
             return ToolPolicy(
                 frozenset(),
                 "policy_unreadable",
@@ -905,19 +948,27 @@ def _resolve_tool_policy(
                 source="mcp_shared",
                 resources=f"session_key={session_key},include=malformed",
             )
+            _retired_policy_by_session.pop(session_key, None)
             return ToolPolicy(
                 frozenset(),
                 "policy_unreadable",
                 "the policy the gateway answered has an include that is not a map of "
                 "server names to lists of tool names",
             )
-        # FIFO bound: dicts preserve insertion order; drop the oldest
-        # session's entry when full (pooled backends serve churning sessions).
+        # LRU bound: drop the least recently used session's entry when full (pooled
+        # backends serve churning sessions).
         while len(_excluded_tools_by_session) >= _EXCLUDED_TOOLS_CACHE_MAX:
-            _evicted = next(iter(_excluded_tools_by_session))
-            _excluded_tools_by_session.pop(_evicted)
-            _included_tools_by_session.pop(_evicted, None)
+            _evicted = min(_excluded_tools_by_session, key=lambda k: _policy_last_used.get(k, 0))
+            while len(_retired_policy_by_session) >= _RETIRED_POLICY_CACHE_MAX:
+                _retired_policy_by_session.pop(next(iter(_retired_policy_by_session)))
+            _retired_policy_by_session[_evicted] = (
+                _excluded_tools_by_session.pop(_evicted),
+                _included_tools_by_session.pop(_evicted, {}),
+            )
+            _policy_last_used.pop(_evicted, None)
         _excluded_tools_by_session[session_key] = resolved
+        _retired_policy_by_session.pop(session_key, None)
+        _policy_last_used[session_key] = time.monotonic_ns()
         # The gateway answered, so the condition the long window caches -- a
         # gateway this process cannot reach -- is over for every session in it.
         # Clearing it is what lets a sibling that never resolved stop being
@@ -979,6 +1030,9 @@ def _resolve_tool_policy(
             ),
             error=_failure_cause(exc),
         )
+        _retired = _retired_policy(session_key)
+        if _retired is not None:
+            return _retired
         return ToolPolicy(frozenset(), "resolution_failed", _last_failure_class)
 
 
