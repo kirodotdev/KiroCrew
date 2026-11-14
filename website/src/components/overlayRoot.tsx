@@ -46,8 +46,12 @@
 //   dialog and everything opened inside it (`GlobalOverlayScope`), because its
 //   modal hold on the page cannot be lifted without remounting what the user
 //   entered; and the notification banner, which is meant for every Crew.
+//
+// The closed sessions sidebar is the same case at a smaller scale: its list
+// stays mounted off screen, and `OffScreenOverlayScope` hides the layers it
+// opened and closes its menus, context menus and selects.
 import {
-  createContext, useContext, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useState,
+  createContext, useContext, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore,
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
@@ -74,8 +78,17 @@ export function useOverlayRoot(): HTMLElement {
  *  stand down, or Escape aimed at the Crew in front would close a dialog in the
  *  hidden one. Always false outside the local pane. */
 export function useLocalCrewHidden(): boolean {
-  return useContext(OverlayRootContext)?.hidden ?? false
+  const crewHidden = useContext(OverlayRootContext)?.hidden ?? false
+  // Inside an off-screen scope (the closed sessions sidebar) too. Read through
+  // the scope's signal, so only the few layers that call this re-render when
+  // it flips; the shared menus use `useCloseWhenCrewHidden`, which does not.
+  const offScreen = useContext(OffScreenContext)
+  const off = useSyncExternalStore(offScreen?.subscribe ?? subscribeNever, offScreen?.get ?? never)
+  return crewHidden || off
 }
+
+const subscribeNever = () => () => {}
+const never = () => false
 
 /** `createPortal` into the owning pane's overlay root. Use this instead of
  *  portalling to `document.body` (lint refuses the latter). */
@@ -104,9 +117,25 @@ export function standDownWhileHidden<E extends { preventDefault(): void }>(
  *  way a click outside it would. `close` must be the layer's own close path, so
  *  a controlled caller hears `onOpenChange(false)`. */
 export function useCloseWhenCrewHidden(open: boolean, close: () => void) {
-  const hidden = useLocalCrewHidden()
+  const hidden = useContext(OverlayRootContext)?.hidden ?? false
   useEffect(() => { if (hidden && open) close() }, [hidden, open, close])
+  // The same for an off-screen scope (`OffScreenOverlayScope`). Read through
+  // a subscription, not a context value, so closing the sidebar re-renders
+  // only the layers that are open, not every menu in its list.
+  const offScreen = useContext(OffScreenContext)
+  useEffect(() => {
+    if (!open || !offScreen) return
+    if (offScreen.get()) { close(); return }
+    return offScreen.subscribe(() => { if (offScreen.get()) close() })
+  }, [open, offScreen, close])
 }
+
+interface OffScreenSignal {
+  get: () => boolean
+  subscribe: (listener: () => void) => () => void
+}
+
+const OffScreenContext = createContext<OffScreenSignal | null>(null)
 
 /** Puts a subtree back on `document.body` and visible, for content that stays
  *  on screen across a Crew switch (a Radix dialog's), so what it opens stacks
@@ -114,6 +143,54 @@ export function useCloseWhenCrewHidden(open: boolean, close: () => void) {
 export function GlobalOverlayScope({ children }: { children: ReactNode }) {
   const value = useMemo(() => ({ container: document.body, hidden: false, inDialog: true }), [])
   return <OverlayRootContext.Provider value={value}>{children}</OverlayRootContext.Provider>
+}
+
+/** Takes a subtree's layers off screen while `offScreen`, for content its host
+ *  keeps mounted but takes off screen (the closed sessions sidebar,
+ *  SessionsSidebarChrome). Its menus, context menus and selects close
+ *  (`useCloseWhenCrewHidden`), `useLocalCrewHidden` reads true so key handlers
+ *  stand down, and every other layer it opened leaves the document with the
+ *  scope's own container (a plain div inside the parent's) and comes back as
+ *  it was. The context value does not change when `offScreen` flips, so
+ *  closing re-renders only the layers that read it. */
+export function OffScreenOverlayScope({ offScreen, children }: { offScreen: boolean; children: ReactNode }) {
+  const parent = useContext(OverlayRootContext)
+  const parentContainer = parent?.container ?? document.body
+  const [container] = useState(() => document.createElement('div'))
+  useInsertionEffect(() => {
+    parentContainer.appendChild(container)
+    return () => container.remove()
+  }, [parentContainer, container])
+  const [signal] = useState(() => {
+    const listeners = new Set<() => void>()
+    const state = { offScreen, listeners }
+    const api: OffScreenSignal & { set: (v: boolean) => void } = {
+      get: () => state.offScreen,
+      subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+      set: (v) => {
+        if (state.offScreen === v) return
+        state.offScreen = v
+        listeners.forEach(l => l())
+      },
+    }
+    return api
+  })
+  useLayoutEffect(() => {
+    // Out of the document while off screen, not just undisplayed: a dialog it
+    // holds must not answer a document-level probe (`anotherEscapeOwnerIsOpen`)
+    // while nobody can see it. The same element comes back, state intact.
+    if (offScreen) container.remove()
+    else if (container.parentNode !== parentContainer) parentContainer.appendChild(container)
+    signal.set(offScreen)
+  }, [container, parentContainer, offScreen, signal])
+  const hidden = parent?.hidden ?? false
+  const inDialog = parent?.inDialog
+  const value = useMemo(() => ({ container, hidden, inDialog }), [container, hidden, inDialog])
+  return (
+    <OverlayRootContext.Provider value={value}>
+      <OffScreenContext.Provider value={signal}>{children}</OffScreenContext.Provider>
+    </OverlayRootContext.Provider>
+  )
 }
 
 /** Renders its children from the commit after it mounts.
