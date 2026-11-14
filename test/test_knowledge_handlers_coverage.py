@@ -1391,6 +1391,34 @@ class TestBatchEmbedItems:
         assert row["embedding_sig"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("spelling", ["false", "False", " false ", "0", "off"])
+    async def test_the_string_false_does_not_start_a_rebuild(self, store, spelling):
+        # A JSON-string "false" is truthy, so it started a full re-embed; it is
+        # now read as False with a warning, and the fill-NULL path runs instead.
+        store.add_item("a", "body a", "note")
+        async with _client(_make_app(store, embedder=_FakeEmbedder())) as client:
+            resp = await client.post(
+                "/api/knowledge/embedding/generate", json={"rebuild": spelling}
+            )
+            assert resp.status == 200
+            data = await resp.json()
+        assert "job_id" not in data
+        assert (data["embedded"], data["total"], data["remaining"]) == (1, 1, 0)
+        assert data["warnings"] == [
+            f"rebuild was the string {spelling!r}; read as False. "
+            "Send a JSON boolean (true/false)."
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_json_bool_reply_carries_no_warnings(self, store):
+        store.add_item("a", "body a", "note")
+        async with _client(_make_app(store, embedder=_FakeEmbedder())) as client:
+            data = await (
+                await client.post("/api/knowledge/embedding/generate", json={"rebuild": False})
+            ).json()
+        assert "warnings" not in data
+
+    @pytest.mark.asyncio
     async def test_items_the_embedder_declines_stay_unembedded(self, store):
         store.add_item("a", "body a", "note")
         emb = _FakeEmbedder(vec=())
