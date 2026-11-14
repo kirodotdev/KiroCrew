@@ -8,8 +8,14 @@ queues behind background starts on a host that has long since had room.
 
 This module re-reads the host on a slow interval and raises the widths. It
 never narrows one, never passes what the host's cores give, and stops once the
-cores, not the memory, set the width. Memory per start stays bounded by
-``agent.spawn_min_memory_gb``, read at each start, which this does not touch.
+cores, not the memory, set the width. ``agent.spawn_min_memory_gb`` gates
+sub-agent starts only, so for any other start these widths' memory term is the
+only memory bound at the start gates; a widened width is the one a gateway that
+booted with the memory free already keeps for its whole life, and never a wider
+one. The memory checks that stand apart from the gates are not touched:
+``resource_status.admission_check`` for background work while host memory is
+critical, and ``resource_status.prewarm_allowance`` for the sessions the
+dashboard pre-warms.
 
 A neutral module: the gateway's boot task calls it and it reads only the sizing
 modules, never ``kiro_crew.acp``.

@@ -671,11 +671,11 @@ class StreamRedactor:
         Returns the run, redacted like any committed text, or ``""`` when nothing
         is released: the run is anything else (:func:`ends_plain_sentence`), a
         value is being dropped, or the structured detectors still read a unit in
-        it. Unlike :meth:`flush` it keeps the stream going. Text glued to the run
-        is then read without it: no pattern needs such a word on its left to
-        match, so no more is shown; a pattern a ``.`` on its left turns off masks
-        more. A caller that wants a sentence's last word shown before the next
-        chunk calls this after :meth:`feed`; one that never does holds the run.
+        it. Unlike :meth:`flush` it keeps the stream going. The word is never a credential's
+        start, but text glued to it is read with nothing on its left: an exempt link or ARN
+        a ``.`` on its left would mask shows whole (as after a space) and the two-part link
+        token is masked whole; the saved reply masks both. Call this after :meth:`feed` to
+        show a sentence's last word before the next chunk; a caller that never does holds it.
         """
         if self.discarding or not ends_plain_sentence(self._buf):
             return ""

@@ -246,3 +246,33 @@ async def test_widening_a_gate_in_use_neither_loses_nor_doubles_a_permit(host, c
     assert gate.semaphore.locked()
     for permit in held:
         permit.release()
+
+
+@pytest.mark.asyncio
+async def test_the_gateway_boot_task_sizes_then_starts_the_re_read_loop(configured, monkeypatch):
+    """The wiring: without it the widths a gateway boots with never widen."""
+    from kiro_crew.slack.gateway import GatewayOrchestrator
+
+    steps: list[object] = []
+
+    async def _sized() -> None:
+        steps.append("sized")
+
+    async def _loop(agent: object, sessions: object) -> None:
+        steps.append((agent, sessions))
+
+    monkeypatch.setattr(widening, "widen_start_gates_as_memory_frees", _loop)
+    sessions = _Sessions()
+    tasks: set[asyncio.Task[None]] = set()
+    orch = SimpleNamespace(
+        _cfg=configured,
+        sessions=sessions,
+        _background_tasks=tasks,
+        _log_session_start_sizing=_sized,
+    )
+
+    GatewayOrchestrator._schedule_session_start_sizing(orch)  # type: ignore[arg-type]
+    (task,) = tasks
+    await await_until(task, what="the boot sizing task")
+
+    assert steps == ["sized", (configured.agent, sessions)]

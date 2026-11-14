@@ -183,3 +183,42 @@ class TestStartPriorityOnTheWire:
         assert [e["env"] for e in stamped] == [[{"name": "A", "value": "1"}, pair], [pair]]
         # The caller's list may be shared with another session: it is not edited.
         assert "env" not in entries[1] and len(entries[0]["env"]) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("priority", [_FG, _BG], ids=["person", "background"])
+    async def test_create_session_carries_its_start_priority_to_its_stub_entries(
+        self, monkeypatch, tmp_path, priority: StartPriority
+    ) -> None:
+        """The wiring: without it no stub ever claims a person's start at the daemon."""
+        from acp_runtime_helpers import _make_runtime
+
+        import kiro_crew.acp.runtime as acp_runtime
+
+        class _Reached(Exception):
+            """The array reached the step after the stamp; the start goes no further."""
+
+        entries = [{"name": "demo", "command": "kirocrew"}]
+        # Through the facade: several owners bind this name, and the facade's write
+        # reaches each of them (and its undo restores each).
+        monkeypatch.setattr(
+            acp_runtime,
+            "_pooled_session_servers_and_ref_spec",
+            lambda *_a, **_kw: (entries, None, ()),
+        )
+        handed_on: list[list[dict[str, Any]]] = []
+
+        async def _next_step(pooled: list[dict[str, Any]], *_a: Any, **_kw: Any) -> Any:
+            handed_on.append(pooled)
+            raise _Reached
+
+        rt, _reader, _proc = _make_runtime()
+        rt._work_dir = tmp_path
+        monkeypatch.setattr(rt, "_unpooled_control_planes", _next_step)
+
+        with pytest.raises(_Reached):
+            await rt.create_session(
+                cwd=tmp_path, agent="worker", session_key="", start_priority=priority
+            )
+
+        pair = {"name": START_PRIORITY_ENV, "value": "fg"}
+        assert [e.get("env", []) for e in handed_on[0]] == ([[pair]] if priority is _FG else [[]])

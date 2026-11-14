@@ -143,7 +143,12 @@ time-to-first-token: `build_session_context` stamps `_mark(...)` per group
 gateway makes the skills read once ahead of its first session
 (`skill_first_read.first_read_after_ready`, past readiness and on a worker
 thread), so that session's `skills` mark does not carry the process's first
-read; the build itself reads through the loader as before.
+read; the build itself reads through the loader as before. A re-walk of the
+skill list that has come due is started ahead of the build in the same way: when
+the person focuses or types in the chat, and again as a turn that starts its
+session begins its claim (`dashboard/skill_read_ahead`), so a session start's
+`skills` mark does not carry the re-walk either
+([memory-skills-hooks spec](../system-specs/modules/memory-skills-hooks.md)).
 
 ### What memory contributes at session start
 

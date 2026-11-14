@@ -6717,7 +6717,15 @@ re-reads the host's available memory every 60 s while memory, not the cores, set
 rises, so a gateway that boots while memory is short does not keep that moment's
 widths. The cached reading's memory figure only rises
 (`session_start_sizing.refresh_host_capacity`), so nothing narrows and no width passes
-what the cores give; `agent.spawn_min_memory_gb` still bounds memory at each start. The narrower common runtime chokepoint adds
+what the cores give. `agent.spawn_min_memory_gb` gates sub-agent starts only: for any
+other start (a chat, a channel turn, a cron job, the warm pool) these widths' memory
+term is the only memory bound at the start gates, and a widened width is the one a
+gateway that booted with the memory free already keeps for its whole life, never a
+wider one. The memory checks that stand apart from the gates are not touched: while
+host memory is critical `resource_status.admission_check` defers background work (an
+`every` or `at` cron firing, a task-runner step, a background helper turn), and
+`resource_status.prewarm_allowance` lowers the number of sessions the dashboard
+pre-warms as memory tightens. The narrower common runtime chokepoint adds
 a gateway-wide `AcpRuntime.spawn()` coordinator capped at
 `agent.runtime_spawn_concurrency` concurrent spawn + `initialize` handshakes. Both
 default to `"auto"`, which `cold_start_sizing` derives from the effective
