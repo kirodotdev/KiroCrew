@@ -131,6 +131,49 @@ class TestRefreshDynamicFieldsStripsStaleUrl:
         # A non-object entry occupies the name as the user's.
         assert config["mcpServers"]["user-nulled"] is None
 
+    def test_edition_extra_env_keys_restored_user_values_kept(self):
+        """An entry that lost the edition's env keys gets them back on refresh.
+
+        A same-named server the user added by hand can replace the bundled entry's
+        env (an older build merged the user's command unit over it). The edition
+        needs its env keys to run the server as shipped, so a missing key is
+        restored; a key the user set keeps the user's value.
+        """
+        from kiro_crew.agent import _refresh_dynamic_fields
+
+        extra = {
+            "edition-extra": {
+                "command": "/v2/python3",
+                "env": {"MODE": "full", "REGION": "a"},
+            },
+            "no-env": {"command": "/v2/tool"},
+        }
+        config = {
+            "mcpServers": {
+                "edition-extra": {"command": "/v1/python3", "env": {"REGION": "mine"}},
+                "no-env": {"command": "/v1/tool", "env": {"K": "v"}},
+            }
+        }
+        with patch("kiro_crew.agent._extra_mcp_servers", return_value=extra):
+            _refresh_dynamic_fields(config)
+        entry = config["mcpServers"]["edition-extra"]
+        assert entry["env"] == {"REGION": "mine", "MODE": "full"}
+        # The edition's own dict is not aliased into the user's entry.
+        assert extra["edition-extra"]["env"] == {"MODE": "full", "REGION": "a"}
+        # An edition spec with no env leaves the user's env alone.
+        assert config["mcpServers"]["no-env"]["env"] == {"K": "v"}
+
+    def test_edition_extra_env_restored_when_entry_has_none(self):
+        """An entry with no env at all takes a copy of the edition's env."""
+        from kiro_crew.agent import _refresh_dynamic_fields
+
+        extra = {"edition-extra": {"command": "/v2/python3", "env": {"MODE": "full"}}}
+        config = {"mcpServers": {"edition-extra": {"command": "/v1/python3"}}}
+        with patch("kiro_crew.agent._extra_mcp_servers", return_value=extra):
+            _refresh_dynamic_fields(config)
+        assert config["mcpServers"]["edition-extra"]["env"] == {"MODE": "full"}
+        assert config["mcpServers"]["edition-extra"]["env"] is not extra["edition-extra"]["env"]
+
     def test_refresh_strips_legacy_denied_commands(self):
         # Upgrade path: an existing config injected by an older build carries a
         # stale toolsSettings.deniedCommands + autoAllowReadonly that kiro-cli

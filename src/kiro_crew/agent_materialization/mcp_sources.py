@@ -397,7 +397,8 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # and ``disabled``, never their command/args/env, the edition's invocation.
     # Not folded into ``managed_names``, which also drives the shared-server
     # tools/allowedTools/disabled sync.
-    edition_names = frozenset(agent_mod._extra_mcp_servers()) - managed_names
+    edition_servers = agent_mod._extra_mcp_servers()
+    edition_names = frozenset(edition_servers) - managed_names
 
     # App-contributed MCP servers go in FIRST so an app's namespaced entry
     # outranks any same-named leftover in the shared global file (every loop
@@ -491,6 +492,16 @@ def merge_mcp_sources(config: dict) -> McpSources:
                 # mcps[name] is a private copy (globals were copied in above),
                 # so update() does not mutate any source dict.
                 mcps[name].update(spec)
+                # An edition-supplied name keeps the env keys the edition ships:
+                # the store's own env keys win, but a same-named store entry
+                # must not drop the keys the server needs to run as shipped.
+                # Merged over the SHIPPED env, not the previous spec's, so a key
+                # the store's env leaves out drops out of the spec.
+                store_env = spec.get("env")
+                if name in edition_names and isinstance(store_env, dict):
+                    shipped_env = edition_servers[name].get("env")
+                    if isinstance(shipped_env, dict):
+                        mcps[name]["env"] = {**shipped_env, **store_env}
             else:
                 mcps[name] = dict(spec)
     return McpSources(kirocrew_mcp, shared_mcp, extra_shared_mcp, managed_names, _replaced)
