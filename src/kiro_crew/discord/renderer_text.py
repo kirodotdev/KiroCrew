@@ -44,12 +44,11 @@ def _redact_steer(text: str) -> str:
 # the first line end left a real marker unrecognised. ``]`` is the terminator
 # this grammar actually has.
 #
-# Requiring ``steer-<id>`` rather than a bare ``[STEERING`` is the ruling
-# ``messaging.driver`` already applies: opening with the sentinel is not being a
-# marker, so prose that merely mentions it stays visible now that the class no
-# longer stops at a line end. The id class matches driver's, and is the SAME in
-# both patterns, because the summary is matched at the offset the marker pattern
-# chose -- a narrower id class there would silently drop the summary.
+# ``steer-<id>`` is required, not a bare ``[STEERING`` (the same rule as
+# ``messaging.driver``), so prose that only mentions the word stays visible even
+# though the class crosses line ends. The id class matches driver's and is the
+# SAME in both patterns: the summary is matched at the marker's offset, so a
+# narrower id class there would silently drop the summary.
 _STEER_MARKER_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+(?:\s*:[^\]]*)?\]", re.IGNORECASE)
 _STEER_SUMMARY_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+\s*:\s*([^\]]*)\]", re.IGNORECASE)
 
