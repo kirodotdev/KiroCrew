@@ -970,6 +970,12 @@ files own it:
   stylesheet's source text reads it through `src/test/indexCssSource.ts`
   (`readIndexCss()`), which splices every partial in at its import.
 
+  No selector may continue past a `[style…]` attribute match (`[style*="x"] .y`).
+  Chrome keys such a rule on the `style` attribute, so every inline style write on
+  any element (each Framer animation frame, a drawer drag) restyles that element's
+  whole subtree. Anchor on a data attribute instead, as `cli-mode.css` does with
+  `[data-chat-scope]`. `src/test/styleAttributeSelectorAnchor.test.ts` enforces it.
+
 The build runs through `@tailwindcss/vite`; there is no PostCSS config. A
 downstream edition's sources are added to the content scan by
 `editionExtensionPlugin` in `vite.config.ts`, which swaps the

@@ -795,6 +795,7 @@ export default function ChatPane({
            `activeSlot`, so without this nothing in the DOM could say which
            pane renders the session the user just opened. */
         data-pane-slot={slotKey}
+        data-chat-scope=""
         {...dropTargetProps}
         className={`relative flex flex-col h-full min-h-0 overflow-hidden bg-bg ${
           frameless
