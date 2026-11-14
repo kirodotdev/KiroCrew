@@ -719,6 +719,7 @@ class SessionManager:
     first_turn_history_owed_pending = _turn_context.first_turn_history_owed_pending
     unlanded_marker_pending = _turn_context.unlanded_marker_pending
     consume_first_turn_history_owed = _turn_context.consume_first_turn_history_owed
+    note_session_head = _turn_context.note_session_head
     consume_replay_suppression = _turn_context.consume_replay_suppression
     _consume_persisted_replay_suppression = _turn_context._consume_persisted_replay_suppression
     suppress_replay_persistently = _turn_context.suppress_replay_persistently

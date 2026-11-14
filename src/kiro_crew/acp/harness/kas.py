@@ -36,6 +36,7 @@ from typing import Any
 # compared by identity, never substituted.
 from kiro_crew import agent as agent_mod
 from kiro_crew import sandbox as sandbox_mod
+from kiro_crew import session_head
 from kiro_crew.acp import kas_agents as kas_agents_mod
 from kiro_crew.acp import kas_route as kas_route_mod
 from kiro_crew.acp._dispatch import advertised_mode_origin
@@ -96,6 +97,7 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_CLOSE,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
+    PROVIDER_LABEL_KAS,
 )
 from kiro_crew.agent import ForkGovernanceUnresolved
 from kiro_crew.config import paths as paths_mod
@@ -1396,6 +1398,10 @@ class KasHarness(MembershipHarness):
                 )
                 if n
             )
+            # Only an engine known to apply a client prompt carries the session head.
+            if self.agent_prompt_applied:
+                head = session_head.head_blocks(agent, spec, session_key, PROVIDER_LABEL_KAS)
+                custom_agents = session_head.with_head(custom_agents, head)
             return custom_agents, snapshot, managed, apps, withdrawn, notice
 
         try:

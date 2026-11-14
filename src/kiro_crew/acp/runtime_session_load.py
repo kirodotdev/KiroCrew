@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import session_head
 from kiro_crew.acp import batch_guard, kas_cli_settings, kas_env_launch
 from kiro_crew.acp._dispatch import attach_kas_custom_agents, parse_session_modes
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
@@ -671,6 +672,13 @@ async def load_session(
         self._copy_native_launch_sources(
             handle, set_mode_ran=set_mode_ran, activated_alias=activated_alias
         )
+    # The head this load re-sent, when the engine is known to apply it: a resumed
+    # turn re-sends the agent prompt only when the session does not hold one.
+    for definition in kas_agents or ():
+        if definition.get("id") == active_agent and handle.kas_agent_prompt_applied:
+            session_head.record(
+                handle.native_context_documents, active_agent, definition.get("prompt")
+            )
 
     # A resume re-initializes the MCP servers and forks the same agent
     # processes a fresh session does, so it needs the same scan; without it

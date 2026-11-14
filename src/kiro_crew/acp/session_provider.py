@@ -23,6 +23,7 @@ from contextlib import aclosing
 from pathlib import Path
 from typing import Any, cast
 
+from kiro_crew.acp import session_provider_context as _sp_context
 from kiro_crew.acp import session_provider_keepalive as _sp_keepalive
 from kiro_crew.acp import session_provider_mcp_reinject as _sp_mcp_reinject
 from kiro_crew.acp import session_provider_shared as _sp_shared
@@ -53,7 +54,6 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_COMPACT,
-    ACP_BACKENDS_COMPACTION_REPORTED,
     ACP_BACKENDS_CONTEXT_RECYCLE,
 )
 from kiro_crew.acp.types import (
@@ -798,36 +798,31 @@ class AcpSessionProvider(LLMProvider):
 
     @property
     def context_incarnation(self) -> object:
-        return (id(self._handle), self.session_id, self.process_instance)
+        return _sp_context.context_incarnation(self)
 
     @property
     def context_provider_type(self) -> str:
-        from kiro_crew.providers.acp import provider_label
-
-        return provider_label(self)
+        return _sp_context.context_provider_type(self)
 
     @property
     def native_context_documents(self) -> dict[str, str]:
-        fit = getattr(self._handle, "native_context_documents_fit", None)
-        if fit is not None and not fit():
-            return {}
-        return dict(self._handle.native_context_documents)
+        return _sp_context.native_context_documents(self)
+
+    @property
+    def session_head_held(self) -> bool:
+        return _sp_context.session_head_held(self)
 
     @property
     def member_dispatch_mounted(self) -> bool | None:
-        # A handle that never recorded an answer is no evidence, not a refusal.
-        mounted = getattr(self._handle, "member_dispatch_mounted", None)
-        return None if mounted is None else bool(mounted)
+        return _sp_context.member_dispatch_mounted(self)
 
     @property
     def native_steering(self) -> bool:
-        from kiro_crew.acp.types import ACP_BACKEND_KAS
-
-        return self.backend == ACP_BACKEND_KAS
+        return _sp_context.native_steering(self)
 
     @property
     def reports_compaction(self) -> bool:
-        return self.backend in ACP_BACKENDS_COMPACTION_REPORTED
+        return _sp_context.reports_compaction(self)
 
     def prompt_timeout_for_deadline(self, deadline: float) -> float:
         """Resolve the immutable transport budget this ACP session supports."""
