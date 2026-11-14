@@ -525,6 +525,9 @@ def describe_manual_change(
         segments = set(guide_catalog._SEGMENT_SPLIT.split(path.lower()))
         if segments & {"token", "secret", "password", "key", "credential", "credentials"}:
             return f"changed config {s(path)}"
+        if b.get("unset") is True:
+            # The leaf is removed, not set to null: the key reads its default again.
+            return f"reset config {s(path)} to its default"
         return f"changed config {s(path)} {s(before)}→{s(b.get('value'))}"
     if route == ("PUT", "/api/members/{slug}/goals/key-results"):
         raw_items = b.get("items")

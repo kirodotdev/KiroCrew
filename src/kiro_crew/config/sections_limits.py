@@ -252,9 +252,10 @@ SOFT_STOP_BUDGET_MAX = 60.0
 EXTRACTION_POOL_SIZE_MIN = 1
 EXTRACTION_POOL_SIZE_MAX = 10
 # Load-only bounds. Unlike the parity block above these are NOT consumed by
-# `_EDITABLE_CONFIG` — the field is config-file-only (no dashboard write path),
-# so the only clamp site is the loader. Kept out of the shared block so its
-# "every bound is shared with the write gate" claim stays true.
+# `_EDITABLE_CONFIG`, so the loader is their only clamp site. Kept out of the
+# shared block so its "every bound is shared with the write gate" claim stays
+# true. Settings -> Advanced's generic rule can write `session.kas_delete_delay_secs`
+# without these bounds, and the loader clamps a stored value outside them.
 EMPTY_RESPONSE_MAX_CONTINUES_MIN = 1
 EMPTY_RESPONSE_MAX_CONTINUES_MAX = 10
 # Also load-only, and a floor only: 0 keeps every turn's copies, so a negative

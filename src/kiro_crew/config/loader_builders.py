@@ -260,6 +260,9 @@ def _session_sort_from(raw: object, default: str) -> str:
 # the same reason: 0 is its documented "use the default" sentinel, which the
 # manager normalizes, so a MIN floor in the generic loop would turn it into a
 # 60-second deadline. Only out-of-range values are altered.
+# The dashboard's generic write rule for a listed key with no `_EDITABLE_CONFIG`
+# rule reads this table (`config_all_settings._security_bounds`), so a save from
+# Settings -> Advanced stays inside the same range and never trips the clamp.
 _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
     ("agent", "subagent_auto_max", 3, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "max_subagents", 0, SUBAGENT_AUTO_MAX_CEILING),

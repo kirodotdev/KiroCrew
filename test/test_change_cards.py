@@ -557,6 +557,17 @@ def test_memory_descriptions_carry_names_only():
     assert text == "changed config chat.verbosity standard→ultra-brief"
 
 
+def test_a_reset_is_remembered_as_a_reset_not_as_a_null_value():
+    """Settings -> Advanced resets with ``unset``; the key reads its default again."""
+    text = catalog.describe_manual_change(
+        ("PATCH", "/api/config/kirocrew"),
+        {},
+        {"path": "agent.log_level", "unset": True},
+        "DEBUG",
+    )
+    assert text == "reset config agent.log_level to its default"
+
+
 def test_memory_line_says_a_deny_rule_was_edited_not_disabled():
     # The PATCH also edits pattern and note; a body without ``enabled`` must not
     # read as "disabled" in the operator's history.

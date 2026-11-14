@@ -22978,6 +22978,44 @@
     "doNotTrackCaption": "Definir DO_NOT_TRACK=1 desativa as métricas de desempenho e o sinal."
   },
   "settings": {
+    "advanced": {
+      "title": "Todas as configurações",
+      "intro": "Cada alteração é verificada antes de ser salva. Altere uma configuração aqui ou siga o link dela até a página onde ela fica. Uma linha somente leitura diz por quê.",
+      "search_placeholder": "Filtrar por nome, chave ou descrição",
+      "read_only": "Somente leitura",
+      "why_safety": "Somente leitura: decide o que o agente pode executar ou fazer sem perguntar a você.",
+      "why_sign_in": "Somente leitura: decide como seus logins são guardados.",
+      "why_reach": "Somente leitura: decide quem pode alcançar este computador, o agente ou um chat.",
+      "why_share": "Somente leitura: envia sua atividade para outro serviço.",
+      "why_owned": "Somente leitura: outra etapa altera isso junto com outras configurações.",
+      "why_marker": "Somente leitura: o {{productName}} define isso quando você termina uma etapa.",
+      "why_alias": "Somente leitura: o {{productName}} lê este valor de outra configuração, então alterá-lo aqui não faria nada.",
+      "why_text": "Somente leitura: contém texto livre, como um caminho de arquivo, um endereço web ou um comando.",
+      "why_locked": "Somente leitura: a política da sua organização define isso.",
+      "why_compound": "Somente leitura: contém vários valores que precisam mudar juntos.",
+      "restart": "Aplica após reiniciar o gateway",
+      "default_label": "Padrão: {{value}}",
+      "current_label": "Atual: {{value}}",
+      "status_idle_draft": "Salva quando você sai do campo",
+      "status_idle_instant": "Salva assim que você muda",
+      "status_saving": "Salvando…",
+      "status_saved": "Salvo",
+      "not_saved": "Não salvo",
+      "put_back": "Descartar minha alteração",
+      "reset": "Restaurar padrão",
+      "reset_aria": "Restaurar {{key}} para o padrão",
+      "reset_confirm": "Restaurar o padrão? Atual: {{value}}",
+      "reset_confirm_yes": "Restaurar",
+      "reset_cancel": "Cancelar",
+      "list_hint": "Um item por linha",
+      "open_setting": "Alterar em {{page}}",
+      "empty": "Nenhuma configuração corresponde.",
+      "load_error": "Não foi possível carregar as configurações.",
+      "empty_value": "(vazio)",
+      "value_on": "Ativado",
+      "value_off": "Desativado",
+      "top_level": "Geral"
+    },
     "chat": {
       "defaultMemoryMode": {
         "description": "Persistente usa o que já sabe e salva nova memória. Anônimo usa o que sabe, mas não salva nova memória. Temporário começa em branco e não salva nada. Todos os chats continuam aparecendo no histórico. Você pode mudar o modo de qualquer chat.",
@@ -23008,6 +23046,10 @@
       "system": "Sistema"
     },
     "tabs": {
+      "advanced": {
+        "description": "Todas as configurações em uma lista",
+        "label": "Avançado"
+      },
       "about": {
         "description": "Versão, canal de atualização, verificação de atualizações e licença",
         "label": "Sobre"

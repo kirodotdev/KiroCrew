@@ -5084,3 +5084,134 @@ safety ceiling: `max(3 * 33,000, floor(window_tokens * 4.0 * 0.125))` characters
 Crossing it omits complete lesson entries first and reports their count; preferences,
 safety rules, and date/runtime identity stay whole. This does not change the fixed
 33,000-character optional-content allowance.
+
+## Settings → Advanced: every key, one validated writer
+
+Settings → Advanced (`website/src/pages/settings/AdvancedPanel.tsx`, rows in
+`website/src/components/allSettings/AllSettingsList.tsx`) lists every config key in
+one list, so a person can change one without editing `config.json`. A key with a
+control of its own elsewhere in Settings is a row with a link to it, never a second
+control. The frontend holds no list of keys. `GET /api/config/schema` adds an
+`allSettings` record to each entry the page lists, built by
+`dashboard/handlers/config_all_settings.py`:
+
+| Record | Meaning |
+|---|---|
+| absent | not listed: a `sensitive` or `deprecated` field, a whole section, a map, a list of non-strings, a `*` path |
+| `{"mode": "control", "settingId"}` | a Settings control names the key: its registry `configKey` (`settings-registry.generated.json`), a `PUT /api/dashboard/config` row, or a `PUT /api/config/theme` row; the row links to that control |
+| `{"mode": "control", "page": {tab, sub?, highlight?}}` | the key's control lives on a page that does not name it: `_OWNING_PAGES` (each row checked against the page's own writer), a channel section (`slack.*`, `teams.*` …, the channel's page writes the whole section), or a preview flag (Feature Previews) |
+| `{"mode": "readonly", "reason"}` | shown, never written here; `reason` is a `WHY_*` code the page turns into one plain sentence |
+| `{"mode": "edit", "control", "resettable", ...bounds}` | the row offers `control` (`bool`, `enum`, `int`, `float`, `str`, `str_list`) |
+
+A `control` row is never written here: `_blocked` refuses a generic rule for it, and
+a curated `_EDITABLE_CONFIG` rule its own page saves through is unchanged. A link
+row still shows the key's current value. A key `PUT /api/dashboard/config` writes
+(its `_allowed` set) is never an `edit` row: its own page owns the control.
+Its control names it with `configKey`, or `DASHBOARD_SETTINGS` lists it, and a test
+reads `_allowed` from the route's source to check each key.
+The same holds for a key another route writes with its own rule: `_OWNING_PAGES`
+links it to that route's page (`memory.history_max_days` and
+`memory.history_idle_hours` to Overview, whose `PUT /api/memory/settings` keeps at
+least 7 days and 0.5 hours; `agent.log_level` to Developer → Logs), so a generic
+write cannot skip that rule. A key such a route writes as one step with other keys
+and that has no control (`memory.embedding_provider`) is read-only (`owned`).
+
+An `edit` row saves when its control changes, with no confirm step. A text,
+number or list field saves when it loses focus (or on Enter); a toggle or select
+saves on change. Beside the control, a status line reads the row's save mutation
+and is announced politely (`role="status"`, `aria-live="polite"`) without moving
+focus: before any save it says what will save the value ("Saves when you leave
+the field" for a draft field, "Saves as soon as you change it" for a toggle or
+select), then "Saving…" while the PATCH and its refetch run, then "Saved". A
+Reset is a save and shows the same states. A refused save hides the status line
+and shows "Not saved" instead. The line holds no state of its own. A row the
+gateway marks `resettable` offers "Reset to default". Clicking it sends nothing:
+the row shows an inline prompt with the current value ("Reset to default?
+Current: github, slack") and two buttons. The prompt's Reset sends `unset`;
+Cancel or Escape closes the prompt and sends nothing. Focus moves to Cancel when
+the prompt opens and back to "Reset to default" when it closes. A refused save
+offers "Discard my edit", which clears the error and shows the saved value
+again; it writes nothing. The
+PATCH reply is the same config body every Settings save gets. The masked config
+view does not fill every leaf: a sub-key of a stored dict section
+(`dashboard.terminal.max_sessions`, `orphan_timeout_s`) is absent when the file
+never set it, and its reader uses the default. An `edit` row whose path the view
+leaves absent shows its schema default and compares Reset against it, so the field
+shows the value in force and Reset is disabled. A `null` on a nullable key is
+stored as written (the route stores a null its generic check accepts).
+
+Every row control refuses another write while its save or Reset is pending,
+including the refetch. The enum passes `busy` to `SimpleSelect`, and the shared
+`send` handler refuses a draft field's late blur while its earlier save runs.
+Every save attempt (including Reset) invalidates all queries on the
+dashboard's query client, on success or error. Active queries refetch immediately;
+inactive queries, such as `tipsStatus` and `tipsAll` while Chat is closed, refetch
+when used again despite the default `staleTime: Infinity`. The success handler
+awaits the refetch before resetting the draft, so the row shows the gateway's
+reread value. Advanced saves are rare, so the extra reads are accepted rather than
+maintaining a second list of which queries depend on each config key.
+
+The remaining read-only rows have no control anywhere in Settings. `READONLY_REASONS`
+names each one with its reason (`safety`: what the agent may run or skip asking;
+`sign_in`: how sign-ins are kept; `reach`: who can reach this machine, the agent or a
+session; `share`: activity sent to another service, such as `telemetry.traces_enabled`,
+whose reader sends each turn's spans to the collector the config or the gateway's
+environment names; `owned`: another step changes it;
+`marker`: Kiro Crew sets it itself; `alias`: the top-level `observe_max_messages` /
+`observe_ttl_hours`, which the loader reads and `to_dict` saves under `slack.*`). A
+listed key is read-only even when it has a curated rule (`browser.live.mask_passwords`,
+which the browser spec keeps on with no control): `_blocked` is checked before the
+curated branch. A key
+is also read-only when it carries a non-channel tag. A tag alone does not mean
+that the key sends activity: WakaTime's API address uses `share`, its OAuth client
+ID uses the explicit `sign_in` reason, and the publish destination list and artifact
+relocation roots fall back to `text`. Other tagged types fall back to `compound`.
+A key is also read-only when
+`_MOVED_CONFIG_FIELDS` names it, when `edition_locks.config_path_locked` holds it
+(`locked`), when it is free text or a list not in `TEXT_EDIT_PATHS` (`text`), or when
+its curated rule has no drawable control (`normalized`, `dict`, a `values_fn` enum:
+`compound`).
+
+Every other key with a curated rule is edited with that rule. A key with none gets a
+schema-derived rule from `generic_spec`: booleans, integers, numbers and enums by
+type; free text and string lists only when `TEXT_EDIT_PATHS` names them, since a
+path, URL, host or command line is where a careless value does the most harm.
+Integer and number bounds only keep an absurd value out of the file (`0` or a
+negative default up to `10**12`); the loader still clamps each field at read. An
+integer listed in `loader_builders._SECURITY_BOUNDED_FIELDS` takes that table's own
+range instead (`_security_bounds`): the loader records a clamp of one of those as
+possible tampering, so a save from this page must never need one. A curated rule
+for such a key already uses the same range, and a test checks every row of the
+table. A bounded key that `_clamp_security_bounds` also clamps past the table's
+range is read-only instead: `agent.subagent_timeout_secs` (`safety`; a non-zero
+value below `SUBAGENT_TIMEOUT_MIN` is raised) and `agent.tool_approval_timeout_secs`
+(`compound`; lowered to `chat_turn_timeout_secs` less `APPROVAL_TURN_MARGIN_SECS`).
+Another integer the loader clamps to a narrower range than `10**12`
+(`session.kas_delete_delay_secs`, for one) still takes the wide bounds; a save
+outside the loader's range reads back clamped.
+`_SENTINEL_FLOORS` lowers the floor for an integer whose loader takes a negative
+value as a mode although its default is not negative (`-1` for
+`session.archive_retention_days` and `resource_limits.xdist_auto_cap`), so that
+value can be saved.
+`_editable_config_spec` asks `_EDITABLE_CONFIG` first and `generic_spec` last, and
+`generic_spec` never adds to `_EDITABLE_CONFIG`, so `change_cards_settings.resolve_setting`
+cannot offer a generic key to a change card.
+
+`PATCH /api/config/kirocrew` treats a generic rule (`"generic": True`) in two extra
+ways. `generic_value_error` checks the value with `kiro_crew config set`'s own
+`cli_config._declared_type_error` (no `"3"` or `true` for an integer), plus the
+reader's own validator for a free-text key in `_TEXT_CHECKS` (`timezone` must pass
+`cron_service.schedule.is_valid_timezone`, or be `""`).
+`{"path", "unset": true}` removes the stored leaf, so the field reads its default
+again, including a later release's default (the agent's memory line for it says
+`reset config <path> to its default`, from `change_card_catalog.describe_manual_change`); it is refused for a curated key, whose
+guards a removal could step around, and together with `if_unset`. Owner gate, SEL
+audit, overlay refusal, write lock and hot-apply are the route's own and apply
+unchanged.
+
+`test_config_all_settings.py` holds two drift guards: an editable key whose path
+contains a security-sounding word fails until it is added to `READONLY_PATHS` or to
+the test's reviewed list; an editable key whose help says a plain config write
+must not set it fails outright; and an editable top-level key that
+`KiroCrewConfig.to_dict` does not save at the top level (an alias of another
+section's key) fails too.
