@@ -271,19 +271,15 @@ async def _run_inner_impl(
         # The worker's spec lives in the crewmate folder, which the agent roster
         # does not list, so it is not looked up by name; what it needs is a
         # backend that carries its per-session kit (the hand-off's own check).
-        from kiro_crew.acp_backends import resolve_selected_backend
         from kiro_crew.config.loader import KiroCrewConfig as _Config
         from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crew_for_member_id
-        from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
+        from kiro_crew.mate_worker import subagent_start_backend, worker_kit_backend_refusal
 
         _cfg = await asyncio.to_thread(_Config.load)
         _crew = crew_for_member_id(_cfg, str(execution.member_id or ""))
         try:
-            worker_backend = (
-                resolve_selected_backend(info.backend)
-                if info.backend is not None
-                else crewmate_worker_backend(_cfg, _crew)
-            )
+            # The one resolver admission also reads (``api_spawn``'s light tier).
+            worker_backend = subagent_start_backend(_cfg, execution, info.backend)
         except CrewmateHarnessUnavailable as exc:
             # The crewmate's pinned harness cannot start, so neither can its
             # worker; it never runs on another harness in its place. The

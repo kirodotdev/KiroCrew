@@ -217,7 +217,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     # Support both single task and batch tasks. A ``tasks`` entry is a prompt
     # string or an object carrying per-task overrides; both
     # normalise to (prompt, overrides) here so the dispatch loop has one shape.
-    task_overrides: list[dict[str, str]] = []
+    task_overrides: list[dict[str, Any]] = []
     if tasks and isinstance(tasks, list):
         task_list = []
         for t in tasks:
@@ -226,7 +226,11 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
                 if not prompt.strip():
                     continue
                 task_list.append(prompt)
-                task_overrides.append({k: v for k, v in t.items() if k != "task" and v})
+                # An explicit ``light: false`` is a value of its own: it overrides
+                # a batch-wide ``light: true`` for this task.
+                task_overrides.append(
+                    {k: v for k, v in t.items() if k != "task" and (v or v is False)}
+                )
             elif isinstance(t, str) and t.strip():
                 task_list.append(t)
                 task_overrides.append({})
@@ -270,6 +274,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     label = normalize_spawn_label(args.get("label"))
     keep = bool(args.get("keep"))
     silent = args.get("silent") is True
+    light = args.get("light") is True
     # Context scope: absent ⇒ true, so a parent that passes nothing gets the
     # same context a normal session would.
     inc_memory = args.get("include_memory", True) is not False
@@ -362,6 +367,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
         t_effort = over.get("reasoning_effort") or reasoning_effort
         t_backend = over.get("backend") or backend
         t_label = normalize_spawn_label(over.get("label")) or label
+        t_light = over["light"] if isinstance(over.get("light"), bool) else light
         if a in refused_agents:
             # Short line on purpose: the full roster is already on the first
             # refusal above, and repeating it once per remaining member would
@@ -391,6 +397,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             body["backend"] = t_backend
         if t_label:
             body["label"] = t_label
+        if t_light:
+            body["light"] = True
         if keep:
             body["keep"] = True
         if silent:
@@ -457,6 +465,10 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             effort_pendings.append((str(d.get("id", "?")), (t_effort, str(d["effort_pending"]))))
         if d.get("runtime_note"):
             runtime_notes.append((str(d.get("id", "?")), ("", str(d["runtime_note"]))))
+        # What a ``light`` flag did, or why it did nothing: the gateway words both.
+        for light_key in ("light", "warning"):
+            if isinstance(d.get(light_key), str) and d[light_key]:
+                runtime_notes.append((str(d.get("id", "?")), ("", d[light_key][:300])))
         if d.get("failover_from"):
             # The run is not on the backend this call named: say where it went.
             runtime_notes.append(

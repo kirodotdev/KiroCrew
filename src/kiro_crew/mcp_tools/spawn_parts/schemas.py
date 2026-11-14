@@ -311,6 +311,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                                 "reasoning_effort": {"type": "string"},
                                 "backend": {"type": "string"},
                                 "label": {"type": "string"},
+                                "light": {"type": "boolean"},
                             },
                             "required": ["task"],
                             "additionalProperties": False,
@@ -318,7 +319,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                         "description": (
                             "Multiple tasks to run in parallel as one wave. Each entry is a "
                             "prompt string, or an object {task, model?, "
-                            "reasoning_effort?, backend?, label?} whose fields override the "
+                            "reasoning_effort?, backend?, label?, light?} whose fields override the "
                             "call's batch-wide value for that task only, e.g. the same review "
                             "prompt on two models or two backends, delivered together."
                         ),
@@ -419,6 +420,18 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "so weigh it on a wide fan-out. Models that do not "
                             "support effort ignore the level, but the process cost "
                             "is still paid."
+                        ),
+                    },
+                    "light": {
+                        "type": "boolean",
+                        "description": (
+                            "Mark a helper job (search, lookup, run-and-report, summarize) "
+                            "so it runs on the cheaper model and lower effort the user "
+                            "configured for helpers. Leave it off for design, "
+                            "review, and edits. Takes effect only when "
+                            "agent.subagent_light_tier is on, and only for a "
+                            "model or reasoning_effort this call leaves unset. Batch-wide; a "
+                            "tasks[] object's own true or false wins for that task."
                         ),
                     },
                     "label": {

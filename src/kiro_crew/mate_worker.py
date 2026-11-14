@@ -1000,6 +1000,30 @@ def crewmate_worker_backend(config: KiroCrewConfig, crewmate: str | None = None)
     )
 
 
+def subagent_start_backend(config: KiroCrewConfig, execution: Any, backend: str | None) -> str:
+    """The backend a sub-agent run admitted under *execution* starts on.
+
+    *backend* is the run's own (named or inherited at admission), ``None`` for
+    none. The allocation gate's answer, read ahead of allocation: a run's own
+    backend wins (``backend_override``); a crewmate's worker runs on its
+    crewmate's (:func:`crewmate_worker_backend`); every other run starts on
+    ``agent.acp_backend``. *execution* is taken as the run will hold it, so a
+    conductor selection becomes its worker first (:func:`spawn_worker_execution`).
+    Raises :class:`~kiro_crew.crewmate_harness.CrewmateHarnessUnavailable` for a
+    crewmate pin that cannot start. Blocking config read.
+    """
+    from kiro_crew.acp_backends import resolve_selected_backend
+    from kiro_crew.crewmate_harness import crew_for_member_id
+
+    if backend is not None:
+        return resolve_selected_backend(backend)
+    execution = spawn_worker_execution(execution) or execution
+    if is_own_worker_execution(execution):
+        crew = crew_for_member_id(config, str(execution.member_id or ""))
+        return crewmate_worker_backend(config, crew)
+    return str(config.agent.acp_backend)
+
+
 def worker_kit_backend_refusal(
     backend: str,
     config: KiroCrewConfig | None = None,

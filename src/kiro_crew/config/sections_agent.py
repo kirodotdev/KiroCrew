@@ -106,8 +106,9 @@ class AgentConfig:
         metadata=_meta(
             "Per-role models",
             "Optional per-task-class model overrides. Keys: 'background' "
-            "(lite / heartbeat background workers) and 'subagent' (spawned "
-            "sub-agents). An empty value or 'auto' defers to the chat default "
+            "(lite / heartbeat background workers), 'subagent' (spawned "
+            "sub-agents) and 'subagent_light' (sub-agents a spawn marks "
+            "light, while Light Sub-agent Tier is on). An empty value or 'auto' defers to the chat default "
             "(agent.model) and then to the provider default, so an unpinned "
             "role stays usable on every subscription tier. Pin a cheaper model "
             "here to run background / sub-agent work on it without changing the "
@@ -122,7 +123,7 @@ class AgentConfig:
         metadata=_meta(
             "Per-role reasoning effort",
             "Optional per-task-class reasoning effort, paired with role_models "
-            "(keys: 'background', 'subagent'). Empty for a role inherits the chat "
+            "(keys: 'background', 'subagent', 'subagent_light'). Empty for a role inherits the chat "
             "default (agent.reasoning_effort) and then the provider/model default. "
             "Only applies on reasoning-capable models. Like a model pin, a "
             "'subagent' effort runs each spawned sub-agent in its own runtime "
@@ -1552,6 +1553,21 @@ class AgentConfig:
             "but one that reuses a process background work started runs marked. "
             "Applies to processes started "
             "after the change. Off by default; no effect on macOS or Linux.",
+        ),
+    )
+    subagent_light_tier: bool = field(
+        default=False,
+        metadata=_meta(
+            "Light Sub-agent Tier",
+            "Let a spawn mark a helper sub-agent (search, lookup, run-and-report, "
+            "summarize) as light. A light spawn runs on the model in "
+            "agent.role_models.subagent_light and the effort in "
+            "agent.role_efforts.subagent_light for whichever of the two its call "
+            "left unset; a model or effort the call names always wins. A spawn "
+            "that names an agent, a crew or a backend is not changed. A pinned "
+            "model or effort starts the sub-agent in its own process, as any "
+            "per-spawn pin does. Off by default: with it off every spawn picks the "
+            "model and effort it always has.",
         ),
     )
     subagent_max_turns: int = field(

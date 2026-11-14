@@ -31,6 +31,7 @@ _SCHEMA_DECLARES_NO_ENUM: dict[str, str] = {
     # keys are dashboard paths only. Both offer "" plus ``EFFORT_LEVELS``.
     "agent.role_efforts.background": "per-role key of a dict entry",
     "agent.role_efforts.subagent": "per-role key of a dict entry",
+    "agent.role_efforts.subagent_light": "per-role key of a dict entry",
     # Onboarding profile slugs: the schema types them as plain strings.
     "dashboard.user_role": "plain string in the schema",
     "dashboard.user_technical_level": "plain string in the schema",
