@@ -5897,7 +5897,9 @@
     "voicePlaybackBar": {
       "preparing": "正在准备音频…",
       "playing": "正在朗读",
-      "stop": "停止朗读"
+      "stop": "停止朗读",
+      "restart": "重新朗读",
+      "restartFromStart": "从头重新朗读"
     },
     "avatarBuilder": {
       "apply": "应用",

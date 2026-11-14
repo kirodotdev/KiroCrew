@@ -6067,7 +6067,9 @@
     "voicePlaybackBar": {
       "preparing": "অডিও প্রস্তুত করা হচ্ছে…",
       "playing": "পড়ে শোনানো হচ্ছে",
-      "stop": "পড়ে শোনানো থামাও"
+      "stop": "পড়ে শোনানো থামাও",
+      "restart": "আবার পড়ুন",
+      "restartFromStart": "শুরু থেকে আবার পড়ে শোনান"
     },
     "avatarBuilder": {
       "apply": "প্রয়োগ করুন",

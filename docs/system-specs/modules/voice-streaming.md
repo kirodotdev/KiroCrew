@@ -316,6 +316,19 @@ auto-speak also stops current speech. Every accepted `voice_chunk`,
 active slot; clearing the known IDs makes late frames inert even after the
 muted flag is reset for another response.
 
+The playback bar's Read again button dispatches `voice-restart`. The playback
+owner keeps the synthesis requests of the current playback context in the order
+they were spoken (the merged sentence text of an auto-speak request, the whole
+reply of a manual Read aloud with its client-fallback flag), and `stopVoice()`
+empties that list, so Stop, a new turn, a new manual Read aloud and a slot
+change each start a context with nothing to replay. Restart tears down output
+and in-flight requests like Stop does, then unmutes, keeps the speech progress
+so a reply still streaming under auto-speak continues after the replayed
+sentences, and submits the saved requests again, each as its own request, in
+order. A request cancelled by the restart keeps its old `request_id`, so its
+late frames are inert. With nothing saved (before anything was spoken, after
+Stop) the event does nothing.
+
 The backend keys active synthesis by `(slot, request_id)` in an application-owned
 registry. `POST /api/voice/cancel` cancels the matching handler, which closes its
 provider stream and releases its child. A bounded, expiring cancellation record

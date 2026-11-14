@@ -6067,7 +6067,9 @@
     "voicePlaybackBar": {
       "preparing": "ऑडियो तैयार हो रहा है…",
       "playing": "ज़ोर से पढ़ा जा रहा है",
-      "stop": "ज़ोर से पढ़ना रोको"
+      "stop": "ज़ोर से पढ़ना रोको",
+      "restart": "फिर से पढ़ो",
+      "restartFromStart": "शुरू से फिर से पढ़ो"
     },
     "avatarBuilder": {
       "apply": "लागू करें",

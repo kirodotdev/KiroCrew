@@ -5897,7 +5897,9 @@
     "voicePlaybackBar": {
       "preparing": "오디오 준비 중…",
       "playing": "읽어 주는 중",
-      "stop": "읽어 주기 중지"
+      "stop": "읽어 주기 중지",
+      "restart": "다시 읽기",
+      "restartFromStart": "처음부터 다시 읽기"
     },
     "avatarBuilder": {
       "apply": "적용",

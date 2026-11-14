@@ -60,6 +60,55 @@ describe('VoicePlaybackBar', () => {
     expect(onStop).toHaveBeenCalledOnce()
   })
 
+  describe('Read again', () => {
+    it.each([
+      ['preparing', setVoicePreparing],
+      ['playing', setVoicePlaying],
+    ] as const)('requests a voice restart while %s', (_state, action) => {
+      const store = mount()
+      act(() => { store.dispatch(action(true)) })
+      const onRestart = vi.fn()
+      const onStop = vi.fn()
+      window.addEventListener('voice-restart', onRestart)
+      window.addEventListener('voice-stop', onStop)
+      try {
+        fireEvent.click(screen.getByRole('button', { name: 'Read again from the start' }))
+      } finally {
+        window.removeEventListener('voice-restart', onRestart)
+        window.removeEventListener('voice-stop', onStop)
+      }
+      expect(onRestart).toHaveBeenCalledOnce()
+      expect(onStop).not.toHaveBeenCalled()
+    })
+
+    it('shows the short label next to the Stop button', () => {
+      const store = mount()
+      act(() => { store.dispatch(setVoicePlaying(true)) })
+      expect(screen.getByTestId('voice-playback-restart').textContent).toBe('Read again')
+      expect(screen.getByRole('button', { name: 'Stop reading' })).toBeTruthy()
+    })
+
+    it('keeps focus on the button while the reading restarts', () => {
+      const store = mount()
+      act(() => { store.dispatch(setVoicePlaying(true)) })
+      const restart = screen.getByRole('button', { name: 'Read again from the start' })
+      restart.focus()
+      const onRestart = () => {
+        store.dispatch(setVoicePlaying(false))
+        store.dispatch(setVoicePreparing(true))
+      }
+      window.addEventListener('voice-restart', onRestart)
+      try {
+        fireEvent.click(restart)
+      } finally {
+        window.removeEventListener('voice-restart', onRestart)
+      }
+      expect(screen.getByRole('status').textContent).toBe('Preparing audio…')
+      expect(screen.getByRole('button', { name: 'Read again from the start' })).toBe(restart)
+      expect(document.activeElement).toBe(restart)
+    })
+  })
+
   describe('focus when the bar goes away', () => {
     /** Drive the rAF `focusComposer` schedules. */
     const flushFrame = async () => {

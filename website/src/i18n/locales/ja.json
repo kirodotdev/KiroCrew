@@ -5897,7 +5897,9 @@
     "voicePlaybackBar": {
       "preparing": "音声を準備中…",
       "playing": "読み上げ中",
-      "stop": "読み上げを停止"
+      "stop": "読み上げを停止",
+      "restart": "もう一度読む",
+      "restartFromStart": "最初からもう一度読み上げる"
     },
     "avatarBuilder": {
       "apply": "適用",
