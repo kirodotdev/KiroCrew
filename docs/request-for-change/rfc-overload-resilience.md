@@ -28,7 +28,7 @@ superseded-by: []
 - Names in this design versus code. Several sections below use design names
   that the code does not carry. `taskq/` holds `store.py` (with its `store_*`
   owners), `model.py`, `lanes.py`, `migrate.py`, `reconcile.py`, `waits.py`,
-  `dependency.py` and `adapters/`; there is no `taskq/state.py`, `scheduler.py`, `budget.py`,
+  `dependency.py`, `timeline.py` (added by #19942) and `adapters/`; there is no `taskq/state.py`, `scheduler.py`, `budget.py`,
   `controller.py` or `recovery.py`. The shipped homes are:
 
   | Design name | Shipped as |

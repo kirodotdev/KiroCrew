@@ -26,11 +26,14 @@ superseded-by: [rfc-retire-chat-autopilot.md]
 > failure they exposed.
 
 Status: superseded. The stage-budget decision and draft implementation
-[#13992](https://github.com/kirodotdev/KiroCrew/pull/13992) no longer apply. The
-ordinary four-hour chat-turn ceiling on current `main` still cancels `_run_chat`
-without first sending native `session/cancel`; issue
-[#14058](https://github.com/kirodotdev/KiroCrew/issues/14058) tracks that narrower
-lifecycle defect. Its fix must not restore the retired Autopilot mode. The
+[#13992](https://github.com/kirodotdev/KiroCrew/pull/13992) no longer apply. Issue
+[#14058](https://github.com/kirodotdev/KiroCrew/issues/14058) tracked the narrower
+lifecycle defect (the ordinary chat-turn ceiling cancelled `_run_chat` without
+first sending native `session/cancel`); it was closed as not planned on
+2026-10-04, and since [#18417](https://github.com/kirodotdev/KiroCrew/pull/18417)
+`_bounded_turn` in `src/kiro_crew/dashboard/turn_dispatch.py` sends the native
+cancel before it cancels the Python task (checked at `1d08e941b3`). That fix did
+not restore the retired Autopilot mode. The
 proposal below is retained as historical context, not as current direction.
 
 - Measured against `main` at `7f1f4fb1d` on 2026-09-26.

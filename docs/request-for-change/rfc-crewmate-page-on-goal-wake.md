@@ -1,10 +1,10 @@
 ---
 title: Crewmate page on a goal wake -- the goal-loop wakes build a crewmate's first Dashboard page, and offer once on a card before replacing a template
-status: accepted
+status: implemented
 author: rayrayxu, with kirocrew-worker
 created: 2026-10-21
-last-audited: 2026-10-21
-audited-at: c428ea050d
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
 implementation-prs: [22533, 22560]
 tracking-issues: []
@@ -14,11 +14,12 @@ superseded-by: []
 
 # RFC: Crewmate page on a goal wake
 
-- Status: accepted. This is the product owner's decision, given 2026-10-21 by
-  rayrayxu. Nothing of it is on main: the first build is in
-  [#22533](https://github.com/kirodotdev/KiroCrew/pull/22533) and the
-  ask-once offer in [#22560](https://github.com/kirodotdev/KiroCrew/pull/22560),
-  both open. This document lands on its own first, because both add a job to
+- Status: implemented. This is the product owner's decision, given 2026-10-21 by
+  rayrayxu. Both parts are on main: the first build merged in
+  [#22533](https://github.com/kirodotdev/KiroCrew/pull/22533)
+  (`dashboard_line` / `DASHBOARD_BUILD_LINE` in `dashboard/goal_reminder.py`) and the
+  ask-once offer in [#22560](https://github.com/kirodotdev/KiroCrew/pull/22560)
+  (`dashboard/page_offer.py`, the `crewmate.dashboard_page` card). This document landed on its own first, because both add a job to
   goal-loop turns, and the First Principles lane reads that decision off the base.
 - Amends, in this document so the accepted and partial documents are not edited:
   [rfc-crewmate-goals.md](rfc-crewmate-goals.md) §3.5 (each cadence has one job)

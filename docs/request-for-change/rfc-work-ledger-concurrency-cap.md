@@ -1,12 +1,12 @@
 ---
 title: Work ledger caps a goal's open items, and its item total becomes an advisory line
-status: partial
+status: implemented
 author: kirocrew agent session, directed by iamwhatever
 created: 2026-10-12
-last-audited: 2026-11-13
-audited-at: 9b32941be6
+last-audited: 2026-11-14
+audited-at: e51c773a0c
 doc-pr: null
-implementation-prs: [19338]
+implementation-prs: [19338, 36312]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -23,15 +23,19 @@ Amended 2026-11-13 by §7 below, by the repository owner's decision: the
 default `concurrency_cap` becomes `MAX_ITEMS_PER_CONDUCTOR` (32), the field
 stays for a bound the user sets, and `resource_status` decides each wave. §3 to
 §6 are kept as the record of the 2026-10-12 decision. §3 shipped in #19338;
-§7 is not built. §7 relies on
+§7 shipped in #36312. §7 relies on
 [`rfc-work-ledger-resource-pressure.md`](rfc-work-ledger-resource-pressure.md)
 for the host signal that replaces the fixed 6.
 
-Status: accepted. The maintainer (iamwhatever) accepted this design in the
+Status: implemented. The maintainer (iamwhatever) accepted this design in the
 conductor chat on 2026-10-12 at about 06:12 UTC: a hard cap on open items, the
-total cap advisory only. The implementation is open as
-[#19338](https://github.com/kirodotdev/KiroCrew/pull/19338) and rebases onto the
-base that carries this document. Every code reference below was read at
+total cap advisory only. The implementation merged as
+[#19338](https://github.com/kirodotdev/KiroCrew/pull/19338), and §7 merged as
+[#36312](https://github.com/kirodotdev/KiroCrew/pull/36312)
+(`DEFAULT_GOAL_CONCURRENCY_CAP = MAX_ITEMS_PER_CONDUCTOR` in `work_ledger_records.py`,
+the wait-for-a-seat refusal in `work_ledger_writes.py`, and the shared
+`resource_wave` conductor rule in `spec_prompts.py` and `crewmate_prompts.json`;
+verified at `e51c773a0c`). Every code reference below was read at
 `0a47021090`.
 
 This document lands on its own because it changes what the goal conductor does by

@@ -15,8 +15,9 @@ superseded-by: []
 # RFC: Perpetual agents — self-scheduled, goal-driven, supervised
 
 - Status: accepted — the product decision is the owner-controlled Perpetual
-  mode in §Accepted decision. Its implementation is tracked in
-  [#11582](https://github.com/kirodotdev/KiroCrew/pull/11582). Line numbers
+  mode in §Accepted decision. Its implementation was tracked in
+  [#11582](https://github.com/kirodotdev/KiroCrew/pull/11582), closed unmerged
+  on 2026-10-29; no Perpetual switch is on main. Line numbers
   and file sizes in the research sections below are as read at the commits this
   document names for them, not live pointers.
 - **Revision 4 (2026-09-28): accepted one narrow product shape.** An owner may

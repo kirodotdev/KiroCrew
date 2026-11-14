@@ -1,12 +1,12 @@
 ---
 title: The goal conductor reads each open worker's new transcript lines on every patrol turn and steers drift
-status: accepted
+status: implemented
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-13
-last-audited: 2026-11-13
-audited-at: 1bfb59ea14
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
-implementation-prs: [36302]
+implementation-prs: [36302, 36618]
 tracking-issues: [36299]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,10 @@ superseded-by: []
 
 # RFC: The goal conductor checks each worker for drift on every patrol turn
 
-Status: accepted. The repository owner asked for this in the conductor chat on
+Status: implemented. Section 2 shipped in
+[#36302](https://github.com/kirodotdev/KiroCrew/pull/36302) and the 2026-11-13
+amendment in [#36618](https://github.com/kirodotdev/KiroCrew/pull/36618)
+(`goal-conductor/SKILL.md` patrol step 5). Accepted: the repository owner asked for this in the conductor chat on
 2026-11-13 and merges this document; it takes effect when it merges. Nothing is
 built by this document and it changes no code. The skill and prompt change is
 [#36302](https://github.com/kirodotdev/KiroCrew/pull/36302), which rebases onto

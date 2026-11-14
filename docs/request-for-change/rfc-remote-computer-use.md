@@ -69,7 +69,7 @@ Six decisions:
   `LinuxBackend`, an `UnsupportedBackend` carrying `LINUX_REASON`. Settings
   renders that reason and no toggle when `supported` is false
   (`ComputerUsePanel.tsx`). The spec gate `_computer_use_spec_gate()`
-  (`agent.py`) also requires `platform_could_be_supported()`, which is
+  (`agent_parts/spec_build.py`) also requires `platform_could_be_supported()`, which is
   `platform_id_for_current_os() in _SUPPORTED_PLATFORM_IDS`, a set holding
   `macos` and `windows`.
 - **The desktop app already holds a tunnel and a bundled backend.** In Remote
@@ -79,7 +79,7 @@ Six decisions:
   (`token-sources.js`, `remote-token.js`). `backend-dist` carries the whole
   Python package, the macOS driver included (`find-bin.js`).
 - **The browser panel has an outbound pull channel, but not for remote
-  gateways.** `browser-agent-channel.js` long-polls
+  gateways.** (The channel, `command_bus.py` and its tests were since removed by #26950.) `browser-agent-channel.js` long-polls
   `/api/browser/command-drain` and posts `/api/browser/command-result`. Both
   are in `_STRICT_INTERNAL_API_PATHS` (`server.py`), and the app sends a
   secret only to a gateway it launched locally (`local-token.js`).

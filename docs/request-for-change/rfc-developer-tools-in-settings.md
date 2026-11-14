@@ -1,10 +1,10 @@
 ---
 title: The developer tools live in Settings > Developer, with no Developer Mode switch
-status: accepted
+status: implemented
 author: iamwhatever
 created: 2026-10-27
-last-audited: 2026-10-27
-audited-at: d8e04b97f3
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr:
 implementation-prs: [24810]
 tracking-issues: [24797]
@@ -14,7 +14,12 @@ superseded-by: []
 
 # RFC: The developer tools live in Settings > Developer, with no Developer Mode switch
 
-- Status: accepted. This is the product owner's decision, given 2026-10-26:
+- Status: implemented in
+  [#24810](https://github.com/kirodotdev/KiroCrew/pull/24810) (merged
+  2026-10-28): `/developer` redirects into `settings/developerSubs`, the
+  `useDevMode` hook and `shell/nav/developerMode.ts` are gone, and
+  `electron/app-menu.js` builds Toggle Developer Tools with `visible: true`.
+  Accepted as the product owner's decision, given 2026-10-26:
   merge the standalone Developer page into Settings > Developer, make today's
   Settings > Developer content its "Feature Previews" page, and remove the
   Developer Mode toggle after checking what else it gates. The owner reviewed
