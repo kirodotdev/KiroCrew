@@ -104,14 +104,21 @@ kirocrew`). Onto that base:
    before. The unit is projected, not merged: a key the source dropped is removed.
    A name the edition supplies through `extra_mcp_servers()` keeps its whole
    command unit (`command`, `args` and `env`), because that invocation is the
-   edition's (`_refresh_dynamic_fields()` refreshes its `command` and `args`);
-   only `timeout` and `disabled` are reconciled onto it, here and in step 3.
+   edition's (`_refresh_dynamic_fields()` refreshes its `command` and `args`, and
+   puts back any `env` key the edition ships that the entry lacks, keeping the
+   user's value for a key both set); only `timeout` and `disabled` are reconciled
+   onto it, here and in step 3.
 3. **Seam-contributed provider globals**, so they can only fill gaps the Kiro
    global did not: a name step 1 or step 2 already claimed in this pass has been
    retired, so it is left alone. Empty in this build.
 4. **`~/.kiro/crew/mcp.json`** via `update()` on an existing entry, so
    Kiro Crew's `command`/`args`/`env` win while user-set fields such as
-   `autoApprove` survive.
+   `autoApprove` survive. On an edition-supplied name the store's `env` is
+   merged over the `env` the edition ships instead of replacing it, so the
+   store's keys win and the edition's other keys stay. The spec then carries
+   exactly those two sets: a key the store set on an earlier build but leaves
+   out of its `env` now is removed, and a key the edition ships stays; to turn
+   one off, set it to another value in the store.
 
 Kiro global outranks any seam-contributed provider global because Kiro Crew is
 kiro-cli-only. Managed servers are skipped by every merge loop: their
