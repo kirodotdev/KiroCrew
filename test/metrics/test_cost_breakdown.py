@@ -440,6 +440,32 @@ class TestSpendUnit:
         assert out.get("unit") == "credits"
         assert out.get("credits") == 12.5
 
+    def test_a_mixed_window_carries_the_dollar_view_beside_the_credits(self, store):
+        """A crew running both harnesses spends in both units in one window."""
+        store([
+            _row(slot="chat-1-1700000000", model="kiro-m", credits=12.5),
+            _dollar_row(slot="chat-2-1700000000", cost=0.5),
+            _dollar_row(slot="chat-2-1700000000", cost=0.25),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        usd = out.get("usd") or {}
+        assert usd.get("unit") == "usd"
+        assert usd.get("credits") == pytest.approx(0.75)
+        assert usd.get("turns") == 2
+        assert usd.get("per_turn") == pytest.approx(0.375)
+        assert [r.get("name") for r in usd.get("by_model", [])] == ["claude-x"]
+        assert [c.get("slot") for c in usd.get("conversations", [])] == ["chat-2-1700000000"]
+        assert "usd" not in usd
+        # Each turn is counted on one card only.
+        assert out.get("turns") == 1
+        assert [r.get("name") for r in out.get("by_model", [])] == ["kiro-m"]
+
+    def test_a_single_unit_window_carries_no_second_view(self, store):
+        store([_row(slot="chat-1-1700000000", credits=3.0)])
+        assert "usd" not in usage_mod.cost_breakdown(7)
+        store([_dollar_row(slot="chat-2-1700000000", cost=0.5)])
+        assert "usd" not in usage_mod.cost_breakdown(7)
+
     def test_a_window_with_no_spend_at_all_stays_in_credits(self, store):
         store([_row(slot="chat-1-1700000000", credits=0.0)])
         out = usage_mod.cost_breakdown(7)

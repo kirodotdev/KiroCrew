@@ -1740,7 +1740,13 @@ instead: `cost_breakdown` reports `unit: "usd"`, keeps every amount under its `c
 key at four decimals, and the tab writes each amount as money under **Cost** labels.
 Any credit-bearing session turn inside the window keeps it in credits; the window before
 it is read in the same unit, so a credit-billed week before a harness switch reads as no
-prior spend. The per-session
+prior spend. A window holding both credit-billed and dollar-billed session turns is the
+credits view with the same view over `cost` nested under `usd`, which the tab renders as
+a second card. Each view counts only its own unit's turns (the dollar view keeps the turns
+billed in dollars, the credits view the rest; a turn billed in both units would show on
+both cards, and no harness writes one), the Context tab titles and links its rows from both
+views' sessions, and the dollar card remembers its own state under the same keys with a
+`:usd` suffix. The per-session
 table sits under a **Full table** disclosure that starts closed and remembers its state
 in `telemetry:spend-table-open`.
 **Stamping boundary:** rows are stamped at the two write sites that can run

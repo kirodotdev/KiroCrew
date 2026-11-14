@@ -1532,6 +1532,8 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
     cost = await asyncio.to_thread(_cost_block, cost_window)
     if cost:
         cost = await _with_conversation_titles(request, cost)
+        if isinstance(cost.get("usd"), dict):
+            cost = {**cost, "usd": await _with_conversation_titles(request, cost["usd"])}
     return web.json_response(
         {
             "enabled": state.enabled,

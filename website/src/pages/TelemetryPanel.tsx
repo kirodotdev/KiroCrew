@@ -32,6 +32,7 @@ import {
   type Other,
   type Resp,
   PanelWindowCtx,
+  allConversations,
   panelWindow,
   otelWindow,
   spendWindow,
@@ -909,7 +910,7 @@ export default function TelemetryPanel() {
               <SpendTab c={offCost} />
             </PanelWindowCtx.Provider>
           )}
-          {data.context && <ContextTab c={data.context} convos={offCost?.conversations} navigable={offCost?.navigable_category} />}
+          {data.context && <ContextTab c={data.context} convos={allConversations(offCost)} navigable={offCost?.navigable_category} />}
           <div className="border border-border bg-card rounded-xl p-3 text-[11px] leading-relaxed">
             <span className="text-text font-medium">{i18nT('pages.telemetryPanel.telemetry_is_off')}</span>{' '}
             <span className="text-muted">{offBody}</span>
@@ -1025,7 +1026,7 @@ export default function TelemetryPanel() {
             <SpendTab c={data.cost} />
           </PanelWindowCtx.Provider>
         )}
-        {active === 'context' && ctx && <ContextTab c={ctx} convos={data?.cost?.conversations} navigable={data?.cost?.navigable_category} />}
+        {active === 'context' && ctx && <ContextTab c={ctx} convos={allConversations(data?.cost)} navigable={data?.cost?.navigable_category} />}
         <PanelWindowCtx.Provider value={otelWin ?? win}>
           {active === 'latency' && <LatencyTab other={other} />}
           {active === 'startup' && s && <StartupTab s={s} faults={startupFaults} total={startupTotal} />}
