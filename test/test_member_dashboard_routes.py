@@ -503,8 +503,8 @@ def test_a_credential_in_a_fold_value_is_redacted_before_it_reaches_the_page():
     binding that fold. Mapping keys are scrubbed too: an artifact name is agent-chosen.
     """
     # ASSEMBLED at runtime, never written out whole. The internal-content scan reads
-    # this change's own diff, so a credential-shaped literal added here is a finding
-    # against the PR whatever the surrounding code is for -- and a test that proves
+    # each PR's own diff, so a credential-shaped literal added here is a finding
+    # against that PR whatever the surrounding code is for -- and a test that proves
     # secrets are redacted is a poor place to put one in plain text. The runtime value
     # is a real key header and a real token shape, which is what the redactor has to
     # recognise; only the source spelling is split. Do not join these back up.
