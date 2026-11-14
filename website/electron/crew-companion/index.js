@@ -176,6 +176,8 @@ function noteCredential(present) {
  * it, in which case the CTA reports that it could not act rather than pretending.
  */
 let getDashboardWindow = null;
+// The macOS app show/focus hooks main.js passes for a user-intent show.
+let surfaceApp = {};
 
 /**
  * Ask the gateway whether the app is enabled.
@@ -250,7 +252,9 @@ function hostsDashboard(wc, base = backendUrl) {
  * @returns {boolean} true when the dashboard was surfaced and can show it.
  */
 function openDashboardSession(slotKey) {
-  return sharedOpenDashboardSession(getDashboardWindow && getDashboardWindow(), backendUrl, slotKey);
+  return sharedOpenDashboardSession(
+    getDashboardWindow && getDashboardWindow(), backendUrl, slotKey, surfaceApp,
+  );
 }
 
 async function reconcileOnce() {
@@ -338,6 +342,7 @@ function initCrewCompanion(deps) {
   reportedNoCredential = false;
   log = (deps && deps.glog) || (() => {});
   getDashboardWindow = (deps && deps.getDashboardWindow) || null;
+  surfaceApp = (deps && deps.surfaceApp) || {};
   setOverlayLogger(log);
   setPanelLogger(log);
   setGalleryLogger(log);
