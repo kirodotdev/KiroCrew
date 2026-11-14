@@ -109,6 +109,7 @@ import os
 import signal
 import sys
 import threading
+import time
 import typing
 from collections.abc import Callable
 
@@ -116,6 +117,7 @@ from kiro_crew.dashboard.crash_dump_store import (
     FAULTHANDLER_MAX_FRAMES,
     FAULTHANDLER_MAX_THREADS,
     LOOP_THREAD_HEADER,
+    record_alarm_due,
 )
 from kiro_crew.dashboard.stall_enrichment import collect_stall_enrichment, describe_loop_thread
 from kiro_crew.diag.threads import _parse_stat, _read_text, _task_dir
@@ -477,6 +479,7 @@ class LoopStallWatchdog:
         loop_major_faults: Callable[[int | None], int | None] = read_thread_major_faults,
         paging_grace_max: float | None = None,
         log: logging.Logger | None = None,
+        wall: Callable[[], float] = time.time,
     ) -> None:
         self._stall_after = stall_after
         self._exit_after = exit_after
@@ -544,6 +547,13 @@ class LoopStallWatchdog:
         # into it, so a recovery can truncate it back. None when not written.
         self._loop_stack_offset: int | None = None
         self._dumped = False
+        # When the armed alarm is due, on the ``now`` clock: set by every arm,
+        # read by the daemon thread, which records it in the dump file's header
+        # on the wall clock (:meth:`_record_alarm_due`). ``_due_written`` is the
+        # value last written there, None for the header's "no alarm".
+        self._wall = wall
+        self._alarm_due_at: float | None = None
+        self._due_written: int | None = None
         # True only between start() and stop() when exit_after is set; gates the
         # alarm so a dashboard-only process (e.g. `kirocrew chat`, where
         # start() is never called) never arms a process-ending timer.
@@ -600,6 +610,7 @@ class LoopStallWatchdog:
                 return False
             try:
                 self._arm_later(seconds)
+                self._alarm_due_at = self._now() + seconds
             except Exception:  # pragma: no cover - never let petting crash the loop
                 # Cancellation succeeded but no replacement alarm exists, and
                 # with the flag cleared no later beat arms one: the exit is off
@@ -684,6 +695,7 @@ class LoopStallWatchdog:
         """
         mono = self._now()
         self._note_resume(mono)
+        self._record_alarm_due(mono)
         silence = mono - self._last_beat
         self._note_sustained_lag()
         self._defer_exit_while_paging(silence)
@@ -742,6 +754,30 @@ class LoopStallWatchdog:
         self._dumped = False
         self._enriched = False
         return False
+
+    def _record_alarm_due(self, mono: float) -> None:
+        """Keep the dump header's ``alarm-due=`` value at the armed alarm's deadline.
+
+        Written from this thread, so the loop thread does no file I/O for it.
+        The kernel holds an expired alarm until the process runs again, so a
+        dump that fired well after the recorded deadline belongs to a process
+        the host stopped running, not to a wedged loop
+        (:func:`kiro_crew.dashboard.crash_dump_store.dump_host_pause_secs`).
+        "No alarm" is written once the alarm is off, before this poll can
+        write a soft dump into the file, so a late soft dump never reads as a
+        late alarm.
+
+        shortcut: the value is moved to the wall clock once per poll, so a
+        host suspend that ends less than one poll before the alarm fires
+        leaves a deadline that reads the suspend as lateness; upgrade if such
+        dumps turn up.
+        """
+        due = self._alarm_due_at if self._later_active else None
+        value = None if due is None else int(self._wall() + (due - mono))
+        if value == self._due_written:
+            return
+        record_alarm_due(self._dump_file, value)
+        self._due_written = value
 
     def _write_loop_stack(self, silence: float) -> None:
         """Write the loop thread's stack into the dump file, ahead of the fatal dump.
@@ -974,6 +1010,7 @@ class LoopStallWatchdog:
             try:
                 self._cancel_later()
                 self._arm_later(self._exit_after)
+                self._alarm_due_at = self._now() + self._exit_after
                 self._later_active = True
             except Exception:  # pragma: no cover - degrade to soft dump only
                 self._log.exception("loop watchdog failed to arm the stall alarm")

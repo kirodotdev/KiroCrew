@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         data_home,
         describe,
         dump_age_seconds,
+        dump_fired_at,
         dump_replay_lines,
         load_loop_stall_exit_after,
         logger,
@@ -219,11 +220,33 @@ async def _report_prior_crash_dump(state: DashboardState) -> None:
         # been reported; the dump stays on disk for `kirocrew doctor` to show on
         # demand.
         if _age_h < 168 and await asyncio.to_thread(claim_dump_notification, _prior_dump):
+            # Attributed first: whether the host stopped running the gateway
+            # decides how both the log line and the notification describe it.
+            try:
+                _attribution = await asyncio.to_thread(attribute_dump, _prior_dump, data_home())
+                _attr_lines = describe(_attribution)
+                _host_pause = _attribution.host_pause_secs
+            except Exception:
+                logger.debug("stall attribution for notification failed", exc_info=True)
+                _attr_lines, _host_pause = [], None
+            # The file is named for when that gateway started; when it fired
+            # is its last write.
+            try:
+                _fired = await asyncio.to_thread(dump_fired_at, _prior_dump)
+            except OSError:
+                _fired = "unknown"
             logger.warning(
-                "⚠️  Prior loop-stall crash dump found: %s (%.1f hours ago). "
+                "⚠️  Prior loop-stall crash dump found: %s (fired %s, %.1f hours ago%s). "
                 "Run `kirocrew doctor` for details.",
                 _prior_dump,
+                _fired,
                 _age_h,
+                (
+                    f"; its alarm fired {_host_pause:.0f}s late, so the host had stopped "
+                    "running the gateway: a host-wide pause, not a gateway stall"
+                    if _host_pause is not None
+                    else ""
+                ),
             )
             # Replay stack content to journal so container/journal-only operators
             # can see it without accessing the file system.
@@ -241,19 +264,21 @@ async def _report_prior_crash_dump(state: DashboardState) -> None:
             # Say who the loop was working for, from the same evidence the
             # doctor reads, so the person restarting knows which job to look
             # at without opening the dump.
-            try:
-                _attr_lines = describe(
-                    await asyncio.to_thread(attribute_dump, _prior_dump, data_home())
-                )
-            except Exception:
-                logger.debug("stall attribution for notification failed", exc_info=True)
-                _attr_lines = []
+            _what = (
+                "The host stopped running the previous gateway, and its stall alarm ended it"
+                if _host_pause is not None
+                else "The previous gateway stopped responding and exited"
+            )
             try:
                 state.notify(
                     "heartbeat",
-                    "⚠️ Gateway restarted after an event-loop stall",
                     (
-                        f"The previous gateway stopped responding and exited "
+                        "⚠️ Gateway restarted after a host-wide pause"
+                        if _host_pause is not None
+                        else "⚠️ Gateway restarted after an event-loop stall"
+                    ),
+                    (
+                        f"{_what} "
                         f"{_age_h:.1f}h ago, then restarted. Work in flight at "
                         f"that moment was interrupted and not saved. "
                         + ("".join(f"{ln}. " for ln in _attr_lines))

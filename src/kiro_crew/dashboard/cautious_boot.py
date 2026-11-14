@@ -21,8 +21,9 @@ ever reached a serving state:
 
 * recent dump + ``tight``/``critical`` host → maximum caution (longer pauses)
 * recent dump + ``ample``/``unknown`` host  → mild stagger only
-* …but if that instance had finished starting up, one step gentler: mild on a
-  still-pressured host, none at all on a calm one.
+* …but if that instance had finished starting up, or the dump shows the host
+  stopped running it (a host-wide pause, not a wedge), one step gentler: mild
+  on a still-pressured host, none at all on a calm one.
 
 The third signal exists because the stagger protects the startup BATTERY. An
 instance that reached a serving state got the whole battery away before it
@@ -47,6 +48,7 @@ from kiro_crew import resource_status
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard.crash_dump_store import (
     dump_age_seconds,
+    dump_host_pause_secs,
     dump_owner_reached_healthy,
     newest_dump_with_stacks,
 )
@@ -124,20 +126,30 @@ def _evaluate(
         # recovery boot the slowest one, on the host that most needs to come
         # back. Downgraded rather than switched off: a host that is STILL tight
         # keeps a mild stagger, because current pressure is its own signal.
-        if dump_owner_reached_healthy(dump, dumps_dir):
+        # A host-wide pause is the same downgrade: the alarm fired late because
+        # the host was not running the process, so no gateway code, startup
+        # battery included, is what stopped it.
+        paused = dump_host_pause_secs(dump)
+        if paused is not None:
+            exonerated = (
+                f"the host stopped running that instance (its stall alarm fired {paused:.0f}s late)"
+            )
+        elif dump_owner_reached_healthy(dump, dumps_dir):
+            exonerated = "that instance reached a serving state"
+        else:
+            exonerated = ""
+        if exonerated:
             if not pressured:
                 return CautiousBootDecision(
                     False,
                     0.0,
-                    (
-                        f"prior instance reached a serving state before stalling "
-                        f"({dump.name}); host posture is {posture}"
-                    ),
+                    f"prior loop-stall crash dump {dump.name}: {exonerated}; "
+                    f"host posture is {posture}",
                 )
             delay = MILD_DELAY_SECS
             reason = (
                 f"prior loop-stall crash dump {dump.name} is {age / 60.0:.1f} min old, "
-                f"but that instance reached a serving state; host posture is {posture}"
+                f"but {exonerated}; host posture is {posture}"
             )
         else:
             delay = MAX_DELAY_SECS if pressured else MILD_DELAY_SECS

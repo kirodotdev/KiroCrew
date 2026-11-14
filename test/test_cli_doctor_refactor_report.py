@@ -229,6 +229,7 @@ class _Host:
             cli_doctor, "dump_first_stack_lines", lambda p, max_lines=5: ['File "loop.py", 1']
         )
         mp.setattr(cli_doctor, "attribute_dump", lambda p, base: self.attribution)
+        mp.setattr(cli_doctor, "dump_fired_at", lambda p: "2026-11-07T18:28:28Z")
         mp.setattr(cli_doctor, "describe", lambda a: ["surface: cron", "job: nightly"])
         mp.setattr(cli_doctor, "job_pause_state_from_disk", lambda job_id: self.paused)
         mp.setattr(cli_doctor, "machine_hostname", lambda: "devbox")
@@ -296,7 +297,7 @@ class _Host:
         self.dump_age = 0.0
         self.stalls = 0
         self.superseded = False
-        self.attribution = SimpleNamespace(is_cron=False, job=None)
+        self.attribution = SimpleNamespace(is_cron=False, job=None, host_pause_secs=None)
         self.paused: str | None = None
         self.local = True
         self.fts5 = True
@@ -790,7 +791,7 @@ Other Channels
                The channel will not start. Set it in Settings > Messaging Channels, or in ~/.kiro/crew/.env
 
 Loop-stall Crash Dumps
-  last dump:   ⚠️  crash-1.dump (2.0h ago)
+  last dump:   ⚠️  crash-1.dump (fired 2026-11-07T18:28:28Z, 2.0h ago)
   MainThread stuck at:
     File "loop.py", 1
   attribution:
@@ -866,7 +867,7 @@ def test_a_broken_host_reports_every_issue_in_order_and_exits_one(host, capsys) 
     host.dump_age = 7200.0
     host.stalls = 1
     host.attribution = SimpleNamespace(
-        is_cron=True, job=SimpleNamespace(job_id="job-7", name="nightly")
+        is_cron=True, job=SimpleNamespace(job_id="job-7", name="nightly"), host_pause_secs=None
     )
     host.paused = "auto-paused"
     host.urls["http://127.0.0.1:9999/api/status"] = urllib.error.HTTPError(
