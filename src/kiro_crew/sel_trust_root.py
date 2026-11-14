@@ -110,7 +110,7 @@ def _load_or_create_hmac_key(self: SecurityEventLog) -> bytes:
     if key_path != legacy_path:
         try:
             mkdirs_owner_only(trust_dir)
-        except OSError:
+        except OSError as prov_exc:
             if legacy_path.exists():
                 logger.warning(
                     "cannot create SEL trust dir %s; continuing with the legacy key location",
@@ -118,6 +118,33 @@ def _load_or_create_hmac_key(self: SecurityEventLog) -> bytes:
                     exc_info=True,
                 )
                 key_path = legacy_path
+            elif isinstance(prov_exc, FileExistsError):
+                # mkdir answered EEXIST — a name exists at trust_dir — yet
+                # mkdirs_owner_only re-raised rather than accept it, so its
+                # isdir probe could not confirm a directory either. A denied
+                # stat separates the two states left standing: a genuine
+                # non-directory at the name (os.stat answers; re-raise below,
+                # unchanged) versus a leaf this process may not stat at all.
+                # The latter is the enforced harness credential mask
+                # withholding trust/ from third-party children
+                # (sandbox_leaves._CREW_CHILD_WITHHELD_LEAVES), which
+                # presents a healthy on-host directory as mkdir=EEXIST
+                # with isdir=False. Provisioning through the same mask
+                # would be refused too, so fail closed naming the mask
+                # instead of letting EEXIST claim a directory fault
+                # nobody has.
+                try:
+                    os.stat(trust_dir)
+                except PermissionError:
+                    raise RuntimeError(
+                        f"SEL trust root {trust_dir} exists but this process "
+                        "may not stat it (os.stat denied): the HMAC key can "
+                        "be neither read nor created here, so the audit chain "
+                        "stays fail-closed — under an enforced harness this "
+                        "is the credential mask withholding trust/, not a "
+                        "directory fault"
+                    ) from prov_exc
+                raise
             else:
                 # Fresh install on an unwritable config dir: key creation
                 # below would fail anyway — surface the real cause.
