@@ -57,8 +57,9 @@ def _deploy_with_progress(
     ``ec2.deploy`` blocks (the ``aws cloudformation deploy`` call waits on the
     WaitCondition), so we run it in a background thread and, on this thread,
     poll + print: (1) each new stack resource event, and (2) once the instance
-    exists, the tail of ``/var/log/kirocrew-setup.log`` over SSM. This replaces
-    the opaque spinner with real progress and makes failures diagnosable.
+    exists, the bootstrap's own phase lines from ``/var/log/kirocrew-setup.log``
+    over SSM. This replaces the opaque spinner with real progress and makes
+    failures diagnosable.
     """
     box: dict[str, object] = {}
     # Capture the detached `aws cloudformation deploy` child so a Ctrl+C on THIS
@@ -158,11 +159,16 @@ def _stream_progress(
                     instance_id = ev["physical_id"]
         except AWSError:
             pass
-        # 2) On-box bootstrap log tail (once the instance is up + SSM-managed).
+        # 2) On-box bootstrap phase lines (once the instance is up + SSM-managed).
         if instance_id:
             for logln in _fetch_bootstrap_log(instance_id, profile, region):
                 if logln in seen_log_lines:
                     continue
+                if not seen_log_lines:
+                    ui.detail(
+                        "      (setup phases only; full log:"
+                        " /var/log/kirocrew-setup.log on the instance)"
+                    )
                 seen_log_lines.add(logln)
                 ui.detail(f"      [box] {logln[:180]}")
                 printed = True
@@ -323,16 +329,20 @@ def _verify_operational(
     return "ok" if signed else "unsigned"
 
 
-def _fetch_bootstrap_log(
-    instance_id: str, profile: str, region: str, *, lines: int = 6
-) -> list[str]:
-    """Best-effort tail of the on-box setup log over SSM (empty on any error)."""
+def _fetch_bootstrap_log(instance_id: str, profile: str, region: str) -> list[str]:
+    """Best-effort read of the bootstrap's phase lines over SSM (empty on any error).
+
+    Selected on the box from the whole log, so a phase line that scrolled past
+    between two polls under build output is still returned; carriage returns
+    split first, so one written after a spinner frame still starts a line.
+    """
+    # `/var/log/kirocrew-setup.log` is a path on the instance, not on this host, so
+    # it is spelled in the remote command rather than hoisted into a constant here.
     try:
         res = ssm.run_command(
             instance_id,
-            "tail -n %d /var/log/kirocrew-setup.log 2>/dev/null "
-            "| tr -d '\\r' "
-            "| grep -avE 'Installing (npm|kirocrew and) depend|building React app' || true" % lines,
+            "tr '\\r' '\\n' 2>/dev/null < /var/log/kirocrew-setup.log "
+            "| grep -aE '^(=== |--- |BOOTSTRAP FAILED)' || true",
             profile,
             region,
             run_as="root",
