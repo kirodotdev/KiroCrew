@@ -93,9 +93,11 @@ failure is thrown.
 
 The path matcher uses the backend's declared-pattern semantics: `/api/example`
 matches itself and slash-delimited children; `/api/example/*` also includes the
-base path; `/api/example*` includes any string prefix match. Blank entries match
-nothing, surrounding whitespace is stripped, and request paths are normalized
-before matching. A bare trailing slash is literal, not shorthand for `/*`.
+base path; `/api/example*` includes any string prefix match; `=/api/example`
+matches that one path and no child, and reads no wildcard (seam level 7: an older
+host matches such an entry to nothing, so the request is refused there). Blank
+entries match nothing, surrounding whitespace is stripped, and request paths are
+normalized before matching. A bare trailing slash is literal, not shorthand for `/*`.
 
 An explicit authentication-expiry response (`403`, `X-Auth-Required: true`)
 notifies the dashboard's existing recovery handler. It does not turn ordinary
@@ -1723,9 +1725,10 @@ notes (`/api/notifications/own` and the dashboard's `useAppNotifications()`, see
 adds the dashboard's [issue list](#issue-list) (`useIssues`, `IssueList`, `IssueCard`),
 and level 7 adds the manifest's `agentReadOnlyDirs` (see
 [manifest-reference.md](manifest-reference.md#agent-read-only-directories)), the
-[backend SDK](#backend-sdk-kiro_crewappsbackend_sdk) and the `desktop` block's
+[backend SDK](#backend-sdk-kiro_crewappsbackend_sdk), the `desktop` block's
 `displays: "all"`, `background` kind and `gutter` (see
-[manifest-reference.md](manifest-reference.md#desktop-windows)); each level
+[manifest-reference.md](manifest-reference.md#desktop-windows)) and the exact
+`permissions.api` entry (`=/api/example`, see the path matcher above); each level
 includes every level below it. Several seams share level 7, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call

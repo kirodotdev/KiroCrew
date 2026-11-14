@@ -342,6 +342,13 @@ nested sandbox is denied by design, so a worktree's `npm ci` lifecycle script ru
 backend's namespace. See *Make Live → Pointer file*. `pod-token` is the exception: it
 needs the gateway's host namespaces, not the pointer.
 
+The page's four owner-only POSTs and its read of the app list (`GET /api/apps`, for
+the backend-down banner) are declared in the manifest's `permissions.api`: the four
+as bare entries, the list as the exact entry `=/api/apps`. The compiled page reaches
+them as dashboard code either way; the declaration is what lets the app repository's
+bundle reach them through the scoped client once its record adopts, with nothing held
+back (app-kit-platform.md § Scoped frontend HTTP transport).
+
 ### Create release worktree
 
 `POST /api/apps/dev-fleet/create-release-worktree` materializes
