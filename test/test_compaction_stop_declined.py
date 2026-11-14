@@ -1188,11 +1188,18 @@ async def test_parked_entries_are_adopted_by_the_next_ordinary_allocation(tmp_pa
 
 
 async def _until_registered(mgr, key, old) -> object:
-    """Wait for a successor of *old* to be registered under *key*, and return it."""
+    """Wait for a successor of *old* to be registered under *key* and to have
+    adopted what the reset parked, and return it.
+
+    Registration and adoption are separate steps: the allocation awaits its
+    start bookkeeping (scratch binding, start record) between them, so a
+    successor can be visible before the parked entries reach its queue.
+    """
+    from kiro_crew import session_lifecycle as sl
 
     def _succeeded() -> bool:
         current = mgr._sessions.get(key)
-        return current is not None and current is not old
+        return current is not None and current is not old and key not in sl._parked_queue
 
     await async_wait_until(
         _succeeded, describe=lambda: f"no successor registered under the key: {mgr._sessions!r}"

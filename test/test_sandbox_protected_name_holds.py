@@ -50,14 +50,14 @@ def _no_host_ssh_probe(monkeypatch):
 
 TIERS = ("standard", "cc", "strict")
 
-#: Protected names held by an ENCLOSING stand-in mask today. Measured, not aspired
-#: to: it is EMPTY, because nothing in the launcher holds a protected
-#: name for the namespace lifetime. Every mask is placed once, at spawn.
+#: Protected names held by an ENCLOSING stand-in mask today. The scratch
+#: index stays behind the whole scratch-root mask for the namespace lifetime,
+#: including after the gateway atomically republishes the index.
 #:
 #: A fix that gives a name a durable hold adds it here, and the equality
 #: assertion below then locks it: the name can never fall back to leaf-name
 #: holding without this constant being edited in the same diff.
-HELD_BY_ENCLOSING_MASK: frozenset[str] = frozenset()
+HELD_BY_ENCLOSING_MASK: frozenset[str] = frozenset({"scratch/.trees.json"})
 
 
 def _launcher_sets(tier: str) -> tuple[list[str], list[str]]:
