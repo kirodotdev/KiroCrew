@@ -194,6 +194,13 @@ export interface KasBundleStatus {
   /** The last install's failure, as the remedy text; '' when none. */
   error: string
   /**
+   * Why this host cannot run the engine (its glibc, OS or architecture), as the
+   * full sentence a refused install reports; '' when it can, or once installed.
+   * Every install on such a host is refused, so no Install or Retry is offered.
+   * Optional: an older gateway sends no such key.
+   */
+  host_unsupported?: string
+  /**
    * The route the last KAS spawn in this gateway took, or null before the first.
    * `automatic` is true when Crew's own engine was chosen because kiro-cli's relay
    * cannot run here (`reason`: 'no_kiro_cli' | 'kiro_cli_signed_out'). Optional:
