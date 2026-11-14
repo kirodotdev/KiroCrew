@@ -28,20 +28,42 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import logging
 import math
 import platform
+import urllib.parse
 from typing import Any
 
 import aiohttp
 
 from kiro_crew import __version__ as _kirocrew_version
+from kiro_crew.http_proxy import resolve_proxy
 
 logger = logging.getLogger(__name__)
 
 # Public WakaTime API. A self-hosted Wakapi/Hackatime backend overrides this via
 # config.wakatime.api_base_url; both expose the same v1 surface.
 DEFAULT_API_BASE = "https://wakatime.com/api/v1"
+
+
+def _proxy_for(url: str) -> str | None:
+    """The configured forward proxy for *url*, or ``None`` to dial it directly.
+
+    A self-hosted Wakapi on this machine (``api_base_url`` on a loopback host) is
+    never sent through a remote proxy: the request carries the API key, and a
+    loopback destination must not leave the machine.
+    """
+    host = urllib.parse.urlparse(url).hostname or ""
+    if host.lower() == "localhost":
+        return None
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            return None
+    except ValueError:
+        pass
+    return resolve_proxy(url)
+
 
 # WakaTime's own recommended cap on heartbeats per request. Callers batching
 # more than this should chunk; the client does not silently drop the tail.
@@ -262,6 +284,7 @@ class WakaTimeClient:
                     params=params,
                     json=payload,
                     headers=self._headers(),
+                    proxy=_proxy_for(url),
                     timeout=aiohttp.ClientTimeout(total=timeout),
                 ) as resp:
                     if resp.status == 429 and attempt == 0:
@@ -311,6 +334,7 @@ class WakaTimeClient:
             async with session.get(
                 url,
                 headers=self._headers(),
+                proxy=_proxy_for(url),
                 timeout=aiohttp.ClientTimeout(total=_DEFAULT_TIMEOUT_SECS),
             ) as resp:
                 if resp.status in (401, 403):
