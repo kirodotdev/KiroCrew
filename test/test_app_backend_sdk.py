@@ -10,6 +10,7 @@ the controls it does not use.
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 import stat
 import subprocess
@@ -431,24 +432,56 @@ def test_run_sandboxed_async_cleanup_kills_a_descendant_that_outlived_the_child(
 ):
     leader_file = tmp_path / "leader.pid"
     background_file = tmp_path / "background.pid"
+    gate = tmp_path / "gate"
+    os.mkfifo(gate)
+    groups: list[int | None] = []
+    read_group = platform_compat._isolated_group_of_live_child
 
     async def fake_prepare(argv, mode, *, env, strip_python_env):
         return (list(argv), {"PATH": os.environ.get("PATH", "")}, None)
 
+    def recording_group_read(pid: int, *, reaped: bool) -> int | None:
+        groups.append(read_group(pid, reaped=reaped))
+        return groups[-1]
+
     monkeypatch.setattr("kiro_crew.sandbox.sandboxed_spawn_argv_async", fake_prepare)
+    monkeypatch.setattr(platform_compat, "_isolated_group_of_live_child", recording_group_read)
 
     def pid_in(path: Path) -> int | None:
         text = path.read_text(encoding="utf-8").strip() if path.exists() else ""
         return int(text) if text.isdigit() else None
 
+    def open_the_gate() -> bool:
+        # Opening the FIFO for writing and closing it ends the shell's read with EOF.
+        # Without a reader yet, a non-blocking open fails with ENXIO: try again.
+        try:
+            os.close(os.open(gate, os.O_WRONLY | os.O_NONBLOCK))
+        except OSError as exc:
+            if exc.errno != errno.ENXIO:
+                raise
+            return False
+        return True
+
     # The shell records itself and a background sleep that keeps the captured pipes,
     # then exits: the case where the child is already reaped when the cleanup runs.
-    # The sleep outlasts every wait below, so only the cleanup can end it in time.
-    script = f'echo $$ > "{leader_file}"; sleep 600 & echo $! > "{background_file}"'
+    # It waits on the gate first, and the gate opens only once run_sandboxed_async
+    # has read the shell's process group: a shell that exits before that read
+    # leaves no group to kill (#37024). The sleep outlasts every wait below, so
+    # only the cleanup can end it in time.
+    script = (
+        f'echo $$ > "{leader_file}"; sleep 600 & echo $! > "{background_file}"; '
+        f'read _ < "{gate}"'
+    )
 
     async def scenario() -> None:
         task = asyncio.ensure_future(
             sdk.run_sandboxed_async(["sh", "-c", script], timeout=FALLBACK_TIMEOUT_SECS)
+        )
+        await async_wait_until(
+            lambda: groups, describe=lambda: "run_sandboxed_async has not read the group"
+        )
+        await async_wait_until(
+            open_the_gate, off_loop=True, describe=lambda: "the shell never opened the gate"
         )
         await async_wait_until(
             lambda: pid_in(background_file) is not None
@@ -463,6 +496,7 @@ def test_run_sandboxed_async_cleanup_kills_a_descendant_that_outlived_the_child(
 
     try:
         asyncio.run(scenario())
+        assert groups == [pid_in(leader_file)], "the group was not read while the shell lived"
         background = pid_in(background_file)
         assert background is not None
         wait_until(
