@@ -11365,7 +11365,11 @@
     "settings": "설정",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Bot"
+    "crew_members": "Bot",
+    "badge_unread_conversations": "읽지 않은 대화",
+    "badge_unread_member_threads": "읽지 않은 멤버 스레드",
+    "badge_notifications": "알림",
+    "badge_approvals_needed": "승인 대기"
   },
   "pages": {
     "mcpPage": {

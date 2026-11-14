@@ -11877,7 +11877,11 @@
     "settings": "Configuración",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Bots"
+    "crew_members": "Bots",
+    "badge_unread_conversations": "conversaciones sin leer",
+    "badge_unread_member_threads": "hilos de miembros sin leer",
+    "badge_notifications": "notificaciones",
+    "badge_approvals_needed": "aprobaciones pendientes"
   },
   "pages": {
     "mcpPage": {

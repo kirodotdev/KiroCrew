@@ -11621,7 +11621,11 @@
     "settings": "সেটিংস",
     "task_runner": "Task Runner",
     "webhooks": "ওয়েবহুক",
-    "crew_members": "Bot"
+    "crew_members": "Bot",
+    "badge_unread_conversations": "অপঠিত কথোপকথন",
+    "badge_unread_member_threads": "অপঠিত সদস্য থ্রেড",
+    "badge_notifications": "বিজ্ঞপ্তি",
+    "badge_approvals_needed": "বাকি অনুমোদন"
   },
   "pages": {
     "mcpPage": {

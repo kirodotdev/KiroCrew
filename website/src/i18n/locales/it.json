@@ -11877,7 +11877,11 @@
     "settings": "Impostazioni",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Bot"
+    "crew_members": "Bot",
+    "badge_unread_conversations": "conversazioni non lette",
+    "badge_unread_member_threads": "thread di membri non letti",
+    "badge_notifications": "notifiche",
+    "badge_approvals_needed": "approvazioni in attesa"
   },
   "pages": {
     "mcpPage": {
