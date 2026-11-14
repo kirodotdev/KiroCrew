@@ -340,6 +340,25 @@ from kiro_crew.dashboard.handlers.memory_member import (  # noqa: E402, F401
     api_memory_seed,
 )
 
+# ── Memory providers (handlers/memory_provider.py) ──
+from kiro_crew.dashboard.handlers.memory_provider import (  # noqa: E402, F401
+    api_memory_provider_conformance,
+    api_memory_provider_get,
+    api_memory_provider_item,
+    api_memory_provider_item_revisions,
+    api_memory_provider_items,
+    api_memory_provider_items_create,
+    api_memory_provider_put,
+)
+from kiro_crew.dashboard.handlers.memory_provider_migrations import (  # noqa: E402, F401
+    api_memory_provider_export,
+    api_memory_provider_import,
+    api_memory_provider_migration,
+    api_memory_provider_migration_resume,
+    api_memory_provider_migration_rollback,
+    api_memory_provider_migrations,
+)
+
 # ── Messaging (extracted to handlers/messaging.py) ──
 from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     _redact,

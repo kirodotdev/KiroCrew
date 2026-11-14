@@ -116,31 +116,48 @@ def turn_lessons_block(
         ctx._config_scoped_groups(context_groups, cfg), _inclusion.CONTEXT_GROUP_LESSONS
     ):
         return ""
-    private = bool(
-        ctx.member_context_identity(
-            member, member_is_id=bool(execution_context and execution_context.member_id)
-        )[0]
-    )
-    if private:
-        store = ctx._vector_stores.get(memory_store or "")
-    else:
-        store = builder.get_memory_for(workspace, memory_store).vector_store
-    if store is None:
-        return ""
+    from kiro_crew.memory_provider import chokepoints as _memory_provider
+
+    route = _memory_provider.session_route(memory_store, session_key)
+    store = None
+    if not route.replaces:
+        private = bool(
+            ctx.member_context_identity(
+                member, member_is_id=bool(execution_context and execution_context.member_id)
+            )[0]
+        )
+        if private:
+            store = ctx._vector_stores.get(memory_store or "")
+        else:
+            store = builder.get_memory_for(workspace, memory_store).vector_store
+        if store is None:
+            return ""
     with builder._lessons_shown_lock:
         snapshot = builder._live_shown_lessons(session_key).copy()
-    try:
-        chosen = store.turn_lessons(
-            text,
+    if route.replaces:
+        chosen = _memory_provider.turn_rules(
+            route,
+            memory_store=memory_store,
+            session_key=session_key,
+            execution_context=execution_context,
+            project=project,
+            text=text,
             shown=snapshot.shown,
-            project_dir=project,
-            max_rows=_TURN_LESSONS_MAX,
-            max_chars=_TURN_LESSONS_CHARS,
-            render_lesson=_markers._scrub_turn_lesson,
         )
-    except (OSError, ValueError, RuntimeError, ctx.sqlite3.Error):
-        logger.warning("Per-message lessons skipped: the lesson store could not be read")
-        return ""
+    else:
+        assert store is not None
+        try:
+            chosen = store.turn_lessons(
+                text,
+                shown=snapshot.shown,
+                project_dir=project,
+                max_rows=_TURN_LESSONS_MAX,
+                max_chars=_TURN_LESSONS_CHARS,
+                render_lesson=_markers._scrub_turn_lesson,
+            )
+        except (OSError, ValueError, RuntimeError, ctx.sqlite3.Error):
+            logger.warning("Per-message lessons skipped: the lesson store could not be read")
+            return ""
     if not chosen:
         return ""
     with builder._lessons_shown_lock:
@@ -345,6 +362,10 @@ def embed_startup_query(
     ):
         return False
     if _budgets._startup_recall_timeout_secs() <= 0:
+        return False
+    from kiro_crew.memory_provider import chokepoints as _memory_provider
+
+    if _memory_provider.session_route(memory_store, None).replaces:
         return False
     memory = builder.get_memory_for(workspace, memory_store)
     store = memory.vector_store
@@ -629,6 +650,12 @@ def prefetch_session_memory(
     # build reads (and embeds) for itself without waiting.
     if _budgets._startup_recall_timeout_secs() <= 0:
         return
+    from kiro_crew.memory_provider import chokepoints as _memory_provider
+
+    # A provider that replaces Crew's memory is read by the build itself; Crew's
+    # own stores are not read early for a build that will not use them.
+    if _memory_provider.session_route(memory_store, None).replaces:
+        return
     entry.work = embedding_work.get()
     entry.started.set()
     try:
@@ -838,6 +865,7 @@ def compaction_lessons_block(
     model_window: int | None,
     essentials: str,
     query_text: str,
+    session_key: str | None = None,
 ) -> str:
     """The session-start lessons block again, for the first turn after a compaction.
 
@@ -859,6 +887,12 @@ def compaction_lessons_block(
         ctx._config_scoped_groups(context_groups), _inclusion.CONTEXT_GROUP_LESSONS
     ):
         return ""
+    from kiro_crew.memory_provider import chokepoints as _memory_provider
+
+    route = _memory_provider.session_route(memory_store, session_key)
+    if route.replaces:
+        # The rules the session was shown at start, re-sent without a provider call.
+        return _memory_provider.compaction_rules(route, session_key or "")
     try:
         memory: MemoryStore | None = None
         member_vectors: VectorMemoryStore | None = None

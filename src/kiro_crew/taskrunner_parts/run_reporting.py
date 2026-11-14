@@ -139,6 +139,28 @@ async def _extract_lesson(self: TaskRunner, task: Task, run: Project | None = No
         rule = result["rule"]
         category = result.get("category", "tool")
         negative = result.get("negative")
+        from kiro_crew.memory_provider import chokepoints as _memory_provider
+
+        memory_route = await asyncio.to_thread(
+            _memory_provider.session_route, private_store, runtime_key or None
+        )
+        if memory_route.replaces:
+            # A provider that replaces Crew's memory takes the lesson; Crew's own
+            # stores are not written. A provider that cannot take it skips it.
+            if not await _memory_provider.put_lesson(
+                memory_route,
+                store=private_store,
+                session_key=runtime_key,
+                execution_context=execution,
+                rule=rule,
+                category=category,
+                negative=negative,
+            ):
+                return
+            logger.info("Lesson extracted from task %d: %s", task.index, rule)
+            if run:
+                run.lessons_learned.append(rule)
+            return
         if private_store:
             if private_vectors is None:
                 raise UnknownMemoryStore("The task's private lesson store is unavailable")

@@ -1319,6 +1319,13 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
             )
         base = kas_cli_settings.with_telemetry_opt_out(base, telemetry_on)
         self._kas_telemetry_sent = telemetry_on
+        # While a provider replaces Crew's memory, the harness's own memory stays off,
+        # so a session never runs two memories (``memory_provider.harness_pin``).
+        from kiro_crew.memory_provider.harness_pin import harness_memory_settings
+
+        pin = await asyncio.to_thread(harness_memory_settings)
+        if pin:
+            base = with_client_meta_settings(base, pin)
     if self._tool_search is None:
         return base
     spec = await asyncio.to_thread(self._projected_spawn_spec)

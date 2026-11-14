@@ -364,6 +364,11 @@ async def api_memory_retired_restore(request: web.Request) -> web.Response:
     store, refusal = await _admin_store(request, "memory.retired.restore", body)
     if refusal is not None:
         return refusal
+    from kiro_crew.dashboard.handlers.memory_provider import provider_active_refusal
+
+    refusal = await provider_active_refusal(store or "")
+    if refusal is not None:
+        return refusal
     raw = body.get("id")
     mem_id = raw.strip() if isinstance(raw, str) else ""
     if not mem_id:

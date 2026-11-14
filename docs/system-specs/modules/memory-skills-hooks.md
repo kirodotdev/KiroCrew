@@ -4302,6 +4302,183 @@ learned-rule operations address the exact prepared SQLite service. V1 retains
 workspace Markdown, JSONL fallback and separate FTS; its startup context is the
 bounded admission described above, with earlier activity behind `memory_recall`.
 
+## Memory providers (`memory_provider/`)
+
+Crew's memory has one seam with two implementations: Crew's own memory (everything
+above) and a provider an installed App Kit app serves. `memory.provider` picks one of
+three modes:
+
+| Mode | Reads | Writes | Crew's own memory |
+|---|---|---|---|
+| `builtin` (default) | Crew | Crew | in use, byte for byte as without the seam |
+| `replace` | the provider | the provider | on disk, untouched; comes back on a switch back |
+| `augment` | Crew, then the provider's read-only block and recall hits | Crew | in use |
+
+**One selection point.** `resolver.route_for(store_id, session_key=...)` is the only
+place a provider is chosen; no caller branches on a provider id. A caller asks
+`route.builtin_answers` (run today's code), `route.replaces` or `route.augments`. With
+mode `builtin` and no id, `route_for` answers the shared `BUILTIN_ROUTE` without
+reading anything but the loaded config, so an install that never chose a provider
+takes exactly the path it took before.
+
+**Frozen per session.** The first `route_for` for a session writes
+`memory_provider_snapshot` (mode, id, app version, API version) into its metadata
+record, and that session keeps it: a switch applies to new chats and never mixes two
+providers in one conversation. A session created before `memory.provider.switched_at`
+freezes to `builtin`. Child work asks with its parent's key and inherits it.
+`memory.provider.id` is kept when the owner switches back to `builtin`, so frozen chats
+stay on their provider.
+
+**No silent fallback.** A provider whose app is disabled or missing, whose backend the
+health watch does not report healthy, that policy denies (`capabilities.memory_provider`),
+that sends memory off the machine without the owner's consent, that cannot isolate a
+Bot's store (`multi_store: false` for a store other than `default`), or that is asked
+for in a Shared Crew, gives a route with `unavailable` set. Prompts then carry
+`[Memory unavailable] <name> did not answer (...)`, recall carries a notice, and
+`learn_add` answers `refused` / `provider_unavailable`. Crew's own memory never stands
+in. A resolver fault for a configured provider reads the same way
+(`chokepoints.session_route`).
+
+**Contract.** `contract.py` (contract v1; it has not shipped, so it changes in place):
+`ProviderScope` (built by Crew from the execution record: `store_id`, `member_id`,
+`memory_mode` persistent or incognito, `session_id`, `project`, `principal`),
+`MemoryItem` / `NewItem`, `WriteResult` (the lesson vocabulary: `inserted`, `enriched`,
+`unchanged`, `deduped`, `refused`; `delete` answers `deleted` or `unchanged`),
+`Capabilities`, `Changes`, `Revision`, and the errors `ProviderUnavailable`,
+`ProviderRefused`, `ProviderReadOnly`, `ProviderNotSupported`, `ProviderConflict`,
+`ProviderInvalidResponse` (each may carry `retry_after_secs`). Every answer is
+validated; an answer over 200 items or 512 KB is invalid.
+
+- **`connect`** is the first call. Crew sends `crew.api_versions`, `crew.want_mode`
+  and the kinds it speaks; the provider answers its name and version, `egress`,
+  `read_only`, `ops`, `kinds`, `search` (lexical, semantic, filters), `writes`
+  (`verbatim`, `preserves_timestamps`, `keeps_origin`, `idempotent`, `dry_run_put`,
+  `max_batch`, `max_text`), `history` (`revisions`, `retired`, `changes`), `ingest`
+  (`none` / `raw` / `items`), `isolation` (`multi_store`, `principal_auth`),
+  `documents` (`none` / `read` / `readwrite`), `steering` (only `none` in v1) and
+  `max_page`. A read-only answer drops its write ops; `changes` and `revisions` count
+  only with their `history` flag. `AppMemoryProvider` keeps the answer for ten
+  minutes and asks again on a switch and on `GET /?probe=1`.
+- **Ops.** Required: `connect`, `health`, `context`. Then `search`, `get`, `list`
+  (cursor, kinds, `status` `active`/`draft`/`retired`/`all`, `updated_after`), `put`
+  (`idempotency_key`, `item_id`, `expected_revision`, `dry_run`), `delete`; optional
+  `put_batch` (per-entry results, at most `max_batch`), `changes` (upserts and deletes
+  since a cursor), `revisions`, `ingest`. Deadlines: `context`
+  `memory.provider.timeout_secs` (default 3, 0.5 to 10); `connect`, `health`, `search`,
+  `get`, `list`, `revisions` 5 s; `put`, `delete`, `changes` 10 s; `put_batch` 30 s;
+  `ingest` 60 s.
+- **Envelope.** Kinds `preference`, `fact`, `episode`, `summary`, `rule`, `finding`,
+  `index`, `note` and `document` (one whole Markdown document, `meta["crew.doc"]`
+  `preferences` or `projects`). Items carry `created_at` / `updated_at` on writes too,
+  `origin` (`provider`, `store`, `id` it was first written under), an optional
+  `revision`, `status` (`active`, `draft`, `retired`; Crew's superseded, expired and
+  forgotten become `retired` plus `meta["crew.retired_reason"]`) and reserved meta keys
+  `crew.source`, `crew.confidence`, `crew.importance`, `crew.written_by`,
+  `crew.session_key`, `crew.derived_from`, `crew.category`, `crew.retired_reason`,
+  `crew.doc` and `negative`, which a provider returns as written (at most 50 pairs).
+  Text caps: 8,000 characters, 64,000 for a `document`; longer text is cut and marked on
+  read and refused on write. Embeddings never cross the wire: a provider ranks with its
+  own index.
+- **Mode gaps.** `Capabilities.mode_gaps(mode)` names what a mode lacks. `augment`
+  needs `context` or `search`. `replace` needs a writable provider with `get`, `list`,
+  `put`, `delete` and `search`, the kinds `rule`, `finding`, `preference`, `fact`,
+  `writes.verbatim` and `writes.idempotent`; `ingest: none` is allowed once the owner
+  acknowledges that automatic learning stops. A Bot store needs `isolation.multi_store`;
+  a Shared Crew needs `isolation.principal_auth`. Global V1's Markdown documents move
+  only to `documents: readwrite`; otherwise they stay in Crew and the plan says so.
+
+**What stays Crew's.** Identity and routing (the provider gets `store_id` and
+`member_id` and never picks them), memory modes (`temporary` never reaches a provider:
+`scope_for` returns `None`; `incognito` never reaches `put`/`delete`/`ingest`),
+governance, the write switches, route auth, budgets and block framing, content screens
+(the volatile-fact refusal and injection scan run before `put`; every item's text and the
+provider's display name go through `markers._scrub_turn_lesson` and the fence
+neutralizer before a block), the sandbox, egress consent, steering, and manual member
+documents (persona, rules, briefing, guides).
+
+**Harness memory pin.** `harness_pin.harness_memory_settings` answers
+`{"userMemoryOptIn": {"enabled": false}}` while `memory.provider.mode` is `replace`, and
+nothing otherwise. The spawn handshake (`runtime_spawn_launch._handshake_client_capabilities`)
+merges it into `_meta.kiro.settings` only inside its `client_meta_settings` branch, a
+positive capability of the harness, so a harness without that channel is sent nothing,
+and in `builtin` and `augment` mode the harness keeps deciding as before. The pin is
+judged once per spawn from config, because `initialize` is per process: a process
+spawned before a switch keeps what it was sent until it restarts.
+
+**Each path in `replace` mode.**
+
+| Path | Replace |
+|---|---|
+| Member essentials | Crew (Bot configuration) |
+| Preferences, facts, activity index, `[Memory activity]` | provider `context`, rendered by `render.session_parts` into the same budgets |
+| `[Learned corrections]` / `[Learned experience]` | `rule` / `finding` items, the rule and findings allowances |
+| `[Memory tools]` | Crew, naming the provider |
+| Per-message lessons | provider `search(kinds={rule})`, max 3, 2,000 characters |
+| Post-compaction lessons | the session's cached rules block, no new call |
+| Early reads (`prefetch_session_memory`, `embed_startup_query`) | skipped; the build asks the provider itself |
+| `memory_recall` | provider `search`; the recall decision point's keep hook still narrows episodes |
+| `learn_add` / `learn_list` / `learn_remove` / `learn_update` | `put` / `list` / `delete` / `put(item_id)` (`lesson_routes.py`), same names and answers |
+| Consolidation | triggers, lease, snapshot, retry gate and marker stay Crew's; publication goes to `consolidation.publish`: `ingest: raw` gets the span, `ingest: items` gets Crew's own extraction (without Crew's stored memory in the prompt) through `put`, `ingest: none` takes nothing |
+| Dashboard editors, records, bulk, promote, retired restore, seed | 409 `memory_provider_active` (Crew's memory stays readable) |
+| Change-card history line, built-in app episode import | skipped with a log line (`resolver.note_skip`) |
+| Task-runner lessons, onboarding import | provider `put` |
+| CLI `learn` | through the gateway's `/api/lessons`; gateway down is exit 2. `memory migrate`/`carve`/`dream`/`import`/`forget` refuse |
+| Embedding repair, Dreaming, migration and backfill, V1 history prune | paused (`builtin_background_allowed`) |
+| Backups, snapshot, portability | Crew's own data only; the UI says the provider backs up its own |
+
+`augment` changes two rows: session start adds `[Memory from <name> (read-only)]` after
+Crew's blocks, at most a quarter of the discretionary pool, and `memory_recall` appends
+the provider's hits after Crew's. Every writer stays Crew's.
+
+`test_memory_provider_writer_coverage.py` names every chokepoint and secondary writer by
+module and function and fails when one stops reaching the resolver.
+
+**Crew's own memory through the contract.** `builtin.BuiltinMemoryProvider` maps the
+contract onto today's functions (lessons via `write_lesson` / `delete_lesson`, facts via
+`set_semantic` / `delete_semantic`, episodes via `write_episodic` / `delete_episodic`),
+with ids `lesson:<key>`, `lesson:jsonl.<n>` (Global V1's lessons file), `fact:<key>`,
+`episode:<id>`, `doc:preferences` / `doc:projects` (one `document` item per Global V1
+file) and `doc:history.<date>` (one `summary` per history day, `created_at` that day).
+`list` returns timestamps and provenance in reserved meta; `revisions` reads
+`memory_revisions`. A move writes a document into an empty file and refuses a different
+one with `document_differs`; an explicit edit replaces it. A Memory V2 store lists no
+documents (its anchors are member documents). It does not keep timestamps or origins on
+write (`preserves_timestamps` and `keeps_origin` are false). The prompt builders and the
+recall route do not use it; the host item routes, moves and the conformance kit do.
+
+**Moves.** `migration.py` runs a move between any two providers as a persisted job:
+
+| Phase | What happens | Writes |
+|---|---|---|
+| Plan (`dry_run`) | lists the source page by page; counts per kind and planned outcome (`would_write`, `refused:content_screen`, `refused:too_long`, `skipped:kind`, `skipped:from_target`, `skipped:documents_stay`, `skipped:retired`); keeps 20 samples per kind (300 characters, in memory only); asks a `dry_run_put` target for its dedup answer on them | none |
+| Run | `put_batch` (or `put`) per page, keyed `crew-move:<job>:<hash of origin>`; after each page saves the checkpoint and appends one ledger line per item (`origin_id`, `target_id`, `outcome`, `text_sha256`) | target only |
+| Verify | reads back 2% of the inserted ids (20 to 200) and compares text hashes | none |
+| Rollback | deletes from the target every id the ledger marks `inserted` by this job, nothing else | target only |
+
+Every written item carries its first `origin`, so a switch back skips what came from the
+target. Crew's content screens run on every item before it is written. A provider error
+with `retry_after_secs` waits that long (at most 300 s); three `unavailable` answers in a
+row pause the job. State lives in `memory_provider_migrations/` (`<job>.json`,
+`<job>.ledger.jsonl`; counts, ids and hashes, never text), the last 20 jobs kept; a job
+found running at start reads as `paused` and resumes from its checkpoint. The directory
+is READONLY in the sandbox and withheld from a foreign harness: a writable ledger would
+let an agent choose what a rollback deletes. A move never switches memory, and no job
+deletes from Crew's own memory; moving into it is refused while a provider replaces it.
+
+**Export, import.** Export is JSONL `kirocrew-memory/1`: a header (`provider`, `store`,
+`member_id`, `exported_at`, `crew_version`, `include`), one wire item per line
+(`?include=retired,revisions` adds retired items and history), and a trailer with the
+item count, the count per kind and the SHA-256 of the item lines. An import whose
+trailer does not match is refused as cut off or changed; one without a trailer imports
+with a warning. Import (32 MB at most) runs as a move job from `file:<hash>`.
+
+**Conformance kit.** `conformance.run(provider, write=...)` checks connect, health,
+context, search, list and get, paging to the end and `status=all` for a provider that
+keeps retired items; with `write`, put, idempotent put, the verbatim round-trip, kept
+timestamps and kept origin (each when the provider claims it) and delete (a read-only
+provider must refuse `put`). `python -m kiro_crew.memory_provider.conformance --app
+<app>[/<provider>]` runs the read-only checks through the gateway.
+
 ## Skills (`skills.py`)
 
 Markdown files at `~/.kiro/crew/skills/{name}/SKILL.md` with optional YAML frontmatter (`name`, `description`, `always`).

@@ -1981,6 +1981,107 @@ Apps declare their agents, skills and `mcpServers` in `app.json`, and
 |--------|---------|-------------|
 | `memorySearch(query, topK?)` | `MemoryResult[]` | Semantic memory search |
 
+### Memory provider routes
+
+With `permissions.memoryAdmin` an app token reaches these, for whichever provider is
+active (Crew's own memory included). `?store=<name>` names a configured store;
+`?provider=builtin` reads Crew's own memory while another provider replaces it.
+
+| Route | What it does |
+|---|---|
+| `GET /api/memory/provider` | mode, active id, every installed provider with its `connect` answer, `mode_gaps`, consent, latency (`?probe=1` runs `connect` again and adds health) |
+| `GET /api/memory/provider/items` | list (`?cursor=`, `?kinds=`, `?status=active\|draft\|retired\|all`, `?updated_after=`) or search (`?q=`) |
+| `GET/PATCH/DELETE /api/memory/provider/items/{id}` | read, replace (`{"item": {...}, "expected_revision"?}`), delete one item |
+| `GET /api/memory/provider/items/{id}/revisions` | one item's history; 404 `not_supported` without `history.revisions` |
+| `POST /api/memory/provider/items` | add one item |
+| `POST /api/memory/provider/migrations` | plan a move: `{"from", "to", "store"?, "kinds"?, "include_retired"?, "preserve_timestamps"?, "dry_run": true}`. An app may only plan; a run is the owner's |
+| `GET /api/memory/provider/migrations`, `GET/DELETE /api/memory/provider/migrations/{id}` | list, follow, cancel (an app: its own plans) |
+| `GET /api/memory/provider/export` | JSONL `kirocrew-memory/1` with a header and a trailer (`?include=retired,revisions`) |
+| `POST /api/memory/provider/import?dry_run=1` | plan an import of a `kirocrew-memory/1` file; an app may only plan |
+
+`PUT /api/memory/provider` (the switch) refuses every app token. Ask the owner instead
+with the App SDK:
+
+```ts
+import { requestMemoryProviderChange } from '@kirocrew/app-sdk'
+const outcome = await requestMemoryProviderChange({ mode: 'replace', id: 'app:my-app/bridge' })
+// 'switched' | 'cancelled' | 'unavailable'
+```
+
+It opens the host's own confirmation sheet; only the owner's press switches. Ask for a
+move the same way; the host sheet plans it, shows the counts and samples, and only the
+owner's press runs it (a resume and a rollback are the owner's too):
+
+```ts
+import { requestMemoryMove } from '@kirocrew/app-sdk'
+const moved = await requestMemoryMove({ from: 'builtin', to: 'app:my-app/bridge' })
+// 'moved' | 'cancelled' | 'unavailable'
+```
+
+Both need App Kit level 8 (`APP_SDK_LEVEL >= 8`).
+
+### Memory provider contract
+
+The gateway posts JSON to `POST /api/<route>/v1/<op>` on loopback, signed exactly like a
+proxied request (verify `X-KiroCrew-Proxy-V2` with its nonce, as for any proxied
+call). It answers `{"ok": true, "result": ...}` or
+`{"ok": false, "error": {"code", "message", "retry_after_secs"}}` with a code of
+`unavailable`, `refused`, `read_only`, `not_supported`, `conflict` or `invalid`.
+The `/apps/<name>/api/...` proxy refuses every path under a declared provider route
+with 403 `memory_provider_route`, so a signed call there always comes from the
+gateway and its `scope` is the store Crew resolved for the caller.
+
+| Op | Body | Result |
+|---|---|---|
+| `connect` (required) | `{"crew": {"api_versions": [1], "want_mode", "kinds"}, "scope"}` | the capabilities below |
+| `health` (required) | `{}` | `{"ok", "detail"}` |
+| `context` (required) | `{"scope", "query", "budget_chars"}` | `{"items": [...]}` |
+| `search` | `{"scope", "query", "limit", "kinds"?}` | `{"items": [...]}` |
+| `get` | `{"scope", "id"}` | `{"item": {...} or null}` |
+| `list` | `{"scope", "cursor", "kinds"?, "status"?, "updated_after"?}` | `{"items": [...], "cursor"}` |
+| `put` | `{"scope", "item", "idempotency_key", "id"?, "expected_revision"?, "dry_run"?}` | `{"outcome": "inserted"\|"enriched"\|"unchanged"\|"deduped"\|"refused", "id", "reason", "superseded", "winner"}` |
+| `delete` | `{"scope", "id"}` | `{"outcome": "deleted"\|"unchanged", "id"}` |
+| `put_batch` | `{"scope", "entries": [{"item", "idempotency_key"}]}` (at most `max_batch`) | `{"results": [<one put result per entry, in order>]}` |
+| `changes` | `{"scope", "cursor"}` | `{"upserts": [...], "deletes": [ids], "cursor"}` |
+| `revisions` | `{"scope", "id"}` | `{"revisions": [{"revision", "at", "op", "source"}]}` |
+| `ingest` | `{"scope", "receipt_id", "messages", "span"}` | `{"accepted", "items"}` |
+
+The `connect` answer:
+
+```jsonc
+{"api_version": 1, "provider": {"name", "version"}, "egress": "local" | "remote",
+ "read_only": false, "ops": ["context", "search", "get", "list", "put", "delete", ...],
+ "kinds": ["rule", "finding", "preference", "fact", ...],
+ "search": {"lexical", "semantic", "filters": ["kind", "scope", "status", "updated_after"]},
+ "writes": {"verbatim", "preserves_timestamps", "keeps_origin", "idempotent",
+            "dry_run_put", "max_batch", "max_text"},
+ "history": {"revisions", "retired", "changes"},
+ "ingest": "none" | "raw" | "items",
+ "isolation": {"multi_store", "principal_auth"},
+ "documents": "none" | "read" | "readwrite", "steering": "none", "max_page": 50}
+```
+
+`verbatim` means `put` stores the text exactly as sent; replacing Crew's memory needs
+it, `idempotent`, the ops `get`, `list`, `put`, `delete`, `search`, and the kinds
+`rule`, `finding`, `preference`, `fact`. A Bot store needs `isolation.multi_store`; a
+Shared Crew needs `isolation.principal_auth`. Global V1's `preferences.md` and
+`projects.md` move only to `documents: "readwrite"`.
+
+`scope` is `{"store_id", "member_id", "memory_mode", "session_id", "project",
+"principal"}`, built by Crew: keep items per `store_id` (or state `multi_store: false`,
+which limits the provider to the global store). An item is `{"id", "kind", "text",
+"title", "scopes", "source", "created_at", "updated_at", "status", "score", "meta",
+"origin", "revision"}` with `kind` one of `preference`, `fact`, `episode`, `summary`,
+`rule`, `finding`, `index`, `note`, `document` (one whole Markdown document,
+`meta["crew.doc"]` `preferences` or `projects`). A write carries `created_at`,
+`updated_at` and `origin` (`{"provider", "store", "id"}`) too: keep them when you say
+`preserves_timestamps` and `keeps_origin`. Return every `meta` key as written; the
+`crew.*` keys and `negative` are Crew's (at most 50 pairs). An answer is capped at 200
+items and 512 KB; text over 8,000 characters (64,000 for a `document`) is cut. A provider that keeps memory off the machine states
+`egress: "remote"`, and the owner is asked once per app version. Check yours with
+`python -m kiro_crew.memory_provider.conformance --app <app id>`; a complete stdlib
+example is `test/fixtures/memory_provider_app/backend/server.py`.
+
 ### Context Injection
 
 Silent background context for LLM — content appears in the next user-initiated turn without triggering a response or showing a visible message.

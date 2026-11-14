@@ -54,6 +54,9 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     # so it is never submitted to this scope; the row records the minimal set.
     "agent_backend": {"mode": "allow", "allow": ["kas"]},
     "capabilities.browse": _CAPABILITY_OFF,
+    # A memory provider an app serves may keep memory off the machine, the same
+    # class of egress as ``channels``: off until the remote policy names it.
+    "capabilities.memory_provider": _CAPABILITY_OFF,
     "capabilities.script_hooks": _CAPABILITY_OFF,
     "capabilities.messaging": _CAPABILITY_OFF,
     "capabilities.agentcore": _CAPABILITY_OFF,

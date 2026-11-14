@@ -638,6 +638,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # Steering files each chat switched off: a writable record would let an agent
     # drop its own rules. Only ``PUT /api/chat/slots/{slot}/steering`` writes it.
     "chat_steering_off.json",
+    # Recorded consent to send memory to a provider app that keeps it off this
+    # machine (``egress: "remote"``). Same class as ``decisions_consent.json``:
+    # the record AUTHORIZES preferences, lessons and transcripts to leave, so an
+    # agent that could write it would consent to its own egress. The owner's
+    # ``PUT /api/memory/provider`` is the only writer and opens the path directly.
+    "memory_provider_consent.json",
     # The owner's Shared Crew preview switch. The record is what AUTHORIZES the
     # Crew to open to other people on the next start, so an agent that could
     # write it would share the owner's machine on the owner's behalf. The

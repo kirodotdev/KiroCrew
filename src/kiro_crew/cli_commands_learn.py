@@ -174,6 +174,13 @@ def _learn(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    # A memory provider that replaces Crew's memory is reached only through the
+    # gateway, so the lesson verbs go through its /api/lessons routes.
+    from kiro_crew import cli_memory_provider
+
+    if action in ("add", "list", "remove") and cli_memory_provider.provider_replaces():
+        cli_memory_provider.learn(action, cleaned_add, remove_query, getattr(args, "port", None))
+        return
     # No verb: print the usage line before the vector store below is built, since
     # init() creates memory.db on a fresh data home.
     if action not in ("add", "list", "remove"):

@@ -200,6 +200,12 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
         CAPABILITY, capability_default=True, scope_matchers={"agents": "identifier"}
     ),
     "capabilities.memory_writes": ScopeSpec(CAPABILITY, capability_default=True),
+    # Whether memory may be served by an external provider an installed app offers
+    # (``kiro_crew.memory_provider``). Default True; a policy that sets
+    # ``{"capabilities": {"memory_provider": {"enabled": false}}}`` keeps every
+    # store on Crew's own memory: the resolver reports the provider unavailable,
+    # the picker shows it blocked, and nothing falls back silently.
+    "capabilities.memory_provider": ScopeSpec(CAPABILITY, capability_default=True),
     # Web browsing (the ``browser`` MCP tool driving the agent's browser) is a
     # governable egress surface: an enterprise policy that denies it must stop
     # the agent browsing through the tool, not only through the shell
