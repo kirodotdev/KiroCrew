@@ -125,16 +125,9 @@ export function stackPaths(layers: UsageSeriesLayer[], days: number): { paths: s
   return { paths: stacked.map(series => shape(series) ?? ''), top }
 }
 
-/** Channel ids are the closed lowercase vocabulary `telemetry_channel_of`
- *  returns (`dashboard`, `cron`, `background`, `telegram` …), shown capitalised
- *  so the legend reads as places spend went rather than as code. `other` is the
- *  classifier's "key shape not recognised" and gets its own label, since shown
- *  as-is it would be mistaken for the fold layer's "Other (n more)". */
-export function channelLabel(id: string): string {
-  if (id === 'other') return i18nT('pages.overview.usageSeriesChart.channel_unrecognized')
-  const words = id.replace(/_/g, ' ')
-  return words.charAt(0).toUpperCase() + words.slice(1)
-}
+import { channelLabel } from '../../utils/channelLabel'
+
+export { channelLabel }
 
 /** A series answer plus the dimension it was requested for. */
 type SeriesView = UsageSeriesPayload & { by: UsageSeriesDimension }

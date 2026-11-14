@@ -976,3 +976,15 @@ describe('Footer memory total', () => {
     expect(screen.getByText('4.3%')).toBeInTheDocument()
   })
 })
+
+describe('channel labels', () => {
+  it('names the channel groups instead of printing the raw channel ids', async () => {
+    mockSessionsMemory.mockResolvedValue(defaultPayload())
+    const ref = makePlaneStateRef()
+    ref.current = { sessions: { sorting: [], groupBy: 'channel', filter: '', visibility: {} } }
+    renderWithProviders(<SessionsTab planeStateRef={ref} />)
+    expect((await screen.findAllByText(/^Dashboard/)).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/^Cron/).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/^dashboard/)).toBeNull()
+  })
+})
