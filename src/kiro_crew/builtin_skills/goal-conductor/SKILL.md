@@ -544,7 +544,9 @@ Each cycle:
    evaluator by hand would be an `error` verdict, not `pending`, which is why it
    is left out. **The worker's claimed `pr` is
    never read as the bar.** Promote it yourself with `work_ledger_record`
-   `action=accept` once you have looked at it, and verify on the next cycle. A
+   `action=accept` once you have looked at it, and verify on the next cycle.
+   Promoting a bar clears the item's verdict, so the new bar needs its own
+   `pass` before the item can close `accepted`. A
    worker that could fill in its own acceptance could point it at anybody's
    already-green pull request, which is exactly why the claim and the condition
    are separate fields.

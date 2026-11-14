@@ -922,8 +922,10 @@ def apply_acceptance_update(
         if item.is_terminal:
             raise WorkLedgerError(f"item {checked_id!r} is {item.state}", code=CODE_ITEM_CLOSED)
         item.acceptance = checked_acceptance
-        # A pending run belongs to the bar it measured; the new bar starts its own.
+        # A pending run and a verdict belong to the bar they measured; the new bar
+        # starts with neither, so ``close accepted`` waits for its own pass.
         item.pending_since = None
+        item.verdict = None
         event = _commit_item_locked(
             slot_key, item, "decision", "acceptance promoted by the conductor"
         )

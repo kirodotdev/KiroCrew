@@ -604,8 +604,10 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
             running = item["verdict"] == "pending" and isinstance(carried, str) and bool(carried)
             item["pending_since"] = _work_stamp(carried, stamp_ms) if running else None
         elif action == "accept":
-            # A pending run belongs to the bar it measured; the new bar starts its own.
+            # A pending run and a verdict belong to the bar they measured; the new
+            # bar starts with neither.
             item["pending_since"] = None
+            item["verdict"] = None
         elif action == "retire":
             # A retire that left the item unbound logs the pair as "", which the
             # cache holds as unset.
