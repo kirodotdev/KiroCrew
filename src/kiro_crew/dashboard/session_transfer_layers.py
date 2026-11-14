@@ -165,8 +165,13 @@ def _read_layer_b(sid: str) -> dict[str, Any] | None:
         if not isinstance(envelope, dict):
             return None
         snapshot = _snapshot_events_file(lf)
-    except Exception:
-        logger.debug("session_transfer: could not read Layer B for sid=%s", sid, exc_info=True)
+    except Exception as exc:
+        logger.warning(
+            "session_transfer: could not read Layer B for sid=%s: %s: %s",
+            sid,
+            type(exc).__name__,
+            exc,
+        )
         return None
     if snapshot is None:
         # A crash-truncated source file (kiro-cli killed mid-write) would ship a
@@ -219,8 +224,13 @@ def _read_kas_layer_b(sid: str) -> dict[str, Any] | None:
         if not isinstance(session, dict):
             return None
         snapshot = _snapshot_events_file(meta.parent / "messages.jsonl")
-    except Exception:
-        logger.debug("session_transfer: could not read KAS session sid=%s", sid, exc_info=True)
+    except Exception as exc:
+        logger.warning(
+            "session_transfer: could not read KAS session sid=%s: %s: %s",
+            sid,
+            type(exc).__name__,
+            exc,
+        )
         return None
     if snapshot is None:
         return None
@@ -237,8 +247,9 @@ def _snapshot_events_file(src: Path) -> Path | None:
     its longest single record. The bytes are copied unchanged (see
     :func:`_read_layer_b` on why nothing is rewritten).
 
-    Returns the snapshot's path, or ``None`` (and no file left behind) when a
-    record does not parse or the log is not UTF-8.
+    Returns the snapshot's path, or ``None`` (and no file left behind) when the
+    log is missing, a record does not parse, the log is not UTF-8 or it cannot
+    be read; every case but a missing log logs one WARNING naming the error.
     """
     fd, name = tempfile.mkstemp(dir=str(_egress_tmp_dir()), suffix=".jsonl")
     dst = Path(name)
@@ -254,7 +265,15 @@ def _snapshot_events_file(src: Path) -> Path | None:
                 fout.write(line)
         ok = True
         return dst
-    except Exception:
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        logger.warning(
+            "session_transfer: could not snapshot Layer B events %s: %s: %s",
+            src,
+            type(exc).__name__,
+            exc,
+        )
         return None
     finally:
         if not ok:

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -95,6 +97,90 @@ def test_layer_b_is_absent(monkeypatch, tmp_path, sid):
 
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
     assert st._read_layer_b(sid) is None
+
+
+_LAYER_B_LOGGER = "kiro_crew.dashboard.session_transfer"
+
+
+def _seed_kiro_cli_pair(kiro_home, sid):
+    """Seed kiro-cli's ``<sid>.{json,jsonl}`` pair; return (envelope, events) paths."""
+    root = kiro_home / "cli"
+    (root / f"{sid}.json").write_text(json.dumps({"session_id": sid}), encoding="utf-8")
+    (root / f"{sid}.jsonl").write_text('{"kind":"Prompt"}\n', encoding="utf-8")
+    return root / f"{sid}.json", root / f"{sid}.jsonl"
+
+
+def _seed_kas_session(kiro_home, sid):
+    """Seed a KAS ``<bucket>/<sid>/`` session; return (session.json, messages.jsonl) paths."""
+    src = kiro_home / "0011f94affd18877" / sid
+    src.mkdir(parents=True)
+    (src / "messages.jsonl").write_text('{"id":"m1"}\n', encoding="utf-8")
+    (src / "session.json").write_text(json.dumps({"id": sid}), encoding="utf-8")
+    return src / "session.json", src / "messages.jsonl"
+
+
+_KIRO_SID = "11111111-2222-3333-4444-555555555555"
+_KAS_SID = "sess_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+@pytest.mark.parametrize(
+    ("sid", "seed", "locked_file"),
+    [
+        pytest.param(_KIRO_SID, _seed_kiro_cli_pair, 0, id="kiro_cli_envelope"),
+        pytest.param(_KIRO_SID, _seed_kiro_cli_pair, 1, id="kiro_cli_events"),
+        pytest.param(_KAS_SID, _seed_kas_session, 0, id="kas_session"),
+        pytest.param(_KAS_SID, _seed_kas_session, 1, id="kas_messages"),
+    ],
+)
+def test_an_unreadable_layer_b_logs_the_error_that_dropped_it(
+    monkeypatch, tmp_path, caplog, sid, seed, locked_file
+):
+    """A Layer B that cannot be read sends the session transcript-only; the default
+    log must say why, so a Windows mid-replace read does not look like a damaged file."""
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.dashboard import session_transfer_layers as layers
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path / "cli")
+    (tmp_path / "cli").mkdir()
+    locked_path = seed(tmp_path, sid)[locked_file]
+    real_read_text = Path.read_text
+
+    def locked_read_text(self, *args, **kwargs):
+        if self == locked_path:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    def locked_open(file, *args, **kwargs):
+        if Path(file) == locked_path:
+            raise PermissionError(13, "Permission denied", str(file))
+        return open(file, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", locked_read_text)
+    monkeypatch.setattr(layers, "open", locked_open, raising=False)
+    with caplog.at_level(logging.WARNING, logger=_LAYER_B_LOGGER):
+        assert st._read_layer_b(sid) is None
+    warnings = [
+        r for r in caplog.records if r.name == _LAYER_B_LOGGER and r.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    assert "PermissionError" in warnings[0].getMessage()
+    assert warnings[0].exc_info is None
+
+
+@pytest.mark.parametrize(
+    "sid",
+    [
+        pytest.param("no-such-sid", id="kiro_cli_pair"),
+        pytest.param("sess_00000000-0000-0000-0000-000000000000", id="kas_session"),
+    ],
+)
+def test_a_missing_layer_b_logs_no_warning(monkeypatch, tmp_path, caplog, sid):
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path / "cli")
+    with caplog.at_level(logging.WARNING, logger=_LAYER_B_LOGGER):
+        assert st._read_layer_b(sid) is None
+    assert [r for r in caplog.records if r.name == _LAYER_B_LOGGER] == []
 
 
 def test_events_jsonl_loadable_accepts_valid_and_rejects_truncated():
