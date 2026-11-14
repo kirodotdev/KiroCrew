@@ -14,6 +14,7 @@ automaton, never with ``re``:
   punctuation character or space as a literal (in an entry using any syntax below,
   not ``<`` / ``>``, which Rust reads as word boundaries; a literal-plus-``.*``
   entry may escape those two, since a command holding either is never granted);
+- Rust's control-character escapes ``\\n \\t \\r \\f \\v \\a``;
 - ``.`` (any character);
 - a bracket class: ``[abc]``, ranges such as ``[A-Za-z0-9_./-]``, negation
   ``[^;|&]``, escaped punctuation, the POSIX classes (``[[:alnum:]]``,
@@ -138,6 +139,9 @@ _MAX_CHAR = "\U0010ffff"
 _REPEAT_CHARS = frozenset("*+?{")
 _DIGITS = frozenset("0123456789")
 
+#: Rust's escapes for a control character: ``\\n`` is a newline, ``\\t`` a tab.
+_CONTROL_ESCAPES = {"a": "\x07", "f": "\x0c", "t": "\t", "n": "\n", "r": "\r", "v": "\x0b"}
+
 #: Rust's POSIX classes, all ASCII: (single characters, inclusive ranges).
 _POSIX_CLASSES: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
     "alnum": ("", (("0", "9"), ("A", "Z"), ("a", "z"))),
@@ -181,13 +185,15 @@ class Pattern:
     ``npm run .*``). ``program`` is set for every other accepted entry: the
     automaton :func:`matches` walks. ``ascii_only`` marks an entry using a
     construct Rust reads by Unicode (``\\d \\w \\s \\b``, ``(?i)``): it matches only
-    an all-ASCII command.
+    an all-ASCII command. ``alternates`` marks an entry using alternation
+    (``a|b``, ``(a|b)``); a ``|`` in a class or escaped is a literal.
     """
 
     segments: tuple[str, ...] | None = None
     program: tuple[tuple, ...] | None = None
     start: int = 0
     ascii_only: bool = False
+    alternates: bool = False
 
 
 def parse(raw: object) -> Pattern | None:
@@ -282,7 +288,12 @@ def _read_text(raw: str) -> Pattern | str:
         program, start = _compile(tree)
     except _Refused as refused:
         return refused.reason
-    return Pattern(program=program, start=start, ascii_only=parser.ascii_only)
+    return Pattern(
+        program=program,
+        start=start,
+        ascii_only=parser.ascii_only,
+        alternates=parser.alternates,
+    )
 
 
 def _literal_segments(body: str) -> tuple[str, ...] | None:
@@ -344,6 +355,7 @@ class _Parser:
         self.multi_line = False
         self.dot_newline = False
         self.ascii_only = False
+        self.alternates = False
         self.group_names: set[str] = set()
 
     def parse(self) -> tuple:
@@ -361,6 +373,7 @@ class _Parser:
         while self._peek() == "|":
             self.pos += 1
             branches.append(self._concat())
+            self.alternates = True
         return branches[0] if len(branches) == 1 else ("alt", branches)
 
     def _concat(self) -> tuple:
@@ -540,7 +553,8 @@ class _Parser:
         return closes
 
     def _escape(self) -> str:
-        """The literal a ``\\`` + ASCII punctuation or space at :attr:`pos` names.
+        """The literal a ``\\`` + ASCII punctuation or space, or one of
+        :data:`_CONTROL_ESCAPES`, at :attr:`pos` names.
 
         Rust escapes any ASCII character but a letter or digit to a literal, and
         reads ``\\<`` / ``\\>`` as word boundaries; every other escape here
@@ -550,6 +564,9 @@ class _Parser:
         nxt = self._peek(1)
         if not nxt:
             raise _Refused("a trailing backslash")
+        if nxt in _CONTROL_ESCAPES:
+            self.pos += 2
+            return _CONTROL_ESCAPES[nxt]
         if not nxt.isascii() or not nxt.isprintable() or nxt.isalnum() or nxt in "<>":
             raise _Refused(f"the escape \\{nxt}")
         self.pos += 2
@@ -1069,21 +1086,23 @@ def _run(program: tuple[tuple, ...], start: int, command: str, end: int, budget:
 
 
 #: Spellings :func:`parse` reads narrower than kiro-cli's Rust engine does, which is
-#: safe for a grant and unsafe for a deny: a ``|`` (``\\Aa|b\\z`` is "starts with a or
-#: ends with b" in Rust, exactly ``a`` or ``b`` here) and the word boundaries ``\\<``,
-#: ``\\>`` and ``\\b{`` (literal text here). Plain substring tests, never a pattern.
-#: An ``ascii_only`` entry, the other narrower reading, is unknown for a command
-#: holding a non-ASCII character (:func:`denied_match`).
-_DENY_UNSAFE = ("|", "\\<", "\\>", "\\b{")
+#: safe for a grant and unsafe for a deny: the word boundaries ``\\<``, ``\\>`` and
+#: ``\\b{`` (literal text here). Plain substring tests, never a pattern. Alternation
+#: is the third (``Pattern.alternates``: ``\\Aa|b\\z`` is "starts with a or ends with
+#: b" in Rust, exactly ``a`` or ``b`` here); a ``|`` in a class or escaped is a
+#: literal in both. An ``ascii_only`` entry, the other narrower reading, is unknown
+#: for a command holding a non-ASCII character (:func:`denied_match`).
+_DENY_UNSAFE = ("\\<", "\\>", "\\b{")
 
 
 def parse_deny(raw: object) -> Pattern | None:
     """*raw* as a ``deniedCommands`` entry, or ``None`` when :func:`parse` cannot read
-    it as wide as kiro-cli does (:data:`_DENY_UNSAFE`), so the caller treats it as
-    unknown and grants nothing."""
+    it as wide as kiro-cli does (:data:`_DENY_UNSAFE`, ``Pattern.alternates``), so
+    the caller treats it as unknown and grants nothing."""
     if not isinstance(raw, str) or any(piece in raw for piece in _DENY_UNSAFE):
         return None
-    return parse(raw)
+    pattern = parse(raw)
+    return None if pattern is None or pattern.alternates else pattern
 
 
 def denied_match(

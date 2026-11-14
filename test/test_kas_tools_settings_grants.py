@@ -53,6 +53,7 @@ _STAMPED = (
     "spec_shell_readonly",
     "spec_granted_paths",
     "spec_granted_read_paths",
+    "spec_denied_grant",
 )
 
 
@@ -151,15 +152,35 @@ def test_an_unlisted_command_stays_refused(work: Path) -> None:
     assert (verdict.action, verdict.tier) == (TOOL_DENY, "spec-shell-allowlist")
 
 
-def test_a_denied_command_stays_denied_and_withholds_the_grant(work: Path) -> None:
-    """A ``deniedCommands`` entry travels as a KAS deny rule, and it still holds
-    the ``allowedCommands`` grant back: this change reads no deny any wider."""
+def test_a_denied_command_stays_denied_and_the_grant_answers_the_rest(work: Path) -> None:
+    """A ``deniedCommands`` entry travels as a KAS deny rule and still refuses what
+    it names; a command it does not name runs unasked, as on kiro-cli."""
     settings = {"shell": {**_SHELL, "deniedCommands": ["kubectl get secrets.*"]}}
     entry = kas_agents.to_client_custom_agent("probe", _spec(settings), "p")
     rules = entry["permissions"]["rules"]
     assert {"capability": "shell", "match": ["kubectl get secrets*"], "effect": "deny"} in rules
     verdict = _judge(_own_request(_shell("kubectl get pods"), _spec(settings), work))
-    assert verdict.action != TOOL_AUTO_APPROVE
+    assert (verdict.action, verdict.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
+    denied = _judge(_own_request(_shell("kubectl get secrets db"), _spec(settings), work))
+    assert denied.action == TOOL_DENY
+
+
+def test_the_reported_deny_by_default_spec_runs_a_matched_command_unasked(work: Path) -> None:
+    """The reported ``execute_bash`` entry: a Rust-regex allowlist under
+    ``denyByDefault`` beside a ``deniedCommands`` class holding ``|`` and ``\\n``.
+    kiro-cli runs ``sleep 5`` without a prompt and refuses an unlisted command."""
+    settings = {
+        "execute_bash": {
+            "allowedCommands": ["^sleep [0-9]{1,4}$"],
+            "deniedCommands": [".*[;&|`$<>(){}\\\\\\n].*"],
+            "autoAllowReadonly": False,
+            "denyByDefault": True,
+        }
+    }
+    verdict = _judge(_own_request(_shell("sleep 5"), _spec(settings), work))
+    assert (verdict.action, verdict.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
+    unlisted = _judge(_own_request(_shell("rm -rf out"), _spec(settings), work))
+    assert (unlisted.action, unlisted.tier) == (TOOL_DENY, "spec-shell-allowlist")
 
 
 def test_a_malformed_auto_allow_readonly_still_withholds_the_grant(work: Path) -> None:
