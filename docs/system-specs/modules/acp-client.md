@@ -5369,7 +5369,9 @@ it. The floor, before it moves a stored Kiro CLI pick onto KAS, starts the v3
 engine of the kiro-cli a session spawn runs once, with stdin and stdout on
 `/dev/null` (`agent_sdk.kas_engine_start_verdict` over
 `kiro_cli.kas_relay_start_output`, 30 s cap; a healthy engine exits at EOF, about
-ten seconds measured on kiro-cli 3.1.0). The start runs outside the sandbox, so it
+ten seconds measured on kiro-cli 3.1.0). A start the sandbox launcher refused (its
+own exit line in the output) is unknown and never recorded
+(`kiro_cli._launcher_refused`, [slack-gateway](slack-gateway.md)). The start runs outside the sandbox, so it
 runs only the pinned install's own path (`kas_engine_start_binary`); a kiro-cli
 reached only through `PATH` is never started, its record alone is read, and with
 nothing recorded its help verdict stands. The start runs in an empty private

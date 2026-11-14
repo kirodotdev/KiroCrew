@@ -4523,7 +4523,10 @@ unsandboxed opt-in, a gateway that itself runs inside a sandbox); every other
 caller of the runner leaves it off and runs as before. The read is not
 run on Windows, which has no sandbox backend. It adds no seal and no mask: the
 keyword only declines to run. Every such case answers "unknown", which keeps
-Kiro Crew's own MCP servers out of deferral. The pinned install and an absolute
+Kiro Crew's own MCP servers out of deferral. A nonzero exit carrying any line the
+launcher writes when it exits (`kiro_cli._launcher_exit_line`, any `sandbox_unavailable.LAUNCHER_EXIT_PREFIXES` line) is unknown
+too, whether or not the launcher's trusted re-run confirmed a refusal: the file's
+own answer was never read. The pinned install and an absolute
 `KIROCREW_KIRO_BIN` keep their own read (`kiro_cli_version_at`), which runs
 inside the sandbox at the configured tier, as a session runs the same binary
 (`kiro_cli._sandboxed_probe`; its fixed argv still runs on a host with no

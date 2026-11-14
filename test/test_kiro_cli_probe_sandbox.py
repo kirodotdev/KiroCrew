@@ -87,6 +87,19 @@ def test_a_line_after_the_version_does_not_hide_it(pinned, runner):
     assert kiro_cli.kiro_cli_version_at(pinned) == (2, 40, 0)
 
 
+def test_a_launcher_exit_line_is_unknown_for_both_engine_probes(pinned, runner):
+    """The launcher refused the run and its trusted re-run passed, so no
+    ``sandbox_failure`` is set: the line is still not kiro-cli's answer."""
+    line = "sandbox: FATAL — cannot enter the launch directory (Device or resource busy)\n"
+    _answer(runner, line, returncode=1)
+    assert kiro_cli.kas_relay_help(pinned) is None
+    assert kiro_cli.kas_relay_start_output(pinned, ("acp", "--agent-engine", "v3")) is None
+    assert kiro_cli._kas_start_cache == {}
+    # An exit kiro-cli made itself is its answer, as before.
+    _answer(runner, "error: V3 is currently not supported on this system.\n", returncode=1)
+    assert "not supported" in (kiro_cli.kas_relay_start_output(pinned, ("acp",)) or "")
+
+
 def test_a_sandbox_refusal_is_unknown_and_not_cached(pinned, runner):
     runner.answer["result"] = ProcessResult(
         ok=False, returncode=1, sandbox_failure=("transient", "detail", "remedy")

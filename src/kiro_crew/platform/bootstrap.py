@@ -552,6 +552,19 @@ def _unknown_verdict_reason(*, start: bool = False) -> str:
     return f"`{binary} acp --help` did not run"
 
 
+def _gap_reason(reason: str) -> str:
+    """A help gap *reason* with the run it was read from, so a fallback notice says why.
+
+    Stats only; never raises.
+    """
+    from kiro_crew.agent_sdk.drivers.acp import kiro_cli_spawn_binary
+
+    binary = kiro_cli_spawn_binary()
+    if binary is None:
+        return reason
+    return f"{reason} (read from the help `{binary} acp --help` printed)"
+
+
 def apply_kas_cli_floor(
     cfg: "KiroCrewConfig", *, kas_defaulted: bool = False, kiro_selected: bool = False
 ) -> str | None:
@@ -635,6 +648,7 @@ def apply_kas_cli_floor(
 
     offers_kas, reason = kas_engine_verdict()
     start_unknown = False
+    from_help = True
     if offers_kas:
         # The help lists v3 even where kiro-cli then refuses to run it. The user's
         # own pick moves only on proof the engine runs here (one start per kiro-cli
@@ -644,6 +658,7 @@ def apply_kas_cli_floor(
         if kiro_pick or started is False:
             offers_kas, reason = started, refusal
             start_unknown = started is None
+            from_help = False
     if offers_kas:
         # Positive evidence only: from here a Kiro CLI pick moves to the KAS path
         # (``KIRO_SELECTION_BACKEND``), including one the user makes later in this
@@ -667,7 +682,9 @@ def apply_kas_cli_floor(
         # session on KAS is refused at its own start; only a Kiro CLI pick's notice holds.
         if not kiro_pick:
             return None
-        notice = KAS_CLI_FLOOR_KIRO_NOTICE.format(reason=reason)
+        notice = KAS_CLI_FLOOR_KIRO_NOTICE.format(
+            reason=_gap_reason(reason) if from_help else reason
+        )
         logger.warning(notice)
         return notice
     if not kiro_pick and kas_bundle.kas_route().bundle:
@@ -678,15 +695,16 @@ def apply_kas_cli_floor(
         return None
     mark_backend_unservable(ACP_BACKEND_KAS, reason)
     agent.acp_backend = resolve_selected_backend(agent.acp_backend)
+    shown = _gap_reason(reason) if from_help else reason
     parts = []
     if kiro_pick:
-        parts.append(KAS_CLI_FLOOR_KIRO_NOTICE.format(reason=reason))
+        parts.append(KAS_CLI_FLOOR_KIRO_NOTICE.format(reason=shown))
     if kas_roles:
         # A Bot's KAS fallback is a default nobody stored, so it gets the default wording.
         template = (
             KAS_CLI_FLOOR_DEFAULT_NOTICE if kas_defaulted or not named else KAS_CLI_FLOOR_NOTICE
         )
-        parts.append(template.format(reason=reason))
+        parts.append(template.format(reason=shown))
     notice = " ".join(parts)
     logger.warning(notice)
     return notice

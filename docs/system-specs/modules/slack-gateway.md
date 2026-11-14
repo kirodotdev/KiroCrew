@@ -212,6 +212,14 @@ sandbox-wrapped with no internal-sandbox delegation, under the
 process-group supervisor with `reap_survivors`, captured output bounded, and the
 whole tree ended on timeout or once the probe exits. A sandboxed probe that does
 not exit cleanly is unknown, not a gap: the launcher can fail before kiro-cli runs.
+The pinned path's `acp --help` and v3 start probes read the same way
+(`kiro_cli._launcher_refused` over `kiro_cli._launcher_exit_line`): a nonzero exit whose output carries the sandbox
+launcher's own exit line (`LAUNCHER_EXIT_PREFIXES`) is unknown
+and logged with that line, even when the launcher's trusted re-run passed and so no
+`sandbox_failure` is set, as when a gateway starts while another boots. A nonzero
+exit kiro-cli made itself (an old kiro-cli's usage, the v3 refusal) is still its
+answer. A help gap's fallback notice names the run it was read from
+(`` (read from the help `<binary> acp --help` printed) ``).
 A capture at the runner's bound is unknown too. Every caller runs the verdict off
 any event loop (a worker thread or a sync CLI entry). An unknown probe on a Kiro CLI pick logs a WARNING
 (`KAS_CLI_FLOOR_KIRO_UNKNOWN_NOTICE`) naming why: no trusted kiro-cli, an

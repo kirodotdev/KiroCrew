@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import stat
@@ -27,6 +28,8 @@ from kiro_crew.kiro_cli_bundle import (  # noqa: F401 - re-exported surface
 
 if TYPE_CHECKING:
     from kiro_crew.kiro_prerequisite import ProcessResult
+
+_logger = logging.getLogger(__name__)
 
 KIRO_CLI_NAME = "kiro-cli"
 
@@ -246,6 +249,48 @@ def _probe_ran(result: ProcessResult) -> bool:
         and result.sandbox_failure is None
         and len(result.output) < _MAX_CAPTURED_OUTPUT
     )
+
+
+def _launcher_exit_line(output: str) -> str | None:
+    """The first line in *output* the sandbox launcher writes when it exits, or ``None``.
+
+    Any ``sandbox_unavailable.LAUNCHER_EXIT_PREFIXES`` line, whatever
+    ``launcher_refusal`` makes of it. For a probe reading what a binary supports,
+    such a line means the launcher ended the run, whether or not its trusted re-run
+    later passed, so the output is not the binary's answer. Untrusted like every
+    such line: a binary that prints it only makes its own answer unknown.
+    """
+    from kiro_crew.sandbox_unavailable import LAUNCHER_EXIT_PREFIXES  # noqa: PLC0415
+
+    for raw in output.splitlines():
+        line = raw.strip()
+        if line.startswith(LAUNCHER_EXIT_PREFIXES):
+            return line
+    return None
+
+
+def _launcher_refused(binary: str, argv: Sequence[str], result: ProcessResult) -> bool:
+    """Whether *result* is the sandbox launcher's own exit, not kiro-cli's answer. Logs it.
+
+    The launcher exits nonzero with a ``sandbox:`` line when it could not set the run
+    up. Its re-run around a trusted no-op can then succeed, so *result* carries no
+    ``sandbox_failure`` (:func:`_probe_ran` passes it), yet the text says nothing
+    about the engine. A probe reading engine support treats it as unknown. A
+    candidate can print the same prefix, which only makes its answer unknown.
+    """
+    if result.ok:
+        return False
+    line = _launcher_exit_line(result.output)
+    if line is None:
+        return False
+    _logger.warning(
+        "%s %s exited %s before kiro-cli answered, so what it supports is unknown: %s",
+        binary,
+        " ".join(argv),
+        result.returncode,
+        line[:200],
+    )
+    return True
 
 
 def mandatory_mcps_drop_supported(version: tuple[int, int, int] | None) -> bool:
@@ -548,9 +593,14 @@ def kas_relay_help(binary: str) -> str | None:
     """``acp --help`` text for this kiro-cli, or ``None`` when the probe FAILED.
 
     Read from help output because there is no machine-readable capability surface
-    for the engine selector. ``None`` means only one thing — the probe could not
-    run (spawn error, timeout) — so the caller reports genuinely-unknown as
-    unknown. Help text that RAN and simply lacks the engine selector is returned
+    for the engine selector. ``None`` means only one thing — the probe gave no
+    answer from kiro-cli (a spawn error, a timeout, or a nonzero exit carrying the
+    sandbox launcher's own exit line) — so the caller reports genuinely-unknown as
+    unknown. The launcher exits 1 with a ``sandbox:`` line when it could not set the
+    run up, and its re-run around a trusted no-op can then succeed, so the result
+    carries no ``sandbox_failure``; that line is not help and says nothing about the
+    engine (:func:`_launcher_refused`, which logs it). Help text that RAN and
+    simply lacks the engine selector, whatever its exit code, is returned
     as-is, not as ``None``: a kiro-cli too old to offer ``--agent-engine`` cannot
     serve KAS at all, and reporting that as "unknown" would let a broken
     configuration pass the readiness check and fail later at spawn instead.
@@ -561,6 +611,8 @@ def kas_relay_help(binary: str) -> str | None:
     """
     result = _sandboxed_probe(binary, ["acp", "--help"], _KAS_HELP_PROBE_TIMEOUT_SECS)
     if result is None or not _probe_ran(result):
+        return None
+    if _launcher_refused(binary, ("acp", "--help"), result):
         return None
     return result.output
 
@@ -602,7 +654,7 @@ def kas_relay_start_output(binary: str, argv_tail: Sequence[str]) -> str | None:
     if cached is not None:
         return cached
     result = _sandboxed_probe(binary, argv, _KAS_START_PROBE_TIMEOUT_SECS)
-    if result is None or not _probe_ran(result):
+    if result is None or not _probe_ran(result) or _launcher_refused(binary, argv, result):
         # Not cached: a start that failed, was refused or never exited says nothing
         # about the host.
         return None
