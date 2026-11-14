@@ -33,7 +33,7 @@ from kiro_crew.dashboard.slot_persistence import metadata_codec as codec
 from kiro_crew.dashboard.slot_persistence import metadata_line, metadata_values
 from kiro_crew.dashboard.source_providers.contract import source_ref_identity_key
 from kiro_crew.dashboard.state import durable_queue_entries
-from kiro_crew.history import SLOT_OWNED_META_KEYS
+from kiro_crew.history import SLOT_OWNED_META_KEYS, transcript_stem
 
 K1 = source_ref_identity_key(("github", "github.com", "o", "r", 1, "", "change", ""))
 K2 = source_ref_identity_key(("github", "github.com", "o", "r", 2, "", "change", ""))
@@ -252,6 +252,7 @@ def _populated(state, *, app: str = "app-1"):
 
 def _purpose(purpose: str, *, name: str, member=None, listed: object = "Listed", **inputs):
     """Build *purpose*; *inputs* are extra constructor keywords (the restore inputs)."""
+    history_key = inputs.pop("history_key", "")
     if purpose == codec.RESTORE:
         return codec.Restore(name=name, member=member, **inputs)
     if purpose == codec.RECENT:
@@ -259,10 +260,10 @@ def _purpose(purpose: str, *, name: str, member=None, listed: object = "Listed",
             name=name,
             member=member,
             listing={"title": listed},
-            history_key=f"dashboard_{name}",
+            history_key=history_key or f"dashboard_{name}",
             **inputs,
         )
-    return codec.Resume(member=member, history_key=f"dashboard:{name}", **inputs)
+    return codec.Resume(member=member, history_key=history_key or f"dashboard:{name}", **inputs)
 
 
 def _slot_folds(slot) -> codec.SaveFolds:
@@ -315,8 +316,12 @@ def test_every_field_a_purpose_reads_round_trips_and_every_other_is_left_alone(
     state = _state(tmp_path, monkeypatch)
     source = _populated(state)
     meta = json.loads(json.dumps(codec.encode(source, merge=merge, folds=_slot_folds(source))))
-    # A recent restore shows the session list's title, which is the line's.
-    fresh, applied, baseline = _read_back(state, meta, purpose, listed=meta.get("title"))
+    # A recent restore shows the session list's title, which is the line's. Read
+    # under the linked thread's own transcript, the file a linked slot saves to.
+    own = transcript_stem(_POPULATED["linked_session_key"])
+    fresh, applied, baseline = _read_back(
+        state, meta, purpose, name=own, history_key=own, listed=meta.get("title")
+    )
 
     write = "merge" if merge else "line"
     restored, kept, settled = [], [], []
@@ -499,7 +504,7 @@ def test_the_full_save_clears_by_absence_and_the_merge_by_a_falsy_value(tmp_path
 
 def test_slot_args_take_each_purposes_construction_inputs():
     meta = {"app": "app-1", "origin": "cron", "linked_session_key": "slack:C1:1.2"}
-    assert codec.slot_args(meta, codec.Restore(name="x")) == {
+    assert codec.slot_args(meta, codec.Restore(name="slack_C1_1.2")) == {
         "agent": "",
         "mode": "",
         "app": "app-1",
@@ -522,6 +527,7 @@ def test_slot_args_take_each_purposes_construction_inputs():
         "origin": "cron",
     }
     assert codec.slot_args({}, codec.Resume(history_key="dashboard:x"))["channel_origin"] is False
+    assert codec.slot_args(meta, codec.Restore(name="x"))["channel_origin"] is False
 
 
 def test_resume_binds_a_review_transcripts_own_link_for_the_dashboard_user_only():
