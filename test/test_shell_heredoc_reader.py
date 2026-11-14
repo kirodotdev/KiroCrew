@@ -97,9 +97,19 @@ class TestReader:
         pytest.param(f"bash -ce +c '{ROOT}'", id="option-cluster-after-c"),
         pytest.param(f"echo hi # x\\\nbash -c '{ROOT}'", id="comment-ending-in-backslash"),
         pytest.param(f"echo hi &# \\\nbash -c '{ROOT}'", id="background-comment-backslash"),
-        # with ``((`` in the text each line is also read as commands: ``<<`` may be a shift
+        pytest.param('echo "$(x=$((1<<2))\nrm -r -f ~\n)"', id="shift-quoted-substitution"),
+        pytest.param('echo "`x=$((1<<2))\nrm -r -f ~\n`"', id="shift-quoted-backtick"),
+        pytest.param("cat <<EOF\n$(x=$((1<<2))\nrm -r -f ~\n)\nEOF", id="shift-body-substitution"),
+        pytest.param('echo "$( "$(x=$((1<<2))\nrm -r -f ~\n)" )"', id="shift-nested-substitution"),
+        pytest.param("cat <<EOF\n`x=$((1<<2))\nrm -r -f ~\n`\nEOF", id="shift-body-backtick"),
+        pytest.param(
+            "cat <<EOF\n'$(x=$((1<<2))\nrm -r -f ~\n)'\nEOF", id="shift-body-literal-quotes"
+        ),
+        # with ``<<`` read as a shift, not a heredoc (no body follows it in bash)
         pytest.param(f"x=$((1<<2))\n{HOME}", id="shift-in-arith-expansion"),
         pytest.param(f"((1<<2))\n{HOME}", id="shift-in-arith-command"),
+        pytest.param(f"((cat<<z))\n{HOME}\nz", id="shift-in-arith-command-tagged"),
+        pytest.param(f"echo $((1<<2))\n{HOME}\n2", id="shift-in-arith-echo-tagged"),
         pytest.param(f"((1<<2)) && bash <<EOF\n{ROOT}\nEOF", id="heredoc-after-arith"),
         pytest.param(f"((1 # ))\ncat <<'EOF'\n'\nEOF\n{HOME} #'\n))", id="comment-in-arith"),
         pytest.param(
@@ -111,9 +121,26 @@ class TestReader:
         pytest.param(f"((1<<2))\nbash -c '{RM} -r \\\n-f ~'", id="arith-then-quoted-continuation"),
         pytest.param(f"x=$((1<<2))\necho hi # \\\n{HOME}", id="arith-then-comment-backslash"),
         pytest.param(f"x=$(\\\n(1<<2))\n{HOME}", id="arith-opener-split-by-continuation"),
-        # the price: a wipe written as heredoc data beside a ``((`` is refused too
-        pytest.param(f"x=$(( `wc -l <<'EOF'\n{HOME}\nEOF\n` ))", id="arith-backtick-heredoc-data"),
-        pytest.param(f"((cd b && make); cat > f <<'EOF'\n{ROOT}\nEOF\n)", id="arith-subshell-data"),
+        pytest.param(f"cat <<'EOF'\nok\nEOF\nx=$((1<<2))\n{HOME}", id="shift-after-a-heredoc"),
+        pytest.param(f"x=$((1<<2))\n{HOME}\ncat <<'EOF'\nok\nEOF", id="shift-before-a-heredoc"),
+        pytest.param(f"# don't\nx=$((1<<2))\n{HOME}", id="comment-quote-before-shift"),
+        # a real heredoc body is data: its quotes, comments and parens open nothing
+        pytest.param(
+            f"cat > n <<'EOF'\ndon't\nEOF\nx=$((1<<2))\n{HOME}", id="body-quote-then-shift"
+        ),
+        pytest.param(f'cat <<EOF\nsay "hi\nEOF\nx=$((1<<2))\n{HOME}', id="body-dquote-then-shift"),
+        pytest.param(f"cat <<EOF\na # (\nEOF\nx=$((1<<2))\n{HOME}", id="body-comment-paren-shift"),
+        pytest.param(
+            f"cat <<'EOF'\n((\nEOF\n# don't\n((1<<2))\n{HOME}", id="body-parens-then-shift"
+        ),
+        pytest.param(
+            f"cat <<'EOF'\n$((1\nEOF\n# don't\nx=$((1<<2))\n{HOME}", id="body-open-arith-shift"
+        ),
+        pytest.param(
+            f"cat <<A <<-'B'\n'\nA\n\t\"\n\tB\nx=$((1<<2))\n{HOME}", id="two-bodies-then-shift"
+        ),
+        pytest.param(f"x=$[1<<2]\ny=$((1<<2))\n{HOME}", id="old-arith-is-no-heredoc"),
+        pytest.param(f'echo "$(printf ok)"; x=$((1<<2))\n{HOME}', id="quoted-subst-then-shift"),
     ],
 )
 def test_the_floor_refuses(cmd):
@@ -145,8 +172,36 @@ def test_the_floor_refuses(cmd):
         pytest.param(
             f'cat <<\'bash -c "{ROOT}"\'\nhello\nbash -c "{ROOT}"', id="tag-spells-a-wipe"
         ),
+        pytest.param("echo '$(x=$((1<<2))\nrm -r -f ~\n)'", id="shift-single-quoted-data"),
+        pytest.param("cat <<'EOF'\n$(x=$((1<<2))\nrm -r -f ~\n)\nEOF", id="shift-quoted-body-data"),
+        pytest.param("echo '`x=$((1<<2))\nrm -r -f ~\n`'", id="shift-single-quoted-backtick-data"),
+        pytest.param(
+            "cat <<'EOF'\n`x=$((1<<2))\nrm -r -f ~\n`\nEOF", id="shift-quoted-body-backtick-data"
+        ),
+        pytest.param(
+            "cat <<EOF\n\\$(x=$((1<<2))\nrm -r -f ~\n)\nEOF", id="shift-escaped-body-data"
+        ),
+        pytest.param(
+            "cat <<EOF\n\\`x=$((1<<2))\nrm -r -f ~\n\\`\nEOF", id="shift-escaped-body-backtick-data"
+        ),
         pytest.param("echo $((1<<2))", id="arith-shift-alone"),
         pytest.param("x=$((1<<2))\nrm -r -f ./build", id="arith-then-a-scoped-rm"),
+        pytest.param(f"x=$(( `wc -l <<'EOF'\n{HOME}\nEOF\n` ))", id="arith-backtick-heredoc-data"),
+        pytest.param(f"((cd b && make); cat > f <<'EOF'\n{ROOT}\nEOF\n)", id="arith-subshell-data"),
+        pytest.param(f"((1<<2))\ncat <<'EOF'\n{HOME}\nEOF", id="heredoc-data-after-a-shift"),
+        pytest.param(f"x=$(( $(cat <<'EOF'\n{HOME}\nEOF\n) ))", id="arith-subst-heredoc-data"),
+        pytest.param(f"x=$((1<<2\n{HOME}", id="unclosed-arith-runs-nothing-after-it"),
+        pytest.param(f"cat <<'EOF'\nx=$((1<<2))\n{HOME}\nEOF", id="shift-and-wipe-in-one-body"),
+        pytest.param(f"cat <<EOF\nx=$((1<<2))\n{HOME}\nEOF", id="shift-and-wipe-unquoted-body"),
+        pytest.param(
+            f"x=$(( $( ((a) >o); cat <<'EOF'\n{HOME}\nEOF\necho 1) ))", id="subshells-in-arith-data"
+        ),
+        # a ``$((`` that is not arithmetic: its heredoc is real
+        pytest.param(f"n=$((cat <<'EOF'\n{HOME}\nEOF\n) | wc -l)", id="failed-arith-subst-data"),
+        # main's reading: a span that closes on a later line is not followed
+        pytest.param(f"x=$((1<<2\n))\n{HOME}", id="shift-in-multiline-arith"),
+        # main's reading: a ``((`` that closes as subshells keeps its heredoc
+        pytest.param(f"((cat <<'EOF'\n{HOME}\nEOF\n); echo z)", id="heredoc-in-failed-arith"),
     ],
 )
 def test_the_floor_allows_body_data(cmd):
@@ -184,8 +239,20 @@ def test_shallow_heredoc_nesting_is_refused_by_its_content():
     assert rm_floor._rm_wipe_targets_nested(_nested_shell_heredocs(2, HOME)) == {"home"}
 
 
-@pytest.mark.parametrize("sep", [";", "\n"], ids=["one-line", "many-lines"])
-def test_the_arithmetic_line_reading_stays_linear(monkeypatch, sep):
+_STEPS = "".join(f'echo "step {i}: $(date +%s)"\n' for i in range(200))
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        ";".join(["((1<<2))"] * 2000) + ";rm -f scratch",
+        "\n".join(["((1<<2))"] * 2000) + "\nrm -f scratch",
+        "cat > notes.txt <<EOF\nhello\nEOF\n" + _STEPS,
+    ],
+    ids=["one-line", "many-lines", "heredoc-then-quoted-substitutions"],
+)
+def test_the_arithmetic_line_reading_stays_linear(monkeypatch, cmd):
+    assert is_denied(cmd) is None
     read = rm_floor._commands.read_commands
     chars: list[int] = []
 
@@ -194,6 +261,39 @@ def test_the_arithmetic_line_reading_stays_linear(monkeypatch, sep):
         return read(text, *args, **kwargs)
 
     monkeypatch.setattr(rm_floor._commands, "read_commands", counting)
-    cmd = sep.join(["((1<<2))"] * 2000) + sep + "rm -f scratch"
     assert rm_floor._rm_wipe_targets_nested(cmd) == set()
     assert sum(chars) <= 12 * len(cmd)  # each line is read a fixed number of times
+
+
+def _nested_failed_arith(depth: int) -> str:
+    text = "true"
+    for _ in range(depth):
+        text = "n=$((cat <<E\nE\nprintf '%s' \"$(" + text + ')"\n) | cat)'
+    return text + "; rm -f scratch"
+
+
+def _nested_unclosed_arith(depth: int) -> str:
+    text = "true"
+    for _ in range(depth):
+        text = "printf '%s' \"$(x=$((1<<2\n" + text + '\n)"'
+    return text + "; rm -f scratch"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [_nested_failed_arith(13), _nested_unclosed_arith(13)],
+    ids=["failed-arith-nesting", "unclosed-arith-nesting"],
+)
+def test_deep_arithmetic_nesting_reads_in_linear_calls(monkeypatch, cmd):
+    # a span that does not close as arithmetic is read once, the way main reads it, so
+    # the number of reads grows with the input, not doubling at each nesting level
+    read = rm_floor._commands.read_commands
+    calls: list[int] = []
+
+    def counting(text, *args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(len(text))
+        return read(text, *args, **kwargs)
+
+    monkeypatch.setattr(rm_floor._commands, "read_commands", counting)
+    assert rm_floor._rm_wipe_targets_nested(cmd) == set()
+    assert len(calls) <= len(cmd)

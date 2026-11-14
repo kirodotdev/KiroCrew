@@ -181,8 +181,11 @@ def read_commands(
     substitution body (its :data:`SUBST` step stays). *heredocs* reads past a live
     ``<<`` instead of stopping: each body goes to its command's :attr:`ShellCommand.heredocs`,
     and the substitutions in an unquoted body are read as commands of their own, listed
-    after the line. The list is never empty: the last command holds whatever follows the
-    last separator.
+    after the line. With both, a ``$((…))`` / ``((…))`` span is tracked too: a ``<<`` in
+    it is a shift, not a heredoc, once the span closes with ``))`` on the line of the
+    ``<<``. Until then the ``<<`` is held as a heredoc, so a span that closes as two
+    subshells, or is still open at the next newline, reads as if it were no span. The
+    list is never empty: the last command holds whatever follows the last separator.
     """
     out: list[ShellCommand] = []
     steps: list[ShellStep] = []
@@ -191,6 +194,10 @@ def read_commands(
     expansion: list[str] = []  # closers of open ``${…}`` / ``$[…]``
     pos, state = 0, 0
     pending: list[list] = []  # [owner index or None, tag, strip tabs, quoted] per ``<<``
+    arith = track and heredocs
+    frames: list[list] = []  # [kind, depth, held heredocs] per open paren
+    fresh: "list | None" = None  # the frame the step before opened
+    closing = odd_dollar = False
 
     def cut(separator: str) -> None:
         nonlocal steps
@@ -208,6 +215,30 @@ def read_commands(
         for step in _shell._iter_shell_chars(text, state):
             at = _base + pos + step.offset
             dollars = dollars + 1 if step.active and step.char == "$" else 0
+            if arith and not expansion and step.text != "\\\n":  # bash drops a continuation
+                char, opened, fresh = (step.char if step.active else ""), fresh, None
+                if closing:  # the ``)`` before closed the arithmetic's own depth
+                    closing = False
+                    held = frames.pop()[2]
+                    if char == ")":
+                        char = ""  # ``))`` ends it: its held ``<<`` were shifts
+                        pending = [doc for doc in pending if all(doc is not h for h in held)]
+                    else:
+                        frames.append(["(", 0, []])  # ``((a) …)``: two subshells
+                top = frames[-1] if frames else ["", 0, []]
+                if char == "(" and opened is not None:
+                    opened[0] = "(("  # ``((`` or ``$((``
+                elif char == "(" and (top[0] != "((" or odd_dollar):
+                    frames.append(fresh := ["(", 0, []])
+                elif char == "(":
+                    top[1] += 1
+                elif char == ")" and top[0] == "((":
+                    top[1], closing = top[1] - bool(top[1]), not top[1]
+                elif char == ")" and top[0] == "(" or char == "`" and top[0] == "`":
+                    frames.pop()
+                elif char == "`":
+                    frames.append(["`", 0, []])
+                odd_dollar = dollars % 2 == 1
             live_syntax = step.active and not expansion
             near = text[max(step.offset - 1, 0) : step.offset + 3]  # ``<<<`` takes one word
             if live_syntax and text.startswith("<<", step.offset) and "<<<" not in near:
@@ -215,6 +246,8 @@ def read_commands(
                     stop = "<<"
                     break
                 pending.append([None, *_heredoc_tag(text, step.offset + 2)])
+                if arith and frames and frames[-1][0] == "((":
+                    frames[-1][2].append(pending[-1])  # a shift if the span closes first
             if live_syntax and step.char == "#" and _shell._opens_comment(text, step.offset):
                 newline = text.find("\n", step.offset)  # a comment's quotes open nothing
                 resume = len(command) if newline < 0 else pos + newline
@@ -258,6 +291,8 @@ def read_commands(
                 cut(step.char)
                 in_redirect = False
                 if step.char == "\n" and pending:  # the bodies start on the next line
+                    for frame in frames:
+                        frame[2] = []  # a held ``<<`` whose span is still open is a heredoc
                     resume = _read_bodies(
                         command, pos + step.offset + 1, pending, out, track, _base
                     )
