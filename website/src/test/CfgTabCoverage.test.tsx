@@ -932,6 +932,20 @@ describe('KiroCrewCfgTab workspace actions', () => {
     expect(screen.getByLabelText('Name')).toHaveValue('second')
   })
 
+  it('still refreshes the table when a warned create answers after Cancel', async () => {
+    let finish: (v: unknown) => void = () => {}
+    vi.mocked(api).createWorkspace = vi.fn(() => new Promise(r => { finish = r }))
+    await renderTab()
+    fireEvent.click(screen.getByRole('button', { name: 'New workspace' }))
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'copied' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(api.kirocrewConfig).toHaveBeenCalledTimes(1)
+    await act(async () => { finish({ ok: true, name: 'copied', warnings: ['nothing was copied'] }) })
+    await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalledTimes(2))
+  })
+
   it('keeps the typed name and shows the refusal when delete fails', async () => {
     vi.mocked(api).deleteWorkspace = vi.fn().mockRejectedValue(new Error("Workspace 'ws-idle' is referenced by agents: bot"))
     await renderTab()

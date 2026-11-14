@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -72,6 +72,7 @@ vi.mock('../components/SimpleSelect', () => ({
 vi.mock('../api/client', () => ({ api: mockApi }))
 
 import KiroCrewAgentsPage from '../pages/KiroCrewAgentsPage'
+import { WorkspaceModal } from '../components/crew/crewFields'
 
 function createTestStore() {
   return configureStore({
@@ -79,9 +80,8 @@ function createTestStore() {
   })
 }
 
-function renderPage() {
+function renderPage(qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   const store = createTestStore()
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -215,6 +215,85 @@ describe('WorkspaceModal — creation flow', () => {
       expect(screen.getByText('Workspace already exists')).toBeInTheDocument()
     })
     expect(screen.getByText('Create Workspace')).toBeInTheDocument()
+  })
+
+  // A copy whose source folder is gone still creates the (empty) workspace, and the
+  // server says so in `warnings`. The dialog must show that line instead of closing
+  // as if the copy happened, and whichever way it is left, the new workspace is
+  // still the one the form picks up.
+  const exits: [string, (modal: HTMLElement) => void][] = [
+    ['Done', modal => fireEvent.click(within(modal).getByRole('button', { name: 'Done' }))],
+    ['the close button', modal => fireEvent.click(within(modal).getByRole('button', { name: 'Close' }))],
+    ['Escape', () => fireEvent.keyDown(document, { key: 'Escape' })],
+  ]
+  it.each(exits)('shows the copy warning, then %s picks the new workspace', async (_, leave) => {
+    const warning = "source workspace 'oncall' has no folder at 'workspace-oncall'; nothing was copied"
+    // Answered inside act(): the modal learns of the warned create from the form's
+    // effects, and an exit taken before they flush reads as a cancel.
+    let finish: (v: unknown) => void = () => {}
+    mockApi.createWorkspace.mockReturnValue(new Promise(r => { finish = r }))
+    renderPage()
+    await screen.findByTestId('crew-card')
+    await openModalViaWorkspaceDropdown()
+
+    const modal = screen.getByRole('dialog', { name: 'Create Workspace' })
+    fireEvent.change(within(modal).getByPlaceholderText('e.g. oncall'), { target: { value: 'copied' } })
+    fireEvent.click(await within(modal).findByRole('option', { name: 'oncall' }))
+    fireEvent.click(within(modal).getByRole('button', { name: 'Create' }))
+    await act(async () => { finish({ ok: true, name: 'copied', warnings: [warning] }) })
+
+    expect(within(modal).getByText(warning)).toBeInTheDocument()
+    expect(mockApi.createWorkspace).toHaveBeenCalledWith({ name: 'copied', dir: 'workspace-copied', copy_from: 'oncall' })
+    leave(modal)
+    await waitFor(() => expect(screen.queryByText('Create Workspace')).not.toBeInTheDocument())
+    const sheet = screen.getByRole('dialog', { name: 'New bot' })
+    await waitFor(() => expect(within(sheet).getByRole('combobox', { name: 'Workspace' })).toHaveTextContent('copied'))
+  })
+
+  // A page that goes away under the warning (a navigation) still hears about the
+  // workspace, and a create reported by Done is never reported again at teardown.
+  it.each([false, true])('reports a warned create once when the page unmounts (Done first: %s)', async (doneFirst) => {
+    mockApi.createWorkspace.mockResolvedValue({ ok: true, name: 'copied', warnings: ['nothing was copied'] })
+    const onCreated = vi.fn()
+    const modal = (open: boolean) => <WorkspaceModal open={open} workspaceOptions={[]} onCreated={onCreated} onClose={() => {}} />
+    const { rerender, unmount } = render(modal(true))
+    fireEvent.change(screen.getByPlaceholderText('e.g. oncall'), { target: { value: 'copied' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    await screen.findByText('nothing was copied')
+    expect(onCreated).not.toHaveBeenCalled()
+    if (doneFirst) {
+      fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+      rerender(modal(false))
+    }
+    unmount()
+    expect(onCreated).toHaveBeenCalledTimes(1)
+    expect(onCreated).toHaveBeenCalledWith('copied')
+  })
+
+  // Leaving the page under the warning retires the dialog's generation before the
+  // form reports the create. The pick is dropped then, but the workspace exists, so
+  // the list is marked stale and re-read on reopen: the app's cache never goes stale
+  // on its own.
+  it('a warned create left by navigation is in the picker when New bot reopens', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    let finish: (v: unknown) => void = () => {}
+    mockApi.createWorkspace.mockReturnValue(new Promise(r => { finish = r }))
+    const { unmount } = renderPage(qc)
+    await screen.findByTestId('crew-card')
+    await openModalViaWorkspaceDropdown()
+
+    const modal = screen.getByRole('dialog', { name: 'Create Workspace' })
+    fireEvent.change(within(modal).getByPlaceholderText('e.g. oncall'), { target: { value: 'copied' } })
+    fireEvent.click(within(modal).getByRole('button', { name: 'Create' }))
+    mockApi.workspaces.mockResolvedValue({ workspaces: [...WORKSPACES_RESPONSE.workspaces, { name: 'copied', dir: 'workspace-copied' }] })
+    await act(async () => { finish({ ok: true, name: 'copied', warnings: ['nothing was copied'] }) })
+    expect(within(modal).getByText('nothing was copied')).toBeInTheDocument()
+    unmount()
+
+    renderPage(qc)
+    await screen.findByTestId('crew-card')
+    const sheet = await openCrewSheet()
+    expect(await within(sheet).findByRole('option', { name: 'copied' })).toBeInTheDocument()
   })
 
   it('"Copy from" StyledSelect shows existing workspaces', async () => {

@@ -365,8 +365,9 @@ export default function NewCrewmateDialog({
   // it; and every close path — nested Cancel / X / Escape / backdrop, the
   // parent's reset-on-open, the parent closing, unmount — bumps the live
   // counter synchronously. A completion whose generation is no longer the
-  // live one is dropped whole: no cache write, no pending pick, no draft
-  // change. A completion from the still-open generation behaves as before.
+  // live one makes no cache write, no pending pick, no draft change and no
+  // fetch; it only marks the list stale, since the workspace exists either
+  // way. A completion from the still-open generation behaves as before.
   const [wsModal, setWsModal] = useState<{ open: boolean; gen: number }>({ open: false, gen: 0 })
   const wsModalOpen = wsModal.open
   const wsGen = useRef(0)
@@ -1086,9 +1087,14 @@ export default function NewCrewmateDialog({
         // of the opening it was rendered for: `WorkspaceForm` keeps the
         // handler from the render its submit started in, so a form that was
         // closed — or a parent that was reset or closed — before the POST
-        // answered arrives here with a retired generation and is dropped.
+        // answered arrives here with a retired generation and is dropped,
+        // save for marking the list stale: with `staleTime: Infinity` nothing
+        // else would re-read it when the dialog next opens.
         onCreated={(newName) => {
-          if (wsModal.gen !== wsGen.current) return
+          if (wsModal.gen !== wsGen.current) {
+            void queryClient.invalidateQueries({ queryKey: ['workspaces'], refetchType: 'none' })
+            return
+          }
           closeWsModal()
           queryClient.setQueryData(['workspaces'], (prev: { workspaces?: { name: string }[] } | undefined) => {
             const list = prev?.workspaces ?? [{ name: 'default' }]
