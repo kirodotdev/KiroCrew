@@ -680,6 +680,17 @@ def test_a_retired_or_malformed_mode_reads_as_plain_chat(raw, restored, tmp_path
     assert resume.mode == ("" if raw == "member" else restored)
 
 
+@pytest.mark.parametrize("keeps", [True, False])
+def test_a_resume_drops_a_mode_its_caller_ruled_out(keeps, tmp_path, monkeypatch):
+    """The caller decides off the loop (``apps.hidden_sessions.resume_keeps_mode``);
+    the read itself does no I/O. A restart restore keeps the saved mode."""
+    state = _state(tmp_path, monkeypatch)
+    resume, _, _ = _read_back(state, {"mode": "acme-app"}, codec.RESUME, keeps_mode=keeps)
+    assert resume.mode == ("acme-app" if keeps else "")
+    restore, _, _ = _read_back(state, {"mode": "acme-app"}, codec.RESTORE, name="kept")
+    assert restore.mode == "acme-app"
+
+
 def test_the_restricted_mark_follows_the_line_and_resume_clears_a_stale_one(tmp_path, monkeypatch):
     state = _state(tmp_path, monkeypatch)
     _read_back(state, {"memory_mode": "ephemeral"}, codec.RESTORE, name="r")

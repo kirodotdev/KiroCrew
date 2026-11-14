@@ -20,7 +20,7 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Code2, GitBranch, Loader2, MessagesSquare, Monitor, Plug, RotateCcw, Server, ShieldAlert, Terminal, Webhook } from 'lucide-react'
+import { Code2, EyeOff, GitBranch, Loader2, MessagesSquare, Monitor, Plug, RotateCcw, Server, ShieldAlert, Terminal, Webhook } from 'lucide-react'
 
 import { api } from '../../api/client'
 import { isNotFoundError } from '../../api/apiError'
@@ -70,6 +70,8 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
   workerAutoApprove?: boolean
   /** The app declares `permissions.chatSlots`: it runs chat sessions of its own. */
   chatSlots?: boolean
+  /** The app declares `permissions.hiddenSessions`: its own chats stay out of the session lists. */
+  hiddenSessions?: boolean
   /** The `permissions.reachableByUserSessions` verbs: what your chats may do to the sessions it runs. */
   reachableByUserSessions?: string[]
   /** The windows and shortcuts its manifest `desktop` block asks the desktop shell for. */
@@ -839,7 +841,18 @@ export default function TrustAppModal({
                 <span>{i18nT('components.appstore.trustAppModal.chat_slots_heading')}</span>
               </div>
               <p className="text-text leading-relaxed">
-                {i18nT('components.appstore.trustAppModal.chat_slots_desc')}
+                {i18nT(app.hiddenSessions ? 'components.appstore.trustAppModal.chat_slots_desc_hidden' : 'components.appstore.trustAppModal.chat_slots_desc')}
+              </p>
+            </div>
+          )}
+          {app.hiddenSessions && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3" data-testid="trust-hidden-sessions">
+              <div className="flex items-center gap-2 font-semibold text-text">
+                <EyeOff size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.hidden_sessions_heading')}</span>
+              </div>
+              <p className="text-text leading-relaxed">
+                {i18nT('components.appstore.trustAppModal.hidden_sessions_desc')}
               </p>
             </div>
           )}

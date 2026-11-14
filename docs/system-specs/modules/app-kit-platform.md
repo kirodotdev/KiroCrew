@@ -6270,9 +6270,33 @@ its own. `POST /api/chat/slots` and the auto-create on `POST /api/chat` accept o
   loader logs that module and skips it, like any broken provider.
 - **Built-ins only, in practice.** `chat_handlers` reads the seam once, at import, and
   that first lookup is what loads the builtin seams modules. An installed app's
-  `on_startup` runs later, so it reaches no create path, and no manifest field is read.
-  With no builtin registering one, the create paths accept `""` alone. The mode-switch
+  `on_startup` runs later, so it reaches no create path through this seam. With no
+  builtin registering one, the seam adds nothing to `""`. The mode-switch
   (`chat_folders._VALID_MODES`) and fork-override allowlists stay narrower on purpose.
+- **An installed app declares it instead.** `permissions.hiddenSessions: true` (the
+  literal `true`) lets `POST /api/chat/slots` also accept a mode equal to the creating
+  app's own id: the app token's app, or on the owner's own request the page's
+  `embed_app` (`slot_create._app_hides_own_mode`). It is taken only while
+  `apps/hidden_sessions.may_hide_sessions` holds: installed, enabled, trusted to
+  execute (`third_party_ceiling_closed`) and declaring, and never for a mode core gives
+  a meaning (`member`, a retired mode). Any other mode is `400 invalid_mode`, so an app
+  hides only chats it creates; an existing chat keeps its mode, and the auto-create on
+  `POST /api/chat` is unchanged. The Older-sessions listing (`GET /api/sessions?user_only=1`,
+  `history_reads.user_hidden_modes`) and its "Delete all" leave out a row whose `mode`
+  names such an app, so a chat its app may not hide right now is listed; resuming it
+  (`hidden_sessions.resume_keeps_mode`, read off the loop by the resume and handed to
+  `metadata_codec.Resume.keeps_mode`) brings it back as a plain chat, keeping only a
+  built-in's worker mode or a hiding app's own. An app's embedded `ChatPanel` keeps the
+  slot it is bound to listed for its own page (`chatPageSlots(slots, bound)`). The sidebar,
+  Sessions page and recently-closed list already show only `""` chats. The approval and
+  question notices (`chatStream.ts` chime and OS toast, the bridge note, the expiry bell
+  note) read no mode, so hiding a row never hides a request. The trust prompt (`TrustAppModal`) and the detail page show
+  it (`HiddenSessionsBox`), and drop "listed under the app" from the `chatSlots` copy. It grants nothing: the app's page already runs with the dashboard's
+  authority, and the mode only moves a chat the app itself creates out of a list.
+  Writers: `apps/hidden_sessions.py`, `dashboard/chat_api/slot_create.py`,
+  `dashboard/handlers/sessions_parts/history_reads.py`. Tests:
+  `test/test_app_hidden_sessions.py`,
+  `website/src/hooks/websocket/hiddenSessionApprovalNotify.test.ts`.
 - **Light package.** The lookup imports the app's package `__init__`, so Design
   Critique serves `register_routes` from a module `__getattr__` that imports its route
   module on first access. That access is the boot route loop's guarded lookup, so an
@@ -6717,7 +6741,7 @@ this repository without core changing.
 | `aws_account_policy` | `AwsAccountPolicy`: `resolve_consent_target()`, `configured_region(p)`, `is_sso_profile(p)` | `dashboard/handlers/aws_consent.py` (`s3` / `ce` cards), `dashboard/handlers/aws_project_profile.py` (the project pill) | the consent card names the CLI default chain; the pill probes in the default region and reports a failed probe as `unavailable` |
 | `transfer_staging` | `TransferStaging`: `pinned_staging(prefix)` | `cloud/microvm/api.py` `staging_dir` | `RuntimeError`, never the shared temp directory |
 | `stopped_loop_tombstone` | `StoppedLoopTombstone`: `keeps_stopped_loop(slot_key, app_id)` | `dashboard/session_directive_apply_monitor.py` `_keeps_stopped_loop` (the stop of a legacy autonudge loop) | the loop row is removed, as for every other legacy loop (see `knowledge.md`, "Repository boundary") |
-| worker slot modes | `register_worker_slot_mode(app_id)`, one per app | `dashboard/chat_handlers.py` `_CREATABLE_MODES` (section 23a) | the chat create paths accept `""` alone |
+| worker slot modes | `register_worker_slot_mode(app_id)`, one per app | `dashboard/chat_handlers.py` `_CREATABLE_MODES` (section 23a) | the chat create paths accept `""` alone, plus an installed app's own id when it declares `permissions.hiddenSessions` (section 23a) |
 
 A builtin app registers from a `seams.py` at its package root. The first lookup of any
 seam imports every such module once, for each name in `BUILTIN_NAMES`, found by file so

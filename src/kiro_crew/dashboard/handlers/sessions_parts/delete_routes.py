@@ -46,6 +46,7 @@ from kiro_crew.dashboard.handlers.sessions_parts.delete_claim import (
 from kiro_crew.dashboard.handlers.sessions_parts.history_reads import (
     _is_user_listed_row,
     _open_row_test,
+    user_hidden_modes,
 )
 from kiro_crew.dashboard.handlers.sessions_parts.slot_teardown import _remove_slot_for_history_key
 from kiro_crew.dashboard.state import DashboardState
@@ -415,11 +416,13 @@ def _clearable_history_keys(
     clearable: list[str] = []
     skipped = 0
     unreadable: list[str] = []
-    for row in log.list_sessions_indexed():
+    rows = log.list_sessions_indexed()
+    hidden = user_hidden_modes(rows) if user_only else frozenset()
+    for row in rows:
         key = row.get("key", "")
         if not key:
             continue
-        if user_only and not _is_user_listed_row(log, row, indexed=True):
+        if user_only and not _is_user_listed_row(log, row, indexed=True, hidden=hidden):
             continue
         if is_open(key):
             skipped += 1

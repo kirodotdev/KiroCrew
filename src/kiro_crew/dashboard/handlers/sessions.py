@@ -78,6 +78,7 @@ if TYPE_CHECKING:
         api_session_meta,
         api_sessions,
         api_sessions_search,
+        user_hidden_modes,
     )
     from kiro_crew.dashboard.handlers.sessions_parts.summaries import (  # noqa: F401
         _SUMMARIZE_MAX_SESSIONS,

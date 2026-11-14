@@ -654,12 +654,12 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_materialise_slot_from_history",
             "function",
-            "(state: 'DashboardState', *, name: 'str | None', history_key: 'str', meta: 'dict', all_messages: 'list[dict]', app: 'str' = '', request_title: 'str' = '', member_binding: 'dict | None' = None, folder_unhidden: 'bool' = True, folder_checked_id: 'str' = '', window_limit: 'int | None' = 500, disk_meta_observed: 'bool' = True, broadcast_rows: 'bool' = True, mint_missing_mids: 'bool' = False) -> '_ChatSlot'",
+            "(state: 'DashboardState', *, name: 'str | None', history_key: 'str', meta: 'dict', all_messages: 'list[dict]', app: 'str' = '', request_title: 'str' = '', member_binding: 'dict | None' = None, folder_unhidden: 'bool' = True, folder_checked_id: 'str' = '', window_limit: 'int | None' = 500, disk_meta_observed: 'bool' = True, broadcast_rows: 'bool' = True, mint_missing_mids: 'bool' = False, keeps_mode: 'bool' = True) -> '_ChatSlot'",
         ),
         (
             "_hydrate_slot_from_history",
             "function",
-            "(state: 'DashboardState', slot: '_ChatSlot', *, meta: 'dict', all_messages: 'list[dict]', request_title: 'str' = '', member_binding: 'dict | None' = None, folder_unhidden: 'bool' = True, folder_checked_id: 'str' = '', window_limit: 'int | None' = 500, disk_meta_observed: 'bool' = True, broadcast_rows: 'bool' = True, mint_missing_mids: 'bool' = False) -> 'None'",
+            "(state: 'DashboardState', slot: '_ChatSlot', *, meta: 'dict', all_messages: 'list[dict]', request_title: 'str' = '', member_binding: 'dict | None' = None, folder_unhidden: 'bool' = True, folder_checked_id: 'str' = '', window_limit: 'int | None' = 500, disk_meta_observed: 'bool' = True, broadcast_rows: 'bool' = True, mint_missing_mids: 'bool' = False, keeps_mode: 'bool' = True) -> 'None'",
         ),
         ("api_chat_slot_resume", "async function", "(request: 'web.Request') -> 'web.Response'"),
         ("_resume_refusal_response", "function", "(refusal: 'ResumeRefusal') -> 'web.Response'"),

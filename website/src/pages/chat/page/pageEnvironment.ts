@@ -30,8 +30,8 @@ import { fetchDashboardConfig } from '../../../api/dashboardConfigQuery'
  *  members INCLUDED. The page's active-slot rules read this list, and a crew member
  *  opened from its root's Crew panel is the active chat in the main pane, so it
  *  must stay listed here or the page would drop it and pick another session. */
-export function chatPageSlots<T extends ChatSlot>(slots: T[]): T[] {
-  return slots.filter(s => isChatPageSurface(s.surface ?? s.mode))
+export function chatPageSlots<T extends ChatSlot>(slots: T[], bound?: string | null): T[] {
+  return slots.filter(s => s.key === bound || isChatPageSurface(s.surface ?? s.mode))
 }
 
 /** The person's rows of that list: crew members, and with the mate sessions
@@ -145,7 +145,13 @@ export function useChatPageEnvironment({
   // Unified chat view: show default and crew slots together, crew members included
   // (`chatPageSlots`), so a crew member opened in the main pane stays the active
   // slot. App-owned worker slots (s.app) are excluded by the sidebar itself.
-  const filteredSlots = useMemo(() => chatPageSlots(slots), [slots])
+  const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  // An app's embedded chat (`ChatPanel`) is bound to its one slot, and a pop-out
+  // window to the chat its `?sid=` names. Either may be a chat an app keeps out of
+  // the session lists (`permissions.hiddenSessions`), so that slot stays listed
+  // here; the sidebar and Sessions page filter for themselves.
+  const bound = popout ? searchParams.get('sid') || searchParams.get('slot') : embedded ? activeSlot : null
+  const filteredSlots = useMemo(() => chatPageSlots(slots, bound), [slots, bound])
   // The person's rows: what the collapsed-sidebar flyout lists and the unread
   // count counts. The sidebar filters its own prop the same way.
   // Keyed on whether this build offers conductor mode too, which decides whether
@@ -182,7 +188,6 @@ export function useChatPageEnvironment({
   // above the composer, which is the only place all of them can see.
   const unresumableResume = useAppSelector(s => s.chat.unresumableResume)
   const undeletableHistory = useAppSelector(s => s.chat.undeletableHistory)
-  const activeSlot = useAppSelector(s => s.chat.activeSlot)
   // The session picker's selection fact for a guide's "choose the session"
   // step: whether one is open here, whether any is listed, and which one by
   // its key, so a choice made there stays bound to that session. The key

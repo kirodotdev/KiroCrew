@@ -598,6 +598,10 @@ class Permissions:
     #: chat runner, its queue, stop, archive and AutoNudge loops on those slots.
     #: Shown at the trust prompt.
     chatSlots: bool = False  # noqa: N815
+    #: Keeps the chats this app creates under its own id as their mode out of the
+    #: session lists (``apps/hidden_sessions.py``). Shown on the app's detail page.
+    #: Hides a list row only: approvals and questions still reach the owner.
+    hiddenSessions: bool = False  # noqa: N815
     #: May hold a bounded, audited auto-approve grant on the app's OWN worker
     #: slots through ``ctx.auto_approve`` (``apps/worker_auto_approve.py``).
     #: Shown at the trust prompt and held back on a widening update like a new
@@ -653,6 +657,8 @@ class Permissions:
             d["agentTurns"] = True
         if self.chatSlots:
             d["chatSlots"] = True
+        if self.hiddenSessions:
+            d["hiddenSessions"] = True
         if self.workerAutoApprove:
             d["workerAutoApprove"] = True
         if self.reachableByUserSessions:
@@ -693,6 +699,7 @@ class Permissions:
             proposeCrewmate=data.get("proposeCrewmate") is True,  # noqa: N815
             agentTurns=data.get("agentTurns") is True,  # noqa: N815
             chatSlots=data.get("chatSlots") is True,  # noqa: N815
+            hiddenSessions=data.get("hiddenSessions") is True,  # noqa: N815
             workerAutoApprove=data.get("workerAutoApprove") is True,  # noqa: N815
             reachableByUserSessions=declared_verbs(data.get("reachableByUserSessions")),
             desktopCapabilities=declared_capabilities(data.get("desktopCapabilities")),
