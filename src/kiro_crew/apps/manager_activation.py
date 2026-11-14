@@ -420,6 +420,12 @@ def disable_app(name: str) -> AppResult:
         return AppResult(
             ok=False, name=name, error=f"could not record the disable of {name!r}: {exc}"
         )
+    # A disable removes every job the app owns, so the next enable registers all of
+    # them again, the ones the owner deleted included.
+    try:
+        protected_app_state.forget_deleted_app_crons(name)
+    except (OSError, ValueError):
+        logger.warning("could not clear the deleted cron jobs of %s", name, exc_info=True)
     if not meta.enabled:
         # Already disabled ON DISK -- which a sandboxed shell can forge by writing
         # enabled:false to the writable installed.json. This early return otherwise

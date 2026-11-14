@@ -944,7 +944,7 @@ async def api_cron_delete(request: web.Request) -> web.Response:
                 job_id,
                 expected_revision=expected_revision,
                 revision_of=cron_job_revision,
-                actor="dashboard",
+                actor=_removal_actor(request),
                 source="api_cron_delete",
             )
             if outcome == "changed":
@@ -958,7 +958,7 @@ async def api_cron_delete(request: web.Request) -> web.Response:
             ok = outcome == "removed"
         else:
             ok = await state.crons.remove_job_async(
-                job_id, actor="dashboard", source="api_cron_delete"
+                job_id, actor=_removal_actor(request), source="api_cron_delete"
             )
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
@@ -967,6 +967,21 @@ async def api_cron_delete(request: web.Request) -> web.Response:
     if ok:
         state.push_refresh("crons")
     return web.json_response({"ok": ok})
+
+
+def _removal_actor(request: web.Request) -> str:
+    """Who asked for a removal: ``app:<name>`` for a verified app token, else the dashboard.
+
+    The cron service records a person's delete of an app job so the app's next
+    registration does not bring it back; an app's removal of its own job is not
+    such a choice, so it must reach the service under the app's own name.
+    """
+    app_claim = request.get("app")
+    if isinstance(app_claim, str) and app_claim:
+        from kiro_crew.apps.cron_sdk import owner_tag
+
+        return owner_tag(app_claim)
+    return "dashboard"
 
 
 # Guardrail: cap batch size so a runaway/hostile payload can't pin the event
@@ -1017,7 +1032,7 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
         # would raise AFTER the on-disk delete and leave the scheduler timer
         # cancelled.
         deleted, failed = await state.crons.remove_jobs(
-            unique_ids, actor="dashboard", source="api_cron_batch_delete"
+            unique_ids, actor=_removal_actor(request), source="api_cron_batch_delete"
         )
     except Exception:
         # The batch itself raised (unexpected) — report everything as failed.
