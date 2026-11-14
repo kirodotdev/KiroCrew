@@ -472,9 +472,12 @@ async def test_a_ready_gateway_logs_no_refusal() -> None:
 
     with patch(_RESOLVE_TARGET, AsyncMock(return_value="")):
         with patch.object(kiro_readiness.logger, "warning") as warn:
-            await agents.api_models(request)
+            response = await agents.api_models(request)
 
     warn.assert_not_called()
+    # The readiness gate let the poll through: the 503 comes from the stubbed binary
+    # lookup after the gate, not from a readiness refusal.
+    assert json.loads(response.body)["code"] == "model_list_unavailable"
 
 
 # ── readiness max-age: polled reads vs destructive reruns ─────────────────
