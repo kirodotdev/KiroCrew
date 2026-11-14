@@ -1,0 +1,24 @@
+{
+  "build_id": "0.3.8+08914cdf7d6b2711",
+  "candidate_label": "0.3.8-host-approval-upgrade-candidate",
+  "crew_012_status": "Legacy 20-file Crew integration retained; real desktop upgrade and permission E2E not verified",
+  "crew_candidate": "Generic external ACP Harness upstream extension is separately under review; not installed by this App",
+  "crew_candidate_commit": "not merged upstream",
+  "crew_candidate_source_contract": "BYO session host_tool_approval=required is available; Crew production enforcement not certified",
+  "crew_commit": "User-supplied Crew 0.12.0 source was audited; origin not cryptographically verified",
+  "crew_host_task_id_injection": "not_wired_into_official_Crew_dispatch",
+  "crew_target": "KiroCrew 0.12.x; guarded legacy integration remains; not native-certified",
+  "crew_work_ledger_preflight": "Crew Work Ledger production dispatch E2E not verified",
+  "cross_platform_e2e": {
+    "linux": "BYO ACP child tested; Crew Gateway not verified",
+    "macos": "not_verified",
+    "windows": "not_verified"
+  },
+  "dsh_phase5_status": "BYO Work Ledger mapping exists; native Crew dispatch integration not installed",
+  "headless_ui_timing": "no visible overlay; measurement in page memory only",
+  "product": "Kiro BYO",
+  "runtime_sha256": "08914cdf7d6b27110388ab57aaa0573e45f3eeeb6583ea9ad552269b01efec2b",
+  "version": "0.3.8",
+  "widget_intent": "natural-language + context-aware followups + always-on Crew hint; Crew UI E2E not verified",
+  "windows_e2e": "not_verified"
+}
