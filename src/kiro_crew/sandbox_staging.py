@@ -1,7 +1,8 @@
 """Materialise the mask targets the launcher binds over crew-home leaves.
 
 The plain masked directories, the live-target pointer, an empty ``.env``, a ``{}``
-refresh-chain store, the md-notebook state and the auth-store staging links: each target
+refresh-chain store, the token-signing key, the md-notebook state and the auth-store
+staging links: each target
 is created before the launcher binds over it, its legacy temp files are swept, and an
 unfit live-target pointer is reported. A new mask target goes here. One of the owners
 ``kiro_crew.sandbox`` is carved into: every name here stays readable and patchable as
@@ -236,6 +237,38 @@ def _materialize_refresh_chains_mask_target(
     secret, so there is nothing to stage either. See security.md, *Refresh-chain store*.
     """
     return _create_absent_mask_target("refresh_chains.json", b"{}", established)
+
+
+def _materialize_signing_key_mask_target(established: list[str] | None = None) -> str | None:
+    """Create the token-signing key when there is none, so its mask can mount.
+
+    The same gap on the key that signs every dashboard token, which the gateway creates at
+    its first start: a sandbox spawned before then (``kirocrew chat`` needs no gateway)
+    could create it, and the gateway adopts any full-length key it finds. A stub is no
+    absent-equivalent, since a short key refuses the boot, so this runs the gateway's own
+    create path and leaves the key the gateway would have made. Held off while a
+    pre-upgrade staging temp is in the root: it may be the key's last name, which the
+    legacy sweep keeps for the operator to rename. See security.md, *Token-signing key*.
+    """
+    root = str(config_dir())
+    target = os.path.join(root, _AUTH_STORE_PUBLISHED_KEY_LEAF)
+    created = False
+    try:
+        if not os.path.lexists(target) and not any(
+            name.startswith(_AUTH_STORE_LEGACY_TEMP_PREFIX) and name.endswith(".tmp")
+            for name in os.listdir(root)
+        ):
+            # Imported here: only an absent key needs the dashboard's key module.
+            from kiro_crew.dashboard.token_secret import _load_or_create_secret
+
+            _load_or_create_secret()
+            created = True
+        if not stat.S_ISREG(os.lstat(target).st_mode):
+            return None
+    except OSError:
+        return None
+    _note_established(established, target)
+    return target if created else None
 
 
 def _create_absent_mask_target(
