@@ -110,6 +110,9 @@ export interface CrewProfilePanelProps {
    *  "No schedules yet" instead of "Nothing wakes this mate on its own yet",
    *  which the row above it would contradict. */
   heartbeatOn?: boolean
+  /** Whether a goal check-in (daily, weekly or monthly) is on: it wakes the
+   *  mate too, so the empty line points to the Goals tab that lists it. */
+  checkInsOn?: boolean
   /** A write from one of the "On its own" rows (Heartbeat or patrol) is in
    *  flight: the tab rail refuses to leave Schedules until it settles (the
    *  host's leave guard refuses close and navigation the same way). */
@@ -563,7 +566,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
                     <h3 className="text-[11px] font-semibold tracking-wide uppercase text-muted px-0.5 mt-1" data-testid="crew-schedule-heading-yours">{t('pages.membersPage.your_schedules')}</h3>
                   </>
                 )}
-                <CrewScheduleList jobs={p.schedules} loading={p.schedulesLoading} error={p.schedulesError} nowTs={p.nowTs} onOpenAll={p.onOpenSchedule} onOpenJob={p.onOpenScheduleJob} onCreate={() => push('new-schedule')} selfWaking={p.heartbeatOn || !!p.selfBody} />
+                <CrewScheduleList jobs={p.schedules} loading={p.schedulesLoading} error={p.schedulesError} nowTs={p.nowTs} onOpenAll={p.onOpenSchedule} onOpenJob={p.onOpenScheduleJob} onCreate={() => push('new-schedule')} selfWaking={p.heartbeatOn || !!p.selfBody} checkInsOn={p.checkInsOn} />
               </div>
             )}
             {tab === 'sessions' && p.sessionsBody}

@@ -23123,6 +23123,7 @@
       "schedule_in": "Запуск через {{time}}",
       "schedule_none": "Пока ничто не пробуждает этого Bot само.",
       "schedule_none_self_waking": "Расписаний пока нет.",
+      "schedule_none_check_ins": "Расписаний пока нет. Его также пробуждают проверки целей на вкладке «Цели».",
       "schedule_state_on": "Активно",
       "schedule_state_paused": "Приостановлено",
       "schedule_state_running": "Выполняется",

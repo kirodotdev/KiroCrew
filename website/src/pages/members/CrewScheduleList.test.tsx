@@ -164,6 +164,14 @@ describe('CrewScheduleList states and doors', () => {
     expect(screen.getByTestId('crew-schedule-empty')).not.toHaveTextContent(/Nothing wakes/)
   })
 
+  it('points to the Goals tab, not "nothing wakes", while a goal check-in is on', () => {
+    // A check-in wakes the mate but is listed only on its Goals tab.
+    render(<CrewScheduleList jobs={[]} loading={false} nowTs={NOW} onOpenAll={vi.fn()} onOpenJob={vi.fn()} onCreate={vi.fn()} checkInsOn />)
+    const empty = screen.getByTestId('crew-schedule-empty')
+    expect(empty).toHaveTextContent('Goals tab')
+    expect(empty).not.toHaveTextContent(/Nothing wakes/)
+  })
+
   it('says in words that nothing wakes the mate, with the create door still offered', () => {
     setup([])
     expect(screen.getByTestId('crew-schedule-empty')).toHaveTextContent(/Nothing wakes this bot on its own yet/)

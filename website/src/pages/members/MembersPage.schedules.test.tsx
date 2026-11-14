@@ -326,6 +326,28 @@ describe('MembersPage Profile card Schedules tab', () => {
     expect(within(screen.getByTestId('crew-profile-tabs')).queryByText('0')).toBeNull()
   })
 
+  it.each([
+    ['a goal check-in', { daily: true }, 'Goals tab'],
+    ['the Heartbeat', { heartbeat: true }, 'No schedules yet.'],
+  ])('neither the tab nor the New schedule page says nothing wakes the mate while %s is on', async (_label, on, line) => {
+    // The check-ins and the Heartbeat wake the mate without being a row here.
+    vi.mocked(api.crons).mockResolvedValue({ jobs: [] } as never)
+    vi.mocked(api.memberGoals.get).mockResolvedValue({
+      slug: 'oncall', member: 'oncall', goals: [], key_results: [], reports: [], removed_goal: null, removed_key_result: null,
+      schedules: { time: '09:00', timezone: '', daily: false, weekly: false, weekday: 1, monthly: false, month_day: 1, heartbeat: false, interval: 60, ...on },
+      limits: { goal_text_max_chars: 2000, key_result_text_max_chars: 200, key_result_value_max_chars: 40, key_result_reading_max_chars: 120 },
+    } as never)
+    onTestFinished(() => { vi.mocked(api.memberGoals.get).mockReset() })
+    await openCrewmate()
+    const list = await openSchedulesTab()
+    await waitFor(() => expect(within(list).getByTestId('crew-schedule-empty')).toHaveTextContent(line))
+    expect(list).not.toHaveTextContent(/Nothing wakes/)
+    fireEvent.click(screen.getByTestId('crew-schedule-create'))
+    const page = await screen.findByTestId('crew-profile-page-new-schedule')
+    await waitFor(() => expect(within(page).getByTestId('member-schedules')).toHaveTextContent(line))
+    expect(page).not.toHaveTextContent(/Nothing wakes/)
+  })
+
   it('reads the list without asking which crew is the default', async () => {
     // The card lists only what is attributed to the open crewmate, so which crew is the
     // default changes nothing here. A failing read of it must cost the list nothing.

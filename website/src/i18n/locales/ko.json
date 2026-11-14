@@ -21482,6 +21482,7 @@
       "schedule_in": "{{time}} 후 실행",
       "schedule_none": "아직 이 Bot을 자동으로 깨우는 일정이 없습니다.",
       "schedule_none_self_waking": "아직 일정이 없습니다.",
+      "schedule_none_check_ins": "아직 일정이 없습니다. 목표 탭의 정기 점검도 이 Bot을 깨웁니다.",
       "schedule_state_on": "활성",
       "schedule_state_paused": "일시 중지",
       "schedule_state_running": "실행 중",
