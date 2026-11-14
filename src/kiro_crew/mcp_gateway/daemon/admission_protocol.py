@@ -342,7 +342,7 @@ async def _await_answering_pings(
     # Fast path: a pool reuse or an immediate rejection completes on the first
     # turn of the loop. Nothing is read from the socket then, so a frame the
     # stub sends right after (its next control frame, kiro-cli's first request)
-    # is left for the main loop exactly as before.
+    # is left for the main loop.
     await asyncio.wait({work}, timeout=0)
     if work.done():
         return work.result()
