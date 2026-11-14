@@ -13,7 +13,8 @@ The generated default configuration is `~/.kiro/agents/kirocrew.json`. Its shipp
 - A `postToolUse` audit hook for shell calls. It appends each command to
   `audit.log` under the data home (`~/.kiro/crew` or `KIROCREW_HOME`); the gateway
   (and a standalone `kirocrew chat`, at its start) rotates that file at 8 MiB,
-  keeping one previous generation as `audit.log.1`.
+  keeping one previous generation as `audit.log.1`. On Windows the hook runs the
+  gateway's Python directly instead of a POSIX shell command.
 
 ## Switching Agents
 

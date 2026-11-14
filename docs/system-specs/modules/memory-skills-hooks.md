@@ -7302,6 +7302,12 @@ Merge rules (implemented in `_merge_kiro_hooks()` in `agent_materialization/kiro
   runs the same sweep once at every start (see [cli.md](cli.md), "Interactive
   Mode"), so the shipped command stays byte-identical and a user-authored hook is
   untouched
+- On Windows, where spec hooks run under `cmd /c`, the spec build swaps that
+  POSIX audit hook for a form that runs the gateway's Python directly and appends
+  the same record (`shell_audit_log.platform_spec_hooks`); POSIX specs keep the
+  shipped command byte for byte. `GET /api/kiro-hooks` applies the same swap
+  to the shipped hooks before tagging rows, so the Hooks page labels the
+  Windows form "bundled"
 - User hooks are appended per event type after bundled hooks
 - Deduped by `(command, matcher)` tuple — same hook won't fire twice
 - Malformed entries (missing `command`, non-dict, non-list) are skipped with warning

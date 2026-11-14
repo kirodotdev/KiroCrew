@@ -29,6 +29,7 @@ from kiro_crew.agent import (
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.dashboard.handlers.hooks_webhook_intake import _json_object
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.shell_audit_log import platform_spec_hooks
 from kiro_crew.validation import sanitize_string
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.hooks")
@@ -453,6 +454,12 @@ async def api_kiro_hooks(request: web.Request) -> web.Response:
         bundled = raw.get("hooks", {}) if isinstance(raw, dict) else {}
     except (OSError, ValueError):
         bundled = {}
+    if not isinstance(bundled, dict):
+        bundled = {}
+    # Compare against the shipped form and the form the spec build writes: on
+    # Windows the bundled audit hook is rewritten for ``cmd /c``, and a spec not
+    # yet re-synced still holds the shipped POSIX one. Either is Crew's own hook.
+    bundled_forms = (bundled, platform_spec_hooks(bundled))
 
     def _hook_row_key(event: str, entry: object) -> tuple[str, str, str] | None:
         """``(event, command, matcher)`` for one hook row, or ``None`` to skip it.
@@ -473,10 +480,11 @@ async def api_kiro_hooks(request: web.Request) -> web.Response:
         return event, command, matcher
 
     bundled_keys: set[tuple[str, str, str]] = set()
-    for event, entries in bundled.items():
-        for e in entries if isinstance(entries, list) else []:
-            if (key := _hook_row_key(event, e)) is not None:
-                bundled_keys.add(key)
+    for form in bundled_forms:
+        for event, entries in form.items():
+            for e in entries if isinstance(entries, list) else []:
+                if (key := _hook_row_key(event, e)) is not None:
+                    bundled_keys.add(key)
     result: dict[str, list[dict]] = {}
     for event, entries in hooks.items():
         if event not in _VALID_HOOK_EVENTS:
