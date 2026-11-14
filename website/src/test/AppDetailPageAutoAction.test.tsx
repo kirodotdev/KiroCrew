@@ -9,8 +9,8 @@
  * privileges without user intent.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react'
+import { MemoryRouter, Routes, Route, useNavigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { i18nT } from '../i18n/t'
 
@@ -41,6 +41,7 @@ vi.mock('../hooks/useTheme', () => ({ useTheme: () => ({ theme: 'light' }) }))
 vi.mock('../components/AppIcon', () => ({ default: () => <div data-testid="app-icon" /> }))
 
 import AppDetailPage from '../pages/AppDetailPage'
+import AppDetailRoute from '../pages/AppDetailRoute'
 
 const REGISTRY_APP = {
   name: 'secretary',
@@ -126,6 +127,72 @@ describe('AppDetailPage — auto-action deep links', () => {
     })
     renderDetail({ state: { autoAction: 'update' } })
     await waitFor(() => expect(installFromRegistryStream).toHaveBeenCalled())
+  })
+
+  describe('a request from the sidebar while the detail page is open', () => {
+    const installed = (name: string, displayName: string) => ({
+      name, displayName, version: '1.0.0', enabled: true,
+      origin: 'registry', resources: 'gateway', lifecycle: 'gateway', installedAt: '2026-07-01T00:00:00Z',
+      manifest: { displayName, description: `${displayName} app.`, author: 'zezhexu' },
+    })
+    function Go() {
+      const navigate = useNavigate()
+      return (
+        <>
+          <button onClick={() => navigate('/apps/detail/radar', { state: { autoAction: 'update' } })}>update radar</button>
+          <button onClick={() => navigate('/apps/detail/secretary', { state: { autoAction: 'update' } })}>update secretary</button>
+        </>
+      )
+    }
+    function renderRoute() {
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      return render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter initialEntries={['/apps/detail/secretary']}>
+            <Go />
+            <Routes><Route path="/apps/detail/:name" element={<AppDetailRoute />} /></Routes>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      )
+    }
+    beforeEach(() => {
+      getApp.mockImplementation(async (name: string) => installed(name, name === 'secretary' ? 'Secretary' : 'Radar'))
+      listRegistry.mockResolvedValue({
+        apps: [REGISTRY_APP, { ...REGISTRY_APP, name: 'radar', displayName: 'Radar' }],
+        serverPlatform: { os: 'darwin', arch: 'arm64' },
+      })
+    })
+
+    it('updates the app it names, and a later request on the same page runs too', async () => {
+      renderRoute()
+      await screen.findByText('Secretary app.')
+
+      fireEvent.click(screen.getByRole('button', { name: 'update radar' }))
+      await waitFor(() => expect(installFromRegistryStream).toHaveBeenCalledTimes(1))
+      expect(installFromRegistryStream.mock.calls[0][0]).toBe('radar')
+
+      fireEvent.click(screen.getByRole('button', { name: 'update radar' }))
+      await waitFor(() => expect(installFromRegistryStream).toHaveBeenCalledTimes(2))
+      expect(installFromRegistryStream.mock.calls[1][0]).toBe('radar')
+    })
+
+    it('runs nothing while the page is already running an action for the app, and says why', async () => {
+      let finish: (value: { ok: boolean }) => void = () => {}
+      installFromRegistryStream.mockImplementation(() => new Promise(resolve => { finish = resolve }))
+      renderRoute()
+      await screen.findByText('Secretary app.')
+
+      fireEvent.click(screen.getByRole('button', { name: 'update secretary' }))
+      await waitFor(() => expect(installFromRegistryStream).toHaveBeenCalledTimes(1))
+      const signal = installFromRegistryStream.mock.calls[0][2] as AbortSignal
+
+      fireEvent.click(screen.getByRole('button', { name: 'update secretary' }))
+      expect(await screen.findByText(i18nT('pages.libraryPage.rail_busy_notice', { name: 'Secretary' }))).toBeTruthy()
+      expect(installFromRegistryStream).toHaveBeenCalledTimes(1)
+      expect(signal.aborted).toBe(false)
+
+      await act(async () => { finish({ ok: true }) })
+    })
   })
 
   it('syncs a PATH-installed app from its directory, never through the registry', async () => {

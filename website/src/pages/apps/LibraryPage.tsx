@@ -20,7 +20,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { LayoutGroup, motion } from 'framer-motion'
 import { guideConfirm } from '../../uiLocations/targetRegistry'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   Package, Bot, Zap, Clock, Lock, Trash2, X, ArrowUp, Compass,
   AlertTriangle, PowerOff,
@@ -42,6 +42,7 @@ import useAppsData from './useAppsData'
 import type { LibraryApp } from './useAppsData'
 import { useAppActions } from './useAppActions'
 import { useAppUpdates } from './useAppUpdates'
+import { readLibraryRailIntent, type LibraryRailIntent } from './libraryRailIntent'
 import { cardDataKey } from './cardDataKey'
 import LaunchpadTile from './LaunchpadTile'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -168,16 +169,28 @@ export default function LibraryPage() {
   // The app whose enable or disable the reader just ran, with the state it
   // was in. When the refetch lands the tile changes section, which remounts
   // it, so focus held inside the old tile falls to the page. Put it back on
-  // the tile's face, once, and only if nothing else took focus meanwhile.
-  const refocusApp = useRef<{ name: string; enabled: boolean } | null>(null)
+  // the tile's face, once, and only if nothing else took focus meanwhile. A
+  // disable the sidebar asked for lands on the tile's Enable button instead,
+  // the one control that undoes it.
+  const refocusApp = useRef<{ name: string; enabled: boolean; control: 'face' | 'enable' } | null>(null)
   useEffect(() => {
     const pending = refocusApp.current
     if (!pending) return
     const app = installedApps.find(a => a.name === pending.name)
     if (app && app.enabled === pending.enabled) return
     refocusApp.current = null
-    if (!app || (document.activeElement && document.activeElement !== document.body)) return
-    document.querySelector<HTMLElement>(`[data-testid="launchpad-tile-${CSS.escape(app.name)}"] button`)?.focus()
+    if (!app) return
+    const tile = document.querySelector<HTMLElement>(`[data-testid="launchpad-tile-${CSS.escape(app.name)}"]`)
+    const active = document.activeElement
+    // Focus still inside this app's own tile is focus this page put there
+    // (the sidebar request focuses the tile face first), so moving it to the
+    // Enable button takes nothing from the reader.
+    const ownTile = pending.control === 'enable' && !!active && !!tile?.contains(active)
+    if (active && active !== document.body && !ownTile) return
+    const target = pending.control === 'enable' && !app.enabled
+      ? tile?.querySelector<HTMLElement>('[role="toolbar"] button')
+      : null
+    ;(target ?? tile?.querySelector<HTMLElement>('button'))?.focus()
   }, [installedApps])
   const menuApp = menuOpenFor !== null ? installedApps.find(a => appDisplayName(a) === menuOpenFor) : undefined
   useGuideSelection('app_tile_menu_open', { selected: menuOpenFor !== null, available: installedApps.length > 0, name: menuOpenFor ?? undefined, alias: menuApp ? menuApp.displayName || menuApp.name : undefined })
@@ -187,7 +200,10 @@ export default function LibraryPage() {
   // single enable path come from useAppActions — shared with DiscoverPage so
   // the two pages cannot drift on how an action behaves.
 
-  const handleAction = async (name: string, action: 'enable' | 'disable' | 'uninstall' | 'update', opener?: HTMLElement | null) => {
+  /** `fromRail`: the sidebar's app menu asked for this action (`libraryRailIntent`). */
+  const handleAction = async (
+    name: string, action: 'enable' | 'disable' | 'uninstall' | 'update', opener?: HTMLElement | null, fromRail = false,
+  ) => {
     if (!connected) return
     // Intercept uninstall to show confirmation modal with preview
     if (action === 'uninstall') {
@@ -214,7 +230,8 @@ export default function LibraryPage() {
     if (action === 'update') return runUpdate(name)
     setActionLoading(`${name}:${action}`)
     setError('')
-    refocusApp.current = { name, enabled: action === 'disable' }
+    const railDisable = fromRail && action === 'disable'
+    refocusApp.current = { name, enabled: action === 'disable', control: railDisable ? 'enable' : 'face' }
     try {
       if (action === 'enable') await runEnable(name)
       else if (action === 'disable') {
@@ -224,6 +241,12 @@ export default function LibraryPage() {
         if (warned) setError(warned)
       }
       announceAppsChanged()
+      // The person chose Disable from the sidebar, where the row then
+      // disappears. Say where the app went and how to turn it back on.
+      if (railDisable) {
+        const app = apps.find(a => a.name === name)
+        showSuccess(i18nT('pages.libraryPage.rail_disabled_notice', { name: app ? appDisplayName(app) : name }))
+      }
     } catch (e) {
       refocusApp.current = null
       if (action === 'enable' && isTrustDeniedError(e)) trust.open(trustTarget(name))
@@ -253,6 +276,57 @@ export default function LibraryPage() {
     }
   }
 
+  // A request from the sidebar's app menu (`libraryRailIntent`): focus the
+  // app's tile, then disable the app or open its uninstall dialog with the tile
+  // as the opener. Taken once the installed list can answer it and cleared from
+  // the history entry at once, so Back or a reload does not run it again. The
+  // search is cleared so the tile is not filtered out of the grid.
+  const location = useLocation()
+  const railRequest = useRef<LibraryRailIntent | null>(null)
+  // The history entry whose request was taken. The router applies the replace
+  // below in a later render, so a refetch that lands first re-runs this effect
+  // with the same entry, and the request must not run a second time.
+  const takenRailEntry = useRef<string | null>(null)
+  useEffect(() => {
+    const intent = readLibraryRailIntent(location.state)
+    if (!intent || takenRailEntry.current === location.key) return
+    const app = installedApps.find(a => a.name === intent.app)
+    if (!app && appsLoading) return
+    takenRailEntry.current = location.key
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
+    if (!app) return
+    setQuery('')
+    railRequest.current = intent
+  }, [location.state, location.key, location.pathname, location.search, installedApps, appsLoading, navigate])
+  // Runs after every commit until the tile is on screen: clearing the search
+  // above renders it one commit later.
+  useEffect(() => {
+    const request = railRequest.current
+    if (!request) return
+    // The crashed-tile fallback below carries the same testid, so its recovery
+    // button stands in for the face.
+    const face = document.querySelector<HTMLElement>(`[data-testid="launchpad-tile-${CSS.escape(request.app)}"] button`)
+    if (!face) return
+    railRequest.current = null
+    face.focus()
+    // The tile menu locks every verb while any action runs on this page, and a
+    // request from the sidebar honours the same lock: it focuses the tile and
+    // runs nothing. The tile's caption shows only its own app's action, so a
+    // notice says why a Disable or Uninstall… did not happen.
+    if (actionLoading !== null || updatePending !== null || updatingAll !== null) {
+      if (request.action !== 'focus') {
+        const app = installedApps.find(a => a.name === request.app)
+        setError(i18nT('pages.libraryPage.rail_busy_notice', { name: app ? appDisplayName(app) : request.app }))
+      }
+      return
+    }
+    if (request.action === 'disable' && installedApps.some(a => a.name === request.app && a.enabled)) {
+      void handleAction(request.app, 'disable', null, true)
+    } else if (request.action === 'uninstall') {
+      void handleAction(request.app, 'uninstall', face)
+    }
+  })
+
   // One tile, shared by both sections. A crashed tile falls back to a card
   // that keeps one recovery verb, so a broken app is never stranded.
   const renderTile = (app: LibraryApp) => {
@@ -276,7 +350,7 @@ export default function LibraryPage() {
         <ErrorBoundary
           scope="apps:installed-card"
           fallback={
-            <div className="flex flex-col items-center gap-2 rounded-xl border border-border px-1.5 pt-3.5 pb-2.5 text-center">
+            <div data-testid={`launchpad-tile-${app.name}`} className="flex flex-col items-center gap-2 rounded-xl border border-border px-1.5 pt-3.5 pb-2.5 text-center">
               <div className="w-[58px] h-[58px] rounded-[15px] bg-bg-elevated flex items-center justify-center">
                 <AlertTriangle aria-hidden className="lucide-inline text-[var(--warn)]" />
               </div>

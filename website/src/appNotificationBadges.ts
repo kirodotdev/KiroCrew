@@ -147,6 +147,20 @@ export function appNotificationBadges(notes: readonly BadgeNote[]): Record<strin
 }
 
 /**
+ * The `ts` of every note that counts toward *appName*'s derived badge: the
+ * notes the rail menu's Mark as read acknowledges. Same predicate and the same
+ * host-stamped attribution as `appNotificationBadges`, so the item clears
+ * exactly the notes behind that count and never another app's.
+ */
+export function appAttentionNoteTimestamps(
+  notes: readonly (BadgeNote & { ts: string })[],
+  appName: string,
+): string[] {
+  const source = APP_SOURCE_PREFIX + appName
+  return notes.filter(note => isAttention(note) && note.source === source).map(note => note.ts)
+}
+
+/**
  * Merge an app's explicitly pushed badge over the derived counts.
  *
  * `pushed` wins on every key it carries, INCLUDING an explicit `0`: an app that

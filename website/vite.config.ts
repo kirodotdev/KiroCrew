@@ -1167,6 +1167,15 @@ export default defineConfig({
               test: /[\\/]node_modules[\\/]dompurify[\\/]/,
             },
             {
+              // Routed out for the same reason as dompurify above: the sidebar app
+              // menu (#7883) pushed the App chunk past its ceiling, and the terminal
+              // (`CliPanel`) imports xterm eagerly, so there is no lazy boundary to
+              // defeat. xterm and its addons were most of App's vendor bytes.
+              name: 'vendor-xterm',
+              priority: 30,
+              test: /[\\/]node_modules[\\/]@xterm[\\/]/,
+            },
+            {
               // Graph/network visualization stack (vis-network, vis-data, sigma,
               // graphology, cytoscape) — large and only used by graph views. Lowest
               // priority so graph-physics above claims its two packages first.
