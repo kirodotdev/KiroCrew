@@ -670,3 +670,79 @@ class TestSubstitutionBodiesReadFoldedOpeners:
         """
         command = "echo bash -c $'g\\'it\\\n\\' push origin main'"
         assert security.is_denied(command) is None
+
+
+class TestMintVerbFromAQuotedSubstitution:
+    """#36961: a substitution that prints the mint verb is read with bash's quote rules.
+
+    A ``'`` inside double quotes in the body is a plain character to bash, but the
+    assignment resolver reads dequoted tokens, where it opens a quote and the
+    program-name scan runs on into the use site. The floor is asserted directly
+    (``_is_credential_mint``) as well as through ``is_denied``, because the catalog
+    rows refuse some of these spellings and would mask a floor miss.
+    """
+
+    VERB = "tok" + "en"
+    NAME = "kiro" + "crew"
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            'T=$(: "\'"; echo {verb}); {name} $T',
+            'T=$(echo "it\'s" >/dev/null; echo {verb}); {name} $T',
+            'T=$(: "\'"; echo {verb}); {name} ${{T}}',
+            'T=$(: "\'"; echo {verb}); {name} $T; echo done',
+            'T=$(: "\'"; echo {verb}); {name} $T|cat',
+            'T=$(: "\'"; echo {verb}); {name} ${{T:0}}',
+            'T=$(: "\'"; echo {verb}); {name} ${{T/a/b}}',
+            'T=$(: "\'"; echo {verb}); U=$T; {name} $U',
+            'T=$(: "\'"; echo {verb}); export U=$T; {name} $U',
+            'T=$(: "\'"; echo {verb}); {name} $(echo $T)',
+            'T=$(: "\'"; echo {verb}); W=T; {name} ${{!W}}',
+            'T=$(: "\'"; echo {verb}); bash -c "{name} $T"',
+            'T=$(: "\'"; echo {verb}); bash -c "{name} ${{T:0}}; echo x"',
+            'T=$(: "\'"; echo {verb}); echo "{name} $T" | bash',
+            '{name} "$(printf {verb})"',
+            '{name} "$(: ")"; printf {verb})"',
+            'P=$(: "\'"; echo {name}); V=$(: "\'"; echo {verb}); $P $V; echo {name}',
+            'T=$(: "\'"; echo {name}); echo $($T {verb})',
+            'T=$(: "\'"; echo {name}); bash -c "\'/opt/bin/$T\' {verb}"',
+            '{name} "`printf {verb}`"',
+        ],
+    )
+    def test_the_mint_is_refused(self, template: str) -> None:
+        from kiro_crew.security import argv_floor_self
+
+        command = template.format(verb=self.VERB, name=self.NAME)
+        assert argv_floor_self._is_credential_mint(command.lower()), command
+        assert security.is_denied(command) is not None, command
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "T=$(date); {name} $T",
+            '{name} doctor "$(date)"',
+            'T=$(: "\'"; echo hi); echo $T',
+            'T=$(: "\'"; echo {verb}); T={name}; $T doctor',
+        ],
+    )
+    def test_a_substitution_without_the_verb_stays_allowed(self, template: str) -> None:
+        command = template.format(verb=self.VERB, name=self.NAME)
+        assert security.is_denied(command) is None, command
+
+    def test_many_ambiguous_assignments_fail_closed_without_a_frame_each(self, monkeypatch) -> None:
+        """Past the reading cap the line is refused with no per-assignment re-read."""
+        from kiro_crew.security import shell_normalizer
+
+        reads: list[int] = []
+        real = shell_normalizer._self_tokens_read
+
+        def spy(text: str, **kw):  # type: ignore[no-untyped-def]
+            if "verb_at" in kw:
+                reads.append(kw["verb_at"])
+            return real(text, **kw)
+
+        monkeypatch.setattr(shell_normalizer, "_self_tokens_read", spy)
+        line = "; ".join(f'A{i}=$(: "\'"; echo {self.NAME} {self.VERB})' for i in range(40))
+        assert security.is_denied(line + "; echo " + self.NAME) is not None
+        assert reads == [], reads
