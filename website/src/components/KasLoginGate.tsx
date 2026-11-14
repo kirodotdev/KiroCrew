@@ -35,6 +35,7 @@ import ErrorNotice from './ErrorNotice'
 import { copyToClipboard } from '../utils/clipboard'
 import { safeHref } from '../utils/safeHref'
 import { clearCachedModels } from '../providers/adapters/acp'
+import { closeRelayCrews } from '../hooks/useRelayViewerCrews'
 import { providerLabel, type KasLoginProvider } from './kasProviderLabel'
 
 import { i18nT } from '../i18n/t'
@@ -876,6 +877,9 @@ function KasLoginFlow({
   // credential to land supersedes the stored one. Cleared when the poll answers
   // authorized (the status re-read then shows the new account) or on cancel.
   const [reauth, setReauth] = useState(false)
+  // Read by the authorized effect below without re-running it on every toggle.
+  const reauthRef = useRef(reauth)
+  reauthRef.current = reauth
   // Set when a switch's new credential landed but the previous slot could not
   // be removed (`previous_identity_not_removed`): the old account still takes
   // precedence, and the signed-in view must say so until the user acts.
@@ -977,6 +981,9 @@ function KasLoginFlow({
   const authorizedCode = pollQuery.data?.code
   useEffect(() => {
     if (!authorized) return
+    // A Switch account landed: open relay Crew windows ran as the old account,
+    // so close them now rather than at their next renewal.
+    if (reauthRef.current) void closeRelayCrews()
     void queryClient.invalidateQueries({ queryKey: QUERY_KEY })
     forgetModelList()
     // A switch whose old slot could not be removed is a sign-in that landed AND
@@ -1044,6 +1051,7 @@ function KasLoginFlow({
       // list is the new account's now, and the poll that would have dropped the
       // old one is already detached.
       if (landed) forgetModelList()
+      if (landed && reauth) void closeRelayCrews()
       return landed ? 'signed_in' : 'signed_out'
     } catch {
       return 'unknown'

@@ -45,9 +45,12 @@ function loadRegistrar() {
 function harness({ opener, gatewayLocal = true, portOwner = "kirocrew" }) {
   const handlers = new Map();
   const probes = [];
+  // Reading BaseWindow is the first thing building the real opener does.
+  const built = [];
   const createIpcRegistrar = loadRegistrar();
   const registrar = createIpcRegistrar({
     electron: {
+      get BaseWindow() { built.push(true); return class {}; },
       app: {},
       dialog: {},
       Notification: class {},
@@ -68,7 +71,7 @@ function harness({ opener, gatewayLocal = true, portOwner = "kirocrew" }) {
     relayCrewOpenerOverride: opener,
   });
   registrar.registerShell();
-  return { open: handlers.get("relay-crew:open"), probes };
+  return { open: handlers.get("relay-crew:open"), closeAll: handlers.get("relay-crew:close-all"), probes, built };
 }
 
 const event = (url = "http://localhost:5476/system/services") => ({
@@ -100,4 +103,25 @@ test("relay-crew:open checks the endpoint ID, then the local-dashboard gate", as
     assert.deepEqual(await r.open(event(url), id), { ok: false, error: "UNAVAILABLE" }, label);
     assert.deepEqual(refusedCalls, [], label);
   }
+});
+
+test("relay-crew:close-all closes with a fixed reason, only from the local dashboard, and ignores arguments", async () => {
+  const reasons = [];
+  const closer = { open: async () => ({ ok: true }), closeAll: (reason) => { reasons.push(reason); } };
+  const h = harness({ opener: closer });
+  assert.equal(await h.closeAll(event(), "a1b2c3d4e5f6g7h8i9j0k1", { reason: "anything" }), undefined);
+  assert.deepEqual(reasons, ["SIGNED_OUT"]);
+  for (const [label, options, url] of REJECTIONS) {
+    const refused = [];
+    const r = harness({ ...options, opener: { open: async () => ({ ok: true }), closeAll: (x) => refused.push(x) } });
+    assert.equal(await r.closeAll(event(url)), undefined, label);
+    assert.deepEqual(refused, [], label);
+  }
+});
+
+test("relay-crew:close-all never builds an opener that was never built", async () => {
+  const h = harness({ opener: null });
+  assert.equal(await h.closeAll(event()), undefined);
+  assert.equal(h.probes.length, 1, "the gate ran");
+  assert.deepEqual(h.built, [], "no opener was built");
 });
