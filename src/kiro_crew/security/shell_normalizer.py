@@ -34,8 +34,10 @@ import re
 import shlex
 from typing import TYPE_CHECKING
 
-from kiro_crew.trust_patterns import ENV_ASSIGNMENT_RE
-
+# ENV_ASSIGNMENT_RE is a frozen public name of this facade (its inventory), re-exported here
+# even though its only use moved into shell_normalizer_walk with the argv walk.
+from ..trust_patterns import ENV_ASSIGNMENT_RE  # noqa: F401
+from . import shell_normalizer_walk as _walk
 from .call_views import once_per_call
 from .shell_normalizer_escapes import (  # noqa: F401  (also re-exported for importers)
     _ANSI_C_QUOTE_RE,
@@ -80,10 +82,12 @@ from .shell_normalizer_walk import (  # noqa: F401  (also re-exported for import
     _LEADING_SUBSTITUTION_RE,
     _LOCAL_ASSIGN_RE,
     _PROCESS_SUBSTITUTION_OPENERS,
+    _RAW_VALUE_PREFIX_RE,
     _SHELL_ACTIVE_CHARS,
     _SHELL_ASSIGN_RE,
     _SHELL_WRAPPER_CHARS,
     _VAR_USE_RE,
+    _argv_programs,
     _arms_case_context,
     _backtick_closer,
     _cut_at_operator,
@@ -94,13 +98,17 @@ from .shell_normalizer_walk import (  # noqa: F401  (also re-exported for import
     _is_computed_value,
     _is_shell_variable_reference,
     _iter_shell_chars,
+    _matching_close_backtick,
     _matching_close_paren,
     _only_single_quoted_openers,
     _opens_comment,
     _prev_word,
+    _program_basename,
+    _program_positions,
     _push_option_matches,
     _push_token_redirection,
     _push_token_shell_read,
+    _raw_word_scopes,
     _redirect_consumes_next,
     _resolve_param_defaults,
     _resolved_word_view,
@@ -129,56 +137,6 @@ if TYPE_CHECKING:
 # glob in the program name (``kiro[c]rew``) is resolved by the shell BEFORE exec, so
 # it has to be tested for expandability rather than compared literally.
 _GLOB_CHARS_RE = re.compile(r"[\[\]?*{}]")
-
-
-@once_per_call()
-def _program_basename(token: str) -> str:
-    """The program name a token invokes, with shell wrappers stripped.
-
-    Strips quoting, command-substitution wrappers and any attached redirection
-    before taking the basename, so an expansion-produced program name
-    (``$(which pkill)``, ``"$(command -v bash)"``) or a redirect-glued one
-    (``kirocrew>/tmp/out``) is compared as the program it resolves to rather than as
-    literal punctuation.  Every program check goes through this -- comparing a raw
-    ``os.path.basename`` lets ``$(which pkill) -f <name>`` past the kill rule.
-
-    The layers are peeled to a FIXED POINT rather than once in a fixed order.
-    A wrapper and a redirect interleave freely, and any single ordering leaves a
-    hole for the interleavings it does not match: ``$(which kirocrew)>/tmp/out`` needs
-    the redirect gone before its closing paren reaches the end of the word, while
-    ``kirocrew)`` needs the paren gone with no redirect in play at all.  Looping until
-    nothing changes makes the peel order-independent, which closes the class
-    instead of whichever spelling a fixed order happened to cover.
-    """
-    if not token:
-        return ""
-    previous = ""
-    substituted = False
-    while token != previous:
-        previous = token
-        token = _strip_redirect(token)
-        token = _resolve_param_defaults(token)
-        token = _EMPTY_SUBST_RE.sub("", token)
-        if token.startswith("$(") or token.startswith("`"):
-            substituted = True
-        token = token.removeprefix("$(").strip(_SHELL_WRAPPER_CHARS)
-        # ANSI-C / locale quoting: ``$'name'`` and ``$"name"`` are just quoting
-        # forms, so the ``$`` left behind after the quotes come off is not part of
-        # the program name.  ``$(`` and ``${`` are handled above and below.
-        if token.startswith("$") and not token.startswith(("$(", "${")):
-            token = token[1:]
-    if substituted:
-        token = _substitution_program(token)
-    # A control operator GLUED to the name (``true;kirocrew``, ``x&&kirocrew``)
-    # means the program that actually runs is what follows the LAST operator --
-    # ``shlex`` splits on whitespace only, so it hands the whole run over as one
-    # word and a comparison against it matches nothing.  Taking the trailing
-    # segment is what bash does; a trailing operator leaves an empty tail, so the
-    # last NON-EMPTY segment is the one that names a program.
-    segments = [s for s in _CONTROL_OPERATOR_RE.split(token) if s]
-    if segments:
-        token = segments[-1]
-    return os.path.basename(token.rstrip("/"))
 
 
 def _glob_could_expand_to(base: str, names: "tuple[str, ...] | frozenset[str]") -> bool:
@@ -393,9 +351,9 @@ def _pipes_into_evaluator(tokens: "list[str]") -> bool:
         if "|" in token:
             seen_pipe = True
         if seen_pipe and (
-            _program_basename(token) in _NESTED_SHELL_PROGRAMS
-            or _program_basename(token) in _NESTED_SHELL_VERBS
-            or _program_basename(token) == "xargs"
+            _walk._program_basename(token) in _NESTED_SHELL_PROGRAMS
+            or _walk._program_basename(token) in _NESTED_SHELL_VERBS
+            or _walk._program_basename(token) == "xargs"
             or _is_shell_variable_reference(token)
         ):
             return True
@@ -657,28 +615,6 @@ def _data_consumer_exempt(
     return programs[index] in _DATA_CONSUMER_PROGRAMS
 
 
-def _argv_programs(tokens: "list[str]") -> "list[str]":
-    """For each token, the program name of the command that token belongs to.
-
-    Walks the argv tracking command boundaries (``_ends_argv``) and skipping
-    leading ``VAR=value`` assignments, which precede the program rather than being
-    it.  Asks "what command is this name an argument OF?" -- the difference
-    between ``echo <name> <verb>`` (data) and ``ssh host <name> <verb>`` (executed).
-    """
-    programs: list[str] = []
-    current = ""
-    expect_program = True
-    for token in tokens:
-        if expect_program and token and not ENV_ASSIGNMENT_RE.match(token):
-            current = _program_basename(token)
-            expect_program = False
-        programs.append(current)
-        if _ends_argv(token):
-            current = ""
-            expect_program = True
-    return programs
-
-
 def _is_shell_command_flag(token: str) -> bool:
     """True if *token* is the shell flag whose next argument is a script."""
     return token == "--command" or bool(_SHELL_COMMAND_FLAG_RE.match(token))
@@ -834,7 +770,7 @@ def _xargs_reconstructed_command(tokens: "list[str]") -> str:
     if pipe <= 0:
         return ""
     xargs_at = next(
-        (i for i in range(pipe + 1, len(tokens)) if _program_basename(tokens[i]) == "xargs"),
+        (i for i in range(pipe + 1, len(tokens)) if _walk._program_basename(tokens[i]) == "xargs"),
         -1,
     )
     if xargs_at == -1:
@@ -970,17 +906,35 @@ def _is_self_program(token: str) -> bool:
     Also true when the name carries a shell GLOB the shell would expand to the
     executable -- ``./bin/kiro[c]rew``, ``kiro?rew``, ``kiro*rew``.
     """
-    base = _program_basename(token)
+    base = _walk._program_basename(token)
     if _SELF_PROGRAM_RE.match(base):
         return True
     return _glob_could_expand_to(base, _SELF_PROGRAM_SPELLINGS)
 
 
-def _self_tokens(text_lower: str, *, resolve: bool = True) -> "list[str]":
+def _spells_self_name(token: str) -> bool:
+    """True if *token*'s basename carries a letter, so a glob there (``k*``,
+    ``kirocre[w]``) spells some of the product's name.  A word of glob characters
+    alone (``*``, ``test/*``) is a filename pattern, not the program, although
+    :func:`_is_self_program` reads it as one that could expand to it."""
+    return re.search(r"[a-z]", _walk._program_basename(token), re.IGNORECASE) is not None
+
+
+def _self_tokens(
+    text_lower: str,
+    *,
+    resolve: bool = True,
+    alternative: bool = False,
+    seed_values: "dict[str, str] | None" = None,
+    seed_program_only: "set[str] | None" = None,
+    bindings_out: "dict[str, object] | None" = None,
+) -> "list[str]":
     """Tokenize the WHOLE command, resolving quoting before any splitting.
 
     *resolve* False stops before assignment and alias resolution, so a quoted
-    script stays the one token its carrier receives.
+    script stays the one token its carrier receives.  *alternative* True returns
+    the ALTERNATIVE resolution (:func:`_alternative_mint_overrides`), or ``[]`` when
+    no assignment pairs with a raw body that names the verb or a protected program.
 
     Splitting the raw text into segments first (as the pattern passes do) is
     unsafe for these rules: it cuts on a ``;`` or ``|`` that is INSIDE a quoted
@@ -1018,7 +972,18 @@ def _self_tokens(text_lower: str, *, resolve: bool = True) -> "list[str]":
         tokens = normalize_shell_command(command)
         if not resolve:
             return tokens
-        return _resolve_function_aliases(_resolve_local_assignments(tokens))
+        overrides = _alternative_mint_overrides(command, tokens) if alternative else None
+        if alternative and not any((overrides or {}).values()):
+            return []
+        return _resolve_function_aliases(
+            _resolve_local_assignments(
+                tokens,
+                mint_overrides=overrides,
+                seed_values=seed_values,
+                seed_program_only=seed_program_only,
+                bindings_out=bindings_out,
+            )
+        )
     except Exception:
         return []
 
@@ -1081,13 +1046,13 @@ def _resolve_function_aliases(tokens: "list[str]") -> "list[str]":
                 target = _normalize_operand(spec.group(2))
                 if _is_self_program(target):
                     aliases[spec.group(1)] = "kirocrew"
-                elif _program_basename(target) in _KILL_BY_NAME_PROGRAMS:
-                    aliases[spec.group(1)] = _program_basename(target)
+                elif _walk._program_basename(target) in _KILL_BY_NAME_PROGRAMS:
+                    aliases[spec.group(1)] = _walk._program_basename(target)
         m = _FUNC_DEF_RE.match(tokens[i])
         if m:
             # Walk the body until the closing brace, taking the first protected program.
             for body_token in tokens[i + 1 :]:
-                base = _program_basename(body_token)
+                base = _walk._program_basename(body_token)
                 if _is_self_program(body_token):
                     aliases[m.group(1)] = "kirocrew"
                     break
@@ -1127,7 +1092,150 @@ def _mint_verb_in_substitution(tokens: "list[str]", idx: int) -> bool:
     return False
 
 
-def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
+def _raw_substitution_mint_name(value: str) -> "str | None":
+    """The protected program (PROGRAM WINS), else the mint verb, that a substitution's
+    OWN body names -- read from the RAW source where that body's quotes still close.
+
+    *value* is an assignment's right-hand side as it stands in the FOLDED SOURCE, quotes
+    intact: ``$(: "'"; echo token)``, a backtick body, or either behind a ``${...}``
+    prefix.  The body is read by the SAME quote-aware closers the baseline path uses --
+    ``_matching_close_paren`` for ``$(...)`` (a paren walk that tracks quotes) and
+    ``_matching_close_backtick`` for a backtick body -- called directly here (not via
+    ``_substitution_bodies``).  In the raw text
+    the source quotes close, so the real substitution close is found and the body scan
+    cannot run past it into the use site; that is the whole point -- it reads only what
+    the substitution actually contains, so a lone DEQUOTED quote (the defect this
+    answers) never arises, and a name sitting only in a ``${KIROCREW:+...}`` prefix or a
+    later command is never mistaken for the body's own.
+
+    Only the FIRST body -- the assigned substitution -- is read, with the same closers
+    ``_substitution_bodies`` uses (``_matching_close_paren`` for ``$(...)``,
+    ``_matching_close_backtick`` for a backtick body; an unproven close reads the
+    remainder, as there).  Reading every body of the remainder instead made this
+    quadratic in the number of substitution assignments on the synchronous gate.
+    Returns the protected program named anywhere in it (``_SELF_NAME_RE`` product
+    name, a by-name kill program, or a lettered-glob spelling via ``_is_self_program``
+    such as ``kirocre[w]``/``k*``), else ``"token"`` when the body names the mint verb,
+    else ``""``; ``None`` when *value* opens no substitution there (the caller then
+    leaves the assignment unpaired).
+    """
+    prefix = _RAW_VALUE_PREFIX_RE.match(value)
+    opener = prefix.end() if prefix else 0
+    if value.startswith("$(", opener):
+        end, proven = _matching_close_paren(value, opener + 2)
+        body = value[opener + 2 : end - 1] if proven else value[opener + 2 :]
+    elif value.startswith("`", opener):
+        end, proven = _matching_close_backtick(value, opener + 1)
+        body = value[opener + 1 : end - 1] if proven else value[opener + 1 :]
+    else:
+        return None
+    verb = False
+    # Tokenize the body the way the resolver tokenizes a command, NOT ``str.split`` --
+    # ``.split`` would break a quoted ``"it's token"`` into a bare ``token`` and bind the
+    # verb the shell never runs as a subcommand (``kirocrew chat -m "it's token"`` is not
+    # a mint).  The raw body's quotes close, so this dequotes cleanly and a quoted phrase
+    # stays one operand.
+    for word in _split_glued_operators(normalize_shell_command(body)):
+        m = _SELF_NAME_RE.search(word)
+        if m:
+            return m.group(0)
+        for prog in _KILL_BY_NAME_PROGRAMS:
+            if prog in word:
+                return prog
+        operand = _normalize_operand(word)
+        if _is_self_program(operand) and _spells_self_name(operand):
+            return "kirocrew"
+        if _is_mint_verb(word):
+            verb = True
+    return "token" if verb else ""
+
+
+#: Builtins that set a variable in the CURRENT shell when given an assignment word.
+#: ``_program_positions`` marks them as argv[0]; the prefix test steps over them so an
+#: assignment they carry (``export T=$(...)``) is still read as the command's prefix.
+_DECLARATION_BUILTINS = frozenset({"export", "declare", "typeset", "local", "readonly"})
+
+
+def _alternative_mint_overrides(command: str, tokens: "list[str]") -> "dict[int, str]":
+    """Readings for the ALTERNATIVE resolution, keyed by the index of the assignment
+    in ``_split_glued_operators(tokens)``: the program/verb (``""`` for neither) that
+    the assignment's own substitution body names, read from the raw *command*.
+
+    This does NOT change the baseline resolution.  It exists so the caller can build a
+    SECOND resolution of the command in which a substitution-valued assignment is bound
+    to :func:`_raw_substitution_mint_name` instead of the baseline's reading, and refuse
+    the command when EITHER resolution refuses.  That makes monotonicity structural: the
+    baseline (main's verdict) is kept untouched, and this can only ADD a refusal where a
+    substitution's body names the mint verb (``T=$(: "'"; echo token); kirocrew $T``) or
+    a protected program the baseline, over-reading a lone dequoted quote, bound to the
+    wrong name.
+
+    Only the assignments the baseline itself binds are read (the same tokens, so the
+    alternative differs from it only in the body reading), and only those that set a
+    variable in THIS shell: at a command's prefix position (no program yet in its argv,
+    stepping over a declaration builtin such as ``export`` that carries the assignment)
+    and at top level in the raw text, so not inside a subshell, a substitution, a brace
+    group or a function body, and not an argument such as ``echo T=$(...)``.  Anything
+    that cannot be classified -- a word count that does not pair with the tokens, a
+    raw word that does not open with the assignment's name, a value with no substitution
+    opener -- is left unpaired, which keeps the baseline binding for it.
+    """
+    words = _raw_word_scopes(command)
+    if len(words) != len(tokens):
+        return {}
+    split = _split_glued_operators(tokens)
+    # Whether a PROGRAM word precedes each token in its command, from the same
+    # redirect-aware walk `_program_positions` uses. The baseline `_argv_programs`
+    # reads a leading fd-prefixed redirect (`2>/dev/null`, `1>&2`, `{fd}>...`) as a
+    # program named `2`/`1`/`{fd}`, which would place a following assignment after a
+    # program and skip its override; the shell strips every such redirect from argv, so
+    # the assignment is still at prefix and its body must be read. This runs only in the
+    # alternative pass, so the baseline (main) is untouched.
+    is_program = _program_positions(split)
+    program_seen: list[bool] = []
+    seen = False
+    after_decl = False
+    for tok, prog in zip(split, is_program):
+        program_seen.append(seen)
+        if not seen and tok.lower() in _DECLARATION_BUILTINS:
+            # A declaration builtin sets a variable in THIS shell, so an assignment it
+            # carries is still at the command's prefix. Step over it and its option
+            # words rather than reading it as the program.
+            after_decl = True
+        elif after_decl and tok.startswith("-"):
+            pass
+        elif prog:
+            seen = True
+            after_decl = False
+        if _walk._ends_argv(tok):
+            seen = False
+            after_decl = False
+    overrides: dict[int, str] = {}
+    index = 0
+    for token, (start, top_level) in zip(tokens, words):
+        assign = _LOCAL_ASSIGN_RE.match(token)
+        if (
+            assign
+            and top_level
+            and not program_seen[index]
+            and _is_computed_value(assign.group(2))
+            and command.startswith(assign.group(1) + "=", start)
+        ):
+            reading = _raw_substitution_mint_name(command[start + len(assign.group(1)) + 1 :])
+            if reading is not None:
+                overrides[index] = reading
+        index += len(_split_glued_operators([token]))
+    return overrides
+
+
+def _resolve_local_assignments(
+    tokens: "list[str]",
+    *,
+    mint_overrides: "dict[int, str] | None" = None,
+    seed_values: "dict[str, str] | None" = None,
+    seed_program_only: "set[str] | None" = None,
+    bindings_out: "dict[str, object] | None" = None,
+) -> "list[str]":
     """Substitute ``$VAR`` uses with a literal assigned earlier in the same command.
 
     Only LITERAL right-hand sides are tracked, and only assignments that appear in
@@ -1139,14 +1247,46 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
     classified, so a name assembled across several assignments still resolves to the
     literal the shell will run.
     """
-    values: dict[str, str] = {}
+    values: dict[str, str] = dict(seed_values) if seed_values else {}
     out: list[str] = []
     # ``X=<name>;$X <verb>`` glues the assignment and the next command into ONE token,
     # because ``shlex`` splits on whitespace only.  Split on top-level control operators
     # first so the assignment is seen as an assignment and the use as a use.
     tokens = _split_glued_operators(tokens)
+    # ALTERNATIVE pass only (the BASELINE, ``mint_overrides is None``, is untouched): a
+    # PROGRAM name read from a substitution body (``F=$(ls kiro*)``) is honoured only at
+    # program position (``$F token``), not as an operand (``pytest $TESTS -k token``).
+    program_positions = (
+        _program_positions(tokens) if (mint_overrides is not None or seed_program_only) else None
+    )
+    alt_program_only: set[str] = set(seed_program_only) if seed_program_only else set()
+
+    def _set_program_only(name: str, program_only: bool) -> None:
+        """Re-derive a variable's provenance from its CURRENT binding alone, so a rebinding
+        never inherits an earlier flag (gpt r21 F1)."""
+        (alt_program_only.add if program_only else alt_program_only.discard)(name)
+
+    def _resolve_rhs(text: str) -> str:
+        """Resolve ``$VAR`` in an RHS / append tail; transform and indirect forms only in
+        the ALTERNATIVE pass, so the baseline stays byte-identical to main."""
+        if mint_overrides is not None:
+            text = _PARAM_TRANSFORM_RE.sub(lambda m: values.get(m.group(1), m.group(0)), text)
+            text = _INDIRECT_VAR_USE_RE.sub(
+                lambda m: values.get(values.get(m.group(1), ""), m.group(0)), text
+            )
+        return _VAR_USE_RE.sub(lambda m: values.get(m.group(1) or m.group(2), m.group(0)), text)
+
+    def _rhs_refs(text: str, flagged: "set[str]") -> bool:
+        """True if *text* references a *flagged* variable in any form the pass resolves."""
+        names = [m.group(1) or m.group(2) for m in _VAR_USE_RE.finditer(text)]
+        if mint_overrides is not None:
+            names += [m.group(1) for m in _PARAM_TRANSFORM_RE.finditer(text)]
+            names += [values.get(m.group(1), "") for m in _INDIRECT_VAR_USE_RE.finditer(text)]
+        return any(n in flagged for n in names)
+
     for idx, token in enumerate(tokens):
         assign = _LOCAL_ASSIGN_RE.match(token)
+        rhs_aliases_program_only = False
         # ``NAME+=tail`` APPENDS, and the pattern above cannot match it at all (``+`` is
         # not a name character), so an appended PROGRAM word would be invisible here:
         # `F=fi; F+=nd; $F <fenced> -exec cat {} +` runs a `find` this resolver would never
@@ -1167,20 +1307,34 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
         append = None if assign else _SHELL_ASSIGN_RE.match(token)
         if append and append.group(2):
             name, tail = append.group(1), append.group(3)
+            # An append EXTENDS the current binding (or keeps it, for an opaque tail); it
+            # replaces it only when a substitution names a protected program. So program-
+            # only provenance is COMBINED across the append -- the existing flag OR the
+            # tail's -- and re-derived only on a replacement. Clearing it on a keep/extend
+            # wrongly refused `TESTS=$(git ls-files 'test/*crew*'); TESTS+=$(true)` (and
+            # `TESTS+=''`) as a mint, though $TESTS stays pytest's operand (gpt).
+            base_program_only = name in alt_program_only
+            tail_aliases_program_only = _rhs_refs(tail, alt_program_only)
             if values and "$" in tail:
                 # Same reason the assignment path expands first: a tail built from an
                 # already-tracked variable is a literal once expanded, and left
                 # unexpanded it reads as computed and the append is dropped.
-                tail = _VAR_USE_RE.sub(
-                    lambda m: values.get(m.group(1) or m.group(2), m.group(0)), tail
-                )
+                tail = _resolve_rhs(tail)
             if _is_computed_value(tail):
-                # No literal to concatenate. Over-approximate exactly as the assignment
-                # path does: the value only matters where it is later used as a program,
-                # so a wrong guess there is a refusal rather than a bypass.
+                # No literal to concatenate -- a substitution's OUTPUT is unknown.
+                # Over-approximate exactly as main does: if the substitution names a
+                # protected program, REPLACE the binding with it and re-derive provenance;
+                # otherwise the append contributes nothing, ``$F`` keeps its prior binding,
+                # and its program-only provenance is kept (combined with the tail's). Both
+                # passes run this path -- an unknown `+=` is an append the guard does not
+                # model and main allows; the mint this floor guards is one whose subcommand
+                # comes from a substitution, not one assembled across an opaque append.
                 produced = _protected_name_in_substitution(tokens, idx)
                 if produced:
                     values[name] = produced
+                    _set_program_only(name, False)
+                else:
+                    _set_program_only(name, base_program_only or tail_aliases_program_only)
                 out.append(token)
                 continue
             piece = tail.strip("\"'").rstrip(";&|")
@@ -1188,6 +1342,7 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
             # rather than being discarded -- that was one of the seven spellings, and
             # bash builds the value the same way.
             values[name] = values.get(name, "") + piece
+            _set_program_only(name, base_program_only or tail_aliases_program_only)
             out.append(token)
             continue
         if assign and values and "$" in (assign.group(2) or ""):
@@ -1195,10 +1350,13 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
             # (``x=p; x=${x}kill``).  Expanding before classifying is what makes the
             # result a literal at all: left unexpanded it looks computed, the earlier
             # binding stays in place, and the reassignment is silently ignored.
-            expanded = _VAR_USE_RE.sub(
-                lambda m: values.get(m.group(1) or m.group(2), m.group(0)),
-                assign.group(2),
-            )
+            #
+            # A target that ALIASES a program-only variable (ANY reference form) inherits
+            # that provenance, so ``$U`` stays literal at an operand too; a verb alias
+            # does not.  Transform/indirect references on the RHS resolve and propagate
+            # in the alternative pass, matching the use site (gpt/opus r20 F3c).
+            rhs_aliases_program_only = _rhs_refs(assign.group(2), alt_program_only)
+            expanded = _resolve_rhs(assign.group(2))
             if expanded != assign.group(2):
                 token = f"{assign.group(1)}={expanded}"
                 assign = _LOCAL_ASSIGN_RE.match(token)
@@ -1209,6 +1367,21 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
             # the variable as holding that name.  Over-approximating here is the safe
             # direction -- the value only matters when ``$X`` is later used as a
             # program, and a wrong guess there is a refusal, not a bypass.
+            if mint_overrides is not None and idx in mint_overrides:
+                # ALTERNATIVE resolution only (``_self_tokens(..., alternative=True)``):
+                # this assignment sets a variable in this shell, and its own substitution
+                # body, read quote-aware from the raw source, names ``reading`` (or
+                # nothing).  A later ``T=$(echo doctor)`` therefore does not inherit an
+                # earlier ``T``'s verb.  The BASELINE call passes no overrides and runs
+                # exactly main's binding below, untouched.
+                reading = mint_overrides[idx]
+                if reading:
+                    values[assign.group(1)] = reading
+                else:
+                    values.pop(assign.group(1), None)
+                _set_program_only(assign.group(1), bool(reading) and reading != "token")
+                out.append(token)
+                continue
             produced = _protected_name_in_substitution(tokens, idx)
             if produced:
                 values[assign.group(1)] = produced
@@ -1218,6 +1391,9 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
                 # where it is later used, so binding it to the verb is the safe
                 # over-approximation.
                 values[assign.group(1)] = "token"
+            # produced is main's baseline program binding and the verb is the mint's own
+            # operand -- neither is program-only, and this rebinding clears any stale flag.
+            _set_program_only(assign.group(1), False)
             out.append(token)
             continue
         if assign and assign.group(2):
@@ -1227,28 +1403,36 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
             value = assign.group(2).strip("\"'").rstrip(";&|")
             if value:
                 values[assign.group(1)] = value
+            # Carry program-only provenance across an alias; clear otherwise.
+            _set_program_only(assign.group(1), rhs_aliases_program_only)
             out.append(token)
             continue
         if values and "$" in token:
-            # ``${!V}`` is INDIRECT: it expands to the value of the variable NAMED by
-            # ``V``, so resolving it takes two hops through the same table.  Done before
-            # the ordinary substitution so what remains afterwards is a plain literal.
-            # A TRANSFORMATION on a tracked variable (``${K:0}``, ``${K^^}``, ``${K/x/y}``)
-            # still expands to something derived from the tracked value, but none of those
-            # spellings are a plain ``${K}``.  Resolved to the value itself: the
-            # transformation is not modelled, and over-approximating here is the safe
-            # direction for the same reason it is for a computed value -- the result only
-            # matters where it is used as a program or verb, and a wrong guess there is a
-            # refusal, not a bypass.  The ``:-``/``:+``/``:=``/``:?`` DEFAULT forms are
-            # excluded: they carry their own literal and are resolved separately.
-            token = _PARAM_TRANSFORM_RE.sub(lambda m: values.get(m.group(1), m.group(0)), token)
+            # ``${!V}`` is INDIRECT (two hops) and a TRANSFORM (``${K^^}``, ``${K/x/y}``)
+            # resolves to the tracked value itself -- over-approximating, safe because a
+            # wrong guess at a use site is a refusal, not a bypass; the ``:-``/``:+``
+            # DEFAULT forms carry their own literal and are resolved separately. A
+            # program-only alternative binding resolves ONLY at program position, across
+            # all three reference forms, so the product name cannot re-enter an operand.
+            # Linear: ``at_program`` is one O(1) lookup, no per-token rescan (gpt/opus r24).
+            at_program = program_positions[idx] if program_positions is not None else True
+
+            def _resolve_name(name: str, default: str, _ap: bool = at_program) -> str:
+                if not _ap and name in alt_program_only:
+                    return default
+                return values.get(name, default)
+
+            token = _PARAM_TRANSFORM_RE.sub(lambda m: _resolve_name(m.group(1), m.group(0)), token)
             token = _INDIRECT_VAR_USE_RE.sub(
-                lambda m: values.get(values.get(m.group(1), ""), m.group(0)), token
+                lambda m: _resolve_name(values.get(m.group(1), ""), m.group(0)), token
             )
             token = _VAR_USE_RE.sub(
-                lambda m: values.get(m.group(1) or m.group(2), m.group(0)), token
+                lambda m: _resolve_name(m.group(1) or m.group(2), m.group(0)), token
             )
         out.append(token)
+    if bindings_out is not None:
+        bindings_out["values"] = dict(values)
+        bindings_out["program_only"] = set(alt_program_only)
     return out
 
 
@@ -1268,54 +1452,29 @@ def _nested_shell_payloads(
 
     *allow_join* suppresses the ``eval`` argument join, and *joined_out* collects
     the joined payloads this call produced. Both exist for
-    :func:`_shell_payload_walk`, which must not let a JOINED frame join again: the
-    joined text is strictly shorter than its parent, so it becomes a frame of its
-    own, and if that frame joins too the walk builds a chain of shrinking suffixes
-    -- N frames each costing an O(N) tokenize and an O(N) join. Measured on
-    ``"eval " * 1280``: 65 s and growing ~5x per doubling, against 0.13 s before
-    the join existed, which stalls the synchronous permission gate long enough for
-    the watchdog to fire. Declining the second join costs no detection, because
-    the join FUSES already-dequoted words in one step -- ``eval eval 'git' 'push
-    origin main'`` is fused to ``git push origin main`` by the first join, so the
-    publish is visible at the first joined frame and the chain would only
-    re-derive suffixes of an answer already in hand.
+    :func:`_shell_payload_walk`, which must not let a JOINED frame join again: a
+    re-joining chain of shrinking suffixes is O(N) frames each O(N) to tokenize and
+    join (measured 65 s on ``"eval " * 1280``), and declining the second join costs
+    no detection, since the first join already fuses the words into the visible
+    publish.
     """
     payloads: list[str] = []
-    # Both scans below look for the FIRST token after a program that satisfies a stop
-    # predicate, handle it, and stop.  Walking forward per program made the function
-    # QUADRATIC in token count: in a run of interpreter tokens with no flag among them
-    # every one of them re-walks the whole tail, so a command padded with them stalls
-    # the synchronous permission gate (measured: 13.2 s for 16 000 tokens, ~4x per
-    # doubling).  The first-stop index is precomputed once per predicate in a single
-    # backward pass instead, which makes the whole function O(N) while returning the
-    # identical payload list -- the loops' only exits were that first stop token or the
-    # end of the list, so nothing else can change.
+    # Both scans find the FIRST token after a program that satisfies a stop predicate.
+    # The first-stop index is precomputed once per predicate in one backward pass, so
+    # the function is O(N) not quadratic (a flag-free interpreter-token run otherwise
+    # re-walked the tail per token: 13.2 s for 16 000 tokens) and returns the identical
+    # payload list.
     env_stop = _next_stop_indexes(tokens, _is_env_split_flag)
-    # The herestring and the GLUED ``-c`` spelling each get their OWN stop table
-    # rather than sharing the flag's: with a shared table, whichever spelling
-    # comes first EATS the stop through which a later spelling's payload was
-    # found -- ``bash <<<'x' -c '<script>'`` yielded only ``x``.  Splitting the
-    # tables fixes the CROSS-spelling case; WITHIN one class each table still
-    # reads only its first stop per shell token, which for short-cluster ``-c``
-    # carriers is closed by the every-carrier sweep at the bottom of this
-    # function.  Two stated residuals: ``--command`` carriers stay
-    # first-stop-only (the sweep is scoped to short clusters), and herestrings
-    # keep a first-occurrence residual (``bash <<<'a' <<<'b'`` yields ``a``; a
-    # real shell applies the LAST redirect).
+    # The herestring and the GLUED ``-c`` spelling each get their OWN stop table,
+    # not the flag's: a shared table let whichever came first eat the other's stop
+    # (``bash <<<'x' -c '<script>'`` yielded only ``x``). Residuals: ``--command``
+    # carriers stay first-stop-only, and herestrings keep a first-occurrence residual.
     #
     # The flag, herestring and glued stops are SPARSE (sorted index lists read
-    # through bisect, payloads cached in dicts keyed by stop position), built in
-    # one forward pass gated on a cheap prefix check.  Dense per-token tables
-    # (and a regex call per token to fill them) made this function's constant
-    # measurably heavier than the merge-base on interpreter-run shapes, and the
-    # pre-existing linearity tests bound ABSOLUTE seconds on CI runners, not
-    # growth rate.  A carrier-free command now allocates three empty lists and
-    # runs one `startswith` per token -- less than the merge-base's own
-    # per-token predicate regex.  Payloads are cached at their stop position
-    # because many shell tokens can share one stop -- re-extracting there copies
-    # the same length-M substring once per shell token, O(N*M) on
-    # ``["bash"]*N + ["-c<payload>"]``; the cached string is one
-    # object, so downstream dedup-set hashing stays linear too.
+    # through bisect, payloads cached per stop position), built in one forward pass
+    # gated on a cheap prefix check: a carrier-free command allocates three empty
+    # lists and runs one ``startswith`` per token, and caching at the stop keeps the
+    # shared-stop case (``["bash"]*N + ["-c<payload>"]``) linear.
     limit = len(tokens)
     flag_stops: "list[int]" = []
     herestring_stops: "list[int]" = []
@@ -1393,7 +1552,7 @@ def _nested_shell_payloads(
     joined_eval = False
     first_shell: "int | None" = None
     for i, token in enumerate(tokens):
-        base = _program_basename(token)
+        base = _walk._program_basename(token)
         # A shell reached through a VARIABLE (``$SHELL -c '<payload>'``) runs the
         # payload exactly as a named shell does.  The recognizer already used for the
         # ``| $SHELL`` evaluator sink applies here too.
@@ -1487,7 +1646,7 @@ def _nested_shell_payloads(
         if "<<<" not in token:
             continue
         head, _, tail = token.partition("<<<")
-        if tail and _program_basename(head) in _NESTED_SHELL_PROGRAMS:
+        if tail and _walk._program_basename(head) in _NESTED_SHELL_PROGRAMS:
             payloads.append(tail)
     # EVERY ``-c`` carrier past the first shell token is swept, not only the
     # first-stop one.  The stop tables above read one token per spelling class,
@@ -1611,69 +1770,111 @@ def _shell_payload_walk_uncached(
     see it.  Re-tokenizing the payload and checking that view too closes the
     class rather than one spelling of it.
 
-    Both the SOURCE text and its argv are returned because the two floors that
-    consume this need different views of the same frame: the self-protection
-    predicates match argv structurally, while the git-publish gate is a
-    verb-anchored scan over command text.  Walking once and handing out both is
-    what keeps the two floors from drifting -- a publish gate doing
-    its own top-level-only text match would let every wrapper form
-    (``bash -c '<push>'``, ``eval '<push>'``) bypass the ONLY enforcement
-    pushes have.
+    Both the SOURCE text and its argv are returned: the self-protection predicates
+    match argv structurally, the git-publish gate scans command text, and walking
+    once keeps them from drifting across wrapper forms (``bash -c '<push>'``).
 
-    Descends to ANY depth.  A numeric depth cap is itself a bypass -- whatever the
-    number, one more wrapper defeats it -- so the walk is bounded structurally: a
-    payload lives inside one token of its parent and is therefore strictly shorter
-    than the parent's source text, and a chain of strictly shorter strings is
-    finite.
+    Descends to ANY depth, bounded structurally rather than by a cap (a cap is itself
+    a bypass): a payload lives inside one token of its parent, so it is strictly
+    shorter, and a chain of shrinking strings is finite.
     """
     out: list[tuple[str, list[str]]] = []
-    seen: set[str] = set()
+    seen: "set[tuple[str, object]]" = set()
     # The third field is whether this frame may perform the ``eval`` argument join.
     # A frame PRODUCED by a join may not, which is what bounds the walk: see
     # ``_nested_shell_payloads``.
-    pending: list[tuple[str, int, bool]] = [(text_lower, len(text_lower) + 1, True)]
+    pending: "list[tuple[str, int, bool, dict[str, object] | None]]" = [
+        (text_lower, len(text_lower) + 1, True, None)
+    ]
     while pending:
-        source, parent_len, allow_join = pending.pop()
+        source, parent_len, allow_join, carry = pending.pop()
         tokens = _self_tokens(source)
         if not tokens:
             continue
         out.append((source, tokens))
+        # Carry the alternative frame's program-only bindings into its nested executable
+        # payloads: ``bash -c "$F token"`` extracts the bare script ``$F token``, where
+        # ``$F`` is at PROGRAM position though it was a ``-c`` operand in the parent.
+        # Resolve it at the INNER program positions (data operands stay unexpanded), so
+        # the walk sees ``kirocrew token`` not ``$F token`` (gpt r28 F1). Carried only.
+        if carry:
+            cv, cp = carry.get("values"), carry.get("program_only")
+            seeded = _self_tokens(
+                source,
+                seed_values=cv if isinstance(cv, dict) else None,
+                seed_program_only=cp if isinstance(cp, set) else None,
+            )
+            if seeded and seeded != tokens:
+                out.append((source, seeded))
+        # Alternative resolution (the monotonic union): when an assignment's value is a
+        # command substitution whose body names the mint verb or a protected program,
+        # ALSO offer the frame binding that name from the raw body, and refuse if EITHER
+        # frame is a mint. The baseline frame keeps main's verdict, so this only ADDS a
+        # refusal; the common command builds no second frame.
+        alt_bindings: "dict[str, object]" = {}
+        alt = (
+            _self_tokens(source, alternative=True, bindings_out=alt_bindings)
+            if "=" in source and ("$(" in source or "`" in source)
+            else None
+        )
+        if alt and alt != tokens:
+            out.append((source, alt))
         # Every substitution body is itself a command line -- command substitution
-        # (``$( )``, backticks) and PROCESS substitution (``<( )``, ``>( )``) alike, since
-        # bash runs the inner command in all of them.  Walking them here means the
-        # ordinary argv checks see ``cat <(kirocrew token)`` as the inner invocation.
-        #
-        # The bodies are read from the FOLDED source -- the same quote-aware fold
-        # ``_self_tokens`` applied to build ``tokens`` -- not from the raw text.
-        # ``_substitution_bodies`` recognises its openers byte-literally, and the
-        # shell removes a ``\`` + newline while READING, before it lexes an opener,
-        # so ``cat <\`` + newline + ``(bash -c '<name> <verb>')`` is a process
-        # substitution to bash while the raw scan sees no ``<(`` at all and the body
-        # was never walked: measured ALLOWED for all three parenthesised openers
-        # while bash ran the mint. Folding the raw text here (rather than at the
-        # walk's seed) reshapes nothing outside a substitution the tokenizer already
-        # reads folded, and the fold preserves single-quoted and ANSI-C spans, so a
-        # continuation that bash keeps literal stays literal in the body too.
+        # (``$( )``, backticks) and process substitution (``<( )``, ``>( )``) alike -- so
+        # it is walked too. Bodies are read from the FOLDED source (the same quote-aware
+        # fold ``_self_tokens`` used), so a ``\`` + newline continuation before a ``<(``
+        # opener folds away as bash reads it, and single-quoted/ANSI-C spans stay literal.
         joined_here: set[str] = set()
-        nested = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
+        # Each descended payload carries the bindings to resolve inside it: the
+        # alternative frame's own bindings for payloads taken from ``alt`` (so a
+        # program-only name reaches its INNER program position), the parent's carry
+        # otherwise, so a binding survives arbitrarily deep nesting.
+        payloads_carry: "list[tuple[str, dict[str, object] | None]]" = [
+            (p, carry)
+            for p in _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
+        ]
+        if alt and alt != tokens:
+            # The alternative binding must also reach a mint nested in a ``bash -c`` or
+            # piped payload (``T=$(: "'"; echo token); bash -c "kirocrew $T"``): descend
+            # that frame's payloads too, so the walk sees ``kirocrew token`` and not only
+            # the baseline's over-read ``kirocrew kirocrew``.
+            alt_carry = alt_bindings if alt_bindings.get("program_only") else carry
+            payloads_carry += [
+                (p, alt_carry)
+                for p in _nested_shell_payloads(alt, allow_join=allow_join, joined_out=joined_here)
+            ]
         # A redirect before the ``-c`` operand hides the script from ``nested``.
         from .shell_commands import redirect_hidden_payloads  # the reader imports this module
 
-        nested = list(nested) + redirect_hidden_payloads(source)
+        payloads_carry += [(p, carry) for p in redirect_hidden_payloads(source)]
         # Single-quoted text is literal only in the caller's own command line: a
         # nested or decoded payload is read quote-blind.
         literal = literal_single_quotes and source == text_lower  # payloads are shorter
-        for payload in nested + _substitution_bodies(
-            _fold_line_continuations(source), raw_source=literal
-        ):
+        payloads_carry += [
+            (p, carry)
+            for p in _substitution_bodies(_fold_line_continuations(source), raw_source=literal)
+        ]
+        for payload, pcarry in payloads_carry:
             # Descend through EVERY literal payload, to any depth.  Termination is
             # structural, not a cap: a payload is carried inside one token of its
             # parent, so it is strictly shorter than the parent's source text.
             payload = _decode_printf_escapes(payload)
-            if len(payload) >= parent_len or payload in seen:
+            # Key the descent-dedup on the carried bindings too, so a payload that also
+            # appears uncarried (the baseline frame's copy) does not block the carried
+            # descent that resolves its program-only name.
+            if pcarry:
+                _po, _va = pcarry.get("program_only"), pcarry.get("values")
+                carry_key: object = (
+                    frozenset(_po if isinstance(_po, set) else ()),
+                    tuple(sorted(_va.items()) if isinstance(_va, dict) else ()),
+                )
+            else:
+                carry_key = None
+            key = (payload, carry_key)
+            if len(payload) >= parent_len or key in seen:
                 continue
-            seen.add(payload)
-            pending.append((payload, len(source), payload not in joined_here))
+            seen.add(key)
+            pending.append((payload, len(source), payload not in joined_here, pcarry))
     return out
 
 

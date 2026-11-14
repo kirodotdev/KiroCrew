@@ -351,8 +351,8 @@ def test_every_reader_of_a_patched_name_reads_it_where_the_patch_writes() -> Non
 
 def test_every_late_read_of_a_patched_name_goes_to_the_module_the_patch_writes() -> None:
     """The reach for a read through a submodule alias, held across the whole package:
-    ``_shell_normalizer._program_basename`` in the argv floor and ``_shell._shell_tokens``
-    in the deny gate read the module a patch of that name writes."""
+    ``_walk._program_basename`` in the argv floor and ``_shell._shell_tokens`` in the
+    deny gate read the module a patch of that name writes."""
     homes = _patched_homes()
     assert late_read_violations(_texts(_package_modules()), homes) == []
 

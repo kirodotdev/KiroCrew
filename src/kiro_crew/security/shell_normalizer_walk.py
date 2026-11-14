@@ -17,15 +17,15 @@ it, so that import path holds. New lexical reading belongs here.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import TYPE_CHECKING, NamedTuple
 
+from ..trust_patterns import ENV_ASSIGNMENT_RE
 from .call_views import once_per_call
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-
-
 #: Any one of these in a view means it is not a single plain command: it can
 #: open a command, an expansion or a redirection, or chain to another command.
 #: An ALLOWLIST of inert text, not a blocklist of opener spellings -- see
@@ -505,6 +505,214 @@ def _redirect_consumes_next(token: str) -> "tuple[bool, bool]":
     if cut == -1:
         return (False, False)
     return (True, token[cut:].lstrip("<>&") == "")
+
+
+#: Command wrappers whose own option words are stepped over to reach the program they
+#: run, as ``(value-taking option flags, trailing positional words)``. Defined here with
+#: ``_program_index`` so ``_program_positions`` and ``argv_rules`` share ONE wrapper/
+#: keyword skip; a word that takes a value leaves the value read as the program, which
+#: only misses.
+_WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
+    "sudo": (
+        frozenset(
+            {
+                *("-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t", "-D", "-R"),
+                *("--user", "--group", "--close-from", "--host", "--prompt"),
+                *("--other-user", "--role", "--type", "--chdir", "--chroot"),
+            }
+        ),
+        0,
+    ),
+    "doas": (frozenset({"-u", "-C"}), 0),
+    "pkexec": (frozenset({"--user"}), 0),
+    "runuser": (frozenset({"-u", "-g", "-G", "--user", "--group"}), 0),
+    "env": (frozenset({"-u", "-C", "--unset", "--chdir"}), 0),
+    "command": (frozenset(), 0),
+    "builtin": (frozenset(), 0),
+    "exec": (frozenset({"-a"}), 0),
+    "nohup": (frozenset(), 0),
+    "setsid": (frozenset(), 0),
+    "time": (frozenset({"-f", "-o", "--format", "--output"}), 0),
+    "nice": (frozenset({"-n", "--adjustment"}), 0),
+    "ionice": (frozenset({"-c", "-n", "-p", "--class", "--classdata"}), 0),
+    "stdbuf": (frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}), 0),
+    "timeout": (frozenset({"-s", "-k", "--signal", "--kill-after"}), 1),
+    "chroot": (frozenset({"--userspec", "--groups"}), 1),
+    "nsenter": (frozenset({"-t", "--target", "-S", "--setuid", "-G", "--setgid"}), 0),
+    "unshare": (frozenset({"--propagation", "--setgroups"}), 0),
+    "flock": (frozenset({"-w", "--timeout", "-E", "--conflict-exit-code"}), 1),
+    "taskset": (frozenset(), 1),
+    "chrt": (frozenset(), 1),
+    "xargs": (
+        frozenset(
+            {
+                *("-I", "-n", "-P", "-L", "-s", "-d", "-E", "-a"),
+                *("--max-args", "--max-procs", "--max-lines", "--max-chars"),
+                *("--delimiter", "--arg-file", "--process-slot-var"),
+            }
+        ),
+        0,
+    ),
+    "systemd-run": (frozenset({"-p", "-u", "-E", "--unit", "--property", "--setenv"}), 0),
+}
+
+
+def _program_index(tokens: "list[str]", options: "list[str] | None" = None) -> "int | None":
+    """Index in *tokens* of the program a command runs, wrappers and ``VAR=x`` stepped over.
+
+    *options* is *tokens* in the case they were written in, when the caller has
+    it: a wrapper's option words are read from it (``sudo -H`` takes no value,
+    ``sudo -h`` does), and ``sudo -e`` / ``--edit`` runs no program at all.
+    Without it the option words are read from *tokens* as they are.
+    """
+    opts = tokens if options is None else options
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        # An empty word is stepped over too, as the other deny views elide it.
+        # ``time`` keeps command position but takes options (``time -p``): read it
+        # as a wrapper so ``-p`` is not taken for the program.
+        keyword = token in _KEEPS_COMMAND_POSITION and token not in _WRAPPERS
+        if not token or ENV_ASSIGNMENT_RE.match(token) or keyword:
+            i += 1
+            continue
+        program = _program_basename(token)
+        wrapper = _WRAPPERS.get(program)
+        if wrapper is None:
+            return i
+        value_opts, positionals = wrapper
+        i += 1
+        while i < len(tokens) and opts[i].startswith("-") and opts[i] != "-":
+            if opts[i] == "--":
+                i += 1
+                break
+            if options is not None and program == "sudo" and opts[i] in ("-e", "--edit"):
+                return None  # sudoedit: every later word is a file it edits
+            i += 2 if opts[i] in value_opts else 1
+        i += positionals
+    return None
+
+
+def _program_positions(tokens: "list[str]") -> "list[bool]":
+    """For each token, True where it is the PROGRAM word (argv[0]) of its command.
+
+    Splits *tokens* into commands at argv boundaries (``_ends_argv``) and asks
+    ``_program_index`` which token in each is the program -- the ONE shared walk that
+    steps over leading ``VAR=value`` assignments, command keywords
+    (``_KEEPS_COMMAND_POSITION``) and wrappers (``_WRAPPERS``: ``env``, ``sudo``,
+    ``exec``, ``nohup``, ``timeout`` ...), so a wrapper before the CLI does not hide it
+    (``env kirocrew ...`` marks ``kirocrew``). A leading REDIRECTION is removed first --
+    recognised only when the token BEGINS with one (optional fd number, ``&`` or
+    ``{name}`` then the operator, via ``_push_token_redirection``), so ``>/dev/null
+    kirocrew ...`` finds the CLI while a program with a redirect GLUED ON
+    (``kirocrew>/dev/null``) keeps its slot -- because ``_program_index`` reads no
+    redirections. The token marked True is the one whose basename names the program, so
+    this agrees with ``_is_self_program``.
+    """
+    positions = [False] * len(tokens)
+    n = len(tokens)
+    start = 0
+    for i, token in enumerate(tokens):
+        if not (_ends_argv(token) or i == n - 1):
+            continue
+        # Command segment tokens[start:i+1]: drop redirections (and a separate target)
+        # with a map back to the original index, then find the program in what remains.
+        argv: list[str] = []
+        idx_map: list[int] = []
+        skip_target = False
+        for j in range(start, i + 1):
+            if skip_target:
+                skip_target = False
+                continue
+            is_redirect, expects_target = _push_token_redirection(tokens[j])
+            if is_redirect:
+                skip_target = expects_target
+                continue
+            argv.append(tokens[j])
+            idx_map.append(j)
+        # No cased-options view is passed. The floor has already lowered the text, and a
+        # lowered `sudo -e` (sudoedit, which runs no program) is indistinguishable from
+        # `sudo -E` (--preserve-env, which DOES run the command). Applying the sudoedit
+        # rule on lowered text would let `sudo -E kirocrew "$(...)"` through, so it is
+        # left off: `_program_index` marks the CLI and `sudo --edit`/`-e` with a
+        # mint-shaped operand is refused -- the fail-closed side.
+        k = _program_index(argv)
+        if k is not None:
+            positions[idx_map[k]] = True
+        start = i + 1
+    return positions
+
+
+@once_per_call()
+def _program_basename(token: str) -> str:
+    """The program name a token invokes, with shell wrappers stripped.
+
+    Strips quoting, command-substitution wrappers and any attached redirection
+    before taking the basename, so an expansion-produced program name
+    (``$(which pkill)``, ``"$(command -v bash)"``) or a redirect-glued one
+    (``kirocrew>/tmp/out``) is compared as the program it resolves to rather than as
+    literal punctuation.  Every program check goes through this -- comparing a raw
+    ``os.path.basename`` lets ``$(which pkill) -f <name>`` past the kill rule.
+
+    The layers are peeled to a FIXED POINT rather than once in a fixed order.
+    A wrapper and a redirect interleave freely, and any single ordering leaves a
+    hole for the interleavings it does not match: ``$(which kirocrew)>/tmp/out`` needs
+    the redirect gone before its closing paren reaches the end of the word, while
+    ``kirocrew)`` needs the paren gone with no redirect in play at all.  Looping until
+    nothing changes makes the peel order-independent, which closes the class
+    instead of whichever spelling a fixed order happened to cover.
+    """
+    if not token:
+        return ""
+    previous = ""
+    substituted = False
+    while token != previous:
+        previous = token
+        token = _strip_redirect(token)
+        token = _resolve_param_defaults(token)
+        token = _EMPTY_SUBST_RE.sub("", token)
+        if token.startswith("$(") or token.startswith("`"):
+            substituted = True
+        token = token.removeprefix("$(").strip(_SHELL_WRAPPER_CHARS)
+        # ANSI-C / locale quoting: ``$'name'`` and ``$"name"`` are just quoting
+        # forms, so the ``$`` left behind after the quotes come off is not part of
+        # the program name.  ``$(`` and ``${`` are handled above and below.
+        if token.startswith("$") and not token.startswith(("$(", "${")):
+            token = token[1:]
+    if substituted:
+        token = _substitution_program(token)
+    # A control operator GLUED to the name (``true;kirocrew``, ``x&&kirocrew``)
+    # means the program that actually runs is what follows the LAST operator --
+    # ``shlex`` splits on whitespace only, so it hands the whole run over as one
+    # word and a comparison against it matches nothing.  Taking the trailing
+    # segment is what bash does; a trailing operator leaves an empty tail, so the
+    # last NON-EMPTY segment is the one that names a program.
+    segments = [s for s in _CONTROL_OPERATOR_RE.split(token) if s]
+    if segments:
+        token = segments[-1]
+    return os.path.basename(token.rstrip("/"))
+
+
+def _argv_programs(tokens: "list[str]") -> "list[str]":
+    """For each token, the program name of the command that token belongs to.
+
+    Walks the argv tracking command boundaries (``_ends_argv``) and skipping
+    leading ``VAR=value`` assignments, which precede the program rather than being
+    it.  Asks "what command is this name an argument OF?" -- the difference
+    between ``echo <name> <verb>`` (data) and ``ssh host <name> <verb>`` (executed).
+    """
+    programs: list[str] = []
+    current = ""
+    expect_program = True
+    for token in tokens:
+        if expect_program and token and not ENV_ASSIGNMENT_RE.match(token):
+            current = _program_basename(token)
+            expect_program = False
+        programs.append(current)
+        if _ends_argv(token):
+            current = ""
+            expect_program = True
+    return programs
 
 
 # ── Feature-branch push gate ──
@@ -1494,3 +1702,62 @@ _EMPTY_QUOTE_RE = re.compile(r'""|\'\'')
 
 # Regex for $HOME or ${HOME} variable expansion.
 _HOME_VAR_RE = re.compile(r"\$\{HOME\}|\$HOME", re.IGNORECASE)
+
+
+# The ``${...}`` prefixes before a substitution opener in an assignment value.
+_RAW_VALUE_PREFIX_RE = re.compile(r"(?:\$\{[^}]*\})*")
+
+
+def _raw_word_scopes(command: str) -> "list[tuple[int, bool]]":
+    """For each shell word of *command*, ``(start offset, at top level)``.
+
+    A word starts where unquoted, unescaped whitespace ends, which is where
+    ``shlex`` starts a token, so the list pairs with ``normalize_shell_command``'s
+    tokens one for one (the caller checks the counts).  *At top level* means no
+    ``(``/``{`` grouping is open in the raw text before it: not inside a subshell, a
+    substitution body, a brace group or a function body.  Read from the raw text
+    through the shared quote walk, so a quote the source closes cannot hide a paren
+    the way a lone dequoted quote does.  If the line's grouping does not BALANCE (depth
+    left open at the end, or it goes negative at some point -- a bare ``{``/``}`` word or
+    a ``case`` pattern's ``)``), the running depth cannot place an assignment, so every
+    word is treated as top level (FAIL-CLOSED): the alternative frame is built and can
+    only ADD a refusal, never lose one (gpt/opus r29->r30).
+
+    Every unquoted ``{`` that does not open a ``${`` parameter counts as a group,
+    glued or not (``f(){ T=$(...); }``), and every unquoted ``}`` closes one, so a
+    brace expansion closed in its own word (``{a,b}``) nets to nothing.  Telling a
+    function body from brace expansion would take a parser, and an over-count only
+    leaves an assignment unpaired, which keeps the baseline's binding.
+    """
+    words: list[tuple[int, bool]] = []
+    depth = 0
+    params = 0  # open ``${`` parameter braces: their ``}`` closes no group
+    broken = False
+    in_word = False
+    for step in _iter_shell_chars(command):
+        if step.active and step.char.isspace():
+            in_word = False
+            continue
+        if not in_word:
+            in_word = True
+            words.append((step.offset, depth == 0 and not broken))
+        if step.char == "{" and command[step.offset - 1 : step.offset] == "$":
+            params += 1
+        elif step.char == "}" and params:
+            params -= 1
+        elif step.active and step.char in "({":
+            depth += 1
+        elif step.active and step.char in ")}":
+            depth -= 1
+        broken = broken or depth < 0
+    # Fail-closed (gpt/opus r29->r30): an unbalanced line -- depth left open at the end,
+    # or it went negative at some point (a bare ``{``/``}`` word, or a ``case`` pattern's
+    # ``)``) -- means an EARLIER fake group would wrongly mark a real top-level ``T=`` as
+    # nested and drop its alternative frame, allowing the mint this PR refuses. The
+    # running depth cannot be trusted here, so treat every word as top level; the
+    # alternative frame is then built and can only ADD a refusal. A balanced line (a real
+    # ``{ …; }`` group or an uncalled ``f(){ …; }`` body) is unchanged -- its inner
+    # assignment stays non-top-level and keeps main's binding, as before.
+    if depth != 0 or broken:
+        words = [(start, True) for start, _ in words]
+    return words

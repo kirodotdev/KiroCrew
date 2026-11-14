@@ -54,6 +54,7 @@ from kiro_crew import platform_compat
 
 from . import shell_commands as _commands
 from . import shell_normalizer as _shell
+from . import shell_normalizer_walk as _walk
 from .denied_rules import BUILTIN_DENIED_RULES, _deny_pattern_matches
 from .paths import MAX_SCANNABLE_COMMAND_CHARS
 
@@ -381,7 +382,7 @@ def _program_after_assigns(tokens: "list[str]") -> "tuple[str, list[str]]":
         i += 1
     if i >= len(tokens):
         return "", []
-    return _shell._program_basename(tokens[i]), tokens[i + 1 :]
+    return _walk._program_basename(tokens[i]), tokens[i + 1 :]
 
 
 def _statement_raw(command: str, cmd: "_commands.ShellCommand") -> str:

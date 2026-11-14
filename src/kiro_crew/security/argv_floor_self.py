@@ -29,6 +29,7 @@ from typing import NamedTuple
 # onto the owning module's namespace, so a name bound into THIS namespace would
 # keep resolving the unpatched object and the instrument would count nothing.
 from . import shell_normalizer as _shell_normalizer
+from . import shell_normalizer_walk as _walk
 from .inline_payload import (
     _INLINE_DYNAMIC_EXEC_RE,
     _decoded_b64_literal_sources,
@@ -115,7 +116,7 @@ def _is_self_module_invocation(tokens: list[str], i: int) -> bool:
     first non-flag" is not expressible as a heuristic here, because an operand and a script
     path look identical.
     """
-    if not _PYTHON_PROGRAM_RE.match(_shell_normalizer._program_basename(tokens[i])):
+    if not _PYTHON_PROGRAM_RE.match(_walk._program_basename(tokens[i])):
         return False
     skip_next = False
     inline_program_next = False
@@ -173,7 +174,7 @@ def _is_self_module_invocation(tokens: list[str], i: int) -> bool:
 
 def _is_kill_by_name_program(token: str) -> bool:
     """True if *token* invokes ``pkill``/``killall``, including a globbed spelling."""
-    base = _shell_normalizer._program_basename(token)
+    base = _walk._program_basename(token)
     if base in _KILL_BY_NAME_PROGRAMS:
         return True
     return _glob_could_expand_to(base, _KILL_BY_NAME_PROGRAMS)
@@ -347,6 +348,11 @@ def _self_floor_can_fire(text_lower: str) -> bool:
     return bool(_INLINE_DYNAMIC_EXEC_RE.search(stripped))
 
 
+# The leading redirection operator of a token (optional fd or ``{name}``, then the
+# operator), stripped so a glued separator behind it (``2>/dev/null;``) still ends the argv.
+_REDIRECT_OP_PREFIX = re.compile(r"\A(?:\d+|\{\w+\})?(?:&>>?|[<>]&\d*-?|>\||>>?|<>?|<<<|<<-?)")
+
+
 def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bool:
     """True if *text_lower* invokes the ``kirocrew token`` credential mint.
 
@@ -378,6 +384,7 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
     decoded_literals = _decoded_b64_literal_sources(submitted)
     for tokens in _self_token_frames(text_lower):
         programs = _argv_programs(tokens)
+        program_positions = _shell_normalizer._program_positions(tokens)
         # The command-level half of ``_data_consumer_exempt`` reads only *tokens*, so its
         # answer is the same for every token in this frame.  Held here and computed at
         # most once per FRAME rather than once per trigger token: that half contains an
@@ -421,9 +428,61 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
             # so testing the boundary first discards the very argument that names it.
             depth = 0
             inline_payload_next = False
+            operand_seen = skip_next = False
+            # Only behind a program word that spells some of the product's name (a literal,
+            # or a glob such as ``k*`` or ``kirocre[w]`` that ``_is_self_program`` reads):
+            # a word of glob characters alone (a ``*`` line of a heredoc'd comment) is
+            # prose, and reading its quoted text as a subcommand refuses ordinary file
+            # writes.  Its literal verb is still read above.
+            literal_program = _shell_normalizer._spells_self_name(token)
             for later in tokens[i + 1 :]:
                 if _is_mint_verb(later):
                     return True
+                # A QUOTED substitution stays one token (``<name> "$(printf <verb>)"``), so a
+                # verb inside it never reaches the word test above.  Where it can be the
+                # subcommand -- before the first operand, and not as a redirect's target
+                # (``> "$(...)"``, ``>"$(...)"``) or an interpreter flag's operand
+                # (``-W ignore``) -- a substitution that names the verb mints (fail
+                # closed): what it prints is outside this floor, so the verb's presence
+                # is what binds, read by the same ``_mint_verb_in_substitution`` the
+                # assignment resolver asks.
+                #
+                # Gated on ``program_positions[i]``: this reading fires only when the
+                # self name IS the program word (argv[0]) of its command, so a mint
+                # hides behind ``kirocrew "$(... token ...)"`` but not behind the product
+                # name sitting in another program's argument -- a repo slug
+                # (``gh ... --repo kirodotdev/KiroCrew --body "$(gh auth token)"``), a
+                # secret/service/container name (``kubectl ... --from-literal=X="$(...)"``,
+                # ``security ... -s kirocrew ... -w "$(...)"``, ``docker run --name kirocrew
+                # ... -e X="$(...)"``).  There the program is ``gh``/``kubectl``/... and
+                # ``$(gh auth token)`` is that tool's own business, so main's allow stands.
+                skip, skip_next = skip_next, False
+                is_redirect, expects_target = _redirect_consumes_next(later)
+                # ``>|`` (clobber) takes the next token as its target too, though its
+                # operator char is ``|``, not stripped by the shared helper.
+                if is_redirect and re.fullmatch(
+                    r"(?:\d+|\{\w+\})?(?:>\||<>|[<>]&?|[<>]{2})", later
+                ):
+                    expects_target = True
+                if is_redirect and re.match(r"(?:\d+|\{\w+\})?[<>&]", later):
+                    skip, skip_next = True, expects_target
+                elif not _is_self_program(token) and (
+                    _shell_normalizer._normalize_operand(later) in _PYTHON_OPERAND_FLAGS
+                ):
+                    skip_next = True
+                if (
+                    not operand_seen
+                    and not skip
+                    and literal_program
+                    and program_positions[i]
+                    and ("$(" in later or "`" in later)
+                    and _shell_normalizer._mint_verb_in_substitution([later], 0)
+                ):
+                    return True
+                if not skip and not later.startswith("-") and not is_redirect:
+                    operand_seen = operand_seen or not (
+                        _shell_normalizer._normalize_operand(later).startswith("kiro_crew")
+                    )
                 # The operand of `-c` is a quoted PROGRAM, so its `;` is data, not a command
                 # separator. Letting `_ends_argv` see it ends the scan on the payload of
                 # `python -c "from kiro_crew.cli import main; main()" token` — one token before
@@ -448,10 +507,19 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
                 # A separator NESTED in a command substitution is part of that
                 # substitution, not the end of this argv: ``<name> $(true; echo <verb>)``
                 # is still one command.  Only a top-level separator ends the scan.
-                depth += _substitution_depth_delta(later)
+                depth = max(depth + _substitution_depth_delta(later), 0)
+                # A redirect operator word never ends the argv on its own (``>|`` holds a
+                # ``|`` that reads as a pipe here; stripped it is empty), but a redirect
+                # GLUED to a separator (``2>/dev/null;``, ``2>&1|grep``) still does: strip
+                # the leading operator and let a NON-EMPTY remainder decide.  Its depth
+                # still counts (above), clamped BEFORE this skip: a ``)`` in a redirect
+                # target (``2>"x)"``) must not leave a negative depth that a later
+                # ``$(true;`` only lifts back to zero, ending the scan before the verb.
+                tail = re.sub(_REDIRECT_OP_PREFIX, "", later, count=1)
+                if skip and is_redirect and not (tail and _ends_argv(tail)):
+                    continue
                 if depth <= 0 and _ends_argv(later):
                     break
-                depth = max(depth, 0)
     return False
 
 
@@ -468,7 +536,7 @@ def _static_substitution_output(body: str) -> str:
     only under-anchor (miss goes to the remainder ledger), never conjure one.
     """
     tokens = body.split()
-    if tokens and _shell_normalizer._program_basename(tokens[0]) in {"echo", "printf"}:
+    if tokens and _walk._program_basename(tokens[0]) in {"echo", "printf"}:
         for arg in tokens[1:]:
             operand = _shell_normalizer._normalize_operand(arg)
             if operand.startswith("-") or "%" in operand:
@@ -499,7 +567,7 @@ def _kill_prefix_keeps_anchor(words: "list[tuple[str, bool]]", word: "list[str]"
     -- whose program is ``kill<pids>``, not ``kill`` -- still attributes
     nothing from its glue.
     """
-    return not words and _shell_normalizer._program_basename("".join(word)) == "kill"
+    return not words and _walk._program_basename("".join(word)) == "kill"
 
 
 def _bare_kill_raw_bodies(source: str) -> "list[str]":
@@ -599,14 +667,14 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
         # spelling slips both union halves (bash-measured).  Both ``$k`` and
         # ``${k}`` count; the value check goes through the same basename read as
         # the literal.
-        if _shell_normalizer._program_basename(w) == "kill":
+        if _walk._program_basename(w) == "kill":
             return True
         if not w.startswith("$"):
             return False
         name = w[1:]
         if name.startswith("{") and name.endswith("}"):
             name = name[1:-1]
-        return _shell_normalizer._program_basename(aliases.get(name, "")) == "kill"
+        return _walk._program_basename(aliases.get(name, "")) == "kill"
 
     def end_segment() -> None:
         end_word()
@@ -898,7 +966,7 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
     # which would separate the verb from its own substitution.
     for source, frame in _self_frames(text_lower):
         for i, token in enumerate(frame):
-            if _shell_normalizer._program_basename(token) != "kill":
+            if _walk._program_basename(token) != "kill":
                 continue
             # Scan only the substitutions in THIS kill's own argv.  Scanning the whole
             # command associated every substitution with any ``kill`` on the line, so
@@ -1134,7 +1202,7 @@ def _self_program_index(tokens: "list[str]", i: int, scan: "_SelfModuleScan") ->
     """
     if _is_self_program(tokens[i]):
         return i
-    if _PYTHON_PROGRAM_RE.match(_shell_normalizer._program_basename(tokens[i])):
+    if _PYTHON_PROGRAM_RE.match(_walk._program_basename(tokens[i])):
         return _self_module_name_index(tokens, i, scan)
     return None
 
