@@ -25,13 +25,13 @@ superseded-by: []
 
 ## Summary
 
-When KiroCrew runs Pi as its agent harness, background tasks launched by Pi extensions
+When Kiro Crew runs Pi as its agent harness, background tasks launched by Pi extensions
 (`bg_run`, `bg_delegate`, `Fusion`) return a launch receipt immediately while execution
-continues asynchronously. KiroCrew currently sees only the tool call completion.
+continues asynchronously. Kiro Crew currently sees only the tool call completion.
 
-This RFC proposes a session-scoped observation bridge for KiroCrew to receive
+This RFC proposes a session-scoped observation bridge for Kiro Crew to receive
 authoritative task lifecycle events from the running Pi process and display them as
-externally owned tasks in KiroCrew's Activity panel.
+externally owned tasks in Kiro Crew's Activity panel.
 
 Phase 1 is strictly **read-only** and covers only `pi-background-tasks` (Host API v1).
 Task lifecycles remain owned by the Pi task registry: a parent chat turn ending does
@@ -43,13 +43,13 @@ steer) are deferred to separate follow-up RFCs.
 ### Current state
 
 1. **Crew-owned execution works:** Running `spawn_run(backend="pi")` or executing
-   through Task Runner with a Pi harness is tracked by KiroCrew because KiroCrew
+   through Task Runner with a Pi harness is tracked by Kiro Crew because Kiro Crew
    initiates and supervises the session lifecycle.
 2. **Pi-owned background execution is unobserved:** When a user chats with a Pi agent,
    tools such as `bg_run` return a launch receipt. Under ACP, `pi-acp` translates this
-   to a completed `tool_call`. The actual job continues in the background, but KiroCrew
+   to a completed `tool_call`. The actual job continues in the background, but Kiro Crew
    has no further visibility into progress, output, or completion.
-3. **Card lifecycle mismatch:** In KiroCrew, native subagent cards are closed when the
+3. **Card lifecycle mismatch:** In Kiro Crew, native subagent cards are closed when the
    parent turn ends (`_native_subagent_close_all`). Reusing this mechanism for Pi
    background tasks falsely marks running tasks as completed.
 
@@ -67,9 +67,9 @@ Neither interface is currently exported across process boundaries by `pi-acp`.
 
 ## Goals
 
-- Display registered Pi background tasks in KiroCrew Activity for the originating chat session.
+- Display registered Pi background tasks in Kiro Crew Activity for the originating chat session.
 - Preserve task state across parent chat turn boundaries, reloads, and reconnects.
-- Enforce strict session isolation: a KiroCrew chat sees only tasks from its own linked Pi process.
+- Enforce strict session isolation: a Kiro Crew chat sees only tasks from its own linked Pi process.
 - Read-only observation in Phase 1: zero execution or control authority granted over the bridge.
 - Keep existing Crew-managed tasks and native Kiro/KAS subagent cards untouched.
 
@@ -93,7 +93,7 @@ Pi Process
   Pi Bridge Extension
          │
          ▼ (local authenticated loopback transport, scoped by session token)
-KiroCrew Host Gateway
+Kiro Crew Host Gateway
   External Task Store (session-scoped)
          │
          ▼
@@ -105,8 +105,8 @@ KiroCrew Host Gateway
 Because `pi-background-tasks` is in-process, an extension running inside the Pi process
 subscribes to `pi-background-tasks:host:changed:v1`.
 
-- **Transport:** Loopback HTTP / IPC endpoint on the KiroCrew host gateway.
-- **Authentication:** At spawn, KiroCrew provisions a high-entropy, short-lived secret
+- **Transport:** Loopback HTTP / IPC endpoint on the Kiro Crew host gateway.
+- **Authentication:** At spawn, Kiro Crew provisions a high-entropy, short-lived secret
   passed securely to the Pi bridge extension.
 - **Security requirement:** The secret must never be exposed in model-visible tools,
   shell child processes, or conversation transcripts.
@@ -135,7 +135,7 @@ Imported tasks are stored in an **External Task Store** separate from Crew's int
   subscribes to change events, and requests an initial task snapshot.
 - **Incremental updates:** Incoming changed events update rows matching the exact key
   only if the revision number is greater than the current stored revision.
-- **Turn end:** When the parent assistant turn finishes, KiroCrew leaves external
+- **Turn end:** When the parent assistant turn finishes, Kiro Crew leaves external
   task cards intact.
 - **Disconnect / Exit:** If the Pi process exits or the lease expires without a terminal
   event, the task is marked `"stale"` or `"disconnected"`—never `"succeeded"`.
@@ -155,7 +155,7 @@ Imported tasks are stored in an **External Task Store** separate from Crew's int
 ## Backward Compatibility
 
 Fully additive:
-- If the bridge is disabled or Pi background tasks are not installed, KiroCrew and `pi-acp`
+- If the bridge is disabled or Pi background tasks are not installed, Kiro Crew and `pi-acp`
   behave exactly as they do today.
 - Crew-managed `spawn_run` and Task Runner execution paths are untouched.
 - Native Kiro/KAS subagent lifecycles are unchanged.
@@ -174,7 +174,7 @@ Fully additive:
 1. **Activity vs Dedicated Page:** Should external Pi tasks appear directly in the
    Activity sidebar, or under a dedicated "Pi Tasks" view? (Proposal: Activity sidebar
    with clear external ownership badge).
-2. **Transport upstreaming:** Should KiroCrew maintain this companion extension bridge,
+2. **Transport upstreaming:** Should Kiro Crew maintain this companion extension bridge,
    or collaborate with `pi-acp` maintainers to standardize an extension-event tunneling
    channel in ACP?
 3. **Retention Policy:** Should completed external tasks expire with the chat turn
