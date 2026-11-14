@@ -9763,6 +9763,7 @@
           "tailnet_direct": false,
           "ssm": false,
           "ssm_port": 5477,
+          "room": false,
           "typing_idle_seconds": 10
         },
         "restore_sessions": false,
@@ -10016,6 +10017,7 @@
         "tailnet_direct": false,
         "ssm": false,
         "ssm_port": 5477,
+        "room": false,
         "typing_idle_seconds": 10
       },
       "requiresRestart": true
@@ -10133,6 +10135,21 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 5477,
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.shared_crew.room",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Room Link",
+      "help": "Off by default. On: a webhook source mapped to the Kiro Space app may post a turn into a session this machine bound for sharing, attributed to the person the app names. Delivery to Slack and notifications stays off on that path. A value that is not true or false reads as off. Needs Shared Crew turned on in Feature Previews; without it this reads as its default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
       "requiresRestart": true
     },
     {

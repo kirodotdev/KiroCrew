@@ -57,6 +57,11 @@ logger = logging.getLogger(__name__)
 # ── Token model ──
 
 TOKEN_PREFIX = "kc_whk_"
+#: The app a source token may be mapped to. Set by the operator when the token is minted
+#: (never by a request); a mapped token may post into a bound shared session
+#: (``shared_crew.room_sessions``). Any other value is refused.
+APP_KIRO_SPACE = "kiro-space"
+KNOWN_TOKEN_APPS = frozenset({APP_KIRO_SPACE})
 TOKEN_ENTROPY_CHARS = 32
 MAX_TOKENS = 20
 LABEL_MAX_LEN = 64
@@ -527,6 +532,7 @@ class WebhookTokenStore:
             # Rows minted before source routing remain readable and preserve
             # their legacy caller-selected routing behavior.
             "agent": str(entry.get("agent") or ""),
+            "app": str(entry.get("app") or ""),
             "enabled": entry.get("enabled", True) is not False,
         }
 
@@ -600,7 +606,7 @@ class WebhookTokenStore:
         write_json_atomic(self.path, data)
 
     def create(
-        self, label: str, require_signature: bool = True, agent: str = ""
+        self, label: str, require_signature: bool = True, agent: str = "", app: str = ""
     ) -> tuple[str, str, dict[str, Any]]:
         """Mint a token. Returns ``(raw_secret, signing_secret, public_entry)``.
 
@@ -614,6 +620,8 @@ class WebhookTokenStore:
         if not isinstance(agent, str):
             raise WebhookError("agent must be a string")
         clean_agent = agent.strip()
+        if not isinstance(app, str) or (app.strip() and app.strip() not in KNOWN_TOKEN_APPS):
+            raise WebhookError("app must be empty or a known app")
         raw = TOKEN_PREFIX + secrets.token_urlsafe(32)[:TOKEN_ENTROPY_CHARS]
         signing_secret = (
             SIGNING_SECRET_PREFIX + secrets.token_urlsafe(32)[:SIGNING_SECRET_ENTROPY_CHARS]
@@ -631,6 +639,7 @@ class WebhookTokenStore:
             "require_signature": bool(require_signature),
             "signing_secret": signing_secret,
             "agent": clean_agent,
+            "app": app.strip(),
             "enabled": True,
         }
         path = self.path

@@ -400,6 +400,11 @@ async def api_webhook_token_create(request: web.Request) -> web.Response:
             {"error": "agent is required", "code": "agent_required"}, status=400
         )
     agent = agent.strip()
+    app = body.get("app", "")
+    if not isinstance(app, str) or app.strip() not in ("", *webhooks.KNOWN_TOKEN_APPS):
+        return web.json_response(
+            {"error": "app must be empty or a known app", "code": "app_invalid"}, status=400
+        )
     try:
         installed_agents = await asyncio.to_thread(_installed_agent_names)
     except Exception:
@@ -427,6 +432,7 @@ async def api_webhook_token_create(request: web.Request) -> web.Response:
                 body.get("label", ""),
                 require_signature=require_signature,
                 agent=agent,
+                app=app,
             ),
         )
     except _DestinationAgentGone:
