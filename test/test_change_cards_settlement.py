@@ -661,6 +661,52 @@ def test_a_poll_that_finishes_the_card_is_saved_before_any_tab_hears(world, tmp_
     assert _reload(tmp_path / "c.json").get(rec["id"])["status"] == "applying"
 
 
+def test_a_poll_that_finishes_the_card_expires_its_failed_twin(world, tmp_path, monkeypatch):
+    async def read_state(kind, params, evidence, *, state, app):
+        return {"known": True, "granted": bool(evidence)}
+
+    monkeypatch.setattr(cards, "read_state", read_state)
+    store = CardStore(tmp_path / "c.json")
+    params = catalog.validate_params("connection.connect", {"slug": "github"})
+    twin = _propose(store, "connection.connect", params, {"known": True, "granted": False})
+    store.begin_step(twin, revision=1, op="apply", index=0)
+    store.record_failure(twin, op="apply", index=0, status=500, body={"code": "x"})
+    store.take_unreported(SLOT)
+    rec = _propose(store, "connection.connect", params, {"known": True, "granted": False})
+    store.begin_step(rec, revision=1, op="apply", index=0)
+    store.record_success(rec, op="apply", index=0, evidence={"state": "minting"})
+    asyncio.run(store.flush(strict=True))
+
+    async def mint_poll(_request):
+        return web.json_response({"slug": "github", "state": "granted"})
+
+    async def main():
+        app = _app(world, store)
+        app.router.add_get("/api/connections/mint", mint_poll)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            r = await client.get(
+                "/api/connections/mint?slug=github",
+                headers=_card_headers({"id": rec["id"], "revision": 1}, step=1),
+            )
+            frames = [
+                (p["card"]["id"], p["card"]["status"])
+                for k, p in app["state"].frames
+                if k == "card_update"
+            ]
+            return r.status, frames
+        finally:
+            await client.close()
+
+    status, frames = asyncio.run(main())
+    assert status == 200 and rec["status"] == "applied"
+    assert twin["status"] == "expired"
+    assert (twin["id"], "expired") in frames
+    assert [o["id"] for o in store.take_unreported(SLOT)] == [rec["id"]]
+    assert _reload(tmp_path / "c.json").get(twin["id"])["status"] == "expired"
+
+
 def _fresh_home(tmp_path, monkeypatch) -> Path:
     """A crew home as a first install has it: no vault, no key, no store yet."""
     home = tmp_path / "home"

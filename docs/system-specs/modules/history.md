@@ -643,6 +643,11 @@ the transcript (`chat_cards.record_change_shown_again`: same reference fields, n
 crew-log entry) and the refusal says the card "is shown again at the end of the
 chat"; every earlier row of that card then draws one "Shown again below" line, and
 later status patches go to the newest row. An `applying` duplicate writes nothing.
+A card that is pending or failed, with no step in flight, expires at once when
+another card in its slot with the same kind and params applies, or a proposal with
+them is answered `no_change` (`CardStore.expire_made`). The agent is not told: the
+apply or the refusal already says the change is made. If that expiry cannot be
+saved, the card waits as before.
 The proposal is an MCP tool call of the running turn, so the row lands after
 that call's `tool` row and before the turn's later text, and the turn-end refresh
 keeps it there. The live frame is placed the same way client-side (ahead of the
