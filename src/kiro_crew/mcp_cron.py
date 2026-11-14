@@ -756,6 +756,15 @@ _AUTO_APPROVAL_OWNER_ONLY = (
 )
 
 
+def _stored_approval_mode(value: Any) -> Any:
+    """Map the tool spelling ``"off"`` to the stored hook-based mode ``""``.
+
+    The tool schemas advertise ``"off"`` because an enum carrying ``""`` makes
+    Gemini refuse the whole request; ``""`` is still accepted from callers.
+    """
+    return "" if value == "off" else value
+
+
 #: ``cron_update`` fields (as ``update_job`` kwargs) that change what a job does or
 #: where it reports. Changing one through a tool turns the owner's auto-approve off.
 _AUTO_RESETTING_FIELDS = frozenset(
@@ -971,7 +980,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # being coerced from a raw-truthy value.
         agent = args.get("agent", "")
         silent = args.get("silent", False)
-        approval_mode = args.get("approval_mode", "")
+        approval_mode = _stored_approval_mode(args.get("approval_mode", ""))
         session_key = _authz_session_key()
         if not session_key:
             # Refuse rather than mint another ownerless row. A job whose owner is
@@ -1106,7 +1115,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 k = "agent_id" if key == "agent" else key
                 kwargs[k] = val
         if "approval_mode" in args:
-            kwargs["approval_mode"] = args["approval_mode"]
+            kwargs["approval_mode"] = _stored_approval_mode(args["approval_mode"])
         if "silent" in args:
             kwargs["silent"] = args["silent"]
         # A boolean spelling of the clear: some clients drop an empty list before it

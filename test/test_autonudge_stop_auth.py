@@ -1252,14 +1252,17 @@ def test_the_judge_is_advertised_to_the_model_on_both_monitor_tools(tool_name: s
     # owner's own brief, and `false` is the bypass. A schema listing only the object
     # makes the bypass unsendable, which is the same way the field itself once shipped
     # unreachable.
-    assert judge["type"] == ["object", "boolean"]
+    # Spelled as anyOf: a type array beside `properties` makes Gemini refuse the call.
+    branches = {b["type"]: b for b in judge["anyOf"]}
+    assert set(branches) == {"object", "boolean"}
     assert judge.get("description", "").strip(), "an undescribed object tells the model nothing"
     assert "false" in judge["description"], "the bypass is unusable if the model is not told"
-    assert set(judge["properties"]) == {"wake_when", "quiet_when", "targets"}
+    props = branches["object"]["properties"]
+    assert set(props) == {"wake_when", "quiet_when", "targets"}
     for field in ("wake_when", "quiet_when"):
-        assert judge["properties"][field]["type"] == "string"
-        assert judge["properties"][field].get("description", "").strip()
-    targets = judge["properties"]["targets"]
+        assert props[field]["type"] == "string"
+        assert props[field].get("description", "").strip()
+    targets = props["targets"]
     assert targets["type"] == "array"
     assert targets["items"]["type"] == "string"
     assert targets.get("description", "").strip()

@@ -3501,6 +3501,15 @@ name is claimed twice. Parity is read from `schemas()`, the declaration — not
 from `build_tool_list()`, which may legitimately omit a declared tool whose app
 is switched off.
 
+A descriptor's JSON Schema must also be one Gemini accepts, because Gemini
+answers HTTP 400 for the whole request when any one tool's schema holds a `type`
+array beside `properties`, `required`, `additionalProperties` or `items` (spell
+it `anyOf`, as `spawn_run.tasks.items` and the monitor `judge` do), or an `enum`
+listing `""` (name the cleared state, as the cron tools' `approval_mode: "off"`
+does). A bare union such as `["string", "null"]` is accepted.
+`test/test_mcp_tool_schema_gemini_shapes.py` walks every first-party server's
+tool list for both shapes.
+
 Two domains keep their code in an owner package beside the module: `control.py`
 and `spawn.py` are mirror facades (`kiro_crew._facade_mirror`) over
 `mcp_tools/control_parts/` and `mcp_tools/spawn_parts/`. Both halves are still
