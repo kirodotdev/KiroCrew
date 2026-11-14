@@ -11,10 +11,10 @@ every module holding the name.
 per name, the manifest, owners never importing their facade, a sample of the patched names
 reaching their readers). These tests pin what is particular to this facade: every name the test
 trees patch through it reaches every module holding it; the owners are exactly the
-``handlers_*.py`` siblings, in layer order; a name the facade serves from outside the family
-stays visible to type checkers; the owner that logs logs under the facade's name; the moved
-exception classes keep the facade's module; and the names the production importers take from
-the facade are the objects their owners define.
+``handlers_*.py`` siblings, in layer order; no module outside the family imports an owner; a
+name the facade serves from outside the family stays visible to type checkers; the owner that
+logs logs under the facade's name; the moved exception classes keep the facade's module; and
+the names the production importers take from the facade are the objects their owners define.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import facade_mirror_scan
+import owner_import_scan
 import pytest
 import source_corpus
 
@@ -163,6 +164,24 @@ def test_the_owners_are_every_handlers_sibling_in_layer_order() -> None:
             if isinstance(node, ast.ImportFrom) and node.module in _OWNERS
         }
         assert imported <= set(_OWNERS[:position]), owner
+
+
+def test_only_the_family_imports_an_owner() -> None:
+    """A module outside the family that imported an owner would hold bindings the
+    facade's mirror never indexes, so a patch through the facade would miss it."""
+    owners = frozenset(_index().owners)
+    family = {
+        f"{name.removeprefix('kiro_crew.').replace('.', '/')}.py" for name in (FACADE, *owners)
+    }
+    sources = source_corpus.iter_candidate_sources(
+        require_any=tuple(name.rpartition(".")[2] for name in owners)
+    )
+    importers = owner_import_scan.owner_importers(
+        sources, source_corpus.src_root(), lambda name: name in owners
+    )
+    # An owner importing a lower owner proves the scan reads real imports.
+    assert "deploy/handlers_sites.py" in importers
+    assert importers - family == set()
 
 
 def _home_imports() -> dict[str, tuple[str, str]]:

@@ -13,9 +13,9 @@ owner-defined name is reached through ``kiro_crew.security.argv_floor`` only.
 its corpus counts patches spelled through the facade's own name only. These tests pin what
 is particular to this facade: every name the test trees patch through either spelling
 reaches every module holding it; the owners are exactly the ``argv_floor_*.py`` siblings,
-loaded lowest layer first, none importing the facade by any spelling; every member logs
-under the facade's logger; and each name served from outside the family stays visible to
-type checkers.
+loaded lowest layer first, none importing the facade by any spelling; no module outside
+the family imports an owner; every member logs under the facade's logger; and each name
+served from outside the family stays visible to type checkers.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from pathlib import Path
 from types import ModuleType
 
 import facade_mirror_scan
+import owner_import_scan
 import pytest
 import source_corpus
 
@@ -404,6 +405,24 @@ def test_the_layer_rule_flags_a_relative_import_of_the_facade() -> None:
     assert _relative_owner_imports(ast.parse("from .argv_floor_self import x\n")) == {
         f"{PACKAGE}.argv_floor_self"
     }
+
+
+def test_only_the_family_imports_an_owner() -> None:
+    """A module outside the family that imported an owner would hold bindings the
+    facade's mirror never indexes, so a patch through the facade would miss it."""
+    owners = frozenset(_index().owners)
+    family = {
+        f"{name.removeprefix('kiro_crew.').replace('.', '/')}.py" for name in (FACADE, *owners)
+    }
+    sources = source_corpus.iter_candidate_sources(
+        require_any=tuple(name.rpartition(".")[2] for name in owners)
+    )
+    importers = owner_import_scan.owner_importers(
+        sources, source_corpus.src_root(), lambda name: name in owners
+    )
+    # An owner importing a lower owner proves the scan reads real imports.
+    assert "security/argv_floor_ssh.py" in importers
+    assert importers - family == set()
 
 
 def test_every_member_logs_under_the_facade_name() -> None:
