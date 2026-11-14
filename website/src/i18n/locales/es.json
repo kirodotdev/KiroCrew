@@ -16990,6 +16990,13 @@
         "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · diseño forzado {{forced}}",
         "slow_frame_log_frames_unsupported": "Este navegador no informa de fotogramas largos."
       },
+      "deepseekKey": {
+        "title": "Clave del proveedor",
+        "intro": "Pega la clave de API que DeepSeek Harness usa para los modelos alojados de DeepSeek. Se guarda en Configuración > Secretos y la configuración solo conserva una referencia a ella. Un modelo que se ejecuta en esta máquina no necesita clave.",
+        "desc_api_key": "Tu clave de API de DeepSeek, de la plataforma de DeepSeek.",
+        "value_missing": "La clave a la que esto apunta ya no está en Secretos, así que se rechazan las nuevas sesiones de DeepSeek Harness. Guarda una clave nueva o quítala.",
+        "read_failed": "No se pudo leer la configuración de DeepSeek Harness. Recarga la página para volver a intentarlo."
+      },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chatear en un Crew",
         "chat_on_a_crew_desc": "Añade “New chat on crew” al menú de creación, que inicia una sesión en un crew remoto, es decir, otra máquina que conectaste en Configuración > Crew remoto, y muestra las sesiones de cada crew conectado en su propio grupo de la lista de sesiones. Sin terminar.",

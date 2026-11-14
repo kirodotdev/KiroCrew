@@ -428,6 +428,8 @@ _CODE_EXEC_SETTINGS: frozenset[str] = frozenset(
         # Which vault secret the Strands harness is handed, and which provider
         # address (a LiteLLM proxy, an Ollama host) its conversation is sent to.
         "agent.strands_env",
+        # Which vault secret the DeepSeek Harness is handed as its provider key.
+        "agent.deepseek_env",
         # The provider and model a Strands session runs: where its conversation goes.
         "agent.strands_provider",
         "agent.strands_model",
