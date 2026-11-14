@@ -372,6 +372,8 @@ class TestPrefsPassesAreBoundedToo:
             c.maybe_consolidate(KEY)
             while c._tasks:
                 await asyncio.gather(*list(c._tasks))
+                # A gather of done tasks does not yield; let their _tasks.discard run.
+                await asyncio.sleep(0)
             first = c._prefs_offset[KEY]
             assert 0 < first < 40, f"the offset jumped to {first}"
             assert f"body-{first - 1}-" in calls.await_args.args[0]
@@ -381,6 +383,8 @@ class TestPrefsPassesAreBoundedToo:
             c.maybe_consolidate(KEY)
             while c._tasks:
                 await asyncio.gather(*list(c._tasks))
+                # A gather of done tasks does not yield; let their _tasks.discard run.
+                await asyncio.sleep(0)
         second_prompt = calls.await_args.args[0]
         assert f"body-{first}-" in second_prompt and "body-0-" not in second_prompt
         assert c._prefs_offset[KEY] > first
@@ -476,6 +480,8 @@ class TestTheBudgetIsNotABehaviourChangeForOrdinarySessions:
             c.check_idle_sessions()
             while c._tasks:
                 await asyncio.gather(*list(c._tasks))
+                # A gather of done tasks does not yield; let their _tasks.discard run.
+                await asyncio.sleep(0)
         again.assert_not_awaited()
 
 

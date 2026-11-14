@@ -62,6 +62,8 @@ def _consolidator(log: ConversationLog) -> HistoryConsolidator:
 async def _settle(c: HistoryConsolidator) -> None:
     while c._tasks:
         await asyncio.gather(*list(c._tasks))
+        # A gather of done tasks does not yield; let their _tasks.discard run.
+        await asyncio.sleep(0)
 
 
 async def _until(predicate, what: str) -> None:

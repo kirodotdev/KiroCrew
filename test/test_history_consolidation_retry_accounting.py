@@ -198,6 +198,8 @@ class TestAttemptCap:
             while c._tasks:
                 # flake-ok: pre-existing unbounded gather of scheduled tasks, moved verbatim
                 await asyncio.gather(*list(c._tasks))
+                # A gather of done tasks does not yield; let their _tasks.discard run.
+                await asyncio.sleep(0)
         again.assert_not_awaited()
 
     @pytest.mark.asyncio
