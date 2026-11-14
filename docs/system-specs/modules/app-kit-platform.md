@@ -7318,6 +7318,13 @@ after STAGE is never executed), then:
 | E6 trust: a grant to another repository is never overwritten | `trust_conflict`, `trust_overlay_owned`, `config_unreadable` | every STAGE pass |
 | a transient failure (the config or the disk) | `config_unreadable`, `disk_full` | every STAGE pass, from the kept staged artifact |
 
+A `config.json` write refused because the file has a change made outside Kiro Crew
+pending review (`PendingEditBlocksSave`) is not a refusal of the pin: the outcome is
+`waiting_for_review`, the ledger is left `staged` with no attempt counted, the
+built-in keeps running, and the next boot tries again. The pass logs one warning
+naming the pending file and every waiting pin, each trace at DEBUG. Recording the
+legacy nav of an already adopted app waits the same way, logged at DEBUG only.
+
 **A stdio MCP server through adoption** (`apps/builtin_adoption_mcp.py`,
 `adopted_mcp_servers_refusal`, called from the E10 check). A pinned tree may declare
 `mcpServers` only as stdio servers it starts from its own files: a bare `python`,
