@@ -1348,12 +1348,19 @@ class TestTerminalWsIntegration:
         Bash 5.1+ lets `PROMPT_COMMAND+=(...)` turn the exported scalar into an
         array whose element zero is still the hook, so a scalar-equality test
         alone would match and unset the WHOLE array — taking the profile's own
-        element with it and silently disabling it after the first prompt.
+        element with it and silently disabling it after the first prompt. The hook
+        drops only element zero and shifts the rest down. A systemd host's
+        ``/etc/profile.d`` appends its own element ahead of this profile's, so the
+        probe reads the LAST element rather than a fixed index.
         """
         home = tmp_path / "home"
         home.mkdir()
         (home / ".bash_profile").write_text(
-            "export KC_5885_PROFILE=PROFILE_OK\n" "PROMPT_COMMAND+=(true)\n"
+            "export KC_5885_PROFILE=PROFILE_OK\n"
+            # What systemd's /etc/profile.d OSC-context script does, so every
+            # host exercises the two-element shape, systemd or not.
+            "PROMPT_COMMAND+=(:)\n"
+            "PROMPT_COMMAND+=(true)\n"
         )
 
         cfg_file = tmp_path / "config.json"
@@ -1389,7 +1396,10 @@ class TestTerminalWsIntegration:
                                     # EXECUTION-only marker: the typed bytes carry
                                     # PC''1= so the line-discipline echo of our own
                                     # keystrokes cannot satisfy the match below.
-                                    await ws.send_bytes(b"echo PC''1=${PROMPT_COMMAND[1]:-GONE}.\n")
+                                    await ws.send_bytes(
+                                        b"echo PC''ALL=[${PROMPT_COMMAND[*]}] "
+                                        b"PC''1=${PROMPT_COMMAND[${#PROMPT_COMMAND[@]}-1]:-GONE}.\n"
+                                    )
                             elif msg.type in _SOCKET_ENDED:
                                 return
 
@@ -1408,6 +1418,12 @@ class TestTerminalWsIntegration:
         assert b"PC1=true." in tail, (
             "the profile's own PROMPT_COMMAND element did not survive the "
             f"readiness hook's self-withdrawal. PTY tail: {tail[-400:]!r}"
+        )
+        # The hook withdrew its own element instead of staying in front of the
+        # profile's: the probe printed every element, and none is the hook.
+        assert b"PCALL=[" in tail and b"KIROCREW_TERMINAL_READY" not in tail, (
+            "the readiness hook stayed in the PROMPT_COMMAND array after the "
+            f"first prompt. PTY tail: {tail[-600:]!r}"
         )
 
     @pytest.mark.skipif(
