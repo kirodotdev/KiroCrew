@@ -15676,7 +15676,16 @@
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Blendet Live-Diagnose zu Scrollposition und Ankern über dem Chat ein",
-        "scroll_inspector": "Scroll-Inspektor"
+        "scroll_inspector": "Scroll-Inspektor",
+        "slow_frame_log": "Protokoll langsamer Frames",
+        "slow_frame_log_desc": "Hält die langsamsten Frames und Interaktionen dieses Tabs fest, jeweils mit dem Skript dahinter. Bleibt in diesem Tab, es wird nichts gesendet. Beim Ausschalten wird es geleert.",
+        "slow_frame_log_empty": "Noch nichts Langsames aufgezeichnet.",
+        "slow_frame_log_interactions": "Langsame Interaktionen",
+        "slow_frame_log_frames": "Lange Frames",
+        "slow_frame_log_interaction_parts": "gewartet {{delay}}, Handler {{processing}}, Darstellung {{presentation}}",
+        "slow_frame_log_frame": "{{duration}}, Eingabe blockiert für {{blocking}}",
+        "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · erzwungenes Layout {{forced}}",
+        "slow_frame_log_frames_unsupported": "Dieser Browser meldet keine langen Frames."
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chat auf einer Crew",

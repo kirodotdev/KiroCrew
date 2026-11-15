@@ -16084,7 +16084,16 @@
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Superpose au chat un diagnostic en direct du défilement et des ancres",
-        "scroll_inspector": "Inspecteur de défilement"
+        "scroll_inspector": "Inspecteur de défilement",
+        "slow_frame_log": "Journal des images lentes",
+        "slow_frame_log_desc": "Conserve les images et les interactions les plus lentes de cet onglet, avec le script à l'origine de chacune. Tout reste dans cet onglet et rien n'est envoyé. Le désactiver l'efface.",
+        "slow_frame_log_empty": "Rien de lent n'a encore été enregistré.",
+        "slow_frame_log_interactions": "Interactions lentes",
+        "slow_frame_log_frames": "Images longues",
+        "slow_frame_log_interaction_parts": "attente {{delay}}, gestionnaires {{processing}}, affichage {{presentation}}",
+        "slow_frame_log_frame": "{{duration}}, saisie bloquée pendant {{blocking}}",
+        "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · mise en page forcée {{forced}}",
+        "slow_frame_log_frames_unsupported": "Ce navigateur ne signale pas les images longues."
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Discuter sur un Crew",

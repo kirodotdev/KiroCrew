@@ -15676,7 +15676,16 @@
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "চ্যাটের উপরে লাইভ স্ক্রল ও অ্যাঙ্কর ডায়াগনস্টিকস দেখায়",
-        "scroll_inspector": "স্ক্রল ইনস্পেক্টর"
+        "scroll_inspector": "স্ক্রল ইনস্পেক্টর",
+        "slow_frame_log": "ধীর ফ্রেমের লগ",
+        "slow_frame_log_desc": "এই ট্যাবের সবচেয়ে ধীর ফ্রেম ও ইন্টারঅ্যাকশন রাখে, প্রতিটির পেছনের স্ক্রিপ্টসহ। এটি এই ট্যাবেই থাকে, কিছুই পাঠানো হয় না। বন্ধ করলে এটি মুছে যায়।",
+        "slow_frame_log_empty": "এখনও ধীর কিছু রেকর্ড হয়নি।",
+        "slow_frame_log_interactions": "ধীর ইন্টারঅ্যাকশন",
+        "slow_frame_log_frames": "দীর্ঘ ফ্রেম",
+        "slow_frame_log_interaction_parts": "অপেক্ষা {{delay}}, হ্যান্ডলার {{processing}}, পেইন্ট {{presentation}}",
+        "slow_frame_log_frame": "{{duration}}, ইনপুট {{blocking}} আটকে ছিল",
+        "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · জোরপূর্বক লেআউট {{forced}}",
+        "slow_frame_log_frames_unsupported": "এই ব্রাউজার দীর্ঘ ফ্রেমের তথ্য দেয় না।"
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "কোনো ক্রুতে চ্যাট",

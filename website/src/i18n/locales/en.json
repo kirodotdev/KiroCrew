@@ -8487,7 +8487,16 @@
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Overlays the chat with live scroll and anchor diagnostics",
-        "scroll_inspector": "Scroll inspector"
+        "scroll_inspector": "Scroll inspector",
+        "slow_frame_log": "Slow frame log",
+        "slow_frame_log_desc": "Keeps this tab's slowest frames and interactions, with the script behind each one. It stays in this tab and nothing is sent. Turning it off clears it.",
+        "slow_frame_log_empty": "Nothing slow recorded yet.",
+        "slow_frame_log_interactions": "Slow interactions",
+        "slow_frame_log_frames": "Long frames",
+        "slow_frame_log_interaction_parts": "waited {{delay}}, handlers {{processing}}, paint {{presentation}}",
+        "slow_frame_log_frame": "{{duration}}, input blocked for {{blocking}}",
+        "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · forced layout {{forced}}",
+        "slow_frame_log_frames_unsupported": "This browser does not report long frames."
       },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished.",

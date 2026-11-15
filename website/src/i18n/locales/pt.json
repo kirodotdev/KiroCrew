@@ -16084,7 +16084,16 @@
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Sobrepõe ao chat um diagnóstico ao vivo de rolagem e âncoras",
-        "scroll_inspector": "Inspetor de rolagem"
+        "scroll_inspector": "Inspetor de rolagem",
+        "slow_frame_log": "Registro de quadros lentos",
+        "slow_frame_log_desc": "Guarda os quadros e as interações mais lentos desta aba, com o script por trás de cada um. Fica nesta aba e nada é enviado. Desativar apaga o registro.",
+        "slow_frame_log_empty": "Nada lento registrado ainda.",
+        "slow_frame_log_interactions": "Interações lentas",
+        "slow_frame_log_frames": "Quadros longos",
+        "slow_frame_log_interaction_parts": "espera {{delay}}, manipuladores {{processing}}, pintura {{presentation}}",
+        "slow_frame_log_frame": "{{duration}}, entrada bloqueada por {{blocking}}",
+        "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · layout forçado {{forced}}",
+        "slow_frame_log_frames_unsupported": "Este navegador não informa quadros longos."
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Conversar em um Crew",

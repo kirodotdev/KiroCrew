@@ -11,6 +11,9 @@ import './lib/installBasePath'
 // Empty in the stock build. See website/src/extensions.ts.
 import './extensions'
 import { startMemoryWatch } from './lib/memoryWatch'
+// Side effect only: when the slow frame log is on (Settings > Developer > Debug
+// tools), it starts here so it sees the page load. Off, it creates no observer.
+import './dev/slowFrameLog'
 import React, { StrictMode, Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
 import { withCommitProfiler, installCommitProfilerConsoleApi } from './lib/commitProfiler'

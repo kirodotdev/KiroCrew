@@ -15268,7 +15268,16 @@
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "チャットにスクロールとアンカーの診断情報をリアルタイムで重ねて表示します",
-        "scroll_inspector": "スクロールインスペクター"
+        "scroll_inspector": "スクロールインスペクター",
+        "slow_frame_log": "遅いフレームのログ",
+        "slow_frame_log_desc": "このタブで最も遅かったフレームと操作を、原因のスクリプトとともに記録します。このタブ内にのみ保持され、何も送信されません。オフにすると記録は消去されます。",
+        "slow_frame_log_empty": "遅いものはまだ記録されていません。",
+        "slow_frame_log_interactions": "遅い操作",
+        "slow_frame_log_frames": "長いフレーム",
+        "slow_frame_log_interaction_parts": "待機 {{delay}}、ハンドラー {{processing}}、描画 {{presentation}}",
+        "slow_frame_log_frame": "{{duration}}、入力のブロック {{blocking}}",
+        "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · 強制レイアウト {{forced}}",
+        "slow_frame_log_frames_unsupported": "このブラウザーは長いフレームを報告しません。"
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "クルー上でチャット",

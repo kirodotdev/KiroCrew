@@ -15676,7 +15676,16 @@
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "चैट पर लाइव स्क्रॉल और ऐंकर डायग्नोस्टिक्स दिखाता है",
-        "scroll_inspector": "स्क्रॉल इंस्पेक्टर"
+        "scroll_inspector": "स्क्रॉल इंस्पेक्टर",
+        "slow_frame_log": "धीमे फ़्रेम का लॉग",
+        "slow_frame_log_desc": "इस टैब के सबसे धीमे फ़्रेम और इंटरैक्शन रखता है, और हर एक के पीछे की स्क्रिप्ट भी। यह इसी टैब में रहता है और कुछ भी भेजा नहीं जाता। बंद करने पर यह साफ़ हो जाता है।",
+        "slow_frame_log_empty": "अभी तक कुछ धीमा दर्ज नहीं हुआ।",
+        "slow_frame_log_interactions": "धीमे इंटरैक्शन",
+        "slow_frame_log_frames": "लंबे फ़्रेम",
+        "slow_frame_log_interaction_parts": "प्रतीक्षा {{delay}}, हैंडलर {{processing}}, पेंट {{presentation}}",
+        "slow_frame_log_frame": "{{duration}}, इनपुट {{blocking}} तक रुका रहा",
+        "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · जबरन लेआउट {{forced}}",
+        "slow_frame_log_frames_unsupported": "यह ब्राउज़र लंबे फ़्रेम की जानकारी नहीं देता।"
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "किसी crew पर चैट करें",

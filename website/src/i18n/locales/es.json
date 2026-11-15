@@ -16084,7 +16084,16 @@
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Superpone al chat un diagnóstico en vivo del desplazamiento y los anclajes",
-        "scroll_inspector": "Inspector de desplazamiento"
+        "scroll_inspector": "Inspector de desplazamiento",
+        "slow_frame_log": "Registro de fotogramas lentos",
+        "slow_frame_log_desc": "Guarda los fotogramas y las interacciones más lentos de esta pestaña, con el script que hay detrás de cada uno. Se queda en esta pestaña y no se envía nada. Al desactivarlo se borra.",
+        "slow_frame_log_empty": "Aún no se ha registrado nada lento.",
+        "slow_frame_log_interactions": "Interacciones lentas",
+        "slow_frame_log_frames": "Fotogramas largos",
+        "slow_frame_log_interaction_parts": "espera {{delay}}, manejadores {{processing}}, pintado {{presentation}}",
+        "slow_frame_log_frame": "{{duration}}, entrada bloqueada {{blocking}}",
+        "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · diseño forzado {{forced}}",
+        "slow_frame_log_frames_unsupported": "Este navegador no informa de fotogramas largos."
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chatear en un Crew",
