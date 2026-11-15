@@ -42,6 +42,7 @@ def _ctx(seen: list[str]) -> ops.OpContext:
         "textPresent",
         "check",
         "back",
+        "glance",
     ],
 )
 async def test_every_read_of_the_page_runs_in_the_isolated_world(method: str) -> None:
