@@ -133,6 +133,14 @@ ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX})
 # -- the settings seed, the starting-mode pin, the session's identity -- is done
 # per session by ``ClaudeHarness``.
 #
+# goose: one ``goose acp`` process keeps an agent per session and runs their turns
+# in parallel (goose 1.57.0: a 60 s command in one session, the other answering in
+# 0.02 s); ``session/close`` drops one session and keeps its record, which
+# ``session/load`` restores on the same process. Like claude it is served by
+# ``AcpRuntime`` only for a chat that shares, and ``GooseHarness`` reads each
+# session's mode back and holds it there. A goose Side Chat never shares: its goose
+# home is a process-wide setting.
+#
 # kiro-cli is NOT a member although it shares subagent sessions: some of its
 # session-control frames (compaction, ``/clear``, an agent switch) name no
 # session, so chats sharing one kiro-cli process would have to take turns to keep
@@ -143,24 +151,29 @@ ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX})
 # The members are the keys of ``CHAT_RUNTIME_SHARING_HARNESSES`` just below, so
 # letting a harness share chats is one row there.
 ACP_BACKENDS_CHAT_RUNTIME_SHARING = frozenset(
-    {ACP_BACKEND_KAS, ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE}
+    {ACP_BACKEND_KAS, ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE}
 )
 
 # Members of ``ACP_BACKENDS_CHAT_RUNTIME_SHARING`` that ``AcpRuntime`` serves only
 # for a chat that shares: every other session of theirs keeps its own process on
 # ``AcpClient``. A chat start asks the placement first and takes the shared runtime
 # only when it got one (``providers.acp_lifecycle.start``).
-ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS = frozenset({ACP_BACKEND_CLAUDE})
+ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE})
 
 # One row per member of ``ACP_BACKENDS_CHAT_RUNTIME_SHARING``: the backend and the
 # default of its own switch under the preview (``agent.chat_runtime_sharing_harnesses``,
 # Settings > Developer > Feature previews > ACP runtime sharing). KAS defaults on:
 # it shared before the per-harness switches existed, so an upgrade keeps it
-# sharing. codex and claude default off: they are new to chat sharing, so an
+# sharing. codex, claude and goose default off: they are new to chat sharing, so an
 # operator turns each on deliberately. ``test_chat_runtime_sharing`` pins that the
 # keys equal the set.
 CHAT_RUNTIME_SHARING_HARNESSES: Mapping[str, bool] = MappingProxyType(
-    {ACP_BACKEND_KAS: True, ACP_BACKEND_CODEX: False, ACP_BACKEND_CLAUDE: False}
+    {
+        ACP_BACKEND_KAS: True,
+        ACP_BACKEND_CODEX: False,
+        ACP_BACKEND_CLAUDE: False,
+        ACP_BACKEND_GOOSE: False,
+    }
 )
 
 # Backends served by AcpRuntime + AcpSessionHandle — the kiro-agent family

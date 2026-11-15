@@ -855,13 +855,21 @@ recover.
   a runtime handle, or a reading whose owner is the module that holds the pid.
 - **Chat sharing is a preview.** The `chat_runtime_sharing` feature preview is off
   by default, so a default install still serves one chat per runtime. The members
-  are KAS (its switch on by default), codex (off by default) and claude (off by
-  default, dashboard chats only); kiro-cli is not,
+  are KAS (its switch on by default), codex (off by default), claude (off by
+  default, dashboard chats only) and goose (off by default, dashboard chats only; a
+  goose Side Chat never shares, because its goose home is the process-wide
+  `GOOSE_PATH_ROOT`); kiro-cli is not,
   because some of its session-control frames name no session. A shared codex
   process takes no new chat once any chat leaves it and dies with its last chat
   (`chat_closes_on_departure`, read by `RuntimeOwnership.release`): codex's
   `session/close` leaves the departed session's MCP fleet running, so this bounds
-  the leftover fleets to cap-1 per process instead of one per chat turnover.
+  the leftover fleets to cap-1 per process instead of one per chat turnover. goose
+  does not set it: its `session/close` drops that session's agent
+  (`AgentManager::remove_session_if_loaded`, goose v1.57.0
+  `crates/goose/src/execution/manager.rs`), and the agent's stdio MCP servers run
+  under rmcp's `TokioChildProcess`, whose drop kills the child (rmcp 3.4.1
+  `transport/child_process.rs`, `ChildWithCleanup`), so a departed goose chat
+  leaves no MCP server behind.
 - **Membership is narrower than the slice it is compared against.** The app
   backend table claims each spawned backend's root process, plus that root's direct
   children where the gateway's wrap inserted a forking sandbox launcher (so the

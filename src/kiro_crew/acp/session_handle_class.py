@@ -58,6 +58,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEER_RETRACT,
     ACP_BACKENDS_STEERING_REQUEST,
+    OWN_STEERING_REQUEST_METHODS,
     AcpEvent,
     AcpPromptStats,
     JsonRpcMessage,
@@ -227,6 +228,9 @@ class AcpSessionHandle:
     _take_injected_steers = _sh_steering._take_injected_steers
     _release_proven_steers = _sh_steering._release_proven_steers
     _note_steering_denial = _sh_steering._note_steering_denial
+    _steer_via_goose_request = _sh_steering._steer_via_goose_request
+    _note_goose_run = _sh_steering._note_goose_run
+    _goose_steer_echo = _sh_steering._goose_steer_echo
     # The session outside its turn loop: ``kiro_crew.acp.session_handle_lifecycle``.
     _died = _sh_lifecycle._died
     cancel = _sh_lifecycle.cancel
@@ -366,6 +370,11 @@ class AcpSessionHandle:
         # consumption report can never clear a pending entry whose row does
         # not exist yet. Matched by identity (``_release_proven_steers``).
         self._steers_accepted: list[str] = []
+        # goose's ``_goose/unstable/session/steer`` (``_steer_via_goose_request``):
+        # the run id goose announced for the running prompt, and each accepted
+        # steer's answer with its wrapped text, until goose echoes it.
+        self._goose_active_run_id: str | None = None
+        self._goose_steers: list[tuple[asyncio.Future[dict[str, Any]], str]] = []
         # True once this turn's prompt has been written to the adapter. A codex
         # steer before that point reaches an adapter with no turn of ours and is
         # answered ``startedNewTurn``, whose untargeted cancel could then land on
@@ -1130,7 +1139,9 @@ class AcpSessionHandle:
         mid-turn correction with ``-32601``.
         """
         backend = self._runtime.acp_backend
-        if backend in ACP_BACKENDS_STEER:
+        if backend in ACP_BACKENDS_STEER or backend in OWN_STEERING_REQUEST_METHODS:
+            # goose takes its own ``_goose/unstable/session/steer``
+            # (``_steer_via_goose_request``), advertised or not.
             return True
         return backend in ACP_BACKENDS_STEERING_REQUEST and steering_advertised(
             self.initialize_result

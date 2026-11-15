@@ -396,8 +396,9 @@ class GooseHarness(MembershipHarness):
 
         ``GOOSE_MODE`` outranks goose's config file, so an operator's ``auto`` there
         cannot defeat it. An operator's own ``GOOSE_PATH_ROOT`` is kept, so the child
-        reads the same goose home the per-chat client reads. Crew sets that variable
-        only for a Side Chat, which keeps a process of its own.
+        reads the same goose home the per-chat client and the placement's account era
+        (``goose_config_dir``) read. Crew sets that variable only for a Side Chat, and
+        a Side Chat never reaches this process (:meth:`prepare_session`).
         """
         from kiro_crew.config import loader as loader_mod
 
@@ -456,7 +457,18 @@ class GooseHarness(MembershipHarness):
         memory_mode: str,
         options: Mapping[str, Any] | None = None,
     ) -> Any:
-        """A marker for this session, so the runtime checks it after it starts."""
+        """A marker for this session, so the runtime checks it after it starts.
+
+        A Side Chat session is refused here: its own goose home is the child's
+        ``GOOSE_PATH_ROOT``, which a shared process cannot carry per session, and
+        on the user's home goose's ``permission.yaml`` could pre-approve a tool.
+        The placement refuses such a chat before it gets here.
+        """
+        if options and options.get("side_read_only"):
+            raise AcpToolGateUnroutable(
+                "a goose Side Chat session needs a goose home of its own, which a "
+                "shared goose process cannot give it; it runs on a process of its own."
+            )
         return _GooseSession()
 
     def session_meta(

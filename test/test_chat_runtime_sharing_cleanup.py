@@ -1822,6 +1822,82 @@ class TestTheCodexEraIsCodexsOwnCredential:
             _self_signed_era(ACP_BACKEND_CLAUDE, {"CLAUDE_CONFIG_DIR": str(tmp_path)}) is not None
         )
 
+    def test_the_goose_era_follows_the_provider_not_its_secrets(self, tmp_path):
+        from kiro_crew.providers.chat_share import goose_spawn_identity
+
+        env = {"GOOSE_PATH_ROOT": str(tmp_path)}
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        cfg = config_dir / "config.yaml"
+        # No config and no provider in the environment: no account can be named.
+        assert goose_spawn_identity(env) == ""
+
+        def provider(name: str, host: str, **rest: object) -> str:
+            lines = [f"GOOSE_PROVIDER: {name}", f"OPENAI_HOST: {host}"]
+            lines += [f"{key}: {value}" for key, value in rest.items()]
+            cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            return goose_spawn_identity(env)
+
+        a = provider("openai", "https://a.example")
+        assert a.startswith("goose:") and "openai" not in a
+        # goose writes the last model it ran and other keys while it runs, and a
+        # token refresh rewrites its secrets; none of that moves the era.
+        assert provider("openai", "https://a.example", GOOSE_MODEL="m2") == a
+        (config_dir / "secrets.yaml").write_text("OPENAI_API_KEY: k2\n", encoding="utf-8")
+        assert goose_spawn_identity(env) == a
+        # Another endpoint or provider founds a new process.
+        assert provider("openai", "https://b.example") not in ("", a)
+        assert provider("anthropic", "https://a.example") not in ("", a)
+        # The environment names the provider over the file, as goose resolves it.
+        provider("openai", "https://a.example")
+        assert goose_spawn_identity({**env, "GOOSE_PROVIDER": "anthropic"}) != a
+        # An endpoint only the environment names counts too, and its change moves it.
+        only_env = {**env, "OLLAMA_HOST": "http://h1"}
+        assert goose_spawn_identity(only_env) not in ("", a)
+        assert goose_spawn_identity({**env, "OLLAMA_HOST": "http://h2"}) != goose_spawn_identity(
+            only_env
+        )
+        # A key the environment hands the child is in it: a rotated one founds a new
+        # process, the same one joins, and the era carries nothing of the key.
+        keyed = {**env, "OPENAI_API_KEY": "sk-old"}
+        old = goose_spawn_identity(keyed)
+        assert old not in ("", a) and "sk-old" not in old
+        assert goose_spawn_identity(dict(keyed)) == old
+        assert goose_spawn_identity({**env, "OPENAI_API_KEY": "sk-new"}) not in ("", old)
+        assert goose_spawn_identity({**env, "AWS_PROFILE": "p2"}) != a
+        # Another goose home with the same provider, hosts and keys founds a new
+        # process: its config, credential and session stores are another home's.
+        other = tmp_path / "other"
+        (other / "config").mkdir(parents=True)
+        (other / "config" / "config.yaml").write_text(cfg.read_text(encoding="utf-8"))
+        assert goose_spawn_identity({"GOOSE_PATH_ROOT": str(other)}) not in ("", a)
+        assert goose_spawn_identity({**env, "XDG_DATA_HOME": "/elsewhere"}) not in ("", a)
+        assert goose_spawn_identity(dict(env)) == a
+        # Unreadable or not a mapping: fail closed.
+        cfg.write_text("key: [unclosed\n", encoding="utf-8")
+        assert goose_spawn_identity(env) == ""
+        cfg.write_text("- a list\n", encoding="utf-8")
+        assert goose_spawn_identity(env) == ""
+
+    def test_the_goose_era_reads_the_provider_agent_env_hands_the_child(
+        self, tmp_path, monkeypatch
+    ):
+        """``agent.env`` reaches goose's environment, so a provider named there counts."""
+        from kiro_crew.acp import agent_env
+        from kiro_crew.providers.chat_share import goose_spawn_identity
+
+        monkeypatch.setenv("GOOSE_PATH_ROOT", str(tmp_path))
+        monkeypatch.delenv("GOOSE_PROVIDER", raising=False)
+        monkeypatch.setattr(agent_env, "agent_env_overlay", lambda: {})
+        assert goose_spawn_identity() == ""
+        monkeypatch.setattr(agent_env, "agent_env_overlay", lambda: {"GOOSE_PROVIDER": "openai"})
+        assert goose_spawn_identity().startswith("goose:")
+        # The start's extra_env counts too, over the gateway's environment.
+        assert goose_spawn_identity(env_overrides={"OPENAI_API_KEY": "k"}) not in (
+            "",
+            goose_spawn_identity(),
+        )
+
     def _real_confirmation(self, monkeypatch, codex_eras):
         import kiro_crew.providers.chat_share as share_mod
         import kiro_crew.sandbox as sandbox_mod
