@@ -3299,6 +3299,8 @@
         "chat_stopped_stalled_body": "The chat stalled and could not recover. Open the chat to start a new one.",
         "folder_agent_label_title": "Check a folder's Default agent",
         "folder_agent_label_body": "These folders' Default agent has a bot's name, but new chats there do not run on that bot: {{folders}}. To use the bot, pick it as the Default agent in the folder's settings.",
+        "folder_agent_key_title": "Check a folder's Default agent",
+        "folder_agent_key_body": "An earlier update may have moved these folders from a custom agent onto the bot of the same name, so new chats there run on that bot: {{folders}}. If you meant the custom agent, pick it again as the Default agent in the folder's settings.",
         "repeated_failures_title": "Tool failures keep coming back",
         "repeated_failures_body": "Some agent tool calls failed again and again this week. Open this note to see them and turn one into a lesson.",
         "mcp_share_paused_title": "A shared MCP server is paused",
