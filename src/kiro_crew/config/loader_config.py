@@ -413,6 +413,22 @@ class KiroCrewConfig:
                         ),
                     },
                 },
+                "return_answer": {
+                    "type": "boolean",
+                    "default": False,
+                    "x-meta": {
+                        "label": "Webhook answer return",
+                        "help": (
+                            "Off by default. When true, a POST /api/hooks/agent call that "
+                            "sends wait (seconds, at most 300) is held until its run ends "
+                            "or the wait runs out, and a run that finished its turn answers "
+                            "with its outcome and the redacted text delivery sends (a "
+                            "timeout or error run, with its outcome alone). Without it, "
+                            "wait is ignored with a warning and the call returns the "
+                            "accept receipt."
+                        ),
+                    },
+                },
             },
         ),
     )
