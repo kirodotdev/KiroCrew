@@ -1,0 +1,8 @@
++79
+The payload walk reads the caller's own command line with single quotes as literal
+when it is one simple `git commit|tag -m` or `gh pr|issue create|edit|comment
+--body|--title` command whose every substitution opener sits inside one bare
+single-quoted message value (`_only_single_quoted_openers`,
+`_is_message_flag_command`), so `gh pr edit 1 --body 'run `ssh x`'` opens no nested
+command. Text with a live opener, a `$`, `#`, `<<`, a backslash, a control byte or an
+unclosed quote keeps the quote-blind reading.
