@@ -143,7 +143,7 @@ def _withheld_env_count(
     That mirror is load-bearing BECAUSE of the default flip: with forwarding off
     this function short-circuits on ``len(entry_env)`` and the forwarder is never
     consulted, so the two could not disagree. With forwarding on they must agree
-    key for key, which ``test_the_eligibility_count_matches_the_forwarder``
+    key for key, which ``test_the_eligibility_count_matches_the_forwarder_key_for_key``
     pins by construction.
     """
     if not forward_env:

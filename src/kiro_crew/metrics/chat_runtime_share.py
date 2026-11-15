@@ -108,7 +108,8 @@ PLACED_OUTCOMES: tuple[str, ...] = ("spawned", "joined", "refused")
 #: ``native_subagents`` (``providers/chat_share.py``), plus ``none`` on a placement.
 #: ``sharing_disabled`` is listed because the function can return it, though the
 #: placement path returns before asking it while the preview is off.
-#: ``test_chat_runtime_share_metrics`` holds this set equal to the function's own.
+#: ``test_refusal_reasons_are_every_branch_the_eligibility_rule_returns`` holds this
+#: set equal to the function's own.
 REFUSAL_REASONS: tuple[str, ...] = (
     "sharing_disabled",
     "backend_not_chat_shareable",
