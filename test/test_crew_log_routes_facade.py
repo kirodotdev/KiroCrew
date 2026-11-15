@@ -140,7 +140,15 @@ def test_every_route_is_the_facade_own_guarded_object() -> None:
     route stays defined there: an ``api_*`` coroutine served from an owner would be the
     unguarded original."""
     routes = [name for name in vars(crew_log) if name.startswith("api_")]
-    assert len(routes) == 7
+    assert sorted(routes) == [
+        "api_crew_log_resolve",
+        "api_crew_log_sessions",
+        "api_crew_log_unit_page",
+        "api_crew_log_unit_projection",
+        "api_session_crew_log",
+        "api_session_crew_log_projection",
+        "api_session_crew_log_projections",
+    ]
     assert not any(name.startswith("api_") for name in _index().exports)
     for name in routes:
         route = vars(crew_log)[name]

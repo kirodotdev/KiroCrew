@@ -170,13 +170,28 @@ def test_the_audit_row_is_held_by_every_owner_that_writes_one() -> None:
     ]
 
 
+#: The owner modules, one per line, so two changes that each add an owner edit
+#: different lines (testing-conventions.md § Merge-safe ratchets and counts).
+_OWNER_MODULES = (
+    "kiro_crew.dashboard.handlers.work_ledger_caller",
+    "kiro_crew.dashboard.handlers.work_ledger_conductor",
+    "kiro_crew.dashboard.handlers.work_ledger_handback",
+    "kiro_crew.dashboard.handlers.work_ledger_read",
+    "kiro_crew.dashboard.handlers.work_ledger_recording",
+    "kiro_crew.dashboard.handlers.work_ledger_refusals",
+    "kiro_crew.dashboard.handlers.work_ledger_worker",
+)
+
+
 def test_the_owners_are_the_work_ledger_siblings_in_layer_order() -> None:
     """``_OWNERS`` lists every ``work_ledger_*.py`` sibling but the Crew board reader, and
     each owner imports only owners listed before it -- the order the facade loads them and
     a read resolves in."""
     owners = list(_index().owners)
     assert sorted(owners) == sorted(_owner_paths())
-    assert len(owners) == 7
+    assert sorted(owners) == list(
+        _OWNER_MODULES
+    ), f"the owner modules changed; write one line per module in _OWNER_MODULES: {sorted(owners)}"
     assert f"{PACKAGE}.{_NOT_AN_OWNER}" not in owners
     late: dict[str, list[str]] = {}
     for position, owner in enumerate(owners):
