@@ -133,7 +133,8 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
     ``agentReadOnlyDirs``, an exact ``permissions.api`` entry,
     ``permissions.chatSlots``, ``permissions.desktopCapabilities`` and
     ``permissions.webhookSource`` at level 7, a directory entry in
-    ``credentialMasks`` at level 8), the context seams any non-test ``.py`` file
+    ``credentialMasks`` and a shortcut's ``platformAccelerators`` at level 8), the
+    context seams any non-test ``.py`` file
     reaches, and the backend SDK package (level 7) any of them names. A miss lets
     a pin adopt on a host without the seam, so the scan errs wide: a false hit
     only asks for a higher ``--min-sdk-level``.
@@ -165,6 +166,13 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
         uses["app.json permissions.webhookSource"] = 7
     if isinstance(masks, list) and any(isinstance(m, str) and m.endswith("/") for m in masks):
         uses["app.json credentialMasks directory"] = 8
+    desktop = raw.get("desktop")
+    desktop = desktop if isinstance(desktop, dict) else {}
+    shortcuts = desktop.get("shortcuts")
+    if isinstance(shortcuts, list) and any(
+        isinstance(s, dict) and "platformAccelerators" in s for s in shortcuts
+    ):
+        uses["app.json desktop.shortcuts platformAccelerators"] = 8
     for dirpath, dirnames, filenames in os.walk(tree):
         dirnames[:] = sorted(d for d in dirnames if d not in _UNSCANNED_DIRS)
         for filename in sorted(filenames):

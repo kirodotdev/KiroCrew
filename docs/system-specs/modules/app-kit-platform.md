@@ -7104,7 +7104,8 @@ manifest's `agentReadOnlyDirs` (§39), the backend SDK package (§40), the deskt
 window host's spanning overlay, background window, panel gutter and the messages between
 an app's windows and `permissions.desktopCapabilities` (§35), the exact `permissions.api` entry (§ Scoped frontend HTTP
 transport), `ctx.chat_slots` (§41), the SDK's project picker (§18i) and `ctx.webhook_source` (§42); level 8 adds directory entries in `credentialMasks`
-(§37) and the SDK's `useHostSessions` (§18j). Several seams share level 7, and two share level 8, so an app that needs one
+(§37), the SDK's `useHostSessions` (§18j) and the desktop block's `platformAccelerators`
+(§35). Several seams share level 7, and three share level 8, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
@@ -8072,11 +8073,16 @@ card it draws, which placement beside an anchor leaves out. A `background` windo
 page that is never shown: 16 by 16, never on screen, invisible to screen capture, never
 throttled, at most one per app. It owns work that must outlive any one display (a
 notification socket, a reminder poll). A shortcut has an `id`, an `accelerator` and the `window` it is
-delivered to. The accelerator must hold two different modifier keys on every
+delivered to, and optionally `platformAccelerators` (`macos`, `windows`, `linux`): a
+different default on the platforms it names, `accelerator` being the default elsewhere
+(a desktop pet's defaults differ per platform: `CommandOrControl+Shift+M` on macOS,
+`Alt+Shift+M` elsewhere, because `Ctrl+Shift+<letter>` is taken there). Every
+accelerator, each platform's included, must hold two different modifier keys on every
 platform (counted per platform: on macOS `CommandOrControl`, `Command` and `Super` are
 one key, elsewhere `CommandOrControl` and `Control` are), so at least one is not Shift,
 and one letter, digit, F-key, arrow or Space, so no app can take a single-modifier
-chord such as copy or paste; two spellings of one chord are one chord.
+chord such as copy or paste; two spellings of one chord are one chord, and no two
+shortcuts share a default on any one platform.
 Anything else is an install refusal (`apps/desktop_manifest.py`), the block is in
 `signing_payload`, and built-in discovery keeps it. The shell re-checks every rule
 (`website/electron/app-window-host-rules.js`) and drops a declaration it refuses whole,
@@ -8094,7 +8100,14 @@ does not proceed. A shortcut is never given to an app when the shell's own owner
 its configured chords in `website/electron/shell-shortcut-reservations.js` (Mochi's
 even while it is disabled, the summon hotkey's on every rebind), the host refuses a
 reserved chord, and a reservation of a chord an app holds releases it synchronously,
-before the owner's own `register()` runs. A chord another app or another program holds
+before the owner's own `register()` runs. One hand-over: an owner that is an app's own
+shell code reserves `{ app: true }` under that app's id, and the host serving the app of
+that id may bind those chords, so an adopted copy is not refused its own; every other
+app still is, and an owner that is no app (the summon hotkey) is never handed over,
+whatever an app is named. An owner opts in only once its own code stands down for the
+copy the host serves, or both would register the same chords and whichever came second
+would get none: Mochi's reservation stays plain until its built-in steps aside
+(`desktop-host-serve`, #37454). A chord another app or another program holds
 at that moment is not taken either: the app holding a chord keeps it for as long as it
 still declares that binding, whatever order the app list arrives in, and an app enabled
 later that declares the same chord gets it only once the holder lets it go. Each
@@ -8147,6 +8160,44 @@ the built-in companion's `crew-companion/panelPlacement.js` re-exports it). Such
 workspace, a panel already open is moved there and brought forward, and the panel hears
 `onPlaced({side})`. A transparent panel has no native shadow.
 
+**Per machine: shortcut bindings.** What the host keeps per app on this computer is
+`website/electron/app-window-prefs.js`, in the shell's own 0600 `app-window-prefs.json`
+(a store that cannot open leaves the host on an in-memory one). It lives in the shell,
+not on a gateway, because a window's `localStorage` is its gateway origin's and the
+same app's window may be served by another crew; that is ruling 5 of #26967 comment
+6713005850 (the window seam's global shortcuts), the gap #36349 left under "Not a goal".
+A page gets no generic per-machine store: the per-machine facts a built-in kept
+(Mochi's are the crew it shows and the rebinds) are the gateway choice and the
+bindings, and a built-in hands its own over from its own shell code (below), so the
+host carries no import of a store another program wrote:
+
+- A shortcut binds at the user's chord for it, else at its declared default for this
+  platform; `""` leaves it unbound. A binding the chord rules refuse falls back to the
+  default, and where a binding lands on another of the app's shortcuts' defaults the
+  binding keeps the chord and the other waits until the user moves one. The app's own
+  Settings page lists them (`shortcuts()`) and rebinds one (`setShortcut(id,
+  accelerator)`, `""` to unbind, `null` for the default) only for a shortcut the app
+  declares, only while the user is acting in that window (the 2 s press rule below),
+  only to a chord the manifest's rule allows and no other of the app's shortcuts is on.
+  A chord other than that shortcut's declared default must be one the user pressed in
+  that window within those 2 s: the shell reads the press from Electron's
+  `before-input-event` (`keyDown`, not a repeat; the key from its position or its
+  character, the modifiers as the keys they are on this platform,
+  `keyPressChords`/`pressedChord` in `app-window-host-rules.js`), one press answers one
+  request, and anything else is refused `not-pressed`. So the page records the user's
+  choice and never picks a chord itself, and the only chord no press chose is the one
+  the publisher signed. The new chord (the default, for `null`) is registered for the
+  shortcut before the binding moves and the old chord is released, so a chord a shell
+  owner reserves, another app or another program holds leaves the previous binding and
+  the chord it held: a refusal never frees the old chord for another app declaring it.
+  The host reads each store key once and keeps it in memory (it is the only writer), so
+  `shortcuts()` touches no disk.
+- Kept by app name, the way core keeps the app's `data/`: the default uninstall keeps
+  it and a reinstall under the name gets it back (`manager_uninstall.uninstall_app`,
+  `keep_data=True`), so an app missing from one listing (a damaged record is skipped)
+  loses nothing. An explicit purge removes `data/` but not this store: the shell is not
+  told of it.
+
 **What a window the user is acting in may ask of the shell.** `showSession(slotKey)` raises the
 dashboard window and routes it to that session (`/chat?sid=`), or only raises it for
 `""`, and resolves true only when the dashboard is there to show it, so a caller keeps a
@@ -8175,11 +8226,12 @@ its app still declares it, at most once per tick interval; one that dies again s
 reopened by the next tick, `openOnEnable` or not, unless it was closed on purpose in
 between (by `close(id)` or `closeAll()`), so a crash loop runs at tick cadence.
 
-**The bridge.** The page gets `window.kirocrewDesktopWindow`: `level` (2), `app`,
+**The bridge.** The page gets `window.kirocrewDesktopWindow`: `level` (3), `app`,
 `window`, `kind`, `ready()`, `close(id?)`, `open(id, options?)`, `setHitRegions(rects)`,
 `setFocusable(bool)` and `onShortcut(cb)`; level 2 adds `closeAll()`, `send`,
 `broadcast`, `onMessage(cb(from, message))`, `onWindowChange`, `onPlaced`, `onActive`,
-`beginDrag`, `endDrag`, `onDrag`, `showSession`, `openExternal` and the capability calls below. The identity is informational: the host
+`beginDrag`, `endDrag`, `onDrag`, `showSession`, `openExternal` and the capability calls below;
+level 3 adds `shortcuts` and `setShortcut` (above). The identity is informational: the host
 resolves every message to the window that sent it, from its main frame, still showing
 its own document, and acts only within that window's own app declaration. A page can
 open only a window its own app declares, shape (hit regions, focus) only an overlay, and
@@ -8242,7 +8294,11 @@ Kit seam level 7 (`APP_SDK_LEVEL`): a gateway below it refuses `displays`, `gutt
 `minAppSdkLevel` 7. Level 2 also adds `capabilities`, `revealFile`, `openImage`,
 `listGateways` and `chooseGateway`; their gateway half (the `permissions.desktopCapabilities`
 key and its grant row) is level 7 too, and a gateway below it sends no
-`desktopCapabilitiesGrant`, so the shell serves no capability.
+`desktopCapabilitiesGrant`, so the shell serves no capability. Bridge level 3 adds the
+shortcut calls; their manifest half, `platformAccelerators`, is App Kit seam level 8,
+sharing the unreleased level with `credentialMasks` directory entries (§37) and
+`useHostSessions` (§18j), so a gateway below it refuses it at install and
+`scripts/adoption_pin.py` maps it to 8.
 
 **Shown at install.** A registry row carries the manifest's `desktop` block under
 `manifest` (`registry_pipeline/manifests.py`), and the trust prompt lists the shapes it declares (an overlay,
@@ -8272,7 +8328,17 @@ value, so a move of the built-in avatar before adoption reaches the host and a d
 the host chose itself after adoption is never overwritten
 (`crew-companion/displayHandOff.js`). A multi-display user finds the avatar where it
 was. Both live in the built-in's own shell directory and leave with it. Its dashboard-routing check now lives in `dashboard-session.js`,
-which the built-in and the kirocrew:// deep link share. Mochi's manifest already declares the three
+which the built-in and the kirocrew:// deep link share. At every start, before the host is created, its `initMochi` copies the crew the pet
+shows and the user's rebinds from its `mochi-machine.json` into the host's gateway
+choice and bindings for `mochi` (the ids its repository declares: `toggle-window`,
+`hide-all`, `screen-capture`; a chord at the built-in's default is no binding, and a
+rebind the host's rules refuse keeps the host's default), recording the value copied
+under `mochi.hostHandOff` in its own store. It copies again only while the host still
+holds that recorded value (or, before any copy, holds nothing of its own), so a change
+in the built-in before adoption reaches the host and a choice the user makes through
+the host (a reset, "self", a new chord) is never overwritten
+(`mochi/hostHandOff.js`, the same rule as Crew Companion's display hand-off). It
+lives in Mochi's shell directory and leaves with it. Mochi's manifest already declares the three
 capabilities its shell code uses (the wheel copy first, so an external Mochi declaring
 them is no widening), and its reveal-file and open-image handlers run `app-local-files.js`.
 `website/electron/test/app-window-host-independence.test.js` pins the host free of
@@ -8286,7 +8352,9 @@ Writers: `apps/desktop_manifest.py`, `apps/desktop_capabilities.py`, `apps/manif
 `website/electron/app-window-host-rules.js`, `website/electron/app-window-preload.js`,
 `website/electron/app-window-span.js`, `website/electron/app-window-placement.js`,
 `website/electron/app-local-files.js`, `website/electron/app-window-gateways.js`,
-`website/electron/dashboard-session.js`, `website/electron/main.js`,
+`website/electron/app-window-prefs.js`, `website/electron/shell-shortcut-reservations.js`,
+`website/electron/mochi/hostHandOff.js`,
+`website/electron/dashboard-session.js`, `website/electron/main.js`, `scripts/adoption_pin.py`,
 `website/src/desktopWindow/desktopWindowTarget.ts`,
 `website/src/desktopWindow/DesktopWindowRoot.tsx`, `website/src/components/AppHost.tsx`,
 `website/src/components/appstore/TrustAppDesktopBox.tsx`,
@@ -8300,6 +8368,8 @@ Tests: `test/test_app_manifest_desktop.py`, `test/test_app_desktop_capabilities.
 `website/electron/test/app-window-gateways.test.js`,
 `website/electron/test/app-window-host.test.js`,
 `website/electron/test/app-window-host-span.test.js`,
+`website/electron/test/app-window-host-prefs.test.js`,
+`website/electron/mochi/test/hostHandOff.test.js`,
 `website/src/test/TrustAppModalDesktop.test.tsx`,
 `website/electron/test/app-window-host-rules.test.js`,
 `website/electron/test/app-window-preload.test.js`,

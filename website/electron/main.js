@@ -910,6 +910,15 @@ app.whenReady().then(async () => {
   });
   if (cleared && !mainWindow.isDestroyed()) await gateway.connect(mainWindow);
 
+  // Each app's shortcut bindings, apart from the shell's own settings. A store that
+  // cannot open leaves the host on an in-memory one.
+  let appWindowPrefsStore;
+  try {
+    appWindowPrefsStore = new Store({ name: "app-window-prefs", configFileMode: STORE_FILE_MODE });
+    tightenStoreFileMode(appWindowPrefsStore.path, { log: (message) => glog("app-window-prefs mode: " + message) });
+  } catch (error) {
+    glog("app-window-prefs: store unavailable — " + (error && error.message));
+  }
   // Optional companion surfaces start only after the primary gateway handoff.
   // Both are best-effort and must never block an otherwise usable dashboard.
   initMochi({
@@ -917,6 +926,8 @@ app.whenReady().then(async () => {
     fetchGatewayAuth: fetchMochiGatewayAuth,
     glog,
     getMainWindow: () => windows.getMainWindow(),
+    // Seeded from Mochi's own store before the host below reads them.
+    hostStores: { gatewayStore: store, prefsStore: appWindowPrefsStore },
   });
   const appWindowDisplays = path.join(app.getPath("userData"), "app-window-displays.json");
   try {
@@ -951,6 +962,7 @@ app.whenReady().then(async () => {
       openExternal: (url) => openExternalSafely(shell.openExternal, url, glog),
       // Which crew each app's windows show is this computer's choice, kept by the shell.
       gatewayStore: store,
+      prefsStore: appWindowPrefsStore,
     });
     appWindowHost.start();
   } catch (error) {
