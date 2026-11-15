@@ -120,9 +120,10 @@ every other app's routes. Each of the four refuses an app token
 (`_require_owner_human`), and its backend's own calls (`live-target`, its removal
 lease) stay in the namespace the gateway admits without a declaration, so the one
 reach the backend token gains is the read of the list. The app repository declares
-the same list. Pinned by `test/test_dev_fleet_permission_parity.py`, which
-registers the real wheel copy and asks `permission_refusal` of that list (None) and
-of the list with a bare `/api/apps` (`permission_widening`).
+the same list. Pinned by `test/test_builtin_permission_parity.py`, which
+registers the real wheel copy and asks `permission_refusal` of that list (None), and
+`test/test_dev_fleet_permission_parity.py`, which asks it of the list with a bare
+`/api/apps` (`permission_widening`).
 
 `raw` returns a successful `Response` without reading it, preserving binary
 bytes, headers and streams. The caller owns consumption and cancellation;
@@ -5687,7 +5688,8 @@ statuses. The page's request carries the owner's session, and the handlers refus
 app token (`source_providers._authorize_owner_request`), so the app's backend token
 gains no reach. A built-in approves what its wheel copy ships at every start, so the
 app repository's copy, which declares the same list, adopts with `permission_refusal`
-None. Pinned by `test/test_code_review_sage_permission_parity.py`.
+None. Pinned by `test/test_code_review_sage_permission_parity.py` and
+`test/test_builtin_permission_parity.py`.
 
 Writers: `website/src/app-sdk/PullRequestPanel.tsx`, `website/src/app-sdk/index.ts`,
 `website/public/vendor/kirocrew-app-sdk.mjs`, `website/src/components/pullRequestClient.tsx`,
@@ -7809,9 +7811,10 @@ targets, headroom, mode) is not declared, so its token is refused there. The
 slots its `/api/ws` connect snapshot shows it: its own, plus what its declared `slots:*`
 scopes add, none for a disabled app (`chat_api/slot_detail.py:api_chat_slots` through
 `ws_event_scope.filter_slots_for_app`, pinned by `test/test_chat_slots_app_token_view.py`).
-The person and an internal-secret caller keep the full list. Pinned by `test/test_design_tweak_permission_parity.py`,
+The person and an internal-secret caller keep the full list. Pinned by `test/test_builtin_permission_parity.py`,
 which registers the real wheel copy and asks `permission_refusal` of the repository's
-list (None) and of that list plus one more path (`permission_widening`). Agent Worlds declares the host paths its page calls the same way (§18j).
+list (None), and `test/test_design_tweak_permission_parity.py`, which asks it of that
+list plus one more path (`permission_widening`). Agent Worlds declares the host paths its page calls the same way (§18j).
 
 **The trust prompt names the host paths.** `TrustAppModal` lists the manifest's
 `permissions.api` entries outside the app's own namespace in a box of their own, as
