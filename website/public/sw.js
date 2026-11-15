@@ -224,6 +224,9 @@ self.addEventListener('fetch', e => {
   if (url.searchParams.has('token')) return
   // Core API
   if (url.pathname.startsWith('/api')) return
+  // The Crew API and the OpenAI-compatible API: data routes like /api, which the
+  // gateway never answers with the shell.
+  if (url.pathname.startsWith('/v1/')) return
   // Single-use sandboxed documents for artifact/widget iframes. Two reasons this
   // must never reach the handler below: the URL carries a one-shot credential the
   // gateway spends on first GET, so any SW-mediated re-fetch resolves to a 404

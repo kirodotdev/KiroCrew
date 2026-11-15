@@ -455,6 +455,27 @@ def _deny(request: web.Request, reason: str, code: str = "") -> web.Response:
         return web.json_response(
             {"error": reason, "code": code or "forbidden"}, status=403, headers=headers
         )
+    # Function-local: the token_auth facade mirrors every module-level name of its
+    # owners, and these are not part of its surface.
+    from kiro_crew.dashboard.crew_api_errors import (
+        contract_error,
+        is_crew_api_path,
+        request_id_for,
+    )
+
+    if is_crew_api_path(request.path):
+        # The Crew API's own error body, on every /v1/ path but the frozen
+        # /v1/chat/completions. ``owner_only`` is the one
+        # refusal about what a known caller may do, so it is the one 403. Every other
+        # refusal here is a credential this layer could not accept, the contract's
+        # 401: ``invalid_token`` unless the refusal names its own reason.
+        return contract_error(
+            403 if code == "owner_only" else 401,
+            code or "invalid_token",
+            reason,
+            request_id_for(request),
+            headers,
+        )
     return web.Response(
         text=_403_HTML.format(reason=reason),
         status=403,
