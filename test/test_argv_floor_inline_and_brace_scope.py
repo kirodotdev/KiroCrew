@@ -464,18 +464,17 @@ class TestInlinePayloadNamesTheMintSurface:
         )
 
     def test_the_bounds_bound_the_walk_and_not_the_verdict(self):
-        # A payload is attacker-shaped text on the synchronous gate path, so the walk stops
-        # at ``_LOADER_NESTING_CAP`` / ``_LOADER_ARG_SCAN_CAP`` instead of following the
-        # input. What must NOT follow is a shorter verdict: past either bound the call has
-        # not been seen to close, so it is judged on everything left. Truncating the slice
-        # to the bound is how a name sitting past it would read as "handed something else".
+        # A payload is attacker-shaped text on the synchronous gate path. Whether the
+        # call nests deep or its argument runs long, what must NOT follow is a shorter
+        # verdict: a call not seen to close is judged on everything left. Truncating the
+        # slice is how a name sitting past the cut would read as "handed something else".
         past_nesting = "exec(" + "f(" * 200 + "'kirocrew'"
         past_scan = "exec(" + "x" * 20000 + "'kirocrew'"
         for payload in (past_nesting, past_scan):
             assert inline_payload._inline_payload_reaches_cli(payload), payload[:40]
-            # The name is past the bound and still inside the judged argument.
+            # The name sits at the end of the long input and is still inside the judged argument.
             assert "'kirocrew'" in inline_payload._code_loader_arguments(payload)[0]
-        # A call that DOES close inside the bounds is judged on its own argument only.
+        # A call that DOES close is judged on its own argument only.
         assert inline_payload._code_loader_arguments("exec(open('p.py').read()); 'kirocrew'") == (
             "open('p.py').read()",
         )

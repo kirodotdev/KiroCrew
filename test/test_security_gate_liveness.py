@@ -466,8 +466,8 @@ def _url_payload_command(n: int) -> str:
 #: and nothing glued after. One regex of three fixed-width alternatives, a helper that
 #: returns the digest spans, their comment, and the one clause beside the document-link
 #: exemption. No pass widened, no threshold moved, and the exfil URL scan is unchanged.
-#: Six more for its ``keep_sri_digests=False`` switch: a streamed segment whose delta
-#: boundary split an SRI value saves main's verdict on the digest, not the notice.
+#: Six more for its ``judged_sri_values`` input: a streamed segment's save judges a
+#: digest holding a value a delta boundary cut, so that delta's verdict is kept.
 #:
 #: Raised again, from 32,188, for the ``self-protection-skills-authority-retire`` floor,
 #: which denies the operator-only ``kirocrew skills authority-retire`` recovery
