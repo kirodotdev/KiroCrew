@@ -70,7 +70,7 @@ from kiro_crew.acp.prompt_blocks import (
 )
 from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
 from kiro_crew.acp.session_handle_mcp import hold_untold_first_turn
-from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError
+from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError, host_checks_sessions
 from kiro_crew.acp.session_handle_watchdog import _WORKING_NEVER_LOGGED
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
@@ -715,6 +715,10 @@ async def _run_turn(
                 _loggable_request_id(stale.id),
             )
         else:
+            # A frame no turn read can still be the one that moved this session's
+            # permission state; the refusal runs inside the turn guard below.
+            if host_checks_sessions(self._runtime):
+                self._note_permission_state(stale)
             # A compaction terminal can land between turns. It still pays an
             # unresolved idle-compaction debt before this drain discards it.
             consume_stale_compaction_status(self, stale)
@@ -817,6 +821,10 @@ async def _run_turn(
     # exception hierarchy. Re-raised unchanged, so cancellation still
     # propagates.
     try:
+        # A session that left its required permission state between turns is
+        # closed here, before its prompt goes out.
+        if host_checks_sessions(self._runtime):
+            await self._refuse_moved_permission_state()
         # Offer synchronously after the drain, before request building can yield
         # and queue a connected status that makes a reset unsafe. Only a server
         # a user message named is a candidate. The consent link is consumed by

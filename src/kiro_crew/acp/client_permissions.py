@@ -36,14 +36,17 @@ from kiro_crew import sel as sel_module
 from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
+    REFUSAL_FOREIGN_SERVER,
+    REFUSAL_UNCLASSIFIED_CALL,
     _loggable_request_id,
     build_permission_event,
+    foreign_server_refused,
     gate_envelope,
 )
 from kiro_crew.acp._dispatch import identified_mcp_call as _identified_mcp_call
 from kiro_crew.acp._dispatch import is_mcp_tool_approval as _is_mcp_tool_approval
 from kiro_crew.acp._dispatch import (
-    meta_builtin_server_names,
+    unclassified_call_refused,
 )
 from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.harness.copilot import COPILOT_IDENTITY_OVERFLOW
@@ -652,7 +655,7 @@ async def _refuse_identity_drift(self: AcpClient, event: AcpEvent) -> bool:
         self._audit_spec_restriction(
             tool_name="tool__unclassified",
             outcome="denied",
-            reason="spec_disabled_tool_unclassified_call",
+            reason=REFUSAL_UNCLASSIFIED_CALL,
         )
         await self.reject_tool(event.request_id)
         return True
@@ -668,7 +671,7 @@ async def _refuse_identity_drift(self: AcpClient, event: AcpEvent) -> bool:
         self._audit_spec_restriction(
             tool_name=f"mcp__{event.mcp_server_name}__{event.tool_name or 'unknown'}",
             outcome="denied",
-            reason="spec_disabled_tool_foreign_server",
+            reason=REFUSAL_FOREIGN_SERVER,
         )
         await self.reject_tool(event.request_id)
         return True
@@ -696,11 +699,11 @@ def _foreign_mcp_identity(self: AcpClient, event: AcpEvent) -> bool:
     if not (event.mcp_identity_trusted and event.mcp_server_name):
         return False
     placed = {
-        element.get("name")
+        element["name"]
         for element in self._session_mcp_servers()
         if isinstance(element, dict) and isinstance(element.get("name"), str)
     }
-    return event.mcp_server_name not in placed | meta_builtin_server_names()
+    return foreign_server_refused(event, placed)
 
 
 def _unclassified_tool_call(self: AcpClient, event: AcpEvent) -> bool:
@@ -735,9 +738,11 @@ def _unclassified_tool_call(self: AcpClient, event: AcpEvent) -> bool:
         # of the harness's own legitimate call.
         return False
     recorded = getattr(self, "_tool_call_unclassified", None)
-    if not isinstance(recorded, dict) or not recorded.get(event.tool_call_id, False):
+    if not isinstance(recorded, dict):
         return False
-    return _identified_mcp_call(event) is None
+    return unclassified_call_refused(
+        event, frame_unclassified=bool(recorded.get(event.tool_call_id, False))
+    )
 
 
 def _tripwire_spec_disabled_tool(self: AcpClient, result: AcpEvent) -> None:

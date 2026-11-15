@@ -258,6 +258,10 @@ class AcpSessionHandle:
     _refuse_unidentifiable_mcp_approval = _sh_permissions._refuse_unidentifiable_mcp_approval
     _refuse_unreadable_mcp_identity = _sh_permissions._refuse_unreadable_mcp_identity
     _refuse_unretained_provenance = _sh_permissions._refuse_unretained_provenance
+    _tool_call_unclassified = _sh_permissions._tool_call_unclassified
+    _refuse_by_harness = _sh_permissions._refuse_by_harness
+    _note_permission_state = _sh_permissions._note_permission_state
+    _refuse_moved_permission_state = _sh_permissions._refuse_moved_permission_state
     _reject_with_host_notice = _sh_permissions._reject_with_host_notice
     _audit_handle_reject = _sh_permissions._audit_handle_reject
     apply_session_permission_routing = _sh_permissions.apply_session_permission_routing
@@ -704,6 +708,10 @@ class AcpSessionHandle:
         # when True), a sibling of the caches above under the same admission,
         # cleared, evicted and released with them.
         self._tool_call_identity_unreadable: dict[str, bool] = {}
+        # Why this session must stop, recorded off a ``session/update`` that moved
+        # the permission state its host requires (``_note_permission_state``), ""
+        # while none has. Never cleared: the session is closed on it.
+        self._permission_state_issue = ""
         # Parent-scoped cache keys populated by tagged native-child tool calls.
         # Cleared per turn beside the sibling per-call caches below.
         self._native_child_tool_call_ids: set[str] = set()
