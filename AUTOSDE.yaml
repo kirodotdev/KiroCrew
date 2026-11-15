@@ -470,6 +470,16 @@ custom-rules:
           `monkeypatch` (use `_floor_monkeypatch`), or a bare
           `monkeypatch.undo()` in a test body (scope the patch with
           `monkeypatch.context()`).
+      13. A host probe that picks which result a live test requires (runs vs
+          fails closed) but asks a different program or binary than the one the
+          test drives (Crew's `userns_available()` deciding for codex's
+          bubblewrap), or lets such a stand-in short-circuit ahead of the
+          program's own check. The kernel and its LSMs judge per binary, so the
+          two disagree on some runner images and the test reds every PR routed
+          there. Use the program's own preflight with the binary it runs; a
+          stand-in answers only where that check gives no verdict
+          (testing-conventions § A host probe that asks a different program
+          than the one under test).
 
       Allowed (do NOT flag):
       - a sleep inside a stub that simulates slow work while the test waits
