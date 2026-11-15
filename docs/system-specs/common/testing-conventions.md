@@ -198,7 +198,7 @@ module through any binding is the semgrep rule's), a `sys.modules` eviction with
 no restore in the same function, raw environment writes, duration bounds, literal waits
 under two seconds (the too-tight lost-run bound of class 6; a negative such as
 `assert not done.wait(0.3)` is not one), literal listener ports, fixed crew-log flush
-ceilings, crew-log removals outside `eager.paused()`, Event waits a test parks on a thread-pool executor, direct writes of asyncio Tasks or TimerHandles to a ``kiro_crew`` module attribute from a test function (K16), ``pytest.mark.xfail(strict=False)`` overrides (K18), a non-zero numeric literal used as a duration-named keyword argument or as a ``setattr`` value on a duration-named attribute — the production-deadline-as-test-boundary shape (K19), an `update_metadata` or `update_metadata_if` call in a coroutine's own frame (K20, [Async tests](#async-tests)), and five frontend shapes. In a file
+ceilings, crew-log removals outside `eager.paused()`, Event waits a test parks on a thread-pool executor, direct writes of asyncio Tasks or TimerHandles to a ``kiro_crew`` module attribute from a test function (K16), ``pytest.mark.xfail(strict=False)`` overrides (K18), a non-zero numeric literal used as a duration-named keyword argument or as a ``setattr`` value on a duration-named attribute — the production-deadline-as-test-boundary shape (K19), an `update_metadata` or `update_metadata_if` call in a coroutine's own frame (K20, [Async tests](#async-tests)), a shared total pinned exactly in a module that walks the product tree: a count asserted `==` an integer literal of 10 or more in a function that reads the walk, or a count compared `==` / `!=` with a module-level ALL-CAPS constant whose name holds `BASELINE`, `COUNT`, `TOTAL`, `EXPECTED` or `ROWS` (K21, [Merge-safe ratchets and counts](#merge-safe-ratchets-and-counts)), and five frontend shapes. In a file
 the pinned semgrep reads no line of, it counts the `time` patches the semgrep rule would
 refuse as well: a file over 1,000,000 bytes, or one holding both a lambda with a bare `*`
 (`lambda a, *, b: ...`) and a parenthesized `with (a as b, ...):`, which semgrep 1.78
@@ -836,6 +836,21 @@ over budget.
   base, make one change of the counted class on each (different files) and update the
   record exactly as the failure message says, then merge both and run the test. It is
   red before the fix and green after, and the PR body says so.
+- **Enforced by the flake-pattern ratchet (K21).** `test/test_flake_pattern_ratchet.py`
+  refuses a change that adds a shared-total pin to a test module that walks the
+  product tree (`source_corpus`, `rglob` / `glob`, `os.walk`, `git ls-files`,
+  `pkgutil.iter_modules` / `walk_packages`, or a source reader imported from a
+  `*_helpers` module such as `_owner_sources`, in a module that names `src`, `_SRC`,
+  `repo_root` or a package's `__path__`): a count (`len`, `sum`, `.count()`, a name holding
+  `count` or `total`) asserted `==` an integer literal of 10 or more in a function
+  that reads the walk, or a count compared `==` / `!=` with a module-level ALL-CAPS
+  constant whose name holds `BASELINE`, `COUNT`, `TOTAL`, `EXPECTED` or `ROWS`. It
+  counts per file against the merge-base like its other shapes, so existing pins are
+  not forced to burn down. It does not see a pin enforced as two one-sided
+  `if total > X` / `if total < X` checks, or one in a module that reads no walk (a
+  doc's count checked against a registry); review catches those (AutoSDE
+  `a-ratchet-may-only-tighten`). A deliberate pin, such as a frozen snapshot no later
+  change edits, carries `# flake-ok: <reason>`.
 
 ### Channel wire fakes: borrow the library's read side, do not model it
 

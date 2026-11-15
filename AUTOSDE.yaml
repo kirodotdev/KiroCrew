@@ -1262,6 +1262,13 @@ custom-rules:
       snapshot of a one-time event no later change edits. Moving a shared
       number to a keyed record whose every key stays exact is tightening, not
       loosening (testing-conventions.md § Merge-safe ratchets and counts).
+      `test/test_flake_pattern_ratchet.py` (K21) already refuses a new count
+      pinned `==` an integer literal of 10 or more, or `==` / `!=` an ALL-CAPS
+      `BASELINE` / `COUNT` / `TOTAL` / `EXPECTED` / `ROWS` constant, in a test
+      module that walks the product tree; flag what it cannot see: a pin held
+      by two one-sided `if total > X` / `if total < X` checks, a count in a
+      doc or registry compared with a constant, and a `# flake-ok` on such a
+      pin whose reason is not a frozen snapshot.
 
       When a ratchet cannot be satisfied without loosening it, that is the
       finding — say so on the PR instead of editing the ratchet.
