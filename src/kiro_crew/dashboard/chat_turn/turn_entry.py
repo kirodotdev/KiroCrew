@@ -175,6 +175,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # and strand the error card / session reset it owes. Initialised here, where the body's single
     # entry cannot miss them, and overwritten with their real values in _turn_dispatch_gates,
     # _turn_build_prompt and _on_cancelled; the seam then always reads a bound name.
+    # ``_turn_t0`` is the exception: its value here IS the real one. It is the
+    # turn's wall-clock start, which the footer's elapsed and the usage row's
+    # duration count from, so a cold start's session claim is inside it.
     _turn_t0 = time.monotonic()
     turn._turn_t0 = _turn_t0
     _stop_reason = ""
