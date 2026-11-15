@@ -34,6 +34,7 @@ from kiro_crew.acp._dispatch import attach_kas_custom_agents, parse_session_mode
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
 from kiro_crew.acp.kas_start_agent import START_AGENT_ID, parking_load
+from kiro_crew.acp.mcp_prune import prune_session_servers, record_pruned
 from kiro_crew.acp.mcp_session_report import (
     active_custom_agent,
     required_managed_servers,
@@ -62,7 +63,11 @@ from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_LOAD_WITHOUT_MODES,
+    ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
+    ACP_BACKENDS_RESUME_WITHOUT_LOAD,
     METHOD_SESSION_LOAD,
+    METHOD_SESSION_RESUME,
     METHOD_SET_MODE,
     JsonRpcMessage,
 )
@@ -159,6 +164,14 @@ async def load_session(
     # The effective agent, checked before anything is acquired, as create_session()
     # does: a resume that names no agent inherits the spawn agent.
     await self._refuse_over_ceiling_start(agent or self._agent)
+    # The verb that restores a session on this host, read from the set
+    # ``AcpClient`` reads (``client_start``): ``ResumeSessionRequest`` carries the
+    # same fields as ``LoadSessionRequest``, so only the method name differs.
+    restore_method = (
+        METHOD_SESSION_RESUME
+        if self.acp_backend in ACP_BACKENDS_RESUME_WITHOUT_LOAD
+        else METHOD_SESSION_LOAD
+    )
 
     # Re-declare the pooled broker stubs so a resumed session keeps talking
     # to the broker — same injection as create_session() and the AcpClient
@@ -298,6 +311,11 @@ async def load_session(
     # a conversation that already had them.
     # Bound once, for the same consumers as session/new: see the note there.
     await self._write_remote_token()
+    # The same prune session/new gets (``mcp_prune``), for the same hosts.
+    pruned = None
+    if self.acp_backend in ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP:
+        pruned = await prune_session_servers(self.acp_backend, mcp_servers)
+        mcp_servers = pruned.kept
     wire_servers = self._remote_session_servers(
         self._harness.session_mcp_servers(mcp_servers, agent_capabilities=self._agent_capabilities)
     )
@@ -411,7 +429,7 @@ async def load_session(
         # The same last word session/new gets, asked inside this branch so the
         # kiro resume path still stops at the comparison above.
         load_params, agent = self._harness.session_request(
-            METHOD_SESSION_LOAD,
+            restore_method,
             load_params,
             agent,
             agent_capabilities=self._agent_capabilities,
@@ -451,19 +469,21 @@ async def load_session(
         # docs/system-specs/modules/acp-client.md "loading a session
         # triggers MCP re-initialization") — so it gets the same budget.
         request_sent_at = time.time()
-        resp = await self._send_and_await(METHOD_SESSION_LOAD, load_params, timeout=budget)
+        resp = await self._send_and_await(restore_method, load_params, timeout=budget)
 
         # A genuine resume echoes "modes" in the response (same signal AcpClient
-        # keys on). Anything else means load did not actually restore state.
-        if "modes" not in resp:
-            raise AcpRuntimeError(f"session/load did not resume session {resume_sid}: {resp}")
+        # keys on). Anything else means load did not actually restore state. A
+        # host that never sends one (``ACP_BACKENDS_LOAD_WITHOUT_MODES``) restored
+        # the session when it answered without an error, as ``AcpClient`` reads it.
+        if "modes" not in resp and self.acp_backend not in ACP_BACKENDS_LOAD_WITHOUT_MODES:
+            raise AcpRuntimeError(f"{restore_method} did not resume session {resume_sid}: {resp}")
         loaded_session_id = resume_sid
     except AcpFrameTooLarge as exc:
         exc.session_start_failed = True
         raise
     except AcpRequestTimeout as exc:
         # Read the staged MCP reports before the finally below clears them.
-        raise self._session_start_stalled(exc, METHOD_SESSION_LOAD, wire_servers) from exc
+        raise self._session_start_stalled(exc, restore_method, wire_servers) from exc
     finally:
         buffered_init = self._finish_session_init(loaded_session_id)
         replayed_turn_frames = self._load_replay_frames.pop(resume_sid, 0)
@@ -489,6 +509,9 @@ async def load_session(
     # session gets its own report against the roster load re-declared. Opened
     # with the queue and no await in between, as create_session does.
     report = self._open_mcp_report(resume_sid, wire_servers)
+    if pruned is not None:
+        # What the array left out is this resume's own failure, on its new report.
+        record_pruned(report, pruned.pruned, pruned.omitted)
     queue: asyncio.Queue[JsonRpcMessage | None] = asyncio.Queue()
     self._session_queues[resume_sid] = queue
     self._session_cwds[resume_sid] = str(session_work_dir)

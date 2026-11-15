@@ -212,6 +212,13 @@ async def approve_tool(
             **recheck,
         )
         sent = True
+        if host_checks_sessions(self._runtime) and gate_event is not None:
+            # A host that holds a call to completing only with Crew's yes records
+            # the yes once it is written; every other answer leaves the call unapproved.
+            self._runtime._harness.note_permission_approved(
+                self._runtime._session_harness_states.get(self._session_id),
+                gate_event.tool_call_id or "",
+            )
     except GrantEnded:
         # Nothing was written: put the request back exactly as it was.
         if gate_event is not None:
@@ -954,17 +961,42 @@ async def _refuse_moved_permission_state(self: AcpSessionHandle) -> None:
         self._session_id,
     )
     try:
+        audit = self._runtime._harness.permission_state_audit(
+            self._runtime._session_harness_states.get(self._session_id)
+        )
+        tool_name, outcome, reason = audit or (
+            "session/set_mode",
+            "denied",
+            "permission_state_tripwire",
+        )
         sel_module.sel().log_tool_invocation(
             session_key=self._session_key or "",
             source="acp",
-            tool_name="session/set_mode",
+            tool_name=tool_name,
             tool_kind="other",
-            outcome="denied",
-            metadata={"reason": "permission_state_tripwire", "backend": backend},
+            outcome=outcome,
+            metadata={"reason": reason, "backend": backend},
         )
     except Exception:  # pragma: no cover - audit is best-effort
         logger.debug("audit of the permission-state tripwire failed", exc_info=True)
-    await asyncio.shield(self._runtime.terminate_session(self._session_id))
+    if getattr(self._runtime._harness, "permission_state_issue_ends_process", False):
+        # The host's gate is the process's, so every session on it is ungoverned
+        # now, as the per-session client reads the same frame (it stops its
+        # process). The runtime is failed -- every other session's turn on it ends
+        # with the runtime's death, its record kept by the harness, so the chat
+        # restores it with ``session/resume`` on a new process -- and killed.
+        # Marked dead before any await, so a cancel landing in the kill's wait
+        # cannot leave a live runtime behind, and first, because the ownership
+        # gate counts only a live runtime's leases: this tenant may then end a
+        # process other chats lease. A tenant mid-flight still refuses the kill;
+        # its own last release then reaps it. No ``session/close``: the process
+        # is ending, and the harness keeps the record either way.
+        self._runtime._mark_dead(f"{backend} gate tripwire: {issue}")
+        await asyncio.shield(
+            self._runtime.kill(reason=f"{backend} gate tripwire on session {self._session_id}")
+        )
+    else:
+        await asyncio.shield(self._runtime.terminate_session(self._session_id))
     try:
         acp_tool_gate.enforce_runtime_routing(
             backend, issue, remedy=acp_tool_gate.remediation_for(backend)

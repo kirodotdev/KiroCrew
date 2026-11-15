@@ -318,6 +318,14 @@ class AcpRuntimeProtocol(Protocol):
 
     def is_alive(self) -> bool: ...
 
+    async def kill(self, *, expected: bool = False, reason: str = "") -> None:
+        """Kill the process, through the ownership gate (``authorize_runtime_kill``).
+
+        A dead runtime's leases do not hold the gate, so a caller that marked the
+        runtime dead first is let through; a tenant mid-flight still refuses it.
+        """
+        ...
+
     @property
     def stdin_stall_death(self) -> bool:
         """Whether the runtime died of a stdin stall with its child still alive."""

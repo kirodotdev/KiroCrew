@@ -37,16 +37,13 @@ from typing import TYPE_CHECKING, Any, Collection
 from kiro_crew import acp_tool_gate
 from kiro_crew.acp.ipc_pickup import with_ipc_pickups
 from kiro_crew.acp.mcp_mount_check import schedule_mount_check
+from kiro_crew.acp.mcp_prune import prune_session_servers, record_pruned
 from kiro_crew.acp.mcp_ref_guard import (
     warn_remote_header_secret_refs,
     warn_unresolved_server_refs,
     warn_unset_env_placeholders,
 )
-from kiro_crew.acp.mcp_session_report import BUCKET_CAP as MCP_REPORT_BUCKET_CAP
-from kiro_crew.acp.mcp_session_report import ERROR_CAP as MCP_REPORT_ERROR_CAP
-from kiro_crew.acp.mcp_session_report import NAME_CAP as MCP_REPORT_NAME_CAP
-from kiro_crew.acp.mcp_session_report import McpSessionReport, sanitize_sink_text
-from kiro_crew.acp.mcp_startable import PrunedServer, prune_unstartable
+from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.pi_mcp_registration import discard_registration
 from kiro_crew.acp.session_mcp import SessionMcpProjection, ToolsAllowlist, agent_spec_snapshot
 from kiro_crew.acp.spec_tools_allowlists import (
@@ -1344,13 +1341,7 @@ def _begin_session_report(self: AcpClient, servers: Any) -> None:
     omitted, self._mcp_pruned_omitted = getattr(self, "_mcp_pruned_omitted", 0), 0
     # Only a server the report admitted counts as configured for the ref guard:
     # a name the failed bucket refused must get no row anywhere.
-    admitted: list[str] = []
-    for server in pruned:
-        if self._mcp_report.record_pruned(server.name, server.reason):
-            if server.name not in admitted:
-                admitted.append(server.name)
-    self._mcp_report.record_pruned_omitted(omitted)
-    self._mcp_pruned_names = tuple(admitted)
+    self._mcp_pruned_names = record_pruned(self._mcp_report, pruned, omitted)
 
 
 async def _prune_unstartable_mcp(self: AcpClient, servers: list[Any]) -> list[Any]:
@@ -1359,42 +1350,16 @@ async def _prune_unstartable_mcp(self: AcpClient, servers: list[Any]) -> list[An
     Only for ``ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP``, where such an element is
     otherwise lost without a word (goose) or takes the whole session with it
     (deepseek). Each call site checks that set BEFORE awaiting this, so the kiro
-    path gains no awaited step (harness-parity H13). The stats run off the loop.
-    Each pruned server is warned about here and recorded on the MCP report as
-    failed by :meth:`_begin_session_report`, which every array build reaches
-    before its request is sent.
+    path gains no awaited step (harness-parity H13). The stats run off the loop
+    (:func:`kiro_crew.acp.mcp_prune.prune_session_servers`, shared with the
+    shared runtime). Each pruned server is warned about there and recorded on the
+    MCP report as failed by :meth:`_begin_session_report`, which every array build
+    reaches before its request is sent.
     """
-    kept, pruned = await asyncio.to_thread(prune_unstartable, servers)
-    # Bounded where it is kept, by the report's own caps: the count by the
-    # failed bucket's size, and each name and reason by its string cap. The
-    # reason quotes the configured command, which can hold a whole CLI line
-    # with a key in it, so it is cleaned before it is kept or logged.
-    retained = tuple(
-        PrunedServer(
-            sanitize_sink_text(str(server.name or ""), MCP_REPORT_NAME_CAP),
-            sanitize_sink_text(str(server.reason or ""), MCP_REPORT_ERROR_CAP),
-        )
-        for server in pruned[:MCP_REPORT_BUCKET_CAP]
-    )
-    omitted = len(pruned) - len(retained)
-    for server in retained:
-        logger.warning(
-            "%s session MCP: leaving server %r out of this session -- %s. The "
-            "session starts without it; fix its command to get its tools back",
-            self.backend,
-            server.name,
-            server.reason,
-        )
-    if omitted:
-        logger.warning(
-            "%s session MCP: leaving %d more unstartable servers out of this "
-            "session, not listed",
-            self.backend,
-            omitted,
-        )
-    self._mcp_pruned = retained
-    self._mcp_pruned_omitted = omitted
-    return kept
+    result = await prune_session_servers(self.backend, servers)
+    self._mcp_pruned = result.pruned
+    self._mcp_pruned_omitted = result.omitted
+    return result.kept
 
 
 def _start_mount_check(self: AcpClient) -> None:
