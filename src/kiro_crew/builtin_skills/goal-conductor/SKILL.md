@@ -284,9 +284,6 @@ in the goal or your plan never reaches the worker. Record the same line with
 `action=decide` for the board, and every later `decide` on that item repeats
 it.
 
-A worker on another crew is dispatched differently: see "Remote dispatch
-(preview)".
-
 Run the steps as separate calls only without `work_dispatch`, or to bind an
 existing session to a new item (step 4 of Patrol: skip step 2). Then make
 **one call at a time**, each after the previous reply came back, in
@@ -381,11 +378,6 @@ work you dispatched it to do, and the item would look stalled rather than
 misconfigured. `select_crew` and `session_create` are also **not wired**:
 `select_crew` returns a crew's resolved configuration and binds nothing, so you
 pass the agent name to `session_create` yourself.
-
-**Remote workers are visible sessions.** Dispatch a worker on another machine as
-its own session there, never as hidden subagents of a session on that machine.
-Only a visible session can be read, steered, stopped and patrolled. A hidden
-subagent has no item to report on, so its work never reaches the ledger.
 
 **A worker needs no memory of its own.** Always dispatch `kirocrew-worker` with
 `agent_kind: "template"`: the worker then runs the `kirocrew-worker` template on
@@ -502,7 +494,6 @@ Each cycle:
    | `done` | the worker CLAIMS acceptance is met | verify (step 3) |
    | `blocked` | an external dependency stopped the work | clear it or re-plan around it; when you answer the worker, `session_send` it, then `work_ledger_record` `action=decide` |
    | `question` | your own decision is needed | `session_send` the answer, then `work_ledger_record` `action=decide`; `session_read_message` the reply |
-   | `reply` | only while the `work_ledger.remote_dispatch` preview is on: the worker's answer to a follow-up you sent it | relay the summary to the worker that asked; run no acceptance, since it claims nothing finished. A `reply` replaces the item's status like any report, so verify a `done` before you send its worker a follow-up |
 
    `blocked` and `question` differ by who must act. That is why they are separate
    values, and why you must not treat one as the other.
@@ -704,8 +695,7 @@ Each cycle:
    `steer: true` saying what is wrong and what to do instead, then
    `work_ledger_record` `action=decide` with the same instruction. On track:
    say nothing. Then write each read's `total` into `next` as that item's
-   cursor with `session_ledger_record`. Skip a remote item on a patrol wake:
-   reading and steering it need an owner turn (Remote dispatch). Cost: at most
+   cursor with `session_ledger_record`. Cost: at most
    two reads per open item per patrol turn (the `since` read, plus the newest
    10 only on overflow), so at most 20 rows per item, and patrol turns come
    only from a report, a flag or the quiet-run floor.
@@ -855,95 +845,6 @@ say in the steered message which earlier instruction it supersedes.
 
 The same rule holds for a fleet: send a correction to several workers with
 `session_broadcast` with `mode: steer`.
-
-## Remote dispatch (preview)
-
-**With `work_ledger.remote_dispatch` off (the default), nothing in this section
-applies and nothing above changes.**
-
-With it on, you can put a leaf item's worker on a connected crew (another
-machine). The session lives there, shows in that crew's sidebar group, and runs
-under that crew's own approvals and credentials. The crew must have the switch
-on too and run the same major.minor version; `agent.session_control` must be on
-here, as for every session tool.
-
-**Conductor mode owner turns only.** Every `crew=` call, and every placed create,
-is admitted only in a turn the owner typed in their own persistent conductor mode
-chat. Anything else is refused (`not_user_turn`, `owner_only`, `conductor_mode_only`,
-`crew_owner_unverifiable`, `crew_caller_is_worker` and others): a plain chat on
-any other agent, a patrol wake, a `session_send` turn, a cron, and a conductor
-another session created. `work_ledger_read` and
-`action=decide` need no owner turn.
-
-**So on a patrol wake** you may read, verify, `accept`, `close` and `decide` a
-remote item, but not `session_send`, `session_read_message`, `session_stop` or
-`session_close` it. A `decide` reaches the worker's crew, but an idle worker
-reads it only at its next `work_brief`; nothing wakes it. When a remote worker
-needs a message, record the `decide`, tell the user, and send it in the next
-owner turn.
-
-**Dispatch a remote item** (`work_dispatch` is local only):
-
-1. `work_ledger_record` `action=create`, as for a local item.
-2. `session_create` with `work_item=<item_id>`, `title` and
-   `agent="kirocrew-worker"`, `agent_kind="template"` (optionally `model`). A
-   crew create refuses `folder`. The session is created already bound, so **skip
-   `bind`**. Name a crew with `crew=`, or omit it and the hub picks the
-   connected crew with the most headroom after its own reservations; the reply
-   then says which crew, and you pass that crew's id as `crew=` on every later
-   call.
-3. `session_send` the seed with `crew=` and the returned key as `target`. The
-   worker is on another machine and cannot see your checkout: the seed names
-   the repo URL and the branch to push.
-
-The crew create reply does not show the `patrol=` outcome; check with
-`monitor_inspect` and arm the loop as Patrol says if none runs.
-
-**No room.** A named crew short on memory, CPU or disk answers `crew_busy` and
-creates nothing. With no `crew=`, placement skips crews that are busy,
-unreachable, on another version or have the switch off, and answers
-`crew_none_available` when none admits the item. Either way the item stays open
-and unbound, and nothing falls back to this machine. Retry in a later owner
-turn; if it keeps failing, or a create is refused `crew_peer_lacks_work_items`,
-tell the user instead of retrying.
-
-**Driving it.** `session_send`, `session_read_message`, `session_stop` and
-`session_close` take the same `crew=` and reach only a crew session you created
-or one an open item of yours is bound to. After a hub restart only the open
-item counts, so close the worker's session before you `close` its item. A
-`decide` whose forward fails says it "did NOT reach the worker's crew"; record
-it again to retry. A remote row adds `worker_instance_id`, `crew_state`,
-`crew_down_since`, `pending_approval` and `remote_error`.
-
-**Reports reach you by a pull.** The hub pulls the worker's latest report from
-each open remote item's crew and files it as an ordinary report, so
-`accept_eval.py`, `accept` and `close` work as for a local item. A background
-puller does this every 30 seconds with no model turn, so a remote `done`,
-`blocked`, `question` or `reply` wakes your work-ledger patrol like a local
-one; a `work_ledger_read` pulls too. Each pull is best effort (a read takes at
-most 32 items in about 6 seconds). Only the latest report is filed: a status
-the worker passed through between two pulls never reaches you, and a row whose
-pull failed keeps its last state.
-
-**Follow-ups use `reply`.** To ask a finished worker something, keep its item
-open, `session_send` the question in an owner turn, and tell it to answer with
-`work_report status=reply`. A `reply` wakes you once pulled and claims nothing,
-so it needs no acceptance (the Patrol table row).
-
-**A lost crew.** When an item's crew has been seen down longer than
-`work_ledger.remote_dispatch_retire_minutes` (default 30), the next pull
-retires that binding: the item is open and unbound again, the row shows
-`redispatch_due` and `retired_crews`, and any later report from the retired
-worker is ignored, `done` included. The clock counts only while this hub is
-running and sees the crew down, so a restart starts it again. Redispatch in an
-owner turn with `session_create(work_item=)` and no `crew=`: placement skips
-retired crews, and its reply names the old worker's `previous_branch` when that
-worker reported one. Seed the new worker to start from that branch, if any, and
-push a NEW one. An explicit `crew=` create may still name a retired crew and
-returns no branch. The retired session can only be closed. Once its crew is
-back, a pull tries once to close it; if that fails, `session_close(crew=)` it
-in an owner turn. An item keeps at most 8 retired sessions not yet closed; a
-retire past that is refused `retired_history_full` and the binding stays.
 
 ## When a conductor dispatched you
 

@@ -27,6 +27,14 @@ CREW_TOOLS = (
     "session_close",
 )
 
+#: The goal-conductor skill keeps its remote-dispatch procedure out of SKILL.md, so
+#: a conductor learns of it only from these descriptions, which exist only while
+#: the preview is on.
+_READ_FIRST = (
+    "Before your first crew or work_item call, read references/remote-dispatch.md "
+    "in the goal-conductor skill's directory and follow it."
+)
+
 _CREW_PROPERTY: dict[str, Any] = {
     "type": "string",
     "description": (
@@ -36,7 +44,7 @@ _CREW_PROPERTY: dict[str, Any] = {
         'agent_kind ("template" only) and model (omit agent to get the crew\'s own '
         "default), and send, read, stop and "
         "close reach only a crew session YOU opened with session_create(crew=) on "
-        "that same crew; pass the key it returned as target."
+        "that same crew; pass the key it returned as target. " + _READ_FIRST
     ),
 }
 
@@ -49,7 +57,7 @@ _WORK_ITEM_PROPERTY: dict[str, Any] = {
         "Omit crew and the hub picks the connected crew with the most headroom; when "
         "none has room the item stays unbound, and only a turn the owner sends can "
         "retry. Its reports reach your next work_ledger_read, and a decide reaches "
-        "the worker."
+        "the worker. " + _READ_FIRST
     ),
 }
 
