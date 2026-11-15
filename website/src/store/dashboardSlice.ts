@@ -4,6 +4,7 @@ import { jsonEqual } from '../utils/structuralEqual'
 import { slotSurfaceKey } from './slotIdentity'
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { api } from '../api/client'
+import { asFrontRead } from '../api/readGate'
 import { streamFlush } from './streamFlush'
 import { ApiError } from '../api/apiError'
 import { isUnsafeKey } from '../utils/sanitize'
@@ -80,7 +81,9 @@ const initialState: DashboardState = {
   enabledAppIds: [],
 }
 
-export const fetchSlots = createAsyncThunk('dashboard/fetchSlots', () => api.chatSlots())
+// Inside `asFrontRead`: the dashboard cannot list or open a session before this
+// answers, so it takes the next free place among the reads (api/readGate).
+export const fetchSlots = createAsyncThunk('dashboard/fetchSlots', () => asFrontRead(() => api.chatSlots()))
 
 /** After a local read, check whether the shared watermark that read could
  *  not cover is an ORPHAN: newer than every saved row the gateway has for an
