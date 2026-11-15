@@ -94,7 +94,8 @@ export function milestoneSentence(done: number, total: number, waiting: string[]
   if (waiting.length) parts.push(i18nT(waiting.length === 1 ? 'components.crewMode.conductor_mode_recap_wait_one' : 'components.crewMode.conductor_mode_recap_wait', { names: joinNames(waiting) }))
   if (stuck.length) parts.push(i18nT(stuck.length === 1 ? 'components.crewMode.conductor_mode_recap_stuck_one' : 'components.crewMode.conductor_mode_recap_stuck_many', { names: joinNames(stuck) }))
   if (quiet.length) parts.push(i18nT(quiet.length === 1 ? 'components.crewMode.conductor_mode_recap_gone_quiet_one' : 'components.crewMode.conductor_mode_recap_gone_quiet_many', { names: joinNames(quiet) }))
-  if (running.length) parts.push(i18nT(running.length === 1 ? 'components.crewMode.conductor_mode_recap_run_one' : 'components.crewMode.conductor_mode_recap_run_many', { names: joinNames(running) }))
+  // Running milestones are listed right above the Recap, so it counts them, never repeats their titles.
+  if (running.length) parts.push(i18nT('components.crewMode.conductor_mode_row_count_running', { count: running.length }))
   return `${parts.join('; ')}.`
 }
 
@@ -230,19 +231,44 @@ const DONE_LINE_KEY = {
 } as const
 
 /** The goal in the user's own words: the ledger goal's first sentence with
- *  parentheticals removed, cut on a word boundary when long. */
-export function goalSentence(text: string, max = 90): string {
-  const one = firstSentence(text.replace(/\s*\([^)]*\)/g, '')).replace(/\s+([:,.;])/g, '$1').trim()
-  if (one.length <= max) return one
-  const cut = one.slice(0, max)
-  const at = cut.lastIndexOf(' ')
-  return `${(at > 30 ? cut.slice(0, at) : cut).replace(/[\s,:;]+$/, '')}…`
+ *  parentheticals removed, whole: the Overview wraps it, never cuts it. */
+export function goalSentence(text: string): string {
+  return firstSentence(text.replace(/\s*\([^)]*\)/g, '')).replace(/\s+([:,.;])/g, '$1').trim()
+}
+
+/** The goal's own "Done when ..." sentence and where it starts, or null. It ends at
+ *  a sentence end, never inside a number ("0.63 s"), or where the Plan begins. */
+export function goalDoneWhen(text: string): { at: number; what: string } | null {
+  const m = text.match(/\bdone when:?\s*(.+?)(?:[.。](?=\s|$)|(?=\s*\b(?:plan|changed)\s*:)|$)/i)
+  return m ? { at: m.index ?? 0, what: m[1].trim() } : null
 }
 
 /** Scope: a limits line, only when the goal states one ("Scope: ..." / "Limits: ..."). */
 export function goalScope(text: string): string {
   const m = text.match(/\b(?:scope|limits?|constraints?)\s*:\s*([^.。\n]+)/i)
   return m ? m[1].trim() : ''
+}
+
+/** The goal text's latest re-plan: the last entry of its "Changed:" part, or null
+ *  when the goal has none. An entry starts with its time ("10:20", "2026-11-14 10:20")
+ *  at the start of the part, a line or after a ";"; with no time, the whole part.
+ *  `at` is that time when the entry carries a date (optional seconds and fraction;
+ *  a "Z", "+08:00" or "+0800" zone is honoured, none reads as local time), null for
+ *  a bare time, no time, or a stamp not followed by a space or the end, so a zone
+ *  it cannot read gives no age instead of a wrong one.
+ *  shortcut: assumes entries are appended, newest last, as the conductor skill writes them. */
+export function latestChange(text: string): { text: string; stamp: string; at: number | null } | null {
+  const m = text.match(/\bchanged\s*:\s*([\s\S]+)$/i)
+  if (!m) return null
+  const part = m[1]
+  let from = 0
+  for (const t of part.matchAll(/(?:^|[;\n]\s*)((?:\d{4}-\d{2}-\d{2}[ T])?\d{1,2}:\d{2})/g)) from = (t.index ?? 0) + t[0].length - t[1].length
+  const entry = part.slice(from).replace(/\s+/g, ' ').trim().replace(/[.。]$/, '')
+  if (!entry) return null
+  const s = entry.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2})(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?(?=\s|$)/)
+  const zone = (s?.[6] ?? '').replace(/^([+-]\d{2})(\d{2})$/, '$1:$2')
+  const at = s ? Date.parse(`${s[1]}T${s[2].padStart(2, '0')}:${s[3]}:${s[4] ?? '00'}${s[5] ?? ''}${zone}`) : NaN
+  return { text: entry, stamp: s ? s[0] : '', at: Number.isFinite(at) ? at : null }
 }
 
 type MilestoneState = 'done' | 'not_done' | 'needs_you' | 'running' | 'waiting' | 'quiet' | 'stuck' | 'next'
@@ -332,37 +358,40 @@ const STATE_ICON: Record<MilestoneState, JSX.Element> = {
   next: <span className="block w-5 h-5 rounded-full border-[1.5px] border-dashed border-[color-mix(in_srgb,var(--muted)_70%,transparent)]" />,
 }
 
+/** A text that wraps, a long word (a SHA, a path) included, instead of being cut. */
+const WRAP = 'min-w-0 [overflow-wrap:anywhere]'
+
 function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoardItem; state: MilestoneState; waitingOn: string; now: number; onOpen?: () => void }) {
   let sub: JSX.Element | string = ''
   if (state === 'done') {
     const link = artifactEntries(item).find(([, v]) => /^https?:\/\//.test(v))
     sub = <>
-      <span className="truncate">{firstSentence(item.summary)}</span>
+      <span className={WRAP}>{firstSentence(item.summary)}</span>
       {item.pr != null && <span className="shrink-0 conductor-mode-accent">{i18nT('components.crewMode.conductor_mode_ms_pr', { n: item.pr })}</span>}
       {link && <a className="shrink-0 conductor-mode-accent hover:underline" href={link[1]} target="_blank" rel="noreferrer">· {link[0]}</a>}
     </>
   } else if (state === 'not_done') {
     const text = i18nT(item.state === 'rejected' ? 'components.crewMode.conductor_mode_ms_not_done_rejected' : 'components.crewMode.conductor_mode_ms_not_done_abandoned')
-    sub = <span className="truncate" title={firstSentence(item.summary) || text}>{text}</span>
+    sub = <span className={WRAP} title={firstSentence(item.summary) || text}>{text}</span>
   } else if (state === 'stuck' || (state === 'waiting' && onConductor(item))) {
     // Who acts next, not the worker's own words: a stuck row says why and how to
     // restart it, and a row the conductor owns says the main chat is on it.
     const said = firstSentence(item.summary)
     const text = i18nT(state === 'waiting' ? 'components.crewMode.conductor_mode_ms_main_chat_answering'
       : item.alive === 'closed' ? 'components.crewMode.conductor_mode_ms_stuck_chat_closed' : 'components.crewMode.conductor_mode_ms_stuck_unread')
-    sub = <span className="truncate" title={said || text}>{text}</span>
+    sub = <span className={WRAP} title={said || text}>{text}</span>
   } else if (state === 'quiet') {
     // Why it is quiet and the PR it named on one line, the worker's own last
     // words on the next, so a narrow panel keeps both: the PR number never
-    // shrinks, the reason and the words truncate.
+    // shrinks, the reason and the words wrap.
     const said = firstSentence(item.summary)
     const why = i18nT('components.crewMode.conductor_mode_ms_quiet')
     sub = <span className="flex flex-col min-w-0 w-full">
-      <span className="flex items-center gap-1 min-w-0">
-        <span className="min-w-0 truncate" title={why} data-testid="conductor-mode-quiet-reason">{why}</span>
+      <span className="flex flex-wrap items-baseline gap-x-1 min-w-0">
+        <span className={WRAP} title={why} data-testid="conductor-mode-quiet-reason">{why}</span>
         {item.pr != null && <span className="shrink-0">{i18nT('components.crewMode.conductor_mode_ms_pr', { n: item.pr })}</span>}
       </span>
-      {said && <span className="truncate" title={said} data-testid="conductor-mode-quiet-said">{said}</span>}
+      {said && <span className={WRAP} title={said} data-testid="conductor-mode-quiet-said">{said}</span>}
     </span>
   } else if (state === 'waiting') {
     // What it waits on, only as far as the board knows: the PR it reported, then
@@ -372,7 +401,7 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
       : said ? i18nT('commandCenter.worker_group_waiting') : i18nT('components.crewMode.conductor_mode_ms_waiting_no_reason')
     sub = <>
       <span className="shrink-0">{head}</span>
-      {said && <span className="truncate" title={said}>· {said}</span>}
+      {said && <span className={WRAP} title={said}>· {said}</span>}
     </>
   } else {
     // A worker idle inside its own loop reads one way, typed: "In progress · PR #N".
@@ -380,22 +409,21 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
       : state === 'running' && item.alive !== 'running' && item.pr != null ? `${i18nT('components.crewMode.conductor_mode_ms_running')} ${i18nT('components.crewMode.conductor_mode_ms_pr', { n: item.pr })}`
       : state === 'running' ? (firstSentence(item.summary) || i18nT('components.crewMode.conductor_mode_ms_running'))
         : i18nT('components.crewMode.conductor_mode_ms_not_started')
-    sub = <span className="truncate" title={text}>{text}</span>
+    sub = <span className={WRAP} title={text}>{text}</span>
   }
-  // "now" only for a turn in flight; a loop between checks shows the time since its report.
-  const right = state === 'running' && item.alive === 'running' ? i18nT('components.crewMode.conductor_mode_ms_now')
-    : state === 'next' ? i18nT('components.crewMode.conductor_mode_ms_next')
-      : state === 'done' || state === 'not_done' ? fmtMinutes(minutesBetween(item.created_at, item.closed_at || item.last_report_at))
-        : fmtMinutes(minutesBetween(item.last_report_at || item.created_at, now))
+  // The time since its last report, a running turn's too (the spinner says it runs).
+  const right = state === 'next' ? i18nT('components.crewMode.conductor_mode_ms_next')
+    : state === 'done' || state === 'not_done' ? fmtMinutes(minutesBetween(item.created_at, item.closed_at || item.last_report_at))
+      : fmtMinutes(minutesBetween(item.last_report_at || item.created_at, now))
   return (
     <li className="flex items-start gap-2.5 py-1.5" data-testid="conductor-mode-milestone" data-state={state}>
       <span className="mt-0.5 shrink-0">{STATE_ICON[state]}</span>
       <span className="flex-1 min-w-0">
         {/* A milestone with a crew member opens it, so a blocked one is one click from where it is decided. */}
         {onOpen
-          ? <button type="button" onClick={onOpen} data-testid="conductor-mode-milestone-open" className={`block max-w-full text-left text-[13px] font-medium truncate hover:underline ${state === 'next' ? 'text-muted' : 'text-text'}`}>{item.title}</button>
-          : <span className={`block text-[13px] font-medium truncate ${state === 'next' ? 'text-muted' : 'text-text'}`}>{item.title}</span>}
-        <span className={`flex items-center gap-1 min-w-0 text-[12px] ${state === 'needs_you' ? 'crew-tone-warn' : 'text-muted'}`}>{sub}</span>
+          ? <button type="button" onClick={onOpen} data-testid="conductor-mode-milestone-open" className={`block max-w-full text-left text-[13px] font-medium [overflow-wrap:anywhere] hover:underline ${state === 'next' ? 'text-muted' : 'text-text'}`}>{item.title}</button>
+          : <span className={`block text-[13px] font-medium [overflow-wrap:anywhere] ${state === 'next' ? 'text-muted' : 'text-text'}`}>{item.title}</span>}
+        <span className={`flex flex-wrap items-baseline gap-x-1 min-w-0 text-[12px] ${state === 'needs_you' ? 'crew-tone-warn' : 'text-muted'}`}>{sub}</span>
       </span>
       <span className={`shrink-0 text-[11px] tabular-nums mt-0.5 ${state === 'running' ? 'conductor-mode-accent font-medium' : 'text-muted'}`}>{right}</span>
     </li>
@@ -681,11 +709,12 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   const items = useMemo(() => [...(board.data?.items ?? [])].sort((a, b) => { const x = a.created_at || '', y = b.created_at || ''; return x < y ? -1 : x > y ? 1 : 0 }), [board.data])
   const goalText = (board.data?.conductor?.goal || '').replace(/\s+/g, ' ').trim()
   // A goal that says its own "Done when ..." wins over the acceptance kinds.
-  const doneMatch = goalText.match(/\bdone when:?\s*([^.。]+)/i)
-  const goalFull = firstSentence((doneMatch ? goalText.slice(0, doneMatch.index) : goalText).replace(/\s*\([^)]*\)/g, '')).trim()
-  const goal = goalSentence(goalText.slice(0, doneMatch ? doneMatch.index : undefined) || goalText)
-  const doneText = doneMatch ? i18nT('components.crewMode.conductor_mode_done_when', { what: doneMatch[1].trim() }) : doneWhen(items)
+  const doneMatch = goalDoneWhen(goalText)
+  const goalFull = goalSentence((doneMatch ? goalText.slice(0, doneMatch.at) : '') || goalText)
+  const doneText = doneMatch ? i18nT('components.crewMode.conductor_mode_done_when', { what: doneMatch.what }) : doneWhen(items)
   const scope = goalScope(goalText)
+  // The raw goal: its Changed entries may be one per line, which collapsing would lose.
+  const changed = latestChange(board.data?.conductor?.goal || '')
   const now = Date.now()
   // Which ledger item each pending approval belongs to: the crew list's own join.
   const approvalByItem = new Map<string, string>()
@@ -764,10 +793,15 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
           <section data-testid="conductor-mode-overview" className="space-y-0.5">
             <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{i18nT('components.crewMode.conductor_mode_overview')}</h3>
             {runState && <RunLine state={runState} run={board.data?.run} />}
-            <p className="text-[14px] font-semibold text-text line-clamp-1 break-words" title={goalFull}>{goal || i18nT('components.crewMode.conductor_mode_goal_none')}</p>
+            <p className="text-[14px] font-semibold text-text [overflow-wrap:anywhere]" data-testid="conductor-mode-goal">{goalFull || i18nT('components.crewMode.conductor_mode_goal_none')}</p>
             {/* "Done when" needs something to finish: no goal and no milestone, no line. */}
-            {(goalText || items.length > 0) && <p className="text-[12px] text-text/85 line-clamp-1" title={doneText}>{doneText}</p>}
-            {scope && <p className="text-[11px] text-muted line-clamp-1" title={scope}>{scope}</p>}
+            {(goalText || items.length > 0) && <p className="text-[12px] text-text/85 [overflow-wrap:anywhere]" data-testid="conductor-mode-done-when">{doneText}</p>}
+            {scope && <p className="text-[11px] text-muted [overflow-wrap:anywhere]">{scope}</p>}
+            {/* The goal's own Changed line: the conductor's latest re-plan and how old it
+                is, so a rewrite shows here and a goal nobody rewrote reads as old. */}
+            {changed && <p className="text-[12px] text-muted [overflow-wrap:anywhere]" data-testid="conductor-mode-changed" title={changed.stamp || undefined}>{changed.at != null
+              ? i18nT('components.crewMode.conductor_mode_changed_when', { when: fmtRelative(Math.min(changed.at, now)), what: changed.text })
+              : i18nT('components.crewMode.conductor_mode_changed', { what: changed.text })}</p>}
           </section>
           {/* (2) Needs your input: the chat's own ask_question card and the crew's
               approval cards, both compact. */}
@@ -814,7 +848,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
                     onToggle={e => setDoneOpen((e.currentTarget as HTMLDetailsElement).open)}>
                     <summary className="flex items-center gap-2.5 py-1.5 cursor-pointer list-none">
                       <span className="shrink-0">{STATE_ICON.done}</span>
-                      <span className="flex-1 min-w-0 text-[13px] text-text truncate">{i18nT('components.crewMode.conductor_mode_ms_done_fold', { n: doneMs.length })}{!doneOpen && <span className="text-muted"> · {fmtList(doneMs.map(m => m.item.title), { style: 'narrow' })}</span>}</span>
+                      <span className="flex-1 min-w-0 text-[13px] text-text">{i18nT('components.crewMode.conductor_mode_ms_done_fold', { n: doneMs.length })}</span>
                       <ChevronRight size={14} aria-hidden="true" className="shrink-0 text-muted transition-transform group-open:rotate-90" />
                     </summary>
                     <ol className="divide-y divide-border pl-2">{doneMs.map(m => <MilestoneRow key={m.item.item_id} {...m} now={now} onOpen={openItem(m.item)} />)}</ol>
@@ -828,7 +862,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
           {/* (4) Recap: one line from the session summary. */}
           <section data-testid="conductor-mode-recap-section" className="space-y-0.5">
             <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{i18nT('components.crewMode.conductor_mode_recap_title')}</h3>
-            <p className="text-[13px] leading-snug text-text line-clamp-2 break-words" title={recap} data-testid="conductor-mode-recap">{recap}</p>
+            <p className="text-[13px] leading-snug text-text [overflow-wrap:anywhere]" data-testid="conductor-mode-recap">{recap}</p>
             {summary.isError && !isNotFoundError(summary.error) && <ErrorNotice variant="inline" message={errMessage(summary.error) || i18nT('components.errorBoundary.something_went_wrong')} askAgent />}
           </section>
         </div>
