@@ -503,6 +503,7 @@ async def _kill_process(self: AcpClient, *, force: bool = False, exit_grace: flo
             try:
                 pipe.close()  # type: ignore[union-attr]
             except Exception:
+                # One pipe that fails to close must not stop the others or the cleanup below.
                 pass
 
     # Snapshot child PIDs before killing — children in different
@@ -627,6 +628,7 @@ def _reset_state(self: AcpClient) -> None:
                 try:
                     pipe.close()  # type: ignore[union-attr]
                 except Exception:
+                    # One pipe that fails to close must not stop the others or the cleanup below.
                     pass
     # Clean up sandbox temp files (macOS seatbelt profile)
     self._discard_sandbox_cleanup()

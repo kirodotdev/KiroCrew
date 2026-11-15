@@ -518,6 +518,7 @@ def _acp_runtime_census(
                 if total_pages > 0:
                     rss_bytes = total_pages * page_size
             except Exception:
+                # A sum that fails leaves the memory size unknown; the runtime is still listed.
                 pass
         runtimes.append(
             _AcpRuntime(root, owner, cpu_pct, age_of(first[root].start_ticks), rss_bytes)
