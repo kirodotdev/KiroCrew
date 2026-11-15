@@ -286,6 +286,11 @@ METHOD_KAS_CODE_INTELLIGENCE = "_kiro/codeIntelligence"
 #: through kiro-cli 2.27.1 and 2.29.0; captured within one process, KAS 0.66.62
 #: through kiro-cli 2.34.0, in ``test/fixtures/acp_frames/kas/mcp-live-apply-live.jsonl``).
 METHOD_SESSION_CLOSE = "session/close"
+#: The standard ACP delete verb, advertised as ``sessionCapabilities.delete``. A
+#: REQUEST with ``{"sessionId": ...}``, answered ``{}``. pi-acp serves it by
+#: unlinking pi's session file and dropping the id from its own session map
+#: (pi-acp 0.0.34), so it is how a disposable pi session's record goes.
+METHOD_SESSION_DELETE = "session/delete"
 METHOD_COMPACTION_STATUS = "_kiro.dev/compaction/status"
 METHOD_CLEAR_STATUS = "_kiro.dev/clear/status"
 METHOD_AGENT_SWITCHED = "_kiro.dev/agent/switched"
