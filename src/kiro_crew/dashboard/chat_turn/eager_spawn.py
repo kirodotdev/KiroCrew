@@ -911,6 +911,7 @@ async def _eager_spawn(
                     _bound=_bound,
                     start_priority=start_priority,
                     focus_resume=focus_resume,
+                    store_to_warm=selected_store,
                 )
             finally:
                 # Every exit that is not a registration -- refused, another
@@ -957,6 +958,7 @@ async def _spawn_admitted_prefetch(
     _bound: tuple,
     start_priority: StartPriority,
     focus_resume: bool = False,
+    store_to_warm: str | None = None,
 ) -> None:
     """The admitted half of ``_eager_spawn``: handshake, guards, registration.
 
@@ -1050,6 +1052,28 @@ async def _spawn_admitted_prefetch(
         logger.info("Eager spawn: %s left to first turn (refused)", session_key)
         return
     sessions.release(session_key)
+    if is_new and not resumed and not slot.blocks_reads:
+        # The first message's build reads every recent-history file (about 75 in a
+        # busy store, a quarter of a second through the hardened reader). None of
+        # that depends on the message, so it is read now, beside the person's
+        # think time, and the build reuses it while the directory is unchanged
+        # (``MemoryStore.warm_recent_history``). A failure only costs the head start.
+        builder = getattr(state, "context_builder", None)
+        if builder is not None:
+            workspace = slot.workspace or None
+
+            def _read_history_early(warm_builder: Any) -> None:
+                warm_builder.get_memory_for(workspace, store_to_warm).warm_recent_history(days=14)
+
+            async def _warm_history() -> None:
+                try:
+                    await asyncio.to_thread(_read_history_early, builder)
+                except Exception:  # noqa: BLE001 - the first build reads for itself
+                    logger.debug("Eager spawn: history was not read early", exc_info=True)
+
+            warm = asyncio.create_task(_warm_history())
+            state._background_tasks.add(warm)
+            warm.add_done_callback(state._background_tasks.discard)
     # The cleanup below may only tear down a session THIS task created.
     # is_new=False means another creator won the same-key race (or the
     # claim attached to an already-registered session): a real turn
