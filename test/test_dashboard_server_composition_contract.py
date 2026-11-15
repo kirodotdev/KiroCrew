@@ -486,6 +486,13 @@ _LAZY_IMPORTS = {
 
 
 def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
+    """The scan must equal ``_LAZY_IMPORTS`` exactly. No total is pinned beside it: the
+    table is the record, one line per module, so two changes that each add an import
+    edit different lines. A hand-kept total is one line both would edit to the same
+    number, which merges cleanly and is wrong (testing-conventions § Merge-safe
+    ratchets)."""
+    listed = [name for names in _LAZY_IMPORTS.values() for name in names.split()]
+    assert sorted(name for name in set(listed) if listed.count(name) > 1) == []
     expected = {name: module for module, names in _LAZY_IMPORTS.items() for name in names.split()}
     local: dict[str, set[str]] = {}
     for source in _owner_sources().values():
@@ -500,8 +507,8 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                 elif isinstance(node, ast.Import):
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
+    assert expected, "the lazy-import table is empty -- the scan has nothing to match"
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 156
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

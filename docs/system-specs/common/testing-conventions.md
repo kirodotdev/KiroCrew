@@ -792,6 +792,51 @@ Rules that decide whether one is worth having:
   (`context._memory_stores` / `_lesson_stores` behind `_stores_lock`), and reset those
   globals through `monkeypatch`, never raw assignment.
 
+### Merge-safe ratchets and counts
+
+Each pull request's CI runs on its own base, and the repository merges without
+testing the combined tree (there is no merge queue). So a ratchet, count or budget
+test must stay green when two changes that are each green on the same base both
+land. Git is the only check between them: two edits to the same line, or to lines
+that touch, conflict and the second author rebases onto the first; two edits that
+make one line the same new text merge cleanly. A test whose record is one shared
+number is therefore broken by design: two changes that each add one site both
+write `9` over `8`, git merges that silently, and `main` holds ten sites. Most of
+the ratchet reds on `main` in 2026-11 had this shape: the lazy-import total in
+`test_dashboard_server_composition_contract.py`, the owner-marked count in
+`test_pid_reader_ratchet.py`, and security line-budget rows written as the amount
+over budget.
+
+- **Never pin an aggregate the record already decides.** When the test compares the
+  scan with a table, mapping or set, a hand-kept total beside it adds no check and is
+  the one line both changes edit identically. Drop it. A number the message must
+  print is computed from the table.
+- **Key the record by what changes.** One entry per file, per site or per change: a
+  dict entry on its own line, a line in a baseline file
+  (`test/wait_discipline_baseline.txt`), or one row file per change
+  (`test/security_line_budget/<change>.txt`). Two changes to different files then
+  edit different lines and both land correct; two changes to the same key edit the
+  same line and conflict, which is the check working. A single module constant such
+  as `_BASELINE_SITES = 143` is the shape this rule refuses.
+- **Exact per key, not exact on the sum.** Equality on keyed entries is merge-safe and
+  leaves no slack: removing a site lowers its own line. A ceiling (`<=`) on a shared
+  total is merge-safe only while nobody may grow into its headroom without a row, so
+  a budget grows by rows that carry the change's OWN delta (lines added minus lines
+  removed, measured from the diff), never by "the amount over": that is growth minus
+  whatever headroom the base had, and two such rows under-count once both merge.
+- **Name the residual.** Two changes that add the same number of sites under the
+  same key still make the same edit. When that happens in practice, narrow the key
+  (file to function).
+- **Some cross-file checks must stay exact, and their red after a merge is a real
+  defect.** A facade's `TYPE_CHECKING` manifest compared with its owners' imports
+  (`test_updates_handlers_facade.py`), or a doc that must be reachable from its
+  directory's index (`scripts/docs_lint.py`): when two changes leave the merged tree
+  inconsistent, the tree is wrong. Fix the tree; do not loosen the check.
+- **Prove it with a two-branch merge.** In a scratch clone, cut two branches from one
+  base, make one change of the counted class on each (different files) and update the
+  record exactly as the failure message says, then merge both and run the test. It is
+  red before the fix and green after, and the PR body says so.
+
 ### Channel wire fakes: borrow the library's read side, do not model it
 
 `kiro_crew.testing.fake_channel_wire` fakes a channel's `aiohttp` session one layer

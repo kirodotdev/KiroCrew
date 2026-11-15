@@ -1250,6 +1250,19 @@ custom-rules:
       `jq`; a link, via `make_dir_link` or `make_escaping_link`) stays
       flagged: supply it.
 
+      A ratchet must also survive two changes merging without a test of the
+      combined tree: two edits that turn one line into the same new text merge
+      cleanly, so a record that is ONE shared number goes red on main when two
+      changes each add a site (both write `9` over `8`). FLAG, in a ratchet the
+      diff adds or rewrites: a module-level total the scan is compared with
+      when the sites could be recorded one line per file, site or change; a
+      hand-kept total asserted beside an exact table or set that already
+      decides it; a message that tells the author to record "the amount over"
+      a shared budget instead of the change's own delta. Do NOT flag a frozen
+      snapshot of a one-time event no later change edits. Moving a shared
+      number to a keyed record whose every key stays exact is tightening, not
+      loosening (testing-conventions.md § Merge-safe ratchets and counts).
+
       When a ratchet cannot be satisfied without loosening it, that is the
       finding — say so on the PR instead of editing the ratchet.
 
