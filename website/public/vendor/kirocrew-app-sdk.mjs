@@ -36,4 +36,10 @@ export const {
   // WS event scope prediction, so a subscription that will never be delivered warns at
   // development time instead of silently receiving nothing.
   checkSubscribeAllowed,
+  // Ask the owner to change which memory Crew uses; the host sheet does the switch (level 10).
+  requestMemoryProviderChange,
+  // Ask the owner to move memory between providers; the host sheet runs it (level 10).
+  requestMemoryMove,
+  // Ask the owner to benchmark memory providers; the host sheet starts the run (level 10).
+  requestMemoryBench,
 } = m

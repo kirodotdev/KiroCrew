@@ -8,6 +8,9 @@
  * path shows no such box, and the Library and the detail page build the gate's
  * target from the manifest the row or the install record carries.
  */
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import en from '../i18n/locales/en.json'
 import { describe, it, expect, vi } from 'vitest'
 import { render, renderHook, screen, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
@@ -103,6 +106,12 @@ describe('TrustAppModal host endpoint disclosure', () => {
 describe('trustGrants', () => {
   // Every entry point that opens the gate (Library, detail page, local-source
   // switch) spreads this helper, so the declared paths reach each of them.
+  it('discloses memory administration once and only for literal true', () => {
+    expect(trustGrants({ memoryAdmin: true, api: ['/api/chat', '/api/memory/provider'] }).api)
+      .toEqual(['/api/chat', '/api/memory/provider'])
+    expect(trustGrants({ memoryAdmin: 'true' } as never).api).toBeUndefined()
+  })
+
   it('carries the declared paths as the manifest lists them', () => {
     expect(trustGrants({ api: ['/api/chat'] }).api).toEqual(['/api/chat'])
     expect(trustGrants(undefined).api).toBeUndefined()
@@ -132,6 +141,16 @@ describe('useAppActions trust target', () => {
     return value
   }
 
+  it('discloses memory administration from both registry and installed manifests', () => {
+    const row = { name: 'crew-app', manifest: { permissions: { memoryAdmin: true } } }
+    for (const app of [target([], [row]), target([row], [])]) {
+      expect(app.api).toEqual(['/api/memory/provider'])
+    }
+    const dialog = renderModal({ ...BASE, ...target([], [row]) })
+    expect(dialog.getByText('pages.overview.memoryProvider.admin_grant')).toBeTruthy()
+    expect(dialog.queryByText('/api/memory/provider')).toBeNull()
+  })
+
   it('carries the declared paths from a registry row', () => {
     const row = {
       name: 'crew-app', displayName: 'Crew App', description: '', version: '1.0.0', author: '',
@@ -146,5 +165,27 @@ describe('useAppActions trust target', () => {
       manifest: { permissions: { api: ['/api/source/pull-request'] } },
     }
     expect(target([installed], []).api).toEqual(['/api/source/pull-request'])
+  })
+})
+
+describe('memory administration instruction disclosure', () => {
+  it('names every instruction-writing surface admitted by HOST_ROUTES', () => {
+    const source = readFileSync(join(__dirname, '../../../src/kiro_crew/dashboard/handlers/memory_app_host.py'), 'utf8').replace(/\r\n/g, '\n')
+    const table = source.match(/HOST_ROUTES:[\s\S]*?\n\)/)?.[0]
+    expect(table).toBeDefined()
+    const writes = [...table!.matchAll(/\("(POST|PUT|PATCH|DELETE)", "([^"]+)"\)/g)]
+      .map(([, method, path]) => `${method} ${path}`)
+      .filter(row => !row.includes(' /api/memory/'))
+    const surfaces = {
+      'PUT /api/members/{slug}/rules': "each Bot's rules",
+      'PUT /api/members/{slug}/goals/long-term': 'long-term goals',
+      'PUT /api/members/{slug}/soul': 'personality',
+      'PUT /api/steering/{key}': 'standing instructions',
+      'PUT /api/chat/slots/{slot}/steering': 'for every chat',
+    }
+    expect(writes.sort()).toEqual(Object.keys(surfaces).sort())
+    for (const phrase of Object.values(surfaces)) {
+      expect(en.pages.overview.memoryProvider.admin_grant).toContain(phrase)
+    }
   })
 })

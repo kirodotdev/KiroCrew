@@ -2703,44 +2703,75 @@ Apps declare their agents, skills and `mcpServers` in `app.json`, and
 
 ### Memory provider routes
 
-These are owner routes: the owner's own dashboard session reaches them, and every app
-token and agent secret is refused (403 `owner_only`). They answer for whichever
-provider is active (Crew's own memory included). `?store=<name>` names a configured
-store; `?provider=builtin` reads Crew's own memory while another provider replaces it.
-A provider app is reached only by the gateway, through the contract below.
+The memory provider feature is a Feature preview, off by default. While a Crew does not
+run it (`KIROCREW_MEMORY_PROVIDER_PREVIEW=1` or the owner's switch in Settings > Feature
+previews, applied on the next gateway start), every route below is a 404,
+`memoryAdmin` is neither granted nor honoured (install and permissions show it as not
+enabled), and the SDK calls below settle `'not_enabled'` without opening anything.
+
+With `permissions.memoryAdmin` an app token reaches these, for whichever provider is
+active (Crew's own memory included). `?store=<name>` names a configured store;
+`?provider=builtin` reads Crew's own memory while another provider replaces it. An app may name only Crew's own memory, the active provider, or a provider it declares itself.
 
 | Route | What it does |
 |---|---|
 | `GET /api/memory/provider` | mode, active id, every installed provider with its `connect` answer, `mode_gaps`, consent, latency (`?probe=1` runs `connect` again and adds health) |
-| `PUT /api/memory/provider` | switch: `{"mode", "id"?}` |
 | `GET /api/memory/provider/items` | list (`?cursor=`, `?kinds=`, `?status=active\|draft\|retired\|all`, `?updated_after=`) or search (`?q=`) |
 | `GET/PATCH/DELETE /api/memory/provider/items/{id}` | read, replace (`{"item": {...}, "expected_revision"?}`), delete one item |
 | `GET /api/memory/provider/items/{id}/revisions` | one item's history; 404 `not_supported` without `history.revisions` |
 | `POST /api/memory/provider/items` | add one item |
-| `POST /api/memory/provider/migrations` | plan (`"dry_run": true`) or run a move: `{"from", "to", "store"?, "kinds"?, "include_retired"?, "preserve_timestamps"?}` |
-| `GET /api/memory/provider/migrations`, `GET/DELETE /api/memory/provider/migrations/{id}` | list, follow, cancel |
-| `POST /api/memory/provider/migrations/{id}/resume`, `.../rollback` | continue from the checkpoint; delete exactly what the move inserted |
+| `POST /api/memory/provider/migrations` | plan a move: `{"from", "to", "store"?, "kinds"?, "include_retired"?, "preserve_timestamps"?, "dry_run": true}`. An app may only plan; a run is the owner's, and the owner's `"egress_consent": true` records consent for a remote target first; a plan needs no consent |
+| `GET /api/memory/provider/migrations`, `GET/DELETE /api/memory/provider/migrations/{id}` | list, follow, cancel (an app: its own plans) |
 | `GET /api/memory/provider/export` | JSONL `kirocrew-memory/1` with a header and a trailer (`?include=retired,revisions`) |
-| `POST /api/memory/provider/import` | import a `kirocrew-memory/1` file (`?dry_run=1` plans it) |
+| `POST /api/memory/provider/import?dry_run=1` | plan an import of a `kirocrew-memory/1` file; an app may only plan |
+
+`PUT /api/memory/provider` (the switch) refuses every app token. Ask the owner instead
+with the App SDK:
+
+```ts
+import { requestMemoryProviderChange } from '@kirocrew/app-sdk'
+const outcome = await requestMemoryProviderChange({ mode: 'replace', id: 'app:my-app/bridge' })
+// 'switched' | 'cancelled' | 'unavailable' | 'not_enabled'
+```
+
+It opens the host's own confirmation sheet; only the owner's press switches. Ask for a
+move the same way; the host sheet plans it, shows the counts and samples, and only the
+owner's press runs it (a resume and a rollback are the owner's too):
+
+```ts
+import { requestMemoryMove } from '@kirocrew/app-sdk'
+const moved = await requestMemoryMove({ from: 'builtin', to: 'app:my-app/bridge' })
+// 'moved' | 'started' (closed while still copying) | 'cancelled' | 'unavailable' | 'not_enabled'
+```
+
+Both need App Kit level 10 (`APP_SDK_LEVEL >= 10`).
 
 ### Memory provider benchmarks
 
 Under `/api/memory/provider/bench`, the owner compares providers on public suites
 (LoCoMo, LongMemEval, BEAM, MemoryAgentBench, PersonaMem v2, PrecisionMemBench) and on
 Crew's own forget and isolation probes, or on an eval set drawn from a read-only copy
-of their own memory. Every route is the owner's; no MCP tool and no CLI verb starts a
-run.
+of their own memory. With `memoryAdmin` an app may read the suites, plan a run
+(`POST /bench/runs` with `"dry_run": true`) and read its own plans and reports; only
+the owner starts, resumes or cancels a run or builds an eval set. No MCP tool and no
+CLI verb starts a run.
 
 | Route | What it does |
 |---|---|
 | `GET /api/memory/provider/bench/suites` | each suite's license, dimensions, ingest modes and whether its data is fetched |
-| `POST /api/memory/provider/bench/suites/{id}/fetch` | download and pin a suite's data |
 | `POST /api/memory/provider/bench/runs` | plan or start: `{"suite", "variant"?, "providers", "mode"?, "k"?, "budget_chars"?, "limit_instances"?, "max_llm_calls"?, "egress_ack"?, "dry_run"}` |
-| `GET /api/memory/provider/bench/runs`, `GET/DELETE /api/memory/provider/bench/runs/{id}` | list, follow, cancel (a cancel resets every scratch store the run created) |
-| `POST /api/memory/provider/bench/runs/{id}/resume` | continue at the next unit |
+| `GET /api/memory/provider/bench/runs`, `GET /api/memory/provider/bench/runs/{id}` | list and follow (an app: its own plans) |
 | `GET /api/memory/provider/bench/runs/{id}/report` | `kirocrew-bench-report/1` (`?format=md` for Markdown) |
 | `GET /api/memory/provider/bench/compare?runs=a,b` | providers across runs; refuses runs with different suites, cut-offs or models |
-| `POST/GET /api/memory/provider/bench/evalsets`, `GET/DELETE /api/memory/provider/bench/evalsets/{id}` | build (or plan) an own-memory eval set, list, read, delete |
+
+Ask the owner to start a run with the App SDK; the host sheet plans it, shows each
+provider's egress, cleanup and model call budget, and only the owner's press starts it:
+
+```ts
+import { requestMemoryBench } from '@kirocrew/app-sdk'
+const answer = await requestMemoryBench({ suite: 'precisionmem', providers: ['builtin', 'app:my-app/bridge'] })
+// { outcome: 'started', runId } | { outcome: 'cancelled' | 'unavailable' | 'not_enabled' }
+```
 
 A run writes only to stores named `bench/<run>/<unit>` with `scope.purpose: "bench"`.
 To be measured fairly, a provider answers a `bench` section in `connect` and serves two

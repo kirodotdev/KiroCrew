@@ -963,6 +963,10 @@ async def start_dashboard(
         from kiro_crew.shared_crew import lifecycle
 
         start_shared_crew_maintenance = lifecycle.install_lifecycle(app)
+    # The memory provider preview switch is read once, here, like Shared Crew's.
+    from kiro_crew.memory_provider.preview import snapshot_at_start
+
+    snapshot_at_start()
 
     # Register built-in apps (idempotent — surfaces baked-in features in App Store).
     # Runs on the executor: escalation cleanup can traverse/delete legacy app

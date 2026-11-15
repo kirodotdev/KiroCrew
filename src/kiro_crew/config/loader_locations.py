@@ -502,6 +502,22 @@ def shared_crew_preview_path() -> Path:
     return config_dir() / "shared_crew_preview.json"
 
 
+def memory_provider_preview_path() -> Path:
+    """Return path to memory_provider_preview.json -- the owner's memory provider preview switch.
+
+    A KEYSTONE for the reason :func:`shared_crew_preview_path` is one: turning it
+    on lets an app serve, replace or manage Crew's memory, which is an
+    authorization, not a preference. The leaf is on
+    ``security._CREW_SECRET_LEAVES`` for the tool path and the OS sandbox mounts
+    it read-only for the shell.
+
+    Holds ``{"enabled": bool}``. A missing, unreadable or malformed file reads
+    as OFF. The only writer is the owner-only ``PUT
+    /api/memory/provider-preview`` handler. Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "memory_provider_preview.json"
+
+
 def ssh_auth_sock_consent_path() -> Path:
     """Return path to ssh_auth_sock_consent.json -- the SSH-agent forward consent.
 

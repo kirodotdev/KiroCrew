@@ -52,6 +52,8 @@ vi.mock('../api/client', () => ({
     members: (...a: unknown[]) => members(...a),
     // The browsing sites card reads its own list; an empty one draws nothing.
     getAppBrowserSites: () => Promise.resolve({ sites: [], active: [] }),
+    // The memory provider preview runs, so a `memoryAdmin` grant is one to approve.
+    memoryProviderPreview: async () => ({ enabled: true, active: true, env_override: false, restart_required: false }),
   },
 }))
 
@@ -164,6 +166,25 @@ describe('AppDetailPage — uncovered surfaces', () => {
     __resetErrorJournalForTests()
     __resetNavSeamForTests()
     sessionStorage.clear()
+  })
+
+  it.each([false, true])('names memory administration on the permissions card (staged: %s)', async staged => {
+    const app = installedApp({
+      manifest: { permissions: { memoryAdmin: true } },
+      approvedGrants: { api: staged ? [] : ['/api/memory/provider'], events: [] },
+    })
+    getApp.mockResolvedValue(app)
+    renderDetail()
+    await loaded()
+    const label = "Read and edit Crew's memory and the instructions your Bots follow: each Bot's rules, long-term goals and personality, and the standing instructions for every chat"
+    expect(screen.getAllByText(label)).toHaveLength(staged ? 2 : 1)
+    expect(screen.queryByText('/api/memory/provider')).toBeNull()
+    if (staged) {
+      getApp.mockResolvedValue({ ...app, approvedGrants: { api: ['/api/memory/provider'], events: [] } })
+      fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
+      await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ api: ['/api/memory/provider'] })))
+      expect(await screen.findByText(`Approved: ${label}. The app can use them now.`)).toBeTruthy()
+    }
   })
 
   // --- Not found / load failure --------------------------------------------
@@ -905,6 +926,19 @@ describe('AppDetailPage — uncovered surfaces', () => {
     expect(screen.getByText('summarize')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ composerActions: ['summarize:insert'] })))
+  })
+
+  it('holds back the memory provider prefix memoryAdmin opens and approves it', async () => {
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', permissions: { api: [], events: [], memoryAdmin: true } },
+      approvedGrants: { api: [], events: [] },
+    }))
+    renderDetail()
+    await loaded()
+    expect(screen.getAllByText("Read and edit Crew's memory and the instructions your Bots follow: each Bot's rules, long-term goals and personality, and the standing instructions for every chat")).toHaveLength(2)
+    expect(screen.queryByText('/api/memory/provider')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ api: ['/api/memory/provider'] })))
   })
 
   it('lists a held-back worker auto-approve grant and approves its one entry', async () => {

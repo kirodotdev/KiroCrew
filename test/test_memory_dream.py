@@ -472,6 +472,10 @@ def test_an_exact_copy_and_a_near_duplicate_are_proposed_by_code(store) -> None:
     near = proposals[md.KIND_NEAR]
     assert set(near["keys"]) == {"lesson.far", "lesson.near"}
     assert all(p["gate"] == "pass" for p in proposals.values())
+    # Each cited row's updated_at at proposal time, so a later edit makes it stale.
+    assert all(
+        set(p["seen"]) == set(p["keys"]) and all(p["seen"].values()) for p in proposals.values()
+    )
 
 
 def _uncertain_pair(store) -> None:

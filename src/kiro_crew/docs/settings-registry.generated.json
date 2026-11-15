@@ -1507,6 +1507,14 @@
       "hint": "Kiro Crew signs in to MCP servers itself and passes the sign-in to chats on a harness it supports, such as Kiro Agent, Claude or Codex. kiro-cli chats sign in as before. Disconnect a server on Connections to remove access."
     },
     {
+      "id": "developer.memory-providers",
+      "label": "Memory providers",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.memory-providers",
+      "description": "Apps that serve, replace or manage Crew's memory",
+      "hint": "Lets an app serve or replace Crew's memory and, once you approve it, read and edit that memory."
+    },
+    {
       "id": "developer.model-for-the-small-model-judge",
       "label": "Model for the small-model judge",
       "tab": "developer",

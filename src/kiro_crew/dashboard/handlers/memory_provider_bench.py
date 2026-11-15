@@ -1,9 +1,20 @@
 """``/api/memory/provider/bench``: compare memory providers on public suites and on a copy of one's own memory.
 
-Every route answers the owner only; an app token or an agent's secret is refused.
+| Route | Who may call |
+|---|---|
+| ``GET /bench/suites`` | owner, ``memoryAdmin`` app |
+| ``POST /bench/suites/{id}/fetch`` | the owner |
+| ``POST /bench/runs`` | the owner; a ``memoryAdmin`` app with ``dry_run: true`` only |
+| ``GET /bench/runs``, ``GET /bench/runs/{id}``, ``GET /bench/runs/{id}/report`` | owner, app (its own plans only) |
+| ``POST /bench/runs/{id}/resume``, ``DELETE /bench/runs/{id}`` | the owner |
+| ``GET /bench/compare?runs=a,b`` | owner, app (its own runs only) |
+| ``POST /bench/evalsets``, ``DELETE /bench/evalsets/{id}`` | the owner |
+| ``GET /bench/evalsets``, ``GET /bench/evalsets/{id}`` | the owner; an app sees counts only |
+
 No MCP tool and no CLI verb starts a run: an agent cannot cause the egress a run can
-cause. Every call passes :func:`memory_provider._caller` and leaves one audit record.
-A run writes only to ``bench/<run>/<unit>`` stores of each provider and to temporary Crew stores,
+cause. Every call passes :func:`memory_provider._caller` (the owner, or an app whose
+``memoryAdmin`` grant the owner approved) and leaves one audit record. A run writes
+only to ``bench/<run>/<unit>`` stores of each provider and to temporary Crew stores,
 never to a store a person uses. Own memory goes only to a provider that says
 ``egress: local`` and can ``reset``, unless the request acknowledges that provider by
 id, app version and the exact item count the plan showed, for that run alone.
@@ -24,6 +35,7 @@ from kiro_crew.dashboard.handlers import memory_provider as base
 logger = logging.getLogger("kiro_crew.dashboard.handlers.memory_provider_bench")
 
 _tasks: set[asyncio.Task[Any]] = set()
+_APPS_PLAN_ONLY = "An app may plan a benchmark (a dry run); only the owner runs one."
 
 
 def _start(coro: Any) -> None:
@@ -40,6 +52,17 @@ def _notify(app: web.Application) -> Any:
             pass
 
     return push
+
+
+def _own(run: Any, caller: str) -> bool:
+    """Whether *caller* may read *run*.
+
+    The owner reads every run. An app (it reached this route holding the approved
+    ``memoryAdmin`` grant) reads the runs it planned and every run the owner started,
+    since a run an app asked for is started from the owner's own sheet; a report keeps
+    ids and scores, never memory text. Another app's plans stay its own.
+    """
+    return caller == "owner" or run.caller in (caller, "owner")
 
 
 async def _body(request: web.Request) -> dict[str, Any] | web.Response:
@@ -84,7 +107,7 @@ async def api_bench_suites(request: web.Request) -> web.Response:
 
 async def api_bench_suite_fetch(request: web.Request) -> web.Response:
     """POST /api/memory/provider/bench/suites/{id}/fetch: download and pin a suite's data."""
-    caller = await base._caller(request, "bench.fetch")
+    caller = await base._caller(request, "bench.fetch", owner_only=True)
     from kiro_crew.eval.bench.errors import BenchRefusal
     from kiro_crew.eval.bench.suites import get
 
@@ -140,8 +163,14 @@ def _load_corpus(options: Any) -> tuple[Any, Any]:
     return suite, corpus
 
 
-def _targets(run_id: str, options: Any, caller: str, suite_id: str) -> tuple[dict[str, Any], str]:
-    """Every provider's target, or ``({}, refusal)``. Never a live store."""
+def _targets(
+    run_id: str, options: Any, caller: str, suite_id: str, *, dry_run: bool = False
+) -> tuple[dict[str, Any], str]:
+    """Every provider's target, or ``({}, refusal)``. Never a live store.
+
+    A plan writes nothing, so its scratch target gets a directory that is never made;
+    a resume builds its targets again.
+    """
     from kiro_crew.eval.bench.ingest import prepare_embedder
     from kiro_crew.eval.bench.target import BASELINES
     from kiro_crew.eval.bench.target_builtin import ScratchBuiltinTarget
@@ -154,9 +183,14 @@ def _targets(run_id: str, options: Any, caller: str, suite_id: str) -> tuple[dic
         if pid in BASELINES:
             targets[pid] = BASELINES[pid]()
         elif pid in ("builtin", resolver.BUILTIN_PROVIDER_ID):
-            scratch = Path(tempfile.mkdtemp(prefix=f"kirocrew-bench-{run_id}-"))
+            if dry_run:
+                scratch = Path(tempfile.gettempdir()) / f"kirocrew-bench-{run_id}-plan"
+            else:
+                scratch = Path(tempfile.mkdtemp(prefix=f"kirocrew-bench-{run_id}-"))
             targets[pid] = ScratchBuiltinTarget(scratch, embed_fn=prepare_embedder(timeout_s=60.0))
         else:
+            if not base.app_may_name(caller, "", pid):
+                return {}, f"{pid}: an app may name only its own provider"
             provider = base._provider_by_id(pid)
             if provider is None or provider is builtin.BUILTIN:
                 return {}, f"{pid}: no such provider"
@@ -247,13 +281,16 @@ async def api_bench_runs(request: web.Request) -> web.Response:
         caller = await base._caller(request, "bench.runs.list")
         runs = await asyncio.to_thread(provider_run.list_runs)
         state = request.query.get("state")
-        rows = [r.to_record() for r in runs if not state or r.state == state]
+        rows = [r.to_record() for r in runs if _own(r, caller) and (not state or r.state == state)]
         return base._respond({"runs": rows})
     caller = await base._caller(request, "bench.runs.create")
     body = await _body(request)
     if isinstance(body, web.Response):
         return body
     dry_run = body.get("dry_run") is not False
+    if caller != "owner" and not dry_run:
+        base._audit(caller, "bench.runs.run", "denied", error="owner_only")
+        return base._json_error(_APPS_PLAN_ONLY, "owner_only", 403)
     try:
         options = provider_run.RunOptions.from_request(body)
         suite, corpus = await asyncio.to_thread(_load_corpus, options)
@@ -261,9 +298,13 @@ async def api_bench_runs(request: web.Request) -> web.Response:
         return base._json_error(str(exc), "invalid_run")
     except Exception as exc:  # noqa: BLE001 - an unfetched suite is a refusal, not a crash
         return base._json_error(str(exc)[:500], "suite_not_fetched", 409)
+    if suite.id == "own" and caller != "owner":
+        return base._json_error("Only the owner benchmarks their own memory.", "owner_only", 403)
     run_id = provider_run.new_run_id()
     try:
-        targets, refusal = await asyncio.to_thread(_targets, run_id, options, caller, suite.id)
+        targets, refusal = await asyncio.to_thread(
+            _targets, run_id, options, caller, suite.id, dry_run=dry_run
+        )
     except Exception as exc:  # noqa: BLE001 - an embedder that is not ready is a refusal
         return base._json_error(str(exc)[:500], "target_unavailable", 503)
     if refusal:
@@ -278,6 +319,7 @@ async def api_bench_runs(request: web.Request) -> web.Response:
         run.plan["egress_refusal"] = egress
     if dry_run:
         await asyncio.to_thread(provider_run.save, run)
+        await asyncio.to_thread(provider_run.prune)
         base._audit(caller, "bench.runs.plan", "allowed", resources=run.id)
         return base._respond({"run_id": run.id, "state": run.state, "plan": run.plan})
     models = await asyncio.to_thread(_models, options)
@@ -329,7 +371,7 @@ def _run_or_404(run_id: str, caller: str) -> Any:
     from kiro_crew.eval.bench import provider_run
 
     run = provider_run.get(run_id)
-    if run is None:
+    if run is None or not _own(run, caller):
         return base._json_error("no such run", "not_found", 404)
     return run
 
@@ -338,8 +380,9 @@ async def api_bench_run(request: web.Request) -> web.Response:
     """GET (status) / DELETE (cancel and clean up) /api/memory/provider/bench/runs/{id}."""
     from kiro_crew.eval.bench import provider_run
 
+    owner_only = request.method != "GET"
     caller = await base._caller(
-        request, "bench.runs.get" if request.method == "GET" else "bench.runs.cancel"
+        request, "bench.runs.get" if not owner_only else "bench.runs.cancel", owner_only=owner_only
     )
     found = await asyncio.to_thread(_run_or_404, request.match_info["id"], caller)
     if isinstance(found, web.Response):
@@ -403,7 +446,7 @@ async def api_bench_run_resume(request: web.Request) -> web.Response:
     """POST /api/memory/provider/bench/runs/{id}/resume: continue at the next unit."""
     from kiro_crew.eval.bench import provider_run
 
-    caller = await base._caller(request, "bench.runs.resume")
+    caller = await base._caller(request, "bench.runs.resume", owner_only=True)
     found = await asyncio.to_thread(_run_or_404, request.match_info["id"], caller)
     if isinstance(found, web.Response):
         return found
@@ -516,10 +559,12 @@ async def api_bench_evalsets(request: web.Request) -> web.Response:
     from kiro_crew.eval.bench import own_memory
 
     if request.method == "GET":
-        await base._caller(request, "bench.evalsets.list")
+        caller = await base._caller(request, "bench.evalsets.list")
         rows = await asyncio.to_thread(own_memory.list_evalsets)
-        return base._respond({"evalsets": rows})
-    caller = await base._caller(request, "bench.evalsets.create")
+        return base._respond(
+            {"evalsets": rows if caller == "owner" else [_counts(r) for r in rows]}
+        )
+    caller = await base._caller(request, "bench.evalsets.create", owner_only=True)
     body = await _body(request)
     if isinstance(body, web.Response):
         return body
@@ -558,12 +603,26 @@ async def api_bench_evalsets(request: web.Request) -> web.Response:
     )
 
 
+def _counts(row: dict[str, Any]) -> dict[str, Any]:
+    plan = row.get("plan") or {}
+    return {
+        "id": row.get("id"),
+        "created_at": row.get("created_at"),
+        "items_by_kind": plan.get("items_by_kind"),
+        "probes_by_kind": plan.get("probes_by_kind"),
+        "dropped": plan.get("dropped"),
+    }
+
+
 async def api_bench_evalset(request: web.Request) -> web.Response:
-    """GET (counts and a probe sample) / DELETE /api/memory/provider/bench/evalsets/{id}."""
+    """GET (counts; the owner also gets probes) / DELETE /api/memory/provider/bench/evalsets/{id}."""
     from kiro_crew.eval.bench import own_memory
 
+    owner_only = request.method != "GET"
     caller = await base._caller(
-        request, "bench.evalsets.get" if request.method == "GET" else "bench.evalsets.delete"
+        request,
+        "bench.evalsets.get" if not owner_only else "bench.evalsets.delete",
+        owner_only=owner_only,
     )
     evalset_id = request.match_info["id"]
     if request.method == "DELETE":
@@ -575,6 +634,8 @@ async def api_bench_evalset(request: web.Request) -> web.Response:
         return base._json_error("no such eval set", "not_found", 404)
     header, corpus = found
     row = {k: header.get(k) for k in ("id", "created_at", "stores", "probes", "plan")}
+    if caller != "owner":
+        return base._respond(_counts(row))
     unit = corpus.units[0]
     probes = [
         {"id": q.query_id, "kind": q.category, "text": q.text, "gold": list(q.gold_ids)}

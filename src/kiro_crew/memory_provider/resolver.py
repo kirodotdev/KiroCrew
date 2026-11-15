@@ -15,8 +15,8 @@ never mixes two providers in one conversation. A chat created before the last sw
 keeps what it started with. Child work reads its parent's record through the same
 session key, so it inherits the parent's choice.
 
-A provider that cannot answer -- its app disabled, uninstalled, unhealthy, missing the
-owner's egress consent, or asked for under Shared Crew --
+A provider that cannot answer -- its app disabled, uninstalled, unhealthy, refused by
+governance, missing the owner's egress consent, or asked for under Shared Crew --
 gives a route with ``unavailable`` set. Callers then show memory as unavailable;
 nothing ever falls back to Crew's own memory in its place.
 """
@@ -39,6 +39,7 @@ MODE_REPLACE = "replace"
 MODE_AUGMENT = "augment"
 BUILTIN_PROVIDER_ID = "builtin"
 SNAPSHOT_FIELD = "memory_provider_snapshot"
+GOVERNANCE_SCOPE = "capabilities.memory_provider"
 
 #: Sessions whose frozen choice is kept in this process; past it the oldest goes and
 #: is read back from its record when next asked for.
@@ -164,8 +165,14 @@ def _chosen(provider: Any) -> tuple[str, str]:
     """``(mode, id)`` as config holds them; anything but strings reads as builtin.
 
     ``MemoryProviderConfig.from_raw`` only ever produces strings, so a non-string
-    is a stand-in config, and it carries no choice.
+    is a stand-in config, and it carries no choice. With the memory provider
+    preview off (:mod:`.preview`) no choice is read at all: routing never leaves
+    Crew's own memory, whatever config says.
     """
+    from kiro_crew.memory_provider.preview import preview_enabled
+
+    if not preview_enabled():
+        return MODE_BUILTIN, ""
     mode = getattr(provider, "mode", MODE_BUILTIN)
     provider_id = getattr(provider, "id", "")
     if not isinstance(mode, str) or not isinstance(provider_id, str):
@@ -230,7 +237,7 @@ def session_snapshot(session_key: str, config: Any = None) -> ProviderSnapshot:
     if snapshot is None:
         provider = cfg.memory.provider
         created = _created_at(record) if record else None
-        if provider.mode == MODE_BUILTIN or (
+        if _chosen(provider)[0] == MODE_BUILTIN or (
             created is not None and provider.switched_at and created < provider.switched_at
         ):
             snapshot = BUILTIN_SNAPSHOT
@@ -337,6 +344,8 @@ def availability_refusal(
     from kiro_crew.memory_provider import consent
     from kiro_crew.memory_provider.contract import ProviderError
 
+    if not _governance_permits(session_key):
+        return "external memory providers are blocked by policy"
     try:
         caps = provider.capabilities()
     except ProviderError as exc:
@@ -359,6 +368,19 @@ def _shared_crew_on() -> bool:
         return bool(preview_enabled())
     except Exception:  # noqa: BLE001 - an unreadable switch reads as on: refuse
         return True
+
+
+def _governance_permits(session_key: str | None) -> bool:
+    try:
+        from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY, governance_permits
+
+        decision = governance_permits(
+            GOVERNANCE_SCOPE, "", session_key=session_key or HOST_SESSION_KEY, log_warning=False
+        )
+    except Exception:  # noqa: BLE001 - an unanswerable ceiling denies the external path
+        logger.debug("memory provider governance check failed", exc_info=True)
+        return False
+    return bool(getattr(decision, "permitted", True))
 
 
 def route_for(

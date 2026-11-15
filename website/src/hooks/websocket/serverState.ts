@@ -129,6 +129,10 @@ const ALL_TARGETS: readonly RefreshTarget[] = [
   // value to mint a new key. This also covers external/CLI config writes.
   { queryKey: ['resolved-model'] },
   { queryKey: ['agent-resolved-model'] },
+  // Which memory Crew uses, and the move list under it (`memory_provider` frame):
+  // a switch made in another window must reach the picker, whose cached overview
+  // is also the switch sheet's copy source.
+  { queryKey: ['memory-provider'] },
   ...ARTIFACT_TARGETS,
 ]
 
@@ -347,6 +351,9 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   // delivered either. Only observed readers refetch.
   queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
   queryClient.invalidateQueries({ queryKey: ['safety-switches'] })
+  // A reconnect is how a restarted gateway shows up, and the memory provider preview
+  // takes effect at that start: re-read whether this gateway runs it.
+  queryClient.invalidateQueries({ queryKey: ['memoryProvider', 'preview'] })
   queryClient.invalidateQueries({ queryKey: ['mcp-tool-grants'] })
   // The runtime monitor contract is fetched once with no staleTime, so a
   // gateway restart that registered a contributed monitor kind while the

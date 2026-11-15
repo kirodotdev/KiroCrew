@@ -663,6 +663,16 @@ editor shows `mode`, `id`, `switched_at` and `stop_learning_ack` read-only
 (`config_all_settings.READONLY_REASONS`), so no switch skips that route's checks.
 `config.json` is READONLY in the sandbox, so an agent cannot switch it.
 
+The whole feature sits behind one Feature preview switch, off by default, that lives
+**outside `config.json`**: `KIROCREW_MEMORY_PROVIDER_PREVIEW=1` in the gateway's
+environment, or the owner's choice in the keystone `~/.kiro/crew/memory_provider_preview.json`
+(`{"enabled": bool}`, path via `config.loader.memory_provider_preview_path()`, module
+`memory_provider.preview`). Its only writer is the owner-only
+`PUT /api/memory/provider-preview`; the gateway reads it once at start, so a change
+applies on the next start and `GET` reports `restart_required` until then, as for
+`shared_crew_preview.json`. While it is off, `memory.provider` and every
+`provider_mode` read as `builtin` whatever this section holds.
+
 Provider benchmarks add no config key. Their reader and judge use the existing
 `background` role (`agent.role_models.background`, `"auto"` by default); a run may name
 another model only when some role already uses it.

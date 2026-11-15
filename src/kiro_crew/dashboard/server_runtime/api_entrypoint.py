@@ -337,6 +337,11 @@ async def start_api_server(
         tailnet_trust=_tailnet_trust,
     )
 
+    # The memory provider preview switch is read once, here, like Shared Crew's.
+    from kiro_crew.memory_provider.preview import snapshot_at_start
+
+    snapshot_at_start()
+
     # Shared Crew is preview-only: without KIROCREW_SHARED_CREW_PREVIEW=1 none of
     # its modules is imported on the boot path (no-new-work-on-gateway-boot-path).
     from kiro_crew.shared_crew.preview import no_maintenance, preview_enabled

@@ -39,6 +39,8 @@ const { api } = vi.hoisted(() => ({
     memoryBackupNow: vi.fn(),
     memoryRestoreBackup: vi.fn(),
     memoryRestoreRetired: vi.fn(),
+    // The memory provider preview switch: a failed read shows its own notice.
+    memoryProviderPreview: vi.fn(),
   },
 }))
 vi.mock('../api/client', () => ({ api }))
@@ -59,6 +61,7 @@ vi.mock('../pages/overview/MemoryRecordsEditor', () => ({ default: () => <div da
 vi.mock('../pages/overview/MemoryFailuresCard', () => ({
   default: ({ onLessonSaved }: { onLessonSaved?: () => unknown }) => <button type="button" aria-label="save a failure lesson" data-testid="failures-card" onClick={() => void onLessonSaved?.()} />,
 }))
+vi.mock('../pages/settings/MemoryProviderPicker', () => ({ default: () => <div data-testid="memory-provider-picker" /> }))
 
 const MemoryTab = (await import('../pages/overview/MemoryTab')).default
 
@@ -94,6 +97,9 @@ beforeEach(() => {
   api.memoryRetired.mockResolvedValue({ retired: [] })
   api.memoryBackups.mockResolvedValue({ backups: [] })
   api.memoryCarve.mockResolvedValue({ counts: {} })
+  api.memoryProviderPreview.mockResolvedValue({
+    enabled: false, active: false, env_override: false, restart_required: false,
+  })
 })
 
 afterEach(() => {

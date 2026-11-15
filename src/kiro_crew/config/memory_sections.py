@@ -81,7 +81,7 @@ class MemoryProviderConfig:
             "the provider named by memory.provider.id; Crew's own memory stays on disk "
             "untouched and comes back when switched back. 'augment' keeps Crew's own "
             "memory and adds the provider as a read-only source. Changed only from "
-            "the owner's PUT /api/memory/provider, and applies to new chats.",
+            "Settings > Overview > Memory > Memory provider, and applies to new chats.",
             enum=list(MEMORY_PROVIDER_MODES),
         ),
     )

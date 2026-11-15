@@ -715,6 +715,9 @@ def persist(
                     receipt.refuse(proposal, reason)
                     continue
                 entry = proposal.entry(receipt.run)
+                # What each cited row looked like when proposed, so accepting later can
+                # refuse a proposal whose rows were edited since (memory_app_host).
+                entry["seen"] = {k: live[k].updated_at for k in proposal.keys if k in live}
                 if len(json.dumps([entry])) > _kind_log.SAMPLE_BYTES_CAP:
                     # It would not fit an empty list either, so waiting cannot help.
                     receipt.refuse(proposal, REFUSE_TOO_LARGE)

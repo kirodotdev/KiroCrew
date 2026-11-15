@@ -252,9 +252,14 @@ async def api_member_goals_get(request: web.Request) -> web.Response:
     """GET /api/members/{slug}/goals?member=<name> — the crewmate's goal record.
 
     An app token gets its own trimmed view instead (``members_app.app_bot_goals``,
-    behind ``permissions.bots: read`` and the owner's ticked Bots), or a 404.
+    behind ``permissions.bots: read`` and the owner's ticked Bots), or a 404. An app
+    reaching this through the memory facade with its ``memoryAdmin`` grant reads the
+    owner's record, the one the facade's goal writes edit.
     """
-    if request.get("app", ""):
+    from kiro_crew.dashboard.handlers._shared import MEMORY_ADMIN_GRANT
+
+    app = request.get("app", "")
+    if app and request.get(MEMORY_ADMIN_GRANT) != f"app:{app}":
         from kiro_crew.dashboard.handlers.members import app_bot_goals
 
         return await app_bot_goals(request)

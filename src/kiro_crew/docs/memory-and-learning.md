@@ -376,11 +376,11 @@ scheduled jobs.
 
 ## Comparing Memory Providers
 
-You can compare memory providers, Crew's own memory included, on public benchmarks or
-on questions drawn from your own memory, through the owner's
-`/api/memory/provider/bench` routes. A plan shows which providers run, whether each
-keeps data on this machine, how the test data is cleaned up, and how many model calls
-answering and grading may take. Nothing runs until you start the planned run.
+An app can let you compare memory providers, Crew's own memory included, on public
+benchmarks or on questions drawn from your own memory. The app asks; Kiro Crew shows a
+sheet with the plan: which providers, whether each keeps data on this machine, how the
+test data is cleaned up, and how many model calls answering and grading may take.
+Nothing runs until you press Run.
 
 - A run writes only to throwaway test stores, never to the memory you use.
 - Benchmark data is downloaded when first needed, from a fixed upstream version.
