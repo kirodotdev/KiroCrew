@@ -938,10 +938,6 @@ class OpencodeLaunch(ProcessAdapter):
             extra_expose_files=expose,
         )
 
-    def session_mcp_servers(self, session: ProcessSession) -> list[dict[str, Any]]:
-        """The opencode session's own ``mcpServers`` entries, warmed by the spawn."""
-        return session._opencode_session_mcp_servers()
-
     def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
         """Apply the seed the read-back verified, unconditionally.
 

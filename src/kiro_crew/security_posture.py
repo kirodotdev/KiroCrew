@@ -579,6 +579,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/client_lifecycle.py",
         "acp/client_mcp_array.py",
         "acp/client_model_selection.py",
+        # The opencode hosted fall-back refusal's model id, scrubbed as it was in
+        # client_model_selection before it moved to the opencode client's owner; the
+        # refusal reaches the browser through the chat's own sinks.
+        "acp/client_opencode_session.py",
         "acp/client_permissions.py",
         "acp/client_start.py",
         "acp/client_tool_events.py",

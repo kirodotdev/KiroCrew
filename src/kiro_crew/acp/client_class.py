@@ -97,6 +97,13 @@ logger = logging.getLogger("kiro_crew.acp.client")
 #: ``client_goose``.
 _SESSION_MODE_READ_BACK_BACKENDS = frozenset({ACP_BACKEND_GOOSE})
 
+#: Backends that can ask permission for a shell call before the update carrying its
+#: command, which the session's client class holds the permission back for
+#: (``_defers_shell_permission``) so the command reaches the security cache first.
+#: ``AcpClient.__new__`` refuses one to a class that defers none. opencode, deferred by
+#: ``client_opencode``.
+_SHELL_PERMISSION_DEFERRAL_BACKENDS = frozenset({ACP_BACKEND_OPENCODE})
+
 
 class AcpClient:
     """JSON-RPC 2.0 client over stdio with kiro-cli acp."""
@@ -179,6 +186,13 @@ class AcpClient:
             # session with a mode nothing checked.
             raise AcpError(
                 f"no client class that reads back the session mode serves the {backend!r} backend"
+            )
+        if backend in _SHELL_PERMISSION_DEFERRAL_BACKENDS and not cls._defers_shell_permission:
+            # And for a backend whose shell permission can arrive ahead of its
+            # command: a class that holds none back would judge the call with no
+            # command in the security cache.
+            raise AcpError(
+                f"no client class that defers shell permissions serves the {backend!r} backend"
             )
         return object.__new__(cls)
 
@@ -853,7 +867,6 @@ class AcpClient:
     _read_mcp_ref_spec = _client_mcp_array._read_mcp_ref_spec
     _guard_unresolved_mcp_refs = _client_mcp_array._guard_unresolved_mcp_refs
     _session_mcp_servers = _client_mcp_array._session_mcp_servers
-    _opencode_session_mcp_servers = _client_mcp_array._opencode_session_mcp_servers
     _mimocode_session_mcp_servers = _client_mcp_array._mimocode_session_mcp_servers
     _deepseek_session_mcp_servers = _client_mcp_array._deepseek_session_mcp_servers
     _copilot_session_mcp_servers = _client_mcp_array._copilot_session_mcp_servers
@@ -919,10 +932,6 @@ class AcpClient:
         )
 
     @property
-    def _is_opencode(self) -> bool:
-        return self.backend == ACP_BACKEND_OPENCODE
-
-    @property
     def _is_mimocode(self) -> bool:
         return self.backend == ACP_BACKEND_MIMOCODE
 
@@ -984,10 +993,11 @@ class AcpClient:
         return getattr(self, "_member_dispatch_mounted", None)
 
     # What a backend whose session contract lives in a client class of its own
-    # (``client_claude``, ``client_goose``) adds to a session. Each hook here is the
-    # behaviour every other backend keeps; that class overrides it. A hook the kiro-cli
-    # path calls adds no branch and no failure mode to it (harness-parity H13): it was
-    # already calling the step it replaces, and the step does nothing here.
+    # (``client_claude``, ``client_goose``, ``client_opencode``) adds to a session. Each
+    # hook here is the behaviour every other backend keeps; that class overrides it. A
+    # hook the kiro-cli path calls adds no branch and no failure mode to it
+    # (harness-parity H13): it was already calling the step it replaces, and the step
+    # does nothing here.
 
     #: True on a backend that pins the starting permission mode once the session
     #: exists (``_pin_starting_mode``). Read before the await, so a session that pins
@@ -1008,6 +1018,19 @@ class AcpClient:
     async def _tripwire_session_mode(self, msg: JsonRpcMessage) -> None:
         """Stop a session that reports leaving the required mode mid-session. Reached
         only where ``_reads_back_session_mode`` is True."""
+
+    #: True on a backend that can ask permission for a shell call before the update
+    #: carrying its command (``_defer_shell_permission``). Read before the await, so
+    #: every other session makes no call.
+    _defers_shell_permission: bool = False
+
+    async def _defer_shell_permission(self, msg: JsonRpcMessage, remaining: float) -> bool:
+        """Re-queue the shell permission *msg* behind its command update, True when it
+        did. Reached only where ``_defers_shell_permission`` is True."""
+        return False
+
+    def _refuse_harness_default_model(self) -> None:
+        """Refuse a session left on a backend default Crew does not run: nothing here."""
 
     @property
     def _permission_surface_governed(self) -> bool:
@@ -1392,7 +1415,6 @@ class AcpClient:
     _adapter_session_mcp_servers = _client_start._adapter_session_mcp_servers
     # Run an ``AcpClient`` prompt turn and dispatch the frames it reads: ``kiro_crew.acp.client_turn``.
     _process_message = _client_turn._process_message
-    _defer_opencode_shell_permission = _client_turn._defer_opencode_shell_permission
     _defer_mimocode_shell_permission = _client_turn._defer_mimocode_shell_permission
     _prompt_loop = _client_turn._prompt_loop
     _consult_liveness_model_wait = _client_turn._consult_liveness_model_wait

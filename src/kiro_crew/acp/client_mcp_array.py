@@ -1114,39 +1114,10 @@ def _session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
     return list(self._session_mcp_cache)
 
 
-def _opencode_session_mcp_servers(self: AcpClient) -> list:
-    """MCP server array passed to an opencode ``session/new`` / ``session/load``.
-
-    The opencode twin of
-    :meth:`kiro_crew.acp.harness.codex.CodexHarness.session_mcp_servers`, and it
-    must stay non-empty: ``opencode acp`` reads no ``~/.kiro/agents/<name>.json``,
-    so without this a session has none of Crew's tools (no ``spawn_run``,
-    ``cron_add``, ``send_message``).
-
-    No transport filter, unlike codex: ``opencode acp`` accepts ``http`` and
-    ``sse`` elements, so ``drop_unadvertised_transports`` would only remove
-    servers it would mount.
-    ``test/test_opencode_session_mcp.py::test_real_opencode_acp_accepts_the_crew_stdio_element``
-    pins this against a real ``opencode acp``.
-
-    Unlike codex, a malformed element (no ``command``, or a non-array ``env``)
-    fails the WHOLE ``session/new`` with ``-32602``.
-    ``acp.session_mcp.acp_server_element`` returns ``None`` for an entry with
-    neither ``command`` nor ``url`` and stringifies what it cannot type, so one
-    bad spec line costs only that server.
-
-    The translation lives in :mod:`kiro_crew.providers.mirrors.opencode`. Keep
-    this method as the seam: an edition may override it, and a capability-set
-    test at the call site would skip that override. In-memory only: the spawn
-    path warms ``_session_mcp_cache`` off the loop (harness-parity H13).
-    """
-    return self._session_mcp_servers()
-
-
 def _mimocode_session_mcp_servers(self: AcpClient) -> list:
     """MCP server array passed to a MiMo Code ``session/new`` / ``session/load``.
 
-    The MiMo Code twin of :meth:`_opencode_session_mcp_servers`, on the same
+    The MiMo Code twin of ``OpencodeAcpClient._opencode_session_mcp_servers``, on the same
     grounds and measured rather than inherited: ``mimo acp`` reads no agent spec of
     Crew's, and driven on 0.1.15 it mounted the element
     ``acp.session_mcp.acp_server_element`` emits, listed its tools and completed a

@@ -182,7 +182,7 @@ async def _tripwire_goose_mode(self: GooseAcpClient, msg: JsonRpcMessage) -> Non
 def _goose_session_mcp_servers(self: GooseAcpClient) -> list:
     """MCP server array passed to a goose ``session/new`` / ``session/load``.
 
-    The goose twin of ``_opencode_session_mcp_servers``, and it must stay
+    The goose twin of ``OpencodeAcpClient._opencode_session_mcp_servers``, and it must stay
     non-empty: ``goose acp`` reads no ``~/.kiro/agents/<name>.json``, so without
     this a goose session has none of Crew's tools (no ``spawn_run``,
     ``cron_add``, ``send_message``). ``_pooled_mcp_servers`` answers ``[]``
