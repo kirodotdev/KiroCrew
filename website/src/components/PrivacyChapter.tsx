@@ -1,5 +1,6 @@
 import { useContext, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { X } from 'lucide-react'
 import { Btn, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { api } from '../api/client'
@@ -62,7 +63,7 @@ const WHERE_BODY_KEY = {
  * MANDATORY, which here means exactly one thing — there is no way past it but
  * forward:
  *   - no "Skip all" (the shell renders none when no handler is passed),
- *   - no Escape-to-dismiss (the Tab trap below deliberately omits it),
+ *   - no Escape-to-dismiss while a choice can still be saved,
  *   - and the paths that abandon the flows on EITHER side still route through
  *     it: skipping Import setup lands here, and "Skip all" from Import setup
  *     shows this screen before the user reaches the product (see
@@ -79,6 +80,9 @@ const WHERE_BODY_KEY = {
  *     both are really off records the ack. An env var or a `config.local.json`
  *     entry that keeps either on leaves the chapter open and says so.
  * A failed write leaves the chapter open with an error and marks nothing as seen.
+ * From then on Close (and Escape) hides it the way Ask the agent does: no choice
+ * is recorded, so it opens again at the next load. Without it a caller whose
+ * writes are always refused had no way off the screen but the hand-off.
  *
  * The text follows what is actually on. With local recording on it lists what is
  * recorded. With only the heartbeat on (recording is off by default today) it
@@ -97,9 +101,16 @@ export default function PrivacyChapter({
   open,
   onContinue,
   onAskAgent,
+  onClose,
   passWhenOff,
 }: {
   open: boolean
+  /**
+   * Offered once a save has failed (Keep on, or Turn off before the read-back):
+   * hides the chapter WITHOUT recording a choice, like `onAskAgent`, so it
+   * returns at the next dashboard load. Unset, no close is offered.
+   */
+  onClose?: () => void
   /**
    * Hides the chapter WITHOUT recording a choice when the user hands an error to
    * the agent: the hand-off opens a chat this mandatory overlay would cover. The
@@ -146,6 +157,11 @@ export default function PrivacyChapter({
     | { kind: 'pinned'; where: 'overlay' | 'unknown' }
     | null
   >(null)
+  // A pinned Turn off still leaves Keep on, which saves; a failed write may
+  // fail every time (a caller the gateway refuses), so only that offers a way out.
+  const closeAfterFailure = onClose && (failure?.kind === 'save' || failure?.kind === 'unconfirmed') ? onClose : undefined
+  const closeRef = useRef(closeAfterFailure)
+  closeRef.current = closeAfterFailure
 
   const choose = async (choice: 'keep' | 'off' | 'on') => {
     setBusy(choice)
@@ -262,14 +278,19 @@ export default function PrivacyChapter({
   crewHiddenRef.current = crewHidden
 
   // Move focus to the heading on open, then trap Tab inside the dialog
-  // (website/AGENTS.md modal a11y). Escape is NOT wired: this chapter cannot be
-  // dismissed, and a key that silently does nothing is better than one that
-  // looks like it should close the screen.
+  // (website/AGENTS.md modal a11y). Escape closes only once Close is offered (a
+  // failed save); before that this chapter cannot be dismissed, and a key that
+  // silently does nothing is better than one that looks like it should close it.
   useEffect(() => {
     if (!open) return
     headingRef.current?.focus()
     const onKeyDown = (event: KeyboardEvent) => {
       if (crewHiddenRef.current) return
+      if (event.key === 'Escape' && closeRef.current && !event.isComposing) {
+        event.preventDefault()
+        closeRef.current()
+        return
+      }
       if (event.key !== 'Tab') return
       const focusable = Array.from(
         dialogRef.current?.querySelectorAll<HTMLElement>(
@@ -330,6 +351,16 @@ export default function PrivacyChapter({
       panelFootnote={i18nT('components.privacyChapter.panelFootnote')}
       eyebrow={i18nT('components.privacyChapter.eyebrow')}
       dialogRef={dialogRef}
+      headerAction={closeAfterFailure && (
+        <button
+          type="button"
+          aria-label={i18nT('app.close')}
+          onClick={closeAfterFailure}
+          className="inline-flex items-center rounded p-1 text-muted transition-colors hover:text-text focus-ring-accent"
+        >
+          <X size={16} aria-hidden="true" />
+        </button>
+      )}
       header={
         <div className="mt-6">
           <h1
