@@ -102,6 +102,19 @@ def set_build_info(info: tuple[str, str]) -> None:
     _build_info = info
 
 
+def _share_tree_root(state: Any, session_key: str) -> str:
+    """The root of *session_key*'s session tree, over this gateway's live slots. No I/O."""
+    from kiro_crew import crew_mode
+    from kiro_crew.dashboard.session_control_parts.crew_filing import _frame_parents
+
+    return crew_mode.share_tree_root(
+        state._slots,
+        session_key,
+        _frame_parents(state),
+        settled=crew_mode.lineage_is_settled(),
+    )
+
+
 # ── Constants ──
 
 
@@ -984,6 +997,10 @@ class DashboardState:
             self.subagents._parent_steering_dirs = lambda key: session_folder_steering_dirs(
                 self, key
             )
+        # Chat runtime sharing places a chat only inside its own session tree.
+        from kiro_crew.agent_sdk.chat_runtime_sharing import set_share_tree_reader
+
+        set_share_tree_reader(lambda key: _share_tree_root(self, key))
         if self.context_builder is not None:
             self.context_builder.live_memory_mode_for_session = (
                 lambda key: live_session_memory_mode(self, key)

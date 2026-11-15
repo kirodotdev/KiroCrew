@@ -965,10 +965,14 @@ class TestThePlacementIsConfirmedAgainstTheSpecAfterwards:
 
             share_mod.RUNTIME_OWNERSHIP = RuntimeOwnership()
             try:
-                # Two CHATS, so the second one joins: two starts of ONE chat go
-                # on separate processes (``_Entry.admits``).
+                # Two CHATS of one tree, so the second one joins: two starts of ONE
+                # chat go on separate processes (``_Entry.admits``), and two trees
+                # never share.
                 for n in (1, 2):
-                    p = make_placement(session_key=f"dashboard:chat-{n}-1790000000")
+                    p = make_placement(
+                        session_key=f"dashboard:chat-{n}-1790000000",
+                        tree_root="dashboard:chat-1-1790000000",
+                    )
                     p._read_confirmation = confirming(("gen-1", "acct-A", "auto", False, True))
                     await p.place(spawn)
             finally:

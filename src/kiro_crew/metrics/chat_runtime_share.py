@@ -10,7 +10,8 @@ chats one crash takes down. These instruments answer them and nothing else.
 name                                               kind     attributes
 =================================================  =======  ======================================
 ``kirocrew.chat_runtime_share.toggled``            counter  ``state`` (on / off)
-``kirocrew.chat_runtime_share.placed``             counter  ``outcome``, ``reason``, ``tenants``
+``kirocrew.chat_runtime_share.placed``             counter  ``outcome``, ``reason``, ``tenants``,
+                                                            ``tree``
 ``kirocrew.chat_runtime_share.processes``          gauge    none: live processes placed by sharing
 ``kirocrew.chat_runtime_share.tenants``            gauge    none: chat leases on those processes
 ``kirocrew.chat_runtime_share.rss_sampled``        counter  ``tenants``, ``rss``
@@ -122,6 +123,10 @@ REFUSAL_REASONS: tuple[str, ...] = (
 )
 
 TENANT_BUCKETS: tuple[str, ...] = ("0", "1", "2", "3", "4+")
+
+#: The kind of session tree a placed chat's process serves: a Bot's tree (every
+#: session a Bot opened, under its member identity) or any other chat tree.
+TREE_KINDS: tuple[str, ...] = ("chat", "bot")
 
 #: Prompt written to first event of that turn back, each edge INCLUSIVE.
 DELAY_BUCKET_EDGE_SECS: tuple[tuple[float, str], ...] = (
@@ -255,12 +260,20 @@ def record_refused(reason: Any) -> None:
     _note_sharing_in_use()
     emit_counter(
         PLACED,
-        {"outcome": "refused", "reason": _closed(reason, REFUSAL_REASONS), "tenants": NONE},
+        {
+            "outcome": "refused",
+            "reason": _closed(reason, REFUSAL_REASONS),
+            "tenants": NONE,
+            "tree": NONE,
+        },
     )
 
 
-def record_placed(*, joined: bool, tenants: Any) -> None:
-    """A chat start landed: founded a process or joined one, with *tenants* after it."""
+def record_placed(*, joined: bool, tenants: Any, tree: Any = "chat") -> None:
+    """A chat start landed: founded a process or joined one, with *tenants* after it.
+
+    *tree* is the kind of session tree the process serves (:data:`TREE_KINDS`).
+    """
     _note_sharing_in_use()
     emit_counter(
         PLACED,
@@ -268,6 +281,7 @@ def record_placed(*, joined: bool, tenants: Any) -> None:
             "outcome": "joined" if joined else "spawned",
             "reason": NONE,
             "tenants": tenants_bucket(tenants),
+            "tree": _closed(tree, TREE_KINDS),
         },
     )
 

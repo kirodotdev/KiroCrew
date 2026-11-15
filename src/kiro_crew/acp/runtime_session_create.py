@@ -130,11 +130,17 @@ async def create_session(
     on_gate_queued: Callable[..., None] | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     bg_runtime_start: bool = False,
+    member_context: bool | None = None,
 ) -> AcpSessionHandle:
     """Create a new ACP session on this runtime. Returns a session handle.
 
     ``crew_agent`` is the canonical Kiro Crew identity for THIS session;
     None falls back to the runtime's own (spawn-time or rekeyed) identity.
+
+    ``member_context`` is whether THIS session runs as a Bot (crew member), which
+    decides whether its member resource documents are projected. None falls back
+    to the runtime's own value. Per session because a shared chat runtime's own
+    value is the founding session's, not this one's.
 
     ``session_key`` is the Kiro Crew session that will OWN this ACP session.
     It is what makes the session's broker stubs resolvable as this session
@@ -430,7 +436,7 @@ async def create_session(
     )
 
     projected_sources: dict[str, str] = {}
-    if self._member_context:
+    if self._member_context if member_context is None else member_context:
         from kiro_crew.member_essential_context import projected_resource_documents
 
         for definition in kas_agents or ():

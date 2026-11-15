@@ -46,6 +46,9 @@ from kiro_crew.acp.chat_runtime_sharing import (
     chat_runtime_sharing_enabled,
     chat_sharing_ineligible_reason,
     kas_chat_sharing_ready,
+    member_scope_of,
+    per_session_fields,
+    share_tree_root_of,
 )
 from kiro_crew.acp.runtime import AcpRuntimeError
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
@@ -119,8 +122,16 @@ class ChatSharePlacement:
         forward_ssh: bool,
         agent_env: dict[str, str] | None = None,
         kas_telemetry: bool = True,
+        tree_root: str = "",
+        member_scope: tuple[str, str] = ("", ""),
     ) -> None:
         self._provider = provider
+        # The sharing scope, read once at this start: sessions share only inside
+        # one tree, and a Bot session only with its own member and store.
+        self._tree_root = tree_root or session_key
+        self._member_scope = member_scope
+        # A harness that takes the spec per session does not key it, so it is not re-read.
+        self._keys_spec = "spec_generation" not in per_session_fields(provider._client.backend)
         # ``agent.env`` as this start read it: a child takes it at spawn and never
         # re-reads it, so a saved change must found a new process rather than join
         # one that carries the old values. A founding spawn launches with this same
@@ -183,7 +194,15 @@ class ChatSharePlacement:
             harness_pin=getattr(p, "_harness_pin", "") or "",
             agent_env=self._agent_env,
             kas_telemetry=self._kas_telemetry,
+            tree_root=self._tree_root,
+            member_id=self._member_scope[0],
+            memory_store=self._member_scope[1],
         )
+
+    @property
+    def tree_kind(self) -> str:
+        """``bot`` for a Bot's tree, ``chat`` otherwise: the placement metric's label."""
+        return "bot" if self._member_scope[0] else "chat"
 
     def spawn_agent_env(self) -> dict[str, str]:
         """The ``agent.env`` snapshot a founding spawn launches with: the one keyed on."""
@@ -202,7 +221,11 @@ class ChatSharePlacement:
         from kiro_crew.kiro_prerequisite import pre_spawn_identity
         from kiro_crew.sandbox import _forward_ssh_auth_sock, effective_sandbox_mode
 
-        generation = await asyncio.to_thread(agent_spec_generation, self._work_dir, self._agent)
+        generation = (
+            await asyncio.to_thread(agent_spec_generation, self._work_dir, self._agent)
+            if self._keys_spec
+            else ""
+        )
         if self._identity_reader is not None:
             era = await pre_spawn_identity(self._identity_reader)
         else:
@@ -297,6 +320,9 @@ class ChatSharePlacement:
         # Still moving: a key nothing can match founds this session its own
         # process, the answer ``agent_spec_generation`` gives an unobservable file.
         self._spec_generation = f"unsettled-{uuid.uuid4().hex}"
+        # The tree root too: a KAS key leaves the spec generation out, so only a
+        # unique root makes that key unmatchable.
+        self._tree_root = self._spec_generation
         self.joinable = False
         self.key = self._build_key()
         logger.warning(
@@ -321,7 +347,7 @@ class ChatSharePlacement:
             placed.leases_on_runtime,
             self.session_key,
         )
-        record_placed(joined=placed.joined, tenants=placed.leases_on_runtime)
+        record_placed(joined=placed.joined, tenants=placed.leases_on_runtime, tree=self.tree_kind)
         return runtime
 
     async def replace_dead(self, spawn: Callable[[], Awaitable[AcpRuntime]]) -> AcpRuntime:
@@ -423,11 +449,22 @@ async def resolve_chat_share(
         return None
     backend = provider._client.backend
     session_key = provider._owning_session_key()
+    # Read on the loop: the reader walks the gateway's live slots.
+    tree_root = share_tree_root_of(session_key)
     kas_ready = False
     if backend == ACP_BACKEND_KAS:
         kas_ready = await asyncio.to_thread(
             kas_chat_sharing_ready, getattr(provider, "_harness_pin", "") or ""
         )
+    member_scope: tuple[str, str] = ("", "")
+    member_shares_root = False
+    if provider.member_context:
+        # A Bot session shares only inside its own Bot's tree: the root must be
+        # the same member on the same store. Both records read off the loop.
+        member_scope, root_scope = await asyncio.to_thread(
+            lambda: (member_scope_of(session_key), member_scope_of(tree_root))
+        )
+        member_shares_root = bool(member_scope[0]) and root_scope == member_scope
     refusal = chat_sharing_ineligible_reason(
         session_key=session_key,
         memory_mode=provider.memory_mode,
@@ -436,6 +473,7 @@ async def resolve_chat_share(
         member_context=provider.member_context,
         remote_workspace=remote_workspace,
         kas_engine_ready=kas_ready,
+        member_shares_root=member_shares_root,
     )
     if not refusal and await asyncio.to_thread(agent_spawns_native_subagents, work_dir, agent):
         refusal = "native_subagents"
@@ -450,7 +488,11 @@ async def resolve_chat_share(
         configured_env = agent_env_overlay()
         telemetry = _kas_telemetry_for(backend, work_dir, configured_env, extra_env)
         return (
-            agent_spec_generation(work_dir, agent),
+            (
+                agent_spec_generation(work_dir, agent)
+                if "spec_generation" not in per_session_fields(backend)
+                else ""
+            ),
             effective_sandbox_mode(sandbox_mode),
             _forward_ssh_auth_sock(sandbox_mode, ()),
             configured_env,
@@ -477,6 +519,8 @@ async def resolve_chat_share(
         forward_ssh=forward,
         agent_env=configured_env,
         kas_telemetry=telemetry,
+        tree_root=tree_root,
+        member_scope=member_scope,
     )
 
 

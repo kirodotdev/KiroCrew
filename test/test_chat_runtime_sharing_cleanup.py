@@ -1035,7 +1035,9 @@ class TestResolveChatShare:
         )
         assert placement is not None
         assert placement.cap == 4
-        assert reads == ["spec"]
+        # KAS takes the spec per session, so a KAS placement neither keys nor reads it.
+        assert reads == []
+        assert placement.key.spec_generation == ""
 
     def test_a_kiro_cli_chat_keeps_its_own_process_with_the_preview_on(self, monkeypatch, caplog):
         with caplog.at_level(logging.WARNING, logger="kiro_crew.providers.chat_share"):

@@ -1121,3 +1121,50 @@ def test_subagent_template_dir_admits_no_absolute_declared_resource(env, tmp_pat
     _absolute_sources_template(env, resources=[f"file://{resource}"])
     with pytest.raises(MemberEssentialContextError, match="resource.md"):
         _subagent_build(env, tmp_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("founder,joiner", [(False, True), (True, False)])
+async def test_the_member_projection_follows_the_session_not_the_process(
+    env, monkeypatch, founder, joiner
+):
+    """On a shared KAS runtime the process's member flag is its founder's, so each
+    session states its own: a Bot session on it gets its member resource documents
+    and a plain session on it gets none, whichever session founded the process."""
+    from kiro_crew.acp.runtime import AcpRuntime
+    from kiro_crew.acp.types import METHOD_SESSION_NEW
+    from kiro_crew.config.paths import kiro_agents_dir
+
+    path = env.project / ".kiro/agents/writer-template.json"
+    agents = kiro_agents_dir()
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / path.name).write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    rt = AcpRuntime(
+        work_dir=env.project,
+        agent="writer-template",
+        acp_backend=ACP_BACKEND_KAS,
+        member_context=founder,
+    )
+    rt._initialized = True
+    rt._expect_mcp_reports = False
+
+    async def transport(method, params, timeout=None):
+        if method == METHOD_SESSION_NEW:
+            return {
+                "sessionId": "member-flag-proof",
+                "modes": {
+                    "currentModeId": "writer-template",
+                    "availableModes": [{"id": "writer-template", "name": "Writer"}],
+                },
+            }
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", transport)
+    handle = await rt.create_session(
+        cwd=env.project, agent="writer-template", mcp_servers=[], member_context=joiner
+    )
+    try:
+        projected = "\n".join(handle.native_context_documents.values())
+        assert ("Declared guide: examples must be reproducible." in projected) is joiner
+    finally:
+        rt._session_queues.clear()

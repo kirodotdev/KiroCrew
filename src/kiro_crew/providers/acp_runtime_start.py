@@ -1083,6 +1083,9 @@ async def _start_kiro_runtime_impl(
                     # Per session: on a shared chat runtime the process's own
                     # crew identity is the founder's, not this chat's.
                     crew_agent=self._crew_agent,
+                    # Per session for the same reason: the member projection
+                    # follows this chat, not the process's founder.
+                    member_context=self.member_context,
                     memory_mode=self.memory_mode,
                     session_key=self._owning_session_key(),
                     channel_id=self._owning_channel_id() or "",

@@ -52,20 +52,15 @@ _SPAWN_INPUT_KEYED = {
     # The telemetry opt-out, judged once by the placement and sent in the founding
     # KAS initialize, which otherwise judges it at spawn.
     "kas_telemetry": "kas_telemetry",
+    # Whether the session is a Bot's: a Bot session carries its member id (and its
+    # store, beside it), a plain chat none, so the two never share and two Bots never do.
+    "member_context": "member_id",
 }
 
 #: Runtime constructor parameter -> why it is NOT a compatibility property.
 #: A reason, never a boolean: the next reader needs to know why without
 #: re-deriving it, and a boolean invites flipping.
 _SPAWN_INPUT_NOT_KEYED = {
-    "member_context": (
-        "Whether this is a crew-member session. A member session is REFUSED chat "
-        "sharing (chat_sharing_ineligible_reason returns 'member_session') and keeps "
-        "its own process, so it never reaches the key and this bool selects no "
-        "shared process -- member isolation of memory and workspace is the safe "
-        "default this change does not cross. Member sharing can return in a "
-        "follow-up once a maintainer approves it."
-    ),
     "max_age_secs": (
         "A recycle threshold, not an input the child behaves differently under. "
         "A hard module default with no config path, so every chat slot passes the "
@@ -129,6 +124,16 @@ _OBSERVED_KEYED = {
         "startup, so it is neither a parameter this layer passes nor a file this "
         "layer writes; a grant revoked in it cannot be undone inside a running "
         "process, so two generations must be two keys."
+    ),
+    "tree_root": (
+        "The root of the session's tree, read from the gateway's slot lineage at the "
+        "start. It is no spawn input: it is the sharing scope, so sessions share only "
+        "inside one tree and a process dying takes at most one tree with it."
+    ),
+    "memory_store": (
+        "The Bot session's memory store, read from its execution record beside its "
+        "member id. A store is per member, so a session of another store must never "
+        "land on this Bot's process even when a lineage names one root."
     ),
 }
 
