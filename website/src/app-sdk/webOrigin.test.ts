@@ -25,7 +25,11 @@ describe('appWebOrigin', () => {
     expect(appWebOrigin('docs', location)).toBeNull()
   })
 
-  it.each(['', 'Docs', 'a.b', '-x', 'x-', 'a'.repeat(64), 'a_b'])('refuses the app name %j', (name) => {
+  it.each(['a', '0', 'a-b', 'a'.repeat(63)])('accepts the app name %j', (name) => {
+    expect(appWebOrigin(name, at('localhost'))).toBe(`http://${name}.apps.localhost:5476`)
+  })
+
+  it.each(['', 'Docs', 'a.b', '-x', 'x-', 'a'.repeat(64), 'a_b', 'é', 'a\n'])('refuses the app name %j', (name) => {
     expect(appWebOrigin(name, at('localhost'))).toBeNull()
   })
 })

@@ -5855,7 +5855,7 @@ Writers: `website/src/app-sdk/hostSessions.ts`, `website/src/app-sdk/index.ts`,
 its check read), `website/public/vendor/kirocrew-app-sdk.mjs`,
 `apps/builtins/agent_worlds/app.json`.
 
-## 18k. An app web origin is the app's own site on the dashboard's port
+## 18k. An app web origin is the app's own origin on the dashboard's port
 
 An app whose UI frames its own backend's pages (a local reverse proxy in front of
 a third-party site is the case this exists for) needs that frame to have a real
@@ -5899,9 +5899,11 @@ is decided there and reaches no dashboard layer:
   becomes 1000, a dropped connection (1006) becomes 1001, and a code outside
   1000-4999 becomes 1002, because those codes are never sent.
 
-Every decision is audited: one SEL `api_access` row per served request
-(`outcome=granted`, `resources` the canonical app host and path) and per refusal
-(`outcome=denied`, the refusal reason in `error`), both `source=app_web_origin`.
+Every decision is audited, because each one is a permission decision: one SEL
+`api_access` row per served request, reads included (`outcome=granted`,
+`resources` the canonical app host and path), and per refusal (`outcome=denied`,
+the refusal reason in `error`), both `source=app_web_origin`. A write that fails
+loses its row and never changes the decision (`_audit`).
 
 **Credentials.** Nothing the gateway trusts crosses: `Authorization`, the
 internal-auth headers, relay identity headers and every `X-KiroCrew-*` header are
@@ -5910,7 +5912,9 @@ dropped, the dashboard's `mc_token*` / `mc_refresh_*` cookies are removed from
 proof that the API proxy (§24) forwarded a call; a page on the app origin may be
 a third party's scripts, so signing there would hand them the backend's
 gateway-only API. The app's own credential (for example a launch token traded
-for a host-only cookie) is the only one on this origin.
+for a host-only cookie) is the only one on this origin. A framed site that signs
+in with bearer or Basic auth therefore needs the app's backend to add
+`Authorization` itself.
 
 **Response.** Hop-by-hop headers and `Clear-Site-Data` are dropped, every
 `Set-Cookie` loses its `Domain` (host-only, so one app's cookie never reaches
@@ -5927,13 +5931,24 @@ page on an app origin cannot post to a dashboard API: `check_origin` refuses its
 Origin. `.apps.localhost` is two labels below `localhost`, apart from the
 single-label Remote Crew pane names and from `kirocrew.localhost`.
 
+**One site for every app.** `localhost` is not on the Public Suffix List, and
+under the list's default rule an unlisted top-level name is a public suffix, so
+a browser may count every app origin as the one site `apps.localhost`. Each app
+still has its own origin, storage and host-only cookies, but `SameSite` cookies
+do not keep one app's framed pages from another app's backend. An app checks
+`Origin` or a CSRF token on the routes that change state; the manifest reference
+says so.
+
 **Discovery.** `appWebOrigin(name)` on `@kirocrew/app-sdk`
 (`website/src/app-sdk/webOrigin.ts`), App Kit seam level 8, answers
 `http://<name>.apps.localhost:<location.port>` when the dashboard is on
 `localhost`, `127.0.0.1` or `kirocrew.localhost` over http, and `null` otherwise.
 That includes an IPv6 dashboard: CSP `frame-ancestors` cannot express its
 bracketed host source, so the app origin cannot be framed there. A published
-HTTPS host and a Remote Crew pane also have no app origin. An app on an older
+HTTPS host and a Remote Crew pane also have no app origin. It reads the dashboard's host name only, not whether this browser reaches
+the name, so an app probes the origin (a `no-cors` fetch, which `connect-src`
+admits) before it switches its frame, and keeps its loopback frame when the
+probe fails. An app on an older
 host finds no such export and keeps its own loopback frame.
 
 Not covered: a dashboard reached over a published HTTPS host (it has no wildcard

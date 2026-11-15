@@ -1,4 +1,4 @@
-"""App web origins: an opted-in app's own site on the dashboard's port.
+"""App web origins: an opted-in app's own origin on the dashboard's port.
 
 An app whose manifest sets ``backend.webOrigin: true`` is served at
 ``http://<app>.apps.localhost:<dashboard port>``. The browser resolves every
@@ -12,7 +12,10 @@ The name is a different site from every dashboard name (``localhost`` is not on
 the Public Suffix List), so the dashboard's host-only cookies are never sent to
 it and a page served there cannot script the dashboard. That is what lets an app
 frame a full third-party site, with real cookies and storage, next to the
-dashboard instead of inside its origin.
+dashboard instead of inside its origin. Under the list's default rule an
+unlisted top-level name is a public suffix, so every app origin may share the
+one site ``apps.localhost``: an app guards its own state-changing routes with
+``Origin`` or a CSRF token rather than ``SameSite``.
 
 The trust model is the app backend's own loopback port's, unchanged:
 
@@ -38,7 +41,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-import re
+import string
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -66,9 +69,22 @@ APP_WEB_ORIGIN_SUFFIX = ".apps.localhost"
 #: preview sources, whose client mirror decides Remote Crew pane embedding.
 APP_WEB_ORIGIN_CSP_SOURCE = " http://*" + APP_WEB_ORIGIN_SUFFIX + ":*"
 
-#: One DNS label: what an app name must be to name a host. App names are
+#: The characters of one DNS label, lower-case because the host is canonicalized
+#: first. A label is what an app name must be to name a host: app names are
 #: kebab-case but may run to 128 characters, and a label stops at 63.
-_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_LABEL_CHARS = frozenset(string.ascii_lowercase + string.digits + "-")
+_LABEL_MAX_LENGTH = 63
+
+
+def _is_dns_label(label: str) -> bool:
+    """Is *label* one DNS label: 1 to 63 of ``a-z0-9-``, not starting or ending with ``-``."""
+    return (
+        0 < len(label) <= _LABEL_MAX_LENGTH
+        and all(char in _LABEL_CHARS for char in label)
+        and not label.startswith("-")
+        and not label.endswith("-")
+    )
+
 
 #: The dashboard host names whose origins may frame an app web origin, and whose
 #: ports an app web origin may be reached on. IPv6 loopback is excluded because
@@ -175,7 +191,7 @@ def parse_app_host(raw_host: str) -> tuple[str, str] | None | bool:
         return None
     label = host[: -len(APP_WEB_ORIGIN_SUFFIX)]
     port = parts[1][1:] or "80"
-    if not _LABEL_RE.match(label):
+    if not _is_dns_label(label):
         return False
     return label, port
 
@@ -345,7 +361,11 @@ async def _refusal(request: web.Request, status: int, reason: str) -> web.Respon
 
 
 async def _record_grant(request: web.Request, app_host: str) -> None:
-    """The serve decision, recorded as every refusal is, before the relay starts."""
+    """The serve decision, recorded as every refusal is, before the relay starts.
+
+    Every admission is a permission decision, so every served request leaves a
+    row, reads included.
+    """
     await _audit(request, outcome="granted", resources=f"{app_host}{request.path}")
 
 
