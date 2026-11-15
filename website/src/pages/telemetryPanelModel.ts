@@ -122,6 +122,25 @@ export type SpendAdvice =
   | { id: 'high_context'; share_pct: number; tokens: number }
   | { id: 'costly_model'; share_pct: number; model: string; cheaper_model: string; ratio: number }
 
+/**
+ * What a session delivered, read by the gateway from the session's own
+ * transcript. The whole object is absent when nothing was found, so a missing
+ * `outcome` on a row read as "none" only when `Cost.outcome_scan` says the row
+ * was read.
+ */
+export type CostOutcome = {
+  commits: number
+  lines_added: number
+  lines_removed: number
+  prs: number
+  /** Pull requests the gateway has seen merged. Owner-only; absent for anyone else. */
+  merged?: number
+  /** Pull requests whose state the gateway has not read yet, so not counted as merged. */
+  unchecked?: number
+  /** The session's spend divided by `merged`; present only when `merged` is above zero. */
+  per_merged?: number
+}
+
 export type CostConvo = {
   slot: string
   /**
@@ -145,6 +164,7 @@ export type CostConvo = {
   first_ts: number
   growth_pct_per_turn?: number | null
   turns_to_compaction?: number | null
+  outcome?: CostOutcome
 }
 
 export type Cost = {
@@ -176,6 +196,8 @@ export type Cost = {
   /** Absent from an older gateway, which means no recommendations. */
   advice?: SpendAdvice[]
   conversations: CostConvo[]
+  /** How many of the costliest conversations were read for an `outcome`; absent when none had one. */
+  outcome_scan?: number
   conversation_count: number
   navigable_category: string
 }

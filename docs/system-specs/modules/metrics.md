@@ -1789,6 +1789,42 @@ views' sessions, and the dollar card remembers its own state under the same keys
 `:usd` suffix. The per-session
 table sits under a **Full table** disclosure that starts closed and remembers its state
 in `telemetry:spend-table-open`.
+**What a session delivered.** For the 50 costliest conversations in the window,
+`dashboard.handlers.usage_outcome` reads the conversation's own transcript (through the
+derivation seam, `ConversationLog.derive_messages_chained_full_with_keys`, memoised by the
+file's mtime and reread at most once a minute while the file keeps changing) and attaches an
+`outcome` to each row that delivered something: `commits`, `lines_added`, `lines_removed`,
+`prs`, and for the owner `merged`, `unchecked` and `per_merged`. `outcome_scan` on the cost
+block says how many rows were read; a window that delivered nothing returns the block
+unchanged. A row's command is the `command` argument in its `meta.input`, or its title when
+there is none, since a long title can arrive cut short. A commit counts when a shell tool
+row ran `git commit` and its `meta.output` holds git's `[branch sha]` summary line (the line
+after it gives the changed lines). A `git commit -q` prints no summary line, so a quiet
+commit is not counted: nothing else in the row says which commit, if any, that call made.
+An amend, a preview (`--dry-run` and the
+formats that imply it: `--short`, `--porcelain`, `--long`, `-z`/`--null`) or any other
+output does not count. Commands are read by the shared shell reader
+(`security.shell_commands.read_commands`, the batch guard's own), so quoting is the shell's
+and a here-document body is data; a command with a quote left open, or longer than 16,384
+characters, counts nothing. An incognito or temporary transcript, or one whose line cannot be
+read, is refused by the seam (`TranscriptWithheld`) and its row gets no outcome. The scan
+records each delivering row's chain; `usage_outcome.respond_with_session_outcomes` then,
+off the loop, takes the lock stems of every contributing chain in one sorted acquire, enters
+each chain's `ConversationLog.publication_hold` in sorted transcript order, drops the outcome
+of any it refuses from both spend units, and builds the `web.json_response` before any hold
+is let go. A session tightened after its scan (a channel `!incognito`) is not published, and
+none can be tightened while the response is built. A busy lock, or more than 256 transcripts
+(`_PUBLICATION_HOLD_MAX`) across the chains, sends no outcome. No hold spans an await. The memo
+keeps every transcript the chained read covered and asks each one's line on every poll
+before it is served, because tightening a line keeps the mtime. A chain longer than 64
+transcripts (`_MEMO_CHAIN_MAX`) is not memoised, so each poll reads it through the seam again.
+A pull request counts when a row ran `gh pr create` or `glab mr create` and its output holds
+the change's URL on its own line, parsed by `parse_source_url`, unless the output says the
+pull request already exists. Each is counted once by sha or URL, and only inside the
+window. `merged` is read from the chip-status cache (`get_cached_check_status`), never
+refreshed here, so a URL the cache has not seen is `unchecked` rather than open, and a caller
+that is not the dashboard owner gets no merge figures. `per_merged` is the session's spend
+divided by `merged`. The Spend table shows the five columns only once a row has an outcome.
 **Stamping boundary:** rows are stamped at the two write sites that can run
 app-owned work — the dashboard chat runner (the slot's `_app`) and the
 subagent completion path (`info.app`, an app-dispatched subagent's spend).

@@ -53,6 +53,10 @@ from kiro_crew.dashboard.handlers.usage import (
     resolve_window,
     slot_turn_usage,
 )
+from kiro_crew.dashboard.handlers.usage_outcome import (
+    attach_session_outcomes,
+    respond_with_session_outcomes,
+)
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.jsonl_util import bounded_records
@@ -1548,11 +1552,19 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
     data = await asyncio.to_thread(_parse_startup_metrics, window, whole_shards=defaulted)
     context = await asyncio.to_thread(_context_block, window)
     cost = await asyncio.to_thread(_cost_block, cost_window)
+    contributors: dict[tuple[str, str], tuple[str, ...]] = {}
     if cost:
+        # Before the titles: they take the transcript map off the payload.
+        cost = await attach_session_outcomes(request, cost, cost_window, contributors)
+        if isinstance(cost.get("usd"), dict):
+            usd = await attach_session_outcomes(request, cost["usd"], cost_window, contributors)
+            cost = {**cost, "usd": usd}
         cost = await _with_conversation_titles(request, cost)
         if isinstance(cost.get("usd"), dict):
             cost = {**cost, "usd": await _with_conversation_titles(request, cost["usd"])}
-    return web.json_response(
+    # Built while every chain that gave an outcome is held: a tightened one is dropped.
+    return await respond_with_session_outcomes(
+        request,
         {
             "enabled": state.enabled,
             "env_pinned": state.env_pinned,
@@ -1573,7 +1585,8 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
             "context": context,
             "cost": cost,
             "other": data.get("other", []),
-        }
+        },
+        contributors,
     )
 
 
