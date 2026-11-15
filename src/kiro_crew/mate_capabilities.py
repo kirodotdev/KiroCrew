@@ -214,7 +214,12 @@ def _apply_operations(
         elif section == "resources":
             if value is True:
                 value = key
-            if not isinstance(value, str) or value != key:
+            # An object row (a knowledge base) has no string to set it to.
+            if (
+                not isinstance(value, str)
+                or value != key
+                or isinstance(rows[section].get(key), dict)
+            ):
                 raise CapabilityError("invalid_resource", 400)
             rows[section][key] = key
         elif section in ("prompt", "model"):

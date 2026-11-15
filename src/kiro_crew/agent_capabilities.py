@@ -27,6 +27,7 @@ from kiro_crew.agent import (
     agents_spec_lock,
     kiro_agents_dir_path,
 )
+from kiro_crew.agent_capabilities_resources import resource_list, resource_rows
 from kiro_crew.agent_capabilities_tool_limits import (  # noqa: F401 - re-exported
     disabled_tool_names,
     tool_limited_servers,
@@ -199,14 +200,10 @@ def _rows(spec: dict, catalog: dict[str, str]) -> dict[str, dict]:
             raise CapabilityError("invalid_spec")
         rows[section] = dict.fromkeys(items, True)
     inverse = {uri: key for key, uri in reversed(list(catalog.items()))}
-    resources = spec.get("resources", [])
-    if not isinstance(resources, list) or not all(isinstance(i, str) for i in resources):
+    split = resource_rows(spec.get("resources", []), inverse)
+    if split is None:
         raise CapabilityError("invalid_spec")
-    for uri in resources:
-        if uri in inverse:
-            rows["skills"][inverse[uri]] = uri
-        else:
-            rows["resources"][uri] = uri
+    rows["skills"], rows["resources"] = split
     for section in ("prompt", "model"):
         if section in spec and spec[section] is not None:
             if not isinstance(spec[section], str):
@@ -235,10 +232,8 @@ def _materialize(base: dict, rows: dict[str, dict], catalog: dict[str, str]) -> 
         or not servers.get(ref[1:].split("/", 1)[0], {"disabled": True}).get("disabled")
     ]
     # Preserve the relative order of all surviving custom resource entries.
-    wanted = list(rows["resources"].values()) + list(rows["skills"].values())
-    result["resources"] = list(
-        dict.fromkeys([r for r in base.get("resources", []) if r in wanted] + wanted)
-    )
+    wanted = {**rows["resources"], **{uri: uri for uri in rows["skills"].values()}}
+    result["resources"] = resource_list(base.get("resources", []), wanted)
     for section in ("prompt", "model"):
         if section in rows[section]:
             result[section] = rows[section][section]
@@ -1159,7 +1154,15 @@ class CapabilityService:
                 elif section == "resources":
                     if value is True:
                         value = key
-                    if not isinstance(value, str) or value != key:
+                    # An object row (a knowledge base) has no string to set it to.
+                    own = intent["overrides"]["resources"].get(key, {}).get("value")
+                    held = (parent_rows["resources"], intent["accepted"]["resources"])
+                    if (
+                        not isinstance(value, str)
+                        or value != key
+                        or isinstance(own, dict)
+                        or any(isinstance(where.get(key), dict) for where in held)
+                    ):
                         raise CapabilityError("invalid_resource", 400)
                 elif not isinstance(value, str) or (section == "model" and not value.strip()):
                     raise CapabilityError("invalid_scalar", 400)
