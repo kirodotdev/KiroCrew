@@ -3280,7 +3280,12 @@
         "repeated_failures_body": "Some agent tool calls failed again and again this week. Open this note to see them and turn one into a lesson.",
         "mcp_share_paused_title": "A shared MCP server is paused",
         "mcp_share_paused_body": "Paused: {{names}}. Review shared servers to approve the update and share again.",
-        "mcp_share_paused_link": "Review shared servers"
+        "mcp_share_paused_link": "Review shared servers",
+        "moved_to_history_title": "Sessions moved to History",
+        "moved_to_history_startup_body_one": "{{count}} older open tab was left in History at startup to keep {{limit}} sessions open at most. Open History to resume it.",
+        "moved_to_history_startup_body_other": "{{count}} older open tabs were left in History at startup to keep {{limit}} sessions open at most. Open History to resume one.",
+        "moved_to_history_idle_body_one": "Archived {{count}} session idle past the {{days}}-day mark to History to stay under the {{limit}}-session limit. Open History to resume it.",
+        "moved_to_history_idle_body_other": "Archived {{count}} sessions idle past the {{days}}-day mark to History to stay under the {{limit}}-session limit. Open History to resume one."
       },
       "notificationBanner": {
         "dismiss_notification": "Dismiss notification",

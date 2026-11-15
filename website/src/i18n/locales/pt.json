@@ -8736,7 +8736,14 @@
         "repeated_failures_body": "Algumas chamadas de ferramentas do agente falharam várias vezes nesta semana. Abra este aviso para vê-las e transformar uma em lição.",
         "mcp_share_paused_title": "Um servidor MCP compartilhado está pausado",
         "mcp_share_paused_body": "Pausado: {{names}}. Revise os servidores compartilhados e aprove a atualização para compartilhar de novo.",
-        "mcp_share_paused_link": "Revisar servidores compartilhados"
+        "mcp_share_paused_link": "Revisar servidores compartilhados",
+        "moved_to_history_title": "Sessões movidas para o Histórico",
+        "moved_to_history_startup_body_one": "Na inicialização, {{count}} aba aberta mais antiga ficou no Histórico para manter no máximo {{limit}} sessões abertas. Abra o Histórico para retomá-la.",
+        "moved_to_history_startup_body_many": "Na inicialização, {{count}} abas abertas mais antigas ficaram no Histórico para manter no máximo {{limit}} sessões abertas. Abra o Histórico para retomar uma.",
+        "moved_to_history_startup_body_other": "Na inicialização, {{count}} abas abertas mais antigas ficaram no Histórico para manter no máximo {{limit}} sessões abertas. Abra o Histórico para retomar uma.",
+        "moved_to_history_idle_body_one": "{{count}} sessão inativa há mais de {{days}} dia(s) foi arquivada no Histórico para ficar abaixo do limite de {{limit}} sessões. Abra o Histórico para retomá-la.",
+        "moved_to_history_idle_body_many": "{{count}} sessões inativas há mais de {{days}} dia(s) foram arquivadas no Histórico para ficar abaixo do limite de {{limit}} sessões. Abra o Histórico para retomar uma.",
+        "moved_to_history_idle_body_other": "{{count}} sessões inativas há mais de {{days}} dia(s) foram arquivadas no Histórico para ficar abaixo do limite de {{limit}} sessões. Abra o Histórico para retomar uma."
       },
       "notificationBanner": {
         "dismiss_notification": "Dispensar notificação",

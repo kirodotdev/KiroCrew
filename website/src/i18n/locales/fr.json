@@ -8736,7 +8736,14 @@
         "repeated_failures_body": "Certains appels d’outils de l’agent ont échoué encore et encore cette semaine. Ouvre cette note pour les voir et en transformer un en leçon.",
         "mcp_share_paused_title": "Un serveur MCP partagé est en pause",
         "mcp_share_paused_body": "En pause : {{names}}. Vérifie les serveurs partagés et approuve la mise à jour pour le partager à nouveau.",
-        "mcp_share_paused_link": "Vérifier les serveurs partagés"
+        "mcp_share_paused_link": "Vérifier les serveurs partagés",
+        "moved_to_history_title": "Sessions déplacées dans l’Historique",
+        "moved_to_history_startup_body_one": "Au démarrage, {{count}} onglet ouvert plus ancien a été laissé dans l’Historique pour garder au plus {{limit}} sessions ouvertes. Ouvre l’Historique pour le reprendre.",
+        "moved_to_history_startup_body_many": "Au démarrage, {{count}} onglets ouverts plus anciens ont été laissés dans l’Historique pour garder au plus {{limit}} sessions ouvertes. Ouvre l’Historique pour en reprendre un.",
+        "moved_to_history_startup_body_other": "Au démarrage, {{count}} onglets ouverts plus anciens ont été laissés dans l’Historique pour garder au plus {{limit}} sessions ouvertes. Ouvre l’Historique pour en reprendre un.",
+        "moved_to_history_idle_body_one": "{{count}} session inactive depuis plus de {{days}} jour(s) a été archivée dans l’Historique pour rester sous la limite de {{limit}} sessions. Ouvre l’Historique pour la reprendre.",
+        "moved_to_history_idle_body_many": "{{count}} sessions inactives depuis plus de {{days}} jour(s) ont été archivées dans l’Historique pour rester sous la limite de {{limit}} sessions. Ouvre l’Historique pour en reprendre une.",
+        "moved_to_history_idle_body_other": "{{count}} sessions inactives depuis plus de {{days}} jour(s) ont été archivées dans l’Historique pour rester sous la limite de {{limit}} sessions. Ouvre l’Historique pour en reprendre une."
       },
       "notificationBanner": {
         "dismiss_notification": "Ignorer la notification",
