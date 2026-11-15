@@ -645,6 +645,11 @@ def _ensure_builtin_skills(base: Path) -> list[tuple[str, Path]]:
                     logger.warning("could not remove staged skill copy %s", stage)
                 continue
             try:
+                # copytree copied the packaged root's mode onto the stage, and
+                # macOS refuses to rename a directory its owner cannot write
+                # (a 0o555 or 0o455 source). Owner rwx is what the repair after
+                # the publish adds anyway, so the fingerprint is unchanged.
+                os.chmod(stage, stat.S_IMODE(os.lstat(stage).st_mode) | stat.S_IRWXU)
                 # No-replace publish: a destination that appeared while the
                 # copy ran (even an empty directory) is never overwritten.
                 publish_dir_noreplace(stage, dest_dir)
