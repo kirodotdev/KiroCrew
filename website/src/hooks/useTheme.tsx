@@ -602,7 +602,7 @@ export interface ThemeContextValue {
   markOnboarded: () => void
   markImportOnboarded: () => void
   /** Persists the ack (and the notice version unless told not to); rejects, marking nothing, when the write fails. */
-  markPrivacyAcked: (ack?: { noticeVersion?: boolean }) => Promise<void>
+  markPrivacyAcked: (ack?: { noticeVersion?: boolean; kiroTelemetry?: boolean }) => Promise<void>
   addCustomTheme: (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => Promise<CustomThemeData>
   deleteCustomTheme: (slug: string) => Promise<void>
   /** Refetch the installed-theme catalog once; `true` when it now reflects the
@@ -1133,6 +1133,7 @@ function useThemeState(): ThemeContextValue {
       import_onboarded?: boolean
       privacy_acked?: boolean
       privacy_ack_version?: number
+      kiro_telemetry_ack_version?: number
     }) => api.updateThemeConfig(body),
   })
 
@@ -1612,10 +1613,18 @@ function useThemeState(): ThemeContextValue {
   // chapter stays open on a failed write instead of claiming the user was told.
   // `noticeVersion: false` records only that the chapter was passed: the text
   // shown did not say local recording is on, so the version stays where it was.
-  const markPrivacyAcked = useCallback(async ({ noticeVersion = true }: { noticeVersion?: boolean } = {}) => {
+  // `kiroTelemetry` records that the text shown named the build's Kiro telemetry
+  // destination: only that acknowledgement lets it export (`kiro_export.notice_shown`).
+  const markPrivacyAcked = useCallback(async (
+    { noticeVersion = true, kiroTelemetry = false }: { noticeVersion?: boolean; kiroTelemetry?: boolean } = {},
+  ) => {
     await api.updateThemeConfig(
       noticeVersion
-        ? { privacy_acked: true, privacy_ack_version: PRIVACY_NOTICE_VERSION }
+        ? {
+            privacy_acked: true,
+            privacy_ack_version: PRIVACY_NOTICE_VERSION,
+            ...(kiroTelemetry ? { kiro_telemetry_ack_version: PRIVACY_NOTICE_VERSION } : {}),
+          }
         : { privacy_acked: true },
     )
     safeSetItem('mc-privacy-acked', '1')

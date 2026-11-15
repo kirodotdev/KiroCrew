@@ -341,12 +341,20 @@ would not take effect:
 
 See [docs/system-specs/modules/governance.md](docs/system-specs/modules/governance.md).
 
-This is separate from `telemetry.enabled`, which controls **local-only**
-performance metrics. They are on by default, stay on your machine, are capped at
-30 days and 100 MB, and turn off with the same Turn off button,
-`kirocrew telemetry disable`, `KIROCREW_TELEMETRY=0` or `DO_NOT_TRACK=1`. A
-terminal-only install prints a one-line notice about them on its first start. See
-[docs/system-specs/modules/metrics.md](docs/system-specs/modules/metrics.md).
+This is separate from `telemetry.enabled`, which controls performance metrics.
+They are on by default, are recorded on your machine, are capped at 30 days and
+100 MB, and turn off with the same Turn off button, `kirocrew telemetry disable`,
+`KIROCREW_TELEMETRY=0` or `DO_NOT_TRACK=1`. A terminal-only install prints a
+one-line notice about them on its first start.
+
+While they are on, the public build also sends the reviewed product usage metrics
+(which features are used and how long things take; no prompts, files, paths or
+credentials) to Kiro telemetry, labelled with a hashed install ID. Nothing is sent
+until the Privacy screen, or the one-line terminal notice, has named it. It is
+not sent from an enterprise (LTS) build, a CI runner, or a non-default
+`KIROCREW_HOME`, and every off switch above stops it. See
+[docs/guides/telemetry-otlp-export.md](docs/guides/telemetry-otlp-export.md#the-kiro-telemetry-destination)
+and [docs/system-specs/modules/metrics.md](docs/system-specs/modules/metrics.md).
 
 ## Docs and contributing
 

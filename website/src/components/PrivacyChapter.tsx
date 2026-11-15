@@ -44,6 +44,12 @@ const WHERE_BODY_KEY = {
     heartbeat: 'components.privacyChapter.whereBodyExport',
     none: 'components.privacyChapter.whereBodyExportNoHeartbeat',
   },
+  // Only the build's Kiro telemetry gets metrics: recorded here, and the next
+  // line (`whereBodyKiro`) names where they go. Never "stay on this machine".
+  recorded: {
+    heartbeat: 'components.privacyChapter.whereBodyRecorded',
+    none: 'components.privacyChapter.whereBodyRecordedNoHeartbeat',
+  },
 } as const
 
 /**
@@ -104,7 +110,7 @@ export default function PrivacyChapter({
    * Persists the ack; `noticeVersion` says whether the current notice version is
    * recorded too. Rejects when the write fails; the chapter then stays open.
    */
-  onContinue: (ack: { noticeVersion: boolean }) => Promise<void> | void
+  onContinue: (ack: { noticeVersion: boolean; kiroTelemetry?: boolean }) => Promise<void> | void
   /**
    * First run only: when usage data is off by the user's own setting, record the
    * ack through `onContinue` without showing the screen (there is nothing to
@@ -176,7 +182,8 @@ export default function PrivacyChapter({
       }
       // One rule for both buttons: the version means "told that local recording
       // is on", so it is recorded only when the text shown said so.
-      await onContinue({ noticeVersion: usage.status === 'ready' && usage.recordingOn })
+      const told = usage.status === 'ready' && usage.recordingOn
+      await onContinue(told && usage.kiroTelemetryOn ? { noticeVersion: true, kiroTelemetry: true } : { noticeVersion: told })
     } catch {
       // Keep writes only the ack, so its failure changed nothing. A Turn off
       // failure can land after one write, both, or an overlay refusal, so it
@@ -339,7 +346,9 @@ export default function PrivacyChapter({
             <p className="text-[12px] text-muted text-right" data-testid="privacy-turn-off-scope">
               {heartbeatOnly
                 ? i18nT('components.privacyChapter.turnOffScopeHeartbeatOnly')
-                : i18nT('components.privacyChapter.turnOffScope')}
+                : usage.kiroTelemetryOn
+                  ? i18nT('components.privacyChapter.turnOffScopeKiro')
+                  : i18nT('components.privacyChapter.turnOffScope')}
             </p>
           )}
           <div className="flex flex-wrap items-center justify-end gap-2">
@@ -411,8 +420,15 @@ export default function PrivacyChapter({
                 ? i18nT('components.privacyChapter.whereBodyOff')
                 : heartbeatOnly
                   ? i18nT('components.privacyChapter.whereBodyHeartbeatOnly')
-                  : i18nT(WHERE_BODY_KEY[usage.exportOn ? 'export' : 'local'][usage.heartbeatOn ? 'heartbeat' : 'none'])}
+                  : i18nT(WHERE_BODY_KEY[usage.exportOn ? 'export' : usage.kiroTelemetryOn ? 'recorded' : 'local'][usage.heartbeatOn ? 'heartbeat' : 'none'])}
           </p>
+          {/* Named on its own line: this notice is what lets the build's own
+              destination export under the recording default. */}
+          {!statusUnknown && !showOff && usage.kiroTelemetryOn && (
+            <p className="mt-2 text-sm leading-relaxed text-muted" data-testid="privacy-kiro-telemetry">
+              {i18nT('components.privacyChapter.whereBodyKiro')}
+            </p>
+          )}
         </section>
         {/* A pin this screen cannot lift (an env var, DO_NOT_TRACK, a policy)
             also keeps Settings from changing it, so do not point there. */}

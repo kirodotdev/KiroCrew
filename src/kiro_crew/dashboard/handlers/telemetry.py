@@ -56,6 +56,7 @@ from kiro_crew.dashboard.handlers.usage import (
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.jsonl_util import bounded_records
+from kiro_crew.metrics import kiro_export
 from kiro_crew.metrics.provider import (
     TELEMETRY_ENV_VAR,
     _held_consent,
@@ -241,6 +242,11 @@ class _TelemetryState(NamedTuple):
     # also have been turned on explicitly. True when unresolvable, the disclosure
     # direction.
     export_permitted: bool = True
+    # Turning recording on would also export somewhere the privacy notice does
+    # not name, so the config route refuses that write (409). The built-in Kiro
+    # destination does not count (``kiro_export.egress_needs_written_opt_in``).
+    # True when unresolvable, the refusal direction.
+    enable_refused: bool = True
 
 
 def _telemetry_cfg() -> _TelemetryState:
@@ -263,6 +269,7 @@ def _telemetry_cfg() -> _TelemetryState:
     destinations: "tuple[dict, ...]" = ()
     retention_days = 0
     export_permitted = True
+    enable_refused = True
     directory = config_dir() / "metrics"
     try:
         full_cfg = KiroCrewConfig.load()
@@ -282,17 +289,21 @@ def _telemetry_cfg() -> _TelemetryState:
         # leave the machine. The endpoint value never leaves that resolution; the
         # panel only needs to know whether egress would happen.
         try:
+            rows = otlp_egress_listing(cfg)
             destinations = tuple(
                 {
                     "name": row.destination.name,
                     "source": row.source,
                     "locked": row.locked,
                 }
-                for row in otlp_egress_listing(cfg)
+                for row in rows
             )
             otlp_configured = bool(destinations)
+            enable_refused = any(not kiro_export.is_builtin(row.destination) for row in rows)
             if otlp_configured:
                 # Unknown consent keeps the live recorder, so disclose what IT exports.
+                # Otherwise this is the operator opt-in; the built-in Kiro
+                # destination, which needs none, is named by its row.
                 export_permitted = live_exporting if held is None else outbound_consented(full_cfg)
             if held is None and live_exporting:
                 # The fallback load may list no destination (an unparseable file
@@ -333,6 +344,7 @@ def _telemetry_cfg() -> _TelemetryState:
         retention_days,
         destinations,
         export_permitted,
+        enable_refused,
     )
 
 
@@ -1955,6 +1967,8 @@ async def api_collection_status(request: web.Request) -> web.Response:
             "otlp_configured": state.otlp_configured,
             # Whether a configured destination is actually sent to now.
             "export_permitted": state.export_permitted,
+            # Whether the switch's ENABLE direction is refused (409) here.
+            "enable_refused": state.enable_refused,
             "otlp_destinations": [dict(row) for row in state.otlp_destinations],
             "metrics_dir": str(state.directory),
         }
