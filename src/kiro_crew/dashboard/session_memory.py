@@ -331,8 +331,10 @@ def lineage_parents(
 
     An empty *nodes* means the crew log is off, or nothing on disk cites a creator,
     and the storage package stays UNIMPORTED on that path: ``parent_payload`` is
-    imported below the early return, so a flag-off boot never loads it. Existing tests
-    pin that. The mint fallback is not reached there either, and that is the right
+    imported below the early return, so a flag-off boot never loads it. The boot probe in
+    ``test_crew_log_emit_redaction_and_flag.py`` pins only the import-time half; no test
+    calls this with an empty *nodes* and checks the package stays unloaded. The mint
+    fallback is not reached there either, and that is the right
     answer rather than a gap: with no folded node anywhere, a creator row would have
     nothing for the child to nest UNDER.
     """
@@ -715,8 +717,9 @@ class SessionMemorySampler:
         The crew log is optional behind ``KIROCREW_CREW_LOG`` and this module is on
         the dashboard's boot path, so the projection is imported here, lazily, and
         only once the flag says there is a store to read -- the same split the
-        emitter and the crew-log routes keep, pinned by the tests that launch with
-        the flag off and assert the package never loaded. Asking the emitter is
+        emitter and the crew-log routes keep. The flag-off boot probe in
+        ``test_crew_log_emit_redaction_and_flag.py`` pins only the import-time half;
+        no test calls this method with the flag off. Asking the emitter is
         the one import that is safe: it is pure glue and loads nothing until a write
         or a read reaches storage.
         """
