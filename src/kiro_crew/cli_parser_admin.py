@@ -173,6 +173,7 @@ Examples:
   kirocrew eval --all                   # all scenarios (slow)
   kirocrew eval --dir ./evals           # your own scenario files (.json, .yaml, .yml)
   kirocrew eval --file ./evals/a.yaml --agent reviewer --model my-model-id --repeat 3
+  kirocrew eval --dir ./evals --baseline eval_results/main.json --max-drop 0.05 --junit eval.xml
 """,
         formatter_class=_fmt,
         parents=[_jail_opts],
@@ -211,6 +212,20 @@ Examples:
         default=1,
         metavar="N",
         help="Run the scenarios N times; a scenario passes only when all N runs pass (pass^k)",
+    )
+    eval_parser.add_argument(
+        "--baseline",
+        metavar="PATH",
+        help="A saved eval_<timestamp>.json to compare with; exit 1 when a scenario's score drops",
+    )
+    eval_parser.add_argument(
+        "--max-drop",
+        dest="max_drop",
+        metavar="FRACTION",
+        help="With --baseline, how far (0 to 1) a scenario's score may fall before it is named a regression (default 0)",
+    )
+    eval_parser.add_argument(
+        "--junit", metavar="PATH", help="Also write the results as a JUnit XML file at PATH"
     )
 
 
