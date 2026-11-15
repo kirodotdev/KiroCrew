@@ -17,8 +17,9 @@ Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe
 
 Instance fields read: ``_agent``, ``_agent_capabilities``, ``_agent_version``,
 ``_crew_agent``, ``_dead``, ``_entitlement_probe_lock``, ``_expect_mcp_reports``,
-``_fold_mcp_frame``, ``_initialized``, ``_kas_telemetry_sent``, ``_mcp_gateway_overlay``,
-``_mcp_reports``, ``_member_context``, ``_model``, ``_open_mcp_report``, ``_pending_init_notifications``,
+``_fold_mcp_frame``, ``_host_sends_mcp_init``, ``_initialized``, ``_kas_telemetry_sent``,
+``_mcp_gateway_overlay``, ``_mcp_reports``, ``_member_context``, ``_model``, ``_open_mcp_report``,
+``_pending_init_notifications``,
 ``_pid``, ``_pool_lookup``, ``_process``, ``_record_tree_in_background``,
 ``_refuse_over_ceiling_start``, ``_remote_session_servers``, ``_remote_workspace_agents``,
 ``_session_label_elements``, ``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``,
@@ -1110,7 +1111,7 @@ async def _finish_create_session(
             staged_before_switch if mode_switched else 0,
             start_priority,
         )
-    elif self._expect_mcp_reports:
+    elif self._expect_mcp_reports and self._host_sends_mcp_init:
         await handle.drain_init(stale_report_frames=staged_before_switch if mode_switched else 0)
     else:
         await handle.drain_init(no_report_ceiling=0.0)

@@ -12,7 +12,7 @@ Instance fields written: ``_load_replay_frames``, ``_parked_copies``, ``_session
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_agent_version``, ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``,
-``_fold_mcp_frame``, ``_initialized``, ``_kas_telemetry_sent``, ``_mcp_gateway_overlay``,
+``_fold_mcp_frame``, ``_host_sends_mcp_init``, ``_initialized``, ``_kas_telemetry_sent``, ``_mcp_gateway_overlay``,
 ``_mcp_switched_off``, ``_model``, ``_open_mcp_report``, ``_park_in_start_agent``, ``_pid``,
 ``_pool_lookup``, ``_record_tree_in_background``, ``_refuse_over_ceiling_start``,
 ``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
@@ -728,7 +728,7 @@ async def load_session(
             start_priority,
             focus_resume=focus_resume,
         )
-    elif self._expect_mcp_reports:
+    elif self._expect_mcp_reports and self._host_sends_mcp_init:
         await handle.drain_init(stale_report_frames=staged_before_switch if mode_switched else 0)
     else:
         await handle.drain_init(no_report_ceiling=0.0)
@@ -898,7 +898,11 @@ async def _wait_managed_mcp(
             # drain, even though it has no managed readiness requirement. A
             # process with MCP switched off starts no server, so no report can
             # ever arm the drain: holding for one would only spend the ceiling.
-            expects_report = self._expect_mcp_reports and not self._mcp_switched_off
+            expects_report = (
+                self._expect_mcp_reports
+                and self._host_sends_mcp_init
+                and not self._mcp_switched_off
+            )
             await handle.drain_init(
                 stale_report_frames=stale_report_frames,
                 no_report_ceiling=None if expects_report else 0.0,

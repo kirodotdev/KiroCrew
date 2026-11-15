@@ -2624,7 +2624,17 @@ each spawn, and it reads the spec itself only when the handshake read none), so 
 server of any
 session on it can report: `_wait_managed_mcp` passes it a zero ceiling as well,
 and a tool-less agent such as `kirocrew-lite` no longer waits out the 6 s
-ceiling on every cold start. Every other agent keeps the ceiling.
+ceiling on every cold start. A host that names no MCP-init frame is the third
+zero-ceiling case: only the kiro family (kiro-cli and KAS) declares
+`notification_aliases.mcp_init`, so on codex-acp, claude-agent-acp and goose no
+report can ever end the wait early. `AcpRuntime._host_sends_mcp_init` is False
+for such a host, and all three drain sites (the readiness drain in
+`runtime_session_create` and `runtime_session_load`, and the external-only drain
+in `runtime_session_load`) then pass a zero ceiling. An unknown backend keeps the
+wait; its spawn refuses it later with the harness's own error. The spec's
+switched-off servers are still recorded from `_expect_mcp_reports` alone, so
+they keep their `disabled` row on these hosts too. Every other agent keeps the
+ceiling.
 
 **An unattended run waits longer, for named servers.** The drain above gives a
 server about a second after the first report, which a slow `node` server can
