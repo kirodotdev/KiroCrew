@@ -365,6 +365,49 @@ describe('Settings > Developer > Feature Previews', () => {
       </QueryClientProvider>,
     )
 
+  /**
+   * Every switch row this tab draws in the stubbed state, keyed by its label;
+   * the value says whether the row carries an InfoTip (a `hint`). One line per
+   * row, so two changes that each add a row edit different lines and the merged
+   * tree passes, where one shared switch total let both write the same new
+   * number and break `main` (testing-conventions.md § Merge-safe ratchets and
+   * counts). Totals the tests below need are computed from this table.
+   */
+  const FEATURE_PREVIEW_ROWS: Record<string, boolean> = {
+    'Chat on a crew': true,
+    'Folder conductor': true,
+    "Bot sessions on the bot's profile": true,
+    'Quick worker check before a hard choice': true,
+    'Reply threads on bot chat messages': true,
+    'Explore': true,
+    'Mark out-of-date Dashboard fields': true,
+    'Send pending approvals to chat apps': true,
+    'Agent Harness for worker chats': true,
+    'Session Environments': true,
+    'ACP runtime sharing': true,
+    'Artifact Deploy': true,
+    'Webhooks': true,
+    'MCP sign-in by Kiro Crew': true,
+    'Secrets vault redesign': false,
+    'Composable layout': true,
+    'Decisions': true,
+  }
+  /** The drawn rows in the table's shape: label -> carries an InfoTip. */
+  const renderedRows = () =>
+    Object.fromEntries(
+      screen.getAllByRole('switch').map(sw => {
+        const row = sw.closest('[data-setting-label]')
+        return [sw.getAttribute('aria-label') ?? '?', !!row?.querySelector('[data-settings-hint] button')]
+      }),
+    )
+  /**
+   * Awaited: the Decisions card is not drawn until the governance read
+   * (`decisions_enabled`) lands, so its row arrives a tick late. A row the
+   * table does not name, or a named row that is missing, never converges.
+   */
+  const expectAllRows = () =>
+    waitFor(() => { expect(renderedRows()).toEqual(FEATURE_PREVIEW_ROWS) })
+
   /** `aria-checked` via the ATTRIBUTE: the Toggle is a `div role="switch"`, and
    *  the reflected `ariaChecked` DOM property is not populated for one. */
   const toggleState = () =>
@@ -496,7 +539,10 @@ describe('Settings > Developer > Feature Previews', () => {
     // an unexpected button lands in `ingress`, an extra or missing tip
     // changes `tips` -- while saying what each half protects.
     const INFO_TIP = 'More information'
-    const INFO_TIP_COUNT = 15 // one per Feature Previews row carrying a `hint`
+    // One per row carrying a `hint`, outside the Decisions card (its own row's tip
+    // is in the Decisions set below). Computed, so a new row edits only its table line.
+    const INFO_TIP_COUNT = Object.entries(FEATURE_PREVIEW_ROWS)
+      .filter(([label, hint]) => hint && label !== 'Decisions').length
     const partition = () => {
       const all = ingressButtons()
       return { tips: all.filter(n => n === INFO_TIP).length, ingress: all.filter(n => n !== INFO_TIP) }
@@ -538,18 +584,14 @@ describe('Settings > Developer > Feature Previews', () => {
     // enclose the header and every card — an anchor on a single card would
     // answer "is this row selected?" instead.
     const { container } = renderTab()
-    // Awaited: the Decisions card is not drawn until the governance read
-    // (`decisions_enabled`) lands, so the last switch arrives a tick late.
-    await waitFor(() => {
-      expect(screen.getAllByRole('switch')).toHaveLength(17)
-    })
+    await expectAllRows()
     const anchors = container.querySelectorAll(`[data-setting-key="${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}"]`)
     expect(anchors).toHaveLength(1)
     const anchor = anchors[0]
     expect(anchor.contains(screen.getByText('Unfinished features. Turn one on to try it.'))).toBe(true)
     for (const h of screen.getAllByRole('heading')) expect(anchor.contains(h)).toBe(true)
-    // The count is here so a card added outside the anchor fails rather than
-    // silently escaping the ring. The last is Decisions, whose switch is
+    // Every row is awaited first so a card added outside the anchor fails rather
+    // than silently escaping the ring. The last is Decisions, whose switch is
     // backend config — a different write path, the same ring.
     for (const s of screen.getAllByRole('switch')) expect(anchor.contains(s)).toBe(true)
   })
@@ -558,7 +600,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // The Dynamic Dashboard is on for every reader, so it has no preview card.
     // Automatic cards is a server setting with its own card on the Developer tab.
     renderTab()
-    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(17) })
+    await expectAllRows()
     expect(screen.queryByRole('switch', { name: /^dynamic dashboard$/i })).toBeNull()
     expect(screen.queryByRole('switch', { name: /automatic cards for all sessions/i })).toBeNull()
   })
