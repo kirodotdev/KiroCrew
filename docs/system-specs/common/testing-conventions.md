@@ -5789,6 +5789,22 @@ it with a negative control that runs a literal found in nearly every file and
 asserts the widest bar refuses it -- that is the regression the check exists to
 catch. `TestFiltersStillNarrowTheTree` in `test/test_source_corpus.py` has both.
 
+### A CI wait that runs out is infrastructure, not a red test
+
+A job that waits on another system (a gate run, the API quota) must size its wait
+to what that system really takes, and must say so when the wait runs out. A fixed
+ceiling shorter than a normal queue reports a green commit red, and every author
+then hunts for a test that never failed. Give a wait that is visibly moving (a run
+`pending` or `queued`, a known rate-limit reset) the long budget, give a wait with no
+news the short one, back off between failed reads, and start the error with
+`CI infrastructure, not a test failure` so the reader re-runs instead of debugging.
+Never turn the wait into a pass: the barrier still fails closed. The model is
+`.github/scripts/await-fast-gate.sh` ([ci-and-reviews](../../ci/ci-and-reviews.md),
+`await-fast-gate`); `test/test_await_fast_gate_poll.py` drives both budgets. A
+transient download error inside a third-party action (`Unexpected HTTP response:
+504` from `setup-python`) is already retried by that action; a red after its
+retries is an upstream outage, so re-run the job once.
+
 ## Keeping the suite fast
 
 The measured runs above exceeded 100k tests. At that scale, setup overhead rather
