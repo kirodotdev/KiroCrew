@@ -183,9 +183,8 @@ async def test_the_slots_own_loop_wake_still_reaches_the_applier_as_a_self_wake(
 
 @pytest.mark.asyncio
 async def test_a_human_started_turn_reaches_the_applier_as_user_facing(tmp_path, monkeypatch):
-    """The conductor patrol path: a member conductor's own human-started turn binds a worker,
-    the bind reply tells it to arm its patrol, and the ``monitor_start`` it issues
-    reaches the applier with the human-origin mark that admits the self-arm."""
+    """A ``monitor_start`` from a human-started turn reaches the applier with the
+    human-origin mark that admits the self-arm (the conductor arming its patrol)."""
     kwargs = await _directive_kwargs(tmp_path, monkeypatch, _directive_user_origin=True)
 
     assert kwargs["producer_is_user_facing"] is True
