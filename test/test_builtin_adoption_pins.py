@@ -190,6 +190,26 @@ _SHIPPED_PINS = [
         "minAppSdkLevel": 1,
         "legacyNav": {"route": "/pptx-maker", "icon": "Presentation"},
     },
+    {
+        "name": "issue-radar",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-issue-radar",
+        "commit": "8e57db85e15e2d53fcd58808aeeac8f54734c6f3",
+        "version": "0.1.2",
+        "treeSha256": "b76d6f60298b6ac194876586a1ec19234fd37cbb4b325dbe8ea72a41123d2a55",
+        "archiveSha256": "02ed708cd9333301a710cdd7d7de03eebe50213e1d1758c96e66a462727729ac",
+        "minAppSdkLevel": 2,
+        "legacyNav": {"route": "/issue-radar", "icon": "Radar"},
+    },
+    {
+        "name": "auto-improvement",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-auto-improvement",
+        "commit": "0e1a22d2e10b49cef904d5839e9bb6d3ad2a4ab2",
+        "version": "1.0.3",
+        "treeSha256": "5b8647bce56b26c5fe7e440c85c42d30013168d45f04d28bbc3908bd417ef457",
+        "archiveSha256": "624d2681fc0ba9ac8edbe9791e03da3b4247f04cdcd2b0ee9f0958e760d02355",
+        "minAppSdkLevel": 2,
+        "legacyNav": {"route": "/auto-improvement", "icon": "Brain"},
+    },
 ]
 
 

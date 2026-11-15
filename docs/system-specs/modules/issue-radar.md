@@ -95,6 +95,17 @@ the app-named `test/test_issue_radar_crew_close_race.py`,
 `src/apps/issue-radar/`, only the `/issue-radar` row of `apps/builtinRegistry.ts` imports
 from it, and the app's frontend tests live beside it.
 
+**Adopted onto its own repository.** The wheel pins the app (`apps/adoption-pins.json`,
+[app-kit-platform.md § 33](app-kit-platform.md#33-former-built-in-adoption)) at
+`KiroCrewCaptain/kirocrew-app-issue-radar` with `minAppSdkLevel` 2, the level of
+`ctx.auto_approve` and `agentTools`, so a host whose record is builtin-owned swaps it in
+place onto that tree at a restart, keeping `data/`, `.app_secret`, the approved grants and
+`enabled`; the rail keeps `/issue-radar` and the `Radar` glyph. The repository's
+`app.json` declares the same `permissions` (`workerAutoApprove` included) and the same
+three `agentTools` as the wheel copy, so nothing is held back and the adopted record keeps
+listing the tools (§ 33, "Agent tools through adoption"). A fix to the app lands in that
+repository first; a change to the wheel copy needs its `App repo:` line.
+
 ## Providers
 
 Three providers are supported, and each is a plain MODULE that mirrors the others
