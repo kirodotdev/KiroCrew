@@ -906,7 +906,7 @@ worker's last test is checked after that warning is written, so its findings are
 it. The package-attribute floor also undoes a replacement made by a wider-scoped fixture
 that a test created lazily (`request.getfixturevalue`) at that test's teardown.
 
-Seven members are there for a different reason — a **process-global** that any testpath
+Eight members are there for a different reason — a **process-global** that any testpath
 can poison for every test after it, which is the same failure shape as host mutation
 one scope down:
 
@@ -977,6 +977,17 @@ one scope down:
   retires the leaked instance's timers through `_cancel_timer`, which is the one place
   that knows a task on a closed loop must be DROPPED rather than cancelled — `Task.cancel`
   schedules through `loop.call_soon` and raises `RuntimeError: Event loop is closed`.
+* `_forget_gatewayd_telemetry_override` drops the process-level telemetry provider
+  `gatewayd._prepare_telemetry` installs (`metrics.provider.use_telemetry_provider`)
+  and the gatewayd role mark. It lives in `test/conftest_resets.py`, like the
+  autonudge restore. A test that runs `gatewayd.main()` in process leaves both set, and
+  every later test on the worker then resolves OTLP egress through gatewayd's provider
+  and ignores the one it installed with `set_context`. That is how
+  `test_config_patch.py`'s
+  `test_enable_is_refused_when_the_egress_posture_cannot_be_resolved` came to answer 200
+  instead of 409 after `test_mcp_gatewayd_coverage.py`'s `TestMain` on the same worker.
+  Reset at setup through the module's own `reset_for_testing()`, and only when the
+  override is set.
 
 It registers the xdist worker budget too — the policy is in the repo-root
 `xdist_budget.py`, a plain module rather than a second conftest, because the module
