@@ -403,7 +403,7 @@ def init_session_fields(self: _ChatSlot) -> None:
     # rather than re-arm the same load.
     self._eager_spawn_reported_resume = False
     # Consecutive failed background starts, and the monotonic time before
-    # which the next one waits (chat_runner._note_eager_spawn_failure).
+    # which the next one waits (chat_turn.eager_spawn._note_eager_spawn_failure).
     self._eager_spawn_failures = 0
     self._eager_spawn_retry_at = 0.0
     # Unclaimed-prefetch teardown timer (resume prefetch). At most one per

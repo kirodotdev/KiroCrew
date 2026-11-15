@@ -810,7 +810,7 @@ async def handle_registries(request: web.Request) -> web.Response:
     #     ``apps.routes`` (479 -> 596), and loads the whole ``dashboard.chat_utils``
     #     tree on paths that today never touch it.
     #
-    # Same reasoning, in routes.py, as ``handle_app_uninstall``'s lazy
+    # Same reasoning, in routes_uninstall.py, as ``_run_uninstall``'s lazy
     # ``_get_config_lock`` import; ``run_config_write`` itself defers that import
     # for an outright cycle.
     from kiro_crew.dashboard.chat_utils import run_config_write

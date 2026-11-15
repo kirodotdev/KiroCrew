@@ -555,7 +555,7 @@ async def _run_inner_impl(
     _result_file_started = False
     # Cache tool names by tool_call_id so PostToolUse can recover the tool name
     # when EVENT_TOOL_RESULT arrives (which only carries tool_call_id and output).
-    # Mirrors kiro_crew.dashboard.chat_runner._pending_tools.
+    # Mirrors the chat turn's ``turn._pending_tools`` (dashboard/chat_turn).
     _pending_tools: dict[str, str] = {}
     # tool_call_id -> the tool id the call's PostToolUse spec hooks match on.
     from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_TOOL_CALL_UPDATE

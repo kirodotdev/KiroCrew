@@ -1416,7 +1416,7 @@ def build_pod_env(
         "KIROCREW_BIND": "127.0.0.1",
         # The pod's OWN venv leads PATH, ahead of cfg.gateway_path (which starts
         # with ~/.local/bin). Without this a bare `kirocrew` inside a pod — an
-        # agent bash turn, a subprocess, `_kirocrew_bin()`'s "console-script on
+        # agent bash turn, a subprocess, `_resolve_kirocrew_bin()`'s "console-script on
         # PATH" probe — resolves the machine-wide shim instead of the checkout
         # under test, so the pod silently exercises the global install and stays
         # coupled to a symlink it does not own.

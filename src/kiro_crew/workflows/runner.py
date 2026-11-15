@@ -83,7 +83,7 @@ except ImportError:  # pragma: no cover - security is app-layer optional
     _redact_credentials = None  # type: ignore[assignment]
     _redact_exfil = None  # type: ignore[assignment]
 
-# Wall-clock ceiling per run (matches ``_RUN_TIMEOUT_SECS`` in the spec).
+# Wall-clock ceiling per run (the spec's ``runner.DEFAULT_RUN_TIMEOUT_SECS``).
 DEFAULT_RUN_TIMEOUT_SECS = 3600
 
 # Bounds on a caller-supplied per-run ceiling. The ceiling is the runaway

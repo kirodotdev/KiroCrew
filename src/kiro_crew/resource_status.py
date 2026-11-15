@@ -1513,7 +1513,7 @@ def admission_check(cfg: object | None = None) -> AdmissionDecision:
 #
 # The macOS kernel memory-pressure hold is NOT applied here: it is the subagent
 # gate's rule, and the eager-spawn ADMISSION reads it from the manager
-# (``chat_runner._admit_prefetch``'s caller), never the re-probe after a
+# (``chat_turn.eager_spawn._admit_prefetch``'s caller), never the re-probe after a
 # pre-warm registered.
 PREWARM_MAX_LIVE = 3
 _PREWARM_BY_POSTURE: dict[str, int] = {
