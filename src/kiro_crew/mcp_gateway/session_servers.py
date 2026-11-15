@@ -372,7 +372,13 @@ def _load_overlay_for_agent(
     Fail-soft: an unreadable/malformed overlay yields ``None`` (unpooled), never
     an exception.
     """
-    if kas_worker_session_key and agent == MATE_WORKER_AGENT:
+    if agent == MATE_WORKER_AGENT:
+        # A worker's stubs are its own session's (KAS, keyed by the session). The
+        # stock worker overlay is also written under this name, and a lookup by
+        # name would hand it to any session that runs the worker spec without
+        # that session's merged limits, so no other host reads it.
+        if not kas_worker_session_key:
+            return None
         return worker_overlay_spec(overlay_dir, kas_worker_session_key)
     project = _project_spec_for_agent(agent, work_dir, markdown_specs, dispatchable_only)
     if project is not None:
