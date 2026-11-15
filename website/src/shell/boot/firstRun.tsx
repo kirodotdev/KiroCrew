@@ -90,13 +90,14 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
     // about what is on, and this user has already passed the chapter, so a
     // failure (the first load after the sign-in runs out is one) must not put it
     // back on screen. Nothing is stored either, so the next load decides again.
-    if (usage.status === 'ready' && usage.recordingOn) {
+    // Off only by a written false an older build wrote: its off form asks once.
+    if (usage.status === 'ready' && (usage.recordingOn || usage.offerOn)) {
       privacyExit.current = 'close'
       setNotice('show')
     } else {
       setNotice('skip')
     }
-  }, [notice, themeBootReady, noticeCandidate, usage.status, usage.recordingOn])
+  }, [notice, themeBootReady, noticeCandidate, usage.status, usage.recordingOn, usage.offerOn])
   // The ONLY way the tour chapter ends first run — deliberately shared by BOTH
   // its exits ("Done" and every skip: "Skip all", a popover Skip, Escape).
   // Privacy is mandatory, so no exit may mark onboarding complete while it is
