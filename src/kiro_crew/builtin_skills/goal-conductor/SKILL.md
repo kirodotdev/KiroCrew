@@ -30,18 +30,51 @@ item, not something you do. The acceptance evaluator this skill bundles
 imports the same script, takes typed arguments (no command, path to run or shell
 string), and is auto-approved, so a verify cycle never waits on a click.
 `execute_bash` is still mounted as its fallback only, for a spec without that tool; it is
-deliberately kept out of `allowedTools`, so every shell call prompts.
+deliberately kept out of `allowedTools`, so every shell call prompts and is
+audit-logged. The evaluator accepts **no command, argv array or shell string
+from a spec**: it builds every argv from a fixed template (`pr_checks` becomes
+`gh pr checks <n>`, `pr_merged` becomes `gh pr view <n> --repo <owner/name>
+--json state`, `edition_check` becomes `kirocrew acceptance-check --json <check>
+<ref>`), and nothing else runs. A spec that could name a command would make this
+approved wrapper a general way to run one, which the denied-command floor cannot
+see inside. Widening means a purpose-built kind, never an accepted argv.
+
+**What prompts.** Granted by name, so a patrol wake with nobody at the keyboard
+never blocks: `session_create`, `session_read_message`, `session_status`,
+`work_ledger_read`, `work_ledger_record`, `work_ledger_rebuild`,
+`work_ask_record`, `work_brief`, `work_report`, `accept_eval`, and these
+`@kirocrew-core` verbs only: `monitor_start`, `monitor_update`,
+`autonudge_stop`, `wait`, `resource_status`, `list_sessions`,
+`session_ledger_read`, `session_ledger_record`, `skill_search`, `skill_fetch`,
+`select_crew`, `send_message`, `send_notification`, `ask_question`,
+`nothing_to_do`, `reset_conversation`. `session_send` and `session_close` into
+a session you created do not prompt either (`agent.conductor_own_child_verbs`,
+on by default); aimed at any other session they prompt, because a send runs as
+that session's own turn and you ingest external content by design.
+`work_dispatch` prompts once per item, since its last step sends the seed.
+`session_stop` (it discards the target's in-flight work), `execute_bash` and
+every other core tool prompt, including `task_run`, `workflow_run` and the
+`spawn_*` family, which you never route an item to. A governance ceiling or an operator `hooks.confirm_tools` pattern can
+make even a granted verb prompt. A prompt is a tool approval, never a reason to
+hand a worker's choice to the person: decide it as Patrol step 2 says.
+
+A session or ledger tool that answers `does not exist` is deferred, not
+missing: load it by id with `tool_search` (`kirocrew-dashboard::<tool>` for
+the session tools; `kirocrew-work::work_ledger_read`,
+`kirocrew-work::work_ledger_record`, `kirocrew-work::work_ledger_rebuild` and
+`kirocrew-work::accept_eval`; `kirocrew-core::monitor_start`), then repeat the
+call.
 
 ## What is a work item
 
 ### User-visible Dynamic Dashboard
 
 You own your dashboard page; it shows ledger evidence; workers report to you and
-do not publish that page. For a long run load the `dashboard` skill, which
+never publish your board page. For a long run load the `dashboard` skill, which
 carries the page, its flow and its honesty rules. The page is the one the
 `[DASHBOARD]` block names. Where no board page is named there is nothing for a
-reader to open, so the `task-dashboard` artifact stays as it is today: an
-authorized descendant publishes it for this goal, with milestone updates to the
+reader to open, so the `task-dashboard` artifact stays as it is today: one
+authorized descendant may publish it for this goal, with milestone updates to the
 same slug, read as a presentation of ledger evidence and never another ledger or
 an acceptance result. The UI already aggregates this session's
 descendants, questions and tool approvals; Normal permission does not require
@@ -76,7 +109,8 @@ A candidate qualifies only if **all three** hold:
    "the test suite passes" is expressed as `pr_checks` on the PR that carries the
    work — CI runs the suite, and its verdict is the one that counts. If an item's
    completion genuinely cannot be stated as one of these, it is not assertable:
-   say so and treat it as a needs-human item rather than inventing a condition.
+   make it a `file` item (a report the worker writes), or `human_approval` only
+   when a person must judge the result; never invent a condition.
    The `acceptance` argument of `work_ledger_record` lists the object for each
    kind, and `work_dispatch` takes the same object: write one of those,
    exactly; there is nothing else to look up.
@@ -84,8 +118,9 @@ A candidate qualifies only if **all three** hold:
 3. **Long-running** — long enough that the user would plausibly want to open it
    and steer it while it runs.
 
-Fewer than two qualifying candidates means the goal does not need you. Say so
-and just do the work in this session.
+Fewer than two qualifying candidates means the goal does not need a conductor.
+Say so, and dispatch the one item or hand the goal back: this session cannot
+write the work itself.
 
 ### The boundary rule
 
@@ -225,7 +260,12 @@ For each item in the round, call `work_dispatch` with the item's `title`, its
 `acceptance`, the `agent` and the `seed` described in the steps
 below. One call runs the four steps in order, sends the seed only after the bind
 succeeded, and on a failure names the step, the refusal code and what it cleaned
-up. It prompts for approval once per item. It never
+up. A `session_control_disabled` refusal means an operator set
+`agent.session_control` (on by default) to `false`: name that switch to the
+user and do not retry. A cron job may drive the sessions it created the same
+way. The session tools come from the `@kirocrew-dashboard` mount and the ledger
+tools from `@kirocrew-work`; an agent whose spec does not mount one never sees
+it. `work_dispatch` never
 opens your ledger: Round 0's `action=goal` does, and without it the first step is
 refused `no_ledger`. A reply with
 `outcome=outcome_unknown` lost a reply rather than being refused: read the board
@@ -241,8 +281,9 @@ it.
 A worker on another crew is dispatched differently: see "Remote dispatch
 (preview)".
 
-Run the four steps as separate calls only to bind an existing session. Then
-make **one call at a time**, each after the previous reply came back, in
+Run the steps as separate calls only without `work_dispatch`, or to bind an
+existing session to a new item (step 4 of Patrol: skip step 2). Then make
+**one call at a time**, each after the previous reply came back, in
 **exactly this order**:
 
 1. `work_ledger_record` `action=create`, with the item's `title` and its
@@ -256,7 +297,8 @@ make **one call at a time**, each after the previous reply came back, in
 4. `session_send` the seed prompt into the new session — the item's goal, its
    acceptance condition, and the instruction to report through `work_report`.
    The seed is the item's whole contract: the child session gets no other
-   context from you.
+   context from you. Its `started: true` means the target began a turn on your
+   message, `started: false` that it queued; neither says the work succeeded.
 
 Step 2 never carries a `message`: the seed is step 4, after the bind. Where a
 `message` would be refused outright, your prompt says so:
@@ -315,6 +357,10 @@ setting raises it; `work_ledger_read` reports the value in force as `max_depth`)
 so at the default you may dispatch a conductor and its own workers may not
 conduct. A `depth_exceeded` error means the item has to be
 flattened into leaves, not retried.
+
+Plan items onto plain persistent dashboard sessions only. Incognito/temporary
+sessions, app-scoped sessions, channel-linked or mirrored sessions, and
+sessions in another workspace are refused by the shared guard.
 
 A specialist crew that does not mount `@kirocrew-work` cannot report to the
 ledger. Dispatch it anyway when it is the right crew for the item, and fall back
@@ -428,7 +474,10 @@ Each cycle:
    conductor record and, per item, the status columns plus the derived
    `orphaned`, `stale` and `acceptance_concrete` flags — no events, acceptance or
    `accept_batch`. This one read replaces the whole transcript-reading cycle, and
-   it stays small however many items the board holds. The full read (no
+   it stays small however many items the board holds. An `orphaned` item (your
+   slot is gone; it self-heals if the session reopens) keeps its binding and
+   keeps taking its worker's writes, unread until someone takes it over or
+   stops it. The full read (no
    `compact`) adds every field, the newest events and a ready-to-pipe
    `accept_batch`; take it when a `done` item needs its bar (step 3). A full
    read too large for the tool-result limit
@@ -505,7 +554,8 @@ Each cycle:
    `{id, verdict, evidence}` per item, with any `done` item it cannot judge
    under `skipped` and the reason. Each answer also carries what a read of that
    item would show you: `reported` (the worker's own `summary` and claimed `pr`:
-   a claim to read, never the bar), the `fails` recorded so far, the
+   a claim to read, never the bar; `summary` is up to 500 characters of worker
+   prose, so decide from `verdict`, `status` and the evaluator), the `fails` recorded so far, the
    `worker_session_key`, `pending_overdue` with your own `decision` when that
    flag is set, and the stored `acceptance` of an overdue item or of a bar that
    is not concrete yet.
@@ -592,7 +642,7 @@ Each cycle:
    already-green pull request, which is exactly why the claim and the condition
    are separate fields.
 
-   **A `human_approval` item is verified by asking.** The evaluator answers `pending` for it forever, so put the decision to the user with `ask_question`. The call BLOCKS until the user responds and returns the answers as its tool result, so your turn does not end and no later patrol cycle has to pick the answer up: read the result and record the verdict in the same turn. The card waits up to 30 minutes; if the result says it expired, was dismissed, or that the user replied in chat instead, act on that outcome (re-ask, or read their next message) rather than inventing an answer.
+   **A `human_approval` item is verified by asking.** The evaluator answers `pending` for it forever, so the answer comes from the user. In a turn nobody typed (it opens with `[auto-nudge cycle`, `[work-ledger wake]` or `[sent by session`, or a cron fired it), never call `ask_question`: record the ask with `work_ask_record`, put it in `needs_you` or an `[OPTIONS:]` reply, keep patrolling the other items, and record the verdict in the turn the user answers. In a turn the user typed, ask with `ask_question`. That call BLOCKS until the user responds and returns the answers as its tool result, so your turn does not end and no later patrol cycle has to pick the answer up: read the result and record the verdict in the same turn. Nothing else runs in this session meanwhile, so keep patrol work out of the turn that asks. The card waits up to 30 minutes; if the result says it expired, was dismissed, or that the user replied in chat instead, act on that outcome (re-ask, or read their next message) rather than inventing an answer.
 
    A result saying the card was withdrawn (dashboard restarted, tab reset) is not an answer: re-issue it.
 
@@ -1058,101 +1108,3 @@ what the composer renders:
 - One `accept_eval` call per cycle covers every `done` item, and only those.
 - Write only what changed to your own session ledger.
 - Stay silent on a quiet cycle.
-
-## Known limits of this version
-
-- **A question card holds your turn open.** `ask_question` blocks until the user responds, so nothing else runs in this session meanwhile; keep patrol work out of the turn that asks, and ask only when the goal genuinely cannot advance without the answer.
-- **The session and ledger tools may not be in your tool list yet.** With MCP
-  Tool Search active their specs are deferred, so a first `session_create` fails
-  with `A tool with the name 'session_create' does not exist`. That means
-  DEFERRED, not missing: load it with
-  `tool_search(tool_id="kirocrew-dashboard::session_create")` — `tool_search` is
-  auto-approved for exactly this, so the load never prompts — then repeat the
-  call. `monitor_start` is served by
-  `kirocrew-core` (`kirocrew-core::monitor_start`); the three ledger verbs are
-  `kirocrew-work::work_ledger_read`, `kirocrew-work::work_ledger_record` and
-  `kirocrew-work::work_ledger_rebuild`, and the check is
-  `kirocrew-work::accept_eval`.
-- **`work_brief` and `work_report` answer `not_bound` to a ROOT conductor.**
-  They are the worker half of the same server, and with no parent there is
-  nothing for them to read. A second-level ledger conductor IS bound as a worker
-  to its own parent, so for it they answer, both without a prompt. See "When a
-  conductor dispatched you" for what to report and when.
-- **Answering a `question` uses `session_send`.** A `session_send` or
-  `session_close` into a session you created runs without a prompt
-  (`agent.conductor_own_child_verbs`, on by default); one aimed at any other
-  session prompts under Normal approval, and Trust removes that click.
-  The prompt is a tool approval, not a reason to hand the worker's choice to the
-  person: decide it as step 2 says.
-- **A cron job may dispatch into the sessions it created**, so a fleet can be
-  stood up and driven from a schedule instead of only from a live chat session.
-  Session control is on by default: the agent config is the grant.
-- **Never dispatch a work item onto a conductor spec expecting it to write** —
-  neither `kirocrew-conductor` nor this agent can write a file, so such an item
-  would look stalled rather than misconfigured. Dispatch a conductor only when
-  the item genuinely decomposes.
-- **The grant is the agent's MCP mount, not a feature switch.** The session tools
-  come from `@kirocrew-dashboard` and the ledger tools from `@kirocrew-work`; an
-  agent whose spec does not mount one never sees it. `agent.session_control`
-  defaults to true and exists only as a single withdrawal — if an operator set it
-  to `false`, every session tool answers `session_control_disabled`. If you see
-  that error, say which switch to flip; do not retry.
-- **Reads and creates do not prompt; anything that touches another session does.**
-  Auto-approved by name: `session_create`, `session_read_message`,
-  `session_status`, `work_ledger_read`, `work_ledger_record`,
-  `work_ledger_rebuild`, `work_brief`, `accept_eval` — so a patrol cycle that wakes on a nudge
-  with nobody at the keyboard never blocks. The `@kirocrew-core` verbs are
-  granted by name too, and only these: `monitor_start`, `monitor_update`,
-  `autonudge_stop`, `wait`, `resource_status`, `list_sessions`,
-  `session_ledger_read`, `session_ledger_record`, `skill_search`, `skill_fetch`,
-  `select_crew`, `send_message`, `send_notification`, `ask_question`,
-  `nothing_to_do`, `reset_conversation`. That covers
-  every core call this procedure asks you to make; **any other core tool is
-  mounted but prompts**, including `task_run`, `workflow_run` and the `spawn_*`
-  family, which this charter forbids you to route a work item to in the first
-  place. **`session_send` and `session_stop` are deliberately NOT
-  auto-approved**, because each writes to a session that is not yours: a seed
-  runs as the target's own turn, and a stop discards the target's in-flight work.
-  You ingest external content by design, so the prompt is the only call-time
-  check on both. Expect one approval per item at dispatch (the seed), one per
-  question you answer, and one if you ever stop an item. `session_close` sits on
-  the same footing — it writes to a session that is not yours, even though it
-  archives rather than deletes — so budget one approval per child you close out.
-  `execute_bash` still prompts, which is why verifying goes through the
-  `accept_eval` tool: run the script by shell only when that tool is missing,
-  and then each such call blocks on one approval.
-  On a host with a governance ceiling
-  even the granted verbs prompt; if you see approvals where this says you
-  should not, that is why.
-- **`session_send` reports delivery, not completion.** `started: true` means the
-  target began a turn on your message; `started: false` means it queued. Neither
-  says the work succeeded — acceptance is still the evaluator's job.
-- **A worker's `summary` is text you read, and the only bound on it is its cap.**
-  It is 500 characters of agent-authored prose, separated by design from every
-  field you decide on. Decide from `verdict`, `status` and the evaluator; read
-  `summary` for context. A conductor that decides from prose is misbehaving
-  against this skill, and no store can prevent that.
-- **An orphaned item keeps accumulating writes.** `orphaned` is derived at read
-  time by asking whether your slot still exists, so it self-heals if the session
-  is reopened, and the worker's binding stays valid meanwhile. Its reports simply
-  go unread until someone takes the item over or stops it.
-- **Some targets are out of bounds by design.** Incognito/temporary sessions,
-  app-scoped sessions, channel-linked or mirrored sessions,
-  and sessions in another workspace are all refused by the shared guard. Plan
-  work items onto plain persistent dashboard sessions only.
-- **Shell is for the bundled evaluator only, and the evaluator runs no
-  command you name.** `execute_bash` exists only as the fallback for the
-  `accept_eval` tool; every shell call is
-  audit-logged and every one prompts. The tool takes the same typed input as
-  the script and nothing else. The evaluator accepts **no command, argv
-  array, or shell string from a spec** — it builds every argv it runs from a
-  fixed template, so `pr_checks` becomes `gh pr checks <n>`, `pr_merged`
-  becomes `gh pr view <n> --repo <owner/name> --json state`, `edition_check`
-  becomes `kirocrew acceptance-check --json <check> <ref>`, and nothing else
-  executes. That is deliberate and load-bearing: this script is invoked as an
-  approved wrapper, so a spec that could name a command would turn it into a
-  general way to run one, and Kiro Crew's denied-command floor cannot see inside
-  it (the floor reads the `execute_bash` string, which says
-  `python3 accept_eval.py`). Widening happens by adding a purpose-built kind that
-  constructs its own argv — never by accepting one. A `refused` verdict is a spec
-  to re-express, never a list to route around.
