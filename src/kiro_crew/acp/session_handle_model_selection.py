@@ -24,9 +24,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew import model_registry
+from kiro_crew.acp import harness_notices
 from kiro_crew.acp._dispatch import set_mode_params, set_model_params
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
@@ -653,6 +654,9 @@ def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
     """
     modes = resp.get("modes")
     current_agent = modes.get("currentModeId") if isinstance(modes, dict) else None
+    # The mode names a mode-change notice reads (``acp.harness_notices``); a no-op
+    # on a backend outside ``ACP_BACKENDS_HARNESS_NOTICES``.
+    harness_notices.note_session_modes(cast(Any, self), resp)
     self.active_agent = (
         self._crew_agent_name(current_agent) if isinstance(current_agent, str) else ""
     )

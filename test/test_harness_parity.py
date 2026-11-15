@@ -1524,7 +1524,7 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "frame. No other harness sends that frame, and the read would spend its grace on every Stop.",
     (
         "src/kiro_crew/acp/session_handle_updates.py",
-        "_handle_update",
+        "_handle_update_frame",
     ): "KAS emits its own notification discriminants. The positive gate restores those "
     "displays without touching the kiro parser, and returns None for anything not "
     "KAS-specific so shared frames still fall through (H5).",
