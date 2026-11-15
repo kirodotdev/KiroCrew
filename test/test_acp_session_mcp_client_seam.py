@@ -33,7 +33,7 @@ from acp_session_mcp_helpers import (
 
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import session_mcp
-from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.client import AcpClient, ClaudeAcpClient
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 from kiro_crew.providers.mirrors import claude_code as claude_mirror
 from kiro_crew.providers.mirrors import registry as mirrors_registry
@@ -46,8 +46,10 @@ class TestClientSeam:
 
         Without a Crew-authored ``settings.local.json`` the array is withheld, so a test
         skipping the seed would hit the withhold path (see ``_resolve_session_mcp_servers``).
+        Built as the class that seeds that file, whatever backend *kw* names, so a test
+        can widen the capability set for a backend that is not claude.
         """
-        client = AcpClient(work_dir=tmp_path, **kw)
+        client = ClaudeAcpClient(work_dir=tmp_path, **kw)
         client._write_claude_local_settings()
         assert client._claude_settings_authored is True
         return client
@@ -436,6 +438,36 @@ class TestClientSeam:
         with pytest.raises(client_mod.AcpError, match="gained deny or ask rules"):
             await client._initialize_session()
         assert killed == [True]
+
+    @pytest.mark.asyncio
+    async def test_a_gained_rule_stops_the_session_through_its_driver_hook(
+        self, tmp_path, agents_dir, monkeypatch
+    ):
+        """The re-read stops the session through ``_claude_stop_session`` only.
+
+        A driver serving several sessions on one process overrides that hook to
+        close this one session; a re-read that killed the process itself would
+        stop every session on it.
+        """
+        client = self._excluded_client(tmp_path, agents_dir, {"permissions": {}})
+        client._write_claude_local_settings()
+        client._claude_session_meta()
+        (tmp_path / ".claude" / "settings.json").write_text(
+            json.dumps({"permissions": {"ask": ["Bash(git push:*)"]}}), encoding="utf-8"
+        )
+        stopped: list[bool] = []
+
+        async def _stop() -> None:
+            stopped.append(True)
+
+        async def _no_kill(*_a, **_kw):
+            raise AssertionError("the re-read killed the process directly")
+
+        monkeypatch.setattr(client, "_claude_stop_session", _stop)
+        monkeypatch.setattr(client, "_kill_process", _no_kill)
+        with pytest.raises(client_mod.AcpError, match="gained deny or ask rules"):
+            await client._verify_claude_project_denies_unchanged()
+        assert stopped == [True]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("version", ["0.84.0", "0.83.0", None])
@@ -849,7 +881,7 @@ class TestClientSeam:
             claude_mod, "_resolve_claude_acp_bin", lambda: (["/opt/bin/claude-agent-acp"], "")
         )
         monkeypatch.setattr(claude_mod, "_claude_adapter_installed_version", _version)
-        monkeypatch.setattr(AcpClient, "_write_claude_local_settings", _write)
+        monkeypatch.setattr(ClaudeAcpClient, "_write_claude_local_settings", _write)
         monkeypatch.setattr(AcpClient, "_resolve_session_mcp_servers", _resolve)
         try:
             asyncio.run(
@@ -1134,7 +1166,9 @@ class TestClientSeam:
         import inspect
 
         source = inspect.getsource(client_mod.AcpClient._initialize_session)
-        assert source.count("await self._pin_claude_starting_mode(") == 2
+        assert source.count("await self._pin_starting_mode(") == 2
+        hook = inspect.getsource(client_mod.ClaudeAcpClient._pin_starting_mode)
+        assert "await self._pin_claude_starting_mode(resp)" in hook
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("path", ["new", "load"])

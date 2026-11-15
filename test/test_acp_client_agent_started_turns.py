@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew.acp import client_transport
-from kiro_crew.acp.client import _CLIENT_OWNERS, AcpClient, AcpError
+from kiro_crew.acp.client import _CLIENT_OWNERS, AcpClient, AcpError, ClaudeAcpClient
 from kiro_crew.acp.client_transport import _ends_agent_started_turn, _starts_agent_turn
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
@@ -601,7 +601,7 @@ def test_the_claude_adapter_binds_the_reader_once_across_respawns(monkeypatch, t
         claude_mod, "_resolve_claude_acp_bin", lambda: (["/opt/bin/claude-agent-acp"], "")
     )
     monkeypatch.setattr(claude_mod, "_claude_adapter_installed_version", lambda _argv: "0.87.0")
-    monkeypatch.setattr(AcpClient, "_seed_session_settings", AsyncMock())
+    monkeypatch.setattr(ClaudeAcpClient, "_seed_session_settings", AsyncMock())
     monkeypatch.setattr(AcpClient, "_prepare_session_mcp", AsyncMock())
     ctx = SpawnContext(
         agent="kirocrew", work_dir=tmp_path, model=None, environ={}, home=tmp_path, session=client

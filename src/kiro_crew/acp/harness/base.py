@@ -159,8 +159,8 @@ class ProcessSession(Protocol):
     ``AcpClient`` is the production implementation; a test hands in a plain object
     carrying these members. The attributes are the session's own state, named as the
     session names them, because the session's turn-time code reads them after the
-    launch: the gate tripwires read the nonces, the settings writer reads the
-    adapter version. A config read-back is the adapter's own
+    launch: the gate tripwires read the nonces. A harness whose session carries more
+    declares a protocol of its own over this one (``harness.claude.ClaudeProcessSession``). A config read-back is the adapter's own
     (:class:`HarnessReadBack`), reached through :meth:`_harness_read_back`.
     """
 
@@ -169,8 +169,6 @@ class ProcessSession(Protocol):
     _session_key: str | None
     _model: str
     _agent_version_read: bool
-    _claude_adapter_argv: tuple[str, ...]
-    _claude_adapter_disk_version: str
     _session_harness_deny_rules: tuple[str, ...]
     _session_mcp_unhonoured: frozenset[str]
     _mimocode_governed_stop: tuple[str, str] | None
@@ -236,15 +234,6 @@ class ProcessSession(Protocol):
 
     async def _discard_copilot_mcp_config(self) -> None:
         """Remove this session's Copilot CLI launch MCP config, if one was written."""
-
-    async def _seed_session_settings(self) -> None:
-        """Seed the session's own settings file, best-effort."""
-
-    async def _prepare_claude_side_read_denies(self) -> None:
-        """Build a Side Chat session's sensitive-path deny rules off the loop, fail closed."""
-
-    def _refuse_claude_session_below_floor_before_spawn(self, installed_version: str) -> None:
-        """Refuse an option-bound session the installed claude-agent-acp is too old for."""
 
     def _install_idle_reader(self) -> None:
         """Have the session read stdout between turns (idempotent)."""

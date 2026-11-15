@@ -568,7 +568,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/_dispatch_parts/surfaced_text.py",
         "acp/_dispatch_parts/tool_result_events.py",
         # The client's owners: code that was acp/client.py's own, scrubbing the
-        # same strings for the same records.
+        # same strings for the same records. The two claude owners hold the
+        # substitution-retry warning and the compaction-notice title that
+        # client_start and client_usage scrubbed before they moved there.
+        "acp/client_claude_session.py",
+        "acp/client_claude_turn.py",
         "acp/client_lifecycle.py",
         "acp/client_mcp_array.py",
         "acp/client_model_selection.py",

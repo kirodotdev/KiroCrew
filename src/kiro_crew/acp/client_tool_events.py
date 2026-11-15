@@ -226,7 +226,7 @@ async def _maybe_audit_unasked_tool_call(self: AcpClient, tool_result_event: "Ac
         return
     # A session that left a foreign settings file out runs pinned to ``default``
     # whatever it requested, so no classifier approved its unasked calls.
-    if self._claude_session_excludes_local():
+    if self._session_excludes_local_settings():
         return
     if getattr(self, "_audit_source", None):
         return

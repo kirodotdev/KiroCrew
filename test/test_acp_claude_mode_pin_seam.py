@@ -134,6 +134,44 @@ class TestUnrequestedModePin:
         assert killed == [True]
 
     @pytest.mark.asyncio
+    async def test_the_pin_reaches_the_session_only_through_its_driver_hooks(
+        self, tmp_path, agents_dir, monkeypatch
+    ):
+        """The pin moves and stops the session through ``_claude_set_mode`` and
+        ``_claude_stop_session`` and never touches the transport itself.
+
+        A driver serving several sessions on one process overrides the two hooks;
+        a pin that sent its own request or killed the process directly would
+        bypass that driver and stop every session on the process.
+        """
+        _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
+        client = self._seeded(tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)
+        self._record_sent_array(client)
+        moved: list[tuple[str, str]] = []
+        stopped: list[bool] = []
+
+        async def _set_mode(session_id: str, mode_id: str) -> None:
+            moved.append((session_id, mode_id))
+            raise client_mod.AcpError("set_mode refused")
+
+        async def _stop() -> None:
+            stopped.append(True)
+
+        async def _no_transport(*_a, **_kw):
+            raise AssertionError("the pin used the transport directly")
+
+        monkeypatch.setattr(client, "_claude_set_mode", _set_mode)
+        monkeypatch.setattr(client, "_claude_stop_session", _stop)
+        for name in ("_send_request", "_wait_for_response", "_kill_process"):
+            monkeypatch.setattr(client, name, _no_transport)
+        with pytest.raises(client_mod.AcpError, match="pin the asking permission mode"):
+            await client._pin_claude_starting_mode(
+                {"sessionId": "s-1", "modes": {"currentModeId": "auto"}}
+            )
+        assert moved == [("s-1", "default")]
+        assert stopped == [True]
+
+    @pytest.mark.asyncio
     async def test_a_load_that_did_not_take_is_pinned_once_on_the_new_session(
         self, tmp_path, agents_dir, monkeypatch
     ):

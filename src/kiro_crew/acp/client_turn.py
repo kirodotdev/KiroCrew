@@ -8,21 +8,23 @@ Each function here whose first parameter is ``self`` is an ``AcpClient`` method:
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_between_turn_credits``, ``_cancelled``,
-``_claude_compaction_pending``, ``_claude_native_compaction_id``, ``_codex_compaction_pending``,
+Instance fields written: ``_active_run_id``, ``_active_tool_calls``,
+``_between_turn_credits``, ``_cancelled``, ``_codex_compaction_pending``,
 ``_compaction_failed_at``, ``_compaction_failed_turn``, ``_last_stop_reason``,
-``_native_child_redactors``, ``_oauth_emitted_servers``, ``_observed_tool_calls``, ``_permission_options``,
-``_prompt_or_tool_seen``, ``_sent_images_req``, ``_sent_images_staged``,
-``_skill_reads``, ``_stale_eligible``,
-``_steers_awaiting_echo``, ``_tool_call_diff_path``, ``_tool_call_harness_tool_name``,
-``_tool_call_identity_unreadable``, ``_tool_call_input_redacted``,
-``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
-``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_call_unclassified``,
-``_tool_dispatched``, ``_turn_done``, ``last_prompt_stats``.
+``_native_child_redactors``, ``_oauth_emitted_servers``, ``_observed_tool_calls``,
+``_permission_options``, ``_prompt_or_tool_seen``, ``_sent_images_req``,
+``_sent_images_staged``, ``_skill_reads``, ``_stale_eligible``, ``_steers_awaiting_echo``,
+``_tool_call_diff_path``, ``_tool_call_harness_tool_name``,
+``_tool_call_identity_unreadable``, ``_tool_call_input_redacted``, ``_tool_call_inputs``,
+``_tool_call_is_shell``, ``_tool_call_mcp_server``, ``_tool_call_params``,
+``_tool_call_tool_name``, ``_tool_call_unclassified``, ``_tool_dispatched``, ``_turn_done``,
+``last_prompt_stats``.
 
-Instance fields read: ``_agent_accepts_image``, ``_batch_window``, ``_buffer``, ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_engine_fallback``, ``_last_activity``, ``_liveness_oracle``,
-``_permission_gate_events``, ``_pid``, ``_process``, ``_sel_settled_tool_calls``, ``_sent_images``,
-``_session_id``, ``_session_key``, ``_steer_turn``, ``_turn_lock``.
+Instance fields read: ``_agent_accepts_image``, ``_batch_window``, ``_buffer``,
+``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_engine_fallback``,
+``_last_activity``, ``_liveness_oracle``, ``_permission_gate_events``, ``_pid``,
+``_process``, ``_sel_settled_tool_calls``, ``_sent_images``, ``_session_id``,
+``_session_key``, ``_steer_turn``, ``_turn_lock``.
 """
 
 from __future__ import annotations
@@ -35,7 +37,6 @@ from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator, Callable
 
 from kiro_crew.acp import (
     batch_guard,
-    claude_background_calls,
     disposed_session,
     launch_tuning,
     pi_steer_turn,
@@ -453,8 +454,7 @@ async def _prompt_loop(
         self._steers_awaiting_echo = {}
         self._compaction_failed_at = None
         self._compaction_failed_turn = False
-        self._claude_compaction_pending = False
-        self._claude_native_compaction_id = None
+        self._reset_harness_compaction()
         self._codex_compaction_pending = False
         deadline = time.monotonic() + timeout
         consecutive_empty = 0
@@ -740,8 +740,8 @@ async def _prompt_loop(
             # as the finished turn it is (see claude_background_calls).
             if (
                 action == "error"
-                and self._is_claude
-                and (ended := await claude_background_calls.settle_background_only(self, msg))
+                and self._ends_background_only_turns
+                and (ended := await self._settle_background_only(msg))
             ):
                 action, msg = "complete", ended
             if action == "complete" and req_id == getattr(self, "_sent_images_req", None):
@@ -884,7 +884,7 @@ async def send_message_stream(
                 # Close out an automatic claude compaction. The returned
                 # event is discarded — this API yields str — but the context
                 # counts it drops are what the meter reads next turn.
-                self._settle_claude_compaction(reason)
+                self._settle_harness_compaction(reason)
                 self._settle_codex_compaction(reason)
                 reason, _ = self.last_prompt_stats.terminal_refusal(reason)
                 self._last_stop_reason = reason
@@ -932,7 +932,7 @@ async def send_message_stream(
                     # guess about bare prose, so dropping it here would let
                     # one wrong guess erase a real answer with nothing left
                     # to recover it from.
-                    self._claude_compaction_event(chunk)
+                    self._harness_compaction_event(chunk)
                     self.last_prompt_stats.text_chunks += 1
                     yield chunk
                     if _is_tool_interrupted_marker(chunk):
@@ -1152,7 +1152,7 @@ async def _dispatch_events(
             # close it out here, BEFORE EVENT_COMPLETE, so a consumer that
             # reads the terminal to leave its compacting state sees it
             # inside the turn rather than after the turn it belongs to.
-            _compaction_settle = self._settle_claude_compaction(reason)
+            _compaction_settle = self._settle_harness_compaction(reason)
             if _compaction_settle is not None:
                 yield _compaction_settle
             # The codex reading of the same hole: a compaction that errored
@@ -1292,7 +1292,7 @@ async def _dispatch_events(
                 # The chunk carries ``control_notice`` so a consumer can show
                 # it without counting it as the turn's answer — the ACP layer
                 # owns the classification, and nothing downstream re-parses.
-                _compaction_event = self._claude_compaction_event(chunk)
+                _compaction_event = self._harness_compaction_event(chunk)
                 if _compaction_event is not None:
                     yield _compaction_event
                     _notice_chunk = True
@@ -1718,7 +1718,7 @@ async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) ->
             self._track_prompt_usage(result)
             # See send_message_stream: settle for the context counts, drop
             # the event this API cannot yield.
-            self._settle_claude_compaction(reason)
+            self._settle_harness_compaction(reason)
             self._settle_codex_compaction(reason)
             # Fold a metadata refusal onto the terminal, as the streaming
             # paths do, so a caller reading ``last_stop_reason`` sees the
@@ -1770,7 +1770,7 @@ async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) ->
                 # that string subtracts it with
                 # strip_claude_compaction_notices; dropping it here would
                 # silently truncate a real answer on a misclassification.
-                self._claude_compaction_event(chunk)
+                self._harness_compaction_event(chunk)
                 output.append(chunk)
                 self.last_prompt_stats.text_chunks += 1
                 if _is_tool_interrupted_marker(chunk):

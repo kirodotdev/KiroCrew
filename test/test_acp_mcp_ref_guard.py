@@ -645,7 +645,7 @@ class TestTheCompositionPath:
         guard's silent path rather than its finding.
         """
         client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=backend)
-        client._write_claude_local_settings()
+        client._write_settings_seed()
         client._mcp_ref_spec = client._read_mcp_ref_spec()
         return client
 
@@ -657,7 +657,7 @@ class TestTheCompositionPath:
         steps on that path.
         """
         wire = [
-            *(client._claude_session_mcp_servers() if client._is_claude else []),
+            *client._harness_session_mcp_servers(),
         ]
         client._begin_session_report(wire)
         client._guard_unresolved_mcp_refs(wire)
