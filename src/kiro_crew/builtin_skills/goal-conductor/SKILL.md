@@ -462,6 +462,14 @@ When a person corrects a behaviour that will come up again, check the lessons
 already saved, then save it as a lesson: the rule, plus what not to do. A slip
 that is not written down repeats in the next turn or the next session.
 
+**An owner's remark is a suggestion, not a rule.** A passing remark ("maybe a
+separate security reviewer") applies to the case it was said about, unless the
+owner says it is a rule. Before you turn a remark into a rule for every change,
+ask the owner once and name what it costs: the extra items, reviews or re-checks
+it adds to each change. Apply the same check before you save a remark with
+`learn_add`: save it as a rule only when the owner said so or agreed when you
+asked, and keep the scope the owner gave.
+
 Each cycle:
 
 1. **Read the ledger first, every cycle.** A cycle a worker's report woke you
