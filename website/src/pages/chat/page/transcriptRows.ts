@@ -11,21 +11,38 @@ import { useBubbleVanishProbe } from '../useBubbleVanishProbe'
 import type { useScrollManager } from '../useScrollManager'
 
 /**
- * True when `next` is `prev` with only its LAST message and LAST display item
- * replaced: a streaming flush growing the reply in place, cheap enough to
- * render at urgent priority. Anything else (a new row, a landed page, a
- * regroup) stays deferred.
+ * True when `next` is `prev` changed only at its tail, which is cheap enough to
+ * render at urgent priority:
+ *
+ *  - the LAST message and LAST display item replaced in place (a streaming
+ *    flush growing the reply), or
+ *  - rows added after them (the sent prompt, the reply's first chunk, a tool
+ *    row), whatever happened to the last row meanwhile.
+ *
+ * Anything that reaches an earlier row (a landed page of history, an edit, a
+ * regroup of earlier rows) stays deferred, and so does the first content of an
+ * empty transcript, which is a page landing.
+ *
+ * Added rows must not wait for the deferral while a reply streams. Every
+ * flush re-renders the page at urgent priority, and each of those renders
+ * restarts the background render the new rows are waiting for. On a device
+ * that cannot finish that render between two flushes it never commits, so the
+ * prompt and the whole reply stay off screen until the stream goes quiet.
  */
 export function grewOnlyAtTail(
   prev: { messages: ChatMessage[]; displayItems: DisplayItem[] },
   next: { messages: ChatMessage[]; displayItems: DisplayItem[] },
 ): boolean {
   const pm = prev.messages, nm = next.messages, pd = prev.displayItems, nd = next.displayItems
-  if (pm.length !== nm.length || pd.length !== nd.length || nm.length === 0) return false
-  const a = pm[pm.length - 1], b = nm[nm.length - 1]
-  if (a.ts !== b.ts || a.role !== b.role) return false
-  for (let i = 0; i < nm.length - 1; i++) if (pm[i] !== nm[i]) return false
-  for (let i = 0; i < nd.length - 1; i++) if (pd[i] !== nd[i]) return false
+  if (pm.length === 0 || nm.length < pm.length) return false
+  if (nm.length === pm.length) {
+    // No row was added: the last row must be the same row, grown in place.
+    if (pd.length !== nd.length) return false
+    const a = pm[pm.length - 1], b = nm[nm.length - 1]
+    if (a.ts !== b.ts || a.role !== b.role) return false
+  }
+  for (let i = 0; i < pm.length - 1; i++) if (pm[i] !== nm[i]) return false
+  for (let i = 0; i < pd.length - 1; i++) if (pd[i] !== nd[i]) return false
   return true
 }
 
@@ -84,8 +101,9 @@ export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCa
   // urgent churn that is hundreds of ms -- long enough that a session switch
   // painted the outgoing tab's transcript under the incoming tab's URL, and a
   // new chat's first send briefly showed the previous session's messages
-  // (#8526). Only same-slot updates (streaming flushes, history landings) are
-  // deferred; a switch renders the right transcript in its first commit.
+  // (#8526). Only same-slot updates that reach rows before the tail (a history
+  // landing, an edit, a regroup of earlier rows) are deferred, see
+  // grewOnlyAtTail; a switch renders the right transcript in its first commit.
   // One deferred frame carries both the rows the virtualizer draws and the
   // messages they came from, so every deferred reader (the transcript, the
   // turn minimap, the Navigation tab) sees the same snapshot by construction.

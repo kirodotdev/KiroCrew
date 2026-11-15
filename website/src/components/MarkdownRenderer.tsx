@@ -106,6 +106,7 @@ import { isGenericLang, looksLikeMarkdown } from './markdown/markdownSniff'
 import { ALLOWED_TAGS, VERBATIM_CONTENT_TAGS, rehypeSanitize, remarkVerbatimUnknownTags } from './markdown/sanitize'
 import { holdsSessionRef, rehypeMarkFencedCode, rehypeSessionRefPunctuation, rehypeSourcepos, rehypeStableRootKeys, rehypeUnwrapBlocks, remarkSoftBreaks, SESSION_REF_TRAILING } from './markdown/treeTransforms'
 import { GLOW_TAIL_CHARS, REVEAL_IDLE_SETTLE_MS, rehypeStreamingCaret, rehypeStreamingGlow, rehypeStreamingReveal } from './markdown/streamingEffects'
+import { deferIncompleteStreamingTable, holdPartialTableRow } from './markdown/streamingTable'
 import { closeCjkAutolinkBoundaries, encodeRefusedLinkDestinations } from './markdown/linkBoundaryRepair'
 import { guideUntrusted } from '../guide/guideMarkers'
 
@@ -893,58 +894,54 @@ function stripStrayTags(content: string, openMarker: string, stripRe: RegExp): s
 const stripStrayWidgetTags = (content: string) => stripStrayTags(content, '<mcwidget', MCWIDGET_STRIP_RE)
 const stripStrayToolUseTags = (content: string) => stripStrayTags(content, '<tool_use', TOOL_USE_STRIP_RE)
 
-// A GFM table delimiter row, e.g. `| --- | :--: |` or `---|---`. remark-gfm
-// only promotes the preceding header line to a <table> once this row is present.
-const TABLE_DELIM_RE = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/
+const noSubscribe = () => () => {}
 
 /**
- * While STREAMING, withhold an incomplete trailing table so it never paints as
- * literal pipe text that later reflows into a <table>.
- *
- * remark-gfm needs BOTH a header row and a `|---|` delimiter row to recognize a
- * table. Mid-stream the header arrives first and renders as a <p> containing
- * literal "| A | B |"; when the delimiter row streams in, that paragraph
- * RESTRUCTURES into a bordered table — a visible structural snap of
- * already-shown content (see MarkdownRenderer.streamingTableSnap.test.tsx).
- * This defers the trailing header run (mirroring how an incomplete fenced code
- * block is held) until the delimiter arrives, so the transition the user sees
- * is the standard "content appears", not "paragraph morphs into a table".
- *
- * Scoped narrowly to avoid hiding ordinary prose: only a run of trailing
- * non-blank lines whose FIRST line is a bordered table header (starts with `|`)
- * is a candidate, and only when that run does NOT yet contain a delimiter row
- * (a `---` row that actually carries a `|`). A run that already has such a
- * delimiter is a real (possibly still growing) table and is left to render.
- *
- * Scoping choices (both close known edge cases):
- *  - Require the first line to START with `|`. A looser "≥2 pipes" test also
- *    matched ordinary prose (e.g. a line with an inline `` `cmd | grep | wc` ``)
- *    and would withhold that whole paragraph for the rest of the stream. Models
- *    emit bordered tables (`| a | b |`), so start-with-`|` keeps the real case
- *    while excluding prose; a borderless table simply isn't deferred (it never
- *    regressed anything — it just renders as before).
- *  - The delimiter must contain a `|`. A bare `---` is a thematic break / setext
- *    underline, NOT a GFM table delimiter (which needs matching pipe-separated
- *    cells), so counting it as "already a table" would wrongly skip deferral and
- *    let the snap happen.
+ * One parse of a block's prepared text. react-markdown parses again on every
+ * render, and the streaming tail block renders on every animation frame, so
+ * this is memoized on what the parse reads: the text, the plugin switches and
+ * the redaction records. A frame that leaves all of them alone skips the parse.
+ * The gates that change without the text (`live`, `typing`, link unfurl) reach
+ * the rendered elements through the contexts MarkdownBlock provides.
  */
-function deferIncompleteStreamingTable(content: string): string {
-  const lines = content.split('\n')
-  let start = lines.length
-  while (start > 0 && lines[start - 1].trim() !== '') start--
-  if (start >= lines.length) return content // trailing blank line / nothing to defer
-  const run = lines.slice(start)
-  if (!/^\s*\|/.test(run[0])) return content // not a bordered table header
-  // A real GFM delimiter row carries at least one pipe; a bare `---` does not.
-  if (run.some((l) => l.includes('|') && TABLE_DELIM_RE.test(l))) return content
-  return lines.slice(0, start).join('\n')
-}
-
-const noSubscribe = () => () => {}
+const ParsedMarkdown = memo(function ParsedMarkdown({ text, sourcePos, glow, smooth, softBreaks, markers }: { text: string; sourcePos?: boolean; glow?: boolean; smooth?: boolean; softBreaks?: boolean; markers?: RedactionMarkers }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // A change to an app's text patterns moves this context, which re-parses.
+  const textPreviews = useContext(TextPreviewsCtx) > 0 && !sourcePos
+  const baseRehype = sourcePos ? REHYPE_PLUGINS_WITH_SOURCEPOS : REHYPE_PLUGINS
+  // Streaming tail block only (see MarkdownRenderer's `glow` prop):
+  //   - in immediate mode: append the glow plugin for trailing-word shimmer;
+  //   - in smooth mode: append the reveal plugin for per-char fade entrance.
+  let rehypePlugins: PluggableList = baseRehype
+  if (glow) {
+    const tail: PluggableList = []
+    // Inline caret first, so the glow/reveal plugins still see (and animate)
+    // the trailing text node that the caret is inserted after.
+    tail.push(rehypeStreamingCaret)
+    if (!smooth) tail.push([rehypeStreamingGlow, { tailChars: GLOW_TAIL_CHARS }])
+    if (smooth) tail.push(rehypeStreamingReveal)
+    rehypePlugins = [...baseRehype, ...tail]
+  }
+  // After sanitize (baseRehype ends with it) and after the streaming tail, so
+  // the injected marker elements are not stripped and the glow/reveal passes
+  // have already claimed the trailing text. Only added when the message
+  // carries records, so every other surface is untouched.
+  if (markers && (markers.ordinals.size > 0 || markers.domains.size > 0)) {
+    rehypePlugins = [...rehypePlugins, [rehypeRedactionMarkers, markers]]
+  }
+  // Last, so it wraps the root shape every other plugin has finished producing:
+  // an earlier position would let a later plugin read `div` where it expects the
+  // block itself.
+  rehypePlugins = [...rehypePlugins, rehypeStableRootKeys]
+  return (
+    <ReactMarkdown remarkPlugins={textPreviews ? (softBreaks ? REMARK_PLUGINS_WITH_BREAKS_TEXT_PREVIEWS : REMARK_PLUGINS_TEXT_PREVIEWS) : (softBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS)} rehypePlugins={rehypePlugins} urlTransform={urlTransform} components={MD_COMPONENTS}>
+      {text}
+    </ReactMarkdown>
+  )
+})
 
 const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLine, glow, smooth, softBreaks, live, typing, unfurl, markers }: { content: string; sourcePos?: boolean; startLine?: number; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; typing?: boolean; unfurl?: boolean; markers?: RedactionMarkers }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
-  const textPreviews = useContext(TextPreviewsCtx) > 0 && !sourcePos
   // Declared before the early return below — Rules of Hooks.
   //
   // `sourcePos` force-disables unfurl: the inline-commenting flow maps a DOM
@@ -976,34 +973,14 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   if (!sourcePos) clean = capWhitespaceRuns(clean)
   // `glow` marks the live streaming tail block: while streaming, hold back an
   // incomplete trailing table so it doesn't paint as pipe text then snap into a
-  // <table> when the delimiter row arrives.
-  if (glow) clean = deferIncompleteStreamingTable(clean)
+  // <table> when the delimiter row arrives, and hold back the row still being
+  // typed so the table is parsed once per row, not once per frame. Both wait
+  // for text that is still to come, so they apply only while this block's own
+  // text is arriving (`typing`). A block the assembler closed because a fence
+  // or widget opened after it is still the last markdown block, but its text
+  // is final: the line break or delimiter row a hold waits for never comes.
+  if (glow && typing) clean = holdPartialTableRow(deferIncompleteStreamingTable(clean))
   if (!clean.trim()) return null
-  const baseRehype = sourcePos ? REHYPE_PLUGINS_WITH_SOURCEPOS : REHYPE_PLUGINS
-  // Streaming tail block only (see MarkdownRenderer's `glow` prop):
-  //   - in immediate mode: append the glow plugin for trailing-word shimmer;
-  //   - in smooth mode: append the reveal plugin for per-char fade entrance.
-  let rehypePlugins: PluggableList = baseRehype
-  if (glow) {
-    const tail: PluggableList = []
-    // Inline caret first, so the glow/reveal plugins still see (and animate)
-    // the trailing text node that the caret is inserted after.
-    tail.push(rehypeStreamingCaret)
-    if (!smooth) tail.push([rehypeStreamingGlow, { tailChars: GLOW_TAIL_CHARS }])
-    if (smooth) tail.push(rehypeStreamingReveal)
-    rehypePlugins = [...baseRehype, ...tail]
-  }
-  // After sanitize (baseRehype ends with it) and after the streaming tail, so
-  // the injected marker elements are not stripped and the glow/reveal passes
-  // have already claimed the trailing text. Only added when the message
-  // carries records, so every other surface is untouched.
-  if (markers && (markers.ordinals.size > 0 || markers.domains.size > 0)) {
-    rehypePlugins = [...rehypePlugins, [rehypeRedactionMarkers, markers]]
-  }
-  // Last, so it wraps the root shape every other plugin has finished producing:
-  // an earlier position would let a later plugin read `div` where it expects the
-  // block itself.
-  rehypePlugins = [...rehypePlugins, rehypeStableRootKeys]
   // `fixCodeFences` runs FIRST: its later passes CREATE code blocks the raw
   // source did not have (blank line before a fence glued to preceding text,
   // splitting a closing fence glued to trailing text). Rewriting boundaries
@@ -1024,9 +1001,7 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   const prepared = sourcePos ? fenced : fixCjkAutolinkBoundaries(fixUnencodedLinkDestinations(fenced))
   const md = (
     <MdSourceCtx.Provider value={prepared}>
-      <ReactMarkdown remarkPlugins={textPreviews ? (softBreaks ? REMARK_PLUGINS_WITH_BREAKS_TEXT_PREVIEWS : REMARK_PLUGINS_TEXT_PREVIEWS) : (softBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS)} rehypePlugins={rehypePlugins} urlTransform={urlTransform} components={MD_COMPONENTS}>
-        {prepared}
-      </ReactMarkdown>
+      <ParsedMarkdown text={prepared} sourcePos={sourcePos} glow={glow} smooth={smooth} softBreaks={softBreaks} markers={markers} />
     </MdSourceCtx.Provider>
   )
   const body = sourcePos
