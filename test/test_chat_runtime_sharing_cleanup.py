@@ -855,6 +855,57 @@ class TestChatSharePlacement:
         assert spawn.calls == [lead_rt]
         assert worker.joined is True
 
+    def test_two_restarts_of_one_tree_at_once_share_the_process_the_first_founds(self, fresh_table):
+        """Resume All after a restart: two chats of tree A start together.
+
+        The second waits on the first one's launch. The first publishes under the
+        founder's empty tree key, so a waiter re-picking by its own tree key would
+        miss it and found a second process on the same tree.
+        """
+        from pathlib import Path
+
+        tree = Path("/home/u/.kirocrew/scratch/tree-a")
+        first, stray = _PlacedRuntime(pid=1), _PlacedRuntime(pid=2)
+        first.work_scratch_dir = tree
+        launched, release = asyncio.Event(), asyncio.Event()
+        calls: list[object] = []
+        pending = [first, stray]
+
+        async def spawn():
+            rt = pending.pop(0)
+            calls.append(rt)
+            launched.set()
+            await release.wait()
+            return rt
+
+        ok = confirming(("gen-1", "acct-A", "auto", False, True))
+
+        def restarted(name):
+            provider = _PlacementProvider()
+            provider._shared_scratch = tree
+            p = make_placement(provider=provider, session_key=f"dashboard:chat-{name}-1")
+            p._read_confirmation = ok
+            return p
+
+        async def scenario():
+            a, b = restarted("a"), restarted("b")
+            ta = asyncio.ensure_future(a.place(spawn))
+            await async_wait_until(launched.is_set, describe=lambda: "the first launch")
+            tb = asyncio.ensure_future(b.place(spawn))
+            await async_wait_until(
+                lambda: any("dashboard:chat-b-1" in f.sessions for f in fresh_table._foundings),
+                describe=lambda: "the second start waiting on the launch",
+            )
+            release.set()
+            placed_a = await await_until(ta, what="the first restart's placement")
+            placed_b = await await_until(tb, what="the waiting restart's placement")
+            return placed_a, placed_b, b
+
+        placed_a, placed_b, b = asyncio.run(scenario())
+        assert (placed_a, placed_b) == (first, first), "the waiter founded a second process"
+        assert calls == [first]
+        assert b.joined is True
+
     def test_a_founded_start_logs_which_key_fields_kept_it_off(self, fresh_table, caplog):
         # Names and emptiness only: the restart's tree is the one field that differs.
         from pathlib import Path

@@ -252,12 +252,16 @@ class _Founding:
     one the allocator's priorities exist to avoid.
 
     ``done`` resolves when the founding ends, published or not, and only tells a
-    waiter to look again -- never what it found.
+    waiter to look again -- never what it found. ``entry`` is what it published,
+    when it did: a founder may publish under another key than it matched on
+    (``acquire``'s *published_key*), so a woken waiter takes that entry rather
+    than re-picking by its own key and missing it.
     """
 
     key: Hashable
     done: asyncio.Future[None]
     sessions: list[str] = field(default_factory=list)
+    entry: _Entry | None = None
 
 
 class RuntimeOwnership:
@@ -358,7 +362,15 @@ class RuntimeOwnership:
             finally:
                 if not founding.done.done():
                     founding.sessions.remove(session_key)
-
+            # What the founding published, even under another key than this one.
+            published = founding.entry
+            if (
+                published is not None
+                and any(e is published for e in self._entries)
+                and published.admits(session_key, cap=cap)
+                and self._alive(published)
+            ):
+                return self._mint(published, session_key, cap=cap, joined=True)
         founding = _Founding(
             key=key, done=asyncio.get_running_loop().create_future(), sessions=[session_key]
         )
@@ -383,6 +395,7 @@ class RuntimeOwnership:
                     _pid_of(runtime),
                 )
             self._entries.append(entry)
+            founding.entry = entry
             return self._mint(entry, session_key, cap=cap, joined=False)
         finally:
             # Every way out -- published, raised, cancelled -- clears the marker
