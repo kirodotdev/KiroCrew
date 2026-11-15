@@ -206,7 +206,9 @@ def _quoted_assignment_scripts(text_lower: str) -> "list[str]":
     n = _shell_normalizer
     found = [text_lower]
     for text in found:  # extended while it runs, so a script's own scripts count
-        for source in _shell_payload_sources(text) if "=" in text else ():
+        literal = text == text_lower
+        walk = _shell_payload_walk(text, literal_single_quotes=literal) if "=" in text else []
+        for source, _ in walk:
             tokens = n._self_tokens(source, resolve=False) if "=" in source else []
             for payload in n._nested_shell_payloads(tokens, allow_join=False):
                 script = _decode_printf_escapes(payload)
@@ -222,20 +224,26 @@ def _quoted_assignment_scripts(text_lower: str) -> "list[str]":
     return found[1:]
 
 
-def _self_frames(text_lower: str) -> "list[tuple[str, list[str]]]":
+def _self_frames(
+    text_lower: str, literal_single_quotes: bool = True
+) -> "list[tuple[str, list[str]]]":
     """The shared walk plus the walk of every quoted script in it that opens with an
     assignment, read whole so the assignment resolves as it does when typed directly.
     Once per text inside one ``sharing_views`` call, like the walk itself."""
     from .shell_commands import _CALL_VIEWS  # local: the facade serves every module name
 
     memo = _CALL_VIEWS.get()
-    key = ("self_frames", text_lower)
+    key = ("self_frames", text_lower, literal_single_quotes)
     frames = None if memo is None else memo.get(key)
     if frames is None:
-        frames = _shell_payload_walk(text_lower)
+        frames = _shell_payload_walk(text_lower, literal_single_quotes=literal_single_quotes)
         seen = {source for source, _tokens in frames}
         for script in _quoted_assignment_scripts(text_lower):
-            fresh = [frame for frame in _shell_payload_walk(script) if frame[0] not in seen]
+            fresh = [
+                frame
+                for frame in _shell_payload_walk(script, literal_single_quotes=False)
+                if frame[0] not in seen
+            ]
             seen.update(frame[0] for frame in fresh)
             frames += fresh
         if memo is not None:
@@ -243,9 +251,9 @@ def _self_frames(text_lower: str) -> "list[tuple[str, list[str]]]":
     return [(source, list(tokens)) for source, tokens in frames]
 
 
-def _self_token_frames(text_lower: str) -> "list[list[str]]":
+def _self_token_frames(text_lower: str, literal_single_quotes: bool = True) -> "list[list[str]]":
     """The command's own argv plus the argv of every nested shell payload."""
-    return [tokens for _source, tokens in _self_frames(text_lower)]
+    return [tokens for _source, tokens in _self_frames(text_lower, literal_single_quotes)]
 
 
 def _shell_payload_sources(text_lower: str) -> "list[str]":
