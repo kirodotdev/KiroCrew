@@ -7301,6 +7301,24 @@ app, with the pin row's `repository` slug: the change lands in the app repositor
 first. Deleting a wheel-copy file is always allowed. The line's shape and slug are
 checked, not that the commit carries the same change.
 
+**A pin is held to the wheel copy it was ported from.** A pin PR stays open while
+the wheel copy keeps changing, so its commit can go stale before it merges. The same
+step therefore treats every row the PR adds or changes (the head table's row differs
+from the merge base's) as needing one `Wheel-copy base: <name>@<sha>` line, the core
+commit whose wheel copy the pinned app-repo commit carries, and fails while the
+app's non-test wheel copy at the base tip differs from the one at that commit,
+deletions included. The base tip is compared, not the head: a pin PR usually
+changes the wheel copy itself (its `app.json` version, which a first pin must
+equal), and the PR's own changes are what its `App repo:` line covers. The fix is
+to port the later change to the app repository, re-pin, and name the newer base. The
+base tip is the one at the PR's last event (opened, push, reopen or body edit):
+PR Hygiene does not re-run when main moves, and readiness does not bind the base
+commit, so a wheel-copy change that lands after that event is not caught until the
+next one. Whoever approves a pin PR therefore edits its body (or pushes) right before
+approving, which re-runs the check against the current tip. The comparison reads
+trees only (`git diff-tree`), so the named commit must be in the head's or the base
+tip's history, and an unreadable one fails closed.
+
 **Who owns the pinned repositories.** The first-party app repositories a pin
 names live under `KiroCrewCaptain`, the Kiro Crew team's GitHub bot account, and
 that account is their trust owner (a maintainer ruling). A pin's `commit`,
