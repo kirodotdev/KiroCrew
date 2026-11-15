@@ -27,7 +27,6 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.resolution import (
     _SECTION_KEYS_EMITTED_ELSEWHERE,
     drop_extra_section_keys,
-    drop_retired_section_keys,
 )
 from kiro_crew.config.sections import _migrate_workspaces, _sanitize_bot_name
 from kiro_crew.config.sections_tailnet import TAILNET_OPENING_PATHS
@@ -619,8 +618,6 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     # values to keep out, so every other key is left as it is.
                     _dict_set_create(existing, key, parsed)
                     _ack_explicit_config_write(key, parsed)
-                    # This raw write bypasses save(), which is what drops retired keys.
-                    drop_retired_section_keys(existing)
                     return existing
 
                 try:

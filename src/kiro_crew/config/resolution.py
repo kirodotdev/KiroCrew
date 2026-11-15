@@ -319,10 +319,11 @@ def warn_misspelled_section_keys(data: dict, cfg: object) -> None:
 def warn_retired_section_keys(data: dict) -> None:
     """One WARNING naming retired keys the operator changed from their old default.
 
-    The keys are inert (nothing reads them) and the next ``save()`` drops them
-    (:data:`_SECTION_KEYS_DELIBERATELY_DROPPED`); this line is the only notice
-    an operator who set one gets. Silent when none is present, and for a key
-    still at the default an older build wrote into every config it saved.
+    The keys are inert (nothing reads them) and the next ``save()`` or locked write
+    to ``config.json`` drops them (:data:`_SECTION_KEYS_DELIBERATELY_DROPPED`); this
+    line is the only notice an operator who set one gets. Silent when none is
+    present, and for a key still at the default an older build wrote into every
+    config it saved.
     """
     found: list[str] = []
     for section, defaults in sorted(_RETIRED_SECTION_KEYS_WARNED.items()):
@@ -346,12 +347,11 @@ def drop_retired_section_keys(data: dict) -> bool:
     """Remove the retired keys from a raw config document, in place.
 
     ``save()`` drops them because it rebuilds the document from the model; a
-    write that edits the raw dict under ``update_config_locked`` (a dashboard
-    save, ``kirocrew config set``) does not, so without this the keys outlived
-    every such save. Only :data:`_SECTION_KEYS_RETIRED` and
-    :data:`_MAP_ENTRIES_RETIRED` are touched: a RENAMED
-    spelling is still read as the live value when the canonical key is absent,
-    so a raw write must keep it. Returns whether anything was removed.
+    write that edits the raw dict does not, so ``update_config_locked`` calls
+    this for every write to ``config.json``. Only :data:`_SECTION_KEYS_RETIRED`
+    and :data:`_MAP_ENTRIES_RETIRED` are touched: a RENAMED spelling is still
+    read as the live value when the canonical key is absent, so a raw write
+    must keep it. Returns whether anything was removed.
     """
     removed = False
     for section, keys in _SECTION_KEYS_RETIRED.items():
