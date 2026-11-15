@@ -699,3 +699,32 @@ async def test_patch_refuses_a_key_another_route_writes(tmp_config, path, value)
     status, body = await _send({"path": path, "value": value})
     assert status == 400, body
     assert key not in _stored(tmp_config).get(section, {})
+
+
+#: The MCP safety switches: written only by the owner-gated
+#: ``/api/security/safety-switches`` route, from Settings -> Security -> Safety switches.
+_SAFETY_SWITCH_LINKS = {
+    "mcp.protect_kiro_permission_rules": "security.stop-the-agent-from-editing-its-own-permission-rules",
+    "mcp.honour_auto_approve": "security.ask-me-before-running-tools-an-mcp-server-pre-approves",
+}
+
+
+@pytest.mark.parametrize("path", sorted(_SAFETY_SWITCH_LINKS))
+def test_a_safety_switch_links_to_its_security_control(path: str) -> None:
+    assert all_settings.descriptor(_BY_PATH[path]) == {
+        "mode": "control",
+        "settingId": _SAFETY_SWITCH_LINKS[path],
+    }
+    # Still a safety key: no generic write rule, and no change-card rule either.
+    assert all_settings.READONLY_REASONS[path] == all_settings.WHY_SAFETY
+    assert all_settings.generic_spec(path) is None
+    assert _editable_config_spec(path) is None
+
+
+@pytest.mark.parametrize("path", sorted(_SAFETY_SWITCH_LINKS))
+@pytest.mark.parametrize("value", [True, False])
+async def test_patch_refuses_a_safety_switch(tmp_config, path: str, value: bool) -> None:
+    section, key = path.split(".")
+    status, body = await _send({"path": path, "value": value})
+    assert status == 400, body
+    assert key not in _stored(tmp_config).get(section, {})

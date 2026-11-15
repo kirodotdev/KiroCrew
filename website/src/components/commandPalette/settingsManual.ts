@@ -129,6 +129,29 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
     params: { section: 'redaction' },
   },
+  // The two MCP safety switches (SecurityPanelSafetySwitches.tsx): same shape,
+  // they live in the `safety` rail section. `configKey` keeps the Advanced
+  // page's read-only rows for both keys linked to these controls.
+  {
+    id: 'security.stop-the-agent-from-editing-its-own-permission-rules',
+    labelKey: 'pages.settings.securityPanel.safetySwitches.protect_label',
+    descriptionKey: 'pages.settings.securityPanel.safetySwitches.protect_desc',
+    tab: 'security',
+    type: 'toggle',
+    occurrence: 1,
+    params: { section: 'safety' },
+    configKey: 'mcp.protect_kiro_permission_rules',
+  },
+  {
+    id: 'security.ask-me-before-running-tools-an-mcp-server-pre-approves',
+    labelKey: 'pages.settings.securityPanel.safetySwitches.ask_label',
+    descriptionKey: 'pages.settings.securityPanel.safetySwitches.ask_desc',
+    tab: 'security',
+    type: 'toggle',
+    occurrence: 1,
+    params: { section: 'safety' },
+    configKey: 'mcp.honour_auto_approve',
+  },
   // The review cards for settings files edited outside the dashboard
   // (SecurityPanelConfigPending.tsx). They render in the Security sub-nav's banner,
   // above every section, so any section mounts them: `posture` is the one a bare

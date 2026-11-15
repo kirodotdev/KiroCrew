@@ -129,6 +129,8 @@ export type {
   CredentialRedactionState,
   McpBodyFieldRow,
   McpBodyFieldsData,
+  SafetySwitchKey,
+  SafetySwitchesState,
   DeniedCommandsData,
   GovernanceScopeDetail,
   GovernanceScope,

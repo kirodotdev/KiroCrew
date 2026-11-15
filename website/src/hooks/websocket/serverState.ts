@@ -116,6 +116,9 @@ const ALL_TARGETS: readonly RefreshTarget[] = [
   TEMPLATES_TARGET,
   { queryKey: ['workspaces'] },
   { queryKey: ['kirocrewConfig'] },
+  // The Security panel's safety switches live in config.json; a save from
+  // another tab reaches this one only through the config refresh frame.
+  { queryKey: ['safety-switches'] },
   { queryKey: ['mcp-tool-grants'] },
   // These answers derive from the config AND, for an `auto` default, the
   // installed agent spec rebuilt by the server's config applier. A refresh
@@ -311,6 +314,7 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   // another tab, which is how the update switches learn of it) was never
   // delivered either. Only observed readers refetch.
   queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+  queryClient.invalidateQueries({ queryKey: ['safety-switches'] })
   queryClient.invalidateQueries({ queryKey: ['mcp-tool-grants'] })
   // The runtime monitor contract is fetched once with no staleTime, so a
   // gateway restart that registered a contributed monitor kind while the

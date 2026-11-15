@@ -167,7 +167,7 @@ const API_KEY_ORDER = [
   'deleteTheme', 'themeDetail', 'themeBoot', 'updateThemeConfig',
   'voiceConfig', 'updateVoiceConfig', 'voiceVoices', 'voiceSystemVoices',
   'awsConsent', 'grantAwsConsent', 'revokeAwsConsent', 'credentialRedaction',
-  'setCredentialRedaction', 'setCredentialRedactionEngine', 'setCredentialRedactionSeams', 'setProjectHooksConsent', 'getProjectHooksConsent', 'revealRedactedValue', 'configPending', 'applyConfigPending',
+  'setCredentialRedaction', 'setCredentialRedactionEngine', 'setCredentialRedactionSeams', 'safetySwitches', 'setSafetySwitch', 'setProjectHooksConsent', 'getProjectHooksConsent', 'revealRedactedValue', 'configPending', 'applyConfigPending',
   'discardConfigPending', 'mcpBodyFields', 'allowMcpBodyField', 'removeMcpBodyField',
   'voiceSynthesize', 'voiceCancel', 'channelsList',
   'channelPresets', 'channelGet', 'channelCreate', 'channelClose',

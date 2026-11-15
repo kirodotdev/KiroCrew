@@ -1164,6 +1164,13 @@ from kiro_crew.dashboard.handlers.project_hooks_consent import (  # noqa: E402, 
 from kiro_crew.dashboard.handlers.redacted_reveal import (  # noqa: E402, F401
     api_owner_value_reveal,
 )
+
+# MCP safety switches — owner-gated, the one dashboard writer of
+# ``mcp.protect_kiro_permission_rules`` and ``mcp.honour_auto_approve``.
+from kiro_crew.dashboard.handlers.safety_switches import (  # noqa: E402, F401
+    api_safety_switches_get,
+    api_safety_switches_put,
+)
 from kiro_crew.dashboard.handlers.security import (  # noqa: E402, F401
     api_denied_command_builtin_toggle,
     api_denied_command_user_add,

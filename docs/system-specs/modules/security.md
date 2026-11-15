@@ -2422,6 +2422,8 @@ sandbox seal, so a shell write can. A governance ceiling still strips the key: a
 ceiling has an opinion about keeps no `autoApprove`, whatever the setting says, and neither does
 a server a `hooks.confirm_tools` pattern names. Turning `mcp.honour_auto_approve` off puts those
 tools back through the gate: after a restart, every verb no server spec declares is dropped.
+The owner turns it on or off in Settings → Security → Safety switches (see "Owner's MCP
+safety switches" below).
 
 **kiro-cli's tool auto-approve rules (`permissions.yaml` / `permissions.json`): the agent's
 file-edit tools cannot write them once the owner opts in.** The engine behind the `kiro` and
@@ -2431,7 +2433,8 @@ folder per workspace, which also records that workspace's trust answer). A rule 
 `effect: allow` runs its tool with no permission request, so the call skips Kiro Crew's tool
 gate. The fence is opt-in: `mcp.protect_kiro_permission_rules` is off by default, so the agent
 may edit these files as it always could, and the owner's switch is the control, as
-`mcp.honour_auto_approve` is for the registry leaf. While the setting is on,
+`mcp.honour_auto_approve` is for the registry leaf, and the owner flips it in Settings →
+Security → Safety switches. While the setting is on,
 `security.paths._permission_rule_rows` adds `_KIRO_PERMISSION_RULE_LEAVES` (the two user files
 and the whole workspace folder) to the write tier, both for the file-edit gate and in
 `write_protected_home_paths()`. The gate reads the setting at each check (the live config
@@ -2450,6 +2453,41 @@ config path`) gets the existing `deny_guidance.DENY_CLASS_TRUST_ROOT` guidance (
 changing and let the user edit it); the edit gate's refusal keeps the classification it has on
 main, because its wording is shared with credential paths.
 How a kept verb is granted: [mcp](../../architecture/mcp.md), "Managed servers".
+
+**Owner's MCP safety switches** (Settings → Security → Safety switches,
+`dashboard/handlers/safety_switches.py`). The two settings above, `mcp.honour_auto_approve`
+and `mcp.protect_kiro_permission_rules`, have one dashboard writer: the owner-gated pair
+`GET`/`PUT /api/security/safety-switches`, in the shape of the credential-redaction switch.
+Both verbs refuse anyone but the dashboard owner with 403 (`dashboard_owner_required`) and
+record the refusal in the SEL. The PUT takes `{key, enabled}`, where `key` is exactly one of
+the two paths and `enabled` a JSON boolean; anything else is a 400 and nothing is written.
+A key `config.local.json` sets, or this build locks, is a 409, as the Settings PATCH answers
+it. A `config.json` edit made outside Kiro Crew that still waits for review
+(`loosening_provenance.refuse_save_if_pending`) is checked before anything is audited and
+answered 409 `file_pending_review`, so a refused save leaves no change record; any other
+`ConfigWriteRefused` from the write is a 409 with its own code. Each change is recorded first as a `critical=True` (synchronous) SEL write
+(`safety_switches.write`, outcome `enabled` / `disabled`, the key as the resource), then
+written through `update_config_locked` under the dashboard config lock; a change whose record
+cannot be written is refused with 503 and the file is untouched, in both directions. The GET
+reports each key as configured (`enabled`), as the gate that reads it sees it now
+(`in_force`, from `_permission_rule_rows` and `_auto_approve_is_honoured`), and whether the
+config read is degraded. A non-owner's card shows both rows disabled, from the config view
+every dashboard session already reads; that view holds saved values, so each row says
+"Saved: on" or "Saved: off" and never claims the state in force. The card shows
+`mcp.protect_kiro_permission_rules` as
+"Stop the agent from editing its own permission rules" and `mcp.honour_auto_approve` as
+the inverse toggle "Ask me before running tools an MCP server pre-approves" (on means the key
+is `false`), so on is the stricter position for both. What each switch covers is exactly what the
+paragraphs above state, and the card's help text says the same: the protect fence refuses
+the agent's file-edit tools only (a shell command can still write the rule files, which have
+no OS sandbox seal), and turning `mcp.honour_auto_approve` off drops only `autoApprove`
+lists on MCP server entries, so a kiro-cli permission rule with `effect: allow`, and an
+"Always allow" tool grant made on the MCP Servers page or an approval card, still runs
+its tool without asking. The keys stay `READONLY_REASONS` (`safety`) on the
+Advanced page, which links each row here, so neither the generic PATCH nor a change card can
+write them. Known limit, the same as the redaction switch: the owner gate is an identity check,
+and every change leaves an SEL record. Pinned by `test/test_safety_switches_routes.py` and
+`website/src/pages/settings/SecurityPanel.safetySwitches.test.tsx`.
 
 **This install's `kirocrew` link** (`<data home>/kirocrew-bin/kirocrew`) is how an agent shell's `kirocrew` reaches the gateway it runs under rather than an older install's launcher in `~/.local/bin` (#24087: a 0.1.2 CLI found there rewrote `config.json` without the member identity fields). `env.augmented_path` lists the directory ahead of `~/.local/bin` and keeps the interpreter directory last, so `python` and `pip` resolve as before; the directory holds that one link and nothing else. The gateway repoints it on every start (`agent.refresh_own_kirocrew_link`), so it names whatever install that gateway runs. On Windows the entry is `kirocrew.cmd`, a one-line forwarder to the running launcher by absolute path, because a symlink needs a privilege an ordinary session lacks; PATH order outranks PATHEXT order across directories, so it beats a `kirocrew.exe` later on PATH. The forwarder is ASCII and carries no `!`, so every console reads the same path whatever its code page (`chcp 65001`) or delayed-expansion setting (`cmd /V:ON`); a launcher under a non-ASCII directory is named by its 8.3 short name. A forwarder is found even when its target is gone, so a start that cannot write one for this install removes the old one. A write would choose the `kirocrew` every later lookup runs, so the leaf is in `_WRITE_PROTECTED_HOME_PATHS` for the file-edit tool and is a `READONLY`, precreated, no-follow leaf for every OS sandbox, the same treatment as `models` below. `test/test_own_kirocrew_link.py` pins the lookup and the seals.
 
