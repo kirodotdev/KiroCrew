@@ -11160,6 +11160,24 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}}（已暂停）— {{time}} {{tz}}",
       "job_name_paused": "{{name}}（已暂停）"
+    },
+    "grillCard": {
+      "decline": "不用了",
+      "label": "讨论提议",
+      "minutes_other": "大约 {{count}} 分钟",
+      "must": "必须",
+      "not_sent": "这里没有聊天框，发不出去。",
+      "question": "问题",
+      "send_decline": "不用讨论了",
+      "send_must": "必须：{{text}}",
+      "send_question": "问题：{{text}}",
+      "send_skip": "不讨论：{{text}}",
+      "send_start": "开始讨论",
+      "sent": "已发出。",
+      "skip": "不讨论",
+      "staged": "已放进聊天框，请从那里发送。",
+      "start": "开始",
+      "who": "谁来聊"
     }
   },
   "hooks": {

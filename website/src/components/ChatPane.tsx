@@ -67,6 +67,8 @@ import { appendFollowUpOption, removeFollowUpOption, selectSingleFollowUpOption,
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
 import { scaleContentWidth } from '../pages/chat/contentWidth'
 import { tryQuickSend } from '../lib/quickSend'
+import { mergeReplyIntoDraft } from '../utils/chatDrafts'
+import { COMPOSE_SEND_EVENT, type ComposeSendDetail } from './chat/GrillCard'
 import { mergeCarriedDraft } from '../utils/pasteTokens'
 import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
 import FlyingQuote from './FlyingQuote'
@@ -682,6 +684,22 @@ export default function ChatPane({
     window.addEventListener(BROWSER_HANDBACK_CHAT_EVENT, handler)
     return () => window.removeEventListener(BROWSER_HANDBACK_CHAT_EVENT, handler)
   }, [crewmate, slotKey, doSend, paneCrewRootClosed])
+
+  // A reply card's Start / No thanks (GrillCard) in this pane: the same Quick
+  // Send gate as this pane's follow-up chips (onFollowUpSelect below), else the
+  // text goes into this pane's box. A card for another chat is left alone.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const d = (e as CustomEvent<ComposeSendDetail>).detail
+      if (!d || d.result || d.slot !== slotKey || typeof d.text !== 'string' || !d.text || paneCrewRootClosed) return
+      const text = d.text
+      if (tryQuickSend(text, dashCfg?.quick_send, false, busy, followUpPickedRef.current.size, t => { doSend(t) })) { d.result = 'sent'; return }
+      setInput(cur => mergeReplyIntoDraft(cur, text))
+      d.result = 'staged'
+    }
+    window.addEventListener(COMPOSE_SEND_EVENT, handler)
+    return () => window.removeEventListener(COMPOSE_SEND_EVENT, handler)
+  }, [slotKey, paneCrewRootClosed, dashCfg?.quick_send, busy, doSend, setInput])
 
   const { stopError, stopErrorDetail, dismissStopError, paneStopState, onStop } = useChatPaneStop({ slotKey, busy: composerBusy, paneSlot, dispatch })
   // The endpointer auto-submit (handed to the Voice atom above) is an Enter

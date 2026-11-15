@@ -4,8 +4,10 @@ import { useSessionPalette } from '../hooks/useSessionPalette'
 import { resolveSessionColor, headerBandStyle } from '../utils/sessionColors'
 import { useAppSelector, store, type AppDispatch } from '../store'
 import {
-  switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog,
+  switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput,
 } from '../store/chatSlice'
+import { mergeReplyIntoDraft } from '../utils/chatDrafts'
+import { tryQuickSend } from '../lib/quickSend'
 import { DeliveryWarningStrip } from '../components/DeliveryWarningStrip'
 import { useDeliveryWarningStrip } from '../components/useDeliveryWarningStrip'
 import { mergeSentTurns, type SentTurnRestore } from './chat/page/composerSend'
@@ -796,6 +798,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     activeSlot, currentSlot, followupTsRef, followupBranchFor, openFollowupSession, setActionError,
   })
 
+  // A reply card's text (the `[GRILL:]` discussion card) goes out the way a
+  // follow-up chip's does: sent with Quick Send on and the slot idle, else staged.
+  // Only for the chat this composer serves: a card from another pane is refused,
+  // so it stays open instead of answering the wrong session. Offline, send()
+  // returns before it sends or reports anything, so the text is staged instead.
+  // A send that fails later reports in the chat's own error row, as a chip's does.
+  const { composeSend } = useStableCallbackProps({ composeSend: (text: string, slot: string): 'sent' | 'staged' | null => {
+    // A split view draws a composer per cell (ChatPane takes its own cards).
+    if ((splitMode && splitFeatureEnabled) || !slot || slot !== activeSlotRef.current || composerSlotRef.current !== slot) return null
+    if (connected && tryQuickSend(text, dashCfg?.quick_send, false, !!slotRunning, followUpPickedRef.current.size, t => { void send(t, slot) })) return 'sent'
+    dispatch(setPendingInput(mergeReplyIntoDraft(inputRef.current, text)))
+    return 'staged'
+  } })
   // Outside events feeding the side panel, the dock terminal and the composer,
   // then the cold file tabs' reads.
   const { runInTerminalScope } = useChatEventBridges({
@@ -811,6 +826,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     terminalCfgUnsettledRef,
     terminalCfgReadFailedRef,
     inputRef,
+    composeSend,
   })
   useColdFileTabHydration({ tabsCtl, showActionError })
   // Session mode of the active slot. In the unified chat view the page-level

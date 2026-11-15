@@ -11415,6 +11415,25 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (pausiert) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (pausiert)"
+    },
+    "grillCard": {
+      "decline": "Nein danke",
+      "label": "Diskussionsvorschlag",
+      "minutes_one": "Etwa {{count}} Minute",
+      "minutes_other": "Etwa {{count}} Minuten",
+      "must": "Muss",
+      "not_sent": "Diese Ansicht hat kein Chatfeld zum Senden.",
+      "question": "Frage",
+      "send_decline": "Keine Diskussion nötig",
+      "send_must": "Muss: {{text}}",
+      "send_question": "Frage: {{text}}",
+      "send_skip": "Nicht besprochen: {{text}}",
+      "send_start": "Starte die Diskussion",
+      "sent": "Gesendet.",
+      "skip": "Nicht besprochen",
+      "staged": "Ins Chatfeld gelegt. Von dort senden.",
+      "start": "Starten",
+      "who": "Wer spricht"
     }
   },
   "hooks": {

@@ -5059,6 +5059,25 @@
         "generic": "Allow for this session: stop blocking any command this rule blocks, until you close this chat (Session options → Close session) or {{productName}} restarts"
       },
       "pill_blocked": "Waiting for approval: {{command}}"
+    },
+    "grillCard": {
+      "decline": "No thanks",
+      "label": "Discussion proposal",
+      "minutes_one": "About {{count}} minute",
+      "minutes_other": "About {{count}} minutes",
+      "must": "Must",
+      "not_sent": "This view has no chat box to send to.",
+      "question": "Question",
+      "send_decline": "No discussion needed",
+      "send_must": "Must: {{text}}",
+      "send_question": "Question: {{text}}",
+      "send_skip": "Not discussing: {{text}}",
+      "send_start": "Start the discussion",
+      "sent": "Sent.",
+      "skip": "Not discussing",
+      "staged": "Put in the chat box. Send it from there.",
+      "start": "Start",
+      "who": "Who talks"
     }
   },
   "hooks": {
