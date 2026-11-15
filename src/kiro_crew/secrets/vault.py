@@ -25,12 +25,23 @@ from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 from kiro_crew.atomic_write import atomic_write, fsync_dir
 from kiro_crew.platform_compat import file_lock, restrict_to_owner
 from kiro_crew.secrets import items as _items
 from kiro_crew.secrets.items import ITEM_TYPE_SECRET
+
+
+def _note_reads(names: Iterable[str]) -> None:
+    """Audit a read of each stored secret in *names* (:mod:`kiro_crew.secrets.read_audit`).
+
+    Imported here rather than at module level: the MCP tool listing loads this
+    module, and its package import count has a ceiling.
+    """
+    from kiro_crew.secrets.read_audit import note_reads as _note
+
+    _note(names)
 
 
 class SecretValue:
@@ -136,7 +147,9 @@ class SecretVault:
         if name not in entries:
             return None
         key = self._get_or_create_key()
-        return self._default_field(name, entries[name], key)
+        value = self._default_field(name, entries[name], key)
+        _note_reads((name,))
+        return value
 
     def get_with_revision(self, name: str) -> Optional[tuple[SecretValue, str]]:
         """The secret and its :func:`entry_revision`, read from one snapshot, or None.
@@ -149,7 +162,9 @@ class SecretVault:
         if name not in entries:
             return None
         entry = entries[name]
-        return self._default_field(name, entry, self._get_or_create_key()), entry_revision(entry)
+        value = self._default_field(name, entry, self._get_or_create_key())
+        _note_reads((name,))
+        return value, entry_revision(entry)
 
     def _default_field(self, name: str, entry: Any, key: bytes) -> SecretValue:
         item_type = entry_item_type(entry)
@@ -179,6 +194,7 @@ class SecretVault:
                 key = self._get_or_create_key()
             plaintext = self._decrypt_entry(name, entry, key)
             result[name] = (entry_item_type(entry), SecretValue(plaintext.decode("utf-8")))
+        _note_reads(name for name, found in result.items() if found is not None)
         return result
 
     def get_items_readable(
@@ -232,6 +248,7 @@ class SecretVault:
             raise ValueError(
                 "Vault key does not open any stored entry. Restore the original .vault_key file."
             )
+        _note_reads(found)
         return found, unreadable
 
     def list_items(self) -> list[dict[str, str]]:
@@ -371,6 +388,7 @@ class SecretVault:
             if key is None:
                 key = self._get_or_create_key()
             result[name] = self._default_field(name, entry, key)
+        _note_reads(name for name, found in result.items() if found is not None)
         return result
 
     async def set(self, name: str, value: str) -> None:

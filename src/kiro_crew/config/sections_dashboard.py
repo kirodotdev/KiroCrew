@@ -257,6 +257,18 @@ class DashboardConfig:
             "and 60 per gateway hour. Live status and native decisions work without it.",
         ),
     )
+    audit_secret_reads: bool = field(
+        default=False,
+        metadata=_meta(
+            "Audit secret reads",
+            "Write a security log row when the gateway reads a vault secret: the secret's "
+            "name, the module that read it and the function that asked (unknown when the "
+            "read runs on a worker thread with no calling code of its own), never the value. "
+            "Repeat reads of one secret by one caller share a row per 10 minutes, which "
+            "counts them. Off by default. Takes effect on the next read; no restart (within "
+            "30 seconds in the MCP gateway process).",
+        ),
+    )
     crewmate_threads: bool = field(
         default=False,
         metadata=_meta(

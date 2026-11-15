@@ -79,6 +79,9 @@ READONLY_REASONS: dict[str, str] = {
     "dashboard.qr_session_until_restart": WHY_SIGN_IN,
     "dashboard.qr_session_persist_across_restart": WHY_SIGN_IN,
     "wakatime.oauth_client_id": WHY_SIGN_IN,
+    # Off, a vault read leaves no row in the security event log
+    # (secrets/read_audit.py note_reads), so only the operator turns it.
+    "dashboard.audit_secret_reads": WHY_SIGN_IN,
     # The decision judge's provider timeout: its owner control lives behind the
     # consent route, not in config.json.
     "decisions.provider.timeout_ms": WHY_OWNED,
