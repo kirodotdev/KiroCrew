@@ -33,6 +33,11 @@ references now point at what main serves today.
 background puller (§2 "Background pull"), shipped in the same PR as this
 amendment.
 
+**Revision 2026-11-15.** The `goal-conductor` skill's remote-dispatch procedure
+moved from `SKILL.md` to `references/remote-dispatch.md`; only the `crew` and
+`work_item` argument descriptions name it, so it is reachable only while
+`work_ledger.remote_dispatch` is on.
+
 ## Summary
 
 A conductor on this gateway can only dispatch workers onto this gateway. This
