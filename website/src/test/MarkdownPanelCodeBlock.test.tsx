@@ -237,7 +237,10 @@ describe('MarkdownPanel — commenting on a fenced code block', () => {
     fireEvent.click(screen.getByLabelText('Add comment'))
     await screen.findByText('same words twice')
     await waitFor(() => expect(paintedText('mc-comment')).toEqual(['mycli rm NAME']))
-    expect(registeredRanges('mc-comment')[0].startContainer.getRootNode()).toBe(screen.getByTestId('code-host').shadowRoot)
+    const codeHost = screen.getByTestId('code-host')
+    expect(registeredRanges('mc-comment')[0].startContainer.getRootNode()).toBe(codeHost.shadowRoot)
+    // The underline rule reaches only `[data-hl-scope]`; a shadow tree takes its highlight style from its host.
+    expect(codeHost.closest('[data-hl-scope]')).not.toBeNull()
   })
 
   it('underlines the block the comment was made in when another block has the same words', async () => {
