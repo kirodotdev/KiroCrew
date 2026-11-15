@@ -12,7 +12,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatSlot } from '../../../types'
 import { chatPageSlots, personChatPageSlots, surfaceUnreadKeys } from './pageEnvironment'
-import { crewModePreviewOn } from '../../../test/crewModePreview'
 
 const row = (key: string, extra: Partial<ChatSlot> = {}): ChatSlot => ({
   key, title: key, messages: 1, running: false, mode: '', ...extra,
@@ -52,6 +51,3 @@ describe('surfaceUnreadKeys -- the unread count', () => {
     expect(surfaceUnreadKeys([], visible)).toEqual([])
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

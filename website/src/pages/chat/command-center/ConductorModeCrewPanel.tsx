@@ -631,7 +631,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   const workers = useMemo(() => mergeCrewWorkers(listed.data?.workers, live), [listed.data, live])
   // Pause all stops this gateway's turns only, so its counts leave remote rows out.
   const localWorkers = workers.filter(w => !w.remote_crew)
-  // Pause all ships behind the conductor mode preview, like the rest of this panel's crew surfaces.
+  // Pause all is offered only where conductor mode is, like the rest of this panel's crew surfaces.
   const crewModeOn = useCrewMode()
   const pause = crewModeOn ? listed.data?.paused : undefined
   const slots = useAppSelector(s => s.dashboard.slots)

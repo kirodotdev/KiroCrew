@@ -122,7 +122,7 @@ export const QUICK_ROWS: ReadonlySet<string> = new Set(['widgets', 'parallel-cha
  */
 export function noticeTitle(id: string): string | null {
   const feature = FEATURE_COPY[id]
-  // The Crew Mode row is not announced while the Crew Mode preview is off.
+  // The conductor mode row is not announced where conductor mode is off (LTS).
   if (feature) return id === 'crew-mode' && !crewModeEnabled() ? null : i18nT(feature.title)
   const sep = id.lastIndexOf(':')
   if (sep <= 0) return null

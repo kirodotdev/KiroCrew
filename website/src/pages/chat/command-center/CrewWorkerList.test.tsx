@@ -14,7 +14,6 @@ import { sseSlotPatch } from '../../../store/dashboardSlice'
 import { ApiError } from '../../../api/apiError'
 import { CREW_WORKERS_PUSH_COALESCE_MS, CrewWorkersTab, reopenCrewSession } from './CrewWorkerList'
 import ConductorModeCrewPanel, { CREW_BOARD_EXPANDED_KEY } from './ConductorModeCrewPanel'
-import { crewModePreviewOn } from '../../../test/crewModePreview'
 import { setCrewModeCatalog } from '../../../lib/crewMode'
 
 const W = (key: string, title: string, status: string, group: string) =>
@@ -594,6 +593,3 @@ describe('Conductor mode Crew tab', () => {
     expect(screen.getByTestId('conductor-mode-recap')).not.toHaveTextContent(/on you/)
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: conductor mode is a feature preview.
-crewModePreviewOn()

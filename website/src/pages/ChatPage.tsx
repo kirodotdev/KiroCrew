@@ -412,11 +412,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const memorySwitchingRef = useRef(false) // Held true while a memory-mode switch runs (see usePanelLayout).
   // A conductor mode chat (a crew root or one of its workers, the same test the
   // side panel uses to put the Board first): only a person moves its focus.
-  const crewModePreview = useCrewMode()
+  const crewModeOffered = useCrewMode()
   const boardFirst = useAppSelector(st => {
     const row = activeSlot ? st.dashboard.slots.find(r => r.key === activeSlot) : undefined
     return crewModeRoot(row) || !!crewRootOf(row)
-  }) && crewModePreview
+  }) && crewModeOffered
   const resources = useChatPageResourcesController({
     boardFirst,
     activeSlot,
@@ -1266,7 +1266,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               crewModeMidChatOffered={crewModeMidChat && !slotLoading && !showComposerMemoryChip}
               crewChipPressed={crewChipPressed}
               agentPickerHidden={crewModeChosen || (!crewModeLeaving && runsCrewMode(currentSlot?.agent, currentSlot?.agent_kind, currentSlot?.crew_mode_agent))}
-              // With the preview off too: the raw `crew_mode_root` stamp is the gateway's
+              // In an LTS build too: the raw `crew_mode_root` stamp is the gateway's
               // own lock (`crew_mode_locked` once the chat has a message), so no switch.
               agentSwitchLocked={hasUserMessage && !!currentSlot?.crew_mode_root}
               turnOffCrewMode={turnOffCrewMode} crewModeSwitching={crewModeSwitching}

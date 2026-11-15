@@ -1352,14 +1352,6 @@
       "hint": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch."
     },
     {
-      "id": "developer.conductor-mode",
-      "label": "Conductor mode",
-      "tab": "developer",
-      "route": "/settings/developer/feature-previews?highlight=developer.conductor-mode",
-      "description": "Hands a chat's tasks to a crew.",
-      "hint": "Lets a chat hand tasks to a crew and track them on a Board."
-    },
-    {
       "id": "developer.decisions",
       "label": "Decisions",
       "tab": "developer",

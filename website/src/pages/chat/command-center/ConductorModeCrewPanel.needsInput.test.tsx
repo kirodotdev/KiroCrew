@@ -17,7 +17,6 @@ vi.mock('../../../hooks/usePanelTabs', () => ({ openPanelView: vi.fn() }))
 import ConductorModeCrewPanel, { personAsks } from './ConductorModeCrewPanel'
 import { CrewWorkersTab } from './CrewWorkerList'
 import type { WorkBoardItem } from '../../../api/crewBoard'
-import { crewModePreviewOn } from '../../../test/crewModePreview'
 
 const ITEM = (over: Partial<WorkBoardItem>): WorkBoardItem => ({
   schema: 1, item_id: 'it_q', title: 'Pick a tea', acceptance: { kind: 'human_approval' }, state: 'open', verdict: null,
@@ -192,6 +191,3 @@ describe('personAsks', () => {
     expect(personAsks([ITEM({ reason: 'approval', status: 'blocked' })], new Set(['it_q']))).toHaveLength(0)
   })
 })
-
-// Last, after the file's own hooks: conductor mode is a feature preview.
-crewModePreviewOn()

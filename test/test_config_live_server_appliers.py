@@ -403,7 +403,7 @@ class TestServerAppliers:
         state.push_refresh.assert_not_called()
         apply(
             ConfigChange(
-                old=cfg, new=cfg, changed=frozenset({"dashboard.feature_previews.crew_mode"})
+                old=cfg, new=cfg, changed=frozenset({"dashboard.feature_previews.explore"})
             )
         )
         state.push_refresh.assert_called_once_with("config")

@@ -362,7 +362,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     /** Pick an interrupted turn back up. NOT `/resume` — that path opens a history session into a tab. */
     continueSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/continue').then(j),
     /** The bulk form of `continueSlot`: Resume every idle session whose last turn ended without a reply (only those among `slots` when given). Owner-only. Starts a background run and answers at once (409 `resume_all_running` with that run's id and total while one is in flight); the outcome arrives as a `resume_all_done` frame. */
-    /** `crewMode`: this tab's Crew Mode preview is on, so its count left out the workers of listed roots and the run leaves them out too. */
+    /** `crewMode`: this build offers conductor mode, so its count left out the workers of listed roots and the run leaves them out too. */
     chatSlotsResumeAll: (crewMode = false, slots?: string[]) => post('/api/chat/slots/resume-all', {
       ...(crewMode ? { crew_mode: true } : {}), ...(slots ? { slots } : {}),
     }).then(j) as Promise<{ ok: boolean; total: number; run_id: string }>,

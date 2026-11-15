@@ -11,8 +11,8 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
  * presses Pause all). `meta.stopped` is how many crew members the pause stopped.
  * The row's English `content` is only a fallback for channel mirrors and SSE
  * readers; here the copy comes from the catalog. Same visual grammar as
- * `CrewDispatchNoticeCard`, and like it, nothing at all while the conductor mode
- * preview is off in this browser.
+ * `CrewDispatchNoticeCard`, and like it, nothing at all in a build without
+ * conductor mode (LTS).
  */
 export default memo(function CrewPausedNoticeCard({ stopped }: { stopped: number }) {
   const crewMode = useCrewMode()

@@ -92,11 +92,11 @@ import { RESUME_ALL_DISMISSED_KEY } from '../lib/resumeAllDismissed'
 import { RESUME_ALL_DONE_EVENT } from '../lib/resumeAllEvent'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { crewModeView } from '../lib/crewMode'
-import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
 import countFixture from '../../../test/fixtures/resume_all_candidates.json'
 import type { Slot } from '../pages/chat-sidebar/types'
 import type { RootState } from '../store'
 import type { ChatSlot } from '../types'
+import { turnOffCrewModeAsLts } from './crewModeOff'
 
 function slot(key: string, extra: Partial<ChatSlot> = {}): ChatSlot {
   return { key, title: key, running: false, messages: 2, created: '2026-10-15T00:00:00Z', last_ts: '2026-10-15T00:00:00Z', ...extra } as ChatSlot
@@ -224,7 +224,7 @@ describe('chat sidebar — Resume all interrupted sessions', () => {
     const { getByTestId } = renderSidebar([slot('a', { interrupted: true }), slot('b', { interrupted: true })])
     await act(async () => { fireEvent.click(getByTestId('resume-all-button')) })
     expect(resumeAll).toHaveBeenCalledTimes(1)
-    expect(resumeAll).toHaveBeenCalledWith(false, ['a', 'b'])
+    expect(resumeAll).toHaveBeenCalledWith(true, ['a', 'b'])
     await waitFor(() => expect(getByTestId('resume-all-button')).toBeDisabled())
     expect(getByTestId('resume-all-button').textContent).toBe('Resuming…')
     // Another run's outcome does not end this row's wait.
@@ -329,7 +329,7 @@ describe('chat sidebar — Resume all interrupted sessions', () => {
     )
     // If the dialog closed but mutate never ran: only the spy assertion fails.
     await waitFor(() => expect(resumeAll).toHaveBeenCalledTimes(1))
-    expect(resumeAll).toHaveBeenCalledWith(false, many.map(s => s.key))
+    expect(resumeAll).toHaveBeenCalledWith(true, many.map(s => s.key))
   })
 
   it('presses at once at the threshold, with no confirmation', async () => {
@@ -524,7 +524,7 @@ describe('chat sidebar — closing the interrupted-sessions banner', () => {
     expect(view.getByTestId('resume-all-row').getAttribute('data-resume-all-count')).toBe('1')
     expect(Array.from(view.getByTestId('resume-all-names').querySelectorAll('li')).map(li => li.textContent)).toEqual(['b'])
     await act(async () => { fireEvent.click(view.getByTestId('resume-all-button')) })
-    expect(resumeAll).toHaveBeenCalledWith(false, ['b'])
+    expect(resumeAll).toHaveBeenCalledWith(true, ['b'])
   })
 
   it('forgets a closed session once it is no longer interrupted, so the next interruption shows', async () => {
@@ -560,7 +560,7 @@ describe('the shared count fixture (test/fixtures/resume_all_candidates.json)', 
   // that same `expected`.
   for (const c of (countFixture as { cases: CountCase[] }).cases) {
     it(`counts exactly what the server resumes: ${c.name}`, async () => {
-      setPreviewFlag(PREVIEW_CREW_MODE, !!c.crew_mode)
+      if (!c.crew_mode) turnOffCrewModeAsLts()
       const payload = c.slots.flatMap(({ key, row }) => (row ? [slot(key, row)] : []))
       const page = payload.filter(s => isChatPageSurface(s.surface ?? s.mode))
       // The sidebar counts from `crewModeView`: a worker whose root is listed is out.

@@ -29,7 +29,7 @@ import { updateInfoQuery } from '../../api/updateInfoQuery'
 import { useUpdateSubscription } from '../../hooks/useUpdateSubscription'
 import { sseStatus } from '../../store/dashboardSlice'
 import type { ResourceProvider } from './types'
-import { PREVIEW_CREW_MODE, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
 
 import { createSettingsProvider, useSettingsProvider } from './providers/settingsProvider'
 import { SETTINGS_REGISTRY } from './settingsRegistry.gen'
@@ -45,6 +45,7 @@ import {
   type SettingsSearchGovernance,
 } from './settingsSearchCore'
 import { extractFromSource } from '../../../scripts/settingsExtract'
+import { turnOffCrewModeAsLts } from '../../test/crewModeOff'
 import { KIRO_SIGN_IN_SETTING_ID } from './kiroSignInSettingId'
 import type { SettingEntry } from './settingsTypes'
 
@@ -118,14 +119,12 @@ describe('settingEntryOffered', () => {
     expect(settingEntryOffered(tipsEntry(), ON)).toBe(true)
   })
 
-  it('offers Start New Chats in conductor mode only while the conductor mode preview draws its row', () => {
+  it('offers Start New Chats in conductor mode with no preview on, and not in an LTS build', () => {
     const entry = SETTINGS_REGISTRY.find(e => e.configKey === 'dashboard.new_chat_crew_mode')
     if (!entry) throw new Error('dashboard.new_chat_crew_mode missing from the registry')
-    localStorage.removeItem(PREVIEW_CREW_MODE)
-    expect(settingEntryOffered(entry, ON)).toBe(false)
-    setPreviewFlag(PREVIEW_CREW_MODE, true)
     expect(settingEntryOffered(entry, ON)).toBe(true)
-    localStorage.removeItem(PREVIEW_CREW_MODE)
+    turnOffCrewModeAsLts()
+    expect(settingEntryOffered(entry, ON)).toBe(false)
   })
 
   it('offers the stale-wake switch only while the stale-fields mark draws it', () => {

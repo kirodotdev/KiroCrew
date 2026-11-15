@@ -106,7 +106,6 @@ import ChatSidebar from '../pages/ChatSidebar'
 import { requestSlotReveal } from '../store/chatSlice'
 import { sseSlots, updateSlot } from '../store/dashboardSlice'
 import { stubAppConfirm } from './appConfirmStub'
-import { turnOnCrewModePreview } from './crewModePreview'
 
 interface TestSlot {
   key: string
@@ -475,7 +474,6 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
   })
 
   it('names a failed session the list hides, a Crew Mode worker, by its title (#11231)', async () => {
-    turnOnCrewModePreview()
     const slots = [
       { key: 'k-root', title: 'Crew root', running: false, messages: 1, crew_mode_root: true },
       { key: 'k-w', title: 'Worker W', running: false, messages: 1, crew_root: 'k-root' },
@@ -489,7 +487,6 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
   })
 
   it('counts a hidden Crew Mode worker in the failed-session retry label', async () => {
-    turnOnCrewModePreview()
     const slots = [
       { key: 'k-root', title: 'Crew root', running: false, messages: 1, crew_mode_root: true },
       { key: 'k-w', title: 'Worker W', running: false, messages: 1, crew_root: 'k-root' },
@@ -505,7 +502,6 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
   })
 
   it('keeps Retry enabled when the only failed session is a hidden Crew Mode worker (#11231)', async () => {
-    turnOnCrewModePreview()
     const slots = [
       { key: 'k-root', title: 'Crew root', running: false, messages: 1, crew_mode_root: true },
       { key: 'k-w', title: 'Worker W', running: false, messages: 1, crew_root: 'k-root' },
@@ -567,7 +563,6 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
   })
 
   it('does not label a switch as a retry when a hidden Crew Mode worker becomes eligible (#11231)', async () => {
-    turnOnCrewModePreview()
     const slots = [
       { key: 'k-a', title: 'Idle A', running: false, messages: 1 },
       { key: 'k-root', title: 'Crew root', running: false, messages: 1, model: 'auto', crew_mode_root: true },

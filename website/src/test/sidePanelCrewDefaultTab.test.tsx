@@ -9,7 +9,6 @@ import { render, cleanup, fireEvent, screen } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
-import { turnOnCrewModePreview } from './crewModePreview'
 
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../components/DiffPanel', () => ({ default: () => null }))
@@ -67,8 +66,7 @@ const selected = () => screen.getAllByRole('tab').find(t => t.getAttribute('aria
 const chip = (name: string) => screen.getAllByRole('tab').find(t => t.textContent?.includes(name) || t.getAttribute('aria-label') === name)!
 
 describe('side panel default tab in Crew Mode', () => {
-  // Crew Mode surfaces are a default-off feature preview.
-  beforeEach(() => { cleanup(); localStorage.clear(); turnOnCrewModePreview(); __resetPanelTabs() })
+  beforeEach(() => { cleanup(); localStorage.clear(); __resetPanelTabs() })
 
   it('a Crew Mode root opens on the Crew tab', () => {
     show('crew-root')
