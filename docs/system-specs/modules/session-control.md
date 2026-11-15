@@ -1364,9 +1364,23 @@ session, and the owner's Conductor while `agent.session_control` is off, see
   `not_creator` with the switch off or on. With the switch on, the giver can take the
   session back by handing it to itself while it still manages the new manager; with
   it off, no fenced caller can.
-- A work-ledger `bind` after a handoff is a separate gap: `_refuse_unowned_worker`
-  compares `_created_by`, so the new manager is refused `worker_not_owned` while the
-  giver can still bind. Tracked in #19103.
+- `bind: true` also moves the right to bind the session to ledger items: the record
+  carries `"bind": true` and `_refuse_unowned_worker` admits only
+  `session_managers.bind_holder`. Only its current holder may pass it (403
+  `not_bind_holder`); a session that conducts moves only under a ledger at least one
+  level above its own (409 `depth_exceeded`, also at the bind). The caller's own open
+  item for it closes `abandoned` on the caller's board unless it waits on a person
+  (an open `ask`, or the Board's `names_person`: a `blocked`/`question` report naming
+  a person-wait reason that no `decide` or steer has answered since), judged again
+  under the board lock in `release_on_handoff`'s `before_write`, so a report that
+  lands during the handoff keeps it open. A bind holds `HANDOFF_LOCK` through its
+  write, and so does a `goal` or `create` that opens the caller's first ledger,
+  whose depth comes from the binding such a bind rewrites; each takes it before
+  any board lock. The depth check reads ledgers by slot key, which names the same
+  ledger as the slot's `effective_session_key` for every slot a handoff admits: a
+  channel-linked target or recipient is refused `linked_session_target` first. A
+  plain handoff, a chain take-back or a hand-back on close writes no flag, so the
+  right returns to the creator.
 - A fenced caller adopting a Bot's DM slot is refused `not_creator`, since no
   fenced caller created it; an unfenced agent in a person's own tab can adopt it.
 
@@ -2422,8 +2436,8 @@ delivery and retains the binding by design (see [session](session.md)), and with
 the predicate in place an owner needs neither it nor an unlink to conduct — from
 the DM or from the tab mirrored to it.
 
-Related fold: the ledger's bind ownership check compares `_created_by` (the
-creator's **slot** key, as `session_create` stamps it) against the conductor
+Related fold: the ledger's bind ownership check compares the bind holder (`_created_by`, the
+creator's **slot** key as `session_create` stamps it, unless a handoff moved it) against the conductor
 **session** key's resolved slot (`caller_slot_key`), because a channel-born
 conductor is keyed `discord:…:genN` while its slot is that key folded to the
 filename charset — a string comparison refused every worker such a conductor
