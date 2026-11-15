@@ -733,10 +733,9 @@ class TestReset:
             )
             from kiro_crew.apps.builtins.mochi.stats_service import STATS_FILE_NAME
 
-            # Seed via the OWNING modules' constants. The previous version of this
-            # test wrote "mochi-stats.json" — a name no module uses — and then
-            # asserted it was gone, so it validated the typo it was meant to catch
-            # and the real stats file survived every reset.
+            # Seed via the OWNING modules' constants. A hand-typed name no module
+            # uses (say "mochi-stats.json") would pass while the real stats file
+            # survives every reset.
             (tmp_path / LOG_FILE).write_text("[]")
             (tmp_path / STATS_FILE_NAME).write_text("{}")
             (tmp_path / DATA_FILE_NAME).write_text("{}")
@@ -1138,7 +1137,7 @@ class TestResetSerializesUnlinks:
             assert json.loads(resp.body)["ok"] is True
 
         # Every lock-guarded store must have been entered during the wipe; a
-        # bare unlink outside these locks (the pre-fix behaviour) would leave
+        # bare unlink outside these locks would leave
         # one or more of these absent.
         assert set(entered) >= {
             "queue_mutation",

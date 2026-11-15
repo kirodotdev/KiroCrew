@@ -668,6 +668,14 @@ PEEK_CALLERS: "dict[str, str]" = {
         "its policy failed to compose — is handled separately by withholding "
         "the line's text (LOG_WITHHELD_PLACEHOLDER)."
     ),
+    "history_append.py::_redact_at_write_boundary": (
+        "no-context answer is the full OSS baseline redaction pass, the same "
+        "answer the PlatformCompositionError arm gives, so a user row is never "
+        "withheld and known credentials are still removed. Resolving instead "
+        "would re-pay a config load on every transcript write of a "
+        "non-standalone host that never booted, or install a process-wide "
+        "default context from a write path."
+    ),
     "speech_providers.py::_installed_speech": (
         "no-context answer is 'no registered speech providers and no edition "
         "default', which is the standalone answer: the built-in STT and TTS sets. "

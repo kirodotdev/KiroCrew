@@ -148,6 +148,7 @@ class AcpRuntime:
     _start_mount_check = _rt_setup._start_mount_check
     # ``session/new`` end to end: ``kiro_crew.acp.runtime_session_create``.
     create_session = _rt_create.create_session
+    _create_session_with_harness_state = _rt_create._create_session_with_harness_state
     _collect_late_start = _rt_create._collect_late_start
     _teardown_late_session = _rt_create._teardown_late_session
     start_collectors = _rt_create.start_collectors
@@ -155,6 +156,7 @@ class AcpRuntime:
     probe_advertised_models = _rt_create.probe_advertised_models
     # ``session/load`` end to end: ``kiro_crew.acp.runtime_session_load``.
     load_session = _rt_load.load_session
+    _load_session_with_harness_state = _rt_load._load_session_with_harness_state
     _wait_managed_mcp = _rt_load._wait_managed_mcp
     _park_in_start_agent = _rt_load._park_in_start_agent
     # The sessions held and how each leaves: ``kiro_crew.acp.runtime_session_registry``.
@@ -167,7 +169,6 @@ class AcpRuntime:
     release_session = _rt_registry.release_session
     delete_session_record = _rt_registry.delete_session_record
     keep_record_on_teardown = _rt_registry.keep_record_on_teardown
-    chat_turn_gate = _rt_registry.chat_turn_gate
     _session_teardown_method = _rt_registry._session_teardown_method
     _mcp_init_progress = _rt_registry._mcp_init_progress
     _session_start_stalled = _rt_registry._session_start_stalled
@@ -629,6 +630,10 @@ class AcpRuntime:
         # binary THIS process is executing, which can differ from the one on
         # disk after an in-place upgrade. Empty until the handshake completes.
         self._agent_version = ""
+        # Per-session state a harness with ``per_session_state`` prepared before each
+        # session's request (``HarnessAdapter.prepare_session``), by session id, ended
+        # with the session (``HarnessAdapter.end_session``). Empty on every other host.
+        self._session_harness_states: dict[str, Any] = {}
         # Entitlement probe state (probe_advertised_models): single-flight lock
         # plus a short-TTL cache of the last non-empty answer.
         self._entitlement_probe_lock = asyncio.Lock()
@@ -645,9 +650,10 @@ class AcpRuntime:
         # (_record_tree_in_background). Every kill waits for them.
         self._start_tree_scans: set[asyncio.Task[None]] = set()
         # Two independent clocks so a failure never extends the life of an old
-        # success: ``_result_at`` is stamped ONLY when a non-empty result is
-        # stored (that result may be replayed until it expires), while
-        # ``_attempt_at`` is stamped on EVERY completed attempt incl.
+        # success: ``_entitlement_probe_result_at`` is stamped ONLY when a
+        # non-empty result is stored (that result may be replayed until it
+        # expires), while ``_entitlement_probe_attempt_at`` is stamped on EVERY
+        # completed attempt incl.
         # failure/empty (it suppresses re-opening a session within the TTL but
         # never replays a stale result).
         self._entitlement_probe_result_at = 0.0
@@ -720,6 +726,14 @@ class AcpRuntime:
         # and could not be repaired; empty otherwise. Set and cleared by
         # ``_spawn_admitted_repairing_kas_extract`` alone, once per spawn.
         self._kas_extract_broken_message = ""
+        # Whether other chats may join this process (``RuntimeOwnership.acquire``):
+        # set by a KAS start from the engine it ran; True for every other host,
+        # where chat sharing's own membership set decides.
+        self.chat_joinable = True
+        # Whether this process stops taking chats once any chat leaves it
+        # (``RuntimeOwnership.release``): set by a shared codex placement, whose
+        # departed sessions leave their MCP fleet running; False everywhere else.
+        self.chat_closes_on_departure = False
         # The server path from kiro-cli's ``failed to canonicalize KAS server path``
         # line, latched by ``_drain_stderr`` before the first session is ready
         # (whatever ``recording_allowed`` says) and cleared by a revive.
@@ -829,11 +843,6 @@ class AcpRuntime:
         # Sessions whose teardown must keep the stored record while a re-injection
         # load runs (``keep_record_on_teardown``).
         self._record_keeping_sessions: set[str] = set()
-        # Serializes CHAT co-tenant turns on a shared kiro-cli process
-        # (``chat_turn_gate``). Held only by shared chat sessions; a subagent turn
-        # is exempt, because it runs while its principal's turn is still open and
-        # would deadlock on the lock the principal holds.
-        self._chat_turn_lock = asyncio.Lock()
         self._dropped_frames_flushed_at: float = 0.0
         # Monotonic time of the last attributable backend frame observed.
         # The idle sweep reads it (``session_activity_at``) because a session's

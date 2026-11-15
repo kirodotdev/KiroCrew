@@ -179,7 +179,7 @@ test("an openOnEnable overlay opens hidden, sandboxed, on the host's own route",
   assert.strictEqual(prefs.sandbox, true);
   assert.strictEqual(prefs.nodeIntegration, false);
   assert.strictEqual(prefs.webviewTag, false);
-  assert.deepStrictEqual(prefs.additionalArguments, ["--kc-app-window=pets/pet/overlay/2/"]);
+  assert.deepStrictEqual(prefs.additionalArguments, ["--kc-app-window=pets/pet/overlay/3/"]);
   assert.deepStrictEqual(win.ignore[0], [true, { forward: true }]);
   assert.deepStrictEqual(win.focusable, [false]);
   assert.strictEqual(win.isVisible(), false, "not revealed before the page says ready");
@@ -616,7 +616,7 @@ test("NEGATIVE: a capability the app does not declare, or the owner did not appr
   t.after(() => host.stop());
   assert.strictEqual(fake.created.length, 3);
   for (const win of fake.created) {
-    assert.match(win.opts.webPreferences.additionalArguments[0], /\/2\/$/, "opened with no capability");
+    assert.match(win.opts.webPreferences.additionalArguments[0], /\/3\/$/, "opened with no capability");
     fake.ipc[CHANNELS.revealFile](fromWindow(win), "/tmp/a.png");
     assert.strictEqual(await fake.ipc[CHANNELS.openImage](fromWindow(win), "/tmp/a.png"), false);
     assert.strictEqual(await fake.ipc[CHANNELS.listGateways](fromWindow(win)), null);
@@ -634,7 +634,7 @@ test("localFiles: reveal and open-image run the shared rules, for that app's win
   );
   t.after(() => host.stop());
   const [win] = fake.created;
-  assert.match(win.opts.webPreferences.additionalArguments[0], /\/2\/localFiles$/);
+  assert.match(win.opts.webPreferences.additionalArguments[0], /\/3\/localFiles$/);
   fake.ipc[CHANNELS.revealFile](fromWindow(win), "/tmp/notes.txt");
   fake.ipc[CHANNELS.revealFile](fromWindow(win), "/tmp/dir");
   fake.ipc[CHANNELS.revealFile](fromWindow(win), 42);
@@ -668,7 +668,7 @@ test("withdrawing an approved capability closes the window opened with it", asyn
   await host.reconcileOnce();
   assert.strictEqual(first.isDestroyed(), true);
   const [, second] = fake.created;
-  assert.match(second.opts.webPreferences.additionalArguments[0], /\/2\/$/, "reopened without it");
+  assert.match(second.opts.webPreferences.additionalArguments[0], /\/3\/$/, "reopened without it");
 });
 
 /** A router over the host gateway, its instance registry and one remote crew. */
@@ -773,7 +773,7 @@ test("gatewayChoice: a crew's window is served only what the app holds on BOTH g
   const [remote] = fake.created;
   assert.match(remote.loaded[0], /^http:\/\/localhost:7778\//);
   remote.webContents.url = remote.loaded[0];
-  assert.match(remote.opts.webPreferences.additionalArguments[0], /\/2\/gatewayChoice$/, "only what the crew approved");
+  assert.match(remote.opts.webPreferences.additionalArguments[0], /\/3\/gatewayChoice$/, "only what the crew approved");
   assert.deepStrictEqual(captured, [], "the crew's bundle is granted no screen");
   fake.ipc[CHANNELS.revealFile](fromWindow(remote), "/tmp/a.png");
   assert.strictEqual(await fake.ipc[CHANNELS.openImage](fromWindow(remote), "/tmp/a.png"), false);
@@ -785,14 +785,14 @@ test("gatewayChoice: a crew's window is served only what the app holds on BOTH g
   await host.reconcileOnce();
   assert.strictEqual(remote.isDestroyed(), true);
   const widened = fake.created[1];
-  assert.match(widened.opts.webPreferences.additionalArguments[0], /\/2\/localFiles,gatewayChoice$/);
+  assert.match(widened.opts.webPreferences.additionalArguments[0], /\/3\/localFiles,gatewayChoice$/);
 
   // ...and withdraws it again: the window opened with it is closed.
   crew.caps = ["gatewayChoice"];
   host._targets.get("pets").at = 0;
   await host.reconcileOnce();
   assert.strictEqual(widened.isDestroyed(), true);
-  assert.match(fake.created[2].opts.webPreferences.additionalArguments[0], /\/2\/gatewayChoice$/);
+  assert.match(fake.created[2].opts.webPreferences.additionalArguments[0], /\/3\/gatewayChoice$/);
   assert.deepStrictEqual(captured, []);
 });
 

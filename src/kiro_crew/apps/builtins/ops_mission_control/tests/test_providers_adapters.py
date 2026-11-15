@@ -687,6 +687,12 @@ class TestPollersMarkTruncationSoAbsenceIsNotRecovery(unittest.IsolatedAsyncioTe
                 ]
             )
 
+        # `configured()` also needs `gh` on PATH; pin that seam so the result does not
+        # depend on whether the host running the test has the CLI installed.
+        gh_on_path = mock.patch.object(github_issues, "_gh_available", return_value=True)
+        gh_on_path.start()
+        self.addCleanup(gh_on_path.stop)
+
         async def _fake_over(args):
             return 0, _issues(DEFAULT_POLL_LIMIT + 1), ""
 

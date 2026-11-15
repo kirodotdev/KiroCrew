@@ -56,7 +56,7 @@ or merge it into another.
    is out of scope; the participants and their role cards; the shared inputs
    participants may read; `soft_rounds` (default 3), `hard_rounds` (default
    6), `check_every` (default 1); a budget (wall clock, default 2 hours; work
-   items, default half the goal's item cap); and `anchor_v=1`. Only the human
+   items, default 10); and `anchor_v=1`. Only the human
    changes the anchor; each change bumps `anchor_v`, and replies written
    against an older `anchor_v` are filed, not judged. A need the owner states
    later is an anchor change, not a ruling.

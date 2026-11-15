@@ -369,7 +369,7 @@ class TestForkGptLaneKeepsCredentialsOutOfTheModelShell:
         # never a credential variable to read. The signing proxy supplies auth.
         assert "env_key" not in provider, (
             "the loopback signer provider must not name an env_key; codex holds "
-            "no credential, the proxy does (#8789)"
+            "no credential, the proxy does"
         )
 
     def test_every_aws_credential_variable_is_excluded(self, tmp_path: Path) -> None:

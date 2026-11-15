@@ -44,6 +44,12 @@ const WHERE_BODY_KEY = {
     heartbeat: 'components.privacyChapter.whereBodyExport',
     none: 'components.privacyChapter.whereBodyExportNoHeartbeat',
   },
+  // Only the build's Kiro telemetry gets metrics: recorded here, and the next
+  // line (`whereBodyKiro`) names where they go. Never "stay on this machine".
+  recorded: {
+    heartbeat: 'components.privacyChapter.whereBodyRecorded',
+    none: 'components.privacyChapter.whereBodyRecordedNoHeartbeat',
+  },
 } as const
 
 /**
@@ -104,7 +110,7 @@ export default function PrivacyChapter({
    * Persists the ack; `noticeVersion` says whether the current notice version is
    * recorded too. Rejects when the write fails; the chapter then stays open.
    */
-  onContinue: (ack: { noticeVersion: boolean }) => Promise<void> | void
+  onContinue: (ack: { noticeVersion: boolean; kiroTelemetry?: boolean }) => Promise<void> | void
   /**
    * First run only: when usage data is off by the user's own setting, record the
    * ack through `onContinue` without showing the screen (there is nothing to
@@ -118,26 +124,53 @@ export default function PrivacyChapter({
   // An unreadable status still shows the "on" text: Turn off works without it,
   // and saying "off" when that cannot be proven would be the worse claim.
   const showOff = usage.status === 'ready' && !usage.on
+  // Recording off only by a written false an older build wrote: the off form
+  // names Kiro telemetry and asks once (Turn on / Keep off). Nothing changes
+  // unless the person turns it on.
+  const offer = usage.status === 'ready' && usage.on && !usage.recordingOn && !!usage.offerOn
   // Heartbeat on, local recording off: say only what is true.
-  const heartbeatOnly = usage.status === 'ready' && usage.on && !usage.recordingOn
+  const heartbeatOnly = usage.status === 'ready' && usage.on && !usage.recordingOn && !offer
   // The status could not be read: say nothing about what is on.
   const statusUnknown = usage.status === 'error'
   // The buttons wait for the status: a choice made before the screen can say
   // what is on would be a choice about a statement the screen never made.
-  const [busy, setBusy] = useState<'keep' | 'off' | null>(null)
+  const [busy, setBusy] = useState<'keep' | 'off' | 'on' | null>(null)
   // `pinned` names what still holds usage data on, read back from the gateway.
   const [failure, setFailure] = useState<
     | { kind: 'save' }
     | { kind: 'unconfirmed' }
+    | { kind: 'onPartial' }
+    | { kind: 'onLanded' }
+    | { kind: 'keepUnconfirmed' }
     | { kind: 'pinned'; where: 'env'; envVar: string }
     | { kind: 'pinned'; where: 'overlay' | 'unknown' }
     | null
   >(null)
 
-  const choose = async (choice: 'keep' | 'off') => {
+  const choose = async (choice: 'keep' | 'off' | 'on') => {
     setBusy(choice)
     setFailure(null)
     try {
+      if (offer) {
+        // Turn on writes the switch FIRST, then confirms it took effect: the
+        // notice ack that lets Kiro telemetry export is recorded only for a
+        // person whose recording is really on. Keep off writes the switch off
+        // too (already off unless an earlier Turn on half-landed), then records
+        // that the notice was shown, so it is not asked again.
+        if (choice === 'on') {
+          await api.patchConfig('telemetry.enabled', true)
+          const collection = await (api.collectionStatus() as Promise<{ enabled?: boolean }>)
+          if (!collection?.enabled) {
+            setFailure({ kind: 'save' })
+            return
+          }
+          await onContinue({ noticeVersion: true, kiroTelemetry: true })
+        } else {
+          await api.patchConfig('telemetry.enabled', false)
+          await onContinue({ noticeVersion: true })
+        }
+        return
+      }
       if (choice === 'off') {
         // Off keys FIRST: a user who said no must not be left on because the
         // ack write landed and the off write did not.
@@ -176,15 +209,32 @@ export default function PrivacyChapter({
       }
       // One rule for both buttons: the version means "told that local recording
       // is on", so it is recorded only when the text shown said so.
-      await onContinue({ noticeVersion: usage.status === 'ready' && usage.recordingOn })
+      const told = usage.status === 'ready' && usage.recordingOn
+      await onContinue(told && usage.kiroTelemetryOn ? { noticeVersion: true, kiroTelemetry: true } : { noticeVersion: told })
     } catch {
       // Keep writes only the ack, so its failure changed nothing. A Turn off
       // failure can land after one write, both, or an overlay refusal, so it
-      // claims neither "off" nor "nothing changed".
-      setFailure(choice === 'off' ? { kind: 'unconfirmed' } : { kind: 'save' })
+      // claims neither "off" nor "nothing changed". In the offer form a write
+      // may land even when its response is lost, so "nothing changed" needs a
+      // read-back that shows recording still off.
+      if (offer) {
+        const readBack = await (api.collectionStatus() as Promise<{ enabled?: boolean }>)
+          .then(c => c?.enabled, () => undefined)
+        // Recording on (a Turn on that landed): the status refresh shows the
+        // on form, so the message says on rather than naming a button.
+        setFailure(
+          readBack === false
+            ? { kind: 'save' }
+            : readBack === true
+              ? { kind: 'onLanded' }
+              : choice === 'on' ? { kind: 'onPartial' } : { kind: 'keepUnconfirmed' },
+        )
+      } else {
+        setFailure(choice === 'off' ? { kind: 'unconfirmed' } : { kind: 'save' })
+      }
     } finally {
       setBusy(null)
-      if (choice === 'off') {
+      if (choice !== 'keep' || offer) {
         qc.invalidateQueries({ queryKey: ['beaconStatus'] })
         qc.invalidateQueries({ queryKey: ['telemetryCollection'] })
         qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
@@ -293,7 +343,9 @@ export default function PrivacyChapter({
               ? i18nT('components.privacyChapter.titleUnknown')
               : showOff
                 ? i18nT('components.privacyChapter.titleOff')
-                : heartbeatOnly
+                : offer
+                  ? i18nT('components.privacyChapter.titleOffer')
+                  : heartbeatOnly
                   ? i18nT('components.privacyChapter.titleHeartbeatOnly')
                   : i18nT('components.privacyChapter.titleOn')}
           </h1>
@@ -305,9 +357,19 @@ export default function PrivacyChapter({
             <p className="mt-2 text-sm leading-relaxed text-muted">
               {statusUnknown
                 ? i18nT('components.privacyChapter.introUnknown')
-                : heartbeatOnly
+                : offer
+                  ? i18nT('components.privacyChapter.introOffer')
+                  : heartbeatOnly
                   ? i18nT('components.privacyChapter.introHeartbeatOnly')
                   : i18nT('components.privacyChapter.intro')}
+            </p>
+          )}
+          {/* The offer is shown once, so what is sent while it stays off is in
+              view before either button, not only in the scrolled details. */}
+          {offer && (
+            <p className="mt-1.5 flex flex-wrap gap-x-2 text-[12px] leading-relaxed text-muted" data-testid="privacy-offer-heartbeat-fields">
+              <span className="font-medium text-text">{i18nT('privacyDisclosure.anonymousHeartbeatTitle')}</span>
+              <span>{i18nT('privacyDisclosure.payloadFields')}</span>
             </p>
           )}
         </div>
@@ -332,18 +394,40 @@ export default function PrivacyChapter({
                   ? i18nT('components.privacyChapter.saveFailed')
                   : failure?.kind === 'unconfirmed'
                     ? i18nT('components.privacyChapter.turnOffUnconfirmed')
-                    : null
+                    : failure?.kind === 'onPartial'
+                      ? i18nT('components.privacyChapter.turnOnPartial')
+                      : failure?.kind === 'onLanded'
+                        ? i18nT('components.privacyChapter.turnOnLanded')
+                        : failure?.kind === 'keepUnconfirmed'
+                          ? i18nT('components.privacyChapter.keepOffUnconfirmed')
+                          : null
             }
           />
-          {!showOff && (
+          {!showOff && !offer && (
             <p className="text-[12px] text-muted text-right" data-testid="privacy-turn-off-scope">
               {heartbeatOnly
                 ? i18nT('components.privacyChapter.turnOffScopeHeartbeatOnly')
-                : i18nT('components.privacyChapter.turnOffScope')}
+                : usage.kiroTelemetryOn
+                  ? i18nT('components.privacyChapter.turnOffScopeKiro')
+                  : i18nT('components.privacyChapter.turnOffScope')}
             </p>
           )}
           <div className="flex flex-wrap items-center justify-end gap-2">
-            {showOff ? (
+            {offer ? (
+              <>
+                <SendBtn type="button" className="focus-ring-accent" onClick={() => void choose('on')} disabled={busy !== null}>
+                  {i18nT('components.privacyChapter.turnOn')}
+                </SendBtn>
+                <Btn
+                  type="button"
+                  className="min-h-9 px-4 text-sm"
+                  onClick={() => void choose('keep')}
+                  disabled={busy !== null}
+                >
+                  {i18nT('components.privacyChapter.keepOff')}
+                </Btn>
+              </>
+            ) : showOff ? (
               <SendBtn type="button" className="focus-ring-accent" onClick={() => void choose('keep')} disabled={busy !== null || usage.status === 'loading'}>
                 {i18nT('components.privacyChapter.continue')}
               </SendBtn>
@@ -409,10 +493,24 @@ export default function PrivacyChapter({
               ? i18nT('components.privacyChapter.whereBodyUnknown')
               : showOff
                 ? i18nT('components.privacyChapter.whereBodyOff')
-                : heartbeatOnly
+                : offer
+                  ? i18nT('components.privacyChapter.whereBodyHeartbeatOffer')
+                  : heartbeatOnly
                   ? i18nT('components.privacyChapter.whereBodyHeartbeatOnly')
-                  : i18nT(WHERE_BODY_KEY[usage.exportOn ? 'export' : 'local'][usage.heartbeatOn ? 'heartbeat' : 'none'])}
+                  : i18nT(WHERE_BODY_KEY[usage.exportOn ? 'export' : usage.kiroTelemetryOn ? 'recorded' : 'local'][usage.heartbeatOn ? 'heartbeat' : 'none'])}
           </p>
+          {/* Named on its own line: this notice is what lets the build's own
+              destination export under the recording default. */}
+          {offer && (
+            <p className="mt-2 text-sm leading-relaxed text-muted" data-testid="privacy-kiro-telemetry-offer">
+              {i18nT('components.privacyChapter.whereBodyOffer')}
+            </p>
+          )}
+          {!statusUnknown && !showOff && usage.kiroTelemetryOn && (
+            <p className="mt-2 text-sm leading-relaxed text-muted" data-testid="privacy-kiro-telemetry">
+              {i18nT('components.privacyChapter.whereBodyKiro')}
+            </p>
+          )}
         </section>
         {/* A pin this screen cannot lift (an env var, DO_NOT_TRACK, a policy)
             also keeps Settings from changing it, so do not point there. */}
@@ -438,6 +536,9 @@ export default function PrivacyChapter({
         </p>
         <PrivacyCommandList />
       </div>
+      {/* "More below" cue: sticks to the bottom of the scrolling body while
+          content remains, and rests on blank space once the end is reached. */}
+      {offer && <div aria-hidden="true" data-testid="privacy-scroll-cue" className="pointer-events-none sticky bottom-0 hidden h-10 bg-gradient-to-t from-card to-transparent sm:block" />}
     </OnboardingChapterShell>
   )
 }

@@ -156,7 +156,7 @@ function ChatSidebar({
   // the mate threads are read off the full store, which this prop no longer holds.
   const mateHidden = useMateSessionsHidden()
   const mateThreads = useAppSelector(selectLiveMateThreads)
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode and mateHidden stand for the previews crewModeView reads
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode and mateHidden stand for the reads crewModeView makes
   const localSlots = useMemo(() => crewModeView(slotsProp, false, mateThreads), [slotsProp, crewMode, mateHidden, mateThreads])
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
@@ -915,7 +915,7 @@ function ChatSidebar({
   // What this render shows rows with. The row model reads the local-only members
   // for a local row alone.
   // A worker in the pane is not listed, so its root's row is marked as its parent.
-  // Through the preview-gated read (`crewMode` above re-renders on a flip).
+  // Through the conductor mode read (`crewMode` above re-renders on the edition lock).
   const crewParent = (crewMode && activeSlot && crewRootOf(slotsProp.find(s => s.key === activeSlot))) || null
   const rowScene: RowScene = {
     activeSlot, crewWindow, crewParent, shell: rowShell,

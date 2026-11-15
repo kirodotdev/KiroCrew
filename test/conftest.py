@@ -283,6 +283,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _fake_computer_use_backend,
     _forget_app_turn_approver,
     _forget_enterprise_profile_pin,
+    _forget_gatewayd_telemetry_override,
     _forget_legacy_auth_sweep_clean_roots,
     _forget_mount_source_sweep_pacing,
     _forget_sandbox_launch_mark,
@@ -610,6 +611,21 @@ def _fresh_mcp_oauth_provenance(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_kiro_telemetry_destination(_floor_monkeypatch):
+    """Keep the built-in Kiro telemetry destination out of every test.
+
+    The public provider returns it next to the configured entries, and it posts to
+    a real endpoint. Off here, so a test that builds a live recorder never reaches
+    the network and every existing destination count stays what it was. The tests
+    of the destination turn it back on with their own ``monkeypatch``.
+    """
+    from kiro_crew.metrics import kiro_export
+
+    _floor_monkeypatch.setattr(kiro_export, "_suppressed_for_tests", True)
+    _floor_monkeypatch.setattr(kiro_export, "_last_build_kept", False)
+
+
+@pytest.fixture(autouse=True)
 def _relay_unless_a_test_opens_the_kas_route(_floor_monkeypatch):
     """Start every test with KAS's automatic bundle switch closed and no install state.
 
@@ -625,6 +641,9 @@ def _relay_unless_a_test_opens_the_kas_route(_floor_monkeypatch):
     from kiro_crew.acp import kas_engine_install, kas_route
 
     _floor_monkeypatch.setattr(kas_route, "automatic_switch_allowed", lambda pin="": False)
+    _floor_monkeypatch.setattr(kas_route, "_PREVIEW_BUNDLE_FAILED", "")
+    _floor_monkeypatch.setattr(kas_route, "_PREVIEW_BUNDLE_FAILED_AT", 0.0)
+    _floor_monkeypatch.setattr(kas_route, "_PREVIEW_SKIP_LOGGED", "")
     _floor_monkeypatch.setattr(kas_route, "_LAST_SPAWN_ROUTE", None)
     _floor_monkeypatch.setattr(
         kas_engine_install,

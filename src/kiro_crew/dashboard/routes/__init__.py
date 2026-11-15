@@ -14,8 +14,9 @@ are contiguous and called in sequence, so global ordering holds by construction;
 reordering this tuple, or the lines inside any slice, can silently shadow a
 route.
 
-``test_dashboard_route_table.py`` pins the resulting (method, path, handler)
-sequence, so a reordering shows up as a failing test rather than as a 404 or a
+``test_dashboard_route_table.py`` pins that every slice registers in its declared
+order and that no route shadows another, so a reordering that shadows a route shows
+up as a failing test rather than as a 404 or a
 handler quietly answering the wrong path.
 """
 
@@ -29,6 +30,7 @@ from kiro_crew.dashboard.routes import (
     browser_live,
     chat,
     connections,
+    crew_api,
     memory,
     messaging,
     realtime,
@@ -56,6 +58,7 @@ _REGISTRARS: tuple[tuple[str, object], ...] = (
     ("system", system.register),
     ("browser_live", browser_live.register),
     ("shared_crew", shared_crew.register),
+    ("crew_api", crew_api.register),
 )
 
 REGISTRAR_NAMES: tuple[str, ...] = tuple(name for name, _ in _REGISTRARS)

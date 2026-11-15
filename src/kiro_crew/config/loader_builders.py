@@ -12,6 +12,7 @@ from collections.abc import Mapping, MutableMapping
 from datetime import datetime, timezone
 
 from kiro_crew import platform_compat
+from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES
 from kiro_crew.agent_spec_pins import coerce_spec_pins
 from kiro_crew.config import sections as _sections
 from kiro_crew.config.loader_document import (
@@ -882,6 +883,9 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         chat_runtime_sharing_max_sessions=section.read(
             "chat_runtime_sharing_max_sessions", _safe_int, 1, 64
         ),
+        chat_runtime_sharing_harnesses=_chat_runtime_sharing_harnesses(
+            section.get("chat_runtime_sharing_harnesses")
+        ),
         agent_started_turns=bool(section.get("agent_started_turns")),
         max_subagents=section.read("max_subagents", _safe_int, 0, SUBAGENT_AUTO_MAX_CEILING),
         max_stop_hook_nudges=section.read("max_stop_hook_nudges", _safe_int, 0),
@@ -1329,6 +1333,21 @@ def _default_session_folder_or_empty(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _chat_runtime_sharing_harnesses(value: object) -> dict:
+    """``agent.chat_runtime_sharing_harnesses`` as ``{harness: bool}`` over the table.
+
+    Every harness in ``CHAT_RUNTIME_SHARING_HARNESSES`` is present, at its stored
+    value when that is a literal ``true``/``false`` and at its default otherwise. A
+    name the table does not hold is dropped, so a hand edit cannot switch on a
+    harness that is not safe to share.
+    """
+    stored = value if isinstance(value, dict) else {}
+    return {
+        name: stored[name] if isinstance(stored.get(name), bool) else default
+        for name, default in CHAT_RUNTIME_SHARING_HARNESSES.items()
+    }
+
+
 def _feature_previews(value: object, default: dict) -> dict:
     """``dashboard.feature_previews`` as ``{name: bool}`` over the known preview names.
 
@@ -1464,6 +1483,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         ),
         show_unread_dot=section.read("show_unread_dot", _safe_bool),
         command_bar_enabled=section.read("command_bar_enabled", _safe_bool),
+        channels_enabled=section.read("channels_enabled", _safe_bool),
         folder_sort=section.read("folder_sort", _folder_sort_from),
         session_sort=section.read("session_sort", _session_sort_from),
         unfiled_sessions_above_folders=section.read("unfiled_sessions_above_folders", _safe_bool),
@@ -1498,6 +1518,9 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         # an older flag would skip exactly those users.
         privacy_ack_version=section.read(
             "privacy_ack_version", _safe_int, 0, _sections.PRIVACY_ACK_VERSION_MAX
+        ),
+        kiro_telemetry_ack_version=section.read(
+            "kiro_telemetry_ack_version", _safe_int, 0, _sections.PRIVACY_ACK_VERSION_MAX
         ),
         crewmates_onboarded=section.read("crewmates_onboarded", _safe_bool),
         user_role=str(section.get("user_role")),

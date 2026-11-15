@@ -1142,10 +1142,10 @@ class TestSearchTargetSynthesizedTier:
     )
     def test_an_operator_authored_regex_denies(self, pattern):
         # Every participating pattern denies on a match, with no second judgement applied.
-        # The last case is the one an earlier revision got wrong: it classified the merged
-        # effective set by pattern TEXT, so an operator rule whose text coincided with a
-        # shipped one was read as shipped and dropped -- a silent fail-open on an explicit
-        # deny. Pattern text is not provenance.
+        # The last case is the trap: classifying the merged effective set by pattern TEXT
+        # reads an operator rule whose text coincides with a shipped one as shipped and
+        # drops it -- a silent fail-open on an explicit deny. Pattern text is not
+        # provenance.
         from kiro_crew.security import is_denied_synthesized_target
 
         assert (

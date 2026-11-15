@@ -425,7 +425,7 @@ class TestEveryAppOwnedKeyHasAReader:
     """The set is a claim that an app reads the key; pin the claim to the reader."""
 
     def test_members_are_exactly_the_documented_readers(self) -> None:
-        # Extend this tuple together with validation._APP_OWNED_TOP_KEYS and add a
+        # Extend this frozenset together with validation._APP_OWNED_TOP_KEYS and add a
         # reader test below; a member with no reader test is a silenced typo.
         assert validation._APP_OWNED_TOP_KEYS == frozenset({"dev_fleet"})
 

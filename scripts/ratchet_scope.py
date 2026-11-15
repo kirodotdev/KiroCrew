@@ -86,6 +86,26 @@ def _git_strict(*args: str) -> str:
     return proc.stdout
 
 
+def _base_branch_refs() -> tuple[str, ...]:
+    """The base-branch refs to probe, nearest first.
+
+    A pull request names its base in ``GITHUB_BASE_REF``; a push names the
+    branch it landed on in ``GITHUB_REF_NAME``. A release branch is probed
+    before ``main`` so a backport is scoped against the branch it targets
+    rather than against everything ``main`` merged since the cut. ``main`` is
+    always kept as the last resort: a ref this checkout does not have makes git
+    fail, and the probe then moves on to the next one, so a run outside CI (or
+    a test repository with only ``main``) behaves exactly as before.
+    """
+    branch = os.environ.get("GITHUB_BASE_REF", "").strip()
+    if not branch and os.environ.get("GITHUB_EVENT_NAME") == "push":
+        branch = os.environ.get("GITHUB_REF_NAME", "").strip()
+    head: tuple[str, ...] = ()
+    if branch and branch != "main":
+        head = (f"origin/{branch}", branch)
+    return (*head, "origin/main", "main")
+
+
 def _first_parent_is_base() -> bool:
     """True when HEAD's FIRST parent is the base branch's commit.
 
@@ -100,14 +120,15 @@ def _first_parent_is_base() -> bool:
 
     Which shape this is is decided by which parent the base branch can reach:
     on the CI shape ``HEAD^1`` IS a commit of the base. The base refs tried
-    here are the same pair, in the same order, as the three-dot fallback's, so
+    here are the same list (:func:`_base_branch_refs`), in the same order, as
+    the three-dot fallback's, so
     a checkout with only a local ``main`` (a merge made ON main has its prior
     tip as ``HEAD^1``, which ``main`` reaches) still recognises the shape. A
     failing git -- neither ref resolvable -- answers False, so an
     unrecognisable merge falls through to the three-dot attempts rather than
     trusting a parent order nothing verified.
     """
-    for base in ("origin/main", "main"):
+    for base in _base_branch_refs():
         code, _ = _git("merge-base", "--is-ancestor", "HEAD^1", base)
         if code == 0:
             return True
@@ -181,7 +202,7 @@ def changed_paths() -> tuple[set[str] | None, str]:
     if is_merge and _first_parent_is_base():
         attempts.append(("merge HEAD^1..HEAD", ["diff", "--name-only", "HEAD^1", "HEAD"]))
         attempts.append(("merge parents", ["diff", "--name-only", "HEAD^1", "HEAD^2"]))
-    for base in ("origin/main", "main"):
+    for base in _base_branch_refs():
         attempts.append((f"{base}...HEAD", ["diff", "--name-only", f"{base}...HEAD"]))
     for label, args in attempts:
         code, out = _git(*args)

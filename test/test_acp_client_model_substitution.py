@@ -259,8 +259,7 @@ class TestSubstitutionFollow:
 
     @pytest.mark.asyncio
     async def test_adopts_substitute_and_reissues(self, tmp_path):
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._model = "global.anthropic.claude-opus-4-8[1m]"
         # Avoid touching the real filesystem seeding.
         client._write_claude_local_settings = MagicMock()  # type: ignore[assignment]
@@ -432,8 +431,7 @@ class TestSubstitutionFollow:
 
     @pytest.mark.asyncio
     async def test_happy_path_no_retry(self, tmp_path):
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._model = "global.anthropic.claude-sonnet-4-6[1m]"
         client._write_claude_local_settings = MagicMock()  # type: ignore[assignment]
 
@@ -477,8 +475,7 @@ class TestSubstitutionFollow:
         ],
     )
     async def test_terminal_advisory_is_not_retried(self, tmp_path, model, substitute):
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._model = model
         client._write_claude_local_settings = MagicMock()  # type: ignore[assignment]
 
@@ -515,8 +512,7 @@ class TestSubstitutionWrappersAndRedaction:
         next handshake step crash on the opaque "Cannot set config option before
         session is initialized" guard.
         """
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._process = MagicMock()
         client._process.returncode = None
 
@@ -545,8 +541,7 @@ class TestSubstitutionWrappersAndRedaction:
         (no substitution happened), the AcpError text MUST NOT include the
         "even after adopting substitute model" clause.
         """
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._process = MagicMock()
         client._process.returncode = None
         client._model = "global.anthropic.claude-opus-4-8[1m]"
@@ -576,8 +571,7 @@ class TestSubstitutionWrappersAndRedaction:
         the AcpError text MUST include the "even after adopting substitute
         model {...}" clause.
         """
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._process = MagicMock()
         client._process.returncode = None
         client._model = "global.anthropic.claude-opus-4-8[1m]"
@@ -611,8 +605,7 @@ class TestSubstitutionWrappersAndRedaction:
         contains a URL-shaped token and asserts the emitted log payload was
         redacted.
         """
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._model = "global.anthropic.claude-opus-4-8[1m]"
         client._write_claude_local_settings = MagicMock()  # type: ignore[assignment]
 
@@ -675,8 +668,7 @@ class TestSubstitutionWrappersAndRedaction:
         the happy path with a URL-shaped self._model and confirm the emitted
         info log does not leak it.
         """
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._process = MagicMock()
         client._process.returncode = None
         # AWS access-key-shaped substring guarantees both redactors fire (URL
@@ -699,7 +691,7 @@ class TestSubstitutionWrappersAndRedaction:
         client._capture_available_models = MagicMock()  # type: ignore[assignment]
         client._store_session_config = MagicMock()  # type: ignore[assignment]
 
-        async def _drain():
+        async def _drain(**_kwargs):
             return None
 
         client._drain_notifications = _drain  # type: ignore[assignment]
@@ -736,8 +728,7 @@ class TestSubstitutionWrappersAndRedaction:
         via the same path as the logger sinks, so the redaction discipline
         applies to exception messages too -- not just logger.* calls.
         """
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._process = MagicMock()
         client._process.returncode = None
         client._model = "global.anthropic.claude-opus-4-8[1m]"

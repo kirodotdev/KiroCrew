@@ -34,8 +34,8 @@ PANEL_ENTRY_TYPE = "panel/published"
 #: Ceilings the panel fold RE-APPLIES to the bytes it reads. The writer clamps too,
 #: but these come off a file a reader does not control, so a planted or damaged line
 #: is exactly the input that ignores the writer's rule. Equal to the store's own caps
-#: by construction -- ``test_agent_panel_crew_log`` pins them against
-#: ``agent_panel`` -- because a lower ceiling here would truncate an ordinary
+#: by construction -- ``test_agent_panel_crew_log`` pins the title cap and the key
+#: width against ``agent_panel`` -- because a lower ceiling here would truncate an ordinary
 #: accepted panel on every read, which is silent corruption rather than a bound.
 PANEL_TITLE_LIMIT = 200
 PANEL_TEMPLATE_LIMIT = 64

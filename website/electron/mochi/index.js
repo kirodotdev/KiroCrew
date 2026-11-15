@@ -1435,13 +1435,28 @@ function startMochiWatcher() {
  * credential path the shell knows (local secret, SSH remote, then the main
  * window's own already-established session — see main.js's
  * fetchMochiGatewayAuth and mochi-session-token.js) and answers
- * `{ value, viaCookie }`, and the gateway-launch logger.
+ * `{ value, viaCookie }`, and the gateway-launch logger. `hostStores` are the
+ * desktop window host's gateway-choice and binding stores, seeded from Mochi's
+ * own (hostHandOff.js) before main.js creates the host.
  */
 function initMochi(deps) {
   BACKEND_URL = deps.backendUrl;
   fetchGatewayAuth = deps.fetchGatewayAuth;
   glog = deps.glog;
   for (const line of pendingGlogs.splice(0)) glog(line);
+  const hostStores = deps.hostStores || {};
+  try {
+    const written = require("./hostHandOff").seedHostMachinePrefs({
+      machineStore,
+      gatewayStore: hostStores.gatewayStore,
+      prefsStore: hostStores.prefsStore,
+      defaults: require("./shortcuts").ACCELERATORS,
+      log: glog,
+    });
+    if (written.length) glog(`mochi: handed ${written.join(", ")} to the desktop window host`);
+  } catch (error) {
+    glog("mochi: host hand-off failed: " + (error && error.message));
+  }
   try {
     require("./panelWindow").setMainWindowGetter(deps.getMainWindow);
   } catch {

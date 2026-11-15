@@ -846,7 +846,7 @@ class TestConsolidationOffsetAfterRotation:
             log.append("k", "user", f"{i}:{body}")
 
         # --- OLD PAIRING (simulated): read offset, then a rotation fires, then
-        # read generation. This is what the pre-fix consolidator did. ---
+        # read generation: the racy order a consolidator must not use. ---
         stale_offset = len(log._read_messages("k"))  # PRE-rotation total = 100
         for i in range(100, 300):
             log.append("k", "user", f"{i}:{body}")  # triggers a real rotation

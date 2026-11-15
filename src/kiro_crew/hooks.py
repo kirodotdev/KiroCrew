@@ -126,6 +126,7 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _tier_spec_builtin_grant,
     _tier_spec_denies,
     _tier_spec_shell_allowlist,
+    _tier_spec_unjudged_denies,
     _tier_spec_write_allowlist,
     _tier_targets,
     _tier_unverifiable_shell,
@@ -664,12 +665,18 @@ class HookManager:
         before = self._config
         after = hooks_config_from_config_dict(getattr(change, "new").hooks)
         self.reload(after)
+
+        def _grants(cfg: HooksConfig) -> set[tuple[str, str]]:
+            return {("tools", p) for p in cfg.auto_approve_tools} | {
+                ("identities", p) for p in cfg.auto_approve_tool_identities
+            }
+
         # A hooks reload can WIDEN what runs without a prompt, and config.json is
         # writable by an auto-approved agent shell, so an approval-set change is
         # SEL-audited the way the channel transports audit an allow-list reload:
         # by COUNT and flag, never by tool name (governance still caps the set).
-        added = len(set(after.auto_approve_tools) - set(before.auto_approve_tools))
-        removed = len(set(before.auto_approve_tools) - set(after.auto_approve_tools))
+        added = len(_grants(after) - _grants(before))
+        removed = len(_grants(before) - _grants(after))
         flags = {
             "sources": (before.auto_approve_sources != after.auto_approve_sources),
             "subagent_spawn": (
@@ -705,7 +712,7 @@ class HookManager:
                 outcome="auto_approve_changed",
                 source="hooks",
                 resources=(
-                    f"added={added} removed={removed} size={len(after.auto_approve_tools)}"
+                    f"added={added} removed={removed} size={len(_grants(after))}"
                     + (f" flags={','.join(flipped)}" if flipped else "")
                     + confirm_note
                 ),
@@ -884,6 +891,7 @@ class HookManager:
         spec_write_allowlist: tuple[str, ...] | None = None,
         spec_write_cwd: str = "",
         spec_denied_grant: Any = None,
+        spec_unjudged_denies: tuple[dict[str, Any] | str, ...] = (),
         spec_shell_readonly: bool = False,
         spec_granted_paths: tuple[str, ...] = (),
         spec_granted_read_paths: tuple[str, ...] = (),
@@ -937,6 +945,7 @@ class HookManager:
                 ),
                 spec_write_cwd=spec_write_cwd,
                 spec_denied_grant=as_spec_denied_grant(spec_denied_grant),
+                spec_unjudged_denies=tuple(spec_unjudged_denies),
                 spec_shell_readonly=spec_shell_readonly is True,
                 spec_granted_paths=tuple(spec_granted_paths),
                 spec_granted_read_paths=tuple(spec_granted_read_paths),
@@ -1967,6 +1976,7 @@ GATE_TIERS: tuple[GateTier, ...] = (
     GateTier("spec-shell-allowlist", "deny_policy", _tier_spec_shell_allowlist),
     GateTier("spec-write-allowlist", "deny_policy", _tier_spec_write_allowlist),
     GateTier("spec-denies", "deny_policy", _tier_spec_denies),
+    GateTier("spec-unjudged-denies", "deny_policy", _tier_spec_unjudged_denies),
     GateTier("app-own-server", "grant", _tier_app_own_server),
     GateTier("operator-grants", "grant", _tier_operator_grants),
     GateTier("spec-builtin-grant", "grant", _tier_spec_builtin_grant),

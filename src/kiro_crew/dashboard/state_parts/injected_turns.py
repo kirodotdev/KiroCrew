@@ -44,7 +44,7 @@ SUBAGENT_COMPLETION_PREFIXES = (
 
 
 # One-shot synthesis turn fired after ALL sub-agents in a fan-out complete and
-# each result has been processed in its own turn (see gateway._subagent_done arm
+# each result has been processed in its own turn (see subagent_wiring._subagent_done arm
 # + chat_runner drain/idle branch). Its visible reply is the consolidated,
 # user-facing summary. Rendered as an "inject" message (not a user bubble); the
 # prefix marks it as a synthetic continuation so it is NOT mirrored to linked

@@ -124,7 +124,7 @@ class TestTheOverrideHandlerReadsItsIssue:
             assert scope in used or scope == "checks", scope
 
     def test_without_the_scope_the_derived_check_fails(self) -> None:
-        # The check has teeth: the block this PR first shipped, minus issues,
+        # The check has teeth: the original block, minus issues,
         # is reported against the issue read.
         workflow, job = self._record()
         shipped = {k: v for k, v in effective_permissions(workflow, job).items() if k != "issues"}

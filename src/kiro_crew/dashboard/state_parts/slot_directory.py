@@ -389,6 +389,8 @@ def native_subagent_snapshots(
                 "task": str(info.get("task") or ""),
                 "agent": str(info.get("agent") or ""),
             }
+            # The label and model a card's frames carry, when it has them.
+            base.update({key: str(info[key]) for key in ("label", "model") if info.get(key)})
             if info.get("done"):
                 done_at = float(info.get("done_at") or 0.0)
                 if done_at and (now - done_at) > ttl_secs:
@@ -800,6 +802,7 @@ def get_or_create_slot(
                 if _ts and not slot.linked_session_key and not _self_ref:
                     self._slack_to_slot[_ts] = name
     except Exception:
+        # Slack-link hydration is optional; the slot is still created and registered.
         pass
     _registry_for(self).put_slot(self, name, slot)
     # Publish the updated key set to SessionManager and the surface

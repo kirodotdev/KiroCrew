@@ -369,10 +369,18 @@ def view(member: str) -> dict[str, Any]:
     Purely additive: there is no recorded template and no "additions since" to
     report — a crewmate's file is the sum of everything added to it.
     """
+    from kiro_crew.mate_spec_policy import conditional_denies, unjudged_denies
+
     _, spec = _owned_file(member)
     return {
         "member": member,
         "revision": _digest(spec),
+        # The file's blocked commands nobody can check, as written: the worker
+        # refuses its shell commands that are not read-only while any is left.
+        "unenforced_denies": unjudged_denies(spec),
+        # Those only the gate checks, in a simple command or chain: the worker
+        # refuses any other command that is not read-only while one is left.
+        "conditional_denies": conditional_denies(spec),
     }
 
 
@@ -802,6 +810,8 @@ def preview(member: str, body: Any) -> dict[str, Any]:
     ``changes`` lists each net-new item (``added``) and each item left out
     because the crewmate already has it (``skipped``).
     """
+    from kiro_crew.mate_spec_policy import conditional_denies, unjudged_denies
+
     path, spec, new_spec, template, tkit = _plan(member, body)
     base = _worker_base_or_none()
     current = slot_directions(spec, base, path.stem)
@@ -810,6 +820,9 @@ def preview(member: str, body: Any) -> dict[str, Any]:
         "template": template,
         "revision": _plan_revision(spec, new_spec),
         "runs_unasked": _runs_unasked(spec, new_spec, base),
+        # The blocked commands nobody can check once the add lands, as written.
+        "unenforced_denies": unjudged_denies(new_spec),
+        "conditional_denies": conditional_denies(new_spec),
         # The behaviour directions the add writes ("" when the agent has none),
         # so the preview can show the text it fills the slot with.
         "directions": tkit.get("prompt") or "",

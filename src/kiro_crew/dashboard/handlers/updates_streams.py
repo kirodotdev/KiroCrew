@@ -139,6 +139,7 @@ class _QueueLogHandler(logging.Handler):
             data = json.dumps({"level": record.levelname, "msg": msg})
             self._queue.put_nowait(data)
         except Exception:
+            # A log handler must never raise into the code that logged.
             pass
 
 
@@ -259,6 +260,7 @@ class _RingLogHandler(logging.Handler):
                     except RuntimeError:
                         pass
         except Exception:
+            # A log handler must never raise into the code that logged.
             pass
 
 

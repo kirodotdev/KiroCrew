@@ -162,24 +162,6 @@ export const PREVIEW_LAYOUT_HARNESS = `${PREVIEW_FLAG_PREFIX}layout-harness`
 export const PREVIEW_FOLDER_CONDUCTOR = `${PREVIEW_FLAG_PREFIX}folder-conductor`
 
 /**
- * Crew Mode: the composer switch that runs a chat on a conductor, and every
- * dashboard mark that goes with it (the welcome, the Crew panel tab, the crew
- * card in the Sessions list, the Crew Mode filter, the crew member breadcrumb).
- *
- * Read it through `crewModeEnabled()` in `lib/crewMode.ts` (or `useCrewMode`
- * for a re-render), never as a bare flag: that one read is what every Crew Mode
- * surface consults.
- *
- * Default OFF, and OFF is the dashboard as it was before Crew Mode's UI: no
- * switch, no conductor hidden from the agent picker, and every session -- a crew
- * member included -- listed and alerting as an ordinary chat. The backend is
- * unchanged either way; without the UI nothing turns Crew Mode on. A chat that
- * is already in Crew Mode stays an ordinary chat on its conductor agent while
- * the flag is off, and its crew members are ordinary rows of the list.
- */
-export const PREVIEW_CREW_MODE = `${PREVIEW_FLAG_PREFIX}crew-mode`
-
-/**
  * A crewmate's sessions leave the person's own lists: every session a mate
  * thread dispatched (its `mate_root` stamp), at any depth, is left out of the
  * sidebar, Recents, the grid and unread counts, and shows on the mate's
@@ -272,6 +254,18 @@ export const PREVIEW_CHAT_RUNTIME_SHARING = `${PREVIEW_FLAG_PREFIX}chat-runtime-
 export const PREVIEW_SECRETS_VAULT = `${PREVIEW_FLAG_PREFIX}secrets-vault`
 
 /**
+ * Worker grill: a conductor may offer to let two or three workers grill a costly
+ * choice before it picks a path, answer a pick with a `[GRILL: {...}]` card line,
+ * and dispatch one moderator worker that runs the fast talk
+ * (`worker_grill_preview.py`, the goal-conductor skill's
+ * `references/worker-grill.md`). Server-only: the gateway reads
+ * `dashboard.feature_previews.worker_grill` per turn, so nothing in the
+ * dashboard reads this key. Default OFF, and OFF is a conductor that offers no
+ * discussion unasked.
+ */
+export const PREVIEW_WORKER_GRILL = `${PREVIEW_FLAG_PREFIX}worker-grill`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -286,7 +280,6 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_LAYOUT_HARNESS,
   PREVIEW_FOLDER_CONDUCTOR,
   PREVIEW_SESSION_ENVIRONMENTS,
-  PREVIEW_CREW_MODE,
   PREVIEW_MATE_SESSIONS,
   PREVIEW_EXPLORE,
   PREVIEW_CREW_OAUTH,
@@ -296,6 +289,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_BRIDGE_APPROVALS,
   PREVIEW_CHAT_RUNTIME_SHARING,
   PREVIEW_SECRETS_VAULT,
+  PREVIEW_WORKER_GRILL,
 ]
 
 /**

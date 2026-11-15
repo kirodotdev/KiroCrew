@@ -115,6 +115,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         spec_write_cwd=e.spec_write_cwd,
         # Same row as spec_granted_builtins, with the denies it is checked against.
         spec_denied_grant=e.spec_denied_grant,
+        # Dropping this would let a Bot worker run a command its spec's unjudged
+        # denies hold: the gate's spec-unjudged-denies row reads it.
+        spec_unjudged_denies=e.spec_unjudged_denies,
         # Dropping this would refuse a read-only command an `autoAllowReadonly`
         # spec runs under `denyByDefault`: the spec-shell-allowlist row reads it.
         spec_shell_readonly=e.spec_shell_readonly,
@@ -167,6 +170,8 @@ def _to_llm_event(e: Any) -> LLMEvent:
         mcp_server_name=e.mcp_server_name,
         diff_old_text=e.diff_old_text,
         diff_path=e.diff_path,
+        # Dropping it leaves a claude Read of an image with no thumbnail on its row.
+        read_path_arg=e.read_path_arg,
         # Typed execution-layer status (``kirocrew/status`` / the watchdog's
         # ``waiting_input`` classification). The consumers read it here:
         # chat_runner's tool-stall continuation takes ``wait_reason`` from
@@ -183,6 +188,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # nothing to record: no notice line and no promotion of the slot to
         # the model the engine moved to (acp/engine_fallback.py).
         model_fallback=e.model_fallback,
+        # A notice the harness reported. Dropping it zeroes it to None, so the
+        # dashboard reads an adapter notice as reply text and never sees a mode change.
+        harness_notice=e.harness_notice,
     )
 
 
@@ -510,41 +518,6 @@ def _inline_turn_finished_cleanly(self: AcpProvider) -> bool:
     """
     probe = getattr(self._client, "turn_finished_cleanly", None)
     return bool(probe()) if callable(probe) else False
-
-
-class _HeldChatTurnGate:
-    """The scope :func:`hold_chat_turn_gate` opens: the backing session's hold, or nothing."""
-
-    def __init__(self, client: Any) -> None:
-        self._client = client
-        self._held: Any = None
-
-    async def __aenter__(self) -> None:
-        hold = getattr(self._client, "hold_chat_turn_gate", None)
-        if hold is None:
-            return
-        held = hold()
-        if hasattr(held, "__aenter__") and hasattr(held, "__aexit__"):
-            await held.__aenter__()
-            self._held = held
-
-    async def __aexit__(self, *exc: Any) -> Any:
-        held, self._held = self._held, None
-        if held is not None:
-            return await held.__aexit__(*exc)
-        return None
-
-
-def hold_chat_turn_gate(self: AcpProvider) -> _HeldChatTurnGate:
-    """Hold a shared process's chat turn gate across a whole compaction.
-
-    The compaction paths wrap ``stream_command('/compact')`` and the deferred
-    ``wait_for_compaction`` receipt in this, so a co-tenant chat cannot start a
-    turn between them into which this session's ownerless compaction terminal is
-    fanned. Delegates to the backing ``AcpSessionProvider``; a placeholder client
-    before startup or a non-runtime client has no gate, and this holds nothing.
-    """
-    return _HeldChatTurnGate(self._client)
 
 
 async def wait_for_compaction(

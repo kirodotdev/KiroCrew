@@ -23,7 +23,6 @@ import reducer, {
 import type { StatusData, ChatSlot } from '../types'
 import { sharedItem } from './unreadStorageTestUtils'
 import { SHARED_UNREAD_FLUSH_MS, flushSharedUnread, relayedUnreadKeys } from '../store/dashboard/unread'
-import { crewModePreviewOn } from './crewModePreview'
 
 vi.mock('../api/client', () => ({
   api: { chatSlots: vi.fn(), chatMode: vi.fn() },
@@ -1056,6 +1055,3 @@ describe('dashboardSlice per-slot unread teardown', () => {
     expect(next.unreadSlots).toEqual(['chat-1'])
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

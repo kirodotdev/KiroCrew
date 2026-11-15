@@ -248,10 +248,10 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # The Notes state files' old bare spellings: kept masked for a copy not yet moved,
     # and never carved back (the backend reads only the state directory).
     *_MD_NOTEBOOK_RETIRED_STATE_LEAVES,
-    # The Notes state DIRECTORY, masked whole. It is OWNED by the md-notebook backend,
-    # itself a sandboxed spawn (`apps/backend.py`), which gets it back through
-    # :func:`app_backend_visible_targets`; the mask still applies to every OTHER
-    # sandboxed process.
+    # The Notes state DIRECTORY of the previous layout, masked whole and handed back to
+    # no spawn. ``md_notebook_state`` copies its state into the app's own declared
+    # ``data/state/`` and empties the PAT here; the registry and settings copies it keeps
+    # for a rollback, and the marker that closes the copy, stay behind this mask.
     _MD_NOTEBOOK_STAGING_LEAF,
     # Browser session material an earlier version's browser CLI wrote: a storage
     # state (cookies), its extension token and three retired markers. No reader is
@@ -626,6 +626,10 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # what keeps the switch the owner's regardless of how a command spells the
     # way there.
     "credential_redaction.json",
+    # The MCP message-body fields the owner allowed. Same class: a writable list
+    # lets an agent allow its own fields past the tool_input size ceiling. Read
+    # only by the gateway's gate; an absent or unreadable file reads as no rows.
+    "mcp_body_fields.json",
     # The Browser Harness prefix (``browser_harness.install.PREFIX_LEAF``): the
     # venv whose interpreter the unsandboxed gateway EXECUTES for the daemon and
     # the helper worker, plus Kiro's Chromium beside it. A write would choose the
@@ -1110,6 +1114,9 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # nothing about the agent's own ceiling, and the gateway reads it outside the
     # sandbox. The risk is a write, answered by the read-only seal.
     "chat_steering_off.json",
+    # The owner's MCP message-body fields: server, tool and field names, no
+    # credential. The risk is a write, answered by the read-only seal.
+    "mcp_body_fields.json",
     # The operator's cloud configuration and the launch record beside it. Neither holds
     # a credential (``CloudConfig`` documents the file as the operator's own, with none),
     # and in-sandbox code READS both: the provisioner selector resolves the Fargate block

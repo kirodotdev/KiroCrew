@@ -875,6 +875,7 @@ def _iter_cc_agent_names(cc_plugins_dir: Path | None = None) -> Iterator[str]:
             if agent_name:
                 yield agent_name
         except Exception:
+            # One unreadable or malformed agent file must not hide the rest.
             continue
 
 

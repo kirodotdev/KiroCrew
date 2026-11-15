@@ -391,7 +391,7 @@ class TestQuoteUnwrapping:
             assert got == want, f"{raw!r}: yaml={want!r} reader={got!r}"
 
     def test_an_escaped_apostrophe_does_not_expose_a_quoted_hash(self) -> None:
-        # GPT review, head 11b06f861. The comment splitter located a
+        # The comment splitter located a
         # single-quoted scalar's closing delimiter at the FIRST quote after the
         # opener — the first half of an ``''`` escape — so everything after it
         # was scanned for a comment and an in-scalar ``#`` truncated the value:
@@ -457,17 +457,16 @@ class TestTheLiteralFoldTheSkillEditorSimulates:
             assert fold_block_scalar("|", body) == expected, label
 
     def test_a_leading_blank_line_survives_the_way_a_parser_keeps_it(self):
-        # Was `test_a_leading_blank_line_is_lost_where_a_parser_keeps_it`, asserting the
-        # loss. A leading break is CONTENT under every chomping mode, so keeping it is
-        # what removes the content-dependence from the editor's comparison.
+        # A leading break is CONTENT under every chomping mode, so keeping it is what
+        # removes the content-dependence from the editor's comparison.
         assert fold_block_scalar("|", ["", "  true"]) == "\ntrue\n"
         assert fold_block_scalar("|", ["  true"]) == "true\n"
         # Strip chomping is how a caller asks for neither break.
         assert fold_block_scalar("|-", ["", "  true"]) == "\ntrue"
 
     def test_the_keep_forms_preserve_what_keep_chomping_preserves(self):
-        # `|+`/`>+` tell YAML to KEEP the trailing blank lines, and now so does this
-        # reader. Was `test_the_keep_forms_discard_what_keep_chomping_preserves`.
+        # `|+`/`>+` tell YAML to KEEP the trailing blank lines, and so does this
+        # reader.
         for indicator in ("|+", ">+"):
             assert fold_block_scalar(indicator, ["  true", "", ""]) == "true\n\n\n", indicator
 
@@ -562,8 +561,8 @@ class TestTheBlockScalarHeaderGrammar:
         assert "body text" not in out
 
     def test_the_write_walk_stops_at_the_same_boundary_the_read_does(self) -> None:
-        # Raised and self-dropped by Opus on b1c0c5c8c as unreachable; fixed anyway,
-        # because it is an asymmetry THIS change introduced. Tightening the read path's
+        # Possibly unreachable, but pinned anyway because the asymmetry is real:
+        # tightening the read path's
         # collection without the write path's left the writer consuming a less-indented
         # trailing comment as though it were block content, so REPLACING the block's own
         # field deleted the author's note -- exactly the silent loss the walk's plain-value
@@ -755,7 +754,7 @@ class TestBlockScalarsAgreeWithARealYamlParser:
         assert checked > 5800, checked
 
     def test_a_folded_scalar_keeps_the_trailing_whitespace_its_author_wrote(self) -> None:
-        # GPT 5.6 review, head 8dcd6ef26. A folded scalar's trailing spaces are CONTENT,
+        # A folded scalar's trailing spaces are CONTENT,
         # and the line break folds to a space AFTER them, so `>` over `a  ` then `b` is
         # `a   b` -- three spaces, not one. The fold was calling `.strip()` on each line,
         # which deleted the author's trailing text outright.
@@ -768,7 +767,7 @@ class TestBlockScalarsAgreeWithARealYamlParser:
         assert fold_block_scalar("|", ["  a  ", "  b"]) == "a  \nb\n"
 
     def test_an_explicit_indent_makes_a_whitespace_only_block_content(self) -> None:
-        # GPT 5.6 review, head c24bf7f53. Under an explicit indicator the HEADER fixes
+        # Under an explicit indicator the HEADER fixes
         # where content starts, so `|2-` over a line of three spaces is one space of
         # CONTENT -- not an empty block. The emptiness check ran BEFORE the dedent, so
         # the line looked blank on its raw text and the whole scalar came back "".
@@ -808,7 +807,7 @@ class TestBlockScalarsAgreeWithARealYamlParser:
         assert parse_frontmatter(out, SKILL_LOADER)["d"] == "\t\n  deep\none\n"
 
     def test_whitespace_beyond_the_indent_is_content_not_a_trailing_break(self) -> None:
-        # GPT 5.6 review, head b1c0c5c8c. A line holding only whitespace looks blank
+        # A line holding only whitespace looks blank
         # (`"   ".strip()` is empty) but the whitespace past the block's indent is
         # CONTENT, so it is not a trailing break and chomping must not eat it. Classified
         # on the raw line this returned `body`; classified after dedent it is `body\n `.
@@ -974,7 +973,7 @@ class TestChompingCannotFlipAnActivationFlag:
             assert value.strip().lower() == "true", f"{label}: {value!r}"
 
     def test_a_crlf_document_resolves_exactly_like_its_lf_twin(self) -> None:
-        # GPT 5.6 review, head ac5b7940e. Judging "blank" in SPACES made a CRLF blank line
+        # Judging "blank" in SPACES made a CRLF blank line
         # -- which is "\r", not "" -- look like a content line at indent 0, so it ENDED the
         # scalar: a steering description was truncated at its first interior blank, and lost
         # whole when the blank came first. YAML normalises line breaks, so the contract is
@@ -999,7 +998,7 @@ class TestChompingCannotFlipAnActivationFlag:
         assert parse_frontmatter(crlf, STEERING_LOADER)["description"] == "one\n\ntwo\n"
 
     def test_a_leading_blank_line_sets_the_block_boundary(self) -> None:
-        # GPT 5.6 review, head a337c8182. A leading all-space line takes part in detecting
+        # A leading all-space line takes part in detecting
         # the block's indent, so a SHALLOWER line after it ends the scalar instead of
         # becoming its first content line. Without that floor, `description: |` over three
         # spaces then ` # note` read the note as content where a parser reads an empty
@@ -1151,7 +1150,7 @@ class TestTheActivationGateCoversEverythingTheLoaderResolves:
             assert _column0_activation_declared(text) is True, value
 
     def test_a_padded_quoted_value_is_detected(self) -> None:
-        # GPT 5.6 review, head 8dcd6ef26. The gate stripped whitespace only OUTSIDE the
+        # The gate stripped whitespace only OUTSIDE the
         # quotes, so `always: " true "` unquoted to `` true `` and matched no truthy
         # word -- while the loader's consumers compare `.strip().lower() == "true"` and
         # DO activate it. An imported skill spelled that way self-activated past the

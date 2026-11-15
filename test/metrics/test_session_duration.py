@@ -514,9 +514,7 @@ class TestEnd:
         assert "run_in_executor(" in body, "the hop must be a bare future, not a Task"
         assert "asyncio.shield(" in body, "a cancellation must not reach the queued item"
         assert "to_thread(" not in body, "shield would wrap a coroutine in a cancellable Task"
-        assert (
-            "_unlink_all(paths)" not in body
-        ), "the unlink must never run on the event loop, which is what #7537 is about"
+        assert "_unlink_all(paths)" not in body, "the unlink must never run on the event loop"
 
     def test_no_end_path_hands_its_caller_a_new_abort_point(self):
         """All three absorb; the helper owns not-dropping the unlink.

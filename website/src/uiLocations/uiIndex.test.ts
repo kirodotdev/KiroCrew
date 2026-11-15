@@ -543,7 +543,6 @@ function baseInputs(over: Record<string, unknown> = {}) {
     catalogs: { en: EN, 'zh-CN': ZH },
     locales: ['en', 'zh-CN'],
     productName: 'Kiro Crew',
-    inputDigest: 'sha256:test',
     routes: ROUTES,
     conditions: UI_CONDITIONS,
     revealStates: UI_REVEAL_STATES,
@@ -1451,10 +1450,9 @@ describe('the committed index', () => {
     expect(byId.get('setting:developer.explore')!.placements[0].requires).toEqual([])
   })
 
-  it('keeps Start New Chats in conductor mode behind the conductor mode preview, and not its own switch', () => {
-    const want = [{ kind: 'preview_flag', flag: 'mc-preview-crew-mode', location: 'setting:developer.conductor-mode' }]
-    expect(byId.get('setting:chat.start-new-chats-in-conductor-mode')!.placements[0].requires).toEqual(want)
-    expect(byId.get('setting:developer.conductor-mode')!.placements[0].requires).toEqual([])
+  it('shows Start New Chats in conductor mode with no prerequisite, and no conductor mode preview switch', () => {
+    expect(byId.get('setting:chat.start-new-chats-in-conductor-mode')!.placements[0].requires).toEqual([])
+    expect(byId.has('setting:developer.conductor-mode')).toBe(false)
   })
 
   it('shows Mates with no prerequisite', () => {

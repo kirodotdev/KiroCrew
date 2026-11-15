@@ -411,7 +411,8 @@ async def _run_side_turn(
     # already redacts each frame, but per-frame redaction alone misses a secret
     # split across streaming chunk boundaries; StreamRedactor withholds a
     # trailing credential-class run until it's confirmed safe. Mirrors
-    # chat_runner._wsred so /side has the same protection as the main chat.
+    # the chat turn's ``turn._wsred`` (chat_turn/turn_entry.py) so /side has the
+    # same protection as the main chat.
     _wsred = StreamRedactor()
 
     def _broadcast(**frame: Any) -> None:

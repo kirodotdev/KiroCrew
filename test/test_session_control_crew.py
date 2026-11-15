@@ -228,6 +228,7 @@ def test_switch_on_adds_crew_to_the_five_tools_only(monkeypatch):
     "verb, fields",
     [
         ("create", {"crew": "lab"}),
+        ("create", {"crew": "lab", "agent": "kirocrew-worker", "agent_kind": "template"}),
         ("send", {"crew": "lab", "target": "chat-77", "message": "hi"}),
         ("read", {"crew": "lab", "target": "chat-77"}),
         ("stop", {"crew": "lab", "target": "chat-77"}),
@@ -365,6 +366,60 @@ def test_after_a_restart_the_item_pair_still_fences_the_slot(env, monkeypatch):
 def test_a_crew_create_refuses_local_only_fields(env):
     status, body = _call(env, "create", crew="lab", folder_id="f1")
     assert (status, body["code"]) == (400, "crew_field_unsupported")
+    assert env.peer.calls == []
+
+
+def test_a_template_kind_reaches_the_peer_create(env):
+    """D6: the peer resolves a same-named crew member first unless the create says
+    ``template``, so the kind rides the create; without it nothing changes."""
+    _create(env, agent="kirocrew-worker", agent_kind="template")
+    first = env.peer.calls[0]
+    assert first["body"]["agent"] == "kirocrew-worker"
+    assert first["body"]["agent_kind"] == "template"
+    env.peer.calls.clear()
+    _create(env, agent="kirocrew-worker")
+    assert "agent_kind" not in env.peer.calls[0]["body"]
+    env.peer.calls.clear()
+    _create(env, agent="kirocrew-worker", agent_kind="")
+    assert "agent_kind" not in env.peer.calls[0]["body"]
+
+
+def test_a_bound_create_carries_the_template_kind(env, monkeypatch):
+    from kiro_crew.dashboard.handlers import remote_ingest
+
+    seen: dict = {}
+
+    async def _bound(state, mgr, board, instance_id, item_id, create):
+        seen.update(create)
+        return "chat-77", {"key": "chat-77"}, SimpleNamespace(item_id=item_id, title="t")
+
+    monkeypatch.setattr(remote_ingest, "create_bound", _bound)
+    status, body = _call(
+        env,
+        "create",
+        crew="lab",
+        work_item="it_0000abcd",
+        agent="kirocrew-worker",
+        agent_kind="template",
+    )
+    assert status == 200, body
+    assert seen["agent_kind"] == "template" and seen["agent"] == "kirocrew-worker"
+
+
+@pytest.mark.parametrize(
+    "fields, code",
+    [
+        ({"agent": "kirocrew-worker", "agent_kind": "member"}, "invalid_agent_kind"),
+        ({"agent": "kirocrew-worker", "agent_kind": "Template"}, "invalid_agent_kind"),
+        ({"agent": "kirocrew-worker", "agent_kind": True}, "invalid_agent_kind"),
+        ({"agent": "kirocrew-worker", "agent_kind": ["template"]}, "invalid_agent_kind"),
+        ({"agent_kind": "template"}, "agent_kind_requires_agent"),
+        ({"agent": "  ", "agent_kind": "template"}, "agent_kind_requires_agent"),
+    ],
+)
+def test_a_bad_agent_kind_is_refused_before_any_peer_call(env, fields, code):
+    status, body = _call(env, "create", crew="lab", **fields)
+    assert (status, body["code"]) == (400, code)
     assert env.peer.calls == []
 
 

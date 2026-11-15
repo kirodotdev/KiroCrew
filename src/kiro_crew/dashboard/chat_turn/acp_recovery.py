@@ -302,7 +302,7 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
     # -- against this slot when the runtime was its own, against the
     # shared-death streak when it was not, under the SAME ladder limit. A
     # single-tenant runtime, which is every runtime at cap 1 with no
-    # sub-agent on it, takes the first branch and behaves exactly as before.
+    # sub-agent on it, takes the first branch.
     _own_fault = runtime_death.caused_by_this_session(client)
     if _own_fault:
         slot._acp_pipe_death_retries += 1

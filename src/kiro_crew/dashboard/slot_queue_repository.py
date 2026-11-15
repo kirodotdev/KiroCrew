@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.channel_prompt import PROMPT_ON_CHANNEL_META_KEY
+from kiro_crew.tracing import steps as trace_steps
 
 if TYPE_CHECKING:
     from kiro_crew.subagent import SubagentDelivery
@@ -869,6 +870,8 @@ class SlotQueueRepository:
             item["_directive_owner_origin"] = True
         owner._queue.append(item)
         owner._note_enqueue()
+        # Its queue wait starts now, timed beside the entry for the reason note_enqueue gives.
+        trace_steps.note_queued(queue_id)
         return queue_id
 
     def note_enqueue(self, owner: Any) -> None:

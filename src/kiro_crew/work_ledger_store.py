@@ -75,11 +75,7 @@ _UNDELIVERED_DIR = "undelivered"
 #: Per-item records of what the hub last learnt about a REMOTE worker's slot
 #: (:mod:`kiro_crew.work_ledger_remote`). A gateway observation, like the above.
 _REMOTE_DIR = "remote"
-#: ``host``: the host-wide pressure record (:mod:`kiro_crew.host_pressure`), kept inside
-#: the masked work-ledger tree so a sandboxed worker cannot write it.
-RESERVED_ROOT_DIRS: frozenset[str] = frozenset(
-    {_BINDINGS_DIR, _UNDELIVERED_DIR, _REMOTE_DIR, "host"}
-)
+RESERVED_ROOT_DIRS: frozenset[str] = frozenset({_BINDINGS_DIR, _UNDELIVERED_DIR, _REMOTE_DIR})
 
 
 def mint_item_id() -> str:
@@ -737,6 +733,7 @@ def _copy_item(item: WorkItem, directory: Path) -> WorkItem:
     copied.acceptance = acceptance
     copied.artifacts = dict(item.artifacts)
     copied.retired_bindings = [dict(b) for b in item.retired_bindings]
+    copied.discussion = _json_copy(item.discussion)
     return copied
 
 

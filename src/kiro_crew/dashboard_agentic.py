@@ -136,7 +136,8 @@ class Instance:
 #: Keyed by the STATE STRING, which is what lets this table live here rather than in
 #: :mod:`kiro_crew.dashboard_package`: the Model type travels from this module to that
 #: one, so a type import back would close a cycle. The two halves are pinned against
-#: each other by ``test_dashboard_package`` -- a state added there with no row here
+#: each other by ``test_every_state_the_reader_can_answer_with_has_a_refusal_beside_it``
+#: (``test/test_dynamic_dashboard.py``) -- a state added there with no row here
 #: would reach an agent as a bare "no package", which is the wrong instruction for two
 #: of the three.
 #:

@@ -75,7 +75,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 | R-LAU-11 | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | kiro-family fixes #23442, #31813, #25569, #29431; other launch paths not audited for loop blocking |
 | R-LAU-12 | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | rerun gates fixed `dashboard/kiro_readiness.py` |
 | R-AUTH-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `agent_sdk/host_auth.py` one declaration each |
-| R-AUTH-2 | ✅ | ✅ | ❓ | ❓ | ❓ | ✅ | ✅ | ✅ | ✅ | `signed_out_signature` `agent_sdk/host_auth.py` for goose, pi, deepseek and copilot; kiro/KAS `_KIRO_SIGNED_OUT`/`_KAS_SIGNED_OUT`; claude, codex, opencode declare no phrase |
+| R-AUTH-2 | ✅ | ✅ | ❓ | ❓ | ✅ | ✅ | ✅ | ✅ | ✅ | `signed_out_signature` `agent_sdk/host_auth.py` for opencode, goose, pi, deepseek and copilot; kiro/KAS `_KIRO_SIGNED_OUT`/`_KAS_SIGNED_OUT`; opencode's hosted fall-back refused at start (`refuse_opencode_hosted_fallback`, `acp/no_model_provider.py`); claude, codex declare no phrase |
 | R-AUTH-3 | ✅ | ✅ | ✅ | ✅ | ❓ | ✅ | ✅ | ✅ | ✅ | `ACP_BACKENDS_CREW_OAUTH_BRIDGE` `agent_sdk/backends_mcp.py` (kas, claude, codex, goose, pi, copilot, deepseek); kiro native `REMOTE_MCP_OAUTH`; opencode in neither |
 | R-AUTH-4 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | only kiro-cli login (cloud `cloud/login.py`) and KAS login are Crew-run |
 | R-AUTH-5 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | Kiro account check only gates kiro-family turns (`dashboard/kiro_readiness.py`) |
@@ -139,7 +139,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 | R-USE-4 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ❓ | kiro/KAS restart fixes (#35428, #33149); inline compaction harnesses never restart (`INLINE_COMPACTION` `backends_turns.py`); deepseek recycle not checked |
 | R-PRM-1 | ✅ | ✅ | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | `ACP_BACKENDS_SENT_IMAGE_RECORD` `backends_turns.py`; others inline every turn by design, replay cost unmeasured |
 | R-ROW-1 | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | kiro-cli v3 rows (#25650, #26589); other harnesses' tool-row shapes per version unmeasured |
-| R-CMD-1 | ✅ | ✅ | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | `KIRO_SLASH_COMMANDS` `backends_turns.py`, `HARNESS_OWNED_SLASH_COMMANDS`, `LOCAL_HARNESS_COMMANDS`, codex row `ACP_BACKEND_PROMPT_HANDLER_COMMANDS`; others keep the prompt path unchecked |
+| R-CMD-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `KIRO_SLASH_COMMANDS` `backends_turns.py`, `HARNESS_OWNED_SLASH_COMMANDS`, `LOCAL_HARNESS_COMMANDS`, a `ACP_BACKEND_PROMPT_HANDLER_COMMANDS` row per non-kiro harness, read off each prompt handler (goose and copilot from source, not live) |
 | R-ERR-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | #28513, #30038 shared |
 | R-ERR-2 | ✅ | ✅ | ✅ | ❓ | ❓ | ✅ | ❓ | ❓ | ❓ | kiro/KAS #28549; claude #30087; goose #28414 |
 | R-ERR-3 | ➖ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | KAS pattern |

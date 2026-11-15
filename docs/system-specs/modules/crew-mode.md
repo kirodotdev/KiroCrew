@@ -37,7 +37,7 @@ The person sees the chat; the crew it dispatched is the chat's to show.
 | **The person closing a conductor closes its workers.** When `DELETE /api/chat/slots/{slot}` closes a conductor mode root or a Bot thread with no app token, the open sessions it still manages after its own close (`session_managers.holder`) close too, down the line, each archived to history, but only one that was in the conductor's tree just before that close (its stamped row names the conductor as `crew_root` or `mate_root`, read in one pass with no await before the close) or was opened while the line was closing; the response names them in `closed_workers` and any that stayed open in `failed_workers`. A session handed up or back by the conductor's own hand-back stays open, as does one that left the tree (`session_release`, an adoption elsewhere), which moves the tree edge and not the manager record, as do a plain chat's sessions and every close by an agent, an app or the idle sweep | `chat_api/slot_lifecycle.py` (`api_chat_slot_delete`), `chat_api/conductor_close.py` (`_conductor_line`, `_close_managed`) |
 | **The person's session list leaves crew members out.** `GET /api/chat/slots` drops `crew_root` rows for a person; `?crew=all` keeps them (the dashboard reads this and filters on the client); a read with `internal_auth` (an agent's folder, status and lineage tools) keeps every row | `crew_mode.list_view`, `chat_api/slot_detail.py` |
 | A conductor mode chat and its crew are filed in no folder: `session_create` and `session_fork` from inside the tree leave the child unfiled and say so | [session-control](session-control.md) § `session_create`'s folder |
-| `dashboard.new_chat_crew_mode` (default off; Settings → Chat → Sessions → **Start New Chats in conductor mode**, shown while the conductor mode preview is on) turns conductor mode on for the person's New chat the way a press of the chip does: the create is unchanged, then the ordinary agent switch moves the new chat to the conductor before it opens, so the chip starts pressed and can still be turned off before the first message. Only the entry points that pass `crewModeDefault` (New chat in the sidebar and a folder's `+`, the new-chat shortcut, the palette and command bar, the Sessions page, an embed tab, a Split View pane, the phone session menu's New chat, the empty chat page) ask for it, and only a created chat the chip would be offered on switches: still on the default agent after the server applied any folder or default-folder pin, no chat mode, Persistent, a default agent that is no conductor. A catalog not read yet is read first. A failed read or a refused switch leaves the plain chat. A first send from a chat page with no session open keeps the default agent | `store/chat/lifecycle.ts` (`createSlot`, `startNewChatInCrewMode`), `lib/crewMode.ts` (`newChatCrewModeAgent`) |
+| `dashboard.new_chat_crew_mode` (default off; Settings → Chat → Sessions → **Start New Chats in conductor mode**, shown wherever conductor mode is, so in every build but LTS) turns conductor mode on for the person's New chat the way a press of the chip does: the create is unchanged, then the ordinary agent switch moves the new chat to the conductor before it opens, so the chip starts pressed and can still be turned off before the first message. Only the entry points that pass `crewModeDefault` (New chat in the sidebar and a folder's `+`, the new-chat shortcut, the palette and command bar, the Sessions page, an embed tab, a Split View pane, the phone session menu's New chat, the empty chat page) ask for it, and only a created chat the chip would be offered on switches: still on the default agent after the server applied any folder or default-folder pin, no chat mode, Persistent, a default agent that is no conductor. A catalog not read yet is read first. A failed read or a refused switch leaves the plain chat. A first send from a chat page with no session open keeps the default agent | `store/chat/lifecycle.ts` (`createSlot`, `startNewChatInCrewMode`), `lib/crewMode.ts` (`newChatCrewModeAgent`) |
 | A new chat born on a conductor counts once in `kirocrew.crew_mode.turned_on`; every new chat counts once in `kirocrew.crew_mode.new_chats` with `crew_mode` true or false; no attribute carries a key, a title or an agent name | `metrics/crew_mode.py`, [metrics](metrics.md) |
 
 The design and its parts are recorded in
@@ -2028,9 +2028,8 @@ order, so the order is part of the behaviour, and `MembersPage.owners.test.tsx`
 pins it together with the facade's exports and the rule that no owner imports
 the facade. The owners are stretches of the hook sequence the page had as one
 file, so a few pieces sit where their registration falls rather than with the
-responsibility they serve (the Schedules guard state below, say); a change that
-regroups them reorders registrations deliberately, reviews that as a behaviour
-change, and edits the order pin (follow-up #20512 for the Schedules guard state). New work goes to the owner of its responsibility:
+responsibility they serve; a change that regroups them reorders registrations
+deliberately, reviews that as a behaviour change, and edits the order pin. New work goes to the owner of its responsibility:
 
 | Owner | Holds |
 |---|---|
@@ -4802,9 +4801,61 @@ the revoked approvals cannot be read. Each one
 left out is a `skipped` `toolsSettings` row
 ("Already has", id `<tool>.<key>`), so the worker behaves as the agent declares
 and no prompt appears or disappears. This runs at kit time only: the worker
-merge still refuses either key in a file, so a hand-edited one fails closed at
-session start. Owner decision:
+merge still refuses `web_fetch.trusted` in a file, so a hand-edited one fails
+closed at session start; a `subagent.trustedAgents` no allow covers is carried
+as written. Owner decision:
 `docs/decisions/2026-11-07-add-abilities-leaves-out-a-grant-the-worker-already-holds.md`.
+The worker carries the `toolsSettings` keys of
+`mate_spec_policy.CARRIED_TOOLS_SETTINGS`, the same ones an ordinary KAS session
+of that agent applies: shell `deniedCommands`, `allowedCommands`,
+`denyByDefault` and `autoAllowReadonly`, read and write `deniedPaths` and
+`allowedPaths`, `web_fetch.blocked`, and `subagent.availableAgents` and
+`trustedAgents` under the `subagent` spelling only. Crew's gate answers the
+shell keys and the `allowedPaths`; KAS turns `trustedAgents` into a `subagent`
+allow. Every other key (`fallbackAction`, `web_fetch.trusted` in a file, a key
+Crew does not know) is refused by name. A shell `allowedCommands` or a read or
+write `allowedPaths` is carried whole even when an entry of it is one Crew
+cannot read, since that entry grants nothing and the call asks. A
+`deniedCommands` list is carried whole too. When an entry of it is one neither
+KAS (a glob in the entry's `permissions`) nor the gate (`kas_spec_denies._refusable_deny`)
+can judge, such as a regex with `|` inside a group, the worker's projection
+records those entries under the Crew-only `_crewShellUnjudgedDenies` key
+(`kas_spec_denies.with_unjudged_denies`, set for `kirocrew-mate-worker` only),
+the session handle stamps them on its own agent's requests
+(`AcpEvent.spec_unjudged_denies`), and the gate's `spec-unjudged-denies` row,
+placed with the deny rows, refuses every shell call of that agent that is not
+read-only (`gate_tiers._command_is_read_only`). The row refuses rather than asks
+because a worker runs under its Bot's Permissions, and under Trust an ask is
+answered for the person; no gate result forces a person's answer
+(`hooks.confirm_tools` only withholds a grant). An ordinary session with the
+same spec keeps asking, as before. The preview and the kit view return those
+entries as `unenforced_denies`, and the pane names them as written, in code font,
+under one sentence saying this Bot refuses every command that is not read-only;
+the finished add adds where to see the list again (this section), and the
+section shows it while the file holds one. Owner decision:
+`docs/decisions/2026-11-13-a-bots-worker-carries-the-agents-tool-grants.md`
+(`test/test_mate_worker_carries_tools_settings.py`).
+Every gate-readable deny that KAS does not carry travels in the same worker
+record as an object containing `key`, the raw `entry`, `conditional`,
+`past_bound`, and `whole`. The same objects travel through the session handle
+and `AcpEvent.spec_unjudged_denies`; the existing Crew-only key is stripped from
+KAS's wire payload. Classification never comes from entry text. The session
+notice pipeline serializes these objects as JSON across its `list[str]` API,
+then formats them only in `spec_keys_notice`. Both gate rows use
+`platform.spec_denied_gate.shell_denies_match`: a match is refused by
+`spec-denies`, a definite no-match keeps the normal approval policy, and an
+unknown result holds a worker's non-read-only command at `spec-unjudged-denies`.
+Unknown includes redirects, chains containing `#` or `[[`, and non-ASCII commands
+against ASCII-only patterns. The preview and the kit view return these
+conditional entries as `conditional_denies`, apart from `unenforced_denies`
+(`mate_spec_policy.conditional_denies`), and the pane names them in a second
+group, "Blocked commands it can check only in simple form", under a sentence
+naming the command shapes the worker then refuses. Truly unjudged entries still
+hold every non-read-only command. Ordinary sessions continue to refuse only
+definite matches. On a Bot's worker (`kirocrew-mate-worker`) the session-start
+notice (`spec_keys_notice`) says the worker refuses those commands unless they
+are read-only, instead of "no effect" or "runs without a refusal"; an ordinary
+session keeps the old wording.
 The add is refused,
 with a `detail` naming the field: `template_restrictions_uncarried` when one
 cannot be kept exactly (`uncarried_restrictions`, `toolsSettings.<tool>` for
@@ -5679,25 +5730,37 @@ members** are the rows stamped `crew_root: <root key>`, the root carries
 and the live slot frame carries them all) and leaves crew members out of the
 person's lists on the client.
 
-**The dashboard's conductor mode is a feature preview, default off**
-(`PREVIEW_CREW_MODE` in `website/src/utils/previewFlags.ts`, the **Conductor mode** card
-in Settings > Developer > Feature Previews, a plain switch with no preview dialog). `crewModeEnabled()` in
-`website/src/lib/crewMode.ts` is the one read of it, and `useCrewMode()` subscribes
-to the same key for a component or memo that must redraw on a flip. Every rule in
-this section and in [Conductor mode](#conductor-mode)'s client half reads through it:
+**The dashboard's conductor mode is on in every build but LTS.** It left Feature
+Previews (`docs/decisions/2026-11-14-conductor-mode-graduates-from-feature-previews.md`):
+there is no switch, and a `crew_mode` key a person's `dashboard.feature_previews` or
+browser still holds is ignored. The LTS edition keeps it off by the maintainer's ruling, as it
+did while it was a preview there (RFC rfc-crew-lts-edition D12). `crewModeEnabled()` in
+`website/src/lib/crewMode.ts` is the one read of that: on only once the edition lock is
+known and is not LTS (`featurePreviewLockKnown() && !previewFlagsLocked()`). The lock
+is known from the `kc-locked-controls` cache (an oss gateway's answer is kept as `[]`)
+or once the config schema read answers, so an LTS dashboard opened with no cache never
+shows conductor mode, not even for one read. `useCrewMode()` subscribes to the same
+state for a component or memo that must redraw when the gateway's lock arrives. A one-shot
+action that is never redone waits for the lock through one helper
+(`whenFeaturePreviewLockKnown` / `useFeaturePreviewLockSettled` in
+`website/src/utils/editionLocks.ts`, bounded by `FEATURE_PREVIEW_LOCK_WAIT_MS`, 5 s)
+and goes ahead as if conductor mode were off when it lapses: the chat page's first
+pick (`useChatPageSessionController`) and a new chat's conductor mode default
+(`store/chat/lifecycle.ts`). A stored conductor mode filter is rewritten to off only in
+LTS, never while the lock is unknown. Every rule in this section and in
+[Conductor mode](#conductor-mode)'s client half reads through it:
 
-| Preview | What the client does |
+| Build | What the client does |
 |---|---|
-| on | Everything below, unchanged |
-| off | `gatewayRunsCrewMode()`, `isConductorAgent()` and `runsCrewMode()` answer `false`, as for a gateway without conductor mode: no composer switch, no welcome, and the agent picker and chords list every conductor. The one ungated read is the row's raw `crew_mode_root` stamp, the server's own classification of a conductor mode root (`crew_mode.slot_is_crew_mode_root`: a Persistent session nothing dispatched): a root that has a user message offers no agent picker (main pane or Split View pane, and no conductor mode mark), and `agentCycleTarget` answers `null` on it (its `locked` argument), since the gateway refuses every such switch (`409 crew_mode_locked`). A conductor chat that is no root (Incognito, Temporary, dispatched) keeps its picker and chords, as the gateway lets it switch; the chords still never land on a conductor. A Crew tab restored from storage is withheld from the side panel strip, its stored state kept. `crewModeRoot(row)` and `crewRootOf(row)`, the only reads of the two stamps, answer `false` and `''`: no crew card, eyebrow, filter row (a stored conductor mode filter is turned off, its key rewritten to `0`), Crew tab, breadcrumb or approval card; `crewModeView` hands the rows back unchanged, so a crew member is an ordinary row; its approval and finished turn alert like any chat's, in its own name and slot (`crewWorkerRoot` answers `''`, `crewWorkerQuiet`); and its approval is decided where it is shown |
+| every build but LTS | Everything below |
+| LTS | `gatewayRunsCrewMode()`, `isConductorAgent()` and `runsCrewMode()` answer `false`, as for a gateway without conductor mode: no composer switch, no welcome, and the agent picker and chords list every conductor. The one ungated read is the row's raw `crew_mode_root` stamp, the server's own classification of a conductor mode root (`crew_mode.slot_is_crew_mode_root`: a Persistent session nothing dispatched): a root that has a user message offers no agent picker (main pane or Split View pane, and no conductor mode mark), and `agentCycleTarget` answers `null` on it (its `locked` argument), since the gateway refuses every such switch (`409 crew_mode_locked`). A conductor chat that is no root (Incognito, Temporary, dispatched) keeps its picker and chords, as the gateway lets it switch; the chords still never land on a conductor. A Crew tab restored from storage is withheld from the side panel strip, its stored state kept. `crewModeRoot(row)` and `crewRootOf(row)`, the only reads of the two stamps, answer `false` and `''`: no crew card, eyebrow, filter row (a stored conductor mode filter is turned off, its key rewritten to `0`), Crew tab, breadcrumb or approval card; `crewModeView` hands the rows back unchanged, so a crew member is an ordinary row; its approval and finished turn alert like any chat's, in its own name and slot (`crewWorkerRoot` answers `''`, `crewWorkerQuiet`); and its approval is decided where it is shown |
 
-A chat already in conductor mode, read with the preview off, is an ordinary chat on its
+A chat already in conductor mode, read by an LTS dashboard, is an ordinary chat on its
 conductor agent: its transcript, composer and agent label as for any chat, and its
 crew members are rows of the list. Once it has a message it offers no agent switch,
 since the gateway keeps it on its conductor. Nothing is hidden or unreachable. The gateway
-does not read the flag: the conductor mode lock (`409 crew_mode_locked`), the unfiled
-crew members and the stamps all stay, so turning the preview back on shows the same
-conductor mode chat.
+does not read the edition lock for this: the conductor mode lock (`409 crew_mode_locked`),
+the unfiled crew members and the stamps all stay.
 
 | Rule | Where |
 |---|---|
@@ -5708,6 +5771,7 @@ conductor mode chat.
 | A PEER's crew members stay rows in the federated session list (`sessionSources.ts`): a local crew member leaves the list because its root's Crew panel lists it, but a peer's root opens in the crew window, which has no such panel, and the panel reads this gateway's slots and routes, so for a peer's crew member the list is the one way in. The rows keep their `crew_root` / `crew_mode_root` stamps for the marks | `website/src/pages/chat-sidebar/sessionSources.ts`, `website/src/hooks/useInstanceSessions.ts` |
 | What a hidden crew member (its root open) owes the person rides on its root. The Command Bar's Needs You lifts a conductor mode root whose workers wait on a tool approval with the Approve pill and the count (`crewWaitingApprovals` over the FULL slot set, the count the fleet page's command center uses); the root's own approval, when it has one, reads as any session's. The sessions view still lists no crew member | `website/src/components/commandBar/CommandBarOverlay.tsx`, `website/src/components/commandBar/CommandBarOverlayRootRows.tsx` |
 | Crew panel data: a worker's group (`approval`, `working`, `with_conductor`, `waiting`, `done`; an idle worker whose own bounded loop will wake it, `ledger_wake.worker_looping` sent as `looping`, is `working`, and so is its milestone, its goal-board card and, when every open item loops, its conductor's row: "N running", no new word), the root summary, the sub-dispatcher order, the Status view's milestone state, Done-when and Recap rules, and the steer receipt notice | `lib/crewWorkers.ts`, `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `lib/crewSteerNotice.ts`, `types/index.chat.ts` |
+| **The Status view cuts no text.** Every Status text wraps, a long word (a SHA, a path) included, with no ellipsis, line clamp or tooltip standing in for it. The Overview shows the goal's whole first sentence (`goalSentence`, parentheticals removed), the goal's whole own "Done when" sentence (`goalDoneWhen`, ending at a sentence end, never inside a number such as "0.63 s", or where `Plan:` starts) and, when the goal text has a `Changed:` part, its last entry as **Latest change** (`latestChange`): an entry starts with its time at the start of the part, a line or after a ";", and one that carries a date also says how long ago it was ("Latest change, 2d ago: ...", the entry's own stamp in the `title`), so a goal the main chat never re-planned reads as old. No `Changed:` entry, no line. The line reads only the goal text: nothing is stored for it and the conductor's prompts are unchanged. A milestone's right column is the time since its last report, a running turn's too (the spinner says it runs). The done fold reads only "N done", folded or open. The Recap's milestone sentence counts running milestones ("87 of 94 done; 7 running.") instead of naming them; waiting, stuck and quiet ones are still named | `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `website/capture/conductor-mode-board-long.tsx` |
 | **When a run is done.** The gateway sends the part only it holds as `run` on the root's `crew_work` (once its board has an item) and on `GET /api/crew-board` (`dashboard/conductor_mode_run.py`): with items and no active loop on the conductor's slot, `settled` is `done` when every item is closed and `stopped` when some are open, else `""`, and the board read also keeps a new goal that has created no item yet (the header's `goal_items_used` is 0) unsettled; `at_limit` marks a patrol that ended at its time or budget bound, and `patrol_on` whether the loop is on. Nothing is stored, so a new goal, a re-armed patrol or a new item leaves it on the next read. A stop the conductor made and one a person made both record `USER_STOP`, so no surface says who stopped a run. The Status view's Overview opens with one line (`conductorModeRunState`): **Paused**, **Waiting for you** (anything under Needs your input), **Working** (a turn or a milestone running, or an unsettled board with milestones whose patrol is on; a new goal waiting on its first milestone with no patrol and nothing running draws no line), then the verdict's **Done** or **Stopped**, each with one sentence and no numbers, and no control of its own: the panel's Back row stays the one way back to the main chat. No line says a final report exists: a stop at a limit or by a person sends none, and the board cannot tell them apart. No milestone and nothing running: no line. A rejected or abandoned milestone is `not_done` (a muted ✕, "Not done · failed its check" / "Not done · dropped"), stays among the open rows and is not counted in "X of Y". The Sessions row reads **Done** only when `run.settled` is `done` (a root with no ledger keeps the every-crew-member-done rule); a stopped run keeps the row's usual line. Known limit: the row's `run` comes from the work fold, which keeps no goal start, so a new goal with no item yet still shows the previous goal's Done on the row until its first item | `src/kiro_crew/dashboard/conductor_mode_run.py`, `dashboard/crew_work.py`, `dashboard/handlers/work_ledger_board.py`, `lib/conductorModeRun.ts`, `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `pages/chat-sidebar/SessionRow.tsx` |
 | While a crew member is on screen, the Crew tab opens with a **Back to main chat** row (`CrewPanelBack`, above both views); it reads **Open main chat** while the root is closed, and then reopens the root from its saved transcript before opening it. Desktop keeps the side panel open on the root; a phone lands on the chat. A failed reopen shows the inline notice under the row (`commandCenter.worker_reopen_failed`, with the agent hand-off). The row takes its label and action from `useCrewBack`, the one place a Back comes from; the worker view's breadcrumb (`CrewWorkerBreadcrumb`) uses the same `useCrewBack` on its root crumb, so clicking the main chat's name does what the row does, and its sub-team lead crumb opens that member the way its Crew tab row does (reopening a closed one first); the current member and its status stay plain text | `components/crew/useCrewBack.ts`, `pages/chat/command-center/CrewWorkerList.tsx`, `pages/chat/command-center/ConductorModeCrewPanel.tsx`, `components/crew/CrewWorkerBreadcrumb.tsx` |
 | While one of a root's crew members is the active chat, the sidebar marks the root's row as its parent: class `session-crew-parent`, `data-crew-parent`, and a screen-reader line (`components.crewMode.parent_row_hint`). `ChatSidebar` derives `crewParent` from the active slot's `crew_root`; `rowView` sets `isCrewParent` only when no crew window covers the pane, and the mark never makes the root the active row | `pages/ChatSidebar.tsx`, `pages/chat-sidebar/rows.ts`, `pages/chat-sidebar/SessionRow.tsx`, `styles/crew-mode.css` |

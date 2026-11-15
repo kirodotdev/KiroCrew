@@ -1379,7 +1379,7 @@ class TestSelfHealRefreshRestart:
 
     @pytest.mark.asyncio
     async def test_refresh_passes_instance_remote_port(self, tmp_path):
-        # F1 regression: connect AND proactive re-mint must target the instance's
+        # Connect AND proactive re-mint must target the instance's
         # actual remote_port (not the default 7777), or a non-default-port
         # instance gets an invalid re-minted token.
         seen: list = []

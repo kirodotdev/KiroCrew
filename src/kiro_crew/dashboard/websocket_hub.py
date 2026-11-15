@@ -1378,6 +1378,7 @@ class WebSocketHub:
             try:
                 await ws.close()
             except Exception:
+                # A socket that fails to close is still dropped with the rest below.
                 pass
         self._owner._ws_clients.clear()
         self._owner._owner_ws_clients.clear()

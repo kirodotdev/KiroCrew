@@ -222,15 +222,11 @@ def _audit_default_on_backfill(name: str) -> None:
 # EMPTY, and that is a finished migration rather than an oversight. Every builtin now
 # ships as a file-based manifest under ``builtins/<dir>/app.json`` and is picked up by
 # ``discover_builtin_apps()``. ``agent-worlds`` and ``channels`` were the last two
-# hardcoded entries; they moved to ``builtins/agent_worlds/app.json`` and
-# ``builtins/channels/app.json`` with every field byte-identical, including the
-# ``defaultEnabled: false`` / ``hidden: true`` flags, which survive because
-# ``_manifest_to_builtin_dict`` copies ``AppManifest.extra`` verbatim.
-#
-# One thing JSON cannot carry came with them, so it is recorded here: ``channels`` sets
-# ``hidden: true`` to keep itself out of the App Store Browse grid only. Its code and
-# routes stay fully intact and it is enabled with ``kirocrew app enable channels``.
-# ``hidden`` gates store visibility, nothing else.
+# hardcoded entries; they moved to file manifests with every field byte-identical,
+# including the ``defaultEnabled: false`` / ``hidden: true`` flags, which survive
+# because ``_manifest_to_builtin_dict`` copies ``AppManifest.extra`` verbatim.
+# ``hidden`` gates store visibility, nothing else. ``channels`` has since folded into
+# core as the ``dashboard.channels_enabled`` setting (``builtins._FOLDED_BUILTIN_SWITCHES``).
 #
 # Why it had to happen for i18n: the display copy of a builtin is localised by the
 # ``APP_MANIFEST_KEY`` table in ``website/src/components/appstore/appManifest.ts``, and

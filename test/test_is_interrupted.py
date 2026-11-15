@@ -126,7 +126,7 @@ class TestDeliberateStop:
     def test_top_level_kind_field_is_recognised(self):
         assert _is_interrupted(slot(user(), stop_event(top_level=True))) is False
 
-    # ---- the production shape (regression: this is what was actually broken) --
+    # ---- the production shape --------------------------------------------------
 
     def test_live_window_shape_before_any_reply(self):
         # The real thing: kind only inside the JSON `cls`, no `meta` key at all.

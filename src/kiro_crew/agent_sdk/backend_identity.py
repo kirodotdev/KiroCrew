@@ -40,14 +40,15 @@ real backend. Call sites that read the string are mock-safe and call sites that
 read the property are not, and that difference is deliberate at each one. This
 module changes neither.
 
-``AcpClient._is_claude`` is deliberately not routed here
--------------------------------------------------------
-``acp.client.AcpClient`` runs its own ``backend == ACP_BACKEND_CLAUDE`` check and
-keeps it. ``agent_sdk`` sits ABOVE ``kiro_crew.acp``, so having the client import
+``ClaudeAcpClient`` is deliberately not routed here
+---------------------------------------------------
+``acp.client.AcpClient`` builds ``ClaudeAcpClient`` for the claude backend, which
+registers under ``ACP_BACKEND_CLAUDE`` itself and keeps that. ``agent_sdk`` sits
+ABOVE ``kiro_crew.acp``, so having the client import
 this module would invert that layering and pull the SDK package -- and the
 backend-install registry its ``__init__`` builds -- into every client import.
-A one-line comparison against a constant both modules already read from
-``agent_sdk.backends`` is the cheaper duplicate.
+Naming the constant both modules already read from ``agent_sdk.backends`` is the
+cheaper duplicate.
 
 Only ``claude`` is here
 -----------------------

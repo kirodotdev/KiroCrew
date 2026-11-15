@@ -812,7 +812,7 @@ class TestGetVectorStoreAsync:
                     offenders.append(f"{node.name}:{call.lineno}")
         assert not offenders, (
             "async handlers must await _get_vector_store_async(...) instead of "
-            f"calling the sync helper on the event loop (#5221): {offenders}"
+            f"calling the sync helper on the event loop: {offenders}"
         )
 
 

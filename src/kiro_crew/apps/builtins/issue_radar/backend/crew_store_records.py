@@ -170,7 +170,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     #: condition differently gives the person answering two queues to watch. And
     #: it is one of only TWO labels a crew ever writes — this one and
     #: `crew: in progress` — so it is validated as input on the way in
-    #: (:func:`_validated_label`), not trusted because a settings form produced it.
+    #: (:func:`_validated_text_setting`), not trusted because a settings form produced it.
     "needs_human_label": "crew: needs human",
     "commit_trailer": "Crew: {name} (Kiro Crew Issue Radar)",
     #: Whether a comment that @mentions the gateway's forge login wakes a crew to

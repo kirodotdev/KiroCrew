@@ -20,7 +20,8 @@ temp file a write stages beside its target and renames over it. A file mask cann
 that temp, and a rename over a masked file detaches the mask from every running session,
 so an app that rewrites its credential by rename keeps it in a declared directory. Before
 each Linux spawn the sandbox creates the directory when absent inside the app's existing
-``data/`` (``sandbox_staging._materialize_declared_mask_dirs``), so the mask is in place
+``data/``, or its moved-aside ``apps/.<name>-data-tmp/`` while the lifecycle holds the tree
+there (``sandbox_staging._materialize_declared_mask_dirs``), so the mask is in place
 before the backend first writes into it; a file or a link at the name refuses the spawn. Its backend gets the directory back only
 while it is absent or a real directory. A declared directory gets the protection a core
 ``HIDDEN`` directory has: its files are not judged one by one for a second hard link,

@@ -41,8 +41,9 @@ def _mock_state(slot: _ChatSlot | None = None, provider: object = None) -> Dashb
     state.sessions.get_provider = MagicMock(return_value=provider)
     if isinstance(provider, MagicMock):
         # A spec double answers every method with a mock; these sessions advertise
-        # no ultracode switch.
+        # no ultracode or Fast mode switch.
         provider.ultracode_enabled.return_value = None
+        provider.fast_mode_enabled.return_value = None
     return state
 
 

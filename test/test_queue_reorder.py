@@ -85,7 +85,7 @@ class TestQueueReorderEndpoint:
         id1 = slot.queue_append("first")
         id2 = slot.queue_append("second")
         id3 = slot.queue_append("third")
-        # Add queued messages to match
+        # Mirror each queue entry as a "queued" history row with its queue_id.
         slot.append("queued", "first", json.dumps({"queue_id": id1}))
         slot.append("queued", "second", json.dumps({"queue_id": id2}))
         slot.append("queued", "third", json.dumps({"queue_id": id3}))

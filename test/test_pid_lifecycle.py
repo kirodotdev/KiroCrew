@@ -1045,7 +1045,7 @@ class TestReclaimOwnsEveryHarnessItTracked:
                 True,
             ),
             (b"node\x00/opt/n/lib/node_modules/pi-acp/dist/index.js", True),
-            # THE FINDING'S CASE (span 99fb501fe250). ``goose``, ``opencode`` and ``dsh``
+            # The key case. ``goose``, ``opencode`` and ``dsh``
             # are single-binary harnesses -- Crew runs ``goose acp``, never
             # ``node .../goose/dist/index.js`` -- so a real unrelated npm application in a
             # directory of that name must not be taken for one of ours and SIGKILLed.
@@ -1128,10 +1128,10 @@ class TestReclaimOwnsEveryHarnessItTracked:
                 b"node\x00/opt/n/lib/node_modules/@agentclientprotocol/" b"codex-acp/dist/index.js",
                 True,
             ),
-            # THE FINDING (span 99fb501fe250, 4th spelling). An unrelated Node app whose
+            # An unrelated Node app whose
             # OPTION VALUE happens to be our adapter's real launch path. Scanning past
-            # options and taking the next token offered that value as the script slot, so a
-            # path a process merely MENTIONS authorized a SIGKILL of it.
+            # options and taking the next token would offer that value as the script slot,
+            # so a path a process merely MENTIONS would authorize a SIGKILL of it.
             (
                 b"node\x00app.js\x00--require\x00/opt/n/lib/node_modules/"
                 b"@agentclientprotocol/codex-acp/dist/index.js",

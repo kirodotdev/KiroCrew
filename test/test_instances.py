@@ -802,7 +802,7 @@ class TestSshTunnelManager:
 
     @pytest.mark.asyncio
     async def test_disconnect_clears_local_port(self, tmp_path):
-        # Regression: connect() records the allocated local_port, but
+        # connect() records the allocated local_port, but
         # disconnect() must reset it to the unallocated sentinel. Otherwise the
         # freed port stays recorded and reads as reserved forever.
         from kiro_crew.instances.registry import _UNALLOCATED_PORT

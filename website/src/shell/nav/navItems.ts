@@ -35,5 +35,6 @@ export const NAV_ITEMS = getBuiltinSurfaces().map(s => ({
   pinnable: s.pinnable,
   // Server state, read where the rail lists are built (`useAppRailOrder`).
   configSwitch: s.configSwitch,
+  configSwitchDefault: s.configSwitchDefault,
   formerApp: s.formerApp,
 }))

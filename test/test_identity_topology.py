@@ -80,8 +80,7 @@ VIEWS = [
             strict=True,
             reason=(
                 "session_pid_<pid>.txt files are keyed by HOST pids; a "
-                "namespace-local pid view cannot resolve them (2026-07-18 "
-                "incident, commit 24c320f6 reverted). A "
+                "namespace-local pid view cannot resolve them. A "
                 "pid-namespace re-raise CR must make identity resolution "
                 "namespace-aware and flip this to pass."
             ),

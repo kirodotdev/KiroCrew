@@ -774,7 +774,7 @@ async def test_the_dashboard_turn_records_it_from_the_live_frames(tmp_path: Path
 
     item_id = _bound_item()
     # The mocked client is no provider class, so the KAS label is read through
-    # the seam ``test_kas_is_read_off_the_provider_label`` pins.
+    # the seam ``test_the_answer_is_read_off_the_provider_label`` pins.
     monkeypatch.setattr(ucw, "_answer_of", lambda _provider: KAS_ANSWER)
     events = [
         *_parsed(KAS_UNRESOLVED_CALL, KAS_UNRESOLVED_RESULT),

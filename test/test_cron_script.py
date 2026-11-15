@@ -1300,21 +1300,25 @@ class TestMcpToolClientProtocol:
         client.close()
         assert not cleanup_file.exists()
 
-    def test_close_timeout_kills(self):
+    def test_close_timeout_kills(self, tmp_path):
         import subprocess
 
         from kiro_crew.cron_script import McpToolClient
 
+        cleanup_file = tmp_path / "sandbox_cleanup"
+        cleanup_file.write_text("temp")
         client = object.__new__(McpToolClient)
         client._proc = MagicMock()
         client._proc.terminate = MagicMock()
         client._proc.wait = MagicMock(side_effect=[subprocess.TimeoutExpired("cmd", 5), None])
         client._proc.kill = MagicMock()
-        client._sandbox_cleanup = None
+        client._sandbox_cleanup = str(cleanup_file)
         client.close()
         client._proc.kill.assert_called_once()
         # The kill is reaped with an unbounded wait after the bounded one expired.
         assert client._proc.wait.call_args_list == [call(timeout=5), call()]
+        # A server that had to be killed still has its sandbox file removed.
+        assert not cleanup_file.exists()
 
     def test_init_popen_failure_cleans_sandbox(self, tmp_path):
         from kiro_crew.cron_script import McpToolClient

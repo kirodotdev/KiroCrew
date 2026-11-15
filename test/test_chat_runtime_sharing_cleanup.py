@@ -15,7 +15,6 @@ import logging
 import pytest
 from chat_runtime_sharing_helpers import _PlacementProvider, confirming, make_placement
 from test_chat_runtime_sharing import (
-    FakeHandle,
     FakeRuntime,
     KillableRuntime,
     a_key,
@@ -24,9 +23,9 @@ from test_chat_runtime_sharing import (
 )
 
 import kiro_crew.runtime_ownership as ro
-from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.acp_backends import ACP_BACKEND_CODEX, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.runtime_ownership import RuntimeOwnership, authorize_runtime_kill
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # ── What a joining session must not do ──
 
@@ -274,142 +273,25 @@ class TestResetLeavesACoTenantsProcessAlone:
         ), "the skip must record the reap debt so the last tenant's release reaps the orphan"
 
 
-class _GateRuntime(FakeRuntime):
-    """A runtime whose ``chat_turn_gate`` is the real one-lock serializer.
+class TestSharedChatTurnsAreNotSerialized:
+    """A shared chat never waits for another chat's turn.
 
-    Records how many gate holders are inside at once so a test can prove the
-    lock actually serializes rather than merely being awaited.
+    Chat sharing is KAS-only, and a KAS engine that may share runs turns of
+    different sessions in parallel (``KAS_CHAT_SHARING_MIN_ENGINE``), so Crew holds
+    no per-process turn lock. Re-adding one would queue shared chats behind each
+    other, the behaviour the preview promises not to have.
     """
 
-    def __init__(self, pid: int = 7000) -> None:
-        super().__init__(pid=pid)
-        self._chat_turn_lock = asyncio.Lock()
-        self.max_concurrent = 0
-        self._inside = 0
+    def test_no_per_process_chat_turn_lock_exists(self):
+        from kiro_crew.acp.runtime import AcpRuntime
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+        from kiro_crew.providers.acp import AcpProvider
 
-    def chat_turn_gate(self):
-        import contextlib
-
-        @contextlib.asynccontextmanager
-        async def _gate():
-            async with self._chat_turn_lock:
-                self._inside += 1
-                self.max_concurrent = max(self.max_concurrent, self._inside)
-                try:
-                    yield
-                finally:
-                    self._inside -= 1
-
-        return _gate()
-
-
-def _provider_for_gate(runtime, *, shared_runtime: bool):
-    from kiro_crew.acp.session_provider import AcpSessionProvider
-
-    return AcpSessionProvider(
-        FakeHandle(),  # type: ignore[arg-type]
-        runtime,
-        owns_runtime=True,
-        runtime_lease="lease" if shared_runtime else None,
-        shared_runtime=shared_runtime,
-        session_key="k",
-    )
-
-
-class TestChatTurnsAreSerializedOnASharedProcess:
-    """An ownerless control frame is unambiguous only while ONE chat turn runs.
-
-    The reader loop routes a no-sessionId compaction / clear / agent-switch to
-    the sessions with an active turn; with two chat turns overlapping it would
-    fan to both and a peer's control event corrupts a co-tenant. So a shared
-    chat session holds the per-process turn gate for its whole turn, and a
-    sub-agent (shared_runtime=False) is kept OUT of it — contending for the lock
-    the principal holds would deadlock the principal→sub-agent await.
-    """
-
-    @pytest.mark.asyncio
-    async def test_two_shared_chat_turns_do_not_overlap(self):
-        rt = _GateRuntime()
-        a = _provider_for_gate(rt, shared_runtime=True)
-        b = _provider_for_gate(rt, shared_runtime=True)
-
-        order: list[str] = []
-        b_may_finish = asyncio.Event()
-
-        async def run_a():
-            async with a._chat_turn_gate():
-                order.append("a-in")
-                # Hold the gate until the test releases it, so b can only be
-                # waiting — never inside — while a holds it.
-                await b_may_finish.wait()
-                order.append("a-out")
-
-        async def run_b():
-            # Let a acquire first.
-            await asyncio.sleep(0)
-            async with b._chat_turn_gate():
-                order.append("b-in")
-
-        ta = asyncio.create_task(run_a())
-        tb = asyncio.create_task(run_b())
-        # Wait on the STATE, not a fixed sleep: a is inside the gate (order shows
-        # "a-in") and b is parked on the lock (the lock is held and b has not
-        # entered). Both are loop-confined asyncio state, so evaluate on-loop.
-        await async_wait_until(
-            lambda: order == ["a-in"] and rt._chat_turn_lock.locked(),
-            describe=lambda: f"order={order} locked={rt._chat_turn_lock.locked()}",
-        )
-        # a is inside and holding; b is blocked on the lock, not inside.
-        assert order == ["a-in"], order
-        assert rt.max_concurrent == 1
-        b_may_finish.set()
-        try:
-            # 30s so a slow runner never decides this; a real deadlock still
-            # fails within it. The ordering assertion below is the actual signal.
-            await asyncio.wait_for(asyncio.gather(ta, tb), timeout=30)
-        except (asyncio.TimeoutError, TimeoutError):
-            for t in (ta, tb):
-                t.cancel()
-            await asyncio.gather(ta, tb, return_exceptions=True)
-            raise AssertionError("gate turns did not drain within 30s")
-        assert order == ["a-in", "a-out", "b-in"], order
-        assert rt.max_concurrent == 1, "two shared chat turns were inside the gate at once"
-
-    @pytest.mark.asyncio
-    async def test_a_subagent_turn_does_not_contend_for_the_gate(self):
-        """A non-shared (sub-agent) session never touches the lock.
-
-        If it did, a sub-agent whose principal already holds the gate could
-        never enter — the deadlock the exemption exists to prevent. Here the
-        principal holds the gate and the sub-agent's gate still enters freely.
-        """
-        rt = _GateRuntime()
-        principal = _provider_for_gate(rt, shared_runtime=True)
-        subagent = _provider_for_gate(rt, shared_runtime=False)
-
-        async with principal._chat_turn_gate():
-            assert rt._chat_turn_lock.locked(), "principal did not take the shared lock"
-            # The sub-agent's gate must not block on the principal's held lock.
-            # Bound the acquisition with a local deadline: if the exemption
-            # regresses, the sub-agent would wait on the principal's held lock
-            # forever, so without this the Windows pytest-timeout kills the whole
-            # worker instead of producing a bounded failure here.
-            entered = False
-
-            async def _enter_subagent_gate() -> None:
-                nonlocal entered
-                async with subagent._chat_turn_gate():
-                    entered = True
-
-            try:
-                # 30s so a slow runner never decides this; the principal holds
-                # the gate, so if the sub-agent contended it would never enter and
-                # a real deadlock still fails within the floor.
-                await asyncio.wait_for(_enter_subagent_gate(), timeout=30)
-            except (asyncio.TimeoutError, TimeoutError):
-                raise AssertionError("a sub-agent turn was blocked by the principal's turn gate")
-            assert entered, "a sub-agent turn was blocked by the principal's turn gate"
-        assert not rt._chat_turn_lock.locked()
+        assert not hasattr(AcpRuntime, "chat_turn_gate")
+        assert not hasattr(AcpSessionProvider, "_chat_turn_gate")
+        assert not hasattr(AcpSessionProvider, "hold_chat_turn_gate")
+        assert not hasattr(AcpProvider, "hold_chat_turn_gate")
+        assert not hasattr(ro, "chat_turn_gate_hold")
 
 
 class TestAgentSwitchFrameOnASharedRuntime:
@@ -616,24 +498,6 @@ class TestReviewFindingsOnTheSharedPath:
             check = src.index("await self._refuse_over_ceiling_start(agent or self._agent)")
             assert check < src.index(verb), f"{fn.__name__} checks the ceiling after {verb}"
 
-    def test_compaction_takes_the_gate_outside_its_budget_and_answers_busy(self):
-        # Moving the hold back inside ``wait_for(...)`` lets a co-tenant's long
-        # turn spend the budget and recycle this session as a failed compaction.
-        import inspect
-
-        from kiro_crew.session_compaction import CompactionCoordinator
-
-        src = inspect.getsource(CompactionCoordinator._compact_in_place)
-        hold = src.index("await gate.enter_async_context(chat_turn_gate_hold(session.provider))")
-        assert src.rindex("async with asyncio.timeout(timeout):", 0, hold) < hold
-        busy = src.index("except TimeoutError:", hold)
-        assert src.index('return "busy"', busy) < src.index("await asyncio.wait_for(", hold)
-        assert hold < src.index("_run_compaction(), timeout=")
-        # The receipt budget is measured from the gate, not from before the wait:
-        # dropping the reset lets a long co-tenant turn shrink it to the floor.
-        reset = src.index("started = time.monotonic()", hold)
-        assert reset < src.index("await asyncio.wait_for(", hold)
-
     def test_a_founding_spawn_launches_with_the_keyed_agent_env(self):
         # Without the hand-off the founder re-reads agent.env at spawn, so a save
         # landing between the read and the spawn gives the process values its
@@ -659,6 +523,60 @@ class TestReviewFindingsOnTheSharedPath:
         assert frozen._agent_env_override == {"A": "1"}
         assert AcpRuntime(work_dir="/w", kas_telemetry=False)._kas_telemetry_override is False
         assert AcpRuntime(work_dir="/w")._agent_env_override is None
+
+
+class TestASharedCodexProcessClosesOnADeparture:
+    """codex leaves a departed session's MCP fleet running (``session/close`` never
+    ends it), so a shared codex process takes no new chat once one leaves and dies
+    with its last chat: at most cap-1 leftover fleets per process."""
+
+    def test_a_chat_after_a_departure_founds_a_new_process(self):
+        ro._reset_for_tests()
+        try:
+            old, new = KillableRuntime(pid=9600), KillableRuntime(pid=9601)
+            old.chat_closes_on_departure = True
+            live = ro.RUNTIME_OWNERSHIP
+            spawn = spawner(old, new)
+            first = asyncio.run(live.acquire(a_key(), "dashboard:chat-1-1", spawn, cap=10))
+            second = asyncio.run(live.acquire(a_key(), "dashboard:chat-2-1", spawn, cap=10))
+            third = asyncio.run(live.acquire(a_key(), "dashboard:chat-3-1", spawn, cap=10))
+            assert second.joined and third.joined
+            assert asyncio.run(live.release(first.lease)) is None
+            later = asyncio.run(live.acquire(a_key(), "dashboard:chat-4-1", spawn, cap=10))
+            assert later.runtime is new and later.joined is False
+            # The closed process keeps its holders and dies with the last one.
+            assert asyncio.run(live.release(second.lease)) is None
+            assert asyncio.run(live.release(third.lease)) is old
+        finally:
+            ro._reset_for_tests()
+
+    def test_a_runtime_without_the_mark_stays_open(self):
+        ro._reset_for_tests()
+        try:
+            old, new = KillableRuntime(pid=9700), KillableRuntime(pid=9701)
+            live = ro.RUNTIME_OWNERSHIP
+            spawn = spawner(old, new)
+            first = asyncio.run(live.acquire(a_key(), "dashboard:chat-1-1", spawn, cap=10))
+            asyncio.run(live.acquire(a_key(), "dashboard:chat-2-1", spawn, cap=10))
+            asyncio.run(live.release(first.lease))
+            later = asyncio.run(live.acquire(a_key(), "dashboard:chat-3-1", spawn, cap=10))
+            assert later.runtime is old and later.joined is True
+        finally:
+            ro._reset_for_tests()
+
+    @pytest.mark.parametrize(
+        ("backend", "marked"), [(ACP_BACKEND_CODEX, True), (ACP_BACKEND_KAS, False)]
+    )
+    def test_only_a_codex_placement_marks_its_runtime(self, backend, marked):
+        from types import SimpleNamespace
+
+        from kiro_crew.acp.runtime import AcpRuntime
+
+        p = make_placement(provider=_PlacementProvider(backend=backend))
+        runtime = AcpRuntime(work_dir="/w")
+        assert runtime.chat_closes_on_departure is False
+        p._accept(SimpleNamespace(lease="l", joined=False, leases_on_runtime=1, runtime=runtime))
+        assert runtime.chat_closes_on_departure is marked
 
 
 class TestAnOversizedSharedProcessDrains:
@@ -766,6 +684,10 @@ def fresh_table(monkeypatch):
 
     table = RuntimeOwnership()
     monkeypatch.setattr(share_mod, "RUNTIME_OWNERSHIP", table)
+    # The post-acquisition admission re-read (a KAS key carries no spec): no
+    # native subagents, as the fake agents here grant none.
+    monkeypatch.setattr(share_mod, "agent_spawns_native_subagents", lambda w, a, b="": False)
+    monkeypatch.setattr(share_mod, "agent_pins_tool_surface", lambda w, a, t: False)
     return table
 
 
@@ -791,6 +713,116 @@ class TestChatSharePlacement:
         assert spawn.calls == [rt]
         assert (a.joined, b.joined) == (False, True)
         assert b.leases_on_runtime == 2
+
+    def test_a_chat_restarted_onto_its_shared_tree_rejoins_that_process(self, fresh_table):
+        """The first message overtakes a chat's pre-warm, and the chat restarts.
+
+        Chat B's eager spawn joins A's process, then the first message takes the
+        start over: the pre-warm is dropped and B restarts carrying the tree its
+        session was recorded in, which is A's process's own tree. A founder keys no
+        tree, so keying B's path would found a second process on the same tree.
+        The gate below holds B's pre-warm mid-handshake, as the race does.
+        """
+        from pathlib import Path
+
+        tree = Path("/home/u/.kirocrew/scratch/tree-a")
+        shared, stray = _PlacedRuntime(pid=1), _PlacedRuntime(pid=2)
+        shared.work_scratch_dir = tree
+        spawn = spawner(shared, stray)
+        ok = confirming(("gen-1", "acct-A", "auto", False, True))
+
+        async def scenario():
+            a = make_placement(session_key="dashboard:chat-a-1")
+            a._read_confirmation = ok
+            assert await a.place(spawn) is shared
+
+            reached, release = asyncio.Event(), asyncio.Event()
+
+            async def held_confirmation():
+                reached.set()
+                await release.wait()
+                return await ok()
+
+            prewarm = make_placement(session_key="dashboard:chat-b-1")
+            prewarm._read_confirmation = held_confirmation
+            task = asyncio.ensure_future(prewarm.place(spawn))
+            # Bounded, and a pre-warm that fails before the gate surfaces here.
+            await async_wait_until(
+                lambda: reached.is_set() or task.done(), describe=lambda: "pre-warm handshake"
+            )
+            if task.done():
+                task.result()
+            assert fresh_table.leases_on_runtime(shared) == 2
+            # The first message takes over: the pre-warm is dropped mid-handshake.
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the dropped pre-warm")
+            assert fresh_table.leases_on_runtime(shared) == 1
+
+            restarted = _PlacementProvider()
+            restarted._shared_scratch = tree
+            b = make_placement(provider=restarted, session_key="dashboard:chat-b-1")
+            b._read_confirmation = ok
+            return b, await b.place(spawn)
+
+        b, placed = asyncio.run(scenario())
+        assert placed is shared, "the restarted chat founded a second process on its own tree"
+        assert spawn.calls == [shared]
+        assert b.joined is True
+
+    def test_a_restart_whose_tree_no_live_process_exposes_keys_that_tree(self, fresh_table):
+        # The process that exposed the tree is gone: the restart founds one that
+        # mounts it, and a fresh chat (no tree) does not land there.
+        from pathlib import Path
+
+        tree = Path("/home/u/.kirocrew/scratch/tree-gone")
+        own, fresh = _PlacedRuntime(pid=1), _PlacedRuntime(pid=2)
+        spawn = spawner(own, fresh)
+        ok = confirming(("gen-1", "acct-A", "auto", False, True))
+
+        async def scenario():
+            restarted = _PlacementProvider()
+            restarted._shared_scratch = tree
+            b = make_placement(provider=restarted, session_key="dashboard:chat-b-1")
+            b._read_confirmation = ok
+            c = make_placement(session_key="dashboard:chat-c-1")
+            c._read_confirmation = ok
+            return b, await b.place(spawn), await c.place(spawn)
+
+        b, placed_b, placed_c = asyncio.run(scenario())
+        assert (placed_b, placed_c) == (own, fresh)
+        assert b.key.shared_scratch
+
+    def test_a_restart_never_joins_a_process_that_does_not_expose_its_tree(self, fresh_table):
+        """The process on the chat's tree is full; a same-key one on another tree has room.
+
+        Joining that one would cut the chat off from its staged work, so the restart
+        founds a process of its own that mounts its tree.
+        """
+        from pathlib import Path
+
+        tree_a, tree_d = Path("/home/u/.kirocrew/scratch/a"), Path("/home/u/.kirocrew/scratch/d")
+        full, other, own = (_PlacedRuntime(pid=p) for p in (1, 2, 3))
+        full.work_scratch_dir, other.work_scratch_dir = tree_a, tree_d
+        spawn = spawner(full, other, own)
+        ok = confirming(("gen-1", "acct-A", "auto", False, True))
+
+        async def scenario():
+            placed = []
+            for n in ("a", "c", "d"):
+                p = make_placement(session_key=f"dashboard:chat-{n}-1", cap=2)
+                p._read_confirmation = ok
+                placed.append(await p.place(spawn))
+            restarted = _PlacementProvider()
+            restarted._shared_scratch = tree_a
+            b = make_placement(provider=restarted, session_key="dashboard:chat-b-1", cap=2)
+            b._read_confirmation = ok
+            placed.append(await b.place(spawn))
+            return b, placed
+
+        b, placed = asyncio.run(scenario())
+        assert placed == [full, full, other, own], "the restart joined a process on another tree"
+        assert b.joined is False and b.key.shared_scratch
 
     def test_two_starts_of_ONE_chat_never_share_a_process(self, fresh_table):
         """The same equal inputs, but both starts are the same chat.
@@ -1042,7 +1074,7 @@ class TestChatSharePlacement:
         assert fresh_table.leases_on_runtime(dead) == 0
         assert fresh_table.leases_on_runtime(fresh) == 1
 
-    @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS])
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX])
     def test_a_failed_joiner_is_evicted_without_ending_the_process(self, fresh_table, backend):
         rt = _PlacedRuntime(backend=backend)
         spawn = spawner(rt)
@@ -1057,11 +1089,18 @@ class TestChatSharePlacement:
             await joiner.abandon(rt, "sess-joiner")
 
         asyncio.run(scenario())
-        # KAS keeps the record (session/close); kiro-cli terminates the session.
+        # KAS keeps the record (session/close) instead of its deleting teardown;
+        # kiro-cli terminates the session, and codex's own teardown verb is the
+        # record-keeping session/close (CodexHarness.teardown).
         if backend == ACP_BACKEND_KAS:
             assert (rt.evicted, rt.terminated) == (["sess-joiner"], [])
         else:
             assert (rt.evicted, rt.terminated) == ([], ["sess-joiner"])
+        if backend == ACP_BACKEND_CODEX:
+            from kiro_crew.acp.harness.codex import CodexHarness
+            from kiro_crew.acp.types import METHOD_SESSION_CLOSE
+
+            assert CodexHarness().teardown.method == METHOD_SESSION_CLOSE
         assert rt.kills == []
         assert fresh_table.leases_on_runtime(rt) == 1
 
@@ -1109,23 +1148,53 @@ class TestChatSharePlacement:
         assert fresh_table.leases_on_runtime(rt) == 0
         assert rt.kills == ["failed session setup cleanup (last holder)"]
 
+    def test_a_cancel_during_the_native_subagent_recheck_returns_the_lease(self, fresh_table):
+        # The KAS recheck runs after the acquisition; a start cancelled while it
+        # is pending must release the lease and kill the process it founded.
+        rt = _PlacedRuntime(backend=ACP_BACKEND_KAS)
+        spawn = spawner(rt)
+        pending = asyncio.Event()
+
+        async def recheck_until_cancelled() -> bool:
+            pending.set()
+            await asyncio.Event().wait()
+            return False
+
+        async def scenario():
+            p = make_placement(provider=_PlacementProvider(backend=ACP_BACKEND_KAS))
+            p._read_confirmation = confirming(
+                (p._spec_generation, "acct-A", "auto", False, p._kas_telemetry)
+            )
+            p._spec_needs_own_process_now = recheck_until_cancelled
+            task = asyncio.ensure_future(p.place(spawn))
+            await asyncio.wait_for(pending.wait(), 30)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            return p
+
+        p = asyncio.run(scenario())
+        assert p.lease is None
+        assert fresh_table.leases_on_runtime(rt) == 0
+        assert rt.kills, "the founded process outlived its cancelled start"
+
 
 class TestResolveChatShare:
     """The preview gate on the start path: off is one config read and ``None``."""
 
-    def _cfg(self, previews):
+    def _cfg(self, previews, harnesses=None):
         from types import SimpleNamespace
 
-        return SimpleNamespace(
-            dashboard=SimpleNamespace(feature_previews=previews),
-            agent=SimpleNamespace(chat_runtime_sharing_max_sessions=4),
-        )
+        agent = SimpleNamespace(chat_runtime_sharing_max_sessions=4)
+        if harnesses is not None:
+            agent.chat_runtime_sharing_harnesses = harnesses
+        return SimpleNamespace(dashboard=SimpleNamespace(feature_previews=previews), agent=agent)
 
     def _resolve(self, monkeypatch, previews, provider, **kw):
         import kiro_crew.providers.chat_share as share_mod
         from kiro_crew.config import live
 
-        cfg = self._cfg(previews)
+        cfg = self._cfg(previews, kw.get("harnesses"))
         monkeypatch.setattr(live, "snapshot", lambda: cfg)
         reads: list[str] = []
 
@@ -1133,10 +1202,19 @@ class TestResolveChatShare:
             reads.append("spec")
             return "gen-1"
 
+        self.kas_probes = 0
+
+        def kas_ready(pin=""):
+            self.kas_probes += 1
+            return kw.get("kas_ready", False)
+
         monkeypatch.setattr(share_mod, "agent_spec_generation", spec_generation)
-        monkeypatch.setattr(share_mod, "kas_chat_sharing_ready", lambda: kw.get("kas_ready", False))
+        monkeypatch.setattr(share_mod, "kas_chat_sharing_ready", kas_ready)
         monkeypatch.setattr(
-            share_mod, "agent_spawns_native_subagents", lambda w, a: kw.get("native", False)
+            share_mod, "agent_spawns_native_subagents", lambda w, a, b="": kw.get("native", False)
+        )
+        monkeypatch.setattr(
+            share_mod, "agent_pins_tool_surface", lambda w, a, t: kw.get("pinned", False)
         )
         import kiro_crew.sandbox as sandbox_mod
 
@@ -1146,7 +1224,7 @@ class TestResolveChatShare:
             work_dir="/w",
             agent="kirocrew",
             sandbox_mode="auto",
-            extra_env={},
+            extra_env=kw.get("extra_env", {}),
             mcp_gateway_overlay=None,
             mcp_gateway_socket=None,
             configured_model="",
@@ -1162,11 +1240,28 @@ class TestResolveChatShare:
 
     def test_preview_on_places_an_eligible_chat_with_the_configured_cap(self, monkeypatch):
         placement, reads = self._resolve(
-            monkeypatch, {"chat_runtime_sharing": True}, _PlacementProvider()
+            monkeypatch,
+            {"chat_runtime_sharing": True},
+            _PlacementProvider(backend=ACP_BACKEND_KAS),
+            kas_ready=True,
         )
         assert placement is not None
         assert placement.cap == 4
-        assert reads == ["spec"]
+        # KAS takes the spec per session, so a KAS placement neither keys nor reads it.
+        assert reads == []
+        assert placement.key.spec_generation == ""
+
+    def test_a_kiro_cli_chat_keeps_its_own_process_with_the_preview_on(self, monkeypatch, caplog):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.providers.chat_share"):
+            placement, reads = self._resolve(
+                monkeypatch,
+                {"chat_runtime_sharing": True},
+                _PlacementProvider(backend=ACP_BACKEND_KIRO),
+                kas_ready=True,
+            )
+        assert placement is None
+        assert reads == []
+        assert "reason=backend_not_chat_shareable" in caplog.text
 
     def test_an_ineligible_start_is_logged_by_reason_and_reads_nothing(self, monkeypatch, caplog):
         with caplog.at_level(logging.WARNING, logger="kiro_crew.providers.chat_share"):
@@ -1188,12 +1283,116 @@ class TestResolveChatShare:
         )
         assert placement is not None
 
+    def test_kas_switched_off_keeps_its_own_process_and_reads_no_engine(self, monkeypatch, caplog):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.providers.chat_share"):
+            placement, reads = self._resolve(
+                monkeypatch,
+                {"chat_runtime_sharing": True},
+                _PlacementProvider(backend=ACP_BACKEND_KAS),
+                kas_ready=True,
+                harnesses={"kas": False},
+            )
+        assert placement is None and reads == []
+        assert self.kas_probes == 0
+        assert "reason=harness_switched_off backend=kas" in caplog.text
+
+    def test_kas_switched_on_explicitly_shares(self, monkeypatch):
+        placement, _ = self._resolve(
+            monkeypatch,
+            {"chat_runtime_sharing": True},
+            _PlacementProvider(backend=ACP_BACKEND_KAS),
+            kas_ready=True,
+            harnesses={"kas": True},
+        )
+        assert placement is not None
+        assert self.kas_probes == 1
+
+    def test_the_kas_switch_does_nothing_with_the_preview_off(self, monkeypatch):
+        placement, reads = self._resolve(
+            monkeypatch,
+            {},
+            _PlacementProvider(backend=ACP_BACKEND_KAS),
+            kas_ready=True,
+            harnesses={"kas": True},
+        )
+        assert placement is None and reads == []
+        assert self.kas_probes == 0
+
+    def test_a_kas_refusal_is_counted_under_its_harness(self, monkeypatch):
+        import kiro_crew.providers.chat_share as share_mod
+
+        counted: list[tuple] = []
+        monkeypatch.setattr(
+            share_mod, "record_refused", lambda reason, **kw: counted.append((reason, kw))
+        )
+        self._resolve(
+            monkeypatch,
+            {"chat_runtime_sharing": True},
+            _PlacementProvider(backend=ACP_BACKEND_KAS),
+            harnesses={"kas": False},
+        )
+        assert counted == [("harness_switched_off", {"backend": ACP_BACKEND_KAS})]
+
+    def test_codex_is_off_by_default_under_the_preview(self, monkeypatch, caplog):
+        """codex is new to chat sharing: with the preview on and no switch stored,
+        a codex chat keeps its own process."""
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.providers.chat_share"):
+            placement, reads = self._resolve(
+                monkeypatch,
+                {"chat_runtime_sharing": True},
+                _PlacementProvider(backend=ACP_BACKEND_CODEX),
+            )
+        assert placement is None and reads == []
+        assert "reason=harness_switched_off backend=codex" in caplog.text
+
+    def test_a_codex_chat_switched_on_shares_without_the_kas_engine_read(self, monkeypatch):
+        """codex has no engine gate: with its switch on it shares, and the KAS
+        engine is never probed. Its era is the codex credential, not Kiro's."""
+        import kiro_crew.providers.chat_share as share_mod
+
+        monkeypatch.setattr(share_mod, "codex_spawn_identity", lambda env=None: "codex:fixed")
+        placement, reads = self._resolve(
+            monkeypatch,
+            {"chat_runtime_sharing": True},
+            _PlacementProvider(backend=ACP_BACKEND_CODEX),
+            harnesses={"codex": True},
+        )
+        assert placement is not None
+        assert reads == ["spec"]
+        assert self.kas_probes == 0
+        assert placement._raw_era == "codex:fixed"
+
+    def test_a_codex_chat_keys_on_the_home_its_own_spawn_resolves(self, monkeypatch):
+        """The era is read under the start's ``extra_env``, the overlay the codex
+        child is spawned with, so a chat whose overlay moves CODEX_HOME keys on that
+        home rather than on the gateway's."""
+        import kiro_crew.providers.chat_share as share_mod
+
+        seen = []
+        monkeypatch.setattr(
+            share_mod, "codex_spawn_identity", lambda env=None: seen.append(env) or "codex:x"
+        )
+        overlay = {"CODEX_HOME": "/srv/codex-b"}
+        placement, _ = self._resolve(
+            monkeypatch,
+            {"chat_runtime_sharing": True},
+            _PlacementProvider(backend=ACP_BACKEND_CODEX),
+            harnesses={"codex": True},
+            extra_env=overlay,
+        )
+        assert placement is not None
+        assert seen == [overlay]
+
     def test_a_native_subagent_agent_keeps_its_own_process(self, monkeypatch, caplog):
         # Its subagents' approvals route only while one session is registered, so
         # beside a co-tenant they would be auto-rejected: it must never join.
         with caplog.at_level(logging.WARNING, logger="kiro_crew.providers.chat_share"):
             placement, reads = self._resolve(
-                monkeypatch, {"chat_runtime_sharing": True}, _PlacementProvider(), native=True
+                monkeypatch,
+                {"chat_runtime_sharing": True},
+                _PlacementProvider(backend=ACP_BACKEND_KAS),
+                kas_ready=True,
+                native=True,
             )
         assert placement is None and reads == []
         assert "reason=native_subagents" in caplog.text
@@ -1223,6 +1422,231 @@ class TestResolveChatShare:
 
     def test_a_session_environment_keeps_its_own_process(self, monkeypatch):
         placement, reads = self._resolve(
-            monkeypatch, {"chat_runtime_sharing": True}, _PlacementProvider(), remote=True
+            monkeypatch,
+            {"chat_runtime_sharing": True},
+            _PlacementProvider(backend=ACP_BACKEND_KAS),
+            kas_ready=True,
+            remote=True,
         )
         assert placement is None and reads == []
+
+
+class TestTheCodexEraIsCodexsOwnCredential:
+    """A codex process authenticates from ``$CODEX_HOME/auth.json``, never from Kiro's
+    sign-in, so its placement keys and re-confirms on that file, not the Kiro era."""
+
+    @staticmethod
+    def _write_chatgpt_auth(path, *, account, user, access, refresh, last_refresh):
+        import base64
+        import json
+
+        claims = {"https://api.openai.com/auth": {"chatgpt_user_id": user}}
+        payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+        path.write_text(
+            json.dumps(
+                {
+                    "OPENAI_API_KEY": None,
+                    "tokens": {
+                        "id_token": f"h.{payload}.s",
+                        "access_token": access,
+                        "refresh_token": refresh,
+                        "account_id": account,
+                    },
+                    "last_refresh": last_refresh,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_the_era_follows_the_codex_account(self, tmp_path):
+        from kiro_crew.providers.chat_share import codex_spawn_identity
+
+        env = {"CODEX_HOME": str(tmp_path)}
+        auth = tmp_path / "auth.json"
+        missing = codex_spawn_identity(env)
+        # No file: the adapter reads a key from the environment, which a running
+        # gateway can change, so nothing stable keys the process: no sharing.
+        assert missing == ""
+        self._write_chatgpt_auth(
+            auth, account="acct-A", user="u-1", access="a1", refresh="r1", last_refresh="t1"
+        )
+        signed_in_a = codex_spawn_identity(env)
+        assert signed_in_a.startswith("codex:")
+        # Another account, or another person in the same workspace, is a new era.
+        self._write_chatgpt_auth(
+            auth, account="acct-B", user="u-1", access="a1", refresh="r1", last_refresh="t1"
+        )
+        assert codex_spawn_identity(env) not in (signed_in_a, missing)
+        self._write_chatgpt_auth(
+            auth, account="acct-A", user="u-2", access="a1", refresh="r1", last_refresh="t1"
+        )
+        assert codex_spawn_identity(env) != signed_in_a
+        # The era names the account, never a secret from the file.
+        assert "acct" not in codex_spawn_identity(env)
+
+    def test_another_codex_home_with_the_same_login_is_another_era(self, tmp_path):
+        """The home holds the config the process loads and the store its threads go
+        to, so a CODEX_HOME moved to a copy of the same login founds a new process."""
+        from kiro_crew.providers.chat_share import codex_spawn_identity
+
+        eras = []
+        for name in ("home-a", "home-b"):
+            home = tmp_path / name
+            home.mkdir()
+            self._write_chatgpt_auth(
+                home / "auth.json",
+                account="acct-A",
+                user="u-1",
+                access="a1",
+                refresh="r1",
+                last_refresh="t1",
+            )
+            eras.append(codex_spawn_identity({"CODEX_HOME": str(home)}))
+        assert eras[0].startswith("codex:") and eras[0] != eras[1]
+
+    def test_the_home_is_the_one_codex_home_resolves(self, tmp_path, monkeypatch):
+        """``codex_transcripts.codex_home`` is the one reading of the codex home: the
+        overlay's CODEX_HOME wins over the gateway's, an overlay without one falls
+        back to it, an overlay HOME moves ``~/.codex``, and a relative home (which
+        codex resolves from a cwd the gateway cannot name) fails closed."""
+        from kiro_crew import platform_compat
+        from kiro_crew.providers.chat_share import codex_spawn_identity
+
+        homes = {}
+        for name in ("gw", "overlay", "user/.codex"):
+            home = tmp_path / name
+            home.mkdir(parents=True)
+            self._write_chatgpt_auth(
+                home / "auth.json",
+                account="acct-A",
+                user="u-1",
+                access="a1",
+                refresh="r1",
+                last_refresh="t1",
+            )
+            homes[name] = home
+        monkeypatch.setenv("CODEX_HOME", str(homes["gw"]))
+        gateway = codex_spawn_identity({})
+        assert gateway.startswith("codex:")
+        assert codex_spawn_identity(None) == gateway
+        overlaid = codex_spawn_identity({"CODEX_HOME": str(homes["overlay"])})
+        assert overlaid.startswith("codex:") and overlaid != gateway
+        assert codex_spawn_identity({"CODEX_HOME": "relative/home"}) == ""
+        if not platform_compat.IS_WINDOWS:
+            monkeypatch.delenv("CODEX_HOME")
+            moved = codex_spawn_identity({"HOME": str(tmp_path / "user")})
+            assert moved.startswith("codex:") and moved not in (gateway, overlaid)
+
+    def test_a_token_refresh_keeps_the_era(self, tmp_path):
+        """codex rewrites tokens and last_refresh on every refresh; a later chat must
+        still join the process the earlier one founded."""
+        from kiro_crew.providers.chat_share import codex_spawn_identity
+
+        env = {"CODEX_HOME": str(tmp_path)}
+        auth = tmp_path / "auth.json"
+        self._write_chatgpt_auth(
+            auth, account="acct-A", user="u-1", access="a1", refresh="r1", last_refresh="t1"
+        )
+        before = codex_spawn_identity(env)
+        self._write_chatgpt_auth(
+            auth, account="acct-A", user="u-1", access="a2", refresh="r2", last_refresh="t2"
+        )
+        assert codex_spawn_identity(env) == before
+
+    def test_an_api_key_sign_in_is_keyed_by_the_key(self, tmp_path):
+        from kiro_crew.providers.chat_share import codex_spawn_identity
+
+        env = {"CODEX_HOME": str(tmp_path)}
+        auth = tmp_path / "auth.json"
+        auth.write_text('{"OPENAI_API_KEY": "sk-one", "tokens": null}', encoding="utf-8")
+        one = codex_spawn_identity(env)
+        assert one.startswith("codex:") and "sk-one" not in one
+        auth.write_text('{"OPENAI_API_KEY": "sk-two", "tokens": null}', encoding="utf-8")
+        assert codex_spawn_identity(env) not in ("", one)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "not json",
+            "[]",
+            '{"tokens": {"access_token": "a"}}',
+            '{"OPENAI_API_KEY": null, "tokens": null}',
+        ],
+    )
+    def test_a_file_naming_no_account_fails_closed(self, tmp_path, body):
+        from kiro_crew.providers.chat_share import codex_spawn_identity
+
+        (tmp_path / "auth.json").write_text(body, encoding="utf-8")
+        assert codex_spawn_identity({"CODEX_HOME": str(tmp_path)}) == ""
+
+    def test_an_unreadable_credential_fails_closed(self, tmp_path):
+        from kiro_crew.providers.chat_share import codex_spawn_identity
+
+        (tmp_path / "auth.json").mkdir()
+        assert codex_spawn_identity({"CODEX_HOME": str(tmp_path)}) == ""
+
+    def _real_confirmation(self, monkeypatch, codex_eras):
+        import kiro_crew.providers.chat_share as share_mod
+        import kiro_crew.sandbox as sandbox_mod
+
+        pending = list(codex_eras)
+        monkeypatch.setattr(
+            share_mod,
+            "codex_spawn_identity",
+            lambda env=None: pending.pop(0) if len(pending) > 1 else pending[0],
+        )
+        monkeypatch.setattr(share_mod, "agent_spec_generation", lambda w, a: "gen-1")
+        monkeypatch.setattr(share_mod, "_kas_telemetry_for", lambda *a: True)
+        monkeypatch.setattr(sandbox_mod, "effective_sandbox_mode", lambda mode: "auto")
+        monkeypatch.setattr(sandbox_mod, "_forward_ssh_auth_sock", lambda mode, hidden: False)
+
+    def test_codex_chats_with_no_kiro_sign_in_share_one_process(self, fresh_table, monkeypatch):
+        """The codex-only operator: no Kiro era at all, one codex credential."""
+        self._real_confirmation(monkeypatch, ["codex:aaa"])
+        rt = _PlacedRuntime(backend=ACP_BACKEND_CODEX)
+        spawn = spawner(rt)
+
+        async def scenario():
+            starts = [
+                make_placement(
+                    provider=_PlacementProvider(era="", backend=ACP_BACKEND_CODEX),
+                    session_key=f"dashboard:chat-{i}-1790000000",
+                    codex_era="codex:aaa",
+                )
+                for i in (1, 2)
+            ]
+            return [await p.place(spawn) for p in starts], starts
+
+        placed, starts = asyncio.run(scenario())
+        assert placed == [rt, rt]
+        assert spawn.calls == [rt]
+        assert [p.joined for p in starts] == [False, True]
+
+    def test_a_codex_sign_in_that_moves_during_placement_never_joins(
+        self, fresh_table, monkeypatch
+    ):
+        """The confirm re-reads the CODEX credential: a sign-in to another codex
+        account landing in the window founds a new process on the fresh key."""
+        rt_a, rt_b = _PlacedRuntime(backend=ACP_BACKEND_CODEX), _PlacedRuntime(
+            pid=4343, backend=ACP_BACKEND_CODEX
+        )
+        spawn = spawner(rt_a, rt_b)
+
+        async def scenario():
+            founder = make_placement(
+                provider=_PlacementProvider(era="", backend=ACP_BACKEND_CODEX),
+                codex_era="codex:aaa",
+            )
+            joiner = make_placement(
+                provider=_PlacementProvider(era="", backend=ACP_BACKEND_CODEX),
+                session_key="dashboard:chat-2-1790000000",
+                codex_era="codex:aaa",
+            )
+            self._real_confirmation(monkeypatch, ["codex:aaa"])
+            await founder.place(spawn)
+            self._real_confirmation(monkeypatch, ["codex:bbb"])
+            return await joiner.place(spawn), joiner
+
+        placed, joiner = asyncio.run(scenario())
+        assert placed is rt_b
+        assert joiner.joined is False

@@ -254,6 +254,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PROGRESS_EVERY_BYTES,
         _REJECTED_MODEL_SENTINEL,
         _SKIP_DOWNLOAD_ENV,
+        _SMALL_HOST_IDLE_EVICT_SECS,
+        _SMALL_HOST_MAX_MIB,
         DOWNLOAD_ATTEMPTS_INTERACTIVE,
         PRIORITY_BULK,
         PRIORITY_INTERACTIVE,
@@ -261,6 +263,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         EmbeddingWork,
         _embed_threads,
         _read_memory_config,
+        _small_host_cache,
         _work_for_priority,
         bulk_duty_cycle,
         bulk_embed_threads,
@@ -270,6 +273,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         embedding_weight_repack,
         embedding_work,
         enter_work_phase,
+        small_memory_host,
         work_phase,
     )
     from kiro_crew.embeddings_shared import (  # noqa: F401
@@ -312,6 +316,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         register_embedding_backend,
         reset_shared_embedder,
         store_embedding_space_is_stale,
+        warm_embedder_for_person,
+        warm_embedder_for_person_soon,
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes

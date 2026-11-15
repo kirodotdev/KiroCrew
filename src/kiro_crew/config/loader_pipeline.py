@@ -897,8 +897,8 @@ def build_config(
     # dict iterates as its keys, a string as its characters). A list with
     # non-string/empty ENTRIES: the parse filter drops them, so an
     # all-invalid narrowing like [1, 2] parses to [] — indistinguishable
-    # from "no restriction configured", the exact silent widening this fix
-    # exists to stop. Both shapes record the degradation so the publish
+    # from "no restriction configured", a silent widening. Both shapes
+    # record the degradation so the publish
     # gate denies, and parse from what safely remains. Validation cannot
     # repair these values (publish.allowed_destinations is fail-closed
     # there — repairing an OPEN default silently widens), so the loader
@@ -1433,8 +1433,8 @@ def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
         #
         # In memory still matters as much as the file, which is why it happens at
         # all: the gateway reads these budgets once at startup, so a disk-only
-        # fix would leave the very run that performed it still on the old value,
-        # and "upgraded, restarted, nothing changed" is the complaint.
+        # write would leave the run that performed it on the old value until
+        # the next restart.
         adopt_keys = {e.dotted_key for e in adoptable}
         if adopt_keys:
             pending.add(MIGRATE_SUPERSEDED_DEFAULTS)

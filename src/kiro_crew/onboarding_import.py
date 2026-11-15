@@ -318,7 +318,8 @@ def _write_memory(
         # 2000-char chunk on CPU), and import writes hundreds of chunks, so an
         # inline embed makes the user watch a spinner for minutes. The row is
         # keyword-searchable immediately and the caller schedules the backfill
-        # sweep that fills the vector in (see ``schedule_embedding_backfill``).
+        # sweep that fills the vector in (see the import handler's
+        # ``_backfill_embeddings``).
         # Batching is NOT the alternative: measured on real import text,
         # ``embed_batch`` is ~25% SLOWER than looping ``embed``. That workload
         # result is independent of the bounded physical micro-batch used by

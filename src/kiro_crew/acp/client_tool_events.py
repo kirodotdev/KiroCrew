@@ -54,6 +54,7 @@ from kiro_crew.acp.harness.copilot import (
     note_copilot_identity_record,
 )
 from kiro_crew.acp.native_child_stamp import parent_tool_use
+from kiro_crew.acp.read_path_arg import read_path_arg
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
@@ -226,7 +227,7 @@ async def _maybe_audit_unasked_tool_call(self: AcpClient, tool_result_event: "Ac
         return
     # A session that left a foreign settings file out runs pinned to ``default``
     # whatever it requested, so no classifier approved its unasked calls.
-    if self._claude_session_excludes_local():
+    if self._session_excludes_local_settings():
         return
     if getattr(self, "_audit_source", None):
         return
@@ -697,6 +698,9 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             mcp_identity_trusted=event_mcp_trusted,
             diff_path=_diff_path,
             harness_tool_id=_event_tool_id,
+            # Off the RAW kind: the argument naming the file this call reads, for the
+            # row's thumbnail strip (``acp.read_path_arg``).
+            read_path_arg=read_path_arg(self.backend, update.get("kind")),
         )
         # getattr: a client built without ``__init__`` keeps no window. A native
         # sub-agent's call is not in this turn's parallel batch: the parent's open

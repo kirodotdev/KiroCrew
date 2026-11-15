@@ -55,6 +55,7 @@ ID_KEYS = frozenset(
         "kirocrew.cron.job_id",
         "kirocrew.workflow_run_id",
         "kirocrew.agent_id",
+        "kirocrew.launched_workflow_run_id",
     }
 )
 
@@ -106,6 +107,7 @@ ALLOWED_KEYS = ID_KEYS | frozenset(
         "kirocrew.approval.wait_ms",
         "kirocrew.approval.decided_by",
         "kirocrew.approval.outcome",
+        "kirocrew.queue.wait_ms",
         "langfuse.observation.type",
         "langfuse.observation.usage_details",
         "langfuse.observation.cost_details",

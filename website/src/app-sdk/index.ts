@@ -612,6 +612,10 @@ export type { IssueSearchRequest, IssueSearchResponse, IssueSummary, IssuePerson
 // ./ProjectPicker).
 export { default as ProjectPicker } from './ProjectPicker'
 export type { AppProjectPickerProps } from './ProjectPicker'
+// The dashboard's live session list and the acts a person takes on a session
+// from it, behind the app's declared chat paths (see ./hostSessions).
+export { useHostSessions } from './hostSessions'
+export type { HostSession, HostSessionApproval, HostSessions, HostSessionDecision, HostSessionSendResult } from './hostSessions'
 // The transcript's row registry, so an app can add a row type or replace one
 // instead of forking the message list.
 export {

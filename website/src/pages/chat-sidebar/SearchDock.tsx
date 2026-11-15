@@ -308,7 +308,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                   // (a row the server stamps `crew_mode_root`), and stays while the
                   // filter is on. With no such chat, on a gateway without Crew Mode
                   // included, the menu reads as it does today.
-                  // With the Crew Mode preview off the row is never offered.
+                  // In a build without conductor mode (LTS) the row is never offered.
                   if (filterDef.key === 'crew' && (!crewModeEnabled() || (!active && slotCount === 0))) return null
                   const isRecent = filterDef.key === 'recent'
                   if (isRecent) {

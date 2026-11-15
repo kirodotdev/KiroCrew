@@ -1085,8 +1085,9 @@ class TestChannelBoundLoopsRefuseABanner:
     ) -> None:
         """A routable channel session refuses a banner before ``svc.add``.
 
-        The session must be routable: without one the add is refused with a 404 before
-        the banner is looked at, and the test would pin nothing.
+        The session is routable, so the banner guard is the only refusal in play. The
+        guard runs before the session check today; if it moved after it, an unroutable
+        session would answer 404 first and the test would pin nothing.
         """
         channel = object()  # identity-stable: the admission check compares `is`
         state = SimpleNamespace(

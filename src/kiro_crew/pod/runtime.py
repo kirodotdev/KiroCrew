@@ -1218,7 +1218,8 @@ def pod_plane_mutex(cfg: PodConfig):
 # Slack is deliberately absent: it has no config-level enable, being gated purely
 # on credentials that ``build_pod_env`` scrubs.
 #
-# ``test_pod.py`` pins this tuple against ``channels.builtin_channel_descriptors()``
+# ``test_pod_env.py::TestSeedSanitization`` pins this tuple against
+# ``channels.builtin_channel_descriptors()``
 # so a channel added to the roster cannot reach a pod ungated.
 SEED_DISABLED_SECTIONS: tuple[str, ...] = (
     "tunnel",
@@ -1415,7 +1416,7 @@ def build_pod_env(
         "KIROCREW_BIND": "127.0.0.1",
         # The pod's OWN venv leads PATH, ahead of cfg.gateway_path (which starts
         # with ~/.local/bin). Without this a bare `kirocrew` inside a pod — an
-        # agent bash turn, a subprocess, `_kirocrew_bin()`'s "console-script on
+        # agent bash turn, a subprocess, `_resolve_kirocrew_bin()`'s "console-script on
         # PATH" probe — resolves the machine-wide shim instead of the checkout
         # under test, so the pod silently exercises the global install and stays
         # coupled to a symlink it does not own.

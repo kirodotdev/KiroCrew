@@ -81,7 +81,9 @@ def test_the_watched_names_are_the_two_workflows_with_a_macos_push_leg() -> None
 @pytest.mark.parametrize("name", ["ci.yml", "build.yml"])
 def test_each_watched_workflow_runs_on_a_push_to_main(name: str) -> None:
     push = _triggers(_load(WORKFLOWS / name))["push"]
-    assert push["branches"] == ["main"]
+    # Release branches run these workflows on a push too; the watcher itself
+    # only pages for main.
+    assert push["branches"][0] == "main"
 
 
 @pytest.mark.parametrize("name", ["ci.yml", "build.yml"])

@@ -127,7 +127,7 @@ class TestFilesystemEgressAtGate:
         # DENIED: without path normalization, fnmatch's ``*`` spans the ``..`` so
         # ``/home/u/workspace/../.bashrc`` matches ``/home/u/workspace/**`` and the
         # write is wrongly permitted (it resolves to ~/.bashrc, outside the
-        # allow-list) — a containment bypass. (path-traversal finding.)
+        # allow-list) — a containment bypass (path traversal).
         _install(
             {
                 "version": 1,
@@ -158,8 +158,8 @@ class TestFilesystemEgressAtGate:
         # An agent-supplied RELATIVE path must not bypass an absolute DENY glob by
         # failing to match: ``_norm_item`` absolutizes it against the CWD first, so
         # a relative path inside a denied tree is still blocked.
-        # (before the fix the relative item stayed relative and never matched
-        # ``/<cwd>/secret/**``, so the deny silently failed open.)
+        # (a relative item left relative never matches ``/<cwd>/secret/**``, so
+        # the deny would silently fail open.)
         monkeypatch.chdir(tmp_path)
         cwd = str(tmp_path)
         _install(
@@ -362,7 +362,7 @@ class TestFilesystemEgressAtGate:
     #    hooks keystone; a flat top-level-only extractor misses nested paths). ──
     def test_nested_array_read_path_is_classified(self):
         # A batch-shaped tool buries its target inside an array argument. The
-        # governance plane must surface it (before the fix this returned ()).
+        # governance plane must surface it, never return ().
         from kiro_crew.platform.governance import classify_tool_args
 
         assert classify_tool_args(
@@ -400,8 +400,8 @@ class TestFilesystemEgressAtGate:
 
     def test_nested_array_read_denied_at_gate(self):
         # END-TO-END: an operator profile confining reads to the workspace must
-        # DENY a nested-array read of a path outside it. Before the fix the
-        # nested path was invisible to governance and the call was PERMITTED.
+        # DENY a nested-array read of a path outside it. If the nested path is
+        # invisible to governance, the call is PERMITTED.
         _install(
             {
                 "version": 1,
@@ -871,7 +871,7 @@ class TestFilesystemEgressAtGate:
         assert resolve(None, None, "filesystem.read", _TRUNCATED_SCAN_ITEM).permitted
 
     def test_flat_and_fetch_cases_unchanged_regression(self):
-        # Regression: the flat top-level path and the fetch/url derivation must be
+        # The flat top-level path and the fetch/url derivation must be
         # byte-for-byte unchanged by the depth-aware rewrite.
         from kiro_crew.platform.governance import classify_tool_args
 

@@ -135,10 +135,12 @@ class StatusReactionController:
                 try:
                     await self._slack.remove_reaction(self._channel, self._ts, old)
                 except Exception:
+                    # Reactions are cosmetic; a failed change must not fail the turn.
                     pass
             if new_emoji is None:
                 return
             try:
                 await self._slack.add_reaction(self._channel, self._ts, new_emoji)
             except Exception:
+                # Reactions are cosmetic; a failed change must not fail the turn.
                 pass

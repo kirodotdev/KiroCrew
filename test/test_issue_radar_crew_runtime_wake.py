@@ -6,7 +6,6 @@ driven the same way: a fake forge client, a fake gateway state, a real crew stor
 
 import asyncio
 import os
-import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -108,10 +107,16 @@ class _WakeClient(_FakeClient):
 
 
 class TestNewWorkWakes(unittest.IsolatedAsyncioTestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
+
+        Background writers (the crew-log fold, the store's ``mkdir`` on read) can
+        re-create a self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self.root = tmp_path
+
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
         self.wake_result = True
         # Both wake kinds are opt-in; these tests exercise them, so they opt in.
         cs.write_settings(
@@ -1548,10 +1553,12 @@ async def test_failed_consumed_write_is_retried_before_turn_finishes(tmp_path, m
 
 
 class TestWakeTimers(unittest.IsolatedAsyncioTestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        """The radar store root, in ``tmp_path`` for the reason ``TestNewWorkWakes`` gives."""
+        self.root = tmp_path
+
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
         reset_singleton()
         self.addCleanup(reset_singleton)
 
@@ -1573,10 +1580,10 @@ class TestUnreadableWakeState(unittest.TestCase):
     """A state file that exists but cannot be read is never written over: an empty
     fallback saved in its place would erase the pending and carried asks it holds."""
 
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        """The radar store root, in ``tmp_path`` for the reason ``TestNewWorkWakes`` gives."""
+        self.root = tmp_path
 
     def _garble(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -9,9 +9,10 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_announced_children``, ``_announced_overflow``,
 ``_mcp_sign_in_ended_hooks``, ``_pending_init_notifications``, ``_routed_requests``,
-``_session_activity_at``, ``_session_cwds``, ``_session_inits_in_flight``,
-``_session_mcp_reports``, ``_session_queues``,
-``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``, ``_turn_active_sessions``.
+``_session_activity_at``, ``_session_cwds``, ``_session_harness_states``,
+``_session_inits_in_flight``, ``_session_mcp_reports``, ``_session_queues``,
+``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
+``_turn_active_sessions``.
 
 Instance fields read: ``_agent_capabilities``, ``_dead``, ``_mcp_reports``, ``_process``,
 ``_record_keeping_sessions``, ``_start_collectors``.
@@ -29,7 +30,6 @@ from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime_start import _split_init_frames
 from kiro_crew.acp.session_handle import AcpRequestTimeout
 from kiro_crew.acp.types import (
-    ACP_BACKEND_KAS,
     MCP_ROSTER_COMPLETE_NOTE,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_MCP_SERVER_INIT_FAILURE,
@@ -260,6 +260,11 @@ async def terminate_session(
     finally:
         self._unclaimed_new_sessions.discard(session_id)
         self.unregister_session(session_id)
+        # What the harness prepared for this session (``HarnessAdapter.end_session``).
+        # A host without per-session state recorded nothing, so nothing is awaited.
+        harness_state = self._session_harness_states.pop(session_id, None)
+        if harness_state is not None:
+            await self._harness.end_session(harness_state)
 
 
 class _RecordKeepingScope:
@@ -303,54 +308,6 @@ def keep_record_on_teardown(self: AcpRuntime, session_id: str) -> _RecordKeeping
     return _RecordKeepingScope(self, session_id)
 
 
-class _ChatTurnGate:
-    """The scope :func:`chat_turn_gate` opens; see it for the why.
-
-    A class rather than a generator context manager for the reason
-    :class:`_RecordKeepingScope` gives.
-    """
-
-    def __init__(self, runtime: AcpRuntime) -> None:
-        self._runtime = runtime
-        self._lock: Any = None
-
-    async def __aenter__(self) -> None:
-        if getattr(self._runtime, "_acp_backend", None) == ACP_BACKEND_KAS:
-            return
-        lock = getattr(self._runtime, "_chat_turn_lock", None)
-        if lock is None:
-            return
-        await lock.acquire()
-        self._lock = lock
-
-    async def __aexit__(self, *exc: Any) -> None:
-        lock, self._lock = self._lock, None
-        if lock is not None:
-            lock.release()
-
-
-def chat_turn_gate(self: AcpRuntime) -> _ChatTurnGate:
-    """Serialize CHAT co-tenant turns on this shared process, one at a time.
-
-    Held for the whole turn, from before the prompt is written through the last
-    event the consumer pulls. kiro-cli emits some session-control frames
-    (compaction, ``/clear``, an agent switch) without a ``sessionId``; the reader
-    loop fans such a frame to every session queue marked ``fanout_no_owner``.
-    While the gate is held at most one chat turn is in flight, so that turn is
-    the frame's only possible producer and an idle co-tenant discards it at its
-    next pre-turn drain. Only shared chat sessions enter
-    (``AcpSessionProvider`` with ``shared_runtime=True``); a subagent turn stays
-    out, because it runs while its principal's turn is open and would deadlock.
-
-    A no-op on KAS. Its engine names the session on every ``session/update`` and
-    keeps its own turn order: one turn per session, and a Crew custom-agent turn
-    waits in the engine's model queue while another session's turn runs
-    (``acp.chat_runtime_sharing.KAS_CHAT_SHARING_MIN_KIRO_CLI``). The frame
-    ownership this gate establishes is already on the wire there.
-    """
-    return _ChatTurnGate(self)
-
-
 async def evict_session(self: AcpRuntime, session_id: str) -> None:
     """Make the host drop a RESIDENT session while keeping its stored record.
 
@@ -385,6 +342,11 @@ async def evict_session(self: AcpRuntime, session_id: str) -> None:
                 )
     finally:
         self.unregister_session(session_id)
+        # What the harness prepared for this session (``HarnessAdapter.end_session``).
+        # A host without per-session state recorded nothing, so nothing is awaited.
+        harness_state = self._session_harness_states.pop(session_id, None)
+        if harness_state is not None:
+            await self._harness.end_session(harness_state)
 
 
 def can_release(self: AcpRuntime) -> bool:

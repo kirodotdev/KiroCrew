@@ -262,9 +262,14 @@ def test_spawn_tools_are_found_under_any_harness_prefix_and_nothing_else():
         "kirocrew-core:spawn_continue",
         "kirocrew.spawn_run",
     ):
-        assert turns._is_spawn_tool(name), name
+        assert turns._tool_role(name) == turns.ROLE_SPAWN, name
     for name in ("", "respawn_run", "spawn_run_x", "spawn_runs", "read", "x" * 300 + "_spawn_run"):
-        assert not turns._is_spawn_tool(name), name
+        assert not turns._tool_role(name), name
+    # The other roles match the same way.
+    assert turns._tool_role("mcp_kirocrew_core_session_send") == turns.ROLE_SEND
+    assert turns._tool_role("@kirocrew-core/session_broadcast") == turns.ROLE_SEND
+    assert turns._tool_role("kirocrew-core:workflow_run") == turns.ROLE_WORKFLOW
+    assert not turns._tool_role("my_workflow_runner")
 
 
 def test_two_open_spawn_calls_fall_back_to_the_turn_span(spans):

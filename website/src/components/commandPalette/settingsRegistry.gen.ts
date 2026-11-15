@@ -2184,6 +2184,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "One Google OAuth client for Gmail, Drive, Calendar, Sheets, Docs and Slides"
   },
   {
+    "id": "developer.acp-runtime-sharing",
+    "label": "ACP runtime sharing",
+    "labelKey": "pages.developer.featurePreviewsTab.chat_runtime_sharing",
+    "description": "Saves computer memory by running several chats in one background program. You choose which kinds of chat share it. They reply at the same time and can't see each other's messages. Turn it off and each new chat gets its own program again.",
+    "hint": "Chats whose harness switch below is on share one background program and reply at the same time, so a long reply in one chat never makes the others wait. If the shared program stops, every chat in it restarts. Chats never see each other's messages. One program runs up to 10 chats by default. Kiro CLI chats, KAS chats on an older engine, and chats whose switch is off keep a program each. Applies to chats you start after changing it. Turned off, each new chat starts its own program, which uses more memory.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.agent-harness-for-worker-chats",
     "label": "Agent Harness for worker chats",
     "labelKey": "pages.developer.featurePreviewsTab.session_harness",
@@ -2311,19 +2324,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "developer.conductor-mode",
-    "label": "Conductor mode",
-    "labelKey": "pages.developer.featurePreviewsTab.crew_mode",
-    "description": "Hands a chat's tasks to a crew.",
-    "hint": "Lets a chat hand tasks to a crew and track them on a Board.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
     "id": "developer.decisions",
     "label": "Decisions",
     "labelKey": "pages.developer.featurePreviewsTab.decisions",
@@ -2426,6 +2426,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.quick-worker-check-before-a-hard-choice",
+    "label": "Quick worker check before a hard choice",
+    "labelKey": "pages.developer.featurePreviewsTab.worker_grill",
+    "description": "Two or three workers test a high-stakes choice and hand you a short brief.",
+    "hint": "When a conductor meets a choice with two paths and a wrong pick is hard to undo, it offers to let two or three workers talk it through first, instead of a 45-minute debate. They check the facts themselves and finish with a short brief: the answer, why, and what they picked for you. Not happy with it? Start another one.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.remote-dispatch",
     "label": "Remote dispatch",
     "labelKey": "pages.developer.featurePreviewsTab.remote_dispatch",
@@ -2507,19 +2520,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "labelKey": "sessionEnvironments.title",
     "description": "Runs a chat in its own remote workspace.",
     "hint": "Shows the Session Environments settings. Existing chats stay on this machine; a chat moves only if you pick a profile for it before its first message.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
-    "id": "developer.share-one-background-program-across-chats",
-    "label": "Share one background program across chats",
-    "labelKey": "pages.developer.featurePreviewsTab.chat_runtime_sharing",
-    "description": "Saves computer memory by running several chats in one background program. Chats can't see each other's messages, but they reply one at a time. Turn it off and each new chat gets its own program again.",
-    "hint": "Chats reply one at a time, so a long reply in one chat makes the others wait. If the shared program stops, every chat in it restarts. Chats never see each other's messages. One program runs up to 10 chats by default. Applies to chats you start after changing it. Turned off, each new chat starts its own program, which uses more memory.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -2868,6 +2868,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "terminal"
     },
     "configKey": "dashboard.terminal.reuse_current"
+  },
+  {
+    "id": "display.show-channels",
+    "label": "Show Channels",
+    "labelKey": "pages.settings.displayPanel.channels",
+    "description": "Off takes Channels off the left rail and out of Search Everywhere. Nothing is deleted or stopped: your channels and the agents working in them are kept.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    },
+    "configKey": "dashboard.channels_enabled"
   },
   {
     "id": "display.show-search-in-the-top-bar",
@@ -3285,6 +3298,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Authenticates coding-activity sync when WakaTime is enabled."
   },
   {
+    "id": "security.ask-me-before-running-tools-an-mcp-server-pre-approves",
+    "labelKey": "pages.settings.securityPanel.safetySwitches.ask_label",
+    "tab": "security",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "section": "safety"
+    },
+    "configKey": "mcp.honour_auto_approve",
+    "label": "Ask me before running tools an MCP server pre-approves",
+    "description": "Tools you set to Always allow still run without asking."
+  },
+  {
     "id": "security.denied-commands",
     "labelKey": "pages.settings.securityPanel.denied_commands",
     "tab": "security",
@@ -3377,6 +3403,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "settingId": "security.config-pending",
     "label": "Settings files changed outside Kiro Crew",
     "description": "Review edits made to settings files outside Kiro Crew, then apply or discard them."
+  },
+  {
+    "id": "security.stop-the-agent-from-editing-its-own-permission-rules",
+    "labelKey": "pages.settings.securityPanel.safetySwitches.protect_label",
+    "tab": "security",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "section": "safety"
+    },
+    "configKey": "mcp.protect_kiro_permission_rules",
+    "label": "Stop the agent from editing its own permission rules",
+    "description": "On: the agent's file-editing tools can't change the rules that let tools run without asking you. Off: they can. Commands the agent runs in a terminal can change these rules either way."
   },
   {
     "id": "security.trust-every-third-party-app",

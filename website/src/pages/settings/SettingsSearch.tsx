@@ -13,7 +13,7 @@ import { settingsSubtitle } from '../../components/commandPalette/settingsTabLab
 import type { SettingEntry } from '../../components/commandPalette/settingsTypes'
 import { makeScoreThenNameComparator } from '../../utils/fuzzyMatch'
 import { useListKeyboardNav } from '../../hooks/useListKeyboardNav'
-import { usePreviewFlagRevision } from '../../hooks/usePreviewFlag'
+import { useCrewMode, usePreviewFlagRevision } from '../../hooks/usePreviewFlag'
 import { SidePanelDockContext } from '../../components/SidePanelLayout'
 import { SearchInput } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
@@ -84,13 +84,15 @@ export default function SettingsSearch() {
   // `settingEntryOffered` reads preview flags (Display > Explore, Session
   // Environments), so a flipped switch must rerun the open search too.
   const previewRev = usePreviewFlagRevision()
+  // And reads conductor mode, which turns on once the gateway's edition lock is known.
+  const crewMode = useCrewMode()
 
   const q = query.trim()
   const results = useMemo(
     () => (q ? searchSettings(q, governance) : []),
     // The revision is an invalidation token: the flags live in localStorage.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [q, governance, previewRev],
+    [q, governance, previewRev, crewMode],
   )
   const open = q.length > 0 && !dismissed
 

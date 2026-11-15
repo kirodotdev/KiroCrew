@@ -143,7 +143,7 @@ def test_cli_chat_shows_the_notice_before_it_starts_a_provider(
     monkeypatch.setattr(backends, "ensure_kiro_cli_kas_verdict", lambda: None)
     seen: list[object] = []
 
-    def _record(cfg: object = None) -> None:
+    def _record(cfg: object = None, **_kwargs: object) -> None:
         seen.append(cfg)
         raise _Stop
 

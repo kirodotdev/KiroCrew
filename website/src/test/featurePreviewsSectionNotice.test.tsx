@@ -58,7 +58,6 @@ describe('Feature previews section, refused toggles', () => {
   it.each([
     [/artifact deploy/i, 'Artifact Deploy'],
     [/webhooks/i, 'Webhooks'],
-    [/^conductor mode/i, 'Conductor mode'],
     [/chat on a crew/i, 'Chat on a crew'],
     [/composable layout/i, 'Composable layout'],
     [/folder conductor/i, 'Folder conductor'],
@@ -79,8 +78,8 @@ describe('Feature previews section, refused toggles', () => {
     vi.spyOn(api, 'patchConfig').mockRejectedValue(Object.assign(new Error('boom'), { status: 500 }))
     renderSection()
     await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
-    await act(async () => { screen.getAllByRole('switch', { name: /^conductor mode/i })[0].click() })
-    await waitFor(() => expect(notice()).toMatch(/couldn’t save “conductor mode”, so it was switched back/i))
+    await act(async () => { screen.getAllByRole('switch', { name: /webhooks/i })[0].click() })
+    await waitFor(() => expect(notice()).toMatch(/couldn’t save “webhooks”, so it was switched back/i))
     await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalledTimes(2))
   })
 })

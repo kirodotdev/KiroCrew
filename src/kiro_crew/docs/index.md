@@ -37,7 +37,7 @@ over and what changes.
 | [Task Runner](task-runner.md) | Autonomous multi-step execution from spec files: hand it a task, walk away |
 | [Research Lab](research-lab.md) | Autonomous multi-cycle research campaigns with scoping, adaptive agent execution, and exportable reports |
 | [Issue Radar Pipeline](issue-radar-pipeline.md) | Which step of automated triage every issue is sitting in, how long it has been there, and what each agent session cost |
-| [Apps](apps.md) | Twenty-two apps ship in the package: enable one from the App Store and it can bring its own pages, agents, skills, and MCP tools |
+| [Apps](apps.md) | Twenty-one apps ship in the package: enable one from the App Store and it can bring its own pages, agents, skills, and MCP tools |
 | [Connections](connections.md) | MCP servers and OAuth'd services on one page: the 38-provider catalogue, adding your own stdio or remote server, what a health badge means, and why a tool's name may differ |
 | [Dashboard](dashboard.md) | React web UI with multi-session chat, memory management, and live system metrics |
 | [Agent Questions](agent-questions.md) | Let an agent pause mid-turn and ask you a clickable multiple-choice question |
@@ -73,6 +73,7 @@ over and what changes.
 | [Streaming Speech-to-Text](configuration.md) | Live transcription partials in the dashboard input, with local Whisper, the macOS on-device recognizer, or optional AWS Transcribe |
 | [Warm Pool](configuration.md) | Keep kiro-cli processes pre-spawned so a new session starts instantly |
 | [Secrets Vault](secrets-vault.md) | Credentials encrypted on disk and refused to the agent, with a `secret://` reference left in `.env` |
+| [Scripted Test Model](scripted-test-model.md) | Test agent specs, hooks, cron scripts and apps against a stand-in model whose replies come from a file: no tokens, the same result every run |
 
 ## Settings reference
 
@@ -135,7 +136,7 @@ gracefully rather than failing the turn.
   output stays plain text otherwise
 - [Context management](https://github.com/kirodotdev/KiroCrew/blob/main/docs/architecture/context-management.md):
   what goes into the model's context — first-turn block order, per-turn additions,
-  sub-agents, custom agents, and Crew mode. A contributor document in the
+  sub-agents, custom agents, and conductor mode. A contributor document in the
   repository, not part of this installed package
 - [Settings deep links](settings-deeplink.md): answer "where is that setting?" with
   a link that opens the tab and flashes the control, from the generated

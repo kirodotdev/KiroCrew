@@ -628,7 +628,7 @@ class TestTheCacheIsHiddenFromAgentSubprocesses:
         "of which Windows has -- and ``_build_launcher_script`` calls POSIX-only "
         "os.getuid. Guarded rather than listed in windows-expected-failures.txt: that "
         "list is a burn-down backlog, and an OS sandbox Windows does not implement is a "
-        "permanent boundary. Same route as test_sandbox_mount_checked.py (#2041)."
+        "permanent boundary. Same route as test_sandbox_mount_checked.py."
     ),
 )
 class TestAnExposedCacheIsStillReadOnly:

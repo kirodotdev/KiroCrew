@@ -1593,6 +1593,7 @@ class SessionAllocationService:
             if picked is not None:
                 model = self._deps.spec_model(picked)
         except Exception:
+            # Any failure here leaves the "auto" default, cached like any other miss.
             pass
         cache[cache_key] = (model, directory_mtime, now)
         return model

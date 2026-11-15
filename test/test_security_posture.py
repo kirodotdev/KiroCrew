@@ -255,11 +255,14 @@ def _gate_side_baseline_log_sites(
 #: nets to zero (both edits land in one reviewed diff), and the scan is
 #: single-scope (see :func:`_gate_side_baseline_log_sites`).
 _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
+    # The model-substitution retry's warning, moved out of client_start.py with the
+    # retry; same gateway process.
+    "acp/client_claude_session.py": 1,
     "acp/client_lifecycle.py": 1,
     # +1: model-unavailable warning log in the rejected-model path
     "acp/client_model_selection.py": 2,
     "acp/client_permissions.py": 1,
-    "acp/client_start.py": 2,
+    "acp/client_start.py": 1,
     "acp/client_transport.py": 1,
     # _format_acp_error's scrubbed-content warning, in the same gateway process as
     # the client owners' sites.
@@ -1177,6 +1180,11 @@ class TestRedactionSinkRegistry:
             "redact_tree",
             "redact_and_truncate",
             "redact_via_context",
+            # Delegates to redact_via_context, plus containment for a miscomposed host.
+            "redact_log_via_context",
+            # The transcript write boundary: the composed policy for a user row, else
+            # redact_exfiltration_urls THEN redact_credentials.
+            "_redact_at_write_boundary(",
             "display_safe",
             # The shared dashboard memory helper recursively runs the exfil
             # scanner followed by the credential scanner for every text value.
@@ -1438,7 +1446,7 @@ class TestGateSideLogRedactorSpelling:
         for rel in ("platform/update_provider.py", "task_planner.py", "name_grant.py"):
             assert (
                 rel not in _BASELINE_LOG_SITE_CENSUS
-            ), f"{rel} was converged by #7151 and must not carry a baseline log site"
+            ), f"{rel} is converged and must not carry a baseline log site"
 
 
 class TestPostureClaimsMatchEnforcement:

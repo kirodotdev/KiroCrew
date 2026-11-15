@@ -89,19 +89,27 @@ async def test_an_existing_name_is_a_conflict_and_left_alone(tmp_path, mock_sel)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "name",
+    ("name", "windows"),
     [
-        "",
-        ".",
-        "..",
-        "a/b",
-        "a\\b",
-        "nul\x00byte",
-        3,
-        "x" * 300,
+        ("", False),
+        (".", False),
+        ("..", False),
+        ("a/b", False),
+        ("a\\b", False),
+        ("nul\x00byte", False),
+        (3, False),
+        ("x" * 300, False),
+        # Windows drops trailing dots and spaces, so a name of only those is empty there.
+        ("...", True),
+        (" ", True),
+        (". .", True),
     ],
 )
-async def test_a_name_that_is_not_one_folder_name_is_refused(tmp_path, mock_sel, name):
+async def test_a_name_that_is_not_one_folder_name_is_refused(
+    request, tmp_path, mock_sel, name, windows
+):
+    if windows:
+        request.getfixturevalue("as_windows")
     status, data = await _post({"parent": str(tmp_path), "name": name})
     assert (status, data["code"]) == (400, "invalid_name")
     assert list(tmp_path.iterdir()) == []
@@ -149,16 +157,6 @@ async def test_windows_a_trailing_dot_onto_an_existing_folder_is_a_conflict(
     status, data = await _post({"parent": str(tmp_path), "name": "taken."})
     assert (status, data["code"]) == (409, "already_exists")
     assert [p.name for p in tmp_path.iterdir()] == ["taken"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("name", ["...", " ", ". ."])
-async def test_windows_a_name_of_only_dots_and_spaces_is_refused(
-    tmp_path, mock_sel, as_windows, name
-):
-    status, data = await _post({"parent": str(tmp_path), "name": name})
-    assert (status, data["code"]) == (400, "invalid_name")
-    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.asyncio

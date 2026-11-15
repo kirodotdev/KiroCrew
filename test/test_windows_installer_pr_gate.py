@@ -151,3 +151,18 @@ def test_filter_covers_every_repo_path_the_job_names(jobs: dict) -> None:
         "MANIFEST.in",
     ):
         assert required in patterns, required
+
+
+def test_the_installer_scripts_add_type_source_has_no_dollar_sign() -> None:
+    """PowerShell expands ``$name`` inside an ``@"..."@`` here-string, even in C#
+    comments. The script runs under ``Set-StrictMode -Version Latest``, so an
+    unset name (``$TEMP`` in a comment) stops the job before it tests anything."""
+
+    script = (ROOT / ".github" / "scripts" / "test-windows-installer.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert "Set-StrictMode -Version Latest" in script
+    sources = re.findall(r'^Add-Type -TypeDefinition @"\n(.*?)\n"@$', script, re.M | re.S)
+    assert sources, "the script no longer compiles a C# helper with Add-Type"
+    for source in sources:
+        assert "$" not in source, "a $ in the Add-Type source is expanded by PowerShell"

@@ -13,9 +13,9 @@ Instance fields written: ``_active_run_id``, ``_cancel_grace_secs``, ``_cancel_t
 ``_permission_options``, ``_steer_answers``, ``_steer_turn``, ``_steering_waiter_map``,
 ``_steers_awaiting_echo``, ``_turn_permission_denied``.
 
-Instance fields read: ``_active_tool_calls``, ``_agent``, ``_agent_version``, ``_background_launches``, ``_batch_window``,
-``_last_stop_reason``, ``_permission_gate_events``, ``_process``, ``_session_id``,
-``_session_key``, ``_stdin_stalled``, ``_turn_done``, ``_turn_lock``.
+Instance fields read: ``_active_tool_calls``, ``_agent``, ``_background_launches``,
+``_batch_window``, ``_last_stop_reason``, ``_permission_gate_events``, ``_process``,
+``_session_id``, ``_session_key``, ``_stdin_stalled``, ``_turn_done``, ``_turn_lock``.
 """
 
 from __future__ import annotations
@@ -597,18 +597,17 @@ async def steer(self: AcpClient, message: str) -> bool:
 
 def _steering_request_ready(self: AcpClient) -> bool:
     """Whether this session's adapter takes ``_session/steering`` as this client
-    sends it: advertised at the handshake, and claude-agent-acp at or above
-    :data:`CLAUDE_ACP_STEERING_MIN_VERSION`. The floor is that adapter's own
+    sends it: advertised at the handshake, and the adapter at or above the release
+    that takes it (``_steering_adapter_floor_met``; on claude-agent-acp
+    :data:`CLAUDE_ACP_STEERING_MIN_VERSION`). The floor is that adapter's own
     release history, and claude is the only member this client sends
     ``_session/steering`` to, so any other member fails closed here -- except pi,
     which is sent no request: it is ready once its launch minted the steer channel
     to Crew's gate extension (:mod:`kiro_crew.acp.pi_steer_turn`)."""
     if self.backend == ACP_BACKEND_PI:
         return pi_steer_turn.ready(self)
-    if self._is_claude and getattr(self, "_steering_advertised", False) is True:
-        return _adapter_version_at_least(
-            getattr(self, "_agent_version", ""), CLAUDE_ACP_STEERING_MIN_VERSION
-        )
+    if getattr(self, "_steering_advertised", False) is True:
+        return self._steering_adapter_floor_met()
     return False
 
 

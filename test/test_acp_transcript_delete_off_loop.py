@@ -26,7 +26,8 @@ from kiro_crew.testing.wait import await_until, default_timeout
 
 async def _cleanup_session(sid: str) -> None:
     await acp_lifecycle.cleanup_session(
-        SimpleNamespace(is_claude_backend=False, is_codex_backend=False), sid
+        SimpleNamespace(is_claude_backend=False, is_codex_backend=False, is_opencode_backend=False),
+        sid,
     )
 
 

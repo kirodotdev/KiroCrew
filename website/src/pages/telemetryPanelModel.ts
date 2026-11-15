@@ -113,6 +113,15 @@ export type CostRow = {
 
 type CostBand = { label: string; turns: number; mean_credits: number }
 
+/**
+ * One measured recommendation. The gateway sends an id and the numbers; the
+ * sentence is worded here, in the reader's language. An id this build does not
+ * know is skipped rather than shown as a blank line.
+ */
+export type SpendAdvice =
+  | { id: 'high_context'; share_pct: number; tokens: number }
+  | { id: 'costly_model'; share_pct: number; model: string; cheaper_model: string; ratio: number }
+
 export type CostConvo = {
   slot: string
   /**
@@ -164,6 +173,8 @@ export type Cost = {
   /** Spend by the session taxonomy — the grouping the panel offers. */
   by_category: CostRow[]
   context_bands: CostBand[]
+  /** Absent from an older gateway, which means no recommendations. */
+  advice?: SpendAdvice[]
   conversations: CostConvo[]
   conversation_count: number
   navigable_category: string

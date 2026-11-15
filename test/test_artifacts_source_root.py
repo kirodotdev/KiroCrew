@@ -733,8 +733,8 @@ class TestSourceMissingIsVisible:
     def test_live_dirty_cannot_report_clean_for_missing_source(
         self, home_store, project_file
     ) -> None:
-        # The regression: live_dirty was computed against the FALLBACK, so it
-        # compared the snapshot with itself and always said "in sync".
+        # live_dirty must not be computed against the FALLBACK: that compares the
+        # snapshot with itself and always says "in sync".
         proj, src = project_file
         home_store.create(
             name="Spec",

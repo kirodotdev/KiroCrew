@@ -9,6 +9,7 @@ import {
   PrivacyDisclosureSections,
   TelemetryToggle,
 } from '../../components/PrivacyDisclosure'
+import { isKiroTelemetryRow } from '../../components/privacyNotice'
 import { i18nT } from '../../i18n/t'
 import { fmtList } from '../../i18n/format'
 
@@ -24,6 +25,8 @@ interface CollectionStatus {
   otlp_configured?: boolean
   /** A configured destination is sent to only after an explicit opt-in to recording. */
   export_permitted?: boolean
+  /** Turning recording on is refused (409): it would also export to an operator's destination. */
+  enable_refused?: boolean
   /** Each of those destinations by name (never its URL), in export order. */
   otlp_destinations?: OtlpDestinationRow[]
   metrics_dir?: string
@@ -93,13 +96,22 @@ function MetricRecordingToggle() {
   // would start export, so describe it as exporting. While it is on, export
   // still waits for an explicit opt-in. Absent reads as permitted: a disclosure
   // errs toward "sent".
-  const otlpExporting = otlpConfigured && (!enabled || statusQ.data?.export_permitted !== false)
   const destinations = statusQ.data?.otlp_destinations ?? []
+  // The build's Kiro telemetry destination needs no opt-in: recording on sends to
+  // it. Every other destination still waits for one (`export_permitted`), so the
+  // two are disclosed apart. An empty list (posture unknown) counts as other.
+  const kiroListed = destinations.some(isKiroTelemetryRow)
+  const otherListed = destinations.length === 0 || destinations.some(row => !isKiroTelemetryRow(row))
+  const otherExporting = otherListed && (!enabled || statusQ.data?.export_permitted !== false)
+  const otlpExporting = otlpConfigured && (otherExporting || kiroListed)
   // A configured egress endpoint pins the ENABLE direction only. Turning recording
   // OFF is exactly what a user on such a host most needs — the config route allows
   // it for that reason — so disabling the whole control here would strand them with
   // export running and no way to stop it.
-  const pinned = envPinned || overlayPinned || (otlpConfigured && !enabled)
+  // The build's own Kiro telemetry destination does not pin it: the privacy
+  // notice names it, so the server accepts the write (`enable_refused`).
+  const enableRefused = statusQ.data?.enable_refused ?? otlpConfigured
+  const pinned = envPinned || overlayPinned || (enableRefused && !enabled)
   // Two independent notes, not one priority chain: a pin reason and the egress
   // fact answer different questions ("why can't I change this" vs "where do my
   // metrics go"), and collapsing them let an env pin hide the fact that metrics
@@ -182,10 +194,24 @@ function MetricRecordingToggle() {
               the dynamic-keys ratchet exists to stop, and it would make the string
               invisible to the key-reference gate. */}
           {enabled
-            ? otlpExporting
-              ? i18nT('pages.settings.privacyPanel.recordMetricsEgressOn')
-              : i18nT('pages.settings.privacyPanel.recordMetricsEgressWaiting')
-            : i18nT('pages.settings.privacyPanel.recordMetricsEgressOff')}
+            ? otherListed
+              ? otherExporting
+                ? i18nT('pages.settings.privacyPanel.recordMetricsEgressOn')
+                : kiroListed
+                  // Beside the Kiro line below: name only the user's own collectors.
+                  ? i18nT('pages.settings.privacyPanel.recordMetricsEgressWaitingOwn')
+                  : i18nT('pages.settings.privacyPanel.recordMetricsEgressWaiting')
+              : i18nT('pages.settings.privacyPanel.recordMetricsEgressKiroOn')
+            : enableRefused
+              ? i18nT('pages.settings.privacyPanel.recordMetricsEgressOff')
+              : i18nT('pages.settings.privacyPanel.recordMetricsEgressOffBuiltin')}
+          {/* Beside a waiting collector of the user's own, the build's Kiro
+              telemetry still gets metrics, so say that on its own line. */}
+          {enabled && otherListed && !otherExporting && kiroListed && (
+            <span className="block mt-1">
+              {i18nT('pages.settings.privacyPanel.recordMetricsEgressKiroOn')}
+            </span>
+          )}
           {/* Every destination by name, so a build's own collector is named next
               to the operator's: the egress fact is incomplete without where. */}
           {destinations.length > 0 && (

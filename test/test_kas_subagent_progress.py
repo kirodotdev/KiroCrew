@@ -340,7 +340,7 @@ def test_normal_tool_call_not_intercepted_on_kas() -> None:
     assert any(e.kind == EVENT_TOOL_CALL for e in events)
 
 
-# ── Regression: roster reset per turn (BLOCKER) ──────────────────────────────
+# ── roster reset per turn ───────────────────────────────────────────────────
 
 
 def _status_of(events: list, sid: str) -> str | None:
@@ -369,7 +369,7 @@ def test_roster_cleared_between_turns_excludes_prior_completed() -> None:
     assert ids == {"B"}
 
 
-# ── Regression: child thinking chunk not surfaced (BLOCKER) ──────────────────
+# ── child thinking chunk is not surfaced; a text chunk is ───────────────────
 
 
 def test_child_thinking_chunk_not_surfaced() -> None:

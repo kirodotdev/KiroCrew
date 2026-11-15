@@ -1282,7 +1282,7 @@ async def test_a_submit_during_the_stop_window_does_not_replace_the_cancelled_tu
         stop = asyncio.ensure_future(client.post("/api/chat/slots/parent/side/stop", json={}))
         await await_until(in_cancel_cleanup)
 
-        # The exact GPT seam: is_complete is already True here, so WITHOUT the
+        # The exact seam: is_complete is already True here, so WITHOUT the
         # is_stopping claim the busy gate would read idle and dispatch q2 as a
         # replacement. is_stopping must keep it QUEUED.
         assert slot._side.is_complete is True, "precondition: finally flipped is_complete"

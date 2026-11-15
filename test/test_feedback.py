@@ -157,7 +157,7 @@ class TestRequireDashboardUser:
 
     @pytest.mark.asyncio
     async def test_denial_is_sel_audited(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # GPT-2: an app-token denial must leave a SEL decision record naming
+        # An app-token denial must leave a SEL decision record naming
         # the endpoint, and an audit failure must never break the 403.
         calls: list[dict] = []
 
@@ -208,7 +208,7 @@ class TestIdentityAndConsentHelpers:
 
         _Cfg.telemetry.beacon_enabled = False
         assert feedback._telemetry_permitted() is False
-        # GPT-2: a caller-supplied audit tool is forwarded so the verdict is
+        # A caller-supplied audit tool is forwarded so the verdict is
         # recorded in the SEL trail.
         assert feedback._telemetry_permitted("feedback_submit") is False
         assert seen_audit_tools[-1] == "feedback_submit"

@@ -911,6 +911,15 @@ build_backend_windows() {
     "$out/python.exe" -s "$ROOT/packaging/precompile_windows.py" \
     --root "$out" --module kiro_crew.cli_server --module lark_oapi
 
+  # An update moves every installed file into %TEMP% first, and a file whose
+  # moved path passes MAX_PATH abandons the update (the script states the
+  # arithmetic). Some lark_oapi caches written just above are that deep, so
+  # drop each over-budget cache (its module compiles from source instead) and
+  # fail the build on any other over-budget file. -B: measuring writes nothing.
+  log "Checking the Windows update path budget ($(basename "$out"))…"
+  "$out/python.exe" -B -I "$ROOT/packaging/check_windows_path_budget.py" \
+    --root "$out" --prefix 'resources\backend-dist\kirocrew-backend' --prune-caches \
+    || { echo "ERROR: the backend payload has a path over the Windows update budget" >&2; exit 1; }
   echo "    $(basename "$out") size: $(du -sh "$out" 2>/dev/null | cut -f1)"
 }
 

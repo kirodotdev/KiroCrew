@@ -16,7 +16,7 @@ import type { BeaconStatus } from './PrivacyDisclosure'
  * something new. The backend keeps the same number as
  * `beacon.PRIVACY_NOTICE_VERSION`; a backend test pins the two together.
  */
-export const PRIVACY_NOTICE_VERSION = 2
+export const PRIVACY_NOTICE_VERSION = 3
 
 /** GET /api/telemetry/collection, the fields the notice reads. */
 interface CollectionStatus {
@@ -29,7 +29,20 @@ interface CollectionStatus {
   otlp_configured?: boolean
   /** That destination is sent to now: recording was turned on explicitly. */
   export_permitted?: boolean
+  /** Off only by a written false older builds wrote: the chapter offers Turn on once. */
+  off_offer?: boolean
+  /** Each destination by name; `provider` + `locked` rows are shipped by the build. */
+  otlp_destinations?: Array<{ name: string; source?: string; locked?: boolean }>
 }
+
+/** The destination the public build ships for product usage metrics. */
+export const KIRO_TELEMETRY_DESTINATION = 'kiro-telemetry'
+
+/** Whether a destination row is the build's own Kiro telemetry, not an operator entry. */
+export function isKiroTelemetryRow(row: { name: string; source?: string; locked?: boolean }): boolean {
+  return row.name === KIRO_TELEMETRY_DESTINATION && row.source === 'provider' && row.locked === true
+}
+
 
 /**
  * Why usage data is off. `config` is a choice the user can change in Settings;
@@ -48,6 +61,10 @@ export interface UsageDataState {
   heartbeatOn: boolean
   /** Local recording is on AND sends metrics to a configured destination. */
   exportOn: boolean
+  /** Local recording is on AND the build's Kiro telemetry destination gets product metrics. */
+  kiroTelemetryOn?: boolean
+  /** Recording is off only by a written false an older build wrote: offer Turn on once. */
+  offerOn?: boolean
   /** Set only when `on` is false. */
   offReason: UsageOffReason | null
   /** The env var to name when `offReason` is `env`. */
@@ -109,10 +126,17 @@ export function useUsageDataState(enabled: boolean): UsageDataState {
   }
   const recordingOn = !!collection.enabled
   const heartbeatOn = !!beacon.enabled && !beacon.env_override && !beacon.governance_override
-  // Absent reads as permitted: a disclosure errs toward "sent".
+  // Absent reads as permitted: a disclosure errs toward "sent". The build's Kiro
+  // telemetry row is named on its own line (`kiroTelemetryOn`), so it does not
+  // count here; an empty or absent list (posture unknown) still does.
+  const rows = collection.otlp_destinations ?? []
+  const otherDestination = rows.length === 0 || rows.some(row => !isKiroTelemetryRow(row))
   const exportOn = recordingOn && !!collection.otlp_configured && collection.export_permitted !== false
+    && otherDestination
+  const kiroTelemetryOn = recordingOn && rows.some(isKiroTelemetryRow)
   if (recordingOn || heartbeatOn) {
-    return { status: 'ready', on: true, recordingOn, heartbeatOn, exportOn, offReason: null, envVar: '' }
+    const offerOn = !recordingOn && !!collection.off_offer
+    return { status: 'ready', on: true, recordingOn, heartbeatOn, exportOn, kiroTelemetryOn, offerOn, offReason: null, envVar: '' }
   }
   const envVar = (beacon.env_override ? beacon.env_var : collection.env_pinned ? collection.env_var : '') ?? ''
   let offReason: UsageOffReason = 'config'

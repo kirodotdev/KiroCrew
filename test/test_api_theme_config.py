@@ -339,6 +339,29 @@ async def test_theme_config_put_persists_privacy_ack_version(cfg_file: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_theme_config_put_persists_the_kiro_telemetry_ack_version(cfg_file: Path) -> None:
+    """Written only when the chapter's text named the Kiro telemetry destination."""
+    _write(cfg_file, {"dashboard": {"privacy_acked": True}})
+    resp = await _put(
+        {"privacy_acked": True, "privacy_ack_version": 3, "kiro_telemetry_ack_version": 3}
+    )
+    assert resp.status == 200
+    stored = _read(cfg_file)["dashboard"]
+    assert stored["kiro_telemetry_ack_version"] == 3
+    assert type(stored["kiro_telemetry_ack_version"]) is int
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [True, -1, "3", 10**6])
+async def test_theme_config_put_refuses_a_bad_kiro_telemetry_ack_version(
+    cfg_file: Path, value: object
+) -> None:
+    _write(cfg_file, {"dashboard": {"privacy_acked": True}})
+    with pytest.raises(web.HTTPBadRequest):
+        await _put({"kiro_telemetry_ack_version": value})
+
+
+@pytest.mark.asyncio
 async def test_privacy_ack_version_does_not_fall_back_to_onboarded(cfg_file: Path) -> None:
     """An existing user (onboarded, acked) reads version 0, so the new notice shows once."""
     _write(cfg_file, {"dashboard": {"onboarded": True, "privacy_acked": True}})

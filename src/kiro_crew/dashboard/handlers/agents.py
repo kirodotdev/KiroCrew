@@ -621,7 +621,7 @@ def _advertised_cc_models(request: web.Request, namespace: str) -> list[dict]:
             continue
         try:
             advertised = getter()
-        except Exception:
+        except Exception:  # A provider whose list fails gives no evidence; ask the next one.
             continue
         rows = model_registry.live_advertised_model_rows(advertised) if advertised else []
         if rows:
@@ -701,7 +701,7 @@ async def _entitled_kiro_models(request: web.Request, models: list[dict]) -> lis
             continue
         try:
             ids = advertised_model_ids(getter())
-        except Exception:
+        except Exception:  # A provider whose list fails gives no evidence; ask the next one.
             continue
         if not ids:
             continue

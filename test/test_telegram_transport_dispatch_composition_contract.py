@@ -1021,6 +1021,7 @@ def test_the_package_initializer_imports_nothing() -> None:
 #: test_close_guard_parity scans the owners for it.
 _FACADE_PINNED = {
     "a redactor call": "test_security_posture: the 'Telegram failure reason' sink",
+    "a row redactor call": "test_autonudge_row_scrub: the _persist_turn user-row scrub",
     "begin_turn": "test_turn_ceiling: GATED composes the ceiling around begin_turn",
     "the turn ceiling": "test_turn_ceiling: GATED (turn_ceiling.gate, TurnCeilingExceeded)",
     "the muted renderer": "test_turn_ceiling: MUTE_AWARE (SilentRenderer, render_refusal)",
@@ -1045,6 +1046,7 @@ _FORBIDDEN_IN_THE_FACADE_TOO = frozenset(
 #: package, so this table is what fixes the file each construct lives in.
 _PINNED_HOME = {
     "a redactor call": "transport_dispatch",
+    "a row redactor call": "turn_engine",
     "begin_turn": "turn_engine",
     "the turn ceiling": "turn_engine",
     "the muted renderer": "turn_engine",
@@ -1078,7 +1080,8 @@ def _facade_pinned_shapes(source: str) -> list[str]:
         [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
     )
     held = {
-        "a redactor call": bool(_REDACTOR_CALL_RE.search(source)),
+        "a redactor call": bool(_REDACTOR_CALL_RE.search(_without_row_scrubs(source))),
+        "a row redactor call": any(scrub in source for scrub in _ROW_SCRUBS),
         "begin_turn": "begin_turn" in called,
         "the turn ceiling": "turn_ceiling.gate" in dotted or "TurnCeilingExceeded" in named,
         "the muted renderer": bool({"SilentRenderer", "render_refusal"} & named),
@@ -1124,8 +1127,18 @@ def test_each_guarded_construct_lives_in_the_file_its_guard_reads() -> None:
 
 
 #: One planted construct per ``_FACADE_PINNED`` label, for the scan's self-test.
+_ROW_SCRUBS = ('_redact_at_write_boundary("user", ', '_redact_at_write_boundary("assistant", ')
+
+
+def _without_row_scrubs(source: str) -> str:
+    for scrub in _ROW_SCRUBS:
+        source = source.replace(scrub, "")
+    return source
+
+
 _PLANTED = {
     "a redactor call": "def f(text):\n    return redact(text)\n",
+    "a row redactor call": 'def f(t):\n    return _redact_at_write_boundary("user", t)\n',
     "begin_turn": "def f(self, key):\n    self.sessions.begin_turn(key)\n",
     "the turn ceiling": (
         "def f(turn_ceiling, key):\n    with turn_ceiling.gate(key):\n        pass\n"

@@ -22,7 +22,7 @@ from kiro_crew.work_ledger_records import (
     CODE_DEPTH_EXCEEDED,
     CODE_DUPLICATE_ITEM,
     CODE_GOAL_CONCURRENCY_CAP_REACHED,
-    CODE_HOST_PRESSURE_CRITICAL,
+    CODE_HOST_MEMORY_CRITICAL,
     CODE_INVALID_ACTION,
     CODE_INVALID_STATUS,
     CODE_INVALID_VALUE,
@@ -56,6 +56,7 @@ from kiro_crew.work_ledger_rules import (
     _require_artifacts,
     _require_choice,
     _require_count,
+    _require_discussion,
     _require_pr,
     _require_text,
     _require_wake_at,
@@ -527,9 +528,10 @@ def _admit_create_locked(slot_key: str) -> ConductorRecord:
 def _refuse_if_host_critical() -> None:
     """Refuse a create while host memory is critical. Writes nothing.
 
-    rfc-work-ledger-resource-pressure §3.5: the code backstop for a conductor that
-    misses the pause rule, under the admission contract: critical refuses; tight,
-    unknown and ``agent.admission_gate: false`` admit. A live probe, not the cached
+    rfc-work-ledger-resource-pressure §3.5 (the part not withdrawn), under the admission
+    contract: critical refuses; tight, unknown and ``agent.admission_gate: false``
+    admit. The conductor checks ``resource_status`` before dispatch; this refusal is
+    the only code backstop. A live probe, not the cached
     verdict: that cache refreshes only when asked, so the first create after memory
     recovered would be judged on a stale refusal. This runs off the loop (the route
     calls the store through ``asyncio.to_thread``) and the probe is one memory read.
@@ -540,8 +542,8 @@ def _refuse_if_host_critical() -> None:
         raise WorkLedgerError(
             f"create refused: {decision.reason}. Dispatch nothing new until memory is "
             "no longer critical",
-            code=CODE_HOST_PRESSURE_CRITICAL,
-            field="host_pressure",
+            code=CODE_HOST_MEMORY_CRITICAL,
+            field="host_memory",
         )
 
 
@@ -751,14 +753,15 @@ def apply_worker_report(
     pr: Any = None,
     reason: Any = None,
     wake_at: Any = None,
+    discussion: Any = None,
 ) -> dict[str, Any]:
     """Write the fields the WORKER owns: ``status``, ``reason``, ``wake_at``,
-    ``summary``, ``artifacts``, ``pr`` and ``last_report_at``. Nothing else is
-    reachable from here.
+    ``summary``, ``artifacts``, ``pr``, ``discussion`` and ``last_report_at``.
+    Nothing else is reachable from here.
 
     ``reason`` rides only on ``blocked`` / ``question``, and ``wake_at`` (when the
-    worker will resume) only on ``progress``. Every report replaces both, so a later
-    report without one clears it.
+    worker will resume) only on ``progress``. Every report replaces those two and
+    ``discussion``, so a later report without one clears it.
 
     No ``verdict``, ``state``, ``acceptance``, ``decision`` or ``round`` parameter,
     so a worker cannot accept itself or widen its bar; ``status: done`` only
@@ -790,6 +793,7 @@ def apply_worker_report(
                 field="reason",
             )
     checked_wake_at = _require_wake_at(wake_at, checked_status)
+    checked_discussion = _require_discussion(discussion)
     checked_id = _require_item_id(item_id)
 
     with item_lock(slot_key, checked_id, create=False):
@@ -803,6 +807,7 @@ def apply_worker_report(
         item.status = checked_status
         item.reason = checked_reason
         item.wake_at = checked_wake_at
+        item.discussion = checked_discussion
         item.summary = checked_summary
         item.artifacts = checked_artifacts
         if checked_pr is not None:

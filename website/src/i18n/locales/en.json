@@ -485,20 +485,6 @@
         "tablist_label": "Auto triage pipeline views"
       }
     },
-    "channels": {
-      "manifest": {
-        "description": "A shared room where several agents work a problem together instead of one agent working alone. You assign each agent a role, and they post progress into the channel and answer each other's @mentions in the open — there is no private agent-to-agent messaging, so the whole exchange stays readable, and you remain the approver for anything that changes state. Agents stay alive in the channel until dismissed, the channel closes, or the agent fails.",
-        "display_name": "Channels",
-        "highlight_1": "Several role-assigned agents collaborate in one shared, readable transcript",
-        "highlight_2": "No private agent-to-agent messaging — every exchange happens in the channel",
-        "highlight_3": "You stay the final approver for any operation that mutates state",
-        "highlight_4": "Agents persist in the channel until dismissed, the channel closes, or the agent fails",
-        "highlight_5": "Hidden from the App Store grid; enable with `kirocrew app enable channels`",
-        "page_label": "Channels",
-        "use_case_1": "Run incident response, research, or code review with several named agent roles in one auditable shared transcript.",
-        "configuration_1": "Enable the hidden app with kirocrew app enable channels, create a channel from a preset or Custom, assign agents and listen modes, then use @mentions to hand off work."
-      }
-    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_one": "{{count}} open PR",
@@ -6028,6 +6014,12 @@
       "hint": "Splits big tasks into steps that helper agents carry out. It changes how work is planned, not how hard Claude thinks. Slower, and counts more against your Claude usage. This chat only, from your next message.",
       "label": "Ultracode"
     },
+    "fastModeToggle": {
+      "hint": "Claude answers faster on the same model. It does not change how hard Claude thinks. Counts more against your Claude usage. This chat only, from your next message.",
+      "label": "Fast mode",
+      "unavailable": "Claude can't use Fast mode in this chat: {{reason}}.",
+      "unavailable_no_reason": "Claude can't use Fast mode in this chat right now."
+    },
     "updateFoundModal": {
       "cancel_update": "Cancel the update",
       "cancel_update_failed": "Could not cancel the update. Try again.",
@@ -7589,6 +7581,16 @@
         "member_rebind_kept_agent": "{{bot}} is now set to {{agent}}, but this chat keeps running {{recorded}}, the agent it started with. Start a new chat with {{bot}} to use {{agent}}.",
         "agent_no_tools": "{{agent}} lists no tools, so it cannot run commands, work with files or use MCP servers in this chat.",
         "agent_no_tools_open": "Choose its tools",
+        "harness_mode_changed": "This session switched to {{mode}} mode.",
+        "harness_task_completed": "Background task completed: {{task}}{{detail}}",
+        "harness_task_failed": "Background task failed: {{task}}{{detail}}",
+        "harness_task_stopped": "Background task stopped: {{task}}{{detail}}",
+        "harness_api_retry": "Claude is retrying a failed request{{reason}}, attempt {{attempt}} of {{max}}.",
+        "harness_api_retry_rate_limit": "rate limit",
+        "harness_api_retry_overloaded": "overloaded",
+        "harness_api_retry_server_error": "server error",
+        "harness_api_retry_cloud_credential_error": "cloud credential error",
+        "harness_api_retry_status": "HTTP {{status}}",
         "crew_name_undispatchable": "This thread's crew name cannot be dispatched. Rename or recreate the bot.",
         "code_channel_worktree_not_ready": "This code channel's worktree is not ready, so the message was not run. Send it again in a moment.",
         "remote_crew_read_only": "This chat ran on a remote crew and is read-only now. Open the crew's own session to keep going.",
@@ -11012,6 +11014,23 @@
         "add": "Add",
         "add_a_custom_deny_pattern_regex_e_g_rm_rf_tmp_mi": "Add a custom deny pattern (regex), e.g. rm -rf /tmp/mine",
         "add_your_own_deny_patterns_python_compatible_reg": "Add your own deny patterns (Python-compatible regex). These are enforced at {{productName}}'s PreToolUse gate alongside the built-in rules.",
+        "bodyFields": {
+          "allow": "Allow this field from now on",
+          "allow_hint": "Lets this field be up to 256 KB. Checks for sensitive paths still run. The refused message is not sent again. “Stop allowing” undoes this.",
+          "defaults_title": "Built in",
+          "desc": "Before a tool runs, every argument is checked, and one argument over 20 KB is refused. A field listed here is the body of a message or document: it can be up to 256 KB, a sensitive path in it is refused, and a credential or a link that carries data out is logged as a warning, not blocked. It is never read as a shell command. A row applies only to the exact server and tool it names.",
+          "field_name": "Field: {{field}}",
+          "load_failed": "Could not load the message body fields.",
+          "owner_empty": "You have not allowed any fields.",
+          "owner_only": "Only the dashboard owner can view and change message body fields.",
+          "owner_title": "Allowed by you",
+          "refused_at": "Refused {{time}}",
+          "refused_empty": "No field has been refused for size yet.",
+          "refused_title": "Refused for size",
+          "remove": "Stop allowing",
+          "section_title": "Message body fields",
+          "write_failed": "Could not save the change. The list is unchanged."
+        },
         "cancel": "Cancel",
         "click_any_control_to_see_exactly_what_it_covers": "Click any control to see exactly what it covers.",
         "collapse_all": "Collapse all",
@@ -11751,6 +11770,10 @@
       "gauges_latest": "latest sample",
       "credits_by_origin": "Credits by origin",
       "cost_by_origin": "Cost by origin",
+      "advice_title": "Where to save",
+      "advice_tip": "Each line is measured from the turns in this window, not estimated. Sub-agent turns are not part of these figures.",
+      "advice_high_context": "{{share}} of spend is on turns above {{tokens}} of context: compact earlier",
+      "advice_costly_model": "{{share}} of spend is on {{model}}, which costs {{ratio}}× as much per turn as {{cheaper}}: use the cheaper model for routine work",
       "credits_by_model": "Credits by model",
       "cost_by_model": "Cost by model",
       "top_sessions": "Top sessions",

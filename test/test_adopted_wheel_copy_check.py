@@ -2,7 +2,9 @@
 
 The first property pinned is the one the gate is for: two real wheel-copy-only
 fixes to a pinned app (one on papyrus's backend, one on file-explorer's server)
-are flagged, so each must name its app-repo commit.
+are flagged, so each must name its app-repo commit. The second is the pin
+drift guard: a PR that adds or changes a pin row fails when the app's wheel
+copy moved after the base its app-repo port names.
 Owning spec: docs/system-specs/modules/app-kit-platform.md § Former built-in
 adoption.
 """
@@ -167,6 +169,174 @@ class TestMarker:
                 mod.check(ns, [bad], "")
 
 
+def _row(name: str, commit: str = "a" * 40) -> dict:
+    return {
+        "name": name,
+        "repository": f"https://github.com/KiroCrewCaptain/kirocrew-app-{name}",
+        "commit": commit,
+    }
+
+
+def _table(*rows: dict) -> str:
+    return json.dumps({"schemaVersion": 1, "pins": list(rows)})
+
+
+class _Compare:
+    """A fake comparer: the drift it reports per (base, name), and every call it saw."""
+
+    def __init__(self, drift: dict[tuple[str, str], list[str]] | None = None) -> None:
+        self.drift = drift or {}
+        self.calls: list[tuple[str, str]] = []
+
+    def __call__(self, base: str, name: str) -> list[str]:
+        self.calls.append((base, name))
+        return self.drift.get((base, name), [])
+
+
+class TestPinDriftGuard:
+    def test_an_added_row_without_a_base_line_fails(self) -> None:
+        errors = mod.check_bases(["", _table(_row("papyrus"))], "", _Compare())
+        assert len(errors) == 1 and errors[0].startswith("papyrus:"), errors
+        assert "Wheel-copy base: papyrus@<commit>" in errors[0]
+
+    def test_a_changed_row_without_a_base_line_fails(self) -> None:
+        texts = [_table(_row("papyrus")), _table(_row("papyrus", "b" * 40))]
+        assert len(mod.check_bases(texts, "", _Compare())) == 1
+
+    def test_an_unchanged_or_dropped_row_needs_no_base(self) -> None:
+        same = _table(_row("papyrus"))
+        compare = _Compare()
+        assert mod.check_bases([same, same, same], "", compare) == []
+        assert mod.check_bases([same, _table()], "", compare) == []
+        assert mod.check_bases([same], "", compare) == []
+        assert compare.calls == []
+
+    def test_a_row_changed_only_on_the_base_tip_needs_no_base(self) -> None:
+        old, new = _table(_row("papyrus")), _table(_row("papyrus", "b" * 40))
+        assert mod.check_bases([old, new, old], "", _Compare()) == []
+
+    def test_a_wheel_copy_change_after_the_base_fails(self) -> None:
+        drift = ["src/kiro_crew/apps/builtins/papyrus/server.py"]
+        compare = _Compare({(SHA, "papyrus"): drift})
+        body = f"Wheel-copy base: papyrus@{SHA}\n"
+        errors = mod.check_bases(["", _table(_row("papyrus"))], body, compare)
+        assert compare.calls == [(SHA, "papyrus")]
+        assert len(errors) == 1 and drift[0] in errors[0] and PAPYRUS in errors[0], errors
+
+    def test_an_unmoved_wheel_copy_passes(self) -> None:
+        body = f"- Wheel-copy base: papyrus@{SHA[:7]}.\r\n"
+        assert mod.check_bases(["", _table(_row("papyrus"))], body, _Compare()) == []
+
+    def test_every_changed_row_needs_its_own_base(self) -> None:
+        texts = ["", _table(_row("papyrus"), _row("file-explorer"))]
+        errors = mod.check_bases(texts, f"Wheel-copy base: papyrus@{SHA}", _Compare())
+        assert len(errors) == 1 and errors[0].startswith("file-explorer:"), errors
+
+    def test_two_different_bases_for_one_app_fail(self) -> None:
+        body = f"Wheel-copy base: papyrus@{SHA}\nWheel-copy base: papyrus@{'c' * 40}\n"
+        errors = mod.check_bases(["", _table(_row("papyrus"))], body, _Compare())
+        assert len(errors) == 1 and "differ" in errors[0]
+
+    def test_a_malformed_base_line_does_not_count(self) -> None:
+        texts = ["", _table(_row("papyrus"))]
+        for bad in (
+            "Wheel-copy base: papyrus@<commit>",
+            "Wheel-copy base: papyrus@abc12",
+            f"Wheel-copy base: papyrus@{SHA.upper()}",
+            f"Wheel-copy base: papyrus@{SHA}0",
+            f"Wheel-copy base: papyrus {SHA}",
+            f"Wheel-copy base: file-explorer@{SHA}",
+            f"see Wheel-copy base: papyrus@{SHA}",
+            f"    Wheel-copy base: papyrus@{SHA}",
+        ):
+            assert len(mod.check_bases(texts, bad, _Compare())) == 1, bad
+
+    def test_an_unreadable_table_fails_closed(self) -> None:
+        with pytest.raises(ValueError):
+            mod.check_bases(["", "{not json"], "", _Compare())
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+
+
+@pytest.fixture
+def wheel_repo(tmp_path: Path) -> Path:
+    """A repository whose first commit holds papyrus's wheel copy on both sides."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    _git(repo, "config", "commit.gpgsign", "false")
+    backend, frontend = mod.wheel_copy_dirs("papyrus")
+    for path in (f"{backend}server.py", f"{frontend}Page.tsx", "README.md"):
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text("v1\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    return repo
+
+
+def _commit(repo: Path, path: str, text: str | None) -> str:
+    target = repo / path
+    if text is None:
+        target.unlink()
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", path)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+class TestGitCompare:
+    @pytest.fixture
+    def repo(self, wheel_repo: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """The comparer runs git in the working directory; enter the repo, revert on teardown."""
+        monkeypatch.chdir(wheel_repo)
+        return wheel_repo
+
+    def _drift(self, base: str, revision: str) -> list[str]:
+        return mod.git_wheel_copy_drift(revision)(base, "papyrus")
+
+    def test_a_wheel_copy_change_after_the_base_is_reported(self, repo: Path) -> None:
+        base = _git(repo, "rev-parse", "HEAD")
+        backend, frontend = mod.wheel_copy_dirs("papyrus")
+        _commit(repo, f"{frontend}Page.tsx", "v2\n")
+        merge = _commit(repo, f"{backend}server.py", None)
+        assert self._drift(base, merge) == [
+            f"{backend}server.py",
+            f"{frontend}Page.tsx",
+        ]
+        assert self._drift(merge, merge) == []
+
+    def test_test_files_and_other_paths_are_not_drift(self, repo: Path) -> None:
+        base = _git(repo, "rev-parse", "HEAD")
+        backend, frontend = mod.wheel_copy_dirs("papyrus")
+        _commit(repo, f"{backend}tests/test_server.py", "t\n")
+        _commit(repo, f"{frontend}Page.test.tsx", "t\n")
+        _commit(repo, "website/src/apps/papyrus-extra/x.ts", "x\n")
+        head = _commit(repo, "README.md", "v2\n")
+        assert self._drift(base, head) == []
+
+    def test_a_base_missing_from_the_checkout_fails_closed(self, repo: Path) -> None:
+        head = _git(repo, "rev-parse", "HEAD")
+        with pytest.raises(mod.CannotCompare):
+            self._drift("d" * 40, head)
+
+    def test_no_revision_to_compare_fails_closed(self, repo: Path) -> None:
+        with pytest.raises(mod.CannotCompare):
+            self._drift(_git(repo, "rev-parse", "HEAD"), "")
+
+
 class TestShippedTable:
     def test_every_pinned_wheel_package_sits_where_the_check_looks(self) -> None:
         """A pinned app's backend package must be ``builtins/<name with _>``, or the gate misses it."""
@@ -181,7 +351,13 @@ class TestShippedTable:
 
 class TestCli:
     def _run(
-        self, tmp_path: Path, ns: str, pins: list[str], body: str
+        self,
+        tmp_path: Path,
+        ns: str,
+        pins: list[str],
+        body: str,
+        cwd: Path | None = None,
+        revs: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         ns_file = tmp_path / "ns.txt"
         ns_file.write_text(ns, encoding="utf-8")
@@ -191,13 +367,15 @@ class TestCli:
             path.write_text(text, encoding="utf-8")
             pin_files.append(str(path))
         env = {**os.environ, "PR_BODY": body}
+        env.pop("BASE_TIP", None)
+        env.update(revs or {})
         return subprocess.run(
             [sys.executable, str(SCRIPT), str(ns_file), *pin_files],
             capture_output=True,
             text=True,
             encoding="utf-8",
             env=env,
-            cwd=tmp_path,
+            cwd=cwd or tmp_path,
             check=False,
         )
 
@@ -213,6 +391,37 @@ class TestCli:
     def test_unreadable_table_fails(self, tmp_path: Path) -> None:
         r = self._run(tmp_path, PR30438, ["{not json"], "")
         assert r.returncode == 1 and "unreadable" in r.stdout
+
+    def test_a_pin_pr_with_a_moved_wheel_copy_fails(self, tmp_path: Path, wheel_repo: Path) -> None:
+        base = _git(wheel_repo, "rev-parse", "HEAD")
+        head = _commit(wheel_repo, f"{mod.wheel_copy_dirs('papyrus')[0]}server.py", "v2\n")
+        pins = ["", "", _table(_row("papyrus"))]
+        revs = {"BASE_TIP": head}
+        body = f"Wheel-copy base: papyrus@{base}"
+        r = self._run(tmp_path, "", pins, body, cwd=wheel_repo, revs=revs)
+        assert r.returncode == 1 and "::error::" in r.stdout and "server.py" in r.stdout, r.stdout
+        body = f"Wheel-copy base: papyrus@{head[:12]}"
+        r = self._run(tmp_path, "", pins, body, cwd=wheel_repo, revs=revs)
+        assert r.returncode == 0, r.stdout
+
+    def test_the_pin_prs_own_wheel_copy_change_is_not_drift(
+        self, tmp_path: Path, wheel_repo: Path
+    ) -> None:
+        """A first pin bumps the wheel ``app.json`` itself; its ``App repo:`` line covers that."""
+        base = _git(wheel_repo, "rev-parse", "HEAD")
+        manifest = f"{mod.wheel_copy_dirs('papyrus')[0]}app.json"
+        head = _commit(wheel_repo, manifest, '{"version": "0.2.3"}\n')
+        ns = _git(wheel_repo, "diff", "--name-status", "--no-renames", base, head) + "\n"
+        body = f"App repo: {PAPYRUS}@{SHA}\nWheel-copy base: papyrus@{base}\n"
+        pins = ["", "", _table(_row("papyrus"))]
+        r = self._run(tmp_path, ns, pins, body, cwd=wheel_repo, revs={"BASE_TIP": base})
+        assert r.returncode == 0, r.stdout
+
+    def test_a_pin_pr_without_a_base_tip_fails(self, tmp_path: Path) -> None:
+        r = self._run(
+            tmp_path, "", ["", _table(_row("papyrus"))], f"Wheel-copy base: papyrus@{SHA}"
+        )
+        assert r.returncode == 1 and "cannot be compared" in r.stdout, r.stdout
 
     def test_body_is_data_not_code(self, tmp_path: Path) -> None:
         body = '$(touch pwned) `touch pwned` "; import os; os.system("touch pwned")'
@@ -244,6 +453,10 @@ class TestWiring:
         assert 'git diff --name-status --no-renames "$MERGE_BASE" "$HEAD_SHA"' in run
         assert 'for rev in "$MERGE_BASE" "$BASE_TIP" "$HEAD_SHA"' in run
         assert "src/kiro_crew/apps/adoption-pins.json" in run
+
+    def test_the_base_tip_reaches_the_script(self) -> None:
+        """The drift guard compares the named base with the base tip it reads from env."""
+        assert self._step()["env"]["BASE_TIP"] == "${{ github.event.pull_request.base.sha }}"
 
     def test_the_script_is_read_from_the_base_ref(self) -> None:
         run = self._step()["run"]

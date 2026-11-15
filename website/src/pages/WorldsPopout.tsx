@@ -6,6 +6,7 @@ import { SCENES, SCENE_STORAGE_KEY, SCENE_LAYOUT_SCALE, type SceneKey } from './
 import { SCENE_COMPONENTS } from './scenes/components'
 import { useAppDispatch } from '../store'
 import { fetchSlots } from '../store/dashboardSlice'
+import { pollWhileVisible } from '../lib/pollWhileVisible'
 
 import { i18nT } from '../i18n/t'
 import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
@@ -29,8 +30,7 @@ export default function WorldsPopout() {
 
   useEffect(() => {
     dispatch(fetchSlots())
-    const iv = setInterval(() => dispatch(fetchSlots()), 5000)
-    return () => clearInterval(iv)
+    return pollWhileVisible(() => { dispatch(fetchSlots()) }, 5000)
   }, [dispatch])
 
   useEffect(() => { safeSetItem(SCENE_STORAGE_KEY, scene) }, [scene])

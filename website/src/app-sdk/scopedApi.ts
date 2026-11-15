@@ -179,6 +179,13 @@ export function apiPathAllowed(allowedPaths: readonly string[], path: string): b
   return matchesDeclared(allowedPaths, new URL(path, 'http://localhost').pathname)
 }
 
+/** The refusal for a path the app's `permissions.api` does not admit: the
+ *  developer diagnostic names the path to declare and what is declared. One
+ *  spelling for every SDK surface that checks a path before it sends. */
+export function permissionDenied(appName: string, path: string, allowedPaths: readonly string[], appLabel: string): AppApiPermissionError {
+  return new AppApiPermissionError(`[app-sdk] App "${appName}" not permitted to access ${path}. Declared: [${allowedPaths.join(', ')}]`, appLabel)
+}
+
 function createScopedApi(allowedPaths: string[], appName: string, sessionKey: string | undefined, appLabel: string): AppApi {
   const check = (path: string): string => {
     // Reject absolute and protocol-relative URLs to prevent SSRF. Backslashes
@@ -193,7 +200,7 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey: st
     const parsed = new URL(path, 'http://localhost')
     const normalized = parsed.pathname
     if (!matchesDeclared(allowedPaths, normalized)) {
-      throw new AppApiPermissionError(`[app-sdk] App "${appName}" not permitted to access ${normalized}. Declared: [${allowedPaths.join(', ')}]`, appLabel)
+      throw permissionDenied(appName, normalized, allowedPaths, appLabel)
     }
     return normalized + parsed.search
   }

@@ -610,9 +610,12 @@ def _md_notebook_degraded_mask_dirs() -> list[str]:
     whole purpose.
 
     When a component of the chain is a planted link the calculus inverts. The Notes
-    backend does not start while this list is non-empty (``apps/backend.py``), so nothing
-    writes into the namespace-only stand-in this mask leaves, where a note would be lost on
-    restart; hiding the directory costs nothing that still works. What it buys is the one exposure skipping leaves behind: a legacy staging orphan
+    backend does not start while this list is non-empty
+    (``md_notebook_state.backend_start_refusal``, the start gate of Notes' row in
+    ``apps/legacy_state_moves`` that ``apps/backend.py`` asks), so nothing writes into the
+    namespace-only stand-in this mask leaves, where a note would be lost on restart; hiding
+    the directory costs nothing that still works. What it buys is the one exposure skipping
+    leaves behind: a legacy staging orphan
     holding real PAT bytes that :func:`_sweep_one_md_notebook_state_dir` cannot delete
     through a link, and that the three leaf masks do not cover because its name is neither
     ``pat`` nor a state file. A directory mask covers every name inside it, orphans
@@ -1262,7 +1265,16 @@ def _materialize_md_notebook_mask_targets(established: list[str] | None = None) 
 
 
 def _migrate_md_notebook_legacy_state() -> list[str]:
-    """Run the Notes builtin's one-time legacy-state move before this sandbox launches.
+    """Run the Notes builtin's first one-time state move before this sandbox launches.
+
+    The bare legacy names into ``md-notebook-staging/`` (:mod:`kiro_crew.md_notebook_state`),
+    a directory every build masks, so it is safe while a sandbox of any build runs. The
+    second move, out of that directory into the app's own ``data/state/``, is NOT run here:
+    an older build's sandbox masks the first directory but not the second, so that move
+    waits until no such sandbox is alive, which only the gateway's callers of Notes' row in
+    ``apps/legacy_state_moves`` check (``md_notebook_state.sealed_legacy_state``: the Notes
+    backend's start, and adoption before and after it swaps the record). Until it seals,
+    this creates the empty ``data/state/`` so the sandbox about to start masks it.
 
     Spawn prep runs it, not only the Notes backend's own spawn, so the first pass and its
     marker that closes promotion happen as early as possible, before an agent of this build
@@ -1277,8 +1289,8 @@ def _migrate_md_notebook_legacy_state() -> list[str]:
     logged and the pass stays unsealed for the next spawn to retry. No agent can plant a
     bare state name meanwhile: :func:`_materialize_md_notebook_mask_targets` runs right
     after this and stubs every bare name, so its mask always mounts, and the Notes backend
-    does not start until the pass is sealed (``sealed_default_legacy_state`` in
-    ``apps/backend.py``). An absent data home is left absent: there is nothing to move.
+    does not start until the pass is sealed. An absent data home is left absent: there is
+    nothing to move.
     """
     # Local, not top-level: every module-level name here is an owner name the
     # ``kiro_crew.sandbox`` facade inventory forwards, and a module alias is not one.
@@ -1297,8 +1309,16 @@ def _migrate_md_notebook_legacy_state() -> list[str]:
         # where a write would land, so it writes nothing. The Notes backend's own writer
         # refuses the same chain, so nothing on this host writes Notes state at all.
         return []
+    app_state_dir = Path(root).joinpath(*mns.APP_STATE_PARTS)
     try:
-        return mns.migrate_legacy_state(state_dir, Path(root).joinpath(*mns.LEGACY_DIR_PARTS))
+        moved = mns.migrate_legacy_state(state_dir, Path(root).joinpath(*mns.LEGACY_DIR_PARTS))
+        if not (state_dir / mns.APP_MOVE_MARKER).exists() and not carveout_chain_has_planted_link(
+            str(app_state_dir / mns.STATE_FILE_NAMES[0])
+        ):
+            # The second move's destination exists before this sandbox starts, so this
+            # sandbox masks it.
+            mns.ensure_app_state_dir(app_state_dir)
+        return moved
     except OSError as exc:
         # Log and continue: the stubs planted next keep every bare name masked, and the
         # Notes backend stays down until a later pass seals.

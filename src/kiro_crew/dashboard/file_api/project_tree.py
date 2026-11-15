@@ -647,7 +647,7 @@ async def api_project_tree(request: web.Request) -> web.Response:
 
     # ``?dir=``: one folder's own listing, for a folder the whole-project
     # listing named in ``truncatedDirectories``. Every check above has already
-    # run on the project root exactly as before; this only narrows the listing
+    # run on the project root; this only narrows the listing
     # to a folder that must resolve, link-free, to a path inside that root.
     raw_dir = request.query.get("dir", "")
     listing_root = base

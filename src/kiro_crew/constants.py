@@ -566,7 +566,7 @@ MARKER_STRUCTURE_CHARS: frozenset[str] = frozenset(
 #: Wait], details in CHANGELOG[1]``). ``], `` DOES continue the list, by the very
 #: rule that makes ``[OPTIONS: Alpha ], Bravo]`` legal, so no guard applied at the
 #: INTERNAL closer can tell them apart. What decides that shape is the terminator
-#: gate on the bare opener (see :data:`_MARKER_BARE_OPENER_GATE_LINE`), which
+#: gate on the bare opener (see :func:`_marker_labels_have_unmatched_opener`), which
 #: reaches it from the other end -- the ``[`` of ``CHANGELOG[1]`` is the opener
 #: whose partner would end the marker, so the line is declined and left whole.
 _MARKER_LABEL_CONTINUES = rf"(?=[ \t]*[|,]|{_MARKER_CLOSE_CLASS})"
@@ -772,7 +772,7 @@ class _MarkerMatcher:
 
     @property
     def pattern(self) -> str:
-        """The candidate pattern's source, for the tests that pin its shape."""
+        """The candidate pattern's source."""
         return self._pattern.pattern
 
     def finditer(self, text: str) -> Iterator[re.Match[str]]:

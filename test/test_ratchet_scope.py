@@ -149,6 +149,9 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _repo_template: Path) 
     # builder strips.
     for var in (*_GIT_LOCATION_VARS, *_GIT_COMMAND_LINE_CONFIG):
         monkeypatch.delenv(var, raising=False)
+    # A CI run's own base branch must not leak into the synthetic repository.
+    for var in ("GITHUB_BASE_REF", "GITHUB_REF_NAME"):
+        monkeypatch.delenv(var, raising=False)
     fixture_repo = tmp_path / "repo"
     shutil.copytree(_repo_template, fixture_repo)
     # A copied checkout reads as "unstaged changes" on Windows (fresh inode/ctime
@@ -219,6 +222,59 @@ class TestMergeShapes:
 
         assert label == "main...HEAD"
         assert paths == {"feature.py"}
+
+
+class TestReleaseBase:
+    """A backport PR is scoped against the release branch it targets."""
+
+    @staticmethod
+    def _backport_merge_ref(repo: Path) -> None:
+        # release/1.2 is cut at the commit `feature` branched from, gains a
+        # release-only commit, and the PR merge ref merges `feature` into it.
+        # main has moved on with mainline.txt, so main cannot reach HEAD^1.
+        _set_origin_main(repo)
+        _git(repo, "branch", "release/1.2", "feature~1")
+        _git(repo, "checkout", "release/1.2")
+        _commit_file(repo, "release_only.txt", "a fix already on the release branch")
+        _git(repo, "update-ref", "refs/remotes/origin/release/1.2", "release/1.2")
+        _git(repo, "checkout", "--detach", "release/1.2")
+        _git(repo, "merge", "--no-ff", "-m", "merge ref", "feature")
+
+    def test_a_pr_into_a_release_branch_scopes_to_the_change_only(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._backport_merge_ref(repo)
+        monkeypatch.setenv("GITHUB_BASE_REF", "release/1.2")
+
+        paths, label = scope.changed_paths()
+
+        assert label == "merge HEAD^1..HEAD"
+        assert paths == {"feature.py"}
+
+    def test_without_the_base_the_probe_falls_back_to_main(self, repo: Path) -> None:
+        # The shape before the release branch was probed: HEAD^1 is not on
+        # main, so the scope widens to everything since the cut.
+        self._backport_merge_ref(repo)
+
+        paths, label = scope.changed_paths()
+
+        assert label == "origin/main...HEAD"
+        assert paths == {"feature.py", "release_only.txt"}
+
+    def test_a_push_names_its_branch_through_ref_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+        monkeypatch.setenv("GITHUB_REF_NAME", "release/1.2")
+        assert scope._base_branch_refs() == (
+            "origin/release/1.2",
+            "release/1.2",
+            "origin/main",
+            "main",
+        )
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+        assert scope._base_branch_refs() == ("origin/main", "main")
 
 
 class TestWholeTreeOverride:

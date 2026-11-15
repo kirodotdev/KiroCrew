@@ -100,11 +100,10 @@ class TestNoBackendGetsThePointerBack:
 
     @_POSIX_ONLY
     def test_the_md_notebook_carveout_leaves_the_pointer_masked(self) -> None:
-        """The one carve-out that DOES exist must not lift this leaf as a side effect."""
-        hidden = _launcher_hidden(
-            "standard",
-            extra_visible_dirs=sandbox.app_backend_visible_targets(sandbox.MD_NOTEBOOK_APP_NAME),
-        )
+        """What the Notes backend's spawn lifts must not lift this leaf as a side effect."""
+        lifted = sandbox.app_declared_mask_targets(sandbox.MD_NOTEBOOK_APP_NAME, builtin=True)
+        assert lifted, "the Notes backend lifted nothing, so this pins nothing"
+        hidden = _launcher_hidden("standard", extra_visible_dirs=lifted)
         for prefix in _CREW_PREFIXES:
             assert _crew_path(prefix, sandbox._LIVE_TARGET_LEAF) in hidden
 

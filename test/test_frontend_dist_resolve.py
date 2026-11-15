@@ -343,7 +343,7 @@ def test_empty_real_dir_is_replaced_when_candidate_exists(fake_pkg, monkeypatch)
     assert platform_compat.is_link_or_junction(tree_dist)
 
 
-# ── Regression: the existing pwa_file symlink test still passes ────────────
+# ── the pwa_file symlink case ──────────────────────────────────────────────
 
 
 def test_resolver_produces_a_symlink_the_pwa_guard_accepts(fake_pkg, tmp_path, monkeypatch):

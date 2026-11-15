@@ -145,7 +145,7 @@ def test_oac_deploy_policy_no_update_delete():
     assert "cloudfront:UpdateOriginAccessControl" not in actions, \
         "UpdateOriginAccessControl belongs in reaper only"
     assert "cloudfront:DeleteOriginAccessControl" not in actions, \
-        "DeleteOriginAccessControl belongs in reaper only (R39)"
+        "DeleteOriginAccessControl belongs in reaper only"
 
 
 def test_oac_deploy_policy_has_create_and_get():

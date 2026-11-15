@@ -78,6 +78,17 @@ describe('KasBundleCard', () => {
     patchConfig.mockClear()
   })
 
+  it('names the sharing preview, not kiro-cli, when the preview picked the engine', async () => {
+    kasBundleStatus.mockResolvedValue({
+      ...INSTALLED,
+      route: { route: 'bundle', automatic: true, reason: 'chat_runtime_sharing', summary: '' },
+    })
+    renderWithProviders(<KasBundleCard />)
+    const note = await screen.findByTestId('kas-bundle-route-auto')
+    expect(note).toHaveTextContent('The ACP runtime sharing preview is on')
+    expect(note).not.toHaveTextContent('Kiro CLI')
+  })
+
   it('offers Install and holds the switch off while nothing is installed', async () => {
     kasBundleStatus.mockResolvedValue(BASE)
     renderWithProviders(<KasBundleCard />)

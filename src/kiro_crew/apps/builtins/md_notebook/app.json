@@ -22,6 +22,9 @@
     "Optionally index a vault into the Knowledge library so agents can search your notes"
   ],
   "defaultEnabled": false,
+  "credentialMasks": [
+    "state/"
+  ],
   "permissions": {
     "api": [
       "/apps/md-notebook/api",

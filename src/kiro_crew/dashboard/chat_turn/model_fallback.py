@@ -1438,8 +1438,9 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
                     # ``slot._stop_state`` (whose setter bumps ``_stop_generation``
                     # on the idle→active edge) ON THE SLOT and only then routes the
                     # cancel to the linked session key; the link changes which
-                    # session the cancel ADDRESSES, not which counter moves
-                    # (asserted by test_stop_addresses_linked_session.py). So there
+                    # session the cancel ADDRESSES (asserted by
+                    # test_stop_addresses_linked_session.py), not which counter
+                    # moves. So there
                     # is no session-scoped stop counter this guard could miss — the
                     # slot counter is the one every Stop advances.
                     if _replay_owes_delivery(turn):

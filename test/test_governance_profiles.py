@@ -265,7 +265,7 @@ def test_cold_store_transient_error_recovers_on_metadata_change(profiles_dir, mo
     # entry to preserve) a transient read error yields an unbound deny-all →
     # cron surface policy-only. The fingerprint IS committed (NOT uncached — the
     # old uncache hack re-ran iterdir/read_text on every hot-path resolve, an
-    # event-loop wedge GPT flagged). Recovery is therefore picked up the normal
+    # event-loop wedge). Recovery is therefore picked up the normal
     # hot-reload way: when the file's metadata changes again, the next access
     # reloads and the real profile takes effect.
     import os
@@ -365,7 +365,7 @@ def test_unreadable_runtime_reload_fails_closed_bind_preserving(profiles_dir, mo
 
 
 def test_unreadable_reload_commits_fingerprint_no_reread_storm(profiles_dir, monkeypatch):
-    # HIGH (GPT pass 1 #2): a PERSISTENTLY unreadable profile must NOT force a
+    # A PERSISTENTLY unreadable profile must NOT force a
     # re-read (iterdir + read_text) on EVERY synchronous resolve — that runs on the
     # event loop (hooks.on_tool_call) and can wedge the gateway on a slow FS. After
     # the first unrecoverable reload, the fingerprint is committed, so subsequent
@@ -411,7 +411,7 @@ def test_unreadable_reload_commits_fingerprint_no_reread_storm(profiles_dir, mon
 
 
 def test_reload_publishes_valid_update_while_other_profile_unreadable(profiles_dir, monkeypatch):
-    # HIGH (GPT pass 3): a valid TIGHTENING of profile A must be published even when
+    # A valid TIGHTENING of profile A must be published even when
     # profile B is unreadable in the same reload. The whole-store rollback would
     # have discarded A's update (kept the old permissive A). Per-profile handling
     # publishes A's update; B fails CLOSED (bind-preserving deny-all), staying bound
@@ -521,7 +521,7 @@ def test_malformed_profile_fails_closed_and_recovers_on_metadata_change(profiles
 
 
 def test_directory_unenumerable_preserves_last_known_good(profiles_dir, monkeypatch):
-    # HIGH (GPT pass 2): a directory iterdir() OSError on a WARM store must NOT
+    # A directory iterdir() OSError on a WARM store must NOT
     # clear the bind index to policy-only. The prior snapshot is preserved.
     from pathlib import Path
 
@@ -574,7 +574,7 @@ def test_missing_profiles_dir_is_absent_no_warning(profiles_dir, monkeypatch, ca
 
 
 def test_cold_start_dir_error_governed_boot_aborts(profiles_dir, monkeypatch):
-    # HIGH (GPT pass 2): a NON-FileNotFoundError directory error at COLD start
+    # A NON-FileNotFoundError directory error at COLD start
     # (unreadable EXISTING dir, no prior snapshot) must NOT silently clear to
     # policy-only and pass the boot assertion. It is flagged unrecoverable so a
     # governed fleet boot-aborts.

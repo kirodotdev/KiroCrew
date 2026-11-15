@@ -120,9 +120,10 @@ every other app's routes. Each of the four refuses an app token
 (`_require_owner_human`), and its backend's own calls (`live-target`, its removal
 lease) stay in the namespace the gateway admits without a declaration, so the one
 reach the backend token gains is the read of the list. The app repository declares
-the same list. Pinned by `test/test_dev_fleet_permission_parity.py`, which
-registers the real wheel copy and asks `permission_refusal` of that list (None) and
-of the list with a bare `/api/apps` (`permission_widening`).
+the same list. Pinned by `test/test_builtin_permission_parity.py`, which
+registers the real wheel copy and asks `permission_refusal` of that list (None), and
+`test/test_dev_fleet_permission_parity.py`, which asks it of the list with a bare
+`/api/apps` (`permission_widening`).
 
 `raw` returns a successful `Response` without reading it, preserving binary
 bytes, headers and streams. The caller owns consumption and cancellation;
@@ -1591,7 +1592,10 @@ spawn holds the copy as its prepared view and makes the same launch-steering dec
 (`inherits_default_resources`) every Kiro launch makes. An app agent may not take the
 `kirocrew-app-launch-*` prefix; a checkout spec of a copy's name is not refused, because
 kiro-cli never reads it for the copy. A foreign file at the path, a second user-level spec declaring the name,
-or an unregistered agent refuses the turn. A warm-pool process is never claimed for it
+an unregistered agent, or a data home that does not own the shared agents directory
+(`write_failed`: the copy is written through the guarded `_atomic_json_write`; pinned
+by `test_a_launch_copy_is_refused_in_a_foreign_shared_dir`) refuses the turn. A warm-pool
+process is never claimed for it
 (`bypass_app_launch`). After the claim, a Kiro provider that did not ask kiro-cli for
 exactly that copy is refused and reset. Rosters (`list_agents`,
 `is_internal_agent_spec`) leave the copies out, and the copy spawns under its own
@@ -2584,8 +2588,9 @@ behind it.
 
 `hidden: true` on a builtin manifest removes it from the Discover catalog while
 leaving its code and routes fully intact. It stays installable and enablable by
-name from the CLI, and remains visible in the Library once enabled. **Channels**
-carries this flag. **Board** is not hidden but removed: it is listed alongside
+name from the CLI, and remains visible in the Library once enabled. **Workflows**
+carries this flag; **Channels** carried it until it folded into core (§33, "Folding a
+built-in into core"). **Board** is not hidden but removed: it is listed alongside
 `knowledge` (promoted to a built-in surface) and `orchestrated` (merged into the
 unified Chat surface) in the escalation-cleanup sweep, which deletes stale
 installed-app directories so an orphaned entry cannot resurface in the store.
@@ -5683,7 +5688,8 @@ statuses. The page's request carries the owner's session, and the handlers refus
 app token (`source_providers._authorize_owner_request`), so the app's backend token
 gains no reach. A built-in approves what its wheel copy ships at every start, so the
 app repository's copy, which declares the same list, adopts with `permission_refusal`
-None. Pinned by `test/test_code_review_sage_permission_parity.py`.
+None. Pinned by `test/test_code_review_sage_permission_parity.py` and
+`test/test_builtin_permission_parity.py`.
 
 Writers: `website/src/app-sdk/PullRequestPanel.tsx`, `website/src/app-sdk/index.ts`,
 `website/public/vendor/kirocrew-app-sdk.mjs`, `website/src/components/pullRequestClient.tsx`,
@@ -5763,9 +5769,89 @@ app page with whatever it held) and no `footer`. A built-in that opens the picke
 declares the families in its own manifest, so its adopted copy, which reaches the picker
 through this export, declares nothing the built-in did not (E9).
 
+Create Folders From Project (`project-scaffolder`) is that built-in. The wheel pins it
+(`apps/adoption-pins.json`, § 33) at `KiroCrewCaptain/kirocrew-app-project-scaffolder`
+with `minAppSdkLevel` 7, the level of this export, so a host whose record is
+builtin-owned swaps it in place onto that tree at a restart, keeping `data/`,
+`.app_secret`, the approved grants and `enabled`; the rail keeps `/project-scaffolder`
+and the `FolderPlus` glyph. Its repository's `app.json` declares the same four families
+as the wheel copy and nothing else. A fix to the app lands in that repository first; a
+change to the wheel copy needs its `App repo:` line.
+
 Writers: `website/src/app-sdk/ProjectPicker.tsx`, `website/src/app-sdk/index.ts`,
 `website/public/vendor/kirocrew-app-sdk.mjs`, `website/src/app-sdk/sdkLevel.ts`,
 `apps/app_sdk_level.py`.
+
+## 18j. The person's sessions reach an app through the SDK, behind the declared chat paths
+
+`useHostSessions` on `@kirocrew/app-sdk` (`website/src/app-sdk/hostSessions.ts`) hands an
+app page the dashboard's live session list and the acts a person takes on a session from
+it: reply or steer (`send`), decide its pending tool approval (`decide`) and start a new
+session without leaving the page (`create`). It is App Kit seam level 8, shared with §37's
+directory entries; a host can report 8 before this seam merged, so an app feature-detects
+the export through a namespace import, never the level alone.
+
+It is host code. `sessions` projects `selectSlotsWithLiveLastTs` newest first by
+`recencyEpoch`, with the title `sessionDisplayTitle` gives, the agent label
+`agentOrDefaultLabel` gives against the dashboard's own shared `['default-agent']` entry
+(read with the dashboard's query client, which its socket keeps current, not the app's),
+the live state, the message count and the newest message. `send` is chat-core's `sendTurn`
+over the dashboard wire, `decide` is `api.decideApproval` and `create` is
+`api.createChatSlot()`, so a session the app shows reads and behaves as the sidebar's row
+does. The scoped transport alone could not: its `POST /api/chat/slots` names the app
+(`embed_app`), which makes a session the app owns rather than the person's, and the live
+list would be a full re-read on every `mc:app:slots`.
+
+Which members an app may use is decided by the identity the host published, the way §18i
+decides the picker:
+
+- **external**: a member is admitted once `apiPathAllowed` admits every path it sends,
+  each on its own (`HOST_SESSIONS_PATHS`): `sessions` needs `/api/chat/slots` and
+  `/api/config/default-agent`, `send` needs `/api/chat`, `create` needs `/api/chat/slots`
+  and `/api/dashboard/config` (the default memory mode `createChatSlot` reads), and
+  `decide` checks the one route it sends, `/api/chat/slots/<key>/approve` for a session's
+  own request or `/api/approvals/<id>/<action>` for a background one. A member not
+  admitted sends nothing: `sessions` is `null`, the default-agent read stays disabled, and
+  `send`, `create` and `decide` reject with `AppApiPermissionError`. `can` answers the same
+  checks so a page can hide a control that would refuse.
+- **builtin**: every member, as host code.
+- **none**: the external answer with nothing declared, the refusal.
+
+This grants nothing the scoped transport would not, since a scoped request carries the
+dashboard user's own authority too (the frontend scoping is the trust model's guardrail,
+not a boundary) and the matcher is the same. A pending approval is a frozen object the
+hook hands out; its decide target (`ApprovalTarget`, with the native `mid` or the
+coordinator `instance`) is kept in a `WeakMap` keyed by that object and never published,
+so an app decides only a request the dashboard showed it, and an object it built itself
+decides nothing (`gone`, no request sent). `decide` resolves to the dashboard approval
+card's own outcome and words: `decided`, `settled` (another person decided first, 409
+`already_resolved`, `settledElsewhereLine`), `gone` (`isTerminalApprovalRefusal`) or
+`failed` with the card's sentence and the journaled error report. `send` resolves to the
+chat-core receipt status (`dispatched`, `queued`, `refused` with the server's reason,
+`unknown`, `response-late`, `transport-error`) and never rejects for a delivery outcome.
+Opening a session in the chat stays `useChatLauncher().openChat({ slotKey })`; reading a
+session's messages, the cron list and the subagent list stay scoped reads
+(`GET /api/chat/slots/<key>`, `GET /api/crons`, `GET /api/spawn`).
+
+Agent Worlds' wheel copy declares what its page calls today (owner ruling of 2026-11-13 on
+#26967, comment 6841699202: an app gets what its built-in already uses, declared in the
+wheel copy first so adoption is no widening): `=/api/chat`, `/api/chat/slots`,
+`/api/approvals`, `=/api/crons`, `=/api/spawn`, `=/api/config/default-agent` and
+`=/api/dashboard/config`. The two families are bare because their key is a path segment;
+every other entry is exact. The app repository declares the same list. Pinned by
+`test/test_builtin_permission_parity.py`, which registers the real wheel copy and asks
+`permission_refusal` of that list (None), and `test/test_agent_worlds_permission_parity.py`,
+which asks it of the list plus one path and of a bare
+`/api/chat` (`permission_widening`). The built-in page itself is unchanged.
+`AppSdkHostSessions.test.tsx` pins the three answers, each member's own admission, that
+every request the members send is admitted by the documented list, the create without
+`embed_app`, both decide routes, the decide outcomes and the forged approval.
+
+Writers: `website/src/app-sdk/hostSessions.ts`, `website/src/app-sdk/index.ts`,
+`website/src/app-sdk/scopedApi.ts` (`permissionDenied`, the one refusal both share),
+`website/src/api/client/approvals.ts` (`decideApprovalPath`, the route both the decide and
+its check read), `website/public/vendor/kirocrew-app-sdk.mjs`,
+`apps/builtins/agent_worlds/app.json`.
 
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
@@ -7027,7 +7113,8 @@ manifest's `agentReadOnlyDirs` (§39), the backend SDK package (§40), the deskt
 window host's spanning overlay, background window, panel gutter and the messages between
 an app's windows and `permissions.desktopCapabilities` (§35), the exact `permissions.api` entry (§ Scoped frontend HTTP
 transport), `ctx.chat_slots` (§41), the SDK's project picker (§18i) and `ctx.webhook_source` (§42); level 8 adds directory entries in `credentialMasks`
-(§37). Several seams share level 7, so an app that needs one
+(§37), the SDK's `useHostSessions` (§18j) and the desktop block's `platformAccelerators`
+(§35). Several seams share level 7, and three share level 8, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
@@ -7249,9 +7336,10 @@ already has it. A release that pins the app still ships its wheel copy; on a hos
 whose record is builtin-owned, the gateway swaps the record **in place** onto the
 pinned repository tree, keeping `data/`, `.app_secret`, the approved grants and
 `enabled`. A host that cannot adopt keeps running the wheel copy unchanged. Core
-names no app anywhere in this machinery: the pin table is data, and
-`test_builtin_adoption_pins.py` fails on a shipped built-in name in any adoption
-module.
+names no app anywhere in this machinery but one stated place, the row keys of
+`apps/legacy_state_moves` ("A legacy state move holds the swap" below): the pin table
+is data, and `test_builtin_adoption_pins.py` fails on a shipped built-in name in any
+adoption module other than that listed exception, and on a row key it does not list.
 
 **What the swap keeps is `data/`, so a built-in keeps its state there before it
 is pinned.** Everything else in the record's directory is retired with the old
@@ -7271,6 +7359,51 @@ package beside `app.json`, and its repository ships both. The record keeps
 running the built-in, whose startup hook moves the file, and the next start
 adopts. A user who never started the release carrying that hook loses nothing.
 Research Lab's campaigns database is the worked case (knowledge.md § 7).
+
+**A legacy state move holds the swap.** A built-in whose state core itself still
+moves out of a layout core used to own (outside the app's directory, masked and handed
+back by name) cannot move it from a startup hook: the old location is core's, and only
+the gateway may read it. Such a built-in has one data row in the core-owned table
+`apps/legacy_state_moves.LEGACY_STATE_MOVES` (today only Notes, whose
+`md_notebook_state` moves `md-notebook-staging/` into `apps/md-notebook/data/state/`;
+[md-notebook](md-notebook.md#state-layout)). A row is two callables of the core module
+that owns the move, `seal()` (run the move under its own safety checks; whether the
+state is now final in `data/`) and `start_refusal()`; no manifest field reads or adds
+one, so an app cannot declare, widen or name a move. The row key is the one place the
+adoption machinery names an app, a stated exception rather than a seam: a row exists
+only for a layout core itself created, so the move's code is core's and so is the row
+that binds it to the app, and the built-in cannot declare it in its own package (§ 34),
+which leaves the wheel while an adopted host still needs the move. The key is a literal,
+so both name gates see it: `test_builtin_adoption_pins.py` lists it as its one exception
+and compares the live keys to that list, and `test_core_md_notebook_decoupling.py` lists
+the Notes key with the old layouts it goes with.
+Three callers, each on the former built-in's provenance only, since the move writes
+the built-in's state into the record's `data/`:
+
+- APPLY, after the `staged` ledger and seam-level checks and before the staged tree is
+  copied, asks `sealed_for_adoption(name)`, which runs the move. Until it seals (a
+  copy failing, an extra hard link on the token, a sandbox of an earlier build still
+  alive, a crash at any step) the outcome is `state_move_pending`: the ledger stays
+  `staged`, a crash-surviving `granting` grant is rolled back as for the other holds,
+  the built-in keeps running, and the next boot asks again. It runs whether or not the
+  app is enabled, so a host whose built-in was disabled at the upgrade (its backend
+  never started, so nothing moved) is not adopted onto an empty `data/`.
+- APPLY, for a pin whose record is not builtin-owned, runs `seal_adopted(name)`: the
+  move, only when `builtin_adoption_gate.adopted_under_pin_trust` holds, at every boot,
+  enabled or not. A record adopted before its move sealed still gets it; a third-party
+  record under the name, or a grant bound to another repository, gets nothing.
+- The backend spawn asks `backend_start_refusal(name, builtin=...)` for the shipped
+  built-in (`is_builtin_app` on the executed path) or a record adopted under pin trust,
+  and does not start while it answers a reason; every other app starts as before.
+
+A host-side gate, not an app-reachable seam, so it carries no `APP_SDK_LEVEL`: the
+pin table that names an app ships in the same wheel as this gate. Pinned by
+`test/test_legacy_state_moves.py`, end to end through STAGE and APPLY with the real
+Notes moves, including a stop at each step of the move;
+`test/test_app_backend_spawn_env.py` (`TestTheSpawnAsksALegacyStateMoveOnProvenance`)
+drives the backend spawn for the shipped built-in, another app under the name and a
+record adopted under pin trust, so the provenance the spawn passes is pinned by
+behaviour.
 
 **Pins.** `apps/adoption-pins.json` (packaged; each row is the output of
 `scripts/adoption_pin.py compute`, re-checked with `adoption_pin.py verify`, and the
@@ -7297,6 +7430,24 @@ merge base, the base tip or the head, unless the body carries one
 app, with the pin row's `repository` slug: the change lands in the app repository
 first. Deleting a wheel-copy file is always allowed. The line's shape and slug are
 checked, not that the commit carries the same change.
+
+**A pin is held to the wheel copy it was ported from.** A pin PR stays open while
+the wheel copy keeps changing, so its commit can go stale before it merges. The same
+step therefore treats every row the PR adds or changes (the head table's row differs
+from the merge base's) as needing one `Wheel-copy base: <name>@<sha>` line, the core
+commit whose wheel copy the pinned app-repo commit carries, and fails while the
+app's non-test wheel copy at the base tip differs from the one at that commit,
+deletions included. The base tip is compared, not the head: a pin PR usually
+changes the wheel copy itself (its `app.json` version, which a first pin must
+equal), and the PR's own changes are what its `App repo:` line covers. The fix is
+to port the later change to the app repository, re-pin, and name the newer base. The
+base tip is the one at the PR's last event (opened, push, reopen or body edit):
+PR Hygiene does not re-run when main moves, and readiness does not bind the base
+commit, so a wheel-copy change that lands after that event is not caught until the
+next one. Whoever approves a pin PR therefore edits its body (or pushes) right before
+approving, which re-runs the check against the current tip. The comparison reads
+trees only (`git diff-tree`), so the named commit must be in the head's or the base
+tip's history, and an unreadable one fails closed.
 
 **Who owns the pinned repositories.** The first-party app repositories a pin
 names live under `KiroCrewCaptain`, the Kiro Crew team's GitHub bot account, and
@@ -7568,8 +7719,9 @@ the other two keys and only the marker is dropped, so the next APPLY meets
 `trust_conflict`; with the binding gone only the added name is removed, never the
 local marker restored. Success sets the marker `adopted`. A grant a crash left behind
 (a `granting` marker for the pin commit) is rolled back the same way when APPLY
-refuses before the swap: a `blocked` ledger, `host_sdk_too_old`, a staged tree
-that no longer verifies, or a record held by state beside `app.json`. A `granting` marker for a name the wheel no longer pins is
+refuses before the swap: a `blocked` ledger, `host_sdk_too_old`, a pending legacy
+state move, a staged tree that no longer verifies, or a record held by state beside
+`app.json`. A `granting` marker for a name the wheel no longer pins is
 not visited; the release that drops a pin row owns that cleanup.
 
 **Durable state.** `agent.apps_builtin_adoption` in `config.json` (sealed
@@ -7717,9 +7869,23 @@ targets, headroom, mode) is not declared, so its token is refused there. The
 slots its `/api/ws` connect snapshot shows it: its own, plus what its declared `slots:*`
 scopes add, none for a disabled app (`chat_api/slot_detail.py:api_chat_slots` through
 `ws_event_scope.filter_slots_for_app`, pinned by `test/test_chat_slots_app_token_view.py`).
-The person and an internal-secret caller keep the full list. Pinned by `test/test_design_tweak_permission_parity.py`,
+The person and an internal-secret caller keep the full list. Pinned by `test/test_builtin_permission_parity.py`,
 which registers the real wheel copy and asks `permission_refusal` of the repository's
-list (None) and of that list plus one more path (`permission_widening`).
+list (None), and `test/test_design_tweak_permission_parity.py`, which asks it of that
+list plus one more path (`permission_widening`). Agent Worlds declares the host paths its page calls the same way (§18j).
+
+The wheel pins Design Tweak (`apps/adoption-pins.json`) at
+`KiroCrewCaptain/kirocrew-app-design-tweak` with `minAppSdkLevel` 8. The tree's own
+seams (`agentTools`, the exact `=/api/chat` entry) are level 7, but the exact-entry
+grammar landed after the level-7 constant did, so a level-7 host cut before it would
+read `=/api/chat` as a literal no path equals and the page could not send; level 8 is
+the first that always carries it. A host whose record is builtin-owned swaps it in
+place onto that tree at a restart, keeping `data/`, `.app_secret`, the approved grants
+and `enabled`; the rail keeps `/design-tweak` and the `Paintbrush` glyph, and the
+wheel copy's `version` is the pinned one (D12). The repository's `app.json` declares
+the same `permissions`, `agentTools` and `skills` as the wheel copy, so E9 holds
+nothing back. A fix to the app lands in that repository first; a change to the wheel
+copy needs its `App repo:` line.
 
 **The trust prompt names the host paths.** `TrustAppModal` lists the manifest's
 `permissions.api` entries outside the app's own namespace in a box of their own, as
@@ -7772,32 +7938,41 @@ next start a no-op. The owner's records under `member-records/` are left as they
 
 When the app's enabled state was the feature's switch, `_FOLDED_BUILTIN_SWITCHES`
 maps the name to the dotted `config.json` path that is the switch now, and
-`apps/builtin_fold.carry_folded_switch` writes the record's off state there before
+`apps/builtin_fold.carry_folded_switch` writes the record's state there before
 the record is retired. The state is `manager_builtins.folded_switch_state`: a record
 of an app that reached installs as a default-on promotion (`_FOLDED_PROMOTED_BUILTINS`,
 the Command Bar) still owed that promotion reads as on unless the owner's protected
 disable or the `apps` allowlist held it off; any other folded app's off record is the
-user's opt-out. Only an off state is written, because every such
-setting defaults on as the app did, and a key already in the file is kept, because
-only Settings writes it. A failed write keeps the record, so
-the next start tries again instead of dropping the opt-out, and until the record is
+user's opt-out. Every such setting defaults to what its app's `defaultEnabled` was,
+on unless the name is in `_FOLDED_OFF_BY_DEFAULT`, and only a state that differs
+from that default is written: an opt-out for a default-on switch, an opt-in for a
+default-off one. A key already in the file is kept, because only Settings (or
+`kirocrew config set`) writes it. A failed write keeps the record, so
+the next start tries again instead of dropping the choice, and until the record is
 retired, and while no config file holds the setting itself, the feature's own check
 reads its off state too (`task_runner_off` for Task Runner, the `builtin`-origin
 record only), since a gateway started without the dashboard never runs the cleanup.
 The Migrate page's
-removal of the same record carries the switch the same way.
+removal of the same record carries the switch the same way. `kirocrew app enable <name>`
+and `app disable <name>` for a name in `_FOLDED_BUILTIN_SWITCHES` write its setting
+(`builtin_fold.set_folded_switch`, called by `cli_commands_app` before it asks a
+gateway), so the command that worked before the fold still does; an app a user
+installed under that name is its own app and takes the ordinary path.
 
 | Former app | Switch | Where it is turned on and off |
 |---|---|---|
 | `command-bar` (Command Bar) | `dashboard.command_bar_enabled` | Settings > Display > View ([command-bar](command-bar.md)) |
 | `projects` (Task Runner) | `taskrunner.enabled` | Settings > Display > View; every start reads it through `taskrunner_switch.task_runner_off`, which also keeps the `apps` governance allowlist deciding it under the old name |
+| `channels` (Channels) | `dashboard.channels_enabled`, default off | `kirocrew app enable channels` or `kirocrew config set`, then Settings > Display > View, whose row is drawn and offered by a settings search only while it is on, as the hidden app was listed in Library only while enabled ([persistent-agent-channels](persistent-agent-channels.md)). It decides only the sidebar row and Search Everywhere result: the page and `/api/channels` were served whatever the app's state, so there is no start gate to carry and no `apps` allowlist read |
 
 On the dashboard the page becomes an ordinary surface (`surfaces/surfaceData.ts`)
 and keeps what its app row had: the nav id (the app's bare name, so the rail's saved
 order and unpinned set still find it), its icon, its place in the Apps group until
 the user drags the group (`formerApp`, `naturalAppGroupOrder`), and its pop-out
 window (`pages/corePopoutPages.tsx`). The surface's `configSwitch` takes it off the
-rail and out of Search Everywhere while its setting is off; its route stays. The
+rail and out of Search Everywhere while its setting is off; its route stays. A
+default-off switch (`configSwitchDefault: false`) reads a config not read yet as off,
+so the row never flashes in before the gateway answers. The
 setting's own row shows the gateway's value alone; Library no longer lists the row,
 so turning the setting on also pins back a row Library had unpinned in a browser. A
 built-in record the former app left behind (its cleanup could not retire it yet)
@@ -7808,8 +7983,11 @@ user installs under the same name is its own app on both, and only the built-in
 record is read by the feature's own check.
 
 Tests: `test/test_task_runner_fold.py`, `test/test_taskrunner_switch.py`,
+`test/test_channels_fold.py`,
 `website/src/shell/nav/appRail.formerApp.test.tsx`,
+`website/src/shell/nav/appRail.channels.test.tsx`,
 `website/src/pages/settings/TaskRunnerSetting.test.tsx`,
+`website/src/pages/settings/ChannelsSetting.test.tsx`,
 `website/src/pages/corePopoutPages.test.ts`,
 `website/src/components/commandPalette/providers/pagesProvider.configSwitch.test.ts`,
 `website/src/appNav.test.ts`.
@@ -7818,7 +7996,9 @@ Tests: `test/test_task_runner_fold.py`, `test/test_taskrunner_switch.py`,
 
 The core names no built-in app. Where a shipped built-in needs something from the host
 that no manifest field may ask for, the built-in declares it and the core reads it
-through one seam that is empty by default:
+through one seam that is empty by default (the one stated exception, core's own move
+of a built-in's state out of a layout core created, is a core row keyed on the app: § 33,
+"A legacy state move holds the swap"):
 
 - **Host grants** (`apps/builtin_host_grants.py`). A package in `BUILTIN_NAMES` may ship
   a `host_grants.py` data module holding one `HOST_GRANTS` mapping: `build_rlimit` (the
@@ -7902,11 +8082,16 @@ card it draws, which placement beside an anchor leaves out. A `background` windo
 page that is never shown: 16 by 16, never on screen, invisible to screen capture, never
 throttled, at most one per app. It owns work that must outlive any one display (a
 notification socket, a reminder poll). A shortcut has an `id`, an `accelerator` and the `window` it is
-delivered to. The accelerator must hold two different modifier keys on every
+delivered to, and optionally `platformAccelerators` (`macos`, `windows`, `linux`): a
+different default on the platforms it names, `accelerator` being the default elsewhere
+(a desktop pet's defaults differ per platform: `CommandOrControl+Shift+M` on macOS,
+`Alt+Shift+M` elsewhere, because `Ctrl+Shift+<letter>` is taken there). Every
+accelerator, each platform's included, must hold two different modifier keys on every
 platform (counted per platform: on macOS `CommandOrControl`, `Command` and `Super` are
 one key, elsewhere `CommandOrControl` and `Control` are), so at least one is not Shift,
 and one letter, digit, F-key, arrow or Space, so no app can take a single-modifier
-chord such as copy or paste; two spellings of one chord are one chord.
+chord such as copy or paste; two spellings of one chord are one chord, and no two
+shortcuts share a default on any one platform.
 Anything else is an install refusal (`apps/desktop_manifest.py`), the block is in
 `signing_payload`, and built-in discovery keeps it. The shell re-checks every rule
 (`website/electron/app-window-host-rules.js`) and drops a declaration it refuses whole,
@@ -7924,7 +8109,14 @@ does not proceed. A shortcut is never given to an app when the shell's own owner
 its configured chords in `website/electron/shell-shortcut-reservations.js` (Mochi's
 even while it is disabled, the summon hotkey's on every rebind), the host refuses a
 reserved chord, and a reservation of a chord an app holds releases it synchronously,
-before the owner's own `register()` runs. A chord another app or another program holds
+before the owner's own `register()` runs. One hand-over: an owner that is an app's own
+shell code reserves `{ app: true }` under that app's id, and the host serving the app of
+that id may bind those chords, so an adopted copy is not refused its own; every other
+app still is, and an owner that is no app (the summon hotkey) is never handed over,
+whatever an app is named. An owner opts in only once its own code stands down for the
+copy the host serves, or both would register the same chords and whichever came second
+would get none: Mochi's reservation stays plain until its built-in steps aside
+(`desktop-host-serve`, #37454). A chord another app or another program holds
 at that moment is not taken either: the app holding a chord keeps it for as long as it
 still declares that binding, whatever order the app list arrives in, and an app enabled
 later that declares the same chord gets it only once the holder lets it go. Each
@@ -7977,6 +8169,44 @@ the built-in companion's `crew-companion/panelPlacement.js` re-exports it). Such
 workspace, a panel already open is moved there and brought forward, and the panel hears
 `onPlaced({side})`. A transparent panel has no native shadow.
 
+**Per machine: shortcut bindings.** What the host keeps per app on this computer is
+`website/electron/app-window-prefs.js`, in the shell's own 0600 `app-window-prefs.json`
+(a store that cannot open leaves the host on an in-memory one). It lives in the shell,
+not on a gateway, because a window's `localStorage` is its gateway origin's and the
+same app's window may be served by another crew; that is ruling 5 of #26967 comment
+6713005850 (the window seam's global shortcuts), the gap #36349 left under "Not a goal".
+A page gets no generic per-machine store: the per-machine facts a built-in kept
+(Mochi's are the crew it shows and the rebinds) are the gateway choice and the
+bindings, and a built-in hands its own over from its own shell code (below), so the
+host carries no import of a store another program wrote:
+
+- A shortcut binds at the user's chord for it, else at its declared default for this
+  platform; `""` leaves it unbound. A binding the chord rules refuse falls back to the
+  default, and where a binding lands on another of the app's shortcuts' defaults the
+  binding keeps the chord and the other waits until the user moves one. The app's own
+  Settings page lists them (`shortcuts()`) and rebinds one (`setShortcut(id,
+  accelerator)`, `""` to unbind, `null` for the default) only for a shortcut the app
+  declares, only while the user is acting in that window (the 2 s press rule below),
+  only to a chord the manifest's rule allows and no other of the app's shortcuts is on.
+  A chord other than that shortcut's declared default must be one the user pressed in
+  that window within those 2 s: the shell reads the press from Electron's
+  `before-input-event` (`keyDown`, not a repeat; the key from its position or its
+  character, the modifiers as the keys they are on this platform,
+  `keyPressChords`/`pressedChord` in `app-window-host-rules.js`), one press answers one
+  request, and anything else is refused `not-pressed`. So the page records the user's
+  choice and never picks a chord itself, and the only chord no press chose is the one
+  the publisher signed. The new chord (the default, for `null`) is registered for the
+  shortcut before the binding moves and the old chord is released, so a chord a shell
+  owner reserves, another app or another program holds leaves the previous binding and
+  the chord it held: a refusal never frees the old chord for another app declaring it.
+  The host reads each store key once and keeps it in memory (it is the only writer), so
+  `shortcuts()` touches no disk.
+- Kept by app name, the way core keeps the app's `data/`: the default uninstall keeps
+  it and a reinstall under the name gets it back (`manager_uninstall.uninstall_app`,
+  `keep_data=True`), so an app missing from one listing (a damaged record is skipped)
+  loses nothing. An explicit purge removes `data/` but not this store: the shell is not
+  told of it.
+
 **What a window the user is acting in may ask of the shell.** `showSession(slotKey)` raises the
 dashboard window and routes it to that session (`/chat?sid=`), or only raises it for
 `""`, and resolves true only when the dashboard is there to show it, so a caller keeps a
@@ -8005,11 +8235,12 @@ its app still declares it, at most once per tick interval; one that dies again s
 reopened by the next tick, `openOnEnable` or not, unless it was closed on purpose in
 between (by `close(id)` or `closeAll()`), so a crash loop runs at tick cadence.
 
-**The bridge.** The page gets `window.kirocrewDesktopWindow`: `level` (2), `app`,
+**The bridge.** The page gets `window.kirocrewDesktopWindow`: `level` (3), `app`,
 `window`, `kind`, `ready()`, `close(id?)`, `open(id, options?)`, `setHitRegions(rects)`,
 `setFocusable(bool)` and `onShortcut(cb)`; level 2 adds `closeAll()`, `send`,
 `broadcast`, `onMessage(cb(from, message))`, `onWindowChange`, `onPlaced`, `onActive`,
-`beginDrag`, `endDrag`, `onDrag`, `showSession`, `openExternal` and the capability calls below. The identity is informational: the host
+`beginDrag`, `endDrag`, `onDrag`, `showSession`, `openExternal` and the capability calls below;
+level 3 adds `shortcuts` and `setShortcut` (above). The identity is informational: the host
 resolves every message to the window that sent it, from its main frame, still showing
 its own document, and acts only within that window's own app declaration. A page can
 open only a window its own app declares, shape (hit regions, focus) only an overlay, and
@@ -8072,7 +8303,11 @@ Kit seam level 7 (`APP_SDK_LEVEL`): a gateway below it refuses `displays`, `gutt
 `minAppSdkLevel` 7. Level 2 also adds `capabilities`, `revealFile`, `openImage`,
 `listGateways` and `chooseGateway`; their gateway half (the `permissions.desktopCapabilities`
 key and its grant row) is level 7 too, and a gateway below it sends no
-`desktopCapabilitiesGrant`, so the shell serves no capability.
+`desktopCapabilitiesGrant`, so the shell serves no capability. Bridge level 3 adds the
+shortcut calls; their manifest half, `platformAccelerators`, is App Kit seam level 8,
+sharing the unreleased level with `credentialMasks` directory entries (§37) and
+`useHostSessions` (§18j), so a gateway below it refuses it at install and
+`scripts/adoption_pin.py` maps it to 8.
 
 **Shown at install.** A registry row carries the manifest's `desktop` block under
 `manifest` (`registry_pipeline/manifests.py`), and the trust prompt lists the shapes it declares (an overlay,
@@ -8088,8 +8323,31 @@ drag hand-off, the hidden notification owner it relays through, the panel beside
 avatar, the gallery, opening a session, opening an https link, turning itself off) has
 a generic counterpart above, so its own repository's copy needs no main-process code;
 the built-in keeps its windows until that copy is adopted, so nothing changes for a
-user before then. Its dashboard-routing check now lives in `dashboard-session.js`,
-which the built-in and the kirocrew:// deep link share. Mochi's manifest already declares the three
+user before then. Once the gateway's row for the name is no longer
+`origin: "builtin"` (an adopted copy is a registry record), the built-in's reconcile
+reads it as `released` and closes its windows whatever the row's enabled flag says, so
+the copy's own windows never run beside a second avatar and a second notification
+owner; a row with no `origin` (a gateway older than the field) is the built-in's, as
+before. Before the host starts, the built-in's own `initCrewCompanion` copies the display
+the built-in avatar last lived on (its userData `crew-companion-pet-position.json`) into the host's
+`app-window-displays.json` under `crew-companion/pet`, the avatar window the app's
+repository declares, and records the value copied (`crew-companion-display-handoff.json`);
+it copies again at a later start only while the host's entry still holds that recorded
+value, so a move of the built-in avatar before adoption reaches the host and a display
+the host chose itself after adoption is never overwritten
+(`crew-companion/displayHandOff.js`). A multi-display user finds the avatar where it
+was. Both live in the built-in's own shell directory and leave with it. Its dashboard-routing check now lives in `dashboard-session.js`,
+which the built-in and the kirocrew:// deep link share. At every start, before the host is created, its `initMochi` copies the crew the pet
+shows and the user's rebinds from its `mochi-machine.json` into the host's gateway
+choice and bindings for `mochi` (the ids its repository declares: `toggle-window`,
+`hide-all`, `screen-capture`; a chord at the built-in's default is no binding, and a
+rebind the host's rules refuse keeps the host's default), recording the value copied
+under `mochi.hostHandOff` in its own store. It copies again only while the host still
+holds that recorded value (or, before any copy, holds nothing of its own), so a change
+in the built-in before adoption reaches the host and a choice the user makes through
+the host (a reset, "self", a new chord) is never overwritten
+(`mochi/hostHandOff.js`, the same rule as Crew Companion's display hand-off). It
+lives in Mochi's shell directory and leaves with it. Mochi's manifest already declares the three
 capabilities its shell code uses (the wheel copy first, so an external Mochi declaring
 them is no widening), and its reveal-file and open-image handlers run `app-local-files.js`.
 `website/electron/test/app-window-host-independence.test.js` pins the host free of
@@ -8103,7 +8361,9 @@ Writers: `apps/desktop_manifest.py`, `apps/desktop_capabilities.py`, `apps/manif
 `website/electron/app-window-host-rules.js`, `website/electron/app-window-preload.js`,
 `website/electron/app-window-span.js`, `website/electron/app-window-placement.js`,
 `website/electron/app-local-files.js`, `website/electron/app-window-gateways.js`,
-`website/electron/dashboard-session.js`, `website/electron/main.js`,
+`website/electron/app-window-prefs.js`, `website/electron/shell-shortcut-reservations.js`,
+`website/electron/mochi/hostHandOff.js`,
+`website/electron/dashboard-session.js`, `website/electron/main.js`, `scripts/adoption_pin.py`,
 `website/src/desktopWindow/desktopWindowTarget.ts`,
 `website/src/desktopWindow/DesktopWindowRoot.tsx`, `website/src/components/AppHost.tsx`,
 `website/src/components/appstore/TrustAppDesktopBox.tsx`,
@@ -8117,6 +8377,8 @@ Tests: `test/test_app_manifest_desktop.py`, `test/test_app_desktop_capabilities.
 `website/electron/test/app-window-gateways.test.js`,
 `website/electron/test/app-window-host.test.js`,
 `website/electron/test/app-window-host-span.test.js`,
+`website/electron/test/app-window-host-prefs.test.js`,
+`website/electron/mochi/test/hostHandOff.test.js`,
 `website/src/test/TrustAppModalDesktop.test.tsx`,
 `website/electron/test/app-window-host-rules.test.js`,
 `website/electron/test/app-window-preload.test.js`,
@@ -8783,6 +9045,17 @@ its own module is seen.
 **The built-in.** Spec Builder's wheel copy declares `chatSlots`, so an adopted copy
 that reads `ctx.chat_slots` is not a widening. The installed copy feature-detects the
 attribute and falls back to its named host lookups on an older host.
+
+The wheel pins Spec Builder (`apps/adoption-pins.json`, § 33) at
+`KiroCrewCaptain/kirocrew-app-spec-builder` with `minAppSdkLevel` 7, the level of
+`chatSlots`, `ctx.chat_slots` and the `agentReadOnlyDirs` entry `trust` (§39), so a
+host whose record is builtin-owned swaps it in place onto that tree at a restart,
+keeping `data/` (the decision record under `data/trust/` included), `.app_secret`, the approved grants and `enabled`; the rail keeps
+`/spec-builder` and the `ClipboardList` glyph, and the wheel copy's `version` is the
+pinned one (D12). The repository's `app.json` declares the same `permissions`,
+`agentReadOnlyDirs` and `skills` as the wheel copy, so E9 holds nothing back. A fix to
+the app lands in that repository first; a change to the wheel copy needs its
+`App repo:` line.
 
 Writers: `apps/chat_slot_sdk.py`, `apps/context.py`, `apps/manifest_sections.py`,
 `apps/builtin_adoption_checks.py`, `apps/permissions.py`, `apps/official_catalog.py`,

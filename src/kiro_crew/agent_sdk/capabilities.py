@@ -15,7 +15,8 @@ So this module carries one frozen record per session, with one field per questio
 a consumer OUTSIDE ``kiro_crew.agent_sdk`` actually asks, and consumers read the
 field. The identity of the backend is still in :attr:`SessionCapabilities.backend`
 because a log line and an error message need to name it — but nothing branches on
-it, and ``test_agent_sdk_capabilities`` pins that.
+it. ``test_agent_sdk_capabilities`` pins that the migrated consumers do not
+read the old backend-identity checks.
 
 Every field is a TRANSLATION of a table that already existed in
 :mod:`kiro_crew.agent_sdk.backends`, not a new judgement. That is deliberate and
@@ -64,7 +65,9 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_NATIVE_TODOS,
     ACP_BACKENDS_NATIVE_WORKFLOWS,
+    ACP_BACKENDS_PLAN_CHECKLIST,
     ACP_BACKENDS_REMOTE_MCP_OAUTH,
+    ACP_BACKENDS_TOOL_TITLE_REFINEMENT,
     model_registry_namespace,
 )
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_CODE
@@ -176,6 +179,15 @@ class SessionCapabilities:
     #: Unknown and newly registered backends remain False until they opt in.
     supports_native_todos: bool
 
+    #: Whether this harness keeps the agent's checklist itself and sends it as an
+    #: ACP ``plan`` (:data:`ACP_BACKENDS_PLAN_CHECKLIST`), rather than through
+    #: kiro-cli's ``todo_list`` tool.
+    #:
+    #: True means the dashboard's checklist sync and recovery blocks, which tell the
+    #: agent to call ``todo_list``, are never prepended to its prompt: it has no such
+    #: tool. False keeps them, which is right for kiro-cli and harmless elsewhere.
+    keeps_own_checklist: bool
+
     #: Whether this harness runs ANY leading-slash prompt as one of its own commands.
     #:
     #: True where the adapter resolves the name itself (Claude Code's ``/review``,
@@ -230,6 +242,17 @@ class SessionCapabilities:
     #: harness, so an unknown backend loses nothing.
     native_workflows: bool
 
+    #: Whether a ``tool_call_update`` carries a call's real title after a first
+    #: ``tool_call`` that named it before its input had streamed
+    #: (:data:`ACP_BACKENDS_TOOL_TITLE_REFINEMENT`), so a Crew-spawned subagent's
+    #: Subagents card takes the refined title for that call's row.
+    #:
+    #: True for claude, whose first frame of a call carries the tool's generic title
+    #: ("Terminal", "Read File"). False keeps the card on the titles of the call and
+    #: its permission request, which is right for kiro-cli: the update that ends its
+    #: failed call carries the bare tool name, a worse title than the first.
+    refines_tool_call_titles: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -254,11 +277,13 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         crew_fires_spec_hooks=backend in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
         crew_fires_spec_observer_hooks=backend in ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
         supports_native_todos=backend in ACP_BACKENDS_NATIVE_TODOS,
+        keeps_own_checklist=backend in ACP_BACKENDS_PLAN_CHECKLIST,
         runs_own_slash_commands=backend in ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS,
         honors_zero_tool_ban=backend in ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
         acp_client_spawnable=backend in ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
         honors_remote_mcp_oauth=backend in ACP_BACKENDS_REMOTE_MCP_OAUTH,
         native_workflows=backend in ACP_BACKENDS_NATIVE_WORKFLOWS,
+        refines_tool_call_titles=backend in ACP_BACKENDS_TOOL_TITLE_REFINEMENT,
     )
 
 
@@ -286,11 +311,13 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     crew_fires_spec_hooks=False,
     crew_fires_spec_observer_hooks=False,
     supports_native_todos=False,
+    keeps_own_checklist=False,
     runs_own_slash_commands=False,
     honors_zero_tool_ban=False,
     acp_client_spawnable=False,
     honors_remote_mcp_oauth=False,
     native_workflows=False,
+    refines_tool_call_titles=False,
 )
 
 

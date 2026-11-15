@@ -648,6 +648,7 @@ class TestOpenAiCompatPin:
         slot.agent = CREW
         slot.mode = DM_SLOT_MODE
         slot.task = None
+        slot.is_closing = False
         slot.event = _asyncio.Event()
         slot.drain = MagicMock(return_value=[])
         state = MagicMock()

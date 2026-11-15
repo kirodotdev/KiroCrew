@@ -2343,10 +2343,20 @@ Pair it with `platform.requiresDesktopApp` when the window is the app's own inte
 | `desktop.shortcuts[]` | object[] | 0 to 4 global shortcuts |
 | `desktop.shortcuts[].id` | string | Delivered to the page when pressed |
 | `desktop.shortcuts[].accelerator` | string | An Electron accelerator with two different modifier keys on every platform (`CommandOrControl+Control` is one key on Windows), one of them not `Shift`, and one letter, digit, `F1`-`F24`, arrow or `Space` key |
+| `desktop.shortcuts[].platformAccelerators` | object | Optional, App Kit seam level 8. A different default on the platforms it names: `macos`, `windows` and `linux`, each an accelerator held to the same rule. `accelerator` is the default elsewhere. No two of your shortcuts may share a chord on any one platform |
 | `desktop.shortcuts[].window` | string | The window the press is delivered to; it is opened first if closed |
 
 Any other key or value is an install refusal. A shortcut whose chord another
-program, the desktop app or another app already holds is not registered.
+program, the desktop app or another app already holds is not registered. The user
+may rebind a shortcut on their computer (below); the desktop app keeps that binding
+per app per computer and uses your default for every shortcut without one.
+
+```json
+"shortcuts": [
+  { "id": "toggle-panel", "accelerator": "Alt+Shift+M",
+    "platformAccelerators": { "macos": "CommandOrControl+Shift+M" }, "window": "panel" }
+]
+```
 
 In the window, your module reads `window.kirocrewDesktopWindow` (absent in a browser):
 call `ready()` once your first frame is painted (the window stays hidden until then),
@@ -2390,6 +2400,23 @@ the ones this window was opened with:
 
 When the owner withdraws a capability, every window opened with it is closed (an
 `openOnEnable` one reopens without it).
+
+Level 3 of the bridge (App Kit seam level 8) adds, for every window of your app:
+
+- `shortcuts()`: resolves your declared shortcuts on this computer, each `{ id,
+  window, defaultAccelerator, accelerator, custom, registered }` (`accelerator` is `""`
+  when the user unbound it, `custom` says the user changed it, `registered` that the
+  chord is held now). Show it on your Settings page.
+- `setShortcut(id, accelerator)`: rebind one of your declared shortcuts (`""` unbinds
+  it, `null` returns it to your default). Answered only within 2 s of a mouse or key
+  press the shell saw in the window, one request per press, never from a background
+  window. A chord other than the shortcut's default must be the one the user just
+  pressed in that window, so call it from the key press your Settings page records.
+  The chord follows the `accelerator` rule above and may not be another of your
+  shortcuts'; the new chord is registered before the old one is let go, so a chord
+  another program, the desktop app or another app holds leaves the old binding and
+  its chord with your app. Resolves `{ ok, reason?, shortcuts }` (`reason`:
+  `undeclared`, `refused`, `not-pressed`, `in-use` or `unavailable`).
 
 ## Open Command
 

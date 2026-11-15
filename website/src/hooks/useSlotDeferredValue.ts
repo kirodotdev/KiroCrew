@@ -34,11 +34,19 @@ import { useDeferredValue, useLayoutEffect, useMemo, useRef, useState } from 're
  * longer): the deferral keeps its earlier input and the current value renders
  * in this commit. While a deferred change is pending, the hook shows the last
  * value it rendered live.
+ *
+ * `drawnAtOnce` lets a value render in this commit while its deferred render
+ * is still pending. It is judged against the value the deferral last
+ * committed, which is what the deferred path would otherwise keep on screen
+ * (the first rows of an empty chat: nothing is on screen to keep). Unlike
+ * `sameShape` it does not hold the deferral's input back, so the deferral
+ * still takes the value and later changes are judged against it.
  */
 export function useSlotDeferredValue<T>(
   slot: string | null | undefined,
   value: T,
   sameShape?: (deferredInput: T, next: T) => boolean,
+  drawnAtOnce?: (committed: T, next: T) => boolean,
 ): T {
   const key = slot ?? null
   // Visit counter: bumped each time the slot changes. Derived during render
@@ -58,10 +66,10 @@ export function useSlotDeferredValue<T>(
   const fed = fedRef.current
   const input = fed !== frame && fed.visit === visit && sameShape?.(fed.value, value) ? fed : frame
   const deferred = useDeferredValue(input)
-  const rendersLive = deferred.visit !== visit || deferred === input
+  const rendersLive = deferred.visit !== visit || deferred === input || drawnAtOnce?.(deferred.value, value) === true
   useLayoutEffect(() => {
     fedRef.current = input
-    if (deferred === input) liveRef.current = value
+    if (rendersLive) liveRef.current = value
   })
   return rendersLive ? value : liveRef.current
 }

@@ -576,7 +576,7 @@ LEGACY_EQUIVALENT_CORPUS = [t for t in _FULL_CORPUS if not _is_bearer_bearing(t)
 CORPUS = _FULL_CORPUS + [text for text, _ in LEGACY_DIVERGENT_SHAPES]
 
 
-# ── The by-value redactor this change retires, kept verbatim as a second oracle ──
+# ── A retired by-value redactor, kept verbatim as a second oracle ──
 
 
 def _legacy_redact_credentials(text: str) -> tuple[str, list[str]]:

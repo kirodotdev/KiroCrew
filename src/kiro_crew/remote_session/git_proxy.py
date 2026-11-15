@@ -432,8 +432,6 @@ def _write_lend(port: int, hosts: List[str], path: str, partial: bool = False) -
         except PermissionError:
             if sys.platform != "win32":
                 raise
-            import time
-
             time.sleep(0.05)
     os.replace(tmp, path)
 
@@ -503,10 +501,10 @@ def main(argv: Optional[list] = None) -> int:
             "git_proxy.py in this workspace is from another Kiro Crew build than the "
             "gateway's; restart the session so the gateway installs its own"
         )
-    # Resolved here: a relative path names the worker directory this starts in.
     secret = sys.stdin.readline(66).strip()
     if re.fullmatch(r"[0-9a-f]{64}", secret) is None:
         raise SystemExit("invalid git proxy capability")
+    # Resolved here: a relative path names the worker directory this starts in.
     return serve(port_file=os.path.abspath(args.port_file), secret=secret)
 
 

@@ -270,7 +270,7 @@ def init_transcript_fields(self: _ChatSlot) -> None:
     # _disk_older_count) so a 5s flush is O(window), not O(file). The
     # (mtime, size) pair also doubles as the "did another process write this
     # file since we last saved?" signal that gates the cross-process
-    # foreign-append merge. See chat_persistence._save_*.
+    # foreign-append merge. See chat_persistence_parts.save_transaction._save_slot_to_history.
     self._frozen_prefix_cache = None
     # What the last committed save left on disk (path, file identity,
     # disk_older, metadata line, window digests, first file-change row), so
@@ -375,6 +375,7 @@ def append(
             try:
                 self._on_question_retired(self.key, retired)  # type: ignore[operator]
             except Exception:
+                # A failing listener must not stop the append.
                 pass
     msg: dict[str, Any] = {
         "role": role,

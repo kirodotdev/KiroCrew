@@ -303,6 +303,13 @@ async def _on_permission_prompt(
     # canonical command.
     perm_meta["trust_grantable"] = "1"
     _override_offer = getattr(turn, "_deny_override", None)
+    if _override_offer is None:
+        # "Always allow this tool": the verified ``@server/tool`` this card may
+        # grant, or why not. Read off the loop (config and governance reads).
+        # Imported here: this body runs on the chat runner module's globals.
+        from kiro_crew.dashboard import always_allow_tool
+
+        perm_meta.update(await asyncio.to_thread(always_allow_tool.card_fields, event))
     if event.takes_rejection_reason and _override_offer is None:
         # The card may ask why: this backend hands a rejection's reason to the
         # model. Not on a deny-rule override card, whose rejection is the rule's
@@ -960,7 +967,7 @@ async def _on_permission_prompt(
                 await asyncio.to_thread(pin_human_approval, cmd)
             # The transport floor judges the call again, so it gets the keys the
             # gate was judged with: an override's, or the session's overrides
-            # (none for almost every call, which then goes exactly as before).
+            # (none for almost every call, which then goes through unchanged).
             _floor_waivers = (
                 {"deny_waivers": _override_waivers(turn, _override_offer)}
                 if _override_offer is not None

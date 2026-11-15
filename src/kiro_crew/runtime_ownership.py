@@ -90,7 +90,7 @@ import uuid
 from collections import Counter
 from collections.abc import Awaitable, Callable, Hashable, Iterable, Iterator, MutableSet
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -358,7 +358,22 @@ class RuntimeOwnership:
         self._foundings.append(founding)
         try:
             runtime = await spawn()
-            entry = _Entry(runtime=runtime, key=key)
+            # A runtime whose engine cannot host several chats (a KAS start that
+            # fell back to a queueing engine under the sharing preview) is published
+            # closed to joins: its founder keeps it, every waiter and later arrival
+            # founds its own. It stays closed whatever the cap: the cap is read live
+            # at each placement and is not part of the key, so an entry published
+            # open at cap 1 would take a joiner once the cap is raised. Only a
+            # sharing placement (cap > 1) logs it; the cap-1 registration of every
+            # chat with the preview off stays silent.
+            closed = getattr(runtime, "chat_joinable", True) is False
+            entry = _Entry(runtime=runtime, key=key, closed=closed)
+            if entry.closed and cap > 1:
+                logger.warning(
+                    "chat-runtime-sharing: runtime pid=%s runs an engine that queues chats; "
+                    "published closed to joins",
+                    _pid_of(runtime),
+                )
             self._entries.append(entry)
             return self._mint(entry, session_key, cap=cap, joined=False)
         finally:
@@ -413,6 +428,13 @@ class RuntimeOwnership:
             return None
         entry.leases.pop(lease, None)
         if entry.leases:
+            # A runtime whose departed sessions leave processes behind (codex: its
+            # per-session MCP fleet outlives ``session/close``) takes no new lease
+            # once any holder leaves, so it drains and dies with its last holder
+            # instead of collecting one leftover fleet per departure. Bounded by the
+            # cap: at most cap-1 departed fleets ever wait on one process.
+            if getattr(entry.runtime, "chat_closes_on_departure", False) is True:
+                entry.closed = True
             logger.info(
                 "runtime_ownership outcome=released pid=%s remaining_leases=%d",
                 _pid_of(entry.runtime),
@@ -537,6 +559,27 @@ class RuntimeOwnership:
         a kill-gate answer, which must stay live-only.
         """
         return sum(len(e.leases) for e in list(self._entries) if e.runtime is runtime)
+
+    def join_on_tree(
+        self, key: Hashable, tree: object, session_key: str, *, cap: int = CHAT_RUNTIME_CAP
+    ) -> Acquisition | None:
+        """A lease on a live runtime under *key* that exposes *tree*, or None. Never spawns.
+
+        A runtime exposes the work directory it inherited or allocated
+        (``work_scratch_dir``). Only a runtime that both matches *key* and exposes
+        *tree* is taken, with the same room and same-session rule as
+        :meth:`acquire`; on None the caller places through :meth:`acquire` instead.
+        """
+        self._drop_dead()
+        for entry in self._entries:
+            if (
+                entry.key == key
+                and entry.admits(session_key, cap=cap)
+                and self._alive(entry)
+                and getattr(entry.runtime, "work_scratch_dir", None) == tree
+            ):
+                return self._mint(entry, session_key, cap=cap, joined=True)
+        return None
 
     # -- internals --
 
@@ -1337,8 +1380,7 @@ def is_shared_chat_runtime(provider: object) -> bool:
     False, so those branches run byte-identically to base for it.
 
     Reads ``_shared_runtime`` (set from ``chat_share_key is not None`` when the
-    provider is built), which is the same flag ``AcpSessionProvider._chat_turn_gate``
-    uses to decide whether to serialize the turn. A runtime LEASE does NOT tell
+    provider is built). A runtime LEASE does NOT tell
     the two apart: the unshared path also takes a lease at registration
     (``acquire_session_lease``), so every registered chat holds a lease string
     whether or not it shares -- ``holds_runtime_lease`` therefore cannot gate
@@ -1355,28 +1397,6 @@ def is_shared_chat_runtime(provider: object) -> bool:
         if getattr(candidate, "_shared_runtime", False) is True:
             return True
     return False
-
-
-def chat_turn_gate_hold(provider: object) -> Any:
-    """An async context that holds *provider*'s shared chat turn gate, or a null one.
-
-    For the compaction paths, which run ``/compact`` and then may wait for the
-    deferred receipt: on a SHARED chat runtime the gate is held across both
-    (``AcpSessionProvider.hold_chat_turn_gate``). Every other provider -- the
-    preview off, a subagent, a non-ACP provider, a test double -- gets
-    ``contextlib.nullcontext()``, so those paths run exactly as before.
-    """
-    import contextlib
-
-    if not is_shared_chat_runtime(provider):
-        return contextlib.nullcontext()
-    hold = getattr(provider, "hold_chat_turn_gate", None)
-    if hold is None:
-        return contextlib.nullcontext()
-    held = hold()
-    if hasattr(held, "__aenter__") and hasattr(held, "__aexit__"):
-        return held
-    return contextlib.nullcontext()
 
 
 async def acquire_session_lease(provider: object) -> None:
@@ -1427,7 +1447,6 @@ __all__ = [
     "claim_runtime_tenancy",
     "commit_runtime_teardown",
     "holds_runtime_lease",
-    "chat_turn_gate_hold",
     "is_shared_chat_runtime",
     "note_runtime_kill",
     "outstanding_leases",

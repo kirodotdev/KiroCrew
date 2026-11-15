@@ -217,7 +217,14 @@ entirely, so claude closes the gap before any call exists: a session whose
 `zero_tools` holds is started with `_meta.claudeCode.options.tools` empty (no
 built-in is mounted), `strictMcpConfig` (no user, project or plugin server) and
 bypass off, an empty wire array is required, and an adapter below the
-session-options floor is stopped before its first prompt. `codex` is served by
+session-options floor is stopped before its first prompt. A NON-empty `tools`
+list (one without `*`, `@builtin` or `@builtin/*`) is not applied to claude's
+built-ins outside a Bot's worker: the session keeps the whole built-in set. A new
+claude chat session of an agent whose spec Crew does not write, and a sub-agent's
+first prompt on a fresh session and the gateway log, get a notice that the
+list is not applied to the built-ins and the full built-in set is in effect, and a
+`model` pin that is not a Claude Code id and so is not applied
+(`agent_sdk/spec_builtin_tools.py`). `codex` is served by
 `AcpRuntime` / `AcpSessionHandle` rather than `AcpClient`. The runtime copies
 `zero_tools` onto the handle on `session/new` and `session/load`, and
 `AcpSessionHandle._deny_zero_tools` refuses EVERY permission request on such a

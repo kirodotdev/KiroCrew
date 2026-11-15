@@ -47,6 +47,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.browser_harness.budgets import CHANGE_AFTER_S, CHANGE_BEFORE_S
 from kiro_crew.browser_harness.frames import FRAME_READ_CAP, split_frame_ref
 from kiro_crew.browser_snapshots import SNAPSHOT_DIR_NAME
 from kiro_crew.browser_snapshots import prune as prune_snapshots
@@ -135,6 +136,15 @@ CONSOLE_CAP = 500
 #: Longest dialog message passed on: the page writes it, and a long one is noise.
 DIALOG_MESSAGE_CAP = 1000
 _DIALOG_ACTIONS = {"accept": "accepted", "dismiss": "dismissed"}
+#: Ops whose result carries a ``changes`` report while ``browser.report_changes`` is on.
+REPORT_OPS: frozenset[str] = frozenset({"click", "type", "select_option"})
+#: How long the page gets to react to an action before the report reads it, and the
+#: longest one read may take: a wedged page costs the report, never the action. Each
+#: side of the action is bounded as a whole too (``budgets.CHANGE_BEFORE_S`` and
+#: ``CHANGE_AFTER_S``), and the route adds both to the op's budget.
+CHANGE_SETTLE_S = 0.3
+CHANGE_READ_S = 3.0
+_CHANGES_LEFT_OUT = "`changes` left out: the page could not be read around the action"
 SCROLL_DEFAULT_PX = 300
 TEXT_CAP = 20_000
 _URL_MAX = 4096
@@ -221,6 +231,10 @@ class OpContext:
     #: read at call time, or ``None`` when no stream holds the tab: then a frame ref
     #: is stale and the outline marks those frames as not read.
     frames: Callable[[], Any] = lambda: None
+    #: ``browser.report_changes``: ``click``, ``type`` and ``select_option`` add a
+    #: ``changes`` report of what the page did. Off by default, so every result is
+    #: byte-for-byte what it was.
+    report_changes: bool = False
     #: Where ``screenshot`` writes the image while it is still being judged: a leaf
     #: no sandboxed agent can read (the hidden IPC leaf). The image moves into
     #: ``screenshot_dir`` only once the check after the capture passes. ``None``
@@ -1419,12 +1433,95 @@ def _dialog_open(shown: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _open_dialog(ctx: OpContext) -> dict[str, Any] | None:
-    """The dialog the page holds open now, or ``None`` (also when it cannot be read)."""
+    """The dialog the page holds open now, or ``None`` (also when it cannot be read).
+
+    A refused address found by the read is the op's answer, so it is raised.
+    """
+    return _dialog_view(await _page_dialog(ctx))
+
+
+async def _page_dialog(ctx: OpContext) -> dict[str, Any] | None:
+    """The open dialog as the page wrote it, uncut, or ``None`` (also when unreadable).
+
+    The change report reads this, so its redaction sees the whole message.
+    """
     try:
         info = await ctx.helper("page_info")
+    except _PageRefused:
+        raise
     except Exception:  # noqa: BLE001 - unreadable: the op's own error is the one to report
         return None
-    return _dialog_view(info.get("dialog")) if isinstance(info, dict) else None
+    raw = info.get("dialog") if isinstance(info, dict) else None
+    return raw if isinstance(raw, dict) else None
+
+
+async def _glance(ctx: OpContext) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """``(census, dialog)``: the page as the change report reads it, or the dialog holding it.
+
+    A JavaScript dialog stops the page's script, so it is looked for first and the
+    page is not read while one is open. The dialog is passed on uncut, so the
+    report redacts its whole message before any cut. Anything else that stops the
+    read leaves both ``None``: the report is dropped, never the action.
+    """
+    from kiro_crew.browser_harness import change_report
+    from kiro_crew.browser_harness.governance import BrowsingDenied
+
+    shown = await _page_dialog(ctx)
+    if shown is not None:
+        return None, shown
+    try:
+        raw = await asyncio.wait_for(_page(ctx, "glance"), CHANGE_READ_S)
+    except (_PageRefused, BrowsingDenied, asyncio.CancelledError):
+        raise
+    except Exception:  # noqa: BLE001 - the report is a convenience; the action stands
+        logger.debug("browser change report: page not read", exc_info=True)
+        return None, None
+    return change_report.census(raw), None
+
+
+async def _census_before(ctx: OpContext) -> dict[str, Any] | None:
+    """The page before the action, or ``None`` when it is not read inside its bound."""
+    try:
+        return (await asyncio.wait_for(_glance(ctx), CHANGE_BEFORE_S))[0]
+    except asyncio.TimeoutError:
+        logger.debug("browser change report: page not read before the action")
+        return None
+
+
+async def _report_changes(
+    ctx: OpContext, result: dict[str, Any], before: dict[str, Any] | None
+) -> None:
+    """:func:`_attach_changes` inside its bound; past it the action's result stands."""
+    try:
+        await asyncio.wait_for(_attach_changes(ctx, result, before), CHANGE_AFTER_S)
+    except asyncio.TimeoutError:
+        _left_out(result)
+
+
+def _left_out(result: dict[str, Any]) -> None:
+    """Say the report was left out, after any warning the op itself gave."""
+    prior = result.get("warning")
+    result["warning"] = f"{prior}; {_CHANGES_LEFT_OUT}" if prior else _CHANGES_LEFT_OUT
+
+
+async def _attach_changes(
+    ctx: OpContext, result: dict[str, Any], before: dict[str, Any] | None
+) -> None:
+    """Add ``changes`` to a successful action's *result*, or a ``warning`` saying why not."""
+    from kiro_crew.browser_harness import change_report
+
+    await ctx.sleep(CHANGE_SETTLE_S)
+    after, dialog = await _glance(ctx)
+    if after is None and dialog is None:
+        # A navigation can swallow the first read; the new page is read once more.
+        await ctx.sleep(CHANGE_SETTLE_S)
+        after, dialog = await _glance(ctx)
+    if dialog is not None:
+        result["changes"] = change_report.dialog_report(dialog)
+    elif before is None or after is None:
+        _left_out(result)
+    else:
+        result["changes"] = change_report.diff(before, after)
 
 
 async def _reflex(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -1491,6 +1588,17 @@ async def run_op(op: str, args: dict[str, Any], ctx: OpContext) -> dict[str, Any
         return await raw_ctx.helper(name, **kwargs)
 
     ctx = replace(ctx, helper=checked_helper)
+    reporting = ctx.report_changes and op in REPORT_OPS
+    before: dict[str, Any] | None = None
+
+    async def act(c: OpContext, a: dict[str, Any]) -> dict[str, Any]:
+        # The page is read just before the action, so a hook that answers instead
+        # of running it costs no read.
+        nonlocal before
+        if reporting:
+            before = await _census_before(c)
+        return await handler(c, a)
+
     try:
         # Navigation/new tabs must still be able to leave a refused page.
         if op not in ("navigate", "tabs", "ask"):
@@ -1498,17 +1606,19 @@ async def run_op(op: str, args: dict[str, Any], ctx: OpContext) -> dict[str, Any
             if refused is not None:
                 return refused
         if ctx.decisions is not None:
-            result = await ctx.decisions.run(op, args, ctx, handler)
+            result = await ctx.decisions.run(op, args, ctx, act)
         elif names_target_only(op, args):
             return needs_ref()
         else:
-            result = await handler(ctx, args)
+            result = await act(ctx, args)
         # A link, key or tab switch can move the page without a navigate op.
         # Check again before the route follows it or publishes a successful result.
         if result.get("ok"):
             refused = await _refuse_current_url(ctx)
             if refused is not None:
                 return refused
+            if reporting:
+                await _report_changes(ctx, result, before)
         return result  # type: ignore[no-any-return]
     except _PageRefused as exc:
         return exc.result

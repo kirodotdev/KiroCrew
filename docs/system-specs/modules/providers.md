@@ -30,6 +30,13 @@ exit codes and the authentication-failure signal remain available. Provider
 engines can still write their own files during a live process; teardown cleanup
 cannot guarantee removal after a crash or for undocumented engine storage.
 
+Each harness's own record of a restricted session goes at teardown too. An
+OpenCode session's rows (its session, messages, parts, event log and child
+sessions) are deleted from OpenCode's `opencode.db` after the process ends
+(`agent_sdk/opencode_transcripts.py`). A pi session is deleted by pi itself: the
+provider sends pi-acp's advertised `session/delete` before the process ends, which
+removes pi's session file and pi-acp's map entry. Persistent sessions keep both.
+
 The ordinary host sandbox and backend capability checks apply independently.
 Member memory requires no extra OS filesystem view, HMAC capability or platform
 isolation admission. See [the memory contract](memory-skills-hooks.md).
@@ -1447,6 +1454,7 @@ in [agent-host-contract.md](agent-host-contract.md).
 - `cancel()` → sends `session/cancel` notification
 - `supports_effort()` / `change_effort(level)` / `clear_effort()` → reasoning-effort control (see below)
 - `ultracode_enabled()` / `set_ultracode(enabled)` → the claude harness's per-session ultracode switch; `None` on every other session (see [claude-code-provider](claude-code-provider.md#the-ultracode-switch))
+- `fast_mode_enabled()` / `set_fast_mode(enabled)` → the claude harness's per-session Fast mode switch, the same way; `None` on every other session (see [claude-code-provider](claude-code-provider.md#the-fast-mode-switch))
 - `is_alive()` → `AcpClient.is_responsive()` (600s stale threshold)
 - `is_process_alive()` → OS-level process check
 
@@ -1637,8 +1645,10 @@ adapted runtime harness neither bypasses the bound nor changes the Kiro path.
   the server as the unrestricted one of the two. `session_key` and `channel_id`
   ride the elements because a codex stdio server starts from `env_clear()` plus an
   allowlist and can learn its session no other way. `permission_surface_owned` is
-  False: this runtime authors no native permission file, so a mirror in claude's
-  class fails closed here rather than delivering tools Crew's gate cannot see. The
+  the harness's answer for this session: False wherever the runtime authors no
+  native permission file, so a mirror in claude's class fails closed there rather
+  than delivering tools Crew's gate cannot see; `ClaudeHarness` answers True only
+  for a session whose own settings seed governs its permission surface. The
   harness still narrows transports afterwards (`session_mcp_servers`), which is
   the last word on what this session's handshake advertised.
 

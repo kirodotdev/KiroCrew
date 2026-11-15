@@ -31,8 +31,10 @@ const WINDOW_KEYS = new Set([
 ]);
 const PANEL_ONLY_KEYS = ["width", "height", "position", "transparent", "gutter"];
 const OVERLAY_ONLY_KEYS = ["displays"];
-const SHORTCUT_KEYS = new Set(["id", "accelerator", "window"]);
+const SHORTCUT_KEYS = new Set(["id", "accelerator", "platformAccelerators", "window"]);
 const BLOCK_KEYS = new Set(["windows", "shortcuts"]);
+/** A shortcut's per-platform default overrides `accelerator`; keyed by these names. */
+const PLATFORMS = Object.freeze(["macos", "windows", "linux"]);
 /** What a hosted window may ask the shell for; mirrors `apps/desktop_capabilities.py`. */
 const CAPABILITIES = Object.freeze(["screenCapture", "localFiles", "gatewayChoice"]);
 
@@ -89,6 +91,46 @@ function canonicalAccelerator(accelerator) {
   return [...mods.sort(), key].join("+");
 }
 
+/**
+ * The keys *accelerator* presses on *platform* ("darwin", or anything else): each
+ * modifier as the physical key it is there, then the key. "" for a chord the rule
+ * above refuses.
+ */
+function pressedChord(accelerator, platform) {
+  const chord = canonicalAccelerator(accelerator);
+  if (!chord) return "";
+  const parts = chord.split("+");
+  const key = parts.pop();
+  const table = SAME_KEY[platform === "darwin" ? 0 : 1];
+  return [...new Set(parts.map((m) => table[m] || m))].sort().concat(key).join("+");
+}
+
+/**
+ * Every chord, in `pressedChord` form, that one native key press spells: Electron's
+ * `before-input-event` input, which page script cannot synthesize. The key is read
+ * from both the physical position (`code`) and the character (`key`), so a page
+ * recording either spelling of the press finds it. Empty for anything but a fresh
+ * key-down of a letter, digit, function, arrow or Space key.
+ */
+function keyPressChords(input, platform) {
+  if (!isPlainObject(input) || input.type !== "keyDown" || input.isAutoRepeat) return [];
+  const mods = [];
+  if (input.control) mods.push("Ctrl");
+  if (input.meta) mods.push(platform === "darwin" ? "Cmd" : "Super");
+  if (input.alt) mods.push("Alt");
+  if (input.shift) mods.push("Shift");
+  const keys = new Set();
+  const code = typeof input.code === "string" ? input.code : "";
+  const spelled = /^(?:Key([A-Z])|Digit([0-9])|Arrow(Up|Down|Left|Right))$/.exec(code);
+  if (spelled) keys.add(spelled[1] || spelled[2] || spelled[3]);
+  else if (FUNCTION_KEY_RE.test(code.toLowerCase())) keys.add(code.toUpperCase());
+  else if (code === "Space") keys.add("Space");
+  const key = typeof input.key === "string" ? input.key : "";
+  if (/^[A-Za-z0-9]$/.test(key)) keys.add(key.toUpperCase());
+  mods.sort();
+  return [...keys].map((k) => [...mods, k].join("+"));
+}
+
 function isPlainObject(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -130,24 +172,48 @@ function parseWindow(raw) {
   return { ...win, width, height, position, transparent, gutter };
 }
 
-function parseShortcut(raw, windowIds, chords) {
+/** The manifest's platform name for a Node `process.platform`. */
+function platformName(platform) {
+  if (platform === "darwin") return "macos";
+  return platform === "win32" ? "windows" : "linux";
+}
+
+/**
+ * One declared shortcut with its default resolved for *platform*, or null.
+ *
+ * `platformAccelerators` overrides `accelerator` on the platforms it names. Every
+ * platform's default is checked, and no two shortcuts of the app may share one on
+ * any platform (`chords` holds a Set per platform name).
+ */
+function parseShortcut(raw, windowIds, chords, platform) {
   if (!isPlainObject(raw) || !ownKeysWithin(raw, SHORTCUT_KEYS)) return null;
   const { id, accelerator, window } = raw;
   if (typeof id !== "string" || !ID_RE.test(id)) return null;
   if (typeof window !== "string" || !windowIds.has(window)) return null;
-  const chord = canonicalAccelerator(accelerator);
-  if (!chord || chords.has(chord)) return null;
-  chords.add(chord);
-  return { id, accelerator, chord, window };
+  const perPlatform = raw.platformAccelerators === undefined ? {} : raw.platformAccelerators;
+  if (!isPlainObject(perPlatform) || !ownKeysWithin(perPlatform, new Set(PLATFORMS))) return null;
+  const defaults = {};
+  for (const name of PLATFORMS) {
+    const accel = Object.prototype.hasOwnProperty.call(perPlatform, name) ? perPlatform[name] : accelerator;
+    const chord = canonicalAccelerator(accel);
+    if (!chord || chords[name].has(chord)) return null;
+    chords[name].add(chord);
+    defaults[name] = { accelerator: accel, chord };
+  }
+  // `accelerator` itself must be valid even where every platform overrides it.
+  if (!canonicalAccelerator(accelerator)) return null;
+  const here = defaults[platformName(platform)];
+  return { id, accelerator: here.accelerator, chord: here.chord, window };
 }
 
 /**
  * Parse one app's `manifest.desktop`, or null when anything in it is refused.
  *
  * @param {unknown} raw the `desktop` value from the app's manifest.
+ * @param {string} [platform] the Node platform each shortcut's default is resolved for.
  * @returns {{windows: object[], shortcuts: object[]} | null}
  */
-function parseDesktopDeclaration(raw) {
+function parseDesktopDeclaration(raw, platform = process.platform) {
   if (!isPlainObject(raw) || !ownKeysWithin(raw, BLOCK_KEYS)) return null;
   const rawWindows = raw.windows;
   if (!Array.isArray(rawWindows) || rawWindows.length < 1 || rawWindows.length > MAX_WINDOWS) {
@@ -168,9 +234,9 @@ function parseDesktopDeclaration(raw) {
   if (!Array.isArray(rawShortcuts) || rawShortcuts.length > MAX_SHORTCUTS) return null;
   const shortcuts = [];
   const shortcutIds = new Set();
-  const chords = new Set();
+  const chords = Object.fromEntries(PLATFORMS.map((name) => [name, new Set()]));
   for (const item of rawShortcuts) {
-    const shortcut = parseShortcut(item, ids, chords);
+    const shortcut = parseShortcut(item, ids, chords, platform);
     if (!shortcut || shortcutIds.has(shortcut.id)) return null;
     shortcutIds.add(shortcut.id);
     shortcuts.push(shortcut);
@@ -208,9 +274,11 @@ function approvedCapabilities(row, manifest) {
  *
  * @param {unknown} rows the parsed `/api/apps` body.
  * @param {(line: string) => void} [log] told once per refused declaration.
+ * @param {{platform?: string}} [options] `platform`: the Node platform shortcut
+ *   defaults are resolved for.
  * @returns {Map<string, {windows: object[], shortcuts: object[], capabilities: string[]}>}
  */
-function desktopDeclarations(rows, log = () => {}) {
+function desktopDeclarations(rows, log = () => {}, { platform = process.platform } = {}) {
   const out = new Map();
   const list = Array.isArray(rows) ? rows : isPlainObject(rows) && Array.isArray(rows.apps) ? rows.apps : [];
   for (const row of list) {
@@ -219,7 +287,7 @@ function desktopDeclarations(rows, log = () => {}) {
     if (typeof name !== "string" || !APP_NAME_RE.test(name) || out.has(name)) continue;
     const manifest = isPlainObject(row.manifest) ? row.manifest : null;
     if (!manifest || manifest.desktop === undefined) continue;
-    const parsed = parseDesktopDeclaration(manifest.desktop);
+    const parsed = parseDesktopDeclaration(manifest.desktop, platform);
     if (parsed) out.set(name, { ...parsed, capabilities: approvedCapabilities(row, manifest) });
     else log(`app-window-host: ${name}: desktop declaration refused`);
   }
@@ -238,9 +306,13 @@ module.exports = {
   MAX_WINDOWS,
   MAX_SHORTCUTS,
   approvedCapabilities,
+  PLATFORMS,
   canonicalAccelerator,
   knownCapabilities,
   parseDesktopDeclaration,
+  platformName,
   desktopDeclarations,
   isAppListBody,
+  keyPressChords,
+  pressedChord,
 };

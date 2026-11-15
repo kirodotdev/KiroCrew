@@ -415,11 +415,20 @@ custom-rules:
          local time is correct; do not flag it.
       5. (D7) An UPPER bound on a measured wall or CPU duration, a rate or a
          sample count (`assert elapsed < 0.5`, "about 125 samples"). Assert the
-         work, the schedule or the order. Do not flag: a LOWER bound that proves
-         a deadline or backoff was honoured ("did not fire early") with a margin
+         work, the schedule or the order. A CPU clock (`time.thread_time`,
+         `time.process_time`) is no exception: coverage's tracer multiplies
+         the CPU of every traced line about fivefold on the instrumented
+         shards, so a budget the code meets bare fails there on every rerun.
+         For a complexity guard, count the work and bound its growth between
+         input sizes (`_interpreter_work` / `_linear_work` in
+         `test/denied_commands_security_helpers.py`). Also FLAG a change that
+         keeps an existing budget alive by reshaping its reading (the minimum
+         of N readings, the tracer paused around it, a larger constant): each
+         still asserts seconds. Do not flag: a LOWER bound that proves a
+         deadline or backoff was honoured ("did not fire early") with a margin
          of at least one clock tick; a bound relative to a span the test
-         measured itself; an existing complexity guard's thread-CPU budget kept
-         at its original constant.
+         measured itself; an existing complexity guard's thread-CPU budget
+         left untouched at its original constant.
       6. (D8) An await, `join` or `communicate` the test itself must unblock,
          with no timeout. On Windows a hang kills the xdist worker and aborts
          the run; bound it so a miss fails by name at that line. A literal bound
@@ -1007,10 +1016,11 @@ custom-rules:
         generic seam every app can use, never the app in core. An explicit
         maintainer decision recorded on the PR (the /ai-review override flow)
         is the only exception — the default is closed.
-      - FLAG restoring a withdrawn built-in (the Board app) or un-hiding the
-        Channels app from the App Store (flipping "hidden": true in
-        src/kiro_crew/apps/builtins/channels/app.json). Both are deliberate
-        fork divergences an upstream sync must not undo.
+      - FLAG restoring a withdrawn built-in (the Board app), restoring the
+        Channels app, or offering Channels where it was not offered (it is the
+        default-off core setting dashboard.channels_enabled, whose Settings
+        row is drawn only while it is on). Both are deliberate fork
+        divergences an upstream sync must not undo.
 
       Allowed (do NOT flag):
       - Changes inside an EXISTING built-in app directory or its existing

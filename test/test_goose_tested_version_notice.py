@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiro_crew.acp.client_permissions import GOOSE_VERIFIED_VERSION_PREFIX
+from kiro_crew.acp.client_goose_session import GOOSE_VERIFIED_VERSION_PREFIX
 from kiro_crew.acp.client_turn_control import (
     GOOSE_TESTED_RANGE,
     GOOSE_TESTED_VERSION,

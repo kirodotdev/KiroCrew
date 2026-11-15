@@ -26,6 +26,7 @@ import type { ChatSlot, SessionInfo } from '../../types'
 import { isChatPageSurface } from '../../utils/channelOrigin'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import { isSafeReload } from '../../lib/safeReload'
+import { useFeaturePreviewLockSettled } from '../../utils/editionLocks'
 import { safeSetItem } from '../../utils/safeStorage'
 import { PANE_SLOT_HINT_PARAM, relayActiveSlotToParent } from '../../lib/paneLastSlot'
 import { shouldReplaceSessionUrl, popMaySwitchSession } from '../../utils/sessionUrlHistory'
@@ -1322,6 +1323,7 @@ export function useChatPageSessionController({
   // automatic move, which `forkMayOpen` lets it undo).
   const waitingForOpen = !activeSlot && openPending
   const [openWaitLapsed, setOpenWaitLapsed] = useState(false)
+  const lockSettled = useFeaturePreviewLockSettled()
   useEffect(() => {
     if (!waitingForOpen) return
     const lease = setTimeout(() => setOpenWaitLapsed(true), PENDING_OPEN_LEASE_MS)
@@ -1370,6 +1372,9 @@ export function useChatPageSessionController({
     // closing it moves to a sibling as usual.
     // The page's own pick never lands on a crew member (`autoOpenRows`): with only
     // crew members left, it creates an ordinary chat instead.
+    // One-shot: before the edition lock is known a crew member reads as an ordinary
+    // chat, so the first pick waits for it (bounded), as a new chat's default does.
+    if (!lockSettled) return
     const eligible = autoOpenRows(filteredSlots)
     const eligibleKeys = new Set(eligible.map(s => s.key))
     if (eligible.length > 0 && isSafeReload() && !hadActiveSlotRef.current) return
@@ -1393,7 +1398,7 @@ export function useChatPageSessionController({
       // which leaves a create or fork the user started free to open.
       dispatch(createSlot({ mode, automatic: true, crewModeDefault: true }))
     }
-  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, mode, newSlotFailed, newSessionRef, tokenConsumingRef, popout, openPending, openWaitLapsed, durablyRemoved])
+  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, mode, newSlotFailed, newSessionRef, tokenConsumingRef, popout, openPending, openWaitLapsed, durablyRemoved, lockSettled])
 
   // Slot switch: the virtualizer (keyed on sessionId = activeSlot) owns entry
   // placement — it force-pins to the bottom (arming follow) or restores a

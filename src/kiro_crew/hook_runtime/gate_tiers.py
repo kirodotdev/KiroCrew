@@ -1170,7 +1170,7 @@ def _operator_confirms(facts: GateFacts, grant_targets: tuple[str, ...]) -> bool
 
 
 def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
-    """The operator's ``auto_approve_tools`` patterns.
+    """The operator's ``auto_approve_tools`` patterns and per-tool identity grants.
 
     Matched against both the original title (preserves "Running: "/"Reading "
     prefixes) and the normalized name (stripped), so "Running: *" and bare
@@ -1196,6 +1196,13 @@ def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
     (over-denying is safe); a grant may not. An identity that is present but
     unproven falls back to the title, exactly as before.
 
+    ``auto_approve_tool_identities`` (the grants the approval card's "Always
+    allow this tool" and the MCP tool list write) uses case-insensitive literal
+    equality against a verified identity, never glob or path normalization and
+    never the title: a shell call's title can be the model's
+    own ``description``, so one reading ``@ops/list`` must not win that grant.
+    ``confirm_tools`` outranks it exactly as it outranks ``auto_approve_tools``.
+
     ``classifier_only`` skips this tier (see the app-own-server tier for why).
     """
     if facts.classifier_only:
@@ -1218,6 +1225,10 @@ def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
     for pattern in facts.config.auto_approve_tools:
         if any(_tool_matches(pattern, target) for target in grant_targets):
             return ToolHookResult.auto_approve(identity_grant=identity_grant)
+    if identity_ref and any(
+        grant.lower() == identity_ref.lower() for grant in facts.config.auto_approve_tool_identities
+    ):
+        return ToolHookResult.auto_approve(identity_grant=True)
     if identity_ref:
         # Runtime breadcrumb for the deliberate title-match exclusion: a pattern
         # that matches the agent-authored title does not grant an
@@ -1525,6 +1536,50 @@ def _tier_spec_denies(facts: GateFacts, tier: GateTier) -> ToolHookResult | None
 
     reason = spec_denies_refusal(facts.call, _spec_builtin_names(facts.call))
     return None if reason is None else ToolHookResult.deny_policy(reason)
+
+
+def _tier_spec_unjudged_denies(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A Bot worker's ``deniedCommands`` entries that neither KAS nor the gate can
+    judge: refuse that agent's shell calls that are not read-only.
+
+    The KAS projection records them for a Bot's worker only
+    (``kas_spec_denies.with_unjudged_denies``), and the session handle stamps them
+    on its own agent's requests (``AcpEvent.spec_unjudged_denies``; empty on every
+    other session and on a sub-agent's request). A worker runs under its Bot's
+    Permissions, and under Trust an ask is answered for the person, so an entry
+    nobody can check must not reach an ask: this row refuses a shell call (kiro-cli's
+    ``execute_bash`` among its names, no MCP server behind it) unless its recovered
+    command is one the read-only row answers (:func:`_command_is_read_only`), which
+    no such entry blocks. Gate-only entries carry a conditional flag in the record and
+    hold unless ``spec_denied_gate.shell_denies_match`` returns a definite
+    no-match. The earlier ``spec-denies`` row uses that same judge to refuse
+    matches. A deny holds on every policy.
+
+    shortcut: an entry with a regex alternation (``(\\s|$)``) is unjudged; teach
+    ``allowed_commands.parse`` alternation inside a group to refuse only matches.
+    """
+    call = facts.call
+    unjudged = call.spec_unjudged_denies
+    if not unjudged or call.mcp_server:
+        return None
+    if not call.is_shell and "execute_bash" not in _spec_builtin_names(call):
+        return None
+    if _command_is_read_only(call.command):
+        return None
+    from kiro_crew.agent_sdk.kas_tool_view import unjudged_denies_for_command
+
+    unjudged = unjudged_denies_for_command(unjudged, call.command)
+    if not unjudged:
+        return None
+    # The first three are named and the rest counted. A literal: the tiers run on
+    # ``hooks``' globals (``compose``), where a module constant here is unbound.
+    named = ", ".join(unjudged[:3])
+    more = len(unjudged) - 3
+    return ToolHookResult.deny_policy(
+        "Blocked by this agent's spec: Kiro Crew cannot check some of its "
+        f"deniedCommands ({named}{f' and {more} more' if more > 0 else ''}), "
+        "so this command cannot run on the Bot's worker"
+    )
 
 
 def _tier_spec_builtin_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:

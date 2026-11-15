@@ -40,7 +40,7 @@ def mock_sel():
         yield instance
 
 
-# --- Regression: binary content survives the download round-trip ---
+# --- Binary content survives the download round-trip ---
 
 
 # Minimal docx fingerprint: ZIP header + non-UTF-8 bytes. These are exactly

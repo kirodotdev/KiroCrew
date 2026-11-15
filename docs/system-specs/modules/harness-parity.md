@@ -298,13 +298,17 @@ commands the dashboard serves there (`/agent`, `/clear`, `/compact`, `/goal`,
 gate reads the same set and answers every other harness command with a notice
 naming the harness. A harness with a row in `ACP_BACKEND_PROMPT_HANDLER_COMMANDS`
 gets the same rule, except for the harness commands in its row. Those reach the
-harness as typed. Codex has the one row, `/compact` and `/mcp`, because codex-acp's
+harness as typed. Codex's row is `/compact` and `/mcp`, because codex-acp's
 `classifyPrompt` runs only those of Crew's harness commands and sends any other name
 to the model. On Codex the list is `/agent`, `/clear`, `/compact`, `/goal`, `/mcp`,
 `/prompts`, `/side` and `/workflow`. A `/help`, `/context`, `/tools` or other
 kiro-cli word typed on Codex gets the "doesn't work with OpenAI Codex. It was not
 sent to the agent." notice. Codex's own built-ins (`/status`, `/review` and the
 others) are not Crew harness commands, so they are not listed and stay prompt text.
+The other non-kiro harnesses have rows read off their own prompt handlers: opencode,
+MiMo Code and DeepSeek `/compact`; Pi `/changelog` and `/compact`; goose `/clear`
+and `/compact`; Copilot `/compact`, `/context` and `/usage` (its prompt-command
+allowlist). Their menus list the row plus the dashboard's own commands.
 On KAS, `/model`, `/tools`, `/mcp`, `/context`, `/usage`,
 `/help` and `/agent` (bare or `list`) are answered by
 `dashboard/kas_local_commands.py` from state
@@ -608,6 +612,26 @@ harness adds `skill` deny rules to the projected agent's `permissions` instead
 path is unchanged. `test/test_kas_skill_scope.py` compares the skills KAS would
 offer for the built payload with the kiro-cli scope and goes red when the rule
 is not sent.
+
+### H16 on Claude: Workflow agents and a child's Stop
+
+Each agent of a Claude Code Workflow run, read from Claude Code's raw SDK task
+messages (`acp/raw_sdk_tasks.py`), is an H16 native child of its session with no
+child-routed frames and no conversation. `native_child_resume_refusal` refuses its
+card id (`<task_id>:<agent>`, or `native:<task_id>:<agent>`) for every agent the
+client has seen (`workflow_card_ids`, bounded by `NATIVE_CHILD_ROSTER_CAP`, kept
+past the run's record and `forget_tasks`, as the child id set is), and
+`report_native_children` counts the agents the run still runs (`live_card_ids`).
+The parent's `session/cancel` stops every background Workflow; a Stop on an
+agent's card closes the card alone.
+
+A person's Stop on a running Agent-tool child's card is the one per-child request:
+`AcpClient.cancel_native_child` sends `session/cancel` naming that child when its
+announce granted `capabilities.cancel` (`ACP_BACKENDS_NATIVE_CHILD_CANCEL`), never
+the parent, and no recovery path sends it. Pinned by
+`test_claude_raw_sdk_tasks.py::test_a_workflow_agent_is_a_native_child_of_its_session`,
+`test_claude_raw_sdk_tasks_lifecycle.py::test_a_workflow_agent_is_refused_after_its_record_goes`
+and `test_claude_native_child_stop.py`.
 
 ## The CI half
 

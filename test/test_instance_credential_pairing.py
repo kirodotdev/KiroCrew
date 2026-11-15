@@ -1718,7 +1718,7 @@ class TestHasListenerEntriesIsThreeValued:
         # The port-keyed and shared files are readable, but run/ enumeration
         # raises. Because absence of a covering listener entry is UNPROVEN, the
         # helper must refuse rather than downgrade to the readable-but-wrong
-        # port-keyed credential (GPT F1: an unreadable run/ must not open the
+        # port-keyed credential (an unreadable run/ must not open the
         # fallback).
         dashboard_server._write_secret_file(run_marker.secret_path(5476), "port-keyed")
         (home / ".local_secret").write_text("shared-secret", encoding="utf-8")
@@ -1765,7 +1765,7 @@ class TestSingleFamilyGatewayAuthenticatesTheV4LiteralDial:
 
         # A ::1-only gateway. A v4-literal dial finds the v4 family uncovered while
         # a listener MAP exists -> fail closed, no port-keyed fallback to a v4
-        # co-resident (GPT F1's disclosure scenario, closed).
+        # co-resident (the disclosure scenario).
         dashboard_server._write_secret_file(run_marker.secret_path(5476), "port-keyed")
         _publish_listener(home, 5476, "::1", "v6")
         assert read_local_secret(5476, dial_host="127.0.0.1") == ""

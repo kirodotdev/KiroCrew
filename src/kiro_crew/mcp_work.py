@@ -447,13 +447,11 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                 "a step after the calls that prove what it reports have returned. "
                 "Which item this lands on "
                 "is resolved from your own session — there is no item parameter."
-                " The whole report is one 64 KB crew-log line as JSON (a non-ASCII "
-                "character can count up to twelve bytes), so a report at every field cap with "
-                "non-ASCII text can be refused work_entry_too_large before anything is "
-                "written; keep summary and artifacts to what a reader needs. An item "
-                "from before the record whose committed acceptance is itself wider "
-                "than a line is refused work_item_too_large, which no shorter report "
-                "cures: the refusal names the conductor's accept as the remedy."
+                " The whole report must fit one 64 KB crew-log line as JSON (a non-ASCII "
+                "character can cost twelve bytes) or it is refused work_entry_too_large; "
+                "keep it to what a reader needs. An item whose committed acceptance is "
+                "itself wider than a line is refused work_item_too_large: no shorter "
+                "report cures it, only the conductor's accept."
             ),
             "inputSchema": {
                 "type": "object",
@@ -501,6 +499,13 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                             "On 'progress': when you will resume, an ISO-8601 time with a "
                             "zone, ahead of now by at most 24 hours. Refused with any other "
                             "status. Each report replaces it."
+                        ),
+                    },
+                    "discussion": {
+                        "type": "object",
+                        "description": (
+                            "Only when hosting a discussion: its whole state for the "
+                            "Board; fields and caps in docs/work-ledger.md."
                         ),
                     },
                 },
@@ -1096,7 +1101,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         payload = {
             k: v
             for k, v in args.items()
-            if k in ("status", "summary", "artifacts", "pr", "reason", "wake_at")
+            if k in ("status", "summary", "artifacts", "pr", "reason", "wake_at", "discussion")
         }
         resp = _post(_REPORT_PATH, payload, session_key=caller_key)
         if resp.get("error"):

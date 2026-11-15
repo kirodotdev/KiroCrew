@@ -212,7 +212,7 @@ describe('auto locations from buildUiIndex', () => {
     agentSettings: [{ id: 'chat.a-setting', label: 'A setting', tab: 'chat', route: '/settings/chat?highlight=chat.a-setting' }],
     descriptors: { 'chat.toggle': { kind: 'toggle', placements: [{ surface: 'chat', parent: 'page.chat', entry: 'toolbar' }] } },
     markerSites: [{ id: 'chat.toggle', rel: 'F.tsx', line: 1, resolved: { source: { key: 'k.toggle' }, excluded: [] } }],
-    previewEnablers: {}, catalogs: { en: EN }, locales: ['en'], productName: 'Kiro Crew', inputDigest: 'sha256:test',
+    previewEnablers: {}, catalogs: { en: EN }, locales: ['en'], productName: 'Kiro Crew',
     routes: ROUTES, conditions: UI_CONDITIONS, revealStates: UI_REVEAL_STATES,
     resolveGuide: () => ({ ok: false, reason: 'none' }),
     autoCandidates,

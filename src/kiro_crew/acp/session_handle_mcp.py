@@ -1285,7 +1285,7 @@ async def drain_init(
     hard_deadline = start + max(duration, no_report_ceiling)
     # A nonpositive ceiling means "do not hold for a first report" — the
     # caller knows no MCP server can register (MCP-free runtime). The idle
-    # shortcut is then active from the start, i.e. the pre-fix behavior.
+    # shortcut is then active from the start.
     reported = no_report_ceiling <= 0.0
     # Exactly the frames the caller counted before it sent set_mode are the
     # pre-switch agent's. A count, not a test for emptiness: a queue that the

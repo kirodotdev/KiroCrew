@@ -95,8 +95,12 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   [lost-run bound](#6-a-hang-is-a-lost-run-not-a-failed-test) may stay, and so may a
   lower bound that proves a deadline was honoured (with a margin of at least one clock
   tick) or a bound relative to a span the test measured itself. An existing complexity
-  guard keeps its thread-CPU budget at the original constant (class 5); a new one counts
-  work instead. [Class 5](#5-absolute-time-budgets-on-instrumented-runs).
+  guard keeps its thread-CPU budget at the original constant, or replaces it with a
+  count of work proven to fail on what the budget caught (class 5); a new one counts
+  work instead. Reshaping a kept budget's reading (the minimum of N readings, the
+  tracer paused around it) is not a fix: it still asserts seconds, and the K8 ratchet
+  counts `thread_time` and `process_time` deltas like any other clock.
+  [Class 5](#5-absolute-time-budgets-on-instrumented-runs).
 - **D8. Every await, join or `communicate` the test itself must unblock is bounded and
   fails by name** (`asyncio.wait_for`; `join(timeout)` followed by an `is_alive()`
   assertion; `communicate(timeout=...)`).
@@ -578,6 +582,15 @@ flags. The BSD `stat -f %Lp` fixture reads real permission bits with Python's
 Reject unsupported arguments and verify actual modes; never substitute a fixed
 successful response for the permission check. Quote paths and bound subprocesses.
 
+A test that runs a GNU-only shell form through bash (`date -d`, `grep -P`, `sed -i`
+with no attached suffix, `stat -c`, a bare `sha256sum -c` on stdin, `find -printf`,
+`base64 -w`) probes the host first and puts a shim or a skip in front of it, the way
+`_has_gnu_date`, `_pcre_grep_path` and `_host_has_gnu_sha256sum` do; the macOS
+shards run it on BSD tools. This covers a workflow step the test extracts, since
+Actions runs that step on Linux but the test does not. A shell script outside
+`.github/` uses the portable form. `test/test_gnu_only_shell_usage.py` enforces both
+and holds the reviewed exceptions.
+
 ### Links: use the conftest helpers, do not skip on Windows
 
 Creating a symlink on Windows needs `SeCreateSymbolicLinkPrivilege`; an unelevated
@@ -681,6 +694,36 @@ Config binding tests unrelated to memory provision real private stores for named
 members through `provision_member_memory`. Only the reserved `default` assistant
 can use V1. Workspace fallback and alias resolution assertions must not depend on
 an invalid member-to-global binding or disable private-file validation.
+
+### A faked host condition changes with the check that reads it
+
+A test often fakes a host condition the suite cannot have for real: the default
+data home (`beacon.is_default_home`), the platform, a privilege, a governance pin.
+The fake and the production check that reads it are one contract, split across
+two files. Change them in the SAME pull request:
+
+- **Adding a check** on a host condition (`if not is_default_home(): return False`)
+  means searching `test/` for every test that reaches that code, and giving the
+  ones that assert the "yes" branch the fake the check now needs.
+- **Removing a fake** (from a shared fixture such as `home`) means searching for
+  every assertion that still depends on it, not only the call the fake was added
+  for: `git grep -n "<function the fake answered>" -- src test`, then read each
+  production caller and the tests that reach it.
+
+MEASURED: one pull request removed the shared `home` fixture's
+`is_default_home() -> True` fake, because `destinations()` no longer read the home.
+A second pull request, written in parallel, made `off_offer_due()` return `False`
+off the default home. Each was green on its own base; once both merged, three
+`TestOffOffer` tests were red on every run of `main` (`assert False is True`) and
+blocked every open pull request until the fake came back, scoped to that class.
+Repeat runs cannot catch this shape, because it fails every time: the guard is the
+search, done by whichever change lands second, plus a rebase onto current `main`
+before the merge.
+
+Scope the fake to the tests that need it (a class-level autouse fixture), not the
+shared fixture, and keep one test that drops it and proves the "no" branch
+(`TestOffOffer`'s `home` case). A fake in a shared fixture outlives the check it
+was written for, and nothing reports that it now hides a branch.
 
 ### Transport readiness before event assertions
 
@@ -863,7 +906,7 @@ worker's last test is checked after that warning is written, so its findings are
 it. The package-attribute floor also undoes a replacement made by a wider-scoped fixture
 that a test created lazily (`request.getfixturevalue`) at that test's teardown.
 
-Seven members are there for a different reason — a **process-global** that any testpath
+Eight members are there for a different reason — a **process-global** that any testpath
 can poison for every test after it, which is the same failure shape as host mutation
 one scope down:
 
@@ -934,6 +977,17 @@ one scope down:
   retires the leaked instance's timers through `_cancel_timer`, which is the one place
   that knows a task on a closed loop must be DROPPED rather than cancelled — `Task.cancel`
   schedules through `loop.call_soon` and raises `RuntimeError: Event loop is closed`.
+* `_forget_gatewayd_telemetry_override` drops the process-level telemetry provider
+  `gatewayd._prepare_telemetry` installs (`metrics.provider.use_telemetry_provider`)
+  and the gatewayd role mark. It lives in `test/conftest_resets.py`, like the
+  autonudge restore. A test that runs `gatewayd.main()` in process leaves both set, and
+  every later test on the worker then resolves OTLP egress through gatewayd's provider
+  and ignores the one it installed with `set_context`. That is how
+  `test_config_patch.py`'s
+  `test_enable_is_refused_when_the_egress_posture_cannot_be_resolved` came to answer 200
+  instead of 409 after `test_mcp_gatewayd_coverage.py`'s `TestMain` on the same worker.
+  Reset at setup through the module's own `reset_for_testing()`, and only when the
+  override is set.
 
 It registers the xdist worker budget too — the policy is in the repo-root
 `xdist_budget.py`, a plain module rather than a second conftest, because the module
@@ -1593,7 +1647,14 @@ measures, never above.
   `mkdir(parents=True)`, which re-creates it. The crew-log eager fold worker is one: a
   fold still running when a test removes its private `KIROCREW_HOME` re-creates that
   home. Use the conftest's per-test `KIROCREW_HOME` pin instead of a private home,
-  because the conftest stops that worker before the pin lifts.
+  because the conftest stops that worker before the pin lifts. A store that `mkdir`s
+  its root on READ is another: the Issue Radar store's `data_dir(root)` does, so any
+  reader still running after a `unittest` cleanup re-creates a `TemporaryDirectory`
+  root that cleanup just removed. In a `unittest` class, take that root from
+  `tmp_path` through an autouse fixture method (`test_issue_radar_deps.py`'s
+  `_per_test_dirs`), because pytest owns that directory and this guard does not scan it.
+  `kirocrew.test-radar-store-root-self-removed` in `semgrep/test-determinism.yaml`
+  refuses a new `TemporaryDirectory()` or `mkdtemp()` in the Issue Radar tests.
 
   Why it is worth a guard rather than a convention: `/tmp` is commonly a tmpfs with a
   fixed **inode** budget (1,048,576 on the hosts this was measured on), and it returns
@@ -2968,6 +3029,12 @@ what it could see, and both are worth reusing:
   IS the assertion (git's ignore and ancestry semantics, openssl's DER output), and give
   those — production helper included — a `cwd=` the test owns. `cwd=` alone leaves a live
   `gh` token in play.
+- **Stubbing the spawn is not enough when a PATH probe gates it.** A test that fakes
+  `_run_gh` but not the adapter's `shutil.which("gh")` gate passes on a runner that ships
+  `gh` and fails on one that does not: the gate answers "unconfigured" first, the fake
+  never runs, and an `assertNotIsInstance` beside it passes for the trivial reason. Pin the
+  probe too (`_gh_available` in the ops-mission-control `github_issues` adapter), and run a
+  host-tool test once with the tool off `PATH` before calling it host-independent.
 - **A skip whose condition is a clock or a scheduler flips without any test failing.** Three
   tests skipped in some runs and passed in others: a ctime tick, whether a real `npm`
   answered in time, whether an earlier test had armed a fork hook in that worker. No
@@ -5250,7 +5317,8 @@ do is counted -- characters read, entries visited -- and require that doubling t
 at most doubles the count (a small constant factor of passes aside). That fails only on
 the property, never on the runner, and unlike a count of *calls* it also sees a
 superlinear scan hidden inside one call. Keep any timing bound the guard already carried
-at its original constant, read on thread CPU: a ratchet may only tighten. A *timed*
+at its original constant, read on thread CPU: a ratchet may only tighten, and the only
+way such a bound leaves is a count proven to catch what it caught (below). A *timed*
 doubling ratio is version-independent (a constant multiplier cancels) but still
 runner-dependent: even on `thread_time`, frequency scaling and co-tenant cache contention
 on a shared runner inflated a measured 3.0-bounded ratio to 3.2x with the property intact.
@@ -5320,6 +5388,37 @@ assert traced(build(4000)) == traced(build(2000))
 
 Keep a *small*-`n` absolute assertion alongside it so a uniform slowdown is still caught, and
 verify the threshold against a mutated implementation rather than reasoning about it.
+
+**A kept budget still reads the tracer, so replace it once a count can do its job.** The
+self-module scan guard (`test_denied_commands_security_cost.py`,
+`test_the_scan_is_linear_not_quadratic`) kept a 0.5 s thread-CPU budget beside its call
+counts, for cost added outside the counted functions. The scan costs about 0.07 s bare.
+Coverage's tracer multiplies that about five times, so on the instrumented Linux shards
+the intact scan read 0.51 to 0.92 s, run after run, on heads that never touched it.
+Taking the smallest of several readings removes a one-off spike, not the multiplier,
+which is on every reading. Removing the trace function for the readings takes the
+multiplier off and leaves a clock. A budget may leave only when a count
+takes over everything it caught: plant each regression the budget was there for and show
+the count fails it. `_interpreter_work` in `test/denied_commands_security_helpers.py` is
+that count where no narrower unit exists: the interpreter instructions the call executes
+on this thread, read through `sys.monitoring`. It is the same number bare, under coverage
+and on a loaded host, so it is bounded as a ratio between three equally spaced sizes
+(`_linear_work`: the second step costs at most a twentieth more than the first), and
+what one more token costs is held under a wide fixed ceiling, so a slowdown that is the
+same for every token still fails. Planted
+in the scan, the old per-token re-walk fails it, and so does a per-token walk that
+inlines its comparisons and calls no counted function, which the 0.5 s budget passed. It
+sees every step taken in Python, however the loop is spelled; it does not see work inside
+one C call (a slice, `in` on a list, `str.join`, a regex search). For a regex, where all
+the work is inside one call, assert what the engine is HANDED before the hostile input
+runs: that a refused pattern compiled nothing, that the one exponential construct never
+reaches a compiled pattern, that a bounded matcher passes at most its window, that no
+character can start two alternatives of one repeated body (read off `re._parser`'s
+parse of the pattern, as `test_the_quoting_regex_is_not_redos_prone` does). A
+regression then fails at that assertion instead of never returning (class 6). A
+complexity guard that runs both a Python walk and a regex search asserts the two
+apart: what the engine is handed, then `_linear_work` on the call's instructions
+(`TestIsDeniedReDoSResistance._assert_scan_is_linear`).
 
 For a regex — no instrumentation surface at all — use `test/conftest.py`'s
 `assert_rejected_without_backtracking(reject, build_pump)`, and note what the mutation

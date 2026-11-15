@@ -360,7 +360,7 @@ class TestNoInlineSaveOnTheEventLoop:
                 continue
             offenders.extend(self._offenders_in(tree, path.name))
         assert not offenders, (
-            "KiroCrewConfig.save() holds the sidecar advisory flock (#4767); a "
+            "KiroCrewConfig.save() holds the sidecar advisory flock; a "
             "coroutine must never call it inline on the event loop. Offload via "
             "dashboard/chat_utils.run_config_write (preferred) or "
             "asyncio.to_thread when the asyncio config lock is already held.\n  "

@@ -273,7 +273,10 @@ drops.
 **Document extraction is deadline-bounded and re-parsed per request.** A
 document pass extracts `.docx`/`.pdf`/`.pptx`/`.xlsx`. The character cap bounds TEXT, not
 work: a workbook of empty rows produces none, so the worksheet row loop samples
-the deadline every `_GREP_ROW_DEADLINE_STRIDE` rows. A parse that did not see all
+the deadline every `_GREP_ROW_DEADLINE_STRIDE` rows, and as often in the cells of one row. The workbook row walk is
+`kiro_crew.workbook_rows.read_workbook_rows`, shared with the Knowledge Library's
+`.xlsx` reader: it skips chartsheets and resets each sheet's dimensions, so a
+stale dimension record cannot hide rows from the search. Each sheet title is redacted whole before the walk keeps its first 31 characters for the row labels, since a token cut short matches no credential pattern. A parse that did not see all
 of a document's text — deadline, mid-read failure, or the character cap — marks
 the answer `truncated`. There is no extraction cache: the shared 2 s budget
 already bounds what one keystroke can cost, and a cache keyed by content had to

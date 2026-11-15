@@ -248,6 +248,11 @@ class HooksConfig:
     """Loaded from config.json ``hooks`` section."""
 
     auto_approve_tools: list[str] = field(default_factory=list)
+    #: Exact ``@server/tool`` grants that the approval card's "Always allow this
+    #: tool" and the MCP tool list's toggle write. The gate matches them only
+    #: against a VERIFIED MCP identity, never a title, and ``confirm_tools``
+    #: outranks them as it outranks ``auto_approve_tools``.
+    auto_approve_tool_identities: list[str] = field(default_factory=list)
     auto_approve_sources: list[str] = field(default_factory=list)
     auto_approve_subagent_spawn: bool = False
     auto_approve_subagent_tools: bool = False
@@ -397,6 +402,7 @@ class HooksConfig:
         disabled_ids = [str(i) for i in raw_disabled_ids if isinstance(i, str) and i]
         return cls(
             auto_approve_tools=merged_approve,
+            auto_approve_tool_identities=_str_list(data.get("auto_approve_tool_identities", [])),
             auto_approve_sources=_str_list(data.get("auto_approve_sources", [])),
             # Fail safe: malformed auto-approve flags must NOT silently widen
             # approval (a string "false" is truthy under plain bool()) — default
@@ -440,6 +446,7 @@ class HooksConfig:
             "auto_approve_tools": [
                 t for t in self.auto_approve_tools if t not in _BUNDLED_AUTO_APPROVE_TOOLS
             ],
+            "auto_approve_tool_identities": list(self.auto_approve_tool_identities),
             "auto_approve_sources": list(self.auto_approve_sources),
             "auto_approve_subagent_spawn": self.auto_approve_subagent_spawn,
             "auto_approve_subagent_tools": self.auto_approve_subagent_tools,

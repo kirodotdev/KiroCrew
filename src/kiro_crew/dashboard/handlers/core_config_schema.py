@@ -10,7 +10,11 @@ import and patch; this module never imports it."""
 from __future__ import annotations
 
 import kiro_crew.config.session_environments as _session_environments
-from kiro_crew.acp_backends import selectable_backend_values, selectable_stored_backend_values
+from kiro_crew.acp_backends import (
+    CHAT_RUNTIME_SHARING_HARNESSES,
+    selectable_backend_values,
+    selectable_stored_backend_values,
+)
 from kiro_crew.apps.manifest import KEBAB_RE
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES_LIMIT
@@ -380,6 +384,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Display -> View). Default on; only a literal `false` opens the search
     # palette instead.
     "dashboard.command_bar_enabled": {"type": "bool"},
+    # Channels' sidebar row and Search Everywhere result (the former `channels`
+    # app's enabled state). Default off; only a literal `true` shows them.
+    "dashboard.channels_enabled": {"type": "bool"},
     # The terminal app "Open in external terminal" starts (Settings → Display →
     # Terminal). "" = unset, the default, which withholds the action. Limited
     # to the desktop shell's launch allowlist; the launch gate in
@@ -526,6 +533,15 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Memory → Repeated failures: the opt-in weekly bell note
     # (dashboard/repeated_failures_notice.py). Default OFF in MemoryConfig.
     "memory.repeated_failures_notice": {"type": "bool"},
+    # Seconds, or "auto" (600 on a machine with 16 GiB or less, 3600 elsewhere). The
+    # field is ``int | str``, which the schema-derived rule cannot edit, so the row
+    # keeps its number box here and also takes the one word.
+    "memory.embedding_idle_evict_secs": {
+        "type": "int",
+        "min": 0,
+        "max": 365 * 24 * 3600,
+        "allow_auto": True,
+    },
     # Knowledge Library ingestion. Chunk budget max mirrors the point past which
     # a single sweep stops being a trickle; dedup cadence max is ~a day of sweeps.
     "knowledge.auto_add_documents": {"type": "bool"},
@@ -708,6 +724,16 @@ for _tier in DECISION_MODEL_ROUTE_TIERS:
 # route cannot grow the section with arbitrary keys.
 for _preview in FEATURE_PREVIEW_FLAGS:
     _EDITABLE_CONFIG[f"dashboard.feature_previews.{_preview}"] = {"type": "bool"}
+
+# The per-harness switches under the ACP runtime sharing preview, one boolean per
+# harness in ``CHAT_RUNTIME_SHARING_HARNESSES``. Only those names are writable, so
+# the route cannot switch on a harness that is not safe to share.
+_EDITABLE_CONFIG.update(
+    {
+        f"agent.chat_runtime_sharing_harnesses.{name}": {"type": "bool"}
+        for name in CHAT_RUNTIME_SHARING_HARNESSES
+    }
+)
 
 
 # The wake judge's two per-point settings. In the editable set where

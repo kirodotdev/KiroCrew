@@ -682,7 +682,7 @@ class TestOwnerOnlyDaclIsIdempotent:
         assert written == [], "an unchanged DACL must not be re-applied"
 
     def test_a_mismatched_dacl_is_still_written(self, tmp_path, monkeypatch):
-        # Guards the failure mode that would make this change a security bug:
+        # Guards the failure mode that would make this helper a security bug:
         # the skip must never swallow a write that is actually needed.
         probed, written = self._capture(monkeypatch, matches=False)
         d = tmp_path / "home"

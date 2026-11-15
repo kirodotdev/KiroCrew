@@ -267,13 +267,24 @@ directory per slug, so for a colliding slug the instance belongs to neither Bot,
 serving it to both -- with an editor -- would let them overwrite each other's dashboard.
 The exact name must derive this slug, exist in config, and be the only name that does.
 
-Both the READ and every WRITE are owner-gated, the same boundary `work_ledger_board`
-draws: the body carries this Bot's work-ledger and crew-log data (task titles,
-summaries, PR links), so arriving as rendered html does not make it a wider audience's. A
-non-owner is refused rather than served an empty read, which would show its numbers as
-stale when the truth is that they were withheld. A write mutates a stored page the
-gateway later renders. App tokens are denied outright -- an app
+Every WRITE is owner-gated, and so is the READ for everyone but one caller -- the same
+boundary `work_ledger_board` draws: the body carries this Bot's work-ledger and crew-log
+data (task titles, summaries, PR links), so arriving as rendered html does not make it a
+wider audience's. Any other non-owner is refused rather than served an empty read, which
+would show its numbers as stale when the truth is that they were withheld. A write
+mutates a stored page the gateway later renders. App tokens are denied outright -- an app
 token scoped to `/api/members` reaches these by prefix.
+
+The one caller is a team Crew teammate the Kiro relay verified, on a Bot in their roster
+(`member_dashboard._teammate_reader`, which calls `members_access._teammate_admitted` and
+audits `members.dashboard` under `resources="relay_teammate"`). They already run that
+Bot's turns and can ask it for any value its page shows, so they read the APPLIED page
+only: a staged page (`?preview=1`) and its Keep and Discard stay owner-only. Their read is
+one-shot. It never arms, replaces or evicts the live page the owner's tabs are pushed
+from, so the owner keeps its own language and version counter; the teammate's page is
+armed and disarmed in one worker call. A teammate's tab therefore gets no pushed frames
+and refreshes through its own timed re-read, and `/refetch`, which recovers a gap in
+those pushes, stays owner-only.
 
 All five rules live in one `_resolve` chokepoint, so a route added later cannot forget
 one of them, and a test reads the handlers' own syntax trees to assert every one calls it
@@ -548,7 +559,7 @@ the page and the read below both refuse a slug alone (`missing_member`).
 To fill the frame, the tab reads
 `GET /api/members/{slug}/dashboard?member=<name>&preview=1`, which serves the staged
 page through the same renderer, the same masking pass and the same owner gate as the
-live one, with `preview: true` in the body and `instance_version` left at the current
+live one (a relay teammate admitted to the live page is refused the staged one), with `preview: true` in the body and `instance_version` left at the current
 version. Nothing staged answers 404 `no_preview`, which the tab says in words (the page
 was kept, discarded or expired) with the same way back to the live page.
 

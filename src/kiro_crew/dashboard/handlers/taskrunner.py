@@ -414,6 +414,7 @@ async def _claim_plan_dir(work_dir: Path) -> tuple[str, Path]:
         try:
             _new_id, task_dir = worker.result()
         except Exception:
+            # The claim failed, so there is no directory to remove.
             pass
         else:
             try:

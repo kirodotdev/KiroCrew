@@ -1328,7 +1328,7 @@ class TestTerminalWsIntegration:
 
         assert b"KC=PROFILE_OK." in out, (
             "a login-guarded profile stanza did not run: the terminal is not a "
-            "login shell (#5885). Observed PTY tail: "
+            "login shell. Observed PTY tail: "
             f"{out[-400:]!r}"
         )
         assert b"BASHRC_WRONG" not in out
@@ -1530,8 +1530,8 @@ class TestTerminalWsIntegration:
         assert ready_frames == [], (
             "the readiness barrier OPENED for a session whose profile ASSIGNED "
             "PROMPT_COMMAND and therefore dropped the hook. Releasing here risks "
-            "handing a queued command to a profile still reading input, which is "
-            f"why #7641's release was reviewed out. frames={ready_frames!r}"
+            "handing a queued command to a profile still reading input, so the "
+            f"barrier must stay shut. frames={ready_frames!r}"
         )
         assert shell_ready is False, (
             "shell_ready must stay False while the hook is clobbered (None means "

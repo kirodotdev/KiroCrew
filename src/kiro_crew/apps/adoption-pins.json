@@ -65,6 +65,123 @@
         "route": "/pptx-maker",
         "icon": "Presentation"
       }
+    },
+    {
+      "name": "issue-radar",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-issue-radar",
+      "commit": "8e57db85e15e2d53fcd58808aeeac8f54734c6f3",
+      "version": "0.1.2",
+      "treeSha256": "b76d6f60298b6ac194876586a1ec19234fd37cbb4b325dbe8ea72a41123d2a55",
+      "archiveSha256": "02ed708cd9333301a710cdd7d7de03eebe50213e1d1758c96e66a462727729ac",
+      "minAppSdkLevel": 2,
+      "legacyNav": {
+        "route": "/issue-radar",
+        "icon": "Radar"
+      }
+    },
+    {
+      "name": "auto-improvement",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-auto-improvement",
+      "commit": "0e1a22d2e10b49cef904d5839e9bb6d3ad2a4ab2",
+      "version": "1.0.3",
+      "treeSha256": "5b8647bce56b26c5fe7e440c85c42d30013168d45f04d28bbc3908bd417ef457",
+      "archiveSha256": "624d2681fc0ba9ac8edbe9791e03da3b4247f04cdcd2b0ee9f0958e760d02355",
+      "minAppSdkLevel": 2,
+      "legacyNav": {
+        "route": "/auto-improvement",
+        "icon": "Brain"
+      }
+    },
+    {
+      "name": "design-tweak",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-design-tweak",
+      "commit": "deff125f4abf4657575f7c03f289bb25d3e37a8d",
+      "version": "0.10.1",
+      "treeSha256": "23affb46e3dc4db56aedd00f8b6338822507cd98b01eec10e0627da7d446f90c",
+      "archiveSha256": "b6093427ecfff4bea6811f7245567732e92f319baa62307dcf243c0023b16a5b",
+      "minAppSdkLevel": 8,
+      "legacyNav": {
+        "route": "/design-tweak",
+        "icon": "Paintbrush"
+      }
+    },
+    {
+      "name": "spec-builder",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-spec-builder",
+      "commit": "79de0b4e3581bcbde1a021d9a335c63f45a44f30",
+      "version": "0.1.1",
+      "treeSha256": "05024a394b6c8f43791248b5d6eef63f1d23a1e61b015dafe76bf585ea7fe75a",
+      "archiveSha256": "039f1143d69bf27bc126659c5625d0d2a123f6ea0b3a42a8143c0701b8b43711",
+      "minAppSdkLevel": 7,
+      "legacyNav": {
+        "route": "/spec-builder",
+        "icon": "ClipboardList"
+      }
+    },
+    {
+      "name": "auto-research",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-auto-research",
+      "commit": "a4688e7331d3a280d56e90eedfbd437601f9de52",
+      "version": "0.1.2",
+      "treeSha256": "0743a9946ee27b4a06292ee56512233f6b9750553cf62ba32f006a2c6f6eaf4a",
+      "archiveSha256": "67ca258c341add3653fc854caf353fcd07131ddb8c94c01343c89c55db47e2c7",
+      "minAppSdkLevel": 2,
+      "legacyNav": {
+        "route": "/auto-research",
+        "icon": "FlaskConical"
+      }
+    },
+    {
+      "name": "aws-control",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-aws-control",
+      "commit": "8382917ef0eac04d349fed4f4ad5d90329226ae7",
+      "version": "0.1.2",
+      "treeSha256": "4c51069de5b7b08b66d1ad86ff3556e05ca5ffae6a0b38fc65da453b72845c68",
+      "archiveSha256": "7218e3482b0af62ed170ed13e51a289e21a6ddbeaaec84aa696956bc4f3ebda6",
+      "minAppSdkLevel": 2,
+      "legacyNav": {
+        "route": "/aws-control",
+        "icon": "Cloud"
+      }
+    },
+    {
+      "name": "dev-fleet",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-dev-fleet",
+      "commit": "9eb46b5fa9ce4409a9de87027b02620588cecef3",
+      "version": "1.0.1",
+      "treeSha256": "d23805a2bb02bd372e45f14cfeb0b8cc9cf6857ba82e8eea1a84d25699ff76ce",
+      "archiveSha256": "03a7a476e1d52a3fc58819d9489d77eb42147efb08c99187255c6e217ec5c7d6",
+      "minAppSdkLevel": 7,
+      "legacyNav": {
+        "route": "/dev-fleet",
+        "icon": "Server"
+      }
+    },
+    {
+      "name": "meetings",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-meetings",
+      "commit": "a1e710690930abc025f051a97e20fe9db502d7f7",
+      "version": "0.1.3",
+      "treeSha256": "3bb25cb8eb58fbc0373c5c5a61df768cdf43c0ebfef0c6f6444b181003b202e4",
+      "archiveSha256": "7514bb05c9924e2610cba97ac8b12bf46a7d85ec9b5534a15bc9421482fce30c",
+      "minAppSdkLevel": 7,
+      "legacyNav": {
+        "route": "/meetings",
+        "icon": "CalendarClock"
+      }
+    },
+    {
+      "name": "project-scaffolder",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-project-scaffolder",
+      "commit": "92b542c07940e9f6cc8d553b0b491b6cdeef4d50",
+      "version": "0.1.1",
+      "treeSha256": "319e00e4bfc6d1e185890a56fce0be4b20ea633a4b5985e25a22a98ecad6ac9d",
+      "archiveSha256": "57b4ca60d07e073389b50b55d698091c0a3ea53d906e3c3870e0b18bc99d0f43",
+      "minAppSdkLevel": 7,
+      "legacyNav": {
+        "route": "/project-scaffolder",
+        "icon": "FolderPlus"
+      }
     }
   ]
 }

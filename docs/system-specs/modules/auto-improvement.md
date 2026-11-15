@@ -1403,8 +1403,22 @@ redaction helpers), never the other way round, so it fills no seam in
 core records and the drawer renders without knowing it. Some of those imports are
 private core names (`llm_helpers._steer_host_deny`, `llm_helpers._extract_json_of_type`,
 `agent_discovery._read_agent_spec`, `config.loader._session_work_dir`,
-`workflows.registry._await_owned`); the app's own repository has to reach them through a
-public surface before it can build against an installed Kiro Crew.
+`workflows.registry._await_owned`); the app's own repository resolves each by name from
+the running gateway through a host shim of its own, failing closed when one is missing,
+until a public surface replaces it. Such a name blocks deleting the wheel copy, not
+pinning it (driver decision 4 in #26967, comment 6729725443).
+
+**Adopted onto its own repository.** The wheel pins the app (`apps/adoption-pins.json`,
+[app-kit-platform.md § 33](app-kit-platform.md#33-former-built-in-adoption)) at
+`KiroCrewCaptain/kirocrew-app-auto-improvement` with `minAppSdkLevel` 2, the level of the
+`ctx.lifecycle` admission its run start uses, so a host whose record is builtin-owned
+swaps it in place onto that tree at a restart, keeping `data/`, `.app_secret`, the
+approved grants and `enabled`; the rail keeps `/auto-improvement` and the `Brain` glyph.
+The repository's `app.json` declares the same `permissions`, `agents` and `skills` as the
+wheel copy, and its one MCP server keeps its name and `autoApprove` list, launched by
+`python3` from a launcher file in the adopted tree instead of `-m` on the wheel package
+(the stdio shape § 33 carries). A fix to the app lands in that repository first; a change
+to the wheel copy needs its `App repo:` line.
 
 `test/test_core_auto_improvement_decoupling.py` is the gate, on the shared
 `test/core_app_independence.py` scanner. The core strings left naming the app are a

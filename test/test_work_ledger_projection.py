@@ -822,6 +822,110 @@ async def test_a_reported_wake_at_rides_the_record_and_the_next_report_clears_it
     assert item is not None and item.wake_at is None
 
 
+#: A discussion at the shape a hosting worker reports it.
+_DISCUSSION: dict[str, Any] = {
+    "phase": "talking",
+    "round": 2,
+    "minutes": 6,
+    "direction": "who writes the welcome page's facts",
+    "agreed": ["the gateway stamps every time"],
+    "disputed": [{"point": "who renders counts", "sides": "A: gateway; B: conductor"}],
+    "checking": ["does the Board fold read ask"],
+    "recent": [{"who": "A", "text": "the fold already holds it"}],
+    "thread": "/artifacts/abc123",
+}
+
+
+@pytest.mark.asyncio
+async def test_a_reported_discussion_rides_the_record_and_the_next_report_replaces_it(
+    monkeypatch,
+):
+    """The fold the Board reads holds the worker's discussion whole, so a rebuild
+    keeps it; the next report replaces it, and one without it clears it."""
+    _real_units(monkeypatch)
+    item_id = await _board()
+    status, body = await _report(
+        WORKER, {"status": "progress", "summary": "round 2", "discussion": _DISCUSSION}
+    )
+    assert status == 200, body
+    wl.rebuild_from_projection(CONDUCTOR)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.discussion == _DISCUSSION
+    status, body = await _report(
+        WORKER, {"status": "progress", "summary": "round 3", "discussion": {"phase": "asking"}}
+    )
+    assert status == 200, body
+    wl.rebuild_from_projection(CONDUCTOR)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.discussion is not None
+    assert item.discussion["phase"] == "asking" and item.discussion["agreed"] == []
+    status, body = await _report(WORKER, {"status": "progress", "summary": "plain"})
+    assert status == 200, body
+    wl.rebuild_from_projection(CONDUCTOR)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.discussion is None
+    assert "discussion" not in item.to_dict()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("part", "code", "field"),
+    [
+        ({"agreed": ["x" * 121]}, "field_too_long", "discussion.agreed[0]"),
+        ({"agreed": ["a"] * 9}, "field_too_long", "discussion.agreed"),
+        (
+            {"recent": [{"who": "A", "text": "y" * 201}]},
+            "field_too_long",
+            "discussion.recent[0].text",
+        ),
+        ({"disputed": [{"point": "p"}]}, "invalid_value", "discussion.disputed[0].sides"),
+        ({"thread": "/home/me/thread.md"}, "invalid_value", "discussion.thread"),
+        ({"phase": "arguing"}, "invalid_value", "discussion.phase"),
+        ({"mood": "calm"}, "invalid_value", "discussion.mood"),
+    ],
+)
+async def test_a_discussion_over_a_cap_is_refused_by_name_and_writes_nothing(
+    monkeypatch, part, code, field
+):
+    """Refused whole, naming the part, before the cache or the record moves."""
+    _real_units(monkeypatch)
+    item_id = await _board()
+    before = wl.read_work_item(CONDUCTOR, item_id)
+    status, body = await _report(
+        WORKER,
+        {"status": "progress", "summary": "s", "discussion": {**_DISCUSSION, **part}},
+    )
+    assert (status, body["code"], body["field"]) == (400, code, field), body
+    assert wl.read_work_item(CONDUCTOR, item_id) == before
+
+
+@pytest.mark.asyncio
+async def test_a_discussion_at_every_cap_in_chinese_fits_one_record_line(monkeypatch):
+    """Every cap at once, in CJK (six bytes a character in the record), still fits
+    the 64 KB line beside a full summary, so a real discussion is never refused for size."""
+    _real_units(monkeypatch)
+    item_id = await _board()
+    ch = "\u4e2d"
+    widest = {
+        "phase": "talking",
+        "round": 99,
+        "minutes": 1440,
+        "direction": ch * 200,
+        "agreed": [ch * 120] * 8,
+        "disputed": [{"point": ch * 120, "sides": ch * 160}] * 5,
+        "checking": [ch * 120] * 3,
+        "recent": [{"who": ch * 20, "text": ch * 200}] * 6,
+        "thread": "/artifacts/" + "a" * 501,
+    }
+    status, body = await _report(
+        WORKER, {"status": "progress", "summary": ch * 500, "discussion": widest}
+    )
+    assert status == 200, body
+    wl.rebuild_from_projection(CONDUCTOR)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.discussion == widest
+
+
 @pytest.mark.asyncio
 async def test_an_ask_record_rides_the_record_and_decide_clears_it_there(monkeypatch):
     """The ask record the route commits is the one a rebuild restores, and a later

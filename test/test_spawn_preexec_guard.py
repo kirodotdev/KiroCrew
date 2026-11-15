@@ -92,7 +92,7 @@ def test_no_async_spawn_forks_python_in_the_child():
         + "\n  ".join(f"{key} (line {line})" for key, line in sorted(offenders.items()))
         + "\n\nUse kiro_crew.sandbox.create_subprocess_limited(...) instead: it "
         "applies the same resource limits AFTER exec, where the process is "
-        "single-threaded. See issue #935."
+        "single-threaded."
     )
 
 

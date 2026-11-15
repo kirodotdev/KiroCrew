@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp import runtime as runtime_mod
-from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.client import AcpClient, ClaudeAcpClient
 from kiro_crew.acp.harness import claude as claude_mod
 from kiro_crew.acp.harness import codex as codex_harness_mod
 from kiro_crew.acp.harness import deepseek as deepseek_mod
@@ -386,7 +386,9 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             patch.object(pi_mod, "_resolve_pi_bin", return_value=(_PI_BIN, _SEARCH_PATH)),
             patch.object(pi_mod, "_pi_node_choice", return_value=pi_mod.PiNodeChoice()),
             patch.object(claude_mod, "_resolve_claude_code_executable", return_value=""),
-            patch.object(AcpClient, "_write_claude_local_settings", return_value=None),
+            # The thinking default reads the host's Claude Code settings files.
+            patch.object(claude_mod, "a_source_decides_thinking", return_value=False),
+            patch.object(ClaudeAcpClient, "_write_claude_local_settings", return_value=None),
             patch.object(pi_mod, "_seal_pi_gate_extension", return_value=_PI_EXTENSION),
             patch.object(pi_mod, "_ensure_pi_gate_launcher", return_value=_PI_LAUNCHER),
             patch.object(pi_mod, "_verify_pi_gate", return_value=("", "")),

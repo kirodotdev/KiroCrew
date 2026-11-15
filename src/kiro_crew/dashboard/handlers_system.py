@@ -341,6 +341,7 @@ def _get_static_system_info() -> dict[str, object]:
             if real_arch == "1":
                 arch = "arm64 (Apple Silicon)"
         except Exception:
+            # Not Apple Silicon, or no answer: keep the arch as reported.
             pass
 
     info: dict[str, object] = {
@@ -574,6 +575,7 @@ def _scan_mcp_processes() -> dict[str, object]:
                     if matched:
                         _seen.add(pid_s.strip())
             except Exception:
+                # A host where ``ps`` fails reports zero processes rather than an error.
                 pass
         return {"mcp_processes": _counts, "mcp_total": len(_seen)}
     except Exception:
@@ -722,6 +724,7 @@ def _collect_system_metrics() -> dict[str, object]:
         data["load_5m"] = round(load5, 2)
         data["load_15m"] = round(load15, 2)
     except Exception:
+        # No load average on this OS (Windows): the fields are left out.
         pass
     # Prefer the /proc/stat interval delta (no subprocess, counts iowait+steal);
     # fall back to the ps lifetime-average on non-Linux or the first sample.
@@ -792,6 +795,7 @@ def _collect_system_metrics() -> dict[str, object]:
         data["net_rx_kbs"] = max(0, _net_speed["rx_kbs"])
         data["net_tx_kbs"] = max(0, _net_speed["tx_kbs"])
     except Exception:
+        # No readable interface counters: the network fields are left out.
         pass
 
     # Disk — cross-platform (shutil.disk_usage works on all platforms)
@@ -800,6 +804,7 @@ def _collect_system_metrics() -> dict[str, object]:
         data["disk_total_gb"] = round(disk_total_v / (1024**3), 1)
         data["disk_free_gb"] = round(disk_free_v / (1024**3), 1)
     except Exception:
+        # A failed disk read leaves its fields out; the other metrics still report.
         pass
 
     # Process monitoring

@@ -23,7 +23,7 @@ from kiro_crew.safety_override import reset_yolo_policy_state as _reset_yolo_pol
 def _ledger_create_ignores_live_memory(_floor_monkeypatch):
     """A work-ledger ``create`` never depends on this runner's free memory.
 
-    ``_create_item`` refuses ``host_pressure_critical`` when the cached admission
+    ``_create_item`` refuses ``host_memory_critical`` when the live admission
     verdict refuses, and that verdict probes live memory, which a CI runner can
     have at under 2 GB. So every create in the suite would pass or fail by runner.
     The refusal is pinned off here; the refusal tests put the real one back.
@@ -206,6 +206,30 @@ def _forget_tracing_switch():
     """
     provider = sys.modules.get("kiro_crew.tracing.provider")
     if provider is not None:
+        provider.reset_for_testing()
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _forget_gatewayd_telemetry_override():
+    """Give every test the platform-context telemetry provider, not gatewayd's.
+
+    ``gatewayd._prepare_telemetry`` (run by ``gatewayd.main()``) installs a
+    process-level provider factory through ``use_telemetry_provider`` and marks the
+    process as gatewayd. Nothing in production undoes that, so a test that drives
+    ``main()`` in process leaves it set, and every later test on the worker resolves
+    OTLP egress through gatewayd's provider instead of ``current_context().telemetry``.
+    A test that installs a raising provider with ``set_context`` is then answered
+    "no egress". Measured: ``test_mcp_gatewayd_coverage.py``'s
+    ``TestMain::test_exits_with_the_amain_return_code`` followed by
+    ``test_config_patch.py``'s
+    ``test_enable_is_refused_when_the_egress_posture_cannot_be_resolved`` (200, not 409).
+
+    Reset at setup, and only when the override is set, so a test that never reached
+    gatewayd pays one dict lookup and two attribute reads.
+    """
+    provider = sys.modules.get("kiro_crew.metrics.provider")
+    if provider is not None and (provider._provider_factory is not None or provider._is_gatewayd):
         provider.reset_for_testing()
     yield
 

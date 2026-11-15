@@ -459,12 +459,23 @@ describe('App routing', () => {
       fireEvent.click(await keepOnWhenReady(dialog))
 
       await waitFor(() =>
-        expect(api.updateThemeConfig).toHaveBeenCalledWith({ privacy_acked: true, privacy_ack_version: 2 }))
+        expect(api.updateThemeConfig).toHaveBeenCalledWith({ privacy_acked: true, privacy_ack_version: 3 }))
       await waitFor(() =>
         expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument())
       // An existing user is not sent back through the tour.
       expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
       expect(api.updateThemeConfig).not.toHaveBeenCalledWith({ onboarded: true })
+      vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: false, env_pinned: false } as never)
+    })
+
+    it('shows the off form once to a user off only by an older build\'s written false', async () => {
+      const api = await existingUser(0)
+      vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: false, env_pinned: false, off_offer: true } as never)
+      renderWithProviders(<App />, { route: '/chat' })
+
+      const dialog = await screen.findByRole('dialog', { name: 'Privacy' }, { timeout: 5000 })
+      expect(within(dialog).getByRole('heading', { name: 'Performance metrics are off' })).toBeInTheDocument()
+      expect(within(dialog).getByRole('button', { name: 'Turn on performance metrics' })).toBeInTheDocument()
       vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: false, env_pinned: false } as never)
     })
 
@@ -567,7 +578,7 @@ describe('App routing', () => {
     })
 
     it('does not show the notice again once the current version is acknowledged', async () => {
-      const api = await existingUser(2)
+      const api = await existingUser(3)
       renderWithProviders(<App />, { route: '/chat' })
 
       await waitFor(() => expect(api.themeBoot).toHaveBeenCalled())
@@ -1453,8 +1464,8 @@ describe('App routing', () => {
     const GROUP_GAP = 6
     const SHIFT_LABELED = Math.ceil(PILL_WIDEST_LABELED + GROUP_GAP)
     // The capsule is a Liquid Glass host whose effect layers precede the
-    // segments, so the rung skips `[data-liquid-glass-layer]` on both sides.
-    const TERMINAL = '.tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer])'
+    // segments, so the rung hides what follows the connection dot.
+    const TERMINAL = '.tb-capsule > .tb-capsule-keep ~ *'
     // ≥640px (label visible): every rung, terminal included, shifts by the
     // labeled footprint, inside the media gate.
     for (const sel of ['.tb-drop-metrics', '.tb-drop-usage', '.tb-drop-feedback', TERMINAL]) {

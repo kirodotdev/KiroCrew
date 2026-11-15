@@ -225,10 +225,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     # and after a crash between write and rename — a file in this directory holds
     # the same bytes as the leaves above, PAT included. Classified as the whole
     # DIRECTORY (like ``whatsapp``) so every temp name, present and future, is
-    # covered. A TOP-LEVEL leaf, not one under ``workspace/md-notebook``, so an
-    # agent-writable ancestor cannot be renamed out from under it. The app's own
-    # backend opens it directly rather than through this gate, so writes keep
-    # working.
+    # covered. The previous layout's state directory: ``md_notebook_state`` copies it
+    # into the app's own ``data/state/``, which the Notes manifest declares in
+    # ``credentialMasks`` and so reaches this gate through the shipped declarations,
+    # and the copies it keeps here stay fenced.
     "md-notebook-staging",
     # Where the sandbox launcher stages the live-target pointer's absent-equivalent
     # stub before linking it into place. Classified as the whole DIRECTORY so the
@@ -655,6 +655,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``/api/security/credential-redaction`` handler is the only writer and opens
     # the path directly, not through this gate.
     "credential_redaction.json",
+    # The MCP message-body fields the owner allowed (``security.mcp_body_fields``).
+    # A row moves a field off the shell matcher and lifts its size ceiling, so an
+    # agent that could write it would allow its own fields. A missing or unreadable
+    # file reads as no rows. The owner-gated ``/api/security/mcp-body-fields``
+    # handler is the only writer and opens the path directly.
+    "mcp_body_fields.json",
     "token_signing.key",
     "refresh_chains.json",
     # The staging directory the two leaves above publish through. Both are masked as

@@ -807,6 +807,7 @@ async def _handle_resume_choice(
                             json={"replace_original": True, "text": label},
                         )
                 except Exception:
+                    # Updating the button message is cosmetic.
                     pass
             return
 
@@ -1018,6 +1019,7 @@ async def _handle_resume_choice(
                         json={"replace_original": True, "text": label},
                     )
             except Exception:
+                # Updating the button message is cosmetic.
                 pass
 
 

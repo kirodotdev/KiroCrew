@@ -129,7 +129,7 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatSidebar from '../pages/ChatSidebar'
 import { crewRowOwnState } from '../pages/chat-sidebar/SessionRow'
 import type { RootState } from '../store'
-import { crewModePreviewOn } from './crewModePreview'
+import { turnOffCrewModeAsLts } from './crewModeOff'
 
 type TestSlot = Record<string, unknown>
 
@@ -510,8 +510,8 @@ describe('chat sidebar — conductor lane', () => {
     expect(container.querySelectorAll('[data-crew-parent="true"]')).toHaveLength(1)
   })
 
-  it('marks no crew parent with the conductor mode preview off', async () => {
-    localStorage.removeItem('mc-preview-crew-mode')
+  it('marks no crew parent in a build without conductor mode (LTS)', async () => {
+    turnOffCrewModeAsLts()
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
       { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
@@ -1800,6 +1800,3 @@ describe('chat sidebar — conductor lane', () => {
     })
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

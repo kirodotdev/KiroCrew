@@ -66,6 +66,7 @@ async def _send_subagent_replay(ws: Any, state: Any, frames: list[dict]) -> None
             for _frame in frames:
                 await ws.send_json(_frame)
     except Exception:
+        # A failed send ends this replay early; the caller still sends the end marker next.
         pass
 
 
@@ -85,4 +86,5 @@ async def send_subagent_replay_done(ws: Any, ws_app: str | None) -> None:
     try:
         await ws.send_json({"type": "subagent_replay_done", "data": {}})
     except Exception:
+        # A failed send of the end marker is dropped; nothing after it depends on it.
         pass

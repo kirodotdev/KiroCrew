@@ -419,6 +419,15 @@ class TestRouteText:
         assert route.automatic is False
         assert "agent.kas_bundle is on" in route.describe()
 
+    def test_the_sharing_preview_route_is_automatic(self):
+        """The preview picks the bundle with agent.kas_bundle off: not the setting."""
+        route = kas_route.KasRoute(bundle=True, reason=kas_route.REASON_SHARING_PREVIEW)
+        assert route.automatic is True
+        assert route.as_dict()["automatic"] is True
+        assert route.describe() == (
+            "KAS runs on Kiro Crew's own engine because the ACP runtime sharing preview is on"
+        )
+
     def test_the_relay(self):
         assert kas_route.RELAY.name == "relay"
         assert kas_route.RELAY.describe() == "KAS runs through kiro-cli's relay"

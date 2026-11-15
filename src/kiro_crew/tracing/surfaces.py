@@ -97,6 +97,7 @@ def root(
     root_session_key: str = "",
     step: str = "",
     attrs: Mapping[str, Any] | None = None,
+    links: tuple[Any, ...] = (),
 ) -> Iterator[Surface]:
     """Open a surface root for the turns streamed in this block. Never raises its own error.
 
@@ -107,7 +108,7 @@ def root(
     *root_session_key* is the
     Crew session whose ``session.id`` every span of the run wears (R6); *step* opens a span under the run
     for the whole block, for a run that streams no model turn. *attrs* are extra
-    allowlisted keys for the run's spans.
+    allowlisted keys for the run's spans; *links* go on its anchor (what launched it).
 
     Opened inside another root bound in this task (a background one-liner a
     dashboard turn awaits), the block's turns are its own, not more attempts of
@@ -121,7 +122,7 @@ def root(
     step_span: Any = None
     if state is not None and trigger in RUN_KINDS and run_key:
         surface.run, step_span = _open_run(
-            state, trigger, run_name, run_key, root_session_key, step, common, attrs
+            state, trigger, run_name, run_key, root_session_key, step, common, attrs, links
         )
     token = turns.bind_turn_root(uuid.uuid4().hex, join=surface.run, attrs=common)
     error: BaseException | None = None
@@ -173,6 +174,7 @@ def _open_run(
     step: str,
     common: Mapping[str, Any],
     attrs: Mapping[str, Any] | None,
+    links: tuple[Any, ...] = (),
 ) -> tuple[runs.RunRef | None, Any]:
     """The run's anchor, its roll-up and its step span; ``(None, None)`` on any failure."""
     ref: runs.RunRef | None = None
@@ -187,6 +189,7 @@ def _open_run(
             key,
             root_session_key=root_session_key,
             attrs=extra,
+            links=links,
         )
         turns.open_rollup(ref.span_id)
         span = None

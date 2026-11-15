@@ -136,6 +136,7 @@ def read_effective_model(source: object) -> str:
                 if isinstance(candidate, str) and candidate and candidate.strip().lower() != "auto":
                     return candidate
     except Exception:
+        # Attribution only: an unreadable chain reports no model.
         pass
     return ""
 

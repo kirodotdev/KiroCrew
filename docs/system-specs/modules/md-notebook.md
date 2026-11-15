@@ -51,27 +51,82 @@ Rooted at `MD_NOTEBOOK_HOME`, defaulting to `~/.kiro/crew/workspace/md-notebook/
 | --- | --- |
 | `vaults/<id>/` | Vaults this app cloned itself. Attached vaults stay where the user has them. |
 
-The state files live in `<crew-home>/md-notebook-staging/`, a directory at the crew data
-home ROOT, and ignore `MD_NOTEBOOK_HOME`:
+The state files live in `<crew-home>/apps/md-notebook/data/state/`, the directory the
+app's manifest declares in `credentialMasks` (`"state/"`, App Kit seam level 8,
+[app-kit-platform §37](app-kit-platform.md#37-an-apps-credential-files-are-masked-by-its-own-manifest-seam-level-3)),
+and ignore `MD_NOTEBOOK_HOME`:
 
 | Path | Contents |
 | --- | --- |
-| `vaults.json` | Vault descriptors. No secrets, but `localPath` is what sync runs git against, so the directory is in `_SENSITIVE_HOME_DIRS`. |
+| `vaults.json` | Vault descriptors. No secrets, but `localPath` is what sync runs git against, so the directory is masked and on the tool gate (through the shipped declaration). |
 | `pat` | GitHub token, chmod 0600, never echoed back to the UI (only a boolean is). 0600 alone does not isolate another process running as the same user, so the directory is masked and fenced. Cleared by writing an EMPTY file, never by `unlink`: the empty file is the reader's absent-equivalent. |
 | `settings.json` | The `autoSync` authorization bit, `autoSyncMins` cadence, and `lastSync` stamps. Written with `fsync`, so a rename from an unflushed page cache cannot discard an acknowledged toggle. |
-| `.migrated`, `.migrating` | The legacy move's marker (its existence closes the move for good), and the lock a pass holds. |
-
 Every state writer stages its temp INSIDE this directory and renames it onto a name in the
 same directory, so the publish never crosses a mount point. (An older layout kept the files
-at `workspace/md-notebook/<name>` and staged here; under the Linux sandbox each was its own
-bind mount and every state write failed with `EXDEV`.) The directory is masked as a whole,
-so a temp or crash orphan holding PAT bytes is always covered. It is top-level because a
-mask covers the leaf and not its ancestors: under the agent-writable `workspace/md-notebook`
-it could be renamed out from under its own mask.
+at `workspace/md-notebook/<name>`; under the Linux sandbox each was its own bind mount and
+every state write failed with `EXDEV`.) The directory is masked as a whole, so a temp or
+crash orphan holding PAT bytes is always covered, and a sandboxed child cannot rename
+`apps/md-notebook/data` or any folder above it (the parent pins every hidden leaf gets,
+`security.md`).
+
+**The previous layout and its move.** The release before this one kept the same three
+files in `<crew-home>/md-notebook-staging/`, a top-level directory core masked and handed
+back to the shipped backend by name (`_APP_BACKEND_OWNED_LEAVES`, now empty). That
+directory stays masked and fenced and is handed back to no spawn.
+`md_notebook_state.move_state_to_app_data` copies it into `data/state/` once, in the
+gateway, after the legacy move below has sealed: each file's bytes there (or its
+absent-equivalent) are written over whatever `data/state/` holds, so a file an agent
+planted there before the directory was masked is replaced, never trusted; then the
+directory is synced and `.moved-to-app-data` written in `md-notebook-staging/`, where no
+agent can plant it, and only after that seal is the old PAT emptied in place, so a pass that
+stops in between can never copy an emptied PAT over the moved one (a sealed pass empties a
+PAT still left there). Every pass that reports the move done, a sealed one included, syncs
+`md-notebook-staging/` first, so the backend starts only once the marker's name is durable;
+a power loss can then never bring back an unsealed move that copies the old files over what
+the backend saved since. The registry and settings copies stay, so an older build still
+finds the vaults; what an older build does with the moved token is under **An older build
+does not mask the moved token** below.
+
+**This move waits for older sandboxes.** A sandbox's masks are fixed when it starts, and one
+started by the previous build masks `md-notebook-staging/` but not `data/state/`, so it would
+read the token the moment it landed there. The move therefore runs only in the gateway,
+through Notes' row in `apps/legacy_state_moves` (`sealed_default_legacy_state`): at the
+start of the shipped backend or of a record adopted from the wheel's pin, and, once Notes
+is pinned, before adoption swaps the record (whether or not Notes is enabled) and at every
+boot for a record adopted under pin trust; and only while
+`older_sandboxes.sandboxes_masking_only` names no live process that masks the old directory
+and not the new one (or cannot read the process table). On Linux that is the kernel's own
+record: each same-uid process's `/proc/<pid>/mountinfo` (each live thread's, when its main
+thread has exited), which a confined process can neither
+change nor hide, at every spelling of the data home. On macOS it is each same-uid process's
+Seatbelt policy, asked through `sandbox_check` whether it may read each directory at the data
+home's canonical spelling: one denied the old directory and not the new one, or whose answer is
+unknown, holds the move. The policy is the kernel's and every child inherits it, so emptying an
+environment or detaching does not shed it. On both, a process can exit between being listed and
+being judged and leave a child the listing never saw, so each new snapshot is judged too, and a
+scan answers "none" only once a snapshot shows nothing new it could not judge and every process the
+previous one could not judge still there, unchanged; a table that keeps changing holds the move as
+an unreadable one does. Windows
+masks nothing in any build, so nothing waits there. While one is alive the token stays in
+`md-notebook-staging/`, which every build masks, the gateway logs the pids, and Notes stays
+off; every later start of the backend checks again. Spawn prep runs only the first move
+(`sandbox_staging._migrate_md_notebook_legacy_state`) and, until the second seals, creates
+the empty `data/state/` before each spawn so that every sandbox of this build masks it. It
+never makes a `data/` while an install, update or keep-data uninstall holds the tree at
+`apps/.md-notebook-data-tmp/` (the restore's rename would land inside it); the generic
+materialiser makes `state/` inside the moved-aside tree then, and the move itself waits.
+Adoption waits too: APPLY swaps the record onto its repository only once the move has
+sealed, so an adopted backend never opens an empty `data/state/` while the state sits in
+`md-notebook-staging/`, which it cannot read
+([app-kit-platform §33](app-kit-platform.md#33-former-built-in-adoption), "A legacy state
+move holds the swap"). A Notes backend that is neither the shipped one nor a record adopted
+under pin trust (a third-party app under the name) gets neither the move nor the wait, so
+the token is never written into its data directory.
 
 **Legacy move.** `kiro_crew.md_notebook_state.migrate_legacy_state` moves real state from the
-old bare names into this directory, in one pass. Sandbox spawn prep runs it first, and the
-Notes backend spawn runs it for a host with no sandbox wrap. A failed pass in spawn prep is
+old bare names into this directory, in one pass. Sandbox spawn prep runs it first, the
+Notes backend spawn runs it for a host with no sandbox wrap, and adoption runs it before the
+second move through Notes' row (above). A failed pass in spawn prep is
 logged and the spawn goes on: the stubs planted right after keep every bare name masked, so
 no agent can plant state for a later pass to promote. The Notes backend does not start until
 the pass is sealed, so no backend write can race it, and passes hold
@@ -80,9 +135,11 @@ one at once. The pass reads each source once (regular file, no link followed) an
 those bytes with `atomic_write` only over an absent or stub destination. It syncs this
 directory, and only then empties the legacy `pat` in place (truncated through an
 `O_NOFOLLOW` descriptor, never unlinked, so a live namespace's mask stays on its inode); if
-the sync fails nothing is emptied. A legacy directory reached through a link is sealed with
-nothing moved, because an agent could swap that link for a directory of its own; Notes
-could not write state on that layout before either.
+the sync fails nothing is emptied. A destination `pat` already holding the legacy bytes (a
+pass stopped after copying it and before its seal) is not copied again, and the legacy `pat`
+is emptied as after a copy, so the token does not stay at a second name. A legacy directory
+reached through a link is sealed with nothing moved, because an agent could swap that link
+for a directory of its own; Notes could not write state on that layout before either.
 The pass ends by writing `.migrated`, which closes promotion for good. A copy that fails
 stops the pass unsealed, so the next spawn copies it again (so does a source it cannot
 read for a reason other than being absent), and a PAT with a second hard
@@ -97,6 +154,16 @@ again. The registry and settings hold no secret and stay at their old names, so 
 settings survive the rollback. Deleting the PAT is deliberate: a copy left behind would keep
 a token the user may later revoke on disk at a second name.
 
+**An older build does not mask the moved token.** Every build before this one masks the bare
+names and `md-notebook-staging/`, and none masks `apps/md-notebook/data/state/`: Notes'
+manifest in those builds declares no `credentialMasks`, and builds from before that seam have
+none to declare. Nothing of this build runs under an older one, so once the move to
+`data/state/` has sealed, an older build installed over this one finds no token where it
+reads one, and its agents can read `data/state/pat`. Kiro Crew ships no rollback
+(`docs/build/release.md`, "Recovery: roll forward"). An operator who installs an older build
+by hand deletes `<crew-home>/apps/md-notebook/data/state/pat` first, and revokes the token if
+an agent of the older build ran before that.
+
 **Re-upgrading does not move state again.** `.migrated` stays, so after upgrade, rollback
 and upgrade again the build reads the state directory as it was at the first upgrade.
 Vaults attached, settings changed or a PAT entered on the older build stay at the old bare
@@ -110,28 +177,35 @@ never persisted.
 
 ## Sandbox
 
-`sandbox._CREW_HIDDEN_LEAVES` bind-masks the `md-notebook-staging` directory, and the three
-old bare names under `workspace/md-notebook/` (stubbed before every spawn), in every sandbox tier, so an agent's spawned
+The app's manifest declares `"credentialMasks": ["state/"]`, so the sandbox bind-masks
+`apps/md-notebook/data/state` as a directory in every tier, creates it before every Linux
+spawn when absent, and refuses a spawn when a link or a file sits at it; an agent's spawned
 subprocesses cannot read the GitHub token or repoint a vault. The backend itself is a
-sandboxed spawn that OWNS that directory, so exactly that one spawn gets it back:
-`_APP_BACKEND_OWNED_LEAVES` declares the directory and
-`apps/backend.py` passes `app_backend_visible_targets()` as `extra_visible_dirs`, gated on
-shipped-builtin provenance. A spelling that sits beneath an independently masked directory
-is refused rather than carved, because carving it would unmask that whole foreign tree.
+sandboxed spawn and that directory's only reader, so exactly that one spawn gets it back:
+`apps/backend.py` passes `app_declared_mask_targets()` as `extra_visible_dirs`, read from
+the manifest of the code it executes, the generic App Kit seam every app uses. Core keeps
+no carve-out for Notes. `sandbox._CREW_HIDDEN_LEAVES` still masks the previous layout's
+`md-notebook-staging` directory and the three old bare names under `workspace/md-notebook/`
+(stubbed before every spawn), for a host that still holds them. A spelling that sits
+beneath an independently masked directory is refused rather than carved, because carving it
+would unmask that whole foreign tree.
 
 Two properties keep the mask meaningful now that the backend can create these files:
 
 * **The masks are materialised before launch.** `mount(2)` cannot target an absent path and
   the launcher's hiding loops guard on existence, so an absent leaf would get no mask at
   all and a namespace spawned before the first vault attach would read the PAT saved after
-  it. The state directory is a direct child of the data home, so the shared
-  `_materialize_maskable_dirs` creates it, and refuses the spawn when it is a link.
-  `_materialize_md_notebook_mask_targets()` then puts each file's absent-equivalent
-  document inside it (`pat` empty, `vaults.json` `[]`, `settings.json` `{}`), refusing the
-  spawn for a non-regular file at a state name. A link at `workspace/md-notebook` (an
+  it. The declared `data/state` directory is created before every Linux spawn, with the
+  folders above it, by the generic `_materialize_declared_mask_dirs`, which refuses the
+  spawn when a link sits in its chain. The previous layout's directory is a direct child
+  of the data home, so the shared `_materialize_maskable_dirs` creates it, and
+  `_materialize_md_notebook_mask_targets()` puts each file's absent-equivalent document
+  inside it (`pat` empty, `vaults.json` `[]`, `settings.json` `{}`), refusing the spawn for
+  a non-regular file at a state name. A link at `workspace/md-notebook` (an
   operator who moved `workspace/` to another disk) DEGRADES instead of refusing: the whole
   `workspace/md-notebook` directory is masked (`_md_notebook_degraded_mask_dirs`), and
-  `apps/backend.py` does not start the Notes backend, so nothing clones into the
+  `apps/backend.py` does not start the Notes backend (the row's start gate,
+  `md_notebook_state.backend_start_refusal`), so nothing clones into the
   namespace-only stand-in and lose notes on restart.
 * **The backend spawn starts isolated.** It launches with `-I` and runs the module through
   `runpy` with an explicit import root, so interpreter startup hooks (`sitecustomize`,
@@ -629,6 +703,9 @@ auto-sync loop), with shared fixtures in `test/md_notebook_helpers.py`.
 `test/test_core_md_notebook_decoupling.py` pins that no core module imports the app and
 lists, with a reason each, the core strings that still name it,
 `test/test_sandbox_md_notebook_carveout.py` pins the state-file carve-out and orphan sweep,
+`test/test_legacy_state_moves.py` pins that adoption waits for the state move (and runs it
+for a disabled app and for a record adopted under pin trust),
+`test/test_app_backend_spawn_env.py` pins on which provenance the backend spawn waits for it,
 and `src/kiro_crew/apps/builtins/md_notebook/tests/test_md_notebook_windows.py` covers the
 native Windows branches. All are collected because `setup.cfg` includes both `test` and
 `src/kiro_crew/apps/builtins` in `testpaths`.

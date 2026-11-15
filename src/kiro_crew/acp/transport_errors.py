@@ -587,16 +587,16 @@ del _raised
 # Auth failure on stderr is detected during spawn/prompt so we can raise
 # AcpAuthRequired (non-retryable) instead of churning through the retry ladder.
 # The detector is `is_auth_failure_output` below; there is deliberately no
-# separate "not logged in" pattern here, because having one was the defect —
-# `_RE_SESSION_EXPIRED` already carries that wording alongside the rest of the
-# auth vocabulary, and a second narrower copy is what let the spawn path miss
-# every expiry that does not use the banner's exact words.
+# separate "not logged in" pattern here: `_RE_SESSION_EXPIRED` already carries
+# that wording alongside the rest of the auth vocabulary, and a second, narrower
+# copy would let the spawn path miss every expiry that does not use the banner's
+# exact words.
 #
 # The DETECTION lives here; the MESSAGE does not. What an operator must do to sign
 # a harness back in is a property of that harness, so every raise site reads
-# `host_auth.signed_out_message(backend)` instead of a literal in this module. A
-# literal here spelled `kiro-cli login` for whichever harness happened to fail,
-# which is wrong the moment a harness signs in through its own credential file.
+# `host_auth.signed_out_message(backend)` instead of a literal in this module: a
+# literal `kiro-cli login` is wrong for a harness that signs in through its own
+# credential file.
 
 
 # ── Transient-error classification (shared by _format_acp_error and
@@ -1180,8 +1180,9 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
     branch at all (the provider's own sentence is shown verbatim), while this
     classifier deliberately hoists all three above the 5xx family so a
     co-occurring connector token or retry hint cannot rescue a payload the
-    backend rejected for its shape or size (see
-    ``test_terminal_branches_outrank_a_co_occurring_dispatch_failure``). A frame
+    backend rejected for its shape or size
+    (``test_terminal_branches_outrank_a_co_occurring_dispatch_failure`` checks the
+    malformed-request branch this way; the oversized-request branch is untested). A frame
     carrying both wordings therefore reads as 5xx prose with a terminal verdict;
     only the verdict drives retries.
 

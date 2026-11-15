@@ -688,6 +688,7 @@ async def api_mcp_active(request: web.Request) -> web.Response:
             if bindings.kiro_agent:
                 agent = bindings.kiro_agent
         except Exception:
+            # Without a readable config, the agent name stays as given.
             pass
 
     # Non-kirocrew agent: read from agent config. The lookup walks the agents

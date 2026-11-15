@@ -158,7 +158,7 @@ def _redact_tool_field(text: str | None, *, limit: int = _MAX_TOOL_FIELD) -> str
 
 
 #: Wire frame pushed onto ``slot._pending`` at a turn's end, before the queue
-#: drain or the cycle's end writes anything (``chat_runner._mark_turn_end``); a
+#: drain or the cycle's end writes anything (``chat_turn.queue_drain._mark_turn_end``); a
 #: recovery the ending turn queued for itself is the same turn and gets none.
 #: ``done`` marks the end of the whole queue cycle; this marks the end of one
 #: turn, which is where an app's stream on a user's session stops

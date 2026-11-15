@@ -708,7 +708,7 @@ def test_published_summary_is_one_redacted_unpinging_line():
     "smuggled", ["<<@U0FAKE>!here>", "<<!here>@U0OWNER>", "<<@U0X>!subteam^S0FAKE>", "@@herehere"]
 )
 def test_mention_markup_cannot_be_reassembled_by_the_defusing(smuggled):
-    """Removing a nested mention must not leave a new one behind (review finding)."""
+    """Removing a nested mention must not leave a new one behind."""
     for text in (cce.published_summary(f"done {smuggled}"), cce._defuse(smuggled)):
         assert "<" not in text and ">" not in text
         assert "@here" not in text.lower()

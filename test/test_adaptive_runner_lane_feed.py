@@ -212,12 +212,12 @@ class TestRunnerLaneFeedsTheExecTrack:
         assert s.running == 4  # 2 manager + 2 lane
         assert s.queued == 8  # 3 manager + 5 lane
 
-        # Finding 1: the cut floor is manager-only. Lane running (2) is NOT
+        # The cut floor is manager-only. Lane running (2) is NOT
         # folded into healthy_in_flight, so with no stalled manager runs the
         # floor is exactly the manager running count.
         assert s.healthy_in_flight == 2
 
-        # Finding 2: at-cap is judged PER point via the busier one, never the
+        # At-cap is judged PER point via the busier one, never the
         # sum. Running per point is 2 and 2 -> saturating is 2 (not 4). Demand
         # per point is 2+3=5 (manager) and 2+5=7 (lane) -> saturating_demand is
         # 7, the busier point, not the 12-sum.

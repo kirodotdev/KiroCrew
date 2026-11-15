@@ -147,7 +147,7 @@ class TestStripMarkdown:
 
     def test_recognized_tag_quoted_in_inline_code_is_preserved(self) -> None:
         # A RECOGNIZED tag in inline code renders literally — quoted visible
-        # content, so speech keeps it (round-5 grammar unification).
+        # content, so speech keeps it.
         assert strip_markdown("the `<!-- keep-visible -->` tag") == (
             "the <!-- keep-visible --> tag"
         )

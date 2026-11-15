@@ -328,6 +328,19 @@ class BrowserConfig:
             enum=list(BROWSER_CHOICES),
         ),
     )
+    report_changes: bool = field(
+        default=False,
+        metadata=_meta(
+            "Report what a step changed",
+            "After a click, a typed entry or a choice in a list, the browser's answer "
+            "also says what the page did: a new address or title, a dialog that "
+            "opened or closed, new alert or status text, the names of fields that "
+            "failed validation, and the controls that appeared or went away. The "
+            "agent then needs fewer page reads between steps. Each step takes a "
+            "fraction of a second longer, and the report covers the page's own "
+            "document, not what is inside frames. Off by default.",
+        ),
+    )
     live: BrowserLiveConfig = field(
         default_factory=BrowserLiveConfig,
         metadata=_meta("Live view", "The live view of the agent's browser in chat."),
@@ -364,6 +377,7 @@ class BrowserConfig:
         reader = SectionReader(cls, section)
         return cls(
             choice=_validated_choice(reader.get("choice")),
+            report_changes=reader.read("report_changes", _safe_bool),
             live=BrowserLiveConfig.from_raw(section.get("live")),
             credentials=BrowserCredentialsConfig.from_raw(section.get("credentials")),
             recording=BrowserRecordingConfig.from_raw(section.get("recording")),

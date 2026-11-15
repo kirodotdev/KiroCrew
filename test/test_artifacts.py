@@ -799,9 +799,8 @@ class TestLifecycleEvents:
             store._append_event(art, type="bogus")
 
     def test_reverted_event_type_accepted(self, store: ArtifactStore) -> None:
-        # Regression: 'reverted' must be in ALLOWED_EVENT_TYPES — it was
-        # added as a render type but missing from the allowlist, so the
-        # dashboard's revert flow surfaced a 400 error to the user.
+        # 'reverted' must be in ALLOWED_EVENT_TYPES as well as the render
+        # types, or the dashboard's revert flow surfaces a 400 error to the user.
         store.create(name="brd", content="# v1")
         store.update("brd", content="# v2", snapshot=True)
         # Revert to v1 (using the dashboard's PATCH path semantics — revert

@@ -102,12 +102,15 @@ export function KasBundleCard() {
 
   const installed = status.installed
   const canTurnOn = installed !== null && !installing
-  // The last KAS spawn took Crew's own engine because kiro-cli's relay cannot run
-  // here. The only sign of that switch on this card, so it is always shown.
+  // The last KAS spawn took Crew's own engine without agent.kas_bundle: kiro-cli's
+  // relay cannot run here, or the ACP runtime sharing preview picked it. The only
+  // sign of that switch on this card, so it is always shown.
   const automatic = status.route?.automatic === true
   const automaticText = !automatic
     ? ''
-    : status.route?.reason === 'kiro_cli_signed_out'
+    : status.route?.reason === 'chat_runtime_sharing'
+      ? i18nT('pages.developer.kasBundleCard.route_auto_sharing_preview')
+      : status.route?.reason === 'kiro_cli_signed_out'
       ? i18nT('pages.developer.kasBundleCard.route_auto_kiro_cli_signed_out')
       : i18nT('pages.developer.kasBundleCard.route_auto_no_kiro_cli')
   const progress = status.progress

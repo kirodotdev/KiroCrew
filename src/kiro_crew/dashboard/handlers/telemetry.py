@@ -56,6 +56,7 @@ from kiro_crew.dashboard.handlers.usage import (
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.jsonl_util import bounded_records
+from kiro_crew.metrics import kiro_export
 from kiro_crew.metrics.provider import (
     TELEMETRY_ENV_VAR,
     _held_consent,
@@ -241,6 +242,14 @@ class _TelemetryState(NamedTuple):
     # also have been turned on explicitly. True when unresolvable, the disclosure
     # direction.
     export_permitted: bool = True
+    # Turning recording on would also export somewhere the privacy notice does
+    # not name, so the config route refuses that write (409). The built-in Kiro
+    # destination does not count (``kiro_export.egress_needs_written_opt_in``).
+    # True when unresolvable, the refusal direction.
+    enable_refused: bool = True
+    # Off only by a written false older builds put in every new config
+    # (``kiro_export.off_offer_due``). False when unreadable: no offer.
+    off_offer: bool = False
 
 
 def _telemetry_cfg() -> _TelemetryState:
@@ -263,6 +272,8 @@ def _telemetry_cfg() -> _TelemetryState:
     destinations: "tuple[dict, ...]" = ()
     retention_days = 0
     export_permitted = True
+    enable_refused = True
+    off_offer = False
     directory = config_dir() / "metrics"
     try:
         full_cfg = KiroCrewConfig.load()
@@ -270,6 +281,7 @@ def _telemetry_cfg() -> _TelemetryState:
         # An unparseable config file holds consent as unknown: no recorder is
         # built, but a live one keeps running. Report what this process records.
         held = _held_consent(full_cfg, bool(cfg.enabled))
+        off_offer = kiro_export.off_offer_due(full_cfg)
         live_recording, live_exporting = live_recorder_state()
         enabled = live_recording if held is None else bool(held)
         retention_days = max(0, int(getattr(cfg, "retention_days", 0) or 0))
@@ -282,17 +294,21 @@ def _telemetry_cfg() -> _TelemetryState:
         # leave the machine. The endpoint value never leaves that resolution; the
         # panel only needs to know whether egress would happen.
         try:
+            rows = otlp_egress_listing(cfg)
             destinations = tuple(
                 {
                     "name": row.destination.name,
                     "source": row.source,
                     "locked": row.locked,
                 }
-                for row in otlp_egress_listing(cfg)
+                for row in rows
             )
             otlp_configured = bool(destinations)
+            enable_refused = any(not kiro_export.is_builtin(row.destination) for row in rows)
             if otlp_configured:
                 # Unknown consent keeps the live recorder, so disclose what IT exports.
+                # Otherwise this is the operator opt-in; the built-in Kiro
+                # destination, which needs none, is named by its row.
                 export_permitted = live_exporting if held is None else outbound_consented(full_cfg)
             if held is None and live_exporting:
                 # The fallback load may list no destination (an unparseable file
@@ -333,6 +349,8 @@ def _telemetry_cfg() -> _TelemetryState:
         retention_days,
         destinations,
         export_permitted,
+        enable_refused,
+        off_offer,
     )
 
 
@@ -1522,7 +1540,7 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
     separate page. Both are independent of the telemetry main switch — those rows
     are always written — so they are fetched even when OTEL export is off.
     """
-    state = _telemetry_cfg()
+    state = await asyncio.to_thread(_telemetry_cfg)
     window = _request_window(request, _WINDOW_DAYS)
     # No window named: each block keeps main's default (spend 7d, the rest 14d).
     defaulted = not any((request.query.get(k) or "").strip() for k in ("days", "since", "until"))
@@ -1955,6 +1973,11 @@ async def api_collection_status(request: web.Request) -> web.Response:
             "otlp_configured": state.otlp_configured,
             # Whether a configured destination is actually sent to now.
             "export_permitted": state.export_permitted,
+            # Whether the switch's ENABLE direction is refused (409) here.
+            "enable_refused": state.enable_refused,
+            # Off only by a written false older builds put in every new config:
+            # the Privacy chapter's off form offers Turn on once.
+            "off_offer": state.off_offer,
             "otlp_destinations": [dict(row) for row in state.otlp_destinations],
             "metrics_dir": str(state.directory),
         }

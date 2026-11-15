@@ -594,7 +594,8 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
             "checked here: the harness reads them."
         ),
         signed_out_message=(
-            "OpenCode is not signed in. Run `opencode auth login` in a terminal on "
+            "OpenCode has no model provider it can use: none is signed in, or its "
+            "key was refused. Run `opencode auth login` in a terminal on "
             "the gateway host and complete its sign-in, or name a locally served "
             "model in the project's opencode.json, then start a new chat. "
             f"{HOST_TERMINAL_NOTE}"
@@ -604,6 +605,15 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # is still authenticated.
         host_logout_retires_children=False,
         entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
+        # opencode 1.19.1, driven live against a provider that answers 401, drops
+        # the status and answers ``session/prompt`` with -32603 ``Internal error:
+        # Incorrect API key provided.`` (data ``errorName: "APIError"``, which it
+        # also uses for other provider faults). The phrase is the OpenAI-style
+        # provider's own, relayed verbatim; a provider worded otherwise keeps the
+        # raw text. A signed-out host gives no error at all: opencode starts on its
+        # own hosted model instead, which the start-time model check refuses
+        # (``acp/no_model_provider.py``).
+        signed_out_signature="Incorrect API key provided",
     ),
     AgentAuthDeclaration(
         backend=ACP_BACKEND_GOOSE,

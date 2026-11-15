@@ -54,6 +54,7 @@ import {
   PREVIEW_DASHBOARD_STALE_WAKE,
   PREVIEW_BRIDGE_APPROVALS,
   PREVIEW_SECRETS_VAULT,
+  PREVIEW_WORKER_GRILL,
   readPreviewFlag,
   setPreviewFlag,
 } from '../utils/previewFlags'
@@ -609,6 +610,14 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(vault.getAttribute('aria-checked')).toBe('false')
     await act(async () => { vault.click() })
     expect(localStorage.getItem(PREVIEW_SECRETS_VAULT)).toBe('1')
+  })
+
+  it('offers the worker grill switch, off by default', async () => {
+    renderTab()
+    const grill = screen.getByRole('switch', { name: /^quick worker check before a hard choice$/i })
+    expect(grill.getAttribute('aria-checked')).toBe('false')
+    await act(async () => { grill.click() })
+    expect(localStorage.getItem(PREVIEW_WORKER_GRILL)).toBe('1')
   })
 
   it('reads the retired instance-sessions key as on, and clears it when turned off', async () => {

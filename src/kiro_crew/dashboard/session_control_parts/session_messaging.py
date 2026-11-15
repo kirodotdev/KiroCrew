@@ -528,7 +528,7 @@ async def send_to_target(
                 state,
                 slot,
                 prompt,
-                session_deliver.peer(steer=False),
+                session_deliver.peer(steer=False, sender=caller_session_key),
                 queue_meta={**send_origin_meta(state, caller_key), SESSION_SEND_QUEUED_META: True},
                 relay_meta=relay_meta,
             )
@@ -719,7 +719,7 @@ async def send_to_target(
                 state,
                 slot,
                 prompt,
-                session_deliver.peer(steer=False),
+                session_deliver.peer(steer=False, sender=caller_session_key),
                 # Only the QUEUE arm keeps it (the run arm has no entry): a
                 # delivery that waits is the one a later drain can drop, and this
                 # stamp is what lets that drop be reported back to us instead of

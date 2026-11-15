@@ -7,6 +7,11 @@ by name, so each of them imports ``_own_address_probe_stays_local``.
 
 from __future__ import annotations
 
+import gc
+import sys
+import threading
+from typing import Callable
+
 import pytest
 
 from kiro_crew.security import BUILTIN_DENIED_RULES
@@ -117,3 +122,62 @@ def _denied_by(cmd: str, reason_notes: "dict[str, str] | None" = None) -> "str |
     _, _, pattern = head.partition("Blocked by security policy: ")
     by_pattern = {r.pattern: r.id for r in BUILTIN_DENIED_RULES}
     return by_pattern.get(pattern or verdict, f"<unmapped:{verdict}>")
+
+
+def _interpreter_work(fn: "Callable[[], object]") -> int:
+    """How many interpreter instructions this thread executes while ``fn`` runs.
+
+    The deterministic replacement for a CPU clock around ``fn``. The count is fixed by
+    what the code does, so the same code reads the same number bare, under coverage and
+    on a loaded runner, where a clock reads the host. Bound its growth as a RATIO
+    between input sizes. An absolute bound needs a wide margin: the number moves with
+    the interpreter version and with every edit to the code under test.
+
+    It sees every step taken in Python, whichever function takes it and however the loop
+    is spelled. It cannot see work done inside one C call: a slice, ``in`` on a list,
+    ``str.join`` and a regex search are each one instruction whatever their length.
+
+    Only this thread is counted, and the cyclic collector is paused for the call, so
+    neither another thread nor a finalizer the collector would run here is billed to
+    ``fn``.
+    """
+    monitoring = sys.monitoring
+    # Ids 3 and 4 are the two the interpreter reserves for no named tool.
+    tool = next(i for i in (3, 4) if monitoring.get_tool(i) is None)
+    this_thread = threading.get_ident()
+    count = 0
+
+    def on_instruction(_code: object, _offset: int) -> None:
+        nonlocal count
+        if threading.get_ident() == this_thread:
+            count += 1
+
+    monitoring.use_tool_id(tool, "interpreter-work")
+    collecting = gc.isenabled()
+    try:
+        gc.disable()
+        monitoring.register_callback(tool, monitoring.events.INSTRUCTION, on_instruction)
+        monitoring.set_events(tool, monitoring.events.INSTRUCTION)
+        fn()
+    finally:
+        monitoring.set_events(tool, monitoring.events.NO_EVENTS)
+        monitoring.register_callback(tool, monitoring.events.INSTRUCTION, None)
+        monitoring.free_tool_id(tool)
+        if collecting:
+            gc.enable()
+    return count
+
+
+def _linear_work(work: "list[int]") -> bool:
+    """True when ``work`` at three equally spaced input sizes grows linearly.
+
+    ``work`` is :func:`_interpreter_work` at sizes ``s``, ``2s`` and ``3s``. A linear
+    cost adds the same work for each step of ``s``; a super-linear one adds more for the
+    second step than for the first. The second step may cost at most a twentieth more
+    than the first. The slack is not for the runner, which cannot move the count: it
+    leaves room for a cost that is linear but not exactly so (a table that grows in
+    chunks). Work that does not grow at all is refused too, since it means the measured
+    call never reached the code under test.
+    """
+    small, middle, large = work
+    return 0 < (middle - small) and (large - middle) * 20 <= (middle - small) * 21
