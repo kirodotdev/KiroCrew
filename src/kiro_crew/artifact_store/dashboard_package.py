@@ -1191,6 +1191,97 @@ def resolve_bound_slug(bound_to: str, *, store: "ArtifactStore | None" = None) -
     provenance (``source_copy_only``) owns its bytes and is an ordinary candidate.
     """
     bound_to = validate_bound_to(bound_to)
+    scan = scan_bound_dashboards(store)
+    claimants = scan.bound.get(bound_to, [])
+    if len(claimants) > 1:
+        raise BindingAmbiguous(
+            f"dashboard package: binding: {claimants[0]!r} and {claimants[1]!r} are both "
+            f"bound to {bound_to!r}, so which one this names is unproven. There "
+            "is one package per Bot or slot: delete or rebind one of them"
+        )
+    found = claimants[0] if claimants else ""
+    if scan.complete:
+        return found or None
+    records, unread = scan.listed, scan.unread
+    if records > MAX_BINDING_SCAN:
+        raise BindingLookupIncomplete(
+            f"dashboard package: binding: {records} dashboard artifacts are stored "
+            f"and this lookup opens the newest {MAX_BINDING_SCAN}, so a package bound to "
+            f"{bound_to!r} behind them was not seen. There is one package per Bot "
+            "or slot, so this many is a library to prune, not a lookup to widen"
+        )
+    # ONE SENTENCE FOR TWO READINGS, because the fact is one: a record that could
+    # not be read may be the package bound here (so ``None`` is unproven) or a
+    # second one bound here (so the match is unproven). Which of the two it would
+    # have been is precisely what could not be determined.
+    raise BindingLookupIncomplete(
+        f"dashboard package: binding: {unread} of {records} dashboard "
+        f"artifacts could not be read, so nothing proves "
+        + (
+            f"{found!r} is the only one bound to {bound_to!r}"
+            if found
+            else f"none of them is bound to {bound_to!r}"
+        )
+    )
+
+
+@dataclass(frozen=True)
+class BoundScan:
+    """What one scan of the stored dashboards found (:func:`scan_bound_dashboards`).
+
+    ``bound`` maps each ``bound_to`` string an opened envelope names to the slugs
+    naming it, in scan order (newest first). ``listed`` counts the dashboard records
+    the store listed (the scan opens at most :data:`MAX_BINDING_SCAN` of them), and
+    ``unread`` those it could not open or decode.
+    """
+
+    bound: dict[str, list[str]]
+    listed: int
+    unread: int
+
+    @property
+    def complete(self) -> bool:
+        """Whether every listed record was opened and read."""
+        return self.listed <= MAX_BINDING_SCAN and not self.unread
+
+
+def is_live_pointer(art: object) -> bool:
+    """Whether stored record *art* serves a file's current bytes, read off its metadata alone.
+
+    ``ArtifactStore._is_live_pointer``'s rule (a ``source_path`` without
+    ``source_copy_only``), for any record a listing returns: a field it lacks reads as
+    empty. A copy with provenance (``source_copy_only``) owns its bytes. Every reader
+    that must skip a live pointer before opening it asks this one rule.
+    """
+    return bool(str(getattr(art, "source_path", "") or "")) and not bool(
+        getattr(art, "source_copy_only", False)
+    )
+
+
+def live_binding_of(content: str) -> str | None:
+    """The binding a dashboard package's text names, by the rule the binding scan reads it.
+
+    The decoded package's ``bound_to`` when it is a string, else ``None``. The one
+    reading of a live package's binding: :func:`scan_bound_dashboards` (and so
+    :func:`resolve_bound_slug`) and the instance import's ownership check both use it,
+    so the two can never judge one package differently. Raises the decoder's own
+    error for text that is not a package.
+    """
+    raw = _decode_package(content)
+    target = raw.get("bound_to") if isinstance(raw, Mapping) else None
+    return target if isinstance(target, str) else None
+
+
+def scan_bound_dashboards(store: "ArtifactStore | None" = None) -> BoundScan:
+    """Every binding the stored dashboards name, by the rules :func:`resolve_bound_slug` reads by.
+
+    The ``kind="dashboard"`` artifacts the store lists, newest first and at most
+    :data:`MAX_BINDING_SCAN`; a live pointer (:func:`is_live_pointer`) is skipped
+    before it is opened, and a record that cannot be
+    opened or whose envelope cannot be decoded is counted in ``unread``. The binding
+    is read off the stored envelope, not a validated package. Why each rule holds is
+    :func:`resolve_bound_slug`'s docstring.
+    """
     if store is None:
         from kiro_crew.artifacts import get_default_store
 
@@ -1198,57 +1289,17 @@ def resolve_bound_slug(bound_to: str, *, store: "ArtifactStore | None" = None) -
     from kiro_crew.artifacts import ArtifactError
 
     records = store.list(kind=DASHBOARD_KIND)
+    bound: dict[str, list[str]] = {}
     unread = 0
-    found = ""
     for art in records[:MAX_BINDING_SCAN]:
-        # A LIVE POINTER is skipped before it is even opened: the artifact serves a
-        # file's current bytes, which no artifact-API gate stands in front of, so this
-        # record cannot be the package bound anywhere. Skipped rather than counted as
-        # unread, because nothing about it is unknown -- what it is is disqualifying.
-        if str(getattr(art, "source_path", "") or "") and not bool(
-            getattr(art, "source_copy_only", False)
-        ):
+        if is_live_pointer(art):
             continue
         try:
             loaded = store.get(art.slug)
-            raw = _decode_package(loaded.content or "")
+            target = live_binding_of(loaded.content or "")
         except (ArtifactError, OSError):
-            # Counted rather than skipped. A record that cannot be opened or decoded
-            # may BE the one bound here -- that is precisely what could not be read --
-            # and once a match is in hand it may be the SECOND one, which is the same
-            # unproven answer seen from the other side.
             unread += 1
             continue
-        # The query is validated, so an equal string is a well-formed binding: a
-        # record whose own ``bound_to`` is malformed cannot match one and needs no
-        # separate check here.
-        if isinstance(raw, Mapping) and raw.get("bound_to") == bound_to:
-            if found:
-                raise BindingAmbiguous(
-                    f"dashboard package: binding: {found!r} and {loaded.slug!r} are both "
-                    f"bound to {bound_to!r}, so which one this names is unproven. There "
-                    "is one package per Bot or slot: delete or rebind one of them"
-                )
-            found = loaded.slug
-    if len(records) > MAX_BINDING_SCAN:
-        raise BindingLookupIncomplete(
-            f"dashboard package: binding: {len(records)} dashboard artifacts are stored "
-            f"and this lookup opens the newest {MAX_BINDING_SCAN}, so a package bound to "
-            f"{bound_to!r} behind them was not seen. There is one package per Bot "
-            "or slot, so this many is a library to prune, not a lookup to widen"
-        )
-    if unread:
-        # ONE SENTENCE FOR TWO READINGS, because the fact is one: a record that could
-        # not be read may be the package bound here (so ``None`` is unproven) or a
-        # second one bound here (so the match is unproven). Which of the two it would
-        # have been is precisely what could not be determined.
-        raise BindingLookupIncomplete(
-            f"dashboard package: binding: {unread} of {len(records)} dashboard "
-            f"artifacts could not be read, so nothing proves "
-            + (
-                f"{found!r} is the only one bound to {bound_to!r}"
-                if found
-                else f"none of them is bound to {bound_to!r}"
-            )
-        )
-    return found or None
+        if target is not None:
+            bound.setdefault(target, []).append(loaded.slug)
+    return BoundScan(bound=bound, listed=len(records), unread=unread)

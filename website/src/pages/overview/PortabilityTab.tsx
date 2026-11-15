@@ -11,6 +11,7 @@ import { noteStaleOwnerResponse } from '../../api/staleOwnerSignal'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { adoptHostUiPrefsOnNextLoad, pauseUiPrefsSync, resumeUiPrefsSync } from '../../lib/uiPrefs'
 import { downloadBlob } from '../../utils/download'
+import { botImportLines } from './portabilityBots'
 
 /**
  * Where a settings restore leaves its result for the load it triggers.
@@ -255,10 +256,16 @@ const NOT_APPLIED_ITEM = /\((?:skipped\b|kept\b|not installed\b|nothing to resto
  * `NOT_APPLIED_ITEM` openers and is reported on its own warning line instead --
  * counting it here too would tell the user N items were imported while the very
  * next line says some of those N were left untouched.
+ *
+ * `reportItems` is the summary's `report_items`: the per-Bot report lines the
+ * import appended to `items`, which are shown from the summary's Bot keys and are
+ * not applied items. An entry is left out by exact match, never by its wording; a
+ * summary without the key counts every item the openers above do not exclude.
  */
-export function importedItemCount(items: unknown): number {
+export function importedItemCount(items: unknown, reportItems?: unknown): number {
   if (!Array.isArray(items)) return 0
-  return items.filter(i => !(typeof i === 'string' && NOT_APPLIED_ITEM.test(i))).length
+  const reports = new Set(Array.isArray(reportItems) ? reportItems.filter((r): r is string => typeof r === 'string') : [])
+  return items.filter(i => !(typeof i === 'string' && (reports.has(i) || NOT_APPLIED_ITEM.test(i)))).length
 }
 
 /** A non-negative integer from the import summary, or null when the field is absent or malformed. */
@@ -483,11 +490,16 @@ export default function PortabilityTab() {
         if (failedTemplates.length) {
           errors.push(i18nT('pages.overview.portabilityTab.import_agent_templates_skipped', { names: describeSkipped(failedTemplates) }))
         }
+        // A Bot the import did not restore whole is a failure; its notices,
+        // the withheld Bot chats and the counts are caveats.
+        const bots = botImportLines(summary)
+        errors.push(...bots.errors)
+        warnings.push(...bots.warnings)
         const keptFiles = keptSettingsFiles(summary.settings_kept)
         if (keptFiles.length) {
           warnings.push(i18nT('pages.overview.portabilityTab.import_settings_kept', { files: fmtList(keptFiles.map(settingsFileLabel)) }))
         }
-        const msg = i18nT('pages.overview.portabilityTab.import_complete_restart_gateway', { count: importedItemCount(summary.items) })
+        const msg = i18nT('pages.overview.portabilityTab.import_complete_restart_gateway', { count: importedItemCount(summary.items, summary.report_items) })
         const chats = [...templateLines, ...chatImportLines(summary)]
         setImportWarnings(warnings)
         setImportErrors(errors)
