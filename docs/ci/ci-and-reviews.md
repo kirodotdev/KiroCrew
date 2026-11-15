@@ -2668,6 +2668,31 @@ nightly HAD one, and was emptied again after it, which is why
 `test_workflow_array_expansion_bash32.py` asks for the local form at the
 expansion instead of reasoning about reachability.
 
+### A runner image move and `playwright install`
+
+Before a job moves to a new runner image, or a runner label starts serving one,
+check that the pinned Playwright (`@playwright/test` in `website/package.json`)
+has a host entry for that OS. Playwright refuses to install a browser on a host
+it does not know: when `kirocrew-linux-4-core` moved to ubuntu 26.04, Playwright
+1.58.2 stopped every `npx playwright install chromium` with `Playwright does not
+support chromium on ubuntu26.04-x64`, and Render Benchmark, i18n Render Gate and
+the fork E2E job went red on every PR and on `main`.
+
+So every `playwright install` step in `.github/workflows/` either runs on an
+image the pinned Playwright supports, or carries the host-platform guard that
+`ci.yml`'s `Install Playwright browser (Chromium)` steps carry (added in #37653):
+on ubuntu 26.04 or later it sets `PLAYWRIGHT_HOST_PLATFORM_OVERRIDE` to the
+ubuntu24.04 build in the step's shell, before the install, and writes it to
+`$GITHUB_ENV` so the later steps that launch the browser resolve the same build.
+A job-level or workflow-level `env` entry for that variable counts too.
+`test_workflow_playwright_host_guard.py` checks each install step for it, so a
+new one without the guard fails in Backend Tests.
+
+The guard is a stopgap: Playwright prints `your OS is not officially supported`
+and runs the 24.04 build. The real fix is to bump Playwright from 1.58.2 to a
+release with a native ubuntu26.04 host entry (1.65.1 has one), then remove the
+guard and its test together.
+
 ## `build.yml`: the artifacts still build
 
 PR-time proof only, no publishing.
