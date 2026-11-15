@@ -1236,6 +1236,9 @@ class TestAGlobArgumentIsNotAKillProgram:
             # read as if the next command's words were its arguments.  Safe direction.
             ("kirocrew; echo token", _MINT),
             ("pkill; echo kirocrew", _KILL),
+            # A glob glued to the boundary under a program that is not a data consumer
+            # is read the same way.
+            ("git grep x -- '*'; ls /w/kirocrew", _KILL),
             # The glued-operator PROGRAM spelling: the target follows it.
             ("x;pkill -f kirocrew", _KILL),
             ("x;kirocrew token", _MINT),
