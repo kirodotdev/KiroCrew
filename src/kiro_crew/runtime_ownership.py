@@ -553,6 +553,27 @@ class RuntimeOwnership:
         """
         return sum(len(e.leases) for e in list(self._entries) if e.runtime is runtime)
 
+    def join_on_tree(
+        self, key: Hashable, tree: object, session_key: str, *, cap: int = CHAT_RUNTIME_CAP
+    ) -> Acquisition | None:
+        """A lease on a live runtime under *key* that exposes *tree*, or None. Never spawns.
+
+        A runtime exposes the work directory it inherited or allocated
+        (``work_scratch_dir``). Only a runtime that both matches *key* and exposes
+        *tree* is taken, with the same room and same-session rule as
+        :meth:`acquire`; on None the caller places through :meth:`acquire` instead.
+        """
+        self._drop_dead()
+        for entry in self._entries:
+            if (
+                entry.key == key
+                and entry.admits(session_key, cap=cap)
+                and self._alive(entry)
+                and getattr(entry.runtime, "work_scratch_dir", None) == tree
+            ):
+                return self._mint(entry, session_key, cap=cap, joined=True)
+        return None
+
     # -- internals --
 
     def _pick(self, key: Hashable, *, cap: int, session_key: str) -> _Entry | None:

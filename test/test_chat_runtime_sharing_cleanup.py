@@ -25,7 +25,7 @@ from test_chat_runtime_sharing import (
 import kiro_crew.runtime_ownership as ro
 from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.runtime_ownership import RuntimeOwnership, authorize_runtime_kill
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # ── What a joining session must not do ──
 
@@ -655,6 +655,116 @@ class TestChatSharePlacement:
         assert spawn.calls == [rt]
         assert (a.joined, b.joined) == (False, True)
         assert b.leases_on_runtime == 2
+
+    def test_a_chat_restarted_onto_its_shared_tree_rejoins_that_process(self, fresh_table):
+        """The first message overtakes a chat's pre-warm, and the chat restarts.
+
+        Chat B's eager spawn joins A's process, then the first message takes the
+        start over: the pre-warm is dropped and B restarts carrying the tree its
+        session was recorded in, which is A's process's own tree. A founder keys no
+        tree, so keying B's path would found a second process on the same tree.
+        The gate below holds B's pre-warm mid-handshake, as the race does.
+        """
+        from pathlib import Path
+
+        tree = Path("/home/u/.kirocrew/scratch/tree-a")
+        shared, stray = _PlacedRuntime(pid=1), _PlacedRuntime(pid=2)
+        shared.work_scratch_dir = tree
+        spawn = spawner(shared, stray)
+        ok = confirming(("gen-1", "acct-A", "auto", False, True))
+
+        async def scenario():
+            a = make_placement(session_key="dashboard:chat-a-1")
+            a._read_confirmation = ok
+            assert await a.place(spawn) is shared
+
+            reached, release = asyncio.Event(), asyncio.Event()
+
+            async def held_confirmation():
+                reached.set()
+                await release.wait()
+                return await ok()
+
+            prewarm = make_placement(session_key="dashboard:chat-b-1")
+            prewarm._read_confirmation = held_confirmation
+            task = asyncio.ensure_future(prewarm.place(spawn))
+            # Bounded, and a pre-warm that fails before the gate surfaces here.
+            await async_wait_until(
+                lambda: reached.is_set() or task.done(), describe=lambda: "pre-warm handshake"
+            )
+            if task.done():
+                task.result()
+            assert fresh_table.leases_on_runtime(shared) == 2
+            # The first message takes over: the pre-warm is dropped mid-handshake.
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the dropped pre-warm")
+            assert fresh_table.leases_on_runtime(shared) == 1
+
+            restarted = _PlacementProvider()
+            restarted._shared_scratch = tree
+            b = make_placement(provider=restarted, session_key="dashboard:chat-b-1")
+            b._read_confirmation = ok
+            return b, await b.place(spawn)
+
+        b, placed = asyncio.run(scenario())
+        assert placed is shared, "the restarted chat founded a second process on its own tree"
+        assert spawn.calls == [shared]
+        assert b.joined is True
+
+    def test_a_restart_whose_tree_no_live_process_exposes_keys_that_tree(self, fresh_table):
+        # The process that exposed the tree is gone: the restart founds one that
+        # mounts it, and a fresh chat (no tree) does not land there.
+        from pathlib import Path
+
+        tree = Path("/home/u/.kirocrew/scratch/tree-gone")
+        own, fresh = _PlacedRuntime(pid=1), _PlacedRuntime(pid=2)
+        spawn = spawner(own, fresh)
+        ok = confirming(("gen-1", "acct-A", "auto", False, True))
+
+        async def scenario():
+            restarted = _PlacementProvider()
+            restarted._shared_scratch = tree
+            b = make_placement(provider=restarted, session_key="dashboard:chat-b-1")
+            b._read_confirmation = ok
+            c = make_placement(session_key="dashboard:chat-c-1")
+            c._read_confirmation = ok
+            return b, await b.place(spawn), await c.place(spawn)
+
+        b, placed_b, placed_c = asyncio.run(scenario())
+        assert (placed_b, placed_c) == (own, fresh)
+        assert b.key.shared_scratch
+
+    def test_a_restart_never_joins_a_process_that_does_not_expose_its_tree(self, fresh_table):
+        """The process on the chat's tree is full; a same-key one on another tree has room.
+
+        Joining that one would cut the chat off from its staged work, so the restart
+        founds a process of its own that mounts its tree.
+        """
+        from pathlib import Path
+
+        tree_a, tree_d = Path("/home/u/.kirocrew/scratch/a"), Path("/home/u/.kirocrew/scratch/d")
+        full, other, own = (_PlacedRuntime(pid=p) for p in (1, 2, 3))
+        full.work_scratch_dir, other.work_scratch_dir = tree_a, tree_d
+        spawn = spawner(full, other, own)
+        ok = confirming(("gen-1", "acct-A", "auto", False, True))
+
+        async def scenario():
+            placed = []
+            for n in ("a", "c", "d"):
+                p = make_placement(session_key=f"dashboard:chat-{n}-1", cap=2)
+                p._read_confirmation = ok
+                placed.append(await p.place(spawn))
+            restarted = _PlacementProvider()
+            restarted._shared_scratch = tree_a
+            b = make_placement(provider=restarted, session_key="dashboard:chat-b-1", cap=2)
+            b._read_confirmation = ok
+            placed.append(await b.place(spawn))
+            return b, placed
+
+        b, placed = asyncio.run(scenario())
+        assert placed == [full, full, other, own], "the restart joined a process on another tree"
+        assert b.joined is False and b.key.shared_scratch
 
     def test_two_starts_of_ONE_chat_never_share_a_process(self, fresh_table):
         """The same equal inputs, but both starts are the same chat.

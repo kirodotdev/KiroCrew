@@ -31,6 +31,7 @@ the gateway's life.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import os
 import uuid
@@ -218,6 +219,28 @@ class ChatSharePlacement:
         )
         return generation, era, tier, forward, telemetry
 
+    def _join_own_tree(self) -> Acquisition | None:
+        """A restarted chat's lease on the live process that still exposes its tree.
+
+        A restart carries the tree its session was recorded in (the resume path's
+        ``recorded_tree``, or the process it last ran on), so its key names that
+        path. The process that founded the group allocated the same tree for
+        itself and keyed none, so a plain key match never finds it and the
+        restart would found a second process on one tree. This joins only a
+        process that exposes the tree AND matches every other field of the key
+        (``shared_scratch`` read as the founder's empty value); anything else
+        leaves the tree in the key, and :meth:`place` founds one that mounts it.
+        """
+        tree = self._provider._shared_scratch
+        if tree is None:
+            return None
+        return RUNTIME_OWNERSHIP.join_on_tree(
+            dataclasses.replace(self.key, shared_scratch=""),
+            Path(tree),
+            self.session_key,
+            cap=self.cap,
+        )
+
     async def _admit_joiner(self, placed: Acquisition) -> None:
         """Run the fork-governance admission a founder ran inside ``spawn()``.
 
@@ -244,7 +267,7 @@ class ChatSharePlacement:
     async def place(self, spawn: Callable[[], Awaitable[AcpRuntime]]) -> AcpRuntime:
         """Take a lease on a compatible runtime (or found one), then confirm the placement."""
         for _ in range(_PLACEMENT_ATTEMPTS):
-            placed = await RUNTIME_OWNERSHIP.acquire(
+            placed = self._join_own_tree() or await RUNTIME_OWNERSHIP.acquire(
                 self.key, self.session_key, spawn, cap=self.cap
             )
             try:
