@@ -620,6 +620,7 @@ class ContinuationCoordinator(ManagerComponent):
                 if _rp.exists():
                     result_hint = f" Prior result still readable at: {_rp}"
             except Exception:
+                # The hint is optional; the follow-up is dispatched without it.
                 pass
             info = SubagentInfo(
                 id=self._manager._mint_agent_id(),

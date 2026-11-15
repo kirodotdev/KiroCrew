@@ -375,6 +375,7 @@ def append(
             try:
                 self._on_question_retired(self.key, retired)  # type: ignore[operator]
             except Exception:
+                # A failing listener must not stop the append.
                 pass
     msg: dict[str, Any] = {
         "role": role,

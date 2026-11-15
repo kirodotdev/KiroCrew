@@ -1236,6 +1236,7 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
         try:
             await kill_and_reap(child, timeout=5)
         except Exception:
+            # A failed reap must not stop the caller from recording the failure.
             pass
 
     async def _run_scrape(

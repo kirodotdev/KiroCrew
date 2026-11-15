@@ -508,6 +508,7 @@ async def _cron_stream_with_posttoken_resume(
                 try:
                     setattr(exc, TOOL_ACTIVITY_ATTR, True)
                 except Exception:
+                    # An exception type that refuses attributes cannot carry the tag.
                     pass
             if _resume_used or not partial or not acp_error_is_transient(exc):
                 raise

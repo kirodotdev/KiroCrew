@@ -1082,6 +1082,7 @@ async def _turn_release_handles(turn: _ChatTurn) -> None:
     try:
         setattr(turn.client, "child_fidelity_aware", False)
     except Exception:
+        # Release must finish even when the client refuses the write.
         pass
     # The elicitation opt-in is the same promise (to render the card) and
     # ends with the turn for the same reason -- on the client the turn
@@ -1089,6 +1090,7 @@ async def _turn_release_handles(turn: _ChatTurn) -> None:
     try:
         setattr(turn.client, "accepts_elicitation", False)
     except Exception:
+        # Release must finish even when the client refuses the write.
         pass
 
 
