@@ -1143,3 +1143,17 @@ surface row, the capture harnesses under `website/capture/` and
 `website/scripts/capture-meetings-*.mjs`, and the repo-level `test/test_meetings_*`
 suites with their helpers (one of which, `test_meetings_providers.py`, the native
 IPv6 CI lane names by path).
+
+**Adopted onto its own repository.** The wheel pins the app (`apps/adoption-pins.json`,
+[app-kit-platform.md § 33](app-kit-platform.md#33-former-built-in-adoption)) at
+`KiroCrewCaptain/kirocrew-app-meetings` with `minAppSdkLevel` 7, the level of the
+`agentReadOnlyDirs` entry `notes` (`ctx.turns`, `ctx.untrusted` and
+`permissions.agentTurns` need level 2), so a host whose record is builtin-owned swaps it
+in place onto that tree at a restart, keeping `data/` (meetings, transcripts, notes and
+the calendar sync state), `.app_secret`, the approved grants and `enabled`; the rail
+keeps `/meetings` and the `CalendarClock` glyph. The repository's `app.json` declares the
+same `permissions` (`/api/ws/stt` and `agentTurns` included) and the same three agents
+as the wheel copy, so E9 holds nothing back. It ships the `meetings` skill under
+`skills/meetings`; once the record is adopted the bundled `builtin_skills/meetings/` copy
+stands down (`test/test_released_builtin_skill_copies.py`). A fix to the app lands in
+that repository first; a change to the wheel copy needs its `App repo:` line.
