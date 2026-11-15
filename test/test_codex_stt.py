@@ -156,6 +156,24 @@ def test_sandbox_refusal_is_reported_before_any_install_step(monkeypatch, binary
     assert (verdict.ok, verdict.code) == (False, codex.CODE_SANDBOX)
 
 
+#: Every locale catalogue but ``en.json``, sorted by file name.
+_LOCALE_FILES = (
+    "bn.json",
+    "de.json",
+    "en-XA.json",
+    "en.manual.json",
+    "es.json",
+    "fr.json",
+    "hi.json",
+    "it.json",
+    "ja.json",
+    "ko.json",
+    "pt.json",
+    "ru.json",
+    "zh-CN.json",
+)
+
+
 def test_extra_missing_message_names_no_install_command(monkeypatch):
     # The prerequisites panel owns the command, and suppresses it where pip cannot
     # target this interpreter; the message must not repeat it in any locale.
@@ -163,7 +181,9 @@ def test_extra_missing_message_names_no_install_command(monkeypatch):
 
     locales = Path(__file__).resolve().parents[1] / "website" / "src" / "i18n" / "locales"
     files = sorted(p for p in locales.glob("*.json") if p.name != "en.json")
-    assert len(files) == 13
+    # One locale per line, so two changes that each add a locale edit different lines
+    # (testing-conventions.md § Merge-safe ratchets and counts).
+    assert [p.name for p in files] == list(_LOCALE_FILES), [p.name for p in files]
     for path in files:
         text = json.loads(path.read_text(encoding="utf-8"))["pages"]["settings"]["sttSettings"][
             "unavailable_codex_extra"
