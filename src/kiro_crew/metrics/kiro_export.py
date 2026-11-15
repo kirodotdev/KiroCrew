@@ -26,9 +26,9 @@ non-bool, ``kirocrew telemetry disable``, ``KIROCREW_TELEMETRY=0``,
 ``capabilities.telemetry`` ``otlp_hosts`` list can refuse its host.
 
 It is not returned at all in an LTS build (the admin's policy decides where
-metrics go, with or without a collector of its own), on a CI runner, or under a
-non-default ``KIROCREW_HOME`` (a dev home, a pod, a worktree preview): the same
-hosts the daily heartbeat does not count.
+metrics go, with or without a collector of its own) or on a CI runner. A
+non-default ``KIROCREW_HOME`` (a dev home, a pod, a worktree preview) gets it
+like any other home; the daily heartbeat keeps its own default-home rule.
 
 Turning recording ON never needs a config-file edit because of it: the notice
 already discloses it, so the dashboard and ``kirocrew telemetry enable`` refuse
@@ -115,8 +115,6 @@ def destinations() -> "tuple[OtlpDestination, ...]":
 
     if _suppressed_for_tests or edition.is_lts() or beacon.is_ci():
         return ()
-    if not beacon.is_default_home():
-        return ()
     from kiro_crew.metrics.product_metrics import PRODUCT_METRICS
     from kiro_crew.platform.interfaces import OtlpDestination
 
@@ -145,8 +143,8 @@ def notice_shown(full_cfg: Any = None) -> bool:
 
     ``dashboard.kiro_telemetry_ack_version``, which the dashboard chapter and
     ``kirocrew telemetry enable`` write only when their text named this
-    destination (``privacy_ack_version`` alone does not count: a chapter shown
-    under a non-default home never named it), or the version whose Kiro telemetry
+    destination (``privacy_ack_version`` alone does not count: a chapter whose
+    text did not name it writes that too), or the version whose Kiro telemetry
     line a start with no dashboard printed on a terminal
     (``notice.KIRO_NOTICE_STAMP_FILE``). Fails closed.
     """

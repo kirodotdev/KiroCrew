@@ -212,7 +212,8 @@ do that.
 | An upgrade that had turned the heartbeat off, `"enabled": false` or a non-bool value, `kirocrew telemetry disable`, `KIROCREW_TELEMETRY=0`, or `DO_NOT_TRACK=1` | No: recording is off |
 | A policy's `otlp_hosts` list that does not permit `telemetry.us-east-1.kiro.dev` | No |
 | LTS build (the policy names the collector, or none) | No: not part of that build's list |
-| CI runner (`CI`, `GITHUB_ACTIONS`, ...) or a non-default `KIROCREW_HOME` | No: not listed, same rule as the daily heartbeat |
+| CI runner (`CI`, `GITHUB_ACTIONS`, ...) | No: not listed, same rule as the daily heartbeat |
+| A non-default `KIROCREW_HOME` (a dev home, a pod, a worktree preview) | Yes, by the same rules as any other home; the daily heartbeat still skips it |
 
 Each data point carries `ClientType=kiro-crew`. The batch's resource keeps
 only service name and version, Python runtime, `kirocrew.harness` and
