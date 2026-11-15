@@ -70,6 +70,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("spawn", "Manage background subagents"),
             ("models", "List the model names --model accepts"),
             ("computer", "Computer-use (desktop automation) diagnostics"),
+            ("trace", "Show one traced turn as a waterfall from the local span files"),
         ),
     ),
     (
