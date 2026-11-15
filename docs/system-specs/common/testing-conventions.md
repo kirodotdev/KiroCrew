@@ -1804,6 +1804,17 @@ measures, never above.
   against every test after it. In production code, treat everything between acquiring a
   resource and entering the `try` that releases it as a leak window.
 
+- **A test that asserts a credential is REMOVED builds it with
+  `kiro_crew.testing.synthetic_credentials`, never a literal.** Use `github_classic()`,
+  `aws_secret()` or another helper there, not the AWS documentation example key
+  `AKIAIOSFODNN7EXAMPLE` or any other `AKIA…` key ID. The structured redactor keeps AWS
+  key IDs and documentation example keys visible as identifiers, so a test planting one
+  goes red or green with detector policy, not with the code under test. Each PR is green
+  on its own base, and both landing reds `main` on every platform: #36640 planted the
+  example key and asserted it gone after #29423 had made the redactor keep it, and
+  #37423 fixed the four test files by switching them to `github_classic()` (why: #37421).
+  Asserting an identifier SURVIVES is the case where an `AKIA…` literal belongs.
+
 - Tests SHOULD be fast (< 1s each)
 - Async tests MUST use `@pytest.mark.asyncio` — and ONLY async tests. The mark on a
   plain `def` is accepted silently by pytest-asyncio strict mode and the test then
