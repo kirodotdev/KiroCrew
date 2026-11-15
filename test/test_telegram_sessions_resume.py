@@ -686,7 +686,9 @@ class TestTelegramColdResume:
         Telegram message reached a connected, non-restricted dashboard raw, and the
         dirty-slot flush persisted it. Discord already fed both sinks the scrubbed body.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        from kiro_crew.testing.synthetic_credentials import github_classic
+
+        secret = github_classic()
         dispatcher, _, _, _ = _dispatcher(tmp_path)
         from kiro_crew.dashboard import channel_slots
 

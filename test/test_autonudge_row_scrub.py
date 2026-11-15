@@ -21,6 +21,10 @@ import pytest
 
 from kiro_crew import autonudge as _an
 from kiro_crew.history import _redact_at_write_boundary
+from kiro_crew.testing.synthetic_credentials import github_classic
+
+#: A credential the redactor removes: it keeps an AWS key ID visible as an identifier.
+_SECRET = github_classic()
 
 
 class TestUserRowsUseTheActiveCredentialPolicy:
@@ -81,7 +85,7 @@ class TestEveryChannelPersisterScrubsTheStoredTurn:
     ``_redact_at_write_boundary`` exactly as ``ConversationLog.append`` does.
     """
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    SECRET = _SECRET
 
     @staticmethod
     def _dispatcher_class(channel: str):
@@ -137,7 +141,7 @@ _TITLE_SCRUBBERS = tuple(
 class TestTheWriteBoundaryScrubsAUserRow:
     """First Principles: one boundary rule instead of a scrub repeated in every persister."""
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    SECRET = _SECRET
 
     def test_a_user_row_is_scrubbed_at_rest(self, tmp_path) -> None:
         from kiro_crew.history import ConversationLog
@@ -209,17 +213,17 @@ class TestPersistedRowRedactionSurvivesAMiscomposedHost:
 
         self._install(monkeypatch)
         with pytest.raises(PlatformCompositionError):
-            redact_via_context("token AKIAIOSFODNN7EXAMPLE")
+            redact_via_context(f"token {_SECRET}")
 
     def test_a_user_row_keeps_its_text_with_credentials_removed(self, monkeypatch) -> None:
         from kiro_crew.platform.context import LOG_WITHHELD_PLACEHOLDER
 
         self._install(monkeypatch)
-        stored = _redact_at_write_boundary("user", "deploy with AKIAIOSFODNN7EXAMPLE now")
+        stored = _redact_at_write_boundary("user", f"deploy with {_SECRET} now")
         assert stored != LOG_WITHHELD_PLACEHOLDER
         assert self._BrokenPolicy.calls, "the composed policy was never tried"
         assert stored.startswith("deploy with ") and stored.endswith(" now")
-        assert "AKIAIOSFODNN7EXAMPLE" not in stored
+        assert _SECRET not in stored
 
     def test_the_fallback_removes_a_value_whose_label_is_inside_a_flagged_url(
         self, monkeypatch
@@ -241,11 +245,11 @@ class TestPersistedRowRedactionSurvivesAMiscomposedHost:
 
         self._install(monkeypatch)
         log = ConversationLog(tmp_path)
-        log.append("slack:C1:1.0", "user", "my key is AKIAIOSFODNN7EXAMPLE, rotate it")
+        log.append("slack:C1:1.0", "user", f"my key is {_SECRET}, rotate it")
         stored = log.read_messages("slack:C1:1.0")[0]["content"]
         assert "rotate it" in stored
         assert self._BrokenPolicy.calls, "the composed policy was never tried"
-        assert "AKIAIOSFODNN7EXAMPLE" not in stored
+        assert _SECRET not in stored
 
     def test_no_raising_redactor_feeds_the_replay_persister(self) -> None:
         """A turn that already went out must be persisted, so its scrub cannot raise."""
@@ -347,7 +351,7 @@ class TestOrdinaryUserProseSurvivesTheRowScrub:
 
     def test_the_guard_can_detect_a_rewrite(self) -> None:
         """Positive control: a real credential MUST still be rewritten."""
-        secret = "my key is AKIAIOSFODNN7EXAMPLE"
+        secret = f"my key is {_SECRET}"
         assert _redact_at_write_boundary("user", secret) != secret
 
 
