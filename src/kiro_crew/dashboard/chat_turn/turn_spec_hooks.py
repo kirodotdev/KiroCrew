@@ -37,6 +37,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
     unmet_post_tool_matchers_sentence,
     withheld_project_spec_hooks,
 )
+from kiro_crew.constants import HOOK_DENY_REASON_MAX_CHARS
 from kiro_crew.dashboard.agent_welcome import AGENT_WELCOME_KIND
 from kiro_crew.dashboard.chat_utils import (
     SPEC_HOOKS_NOTICE_KIND,
@@ -1123,12 +1124,12 @@ async def _fire(
                 )
             elif r.exit_code == 2:
                 injected.append(
-                    f"BLOCKED:{r.hook_name}:{r.stderr[:200] if r.stderr else 'hook denied'}"
+                    f"BLOCKED:{r.hook_name}:{r.stderr[:HOOK_DENY_REASON_MAX_CHARS] if r.stderr else 'hook denied'}"
                 )
                 logger.warning(
                     "Hook %s blocked tool: %s",
                     r.hook_name,
-                    r.stderr[:200] if r.stderr else "exit 2",
+                    r.stderr[:HOOK_DENY_REASON_MAX_CHARS] if r.stderr else "exit 2",
                 )
                 state.broadcast_ws(
                     "activity_event",
