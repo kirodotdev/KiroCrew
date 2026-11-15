@@ -6,8 +6,9 @@ describe('HiddenSessionsBox', () => {
   it('says the app keeps its chats out of the list, and that requests still arrive', () => {
     render(<HiddenSessionsBox />)
     const box = screen.getByTestId('hidden-sessions')
-    expect(box.textContent).toContain("Its own chats stay out of your sidebar and session list; open them from the app's page.")
-    expect(box.textContent).toContain('Their approvals and questions still reach you.')
+    expect(box.textContent).toContain("Chats it creates as its own private chats stay out of your sidebar and session list; open them from the app's page.")
+    expect(box.textContent).toContain('Its other chats stay listed under the app.')
+    expect(box.textContent).toContain('Approvals and questions from hidden chats still reach you.')
     expect(box.querySelector('code')?.textContent).toBe('hiddenSessions')
   })
 })

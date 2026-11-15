@@ -7,6 +7,7 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from kiro_crew.apps.hidden_sessions import listed_surface
 from kiro_crew.dashboard.agent_welcome import welcome_preview
 from kiro_crew.dashboard.slot_preparing import is_preparing, preparing_caption
 from kiro_crew.dashboard.slot_queue_repository import is_held_queue_entry
@@ -525,7 +526,8 @@ class SlotProjection:
             "served_model": slot.served_model,
             "reasoning_effort": slot.reasoning_effort,
             "mode": slot.mode,
-            "surface": slot.mode,
+            # An app's mode lists as plain while the app may not hide it.
+            "surface": listed_surface(slot.mode),
             "workspace": slot.workspace,
             "project": slot.project,
             # Relay-archive marker. Shipped on every slot so the frontend can

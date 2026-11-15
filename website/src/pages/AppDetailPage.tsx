@@ -1782,7 +1782,7 @@ export default function AppDetailPage() {
                   </div>
                 )}
                 {app.manifest.permissions.workerAutoApprove && <WorkerAutoApproveBox staged={stagedWorkerAutoApprove} />}
-                {app.manifest.permissions.chatSlots === true && <ChatSlotsBox hidden={app.manifest.permissions.hiddenSessions === true} />}
+                {app.manifest.permissions.chatSlots === true && <ChatSlotsBox />}
                 {app.manifest.permissions.hiddenSessions === true && <HiddenSessionsBox />}
                 <UserSessionReachBox declared={reachVerbs(app.manifest.permissions.reachableByUserSessions)} staged={stagedUserSessionReach} />
                 <DesktopCapabilitiesBox declared={knownDesktopCapabilities(app.manifest.permissions.desktopCapabilities)} staged={stagedDesktopCapabilities} />

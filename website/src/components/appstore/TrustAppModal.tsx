@@ -841,7 +841,7 @@ export default function TrustAppModal({
                 <span>{i18nT('components.appstore.trustAppModal.chat_slots_heading')}</span>
               </div>
               <p className="text-text leading-relaxed">
-                {i18nT(app.hiddenSessions ? 'components.appstore.trustAppModal.chat_slots_desc_hidden' : 'components.appstore.trustAppModal.chat_slots_desc')}
+                {i18nT('components.appstore.trustAppModal.chat_slots_desc')}
               </p>
             </div>
           )}

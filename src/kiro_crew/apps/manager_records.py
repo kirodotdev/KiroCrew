@@ -705,6 +705,11 @@ def _write_installed(
             # Same revoke-only rule for the app's worker auto-approve grants: one
             # minted while a disable was in flight ends once the record says so.
             revoke_worker_auto_approve(name)
+        # An enable, disable or manifest change decides whether the app may still
+        # hide its open chats.
+        from kiro_crew.apps.hidden_sessions import request_hiding_refresh
+
+        request_hiding_refresh()
 
 
 # Grant families held back on a widening update. ``sessionApproval`` is a flag

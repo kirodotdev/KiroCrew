@@ -50,9 +50,8 @@ describe('TrustAppModal chat slots disclosure', () => {
     expect(dialog.getByTestId('trust-hidden-sessions')).toBeTruthy()
     expect(dialog.getByText(`${K}.hidden_sessions_heading`)).toBeTruthy()
     expect(dialog.getByText(`${K}.hidden_sessions_desc`)).toBeTruthy()
-    // The chat slots copy no longer promises a sidebar row.
-    expect(dialog.getByText(`${K}.chat_slots_desc_hidden`)).toBeTruthy()
-    expect(dialog.queryByText(`${K}.chat_slots_desc`)).toBeNull()
+    // Chats opened through ctx.chat_slots.open stay listed, so the main copy stays.
+    expect(dialog.getByText(`${K}.chat_slots_desc`)).toBeTruthy()
   })
 
   it('shows no such box for an app that does not declare it', () => {
@@ -86,10 +85,5 @@ describe('ChatSlotsBox', () => {
     const box = screen.getByTestId('chat-slots')
     expect(within(box).getByText('pages.appDetailPage.chat_slots_desc')).toBeTruthy()
     expect(within(box).getByText('chatSlots')).toBeTruthy()
-  })
-
-  it('drops the sidebar wording when the app hides its chats', () => {
-    render(<ChatSlotsBox hidden />)
-    expect(within(screen.getByTestId('chat-slots')).getByText('pages.appDetailPage.chat_slots_desc_hidden')).toBeTruthy()
   })
 })

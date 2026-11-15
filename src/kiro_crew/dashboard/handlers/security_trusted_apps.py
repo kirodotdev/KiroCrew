@@ -375,6 +375,10 @@ async def _mutate_agent_config(mutate) -> None:
         # grant does not take effect until a restart — and a REVOKE that does not
         # take effect is the exact failure this feature exists to prevent.
         _invalidate_config_cache()
+        # A trust change decides whether an app may still hide its open chats.
+        from kiro_crew.apps.hidden_sessions import request_hiding_refresh
+
+        request_hiding_refresh()
 
     async with _get_config_lock():
         await asyncio.get_running_loop().run_in_executor(None, _read_modify_write)

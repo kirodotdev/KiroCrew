@@ -183,6 +183,9 @@ def set_owner_disabled(app_name: str, disabled: bool) -> None:
         atomic_write(path, "1\n")
     else:
         path.unlink(missing_ok=True)
+    from kiro_crew.apps.hidden_sessions import request_hiding_refresh
+
+    request_hiding_refresh()
 
 
 def _deleted_crons_path(app_name: str) -> Path:

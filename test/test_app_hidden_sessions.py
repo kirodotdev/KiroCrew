@@ -106,7 +106,7 @@ def _state(tmp_path, monkeypatch):
     return state
 
 
-def _client(state, caller_app: str | None = None) -> TestClient:
+def _client(state, caller_app: str | None = None, user: str = "") -> TestClient:
     from chat_test_helpers import _make_app
 
     from kiro_crew.dashboard.chat import api_chat_slot_create
@@ -118,7 +118,7 @@ def _client(state, caller_app: str | None = None) -> TestClient:
         @web.middleware
         async def as_app(request, handler):
             request["app"] = caller_app
-            request["user"] = ""
+            request["user"] = user
             return await handler(request)
 
         app.middlewares.insert(0, as_app)
@@ -185,6 +185,148 @@ async def test_any_other_mode_is_refused(tmp_path, monkeypatch, caller_app, body
 
 
 @pytest.mark.asyncio
+async def test_a_non_owner_dashboard_caller_cannot_name_an_app_page(tmp_path, monkeypatch) -> None:
+    """Only the owner's own request may speak for an app page through ``embed_app``."""
+    state = _state(tmp_path, monkeypatch)
+    _may_hide(monkeypatch)
+    async with _client(state, caller_app="", user="someone-else") as client:
+        resp = await client.post(
+            "/api/chat/slots", json={"name": "guest-1", "embed_app": APP, "mode": APP}
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "invalid_mode"
+    assert state.get_slot("guest-1") is None
+
+
+# ── an open hidden chat while its app may not hide it ────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _unpublished_listing(_floor_monkeypatch):
+    _floor_monkeypatch.setattr(hidden_sessions, "_hiding_apps", None)
+    _floor_monkeypatch.setattr(hidden_sessions, "_app_ids", frozenset())
+    _floor_monkeypatch.setattr(hidden_sessions, "_refresh_queued", False)
+    yield
+    hidden_sessions.bind_listing(None, None)
+
+
+async def _listed_surface(client: TestClient, key: str) -> str:
+    resp = await client.get("/api/chat/slots")
+    assert resp.status == 200, await resp.text()
+    data = await resp.json()
+    rows = data if isinstance(data, list) else data["slots"]
+    (row,) = [r for r in rows if r["key"] == key]
+    return row["surface"]
+
+
+@pytest.mark.asyncio
+async def test_disabling_the_app_lists_its_open_hidden_chat_and_enabling_hides_it(
+    tmp_path, monkeypatch
+) -> None:
+    """The owner's disable asks for the refresh that flips the list, and resends it."""
+    from kiro_crew.apps import protected_app_state
+
+    state = _state(tmp_path, monkeypatch)
+    allowed = {APP}
+    monkeypatch.setattr(hidden_sessions, "may_hide_sessions", lambda app_id: app_id in allowed)
+    monkeypatch.setattr(hidden_sessions, "_installed_app_names", lambda: [APP, OTHER])
+    refreshes: list[int] = []
+    async with _client(state) as client:
+        # The dashboard runs the refresh in a worker thread; here it runs at once.
+        hidden_sessions.bind_listing(
+            hidden_sessions.refresh_hiding_apps, lambda: refreshes.append(1)
+        )
+        resp = await client.post(
+            "/api/chat/slots", json={"name": "dj-open", "embed_app": APP, "mode": APP}
+        )
+        assert resp.status == 200, await resp.text()
+        hidden_sessions.request_hiding_refresh()
+        assert await _listed_surface(client, "dj-open") == APP
+        refreshes.clear()
+
+        allowed.clear()
+        protected_app_state.set_owner_disabled(APP, True)
+        # Every open browser is sent the slots frame again, not only the next reader.
+        assert refreshes == [1]
+        assert await _listed_surface(client, "dj-open") == ""
+
+        allowed.add(APP)
+        protected_app_state.set_owner_disabled(APP, False)
+        assert await _listed_surface(client, "dj-open") == APP
+    # The chat itself keeps its mode; only the list it shows in changes.
+    assert state.get_slot("dj-open").mode == APP
+
+
+def test_the_listing_reads_only_the_published_set(monkeypatch) -> None:
+    """The slots frame never reads an app record: no disk I/O on the serving loop."""
+
+    def on_disk(app_id):
+        raise AssertionError("the listing read an app record")
+
+    monkeypatch.setattr(hidden_sessions, "may_hide_sessions", on_disk)
+    monkeypatch.setattr(hidden_sessions, "_app_ids", frozenset({APP, OTHER}))
+    monkeypatch.setattr(hidden_sessions, "_hiding_apps", frozenset({APP}))
+    assert hidden_sessions.listed_surface(APP) == APP
+    assert hidden_sessions.listed_surface(OTHER) == ""
+
+
+def test_a_live_trust_setting_edit_refreshes_the_set(monkeypatch) -> None:
+    """A trust change from the CLI or a hand edit reaches the listing, not only the endpoint."""
+    from kiro_crew.config import live
+
+    subscribed: dict = {}
+
+    def fake_subscribe(*prefixes, callback, name=None):
+        subscribed.update(prefixes=prefixes, callback=callback)
+        return object()
+
+    monkeypatch.setattr(live, "subscribe", fake_subscribe)
+    monkeypatch.setattr(hidden_sessions, "_trust_config_sub", None)
+    asked: list[int] = []
+    hidden_sessions.bind_listing(lambda: asked.append(1), None)
+    hidden_sessions.watch_trust_config()
+    assert set(subscribed["prefixes"]) == {
+        "agent.apps_allow_third_party",
+        "agent.apps_trusted",
+        "agent.apps_trusted_local",
+        "agent.apps_trusted_repositories",
+    }
+    subscribed["callback"](SimpleNamespace(path="agent.apps_trusted"))
+    assert asked == [1]
+
+
+def test_an_unpublished_or_failed_set_shows_the_chat(monkeypatch) -> None:
+    monkeypatch.setattr(hidden_sessions, "_app_ids", frozenset({APP}))
+    assert hidden_sessions.listed_surface(APP) == ""
+
+    def broken():
+        raise OSError("unreadable apps tree")
+
+    monkeypatch.setattr(hidden_sessions, "_installed_app_names", broken)
+    hidden_sessions.refresh_hiding_apps()
+    assert hidden_sessions.listed_surface(APP) == ""
+
+
+@pytest.mark.parametrize("mode", ["", "member", "orchestrator", "Bad Name", "custom-mode"])
+def test_a_mode_that_names_no_app_keeps_its_surface(monkeypatch, mode) -> None:
+    """A core, worker or any other mode mirrors as before; only an app's mode is listed."""
+    monkeypatch.setattr(hidden_sessions, "_app_ids", frozenset({APP}))
+    monkeypatch.setattr(hidden_sessions, "_hiding_apps", frozenset())
+    assert hidden_sessions.listed_surface(mode) == mode
+
+
+def test_an_uninstalled_app_s_open_chat_is_listed(monkeypatch) -> None:
+    installed = [APP]
+    monkeypatch.setattr(hidden_sessions, "_installed_app_names", lambda: list(installed))
+    monkeypatch.setattr(hidden_sessions, "may_hide_sessions", lambda app_id: app_id in installed)
+    hidden_sessions.refresh_hiding_apps()
+    assert hidden_sessions.listed_surface(APP) == APP
+    installed.clear()
+    hidden_sessions.refresh_hiding_apps()
+    assert hidden_sessions.listed_surface(APP) == ""
+
+
+@pytest.mark.asyncio
 async def test_an_existing_chat_keeps_its_mode(tmp_path, monkeypatch) -> None:
     """Naming a person's chat cannot move it out of their list."""
     state = _state(tmp_path, monkeypatch)
@@ -205,6 +347,8 @@ async def test_a_built_in_worker_mode_needs_no_declaration(tmp_path, monkeypatch
     monkeypatch.setattr(
         "kiro_crew.dashboard.chat_handlers._CREATABLE_MODES", ("", "builtin-worker")
     )
+    # The registry `_CREATABLE_MODES` is built from, which the listing reads too.
+    monkeypatch.setattr("kiro_crew.apps.seams.worker_slot_modes", lambda: ("builtin-worker",))
     async with _client(state) as client:
         resp = await client.post("/api/chat/slots", json={"name": "w-1", "mode": "builtin-worker"})
         assert resp.status == 200, await resp.text()
