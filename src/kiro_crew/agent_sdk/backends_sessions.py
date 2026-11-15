@@ -14,6 +14,9 @@ in ``VOCABULARY_PATHS``, which is what lets its ``ACP_BACKEND*`` names be define
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
+
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
@@ -119,7 +122,17 @@ ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX})
 # chat. codex is not a member either: its chat teardown's record preservation has
 # no lane cover. Every other backend is out because it is not served by
 # ``AcpRuntime`` (one process per session).
+#
+# The members are the keys of ``CHAT_RUNTIME_SHARING_HARNESSES`` just below, so
+# letting a harness share chats is one row there.
 ACP_BACKENDS_CHAT_RUNTIME_SHARING = frozenset({ACP_BACKEND_KAS})
+
+# One row per member of ``ACP_BACKENDS_CHAT_RUNTIME_SHARING``: the backend and the
+# default of its own switch under the preview (``agent.chat_runtime_sharing_harnesses``,
+# Settings > Developer > Feature previews > ACP runtime sharing). KAS defaults on:
+# it shared before the per-harness switches existed, so an upgrade keeps it
+# sharing. ``test_chat_runtime_sharing`` pins that the keys equal the set.
+CHAT_RUNTIME_SHARING_HARNESSES: Mapping[str, bool] = MappingProxyType({ACP_BACKEND_KAS: True})
 
 # Backends served by AcpRuntime + AcpSessionHandle — the kiro-agent family
 # (kiro-cli and KAS) whose single process hosts N sessions via demux.

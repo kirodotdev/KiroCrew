@@ -197,12 +197,23 @@ _PROBED_BUNDLE_NODES: set[tuple[str, str]] = set()
 
 
 def _chat_sharing_preview_on() -> bool:
-    """Whether the ``chat_runtime_sharing`` preview is on. Blocking; never raises."""
+    """Whether the ``chat_runtime_sharing`` preview is on with KAS's own switch on.
+
+    Blocking; never raises. KAS's switch off means no KAS chat shares, so this
+    reads False exactly as with the preview off.
+    """
     try:
-        from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_enabled
+        from kiro_crew.acp.chat_runtime_sharing import (
+            chat_runtime_sharing_enabled,
+            chat_runtime_sharing_harness_enabled,
+        )
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
         from kiro_crew.config.loader import KiroCrewConfig
 
-        return chat_runtime_sharing_enabled(KiroCrewConfig.load())
+        cfg = KiroCrewConfig.load()
+        return chat_runtime_sharing_enabled(cfg) and chat_runtime_sharing_harness_enabled(
+            cfg, ACP_BACKEND_KAS
+        )
     except Exception:  # noqa: BLE001 - an unreadable config keeps the preview off
         return False
 

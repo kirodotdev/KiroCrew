@@ -47,6 +47,7 @@ from kiro_crew.acp.chat_runtime_sharing import (
     agent_spec_generation,
     chat_runtime_cap,
     chat_runtime_sharing_enabled,
+    chat_runtime_sharing_harness_enabled,
     chat_sharing_ineligible_reason,
     kas_chat_sharing_ready,
     member_scope_of,
@@ -417,7 +418,12 @@ class ChatSharePlacement:
             placed.leases_on_runtime,
             self.session_key,
         )
-        record_placed(joined=placed.joined, tenants=placed.leases_on_runtime, tree=self.tree_kind)
+        record_placed(
+            joined=placed.joined,
+            tenants=placed.leases_on_runtime,
+            tree=self.tree_kind,
+            backend=self._provider._client.backend,
+        )
         return runtime
 
     async def replace_dead(self, spawn: Callable[[], Awaitable[AcpRuntime]]) -> AcpRuntime:
@@ -507,6 +513,8 @@ async def resolve_chat_share(
         if cfg is None:
             cfg = await asyncio.to_thread(KiroCrewConfig.load)
         enabled = chat_runtime_sharing_enabled(cfg)
+        backend = provider._client.backend
+        harness_enabled = chat_runtime_sharing_harness_enabled(cfg, backend)
         configured_cap = int(
             getattr(cfg.agent, "chat_runtime_sharing_max_sessions", CHAT_RUNTIME_CAP)
         )
@@ -517,7 +525,6 @@ async def resolve_chat_share(
         return None
     if not enabled:
         return None
-    backend = provider._client.backend
     session_key = provider._owning_session_key()
     # The rules that need no reads first, with the read-backed inputs at their
     # permissive values: a start they refuse (a backend that never shares, a
@@ -533,15 +540,21 @@ async def resolve_chat_share(
         remote_workspace=remote_workspace,
         kas_engine_ready=True,
         member_shares_root=True,
+        harness_enabled=harness_enabled,
     )
     if refusal:
-        logger.warning("chat-runtime-sharing ineligible reason=%s session=%s", refusal, session_key)
-        record_refused(refusal)
+        logger.warning(
+            "chat-runtime-sharing ineligible reason=%s backend=%s session=%s",
+            refusal,
+            backend,
+            session_key,
+        )
+        record_refused(refusal, backend=backend)
         return None
     # Read on the loop: the reader walks the gateway's live slots.
     tree_root = share_tree_root_of(session_key)
     kas_ready = False
-    if backend == ACP_BACKEND_KAS:
+    if backend == ACP_BACKEND_KAS and harness_enabled:
         kas_ready = await asyncio.to_thread(
             kas_chat_sharing_ready, getattr(provider, "_harness_pin", "") or ""
         )
@@ -563,14 +576,20 @@ async def resolve_chat_share(
         remote_workspace=remote_workspace,
         kas_engine_ready=kas_ready,
         member_shares_root=member_shares_root,
+        harness_enabled=harness_enabled,
     )
     if not refusal and await asyncio.to_thread(
         agent_spawns_native_subagents, work_dir, agent, backend
     ):
         refusal = "native_subagents"
     if refusal:
-        logger.warning("chat-runtime-sharing ineligible reason=%s session=%s", refusal, session_key)
-        record_refused(refusal)
+        logger.warning(
+            "chat-runtime-sharing ineligible reason=%s backend=%s session=%s",
+            refusal,
+            backend,
+            session_key,
+        )
+        record_refused(refusal, backend=backend)
         return None
     from kiro_crew.acp.agent_env import agent_env_overlay
     from kiro_crew.sandbox import _forward_ssh_auth_sock, effective_sandbox_mode

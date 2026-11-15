@@ -26,6 +26,7 @@ from typing import Any
 
 from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
+from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES
 from kiro_crew.config.sections import (
     FEATURE_PREVIEW_FLAGS,
     MAX_PER_CREATOR_MAX,
@@ -230,6 +231,12 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
 _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
     {
         "agent.chat_turn_timeout_secs",
+        # Whether one harness's chats may pool into one agent process while the
+        # sharing preview is on: process placement only, never what a chat can reach.
+        *(
+            f"agent.chat_runtime_sharing_harnesses.{_name}"
+            for _name in CHAT_RUNTIME_SHARING_HARNESSES
+        ),
         "agent.completion_keep",
         "agent.completion_keep_chars",
         "agent.fallback_model",

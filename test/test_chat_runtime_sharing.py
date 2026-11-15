@@ -32,9 +32,9 @@ from kiro_crew.acp_backends import (
 )
 from kiro_crew.runtime_ownership import RuntimeOwnership, authorize_runtime_kill
 
-#: The arguments that make a start shareable on the backend axis: KAS on an
-#: engine ``kas_chat_sharing_ready`` accepts.
-_SHAREABLE = {"backend": ACP_BACKEND_KAS, "kas_engine_ready": True}
+#: The arguments that make a start shareable on the backend axis: KAS with its own
+#: switch on, on an engine ``kas_chat_sharing_ready`` accepts.
+_SHAREABLE = {"backend": ACP_BACKEND_KAS, "kas_engine_ready": True, "harness_enabled": True}
 
 
 class FakeRuntime:
@@ -161,9 +161,45 @@ class TestChatSharingEligibility:
             sharing_enabled=True,
             backend=ACP_BACKEND_KAS,
             member_context=False,
+            harness_enabled=True,
         )
         assert chat_sharing_ineligible_reason(**common) == "kas_engine_not_shareable"
         assert eligible_for_chat_sharing(**common, kas_engine_ready=True)
+
+    def test_a_harness_switched_off_keeps_its_own_process(self):
+        """The harness's own switch under the preview: off refuses with its own
+        reason, before the engine is asked, and on lets the other rules decide."""
+        args = dict(
+            session_key="dashboard:chat-12-1790000000",
+            memory_mode="persistent",
+            sharing_enabled=True,
+            backend=ACP_BACKEND_KAS,
+            member_context=False,
+            kas_engine_ready=True,
+        )
+        assert chat_sharing_ineligible_reason(**args) == "harness_switched_off"
+        assert chat_sharing_ineligible_reason(**args, harness_enabled=False) == (
+            "harness_switched_off"
+        )
+        assert not eligible_for_chat_sharing(**args, harness_enabled=False)
+        assert eligible_for_chat_sharing(**args, harness_enabled=True)
+        # The engine is not what refused: a not-ready engine still reads as the switch.
+        args["kas_engine_ready"] = False
+        assert chat_sharing_ineligible_reason(**args) == "harness_switched_off"
+
+    def test_a_switch_cannot_let_in_a_harness_outside_the_table(self):
+        assert (
+            chat_sharing_ineligible_reason(
+                session_key="dashboard:chat-12-1790000000",
+                memory_mode="persistent",
+                sharing_enabled=True,
+                backend=ACP_BACKEND_CODEX,
+                member_context=False,
+                kas_engine_ready=True,
+                harness_enabled=True,
+            )
+            == "backend_not_chat_shareable"
+        )
 
     def test_a_kiro_cli_chat_keeps_its_own_process_with_the_preview_on(self):
         """kiro-cli is not a chat-sharing backend: chats sharing its process would
@@ -244,6 +280,59 @@ class TestChatSharingEligibility:
         )
 
 
+class TestPerHarnessSwitches:
+    """One row per harness in ``CHAT_RUNTIME_SHARING_HARNESSES``: its switch and its default."""
+
+    def _cfg(self, stored):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(agent=SimpleNamespace(chat_runtime_sharing_harnesses=stored))
+
+    def test_the_table_is_the_chat_sharing_set_and_kas_defaults_on(self):
+        from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES
+
+        assert set(CHAT_RUNTIME_SHARING_HARNESSES) == set(ACP_BACKENDS_CHAT_RUNTIME_SHARING)
+        assert CHAT_RUNTIME_SHARING_HARNESSES[ACP_BACKEND_KAS] is True
+
+    @pytest.mark.parametrize(
+        "stored,expected",
+        [
+            ({"kas": False}, False),
+            ({"kas": True}, True),
+            ({}, True),
+            ({"kas": "no"}, True),
+            (None, True),
+        ],
+    )
+    def test_the_reader_takes_the_stored_bool_else_the_default(self, stored, expected):
+        from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_harness_enabled
+
+        assert chat_runtime_sharing_harness_enabled(self._cfg(stored), ACP_BACKEND_KAS) is expected
+
+    def test_a_stored_true_cannot_switch_on_a_harness_outside_the_table(self):
+        from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_harness_enabled
+
+        cfg = self._cfg({ACP_BACKEND_CODEX: True, ACP_BACKEND_KIRO: True})
+        assert chat_runtime_sharing_harness_enabled(cfg, ACP_BACKEND_CODEX) is False
+        assert chat_runtime_sharing_harness_enabled(cfg, ACP_BACKEND_KIRO) is False
+
+    def test_the_loader_fills_defaults_and_drops_unknown_names(self):
+        from kiro_crew.config.loader_builders import _chat_runtime_sharing_harnesses
+        from kiro_crew.config.sections import AgentConfig
+
+        assert AgentConfig().chat_runtime_sharing_harnesses == {"kas": True}
+        assert _chat_runtime_sharing_harnesses({"kas": False, "codex": True}) == {"kas": False}
+        assert _chat_runtime_sharing_harnesses({"kas": 0}) == {"kas": True}
+        assert _chat_runtime_sharing_harnesses("x") == {"kas": True}
+
+    def test_only_table_harnesses_are_writable_from_the_dashboard(self):
+        from kiro_crew.dashboard.handlers.core_config_schema import _EDITABLE_CONFIG
+
+        prefix = "agent.chat_runtime_sharing_harnesses."
+        writable = {k[len(prefix) :] for k in _EDITABLE_CONFIG if k.startswith(prefix)}
+        assert writable == set(ACP_BACKENDS_CHAT_RUNTIME_SHARING)
+
+
 class TestIsSharedChatRuntimeTellsTheSharedPathApart:
     """``is_shared_chat_runtime`` is the guard the ownerless ``_run_chat`` gates use.
 
@@ -317,6 +406,7 @@ class TestTheRefusalNamesItsBranch:
         [
             ({"sharing_enabled": False}, "sharing_disabled"),
             ({"backend": ACP_BACKEND_CODEX}, "backend_not_chat_shareable"),
+            ({"harness_enabled": False}, "harness_switched_off"),
             ({"memory_mode": "incognito"}, "memory_mode_not_shareable"),
             ({"session_key": "cron:nightly-digest"}, "origin_not_dashboard"),
         ],

@@ -1473,6 +1473,7 @@ from kiro_crew.agent_sdk.backends_sessions import (  # noqa: E402,F401 - re-expo
     ACP_BACKENDS_SERIAL_SESSION_STARTS,
     ACP_BACKENDS_SESSION_EVICTION,
     ACP_BACKENDS_SESSION_SHARING,
+    CHAT_RUNTIME_SHARING_HARNESSES,
 )
 from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exported vocabulary
     ACP_BACKEND_PROMPT_HANDLER_COMMANDS,

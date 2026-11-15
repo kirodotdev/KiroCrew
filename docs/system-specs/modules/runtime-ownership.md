@@ -202,6 +202,16 @@ kiro-cli version alone does not count, and an engine version that cannot be read
 (no extract yet, no installed bundle) keeps one process per chat
 (`kas_engine_not_shareable`).
 
+**Each harness has its own switch under the preview.** The table is
+`agent_sdk.backends_sessions.CHAT_RUNTIME_SHARING_HARNESSES`: one row per harness
+that may share chats, with the default of its switch (KAS: on). The switch is
+`agent.chat_runtime_sharing_harnesses.<harness>`, shown under the preview's row in
+Settings > Developer > Feature previews only while the preview is on. A chat may
+share only when the preview is on AND its harness's switch is on AND every rule
+above holds; a harness switched off keeps one process per chat
+(`harness_switched_off`, checked before the KAS engine is read). Letting another
+harness share chats is one row in that table.
+
 The preview also moves KAS onto Crew's own pinned engine by itself
 (`kas_route.REASON_SHARING_PREVIEW`), so it works from the Feature previews row
 alone, without `agent.kas_bundle`. A stored Kiro CLI pick and the operator's

@@ -741,6 +741,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _build_telemetry_config,
         _builtin_adoption_markers,
         _builtin_adoption_nav,
+        _chat_runtime_sharing_harnesses,
         _clamp_compact_wait_secs,
         _clamp_security_bounds,
         _crew_mode_agent_or_default,

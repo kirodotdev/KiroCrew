@@ -21,6 +21,7 @@ import { DecisionsCard } from './DecisionsCard'
 import { RemoteDispatchCard } from './RemoteDispatchCard'
 import { EditionPreviewRows } from './EditionPreviewRows'
 import { ReplyThreadsRow } from './ReplyThreadsRow'
+import { ChatRuntimeSharingHarnessRows } from './ChatRuntimeSharingHarnessRows'
 import { i18nT } from '../../i18n/t'
 import { WorkConfirmDeclined } from '../../utils/workInFlight'
 import { useRestartRefusal } from '../../hooks/useRestartRefusal'
@@ -475,15 +476,20 @@ export function FeaturePreviewsSection() {
         )}
         {/* Chat runtime sharing (`chat_runtime_sharing`): a gateway switch read at
             each session start (`acp.chat_runtime_sharing.chat_runtime_sharing_enabled`).
-            NO ingress button: there is no new page, only fewer processes. */}
+            NO ingress button: there is no new page, only fewer processes. Its
+            per-harness switches show only while it is on, inside the same row;
+            the gateway checks both. */}
         {!previewsOff && (
-          <SettingsToggle
-            label={i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing')}
-            description={i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing_desc_summary')}
-            hint={i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing_desc')}
-            checked={chatRuntimeSharing}
-            onChange={v => setPreviewFlag(PREVIEW_CHAT_RUNTIME_SHARING, v)}
-          />
+          <div>
+            <SettingsToggle
+              label={i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing')}
+              description={i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing_desc_summary')}
+              hint={i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing_desc')}
+              checked={chatRuntimeSharing}
+              onChange={v => setPreviewFlag(PREVIEW_CHAT_RUNTIME_SHARING, v)}
+            />
+            {chatRuntimeSharing && <ChatRuntimeSharingHarnessRows />}
+          </div>
         )}
         {/* The built-in KAS engine (`agent.kas_bundle`), the whole card: its switch
             and the Install button for the pinned engine. It lives here, not on the

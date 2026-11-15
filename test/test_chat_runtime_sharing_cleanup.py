@@ -1121,19 +1121,19 @@ class TestChatSharePlacement:
 class TestResolveChatShare:
     """The preview gate on the start path: off is one config read and ``None``."""
 
-    def _cfg(self, previews):
+    def _cfg(self, previews, harnesses=None):
         from types import SimpleNamespace
 
-        return SimpleNamespace(
-            dashboard=SimpleNamespace(feature_previews=previews),
-            agent=SimpleNamespace(chat_runtime_sharing_max_sessions=4),
-        )
+        agent = SimpleNamespace(chat_runtime_sharing_max_sessions=4)
+        if harnesses is not None:
+            agent.chat_runtime_sharing_harnesses = harnesses
+        return SimpleNamespace(dashboard=SimpleNamespace(feature_previews=previews), agent=agent)
 
     def _resolve(self, monkeypatch, previews, provider, **kw):
         import kiro_crew.providers.chat_share as share_mod
         from kiro_crew.config import live
 
-        cfg = self._cfg(previews)
+        cfg = self._cfg(previews, kw.get("harnesses"))
         monkeypatch.setattr(live, "snapshot", lambda: cfg)
         reads: list[str] = []
 
@@ -1141,10 +1141,14 @@ class TestResolveChatShare:
             reads.append("spec")
             return "gen-1"
 
+        self.kas_probes = 0
+
+        def kas_ready(pin=""):
+            self.kas_probes += 1
+            return kw.get("kas_ready", False)
+
         monkeypatch.setattr(share_mod, "agent_spec_generation", spec_generation)
-        monkeypatch.setattr(
-            share_mod, "kas_chat_sharing_ready", lambda pin="": kw.get("kas_ready", False)
-        )
+        monkeypatch.setattr(share_mod, "kas_chat_sharing_ready", kas_ready)
         monkeypatch.setattr(
             share_mod, "agent_spawns_native_subagents", lambda w, a, b="": kw.get("native", False)
         )
@@ -1217,6 +1221,56 @@ class TestResolveChatShare:
             kas_ready=True,
         )
         assert placement is not None
+
+    def test_kas_switched_off_keeps_its_own_process_and_reads_no_engine(self, monkeypatch, caplog):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.providers.chat_share"):
+            placement, reads = self._resolve(
+                monkeypatch,
+                {"chat_runtime_sharing": True},
+                _PlacementProvider(backend=ACP_BACKEND_KAS),
+                kas_ready=True,
+                harnesses={"kas": False},
+            )
+        assert placement is None and reads == []
+        assert self.kas_probes == 0
+        assert "reason=harness_switched_off backend=kas" in caplog.text
+
+    def test_kas_switched_on_explicitly_shares(self, monkeypatch):
+        placement, _ = self._resolve(
+            monkeypatch,
+            {"chat_runtime_sharing": True},
+            _PlacementProvider(backend=ACP_BACKEND_KAS),
+            kas_ready=True,
+            harnesses={"kas": True},
+        )
+        assert placement is not None
+        assert self.kas_probes == 1
+
+    def test_the_kas_switch_does_nothing_with_the_preview_off(self, monkeypatch):
+        placement, reads = self._resolve(
+            monkeypatch,
+            {},
+            _PlacementProvider(backend=ACP_BACKEND_KAS),
+            kas_ready=True,
+            harnesses={"kas": True},
+        )
+        assert placement is None and reads == []
+        assert self.kas_probes == 0
+
+    def test_a_kas_refusal_is_counted_under_its_harness(self, monkeypatch):
+        import kiro_crew.providers.chat_share as share_mod
+
+        counted: list[tuple] = []
+        monkeypatch.setattr(
+            share_mod, "record_refused", lambda reason, **kw: counted.append((reason, kw))
+        )
+        self._resolve(
+            monkeypatch,
+            {"chat_runtime_sharing": True},
+            _PlacementProvider(backend=ACP_BACKEND_KAS),
+            harnesses={"kas": False},
+        )
+        assert counted == [("harness_switched_off", {"backend": ACP_BACKEND_KAS})]
 
     def test_a_native_subagent_agent_keeps_its_own_process(self, monkeypatch, caplog):
         # Its subagents' approvals route only while one session is registered, so
