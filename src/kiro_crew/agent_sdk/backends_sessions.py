@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from types import MappingProxyType
+from typing import Any
 
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
@@ -407,6 +408,27 @@ ACP_BACKENDS_LOAD_WITHOUT_MODES = frozenset(
 # set is the record, and adding a harness to it is a deliberate edit with a capture
 # behind it (harness-parity H6, the same reason every capability here is opt-in).
 ACP_BACKENDS_RESUME_WITHOUT_LOAD = frozenset({ACP_BACKEND_DEEPSEEK})
+
+
+def can_restore_session(backend: str, agent_capabilities: Mapping[str, Any]) -> bool:
+    """Whether a host that answered ``initialize`` with *agent_capabilities* restores
+    a saved session. The one reading both ACP drivers use (``AcpClient`` and
+    ``AcpRuntime``).
+
+    Both spellings are standard ACP v1: ``loadSession`` is the flag for
+    ``session/load``, and ``sessionCapabilities.resume`` is the object -- an empty
+    one means supported -- for ``session/resume``. Keyed on
+    ``ACP_BACKENDS_RESUME_WITHOUT_LOAD`` rather than probing both, so a harness
+    cannot be read as restorable through a capability it never advertised and then
+    sent a verb it does not serve.
+    """
+    if backend in ACP_BACKENDS_RESUME_WITHOUT_LOAD:
+        session_capabilities = agent_capabilities.get("sessionCapabilities")
+        return isinstance(session_capabilities, dict) and isinstance(
+            session_capabilities.get("resume"), dict
+        )
+    return bool(agent_capabilities.get("loadSession", False))
+
 
 # Harnesses that keep a saved session on the directory it was created in, so it is
 # restored only in that directory. opencode 1.x runs one instance per directory and

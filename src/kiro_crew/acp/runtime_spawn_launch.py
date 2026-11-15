@@ -69,7 +69,10 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.spawn_blocked import AcpSpawnBlocked, is_windows_spawn_blocked
 from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent import ensure_agent_materialized
-from kiro_crew.agent_sdk.backends import spawn_delegates_to_internal_sandbox
+from kiro_crew.agent_sdk.backends import (
+    can_restore_session,
+    spawn_delegates_to_internal_sandbox,
+)
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.agent_sdk.tool_search import (
     custom_agent_never_defer_ids,
@@ -347,6 +350,8 @@ async def _resolve_spawn_plan(self: AcpRuntime) -> SpawnPlan:
             sandbox_mode=self._sandbox_mode,
             member_context=self._member_context,
             harness_pin=self._harness_pin,
+            extra_env=dict(self._extra_env or {}),
+            agent_env=getattr(self, "_agent_env_override", None),
         )
     )
     # The ONE derived-spec gate on this path, and the one host-level gate that is
@@ -786,6 +791,9 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             # with.
             # Called before the launch tail's scrub, so a host can both add its
             # own variables and remove one the generic path would pass through.
+            # What the spawn itself minted for its child (``SpawnPlan.child_env``),
+            # placed first so the host's own answer below is the last word.
+            env.update(plan.child_env)
             self._harness.apply_spawn_env(
                 env, spawned_binary=spawned_binary, cli_owned_auth=not plan.host_auth
             )
@@ -1109,7 +1117,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
         self._initialize_result = init_resp if isinstance(init_resp, dict) else {}
         _agent_caps = init_resp.get("agentCapabilities", {})
         self._agent_capabilities = _agent_caps if isinstance(_agent_caps, dict) else {}
-        self._can_load_session = bool(self._agent_capabilities.get("loadSession", False))
+        self._can_load_session = can_restore_session(self._acp_backend, self._agent_capabilities)
         # Retain promptCapabilities so the prompt path can gate non-text
         # blocks -- without them an image block would be sent regardless of
         # whether the agent accepts one, and a refusal would surface as a

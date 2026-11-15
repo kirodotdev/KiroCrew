@@ -122,6 +122,16 @@ class SpawnContext:
     seed) and records there the facts the session's turn-time code reads back (a
     gate nonce, a resolved adapter version)."""
 
+    extra_env: Mapping[str, str] = field(default_factory=dict, kw_only=True)
+    """The shared runtime's own ``extra_env``, which its child is launched with on
+    top of the gateway's environment and ``agent.env``. Read by a host that boots a
+    probe child before the real one (the DeepSeek Harness gate read-back), so the
+    probe composes what the child will."""
+
+    agent_env: Mapping[str, str] | None = field(default=None, kw_only=True)
+    """The ``agent.env`` snapshot the shared runtime launches with, or ``None`` when
+    it reads ``agent.env`` at launch. Read for the same probe."""
+
 
 @dataclass
 class HarnessReadBack:
@@ -322,6 +332,15 @@ class SpawnPlan:
 
     Runs on the spawn worker with the merged environment. An explicit private
     state location skips preparation, preserving the operator's override.
+    """
+
+    child_env: Mapping[str, str] = field(default_factory=dict)
+    """Variables this spawn decided its child must carry, set on the child's
+    environment just before :meth:`HarnessAdapter.apply_spawn_env` runs.
+
+    For a value the spawn itself minted, which a harness keeps no state to hand on
+    (the DeepSeek Harness gate nonce its read-back was booted with, and the
+    permission mode it pinned). Empty for every other host.
     """
 
 
@@ -888,6 +907,30 @@ class HarnessAdapter(LaunchAdapter):
         and only where :attr:`per_session_state` is True.
         """
         return ""
+
+    def note_permission_approved(self, state: Any, tool_call_id: str) -> None:
+        """Record that Crew's yes to *state*'s permission request for *tool_call_id*
+        was written.
+
+        For a host that holds a session to "a call completes only with Crew's yes"
+        (the DeepSeek Harness gate tripwire, :meth:`session_update_issue`): every
+        other outcome -- a refusal on any path, a cancel, no answer yet -- leaves
+        the call unapproved. Called by the handle's approve path once the answer is
+        written, and only where :attr:`per_session_state` is True. Must not raise.
+        """
+
+    #: True when a :meth:`session_update_issue` refusal means the PROCESS can no
+    #: longer be trusted, not just the session: the host's gate is composed into the
+    #: process once (the DeepSeek Harness ``--patch`` plugin), so a call that ran past
+    #: it on one session says the same of every other. The runtime is then marked
+    #: dead instead of closing the one session.
+    permission_state_issue_ends_process: bool = False
+
+    def permission_state_audit(self, state: Any) -> tuple[str, str, str] | None:
+        """``(tool_name, outcome, reason)`` for the audit row of the issue
+        :meth:`session_update_issue` last reported on *state*, or None for the default
+        row (a denied ``session/set_mode``, the mode tripwire's). Must not raise."""
+        return None
 
     def holds_replayed_permission(self, session_id: str) -> bool:
         """Whether a permission request for *session_id* arrived inside a resume hold.

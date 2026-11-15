@@ -18,7 +18,7 @@ Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe
 Instance fields read: ``_agent``, ``_agent_capabilities``, ``_agent_version``,
 ``_crew_agent``, ``_dead``, ``_entitlement_probe_lock``, ``_expect_mcp_reports``,
 ``_fold_mcp_frame``, ``_initialized``, ``_kas_telemetry_sent``, ``_mcp_gateway_overlay``,
-``_member_context``, ``_model``, ``_open_mcp_report``, ``_pending_init_notifications``,
+``_mcp_reports``, ``_member_context``, ``_model``, ``_open_mcp_report``, ``_pending_init_notifications``,
 ``_pid``, ``_pool_lookup``, ``_process``, ``_record_tree_in_background``,
 ``_refuse_over_ceiling_start``, ``_remote_session_servers``, ``_remote_workspace_agents``,
 ``_session_label_elements``, ``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``,
@@ -42,6 +42,7 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
+from kiro_crew.acp.mcp_prune import prune_session_servers, record_pruned
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
     _drop_withdrawn_stubs,
@@ -60,6 +61,7 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.types import (
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     METHOD_SESSION_NEW,
     JsonRpcMessage,
 )
@@ -430,6 +432,13 @@ async def create_session(
     # narrows its array would otherwise be reported as having been sent servers
     # the wire never carried, and the guard would judge refs against them.
     await self._write_remote_token()
+    # A host that fails or silently loses a server whose command cannot start
+    # gets the array without it (the ``AcpClient`` prune, one routine); every
+    # other host makes no call.
+    pruned = None
+    if self.acp_backend in ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP:
+        pruned = await prune_session_servers(self.acp_backend, mcp_servers)
+        mcp_servers = pruned.kept
     wire_servers = self._remote_session_servers(
         self._harness.session_mcp_servers(mcp_servers, agent_capabilities=self._agent_capabilities)
     )
@@ -600,7 +609,7 @@ async def create_session(
                 close_session=lambda: self.terminate_session(session_id),
                 agent_version=self._agent_version,
             )
-        return await self._finish_create_session(
+        handle = await self._finish_create_session(
             session_id,
             resp,
             buffered_init=buffered_init,
@@ -630,6 +639,12 @@ async def create_session(
             withheld_notice=withheld_notice,
             start_priority=start_priority,
         )
+        if pruned is not None:
+            # On the report the session opened with: what the array left out failed.
+            report = self._mcp_reports().get(session_id)
+            if report is not None:
+                record_pruned(report, pruned.pruned, pruned.omitted)
+        return handle
     except BaseException:
         if session_id in self._unclaimed_new_sessions:
             await asyncio.shield(self.terminate_session(session_id))

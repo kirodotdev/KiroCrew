@@ -105,6 +105,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_FORBIDDEN_MODES,
     ACP_BACKEND_LAUNCH,
     ACP_BACKENDS_NO_MCP_INIT_FRAMES,
+    can_restore_session,
     launch_for,
 )
 from kiro_crew.config.paths import kiro_sessions_dir
@@ -748,21 +749,10 @@ async def _initialize_session(self: AcpClient) -> None:
             await self._discard_copilot_mcp_config()
     logger.info("ACP initialized (protocol=%s)", init_resp.get("protocolVersion"))
 
-    # Whether this harness can restore a session at all, asked of whichever
-    # capability the harness advertises it under. Both spellings are standard ACP
-    # v1: ``loadSession`` is the flag for ``session/load``, and
-    # ``sessionCapabilities.resume`` is the object -- an empty one means supported
-    # -- for ``session/resume``. Keyed on the membership set rather than probing
-    # both, so a harness cannot be read as restorable through a capability it
-    # never advertised and then sent a verb it does not serve.
+    # Whether this harness can restore a session at all, read the way the shared
+    # runtime reads it (``backends_sessions.can_restore_session``).
     capabilities = init_resp.get("agentCapabilities") or {}
-    if self.backend in ACP_BACKENDS_RESUME_WITHOUT_LOAD:
-        session_capabilities = capabilities.get("sessionCapabilities")
-        self._can_load_session = isinstance(session_capabilities, dict) and isinstance(
-            session_capabilities.get("resume"), dict
-        )
-    else:
-        self._can_load_session = bool(capabilities.get("loadSession", False))
+    self._can_load_session = can_restore_session(self.backend, capabilities)
     # Read on every handshake so a respawn onto a harness that dropped image
     # support cannot keep a stale yes. Only a literal ``true`` counts.
     prompt_capabilities = capabilities.get("promptCapabilities")
