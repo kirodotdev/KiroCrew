@@ -390,6 +390,12 @@ class TestNotice:
 class TestOffOffer:
     """Off only by a written false older builds put in every new config."""
 
+    @pytest.fixture(autouse=True)
+    def _default_home(self, monkeypatch):
+        # The offer is asked on the default data home only; the private test home is
+        # not that one, so it stands in for it here (the "home" case below undoes it).
+        monkeypatch.setattr(beacon, "is_default_home", lambda: True)
+
     def _old_default(self, home, **telemetry):
         _write_config(home, {"enabled": False, **telemetry}, ack=2, kiro_ack=0)
 
