@@ -134,9 +134,12 @@ def _drive(tmp_path, monkeypatch, backend: str, *, rolls_back: bool):
     monkeypatch.setattr(client, "_wait_for_response", _wait)
     # Each backend is a mirror: each carries the bad element in its own spec half,
     # and the pooled broker append is empty for them.
-    monkeypatch.setattr(client, "_goose_session_mcp_servers", lambda: [good, bad])
-    monkeypatch.setattr(client, "_deepseek_session_mcp_servers", lambda: [good, bad])
-    monkeypatch.setattr(client, "_copilot_session_mcp_servers", lambda: [good, bad])
+    own_array = {
+        ACP_BACKEND_GOOSE: "_goose_session_mcp_servers",
+        ACP_BACKEND_DEEPSEEK: "_deepseek_session_mcp_servers",
+        ACP_BACKEND_COPILOT: "_copilot_session_mcp_servers",
+    }[backend]
+    monkeypatch.setattr(client, own_array, lambda: [good, bad])
     monkeypatch.setattr(client, "_pooled_mcp_servers", lambda: [])
     return client, sent
 

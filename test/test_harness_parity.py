@@ -1018,7 +1018,6 @@ _MCP_SEAM_HOOKS = ["adapter", "harness"]
 _ADAPTER_MCP_SEAMS = {
     "OpencodeLaunch": "opencode",
     "MimoCodeLaunch": "mimocode",
-    "GooseLaunch": "goose",
     "DeepseekLaunch": "deepseek",
     "CopilotLaunch": "copilot",
     "PiLaunch": "pi",
@@ -1066,8 +1065,8 @@ def test_each_mcp_seam_is_spliced_only_for_its_own_harness() -> None:
             if h in ("adapter", "harness"):
                 # Gated by construction: the adapter is the one for ``self.backend``,
                 # and each adapter asks only its own hook (the test below); the
-                # harness hook is the client class's own, and only ClaudeAcpClient
-                # fills it (pinned below).
+                # harness hook is the client class's own, and only ClaudeAcpClient and
+                # GooseAcpClient fill it (pinned below).
                 continue
             tail = source[m.end() : m.end() + 80]
             assert re.match(rf"\s+if\s+self\._is_{h}\b", tail), (
@@ -1076,21 +1075,24 @@ def test_each_mcp_seam_is_spliced_only_for_its_own_harness() -> None:
             )
 
 
-def test_only_the_claude_client_fills_the_harness_mcp_seam() -> None:
-    """The ``harness`` splice adds nothing on the shared class, and claude's array on
-    its own: the gate is which class the backend builds."""
+def test_only_the_claude_and_goose_clients_fill_the_harness_mcp_seam() -> None:
+    """The ``harness`` splice adds nothing on the shared class, and claude's or goose's
+    array on its own class: the gate is which class the backend builds."""
     shared = acp_client.AcpClient(acp_backend="")
     assert shared._harness_session_mcp_servers() == []
     filled = [
         cls.__name__
-        for cls in (acp_client.AcpClient, acp_client.ClaudeAcpClient)
+        for cls in (acp_client.AcpClient, acp_client.ClaudeAcpClient, acp_client.GooseAcpClient)
         if "_harness_session_mcp_servers" in vars(cls)
         and vars(cls)["_harness_session_mcp_servers"]
         is not vars(acp_client.AcpClient)["_harness_session_mcp_servers"]
     ]
-    assert filled == ["ClaudeAcpClient"]
+    assert filled == ["ClaudeAcpClient", "GooseAcpClient"]
     assert "self._claude_session_mcp_servers()" in inspect.getsource(
         acp_client.ClaudeAcpClient._harness_session_mcp_servers
+    )
+    assert "self._goose_session_mcp_servers()" in inspect.getsource(
+        acp_client.GooseAcpClient._harness_session_mcp_servers
     )
 
 

@@ -222,9 +222,6 @@ class ProcessSession(Protocol):
     def _mimocode_session_mcp_servers(self) -> list[dict[str, Any]]:
         """The MiMo Code session's ``mcpServers`` entries."""
 
-    def _goose_session_mcp_servers(self) -> list[dict[str, Any]]:
-        """The goose session's ``mcpServers`` entries."""
-
     def _deepseek_session_mcp_servers(self) -> list[dict[str, Any]]:
         """The DeepSeek Harness session's ``mcpServers`` entries."""
 
