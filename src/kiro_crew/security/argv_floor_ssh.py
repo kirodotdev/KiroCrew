@@ -38,6 +38,7 @@ from .shell_normalizer import (
     _data_consumer_exempt,
     _decode_shell_quoted_literals,
     _ends_argv,
+    _only_single_quoted_openers,
     _program_basename,
     _resolve_param_defaults,
     _strip_redirect,
@@ -934,10 +935,11 @@ def _function_call_binds_self(text: str) -> bool:
 def _reaches_self_over_ssh(text_lower: str) -> bool:
     """:func:`_is_ssh_to_self` on *text_lower* and on each quoted assignment script in it,
     read whole: the separator mask would turn a script's own separators into data."""
-    return any(map(_is_ssh_to_self, [text_lower, *_quoted_assignment_scripts(text_lower)]))
+    scripts = _quoted_assignment_scripts(text_lower)
+    return _is_ssh_to_self(text_lower, own_line=True) or any(map(_is_ssh_to_self, scripts))
 
 
-def _is_ssh_to_self(text_lower: str) -> bool:
+def _is_ssh_to_self(text_lower: str, *, own_line: bool = False) -> bool:
     """True if *text_lower* opens an ssh/scp/sftp/rsync channel to THIS host.
 
     Structural for the same reason the other floors are: the target hides
@@ -982,6 +984,10 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     the shell-builtin export spellings (``declare -x``/``typeset -x``), which
     are not leading-assignment syntax and so are not modeled by the walk.
     """
+    # Single quotes read as literal only in the caller's own line, and only when it
+    # has no live substitution opener before the splices below rewrite it: a spliced
+    # static output (``x'y``) could otherwise pair into quotes around a live one.
+    literal = own_line and _only_single_quoted_openers(text_lower)
     # Collapse empty expansions in the SOURCE so the gate and tokenization both
     # read the spliced-out spelling (``s$()sh localhost`` -> ``ssh localhost``).
     text_lower = _EMPTY_EXPANSION_RE.sub("", text_lower)
@@ -1053,7 +1059,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     # frames (a copy staged in a wrapper payload reaches its siblings); a
     # copy staged in an EARLIER command line is the documented residual.
     bound_program_verbs: "dict[str, str]" = {}
-    for tokens in _self_token_frames(text_lower):
+    for tokens in _self_token_frames(text_lower, literal):
         programs = _argv_programs(tokens)
         # A leading ``RSYNC_RSH=<cmd>`` environment assignment selects rsync's
         # remote shell exactly like ``-e``/``--rsh``, but rides BEFORE the verb
