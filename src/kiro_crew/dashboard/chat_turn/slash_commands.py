@@ -626,6 +626,11 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                 # The nested call is a whole turn with its own exit guard, so the
                 # tail is its to run, however it ends.
                 turn_exit.handed_off = True
+                # The caller's trace id (tracing/inbound.py) goes to the nested turn,
+                # the one that produces the reply.
+                from kiro_crew.tracing import inbound as trace_inbound
+
+                trace_inbound.hand_back(turn._recovery_turn_id)
                 await _run_chat(
                     state,
                     slot,

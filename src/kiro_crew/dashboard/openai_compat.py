@@ -44,6 +44,7 @@ from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key, load_
 from kiro_crew.dashboard.turn_dispatch import chat_turn_timeout_secs
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.tracing import inbound as trace_inbound
 from kiro_crew.validation import _AGENT_NAME_RE, is_registered_agent_name
 
 logger = logging.getLogger(__name__)
@@ -746,6 +747,9 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     # helpers lets the turn run, so a scope opened there would leave a window in
     # which a turn-end release could discard tokens this reader owes its client.
     with slot.pending_consumer():
+        # The caller is authorized and the turn is about to start: join its trace
+        # when asked to (tracing/inbound.py). "" when off, invalid or tracing is off.
+        traceparent = trace_inbound.begin(request.headers)
         # Launch the chat, bounded by the standard chat-turn ceiling. A fixed
         # 300s cap here would race COMPACT_WAIT_TIMEOUT_SECS: a /compact prompt
         # phase plus the full compaction wait always exceeds it, so the outer
@@ -782,10 +786,15 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
 
         if stream:
             return await _stream_response(
-                request, state, slot, completion_id, model, created, ephemeral
+                request, state, slot, completion_id, model, created, ephemeral, traceparent
             )
         else:
-            return await _blocking_response(state, slot, completion_id, model, created, ephemeral)
+            blocking = await _blocking_response(
+                state, slot, completion_id, model, created, ephemeral
+            )
+            if traceparent:
+                blocking.headers["traceparent"] = traceparent
+            return blocking
 
 
 _SERVER_ERROR = {"error": {"message": "internal error", "type": "server_error"}}
@@ -854,12 +863,15 @@ async def _stream_response(
     model: str,
     created: int,
     ephemeral: bool,
+    traceparent: str = "",
 ) -> web.StreamResponse:
     """Stream SSE in OpenAI format."""
     resp = web.StreamResponse()
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
     resp.headers["X-Accel-Buffering"] = "no"
+    if traceparent:
+        resp.headers["traceparent"] = traceparent
     await resp.prepare(request)
 
     try:

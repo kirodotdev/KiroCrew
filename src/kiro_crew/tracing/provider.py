@@ -125,6 +125,7 @@ def _inputs(cfg: Any) -> tuple[object, ...]:
         _pairs(getattr(cfg, "traces_otlp_headers_secret", None)),
         _pairs(getattr(cfg, "traces_otlp_headers_env", None)),
         getattr(cfg, "traces_conductor_mode", CONDUCTOR_MODE_RUN),
+        getattr(cfg, "accept_traceparent", False) is True,
     )
 
 
@@ -133,6 +134,16 @@ def _inputs(cfg: Any) -> tuple[object, ...]:
 CONDUCTOR_MODE_RUN = "run"
 CONDUCTOR_MODE_TURN = "turn"
 _conductor_mode_shape = CONDUCTOR_MODE_RUN
+
+
+#: ``telemetry.accept_traceparent``: whether an authenticated HTTP caller's W3C
+#: ``traceparent`` parents the turn it starts (``tracing/inbound.py``). Read with the switch.
+_accept_traceparent = False
+
+
+def accepts_traceparent() -> bool:
+    """Whether the last read of the switch resolved ``accept_traceparent`` on; never reads."""
+    return _accept_traceparent
 
 
 def conductor_mode_shape() -> str:
@@ -178,7 +189,8 @@ def _build() -> TraceState | None:
         _built_inputs = None
         return None
     _built_inputs = _inputs(cfg)
-    global _built, _conductor_mode_shape
+    global _built, _conductor_mode_shape, _accept_traceparent
+    _accept_traceparent = getattr(cfg, "accept_traceparent", False) is True
     _conductor_mode_shape = (
         CONDUCTOR_MODE_TURN
         if getattr(cfg, "traces_conductor_mode", "") == CONDUCTOR_MODE_TURN
@@ -413,9 +425,10 @@ async def flush_for_exit() -> None:
 
 def reset_for_testing() -> None:
     """Shut down and forget the tracer, so a test starts from the switch."""
-    global _conductor_mode_shape
+    global _conductor_mode_shape, _accept_traceparent
     shutdown()
     _conductor_mode_shape = CONDUCTOR_MODE_RUN
+    _accept_traceparent = False
     with _counts_lock:
         _span_counts.clear()
 

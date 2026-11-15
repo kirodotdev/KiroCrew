@@ -83,6 +83,7 @@ from kiro_crew.session_capabilities import CapabilityStartupError
 from kiro_crew.shared_crew.admission import OperationKind
 from kiro_crew.shared_crew.turn_gate import TurnRefused, run_admitted_or_raise
 from kiro_crew.tool_gate_busy import hook_gate_busy
+from kiro_crew.tracing import inbound as trace_inbound
 from kiro_crew.tracing import surfaces as trace_surfaces
 
 logger = logging.getLogger(__name__)
@@ -662,6 +663,9 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             source="webhook",
             resources=session_key,
         )
+        # The caller passed the token and signature checks above: join its trace when
+        # asked to (tracing/inbound.py).
+        traceparent = trace_inbound.begin(request.headers)
         task = asyncio.create_task(
             _run_hook_agent(
                 state,
@@ -685,8 +689,11 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
 
-    extra = await _answer_fields(body, task) if "wait" in body else {}
-    return web.json_response({"status": "accepted", "sessionKey": session_key, **extra})
+    extra: dict[str, Any] = {"sessionKey": session_key}
+    if "wait" in body:
+        extra.update(await _answer_fields(body, task))
+    headers = {"traceparent": traceparent} if traceparent else None
+    return web.json_response({"status": "accepted", **extra}, headers=headers)
 
 
 async def api_hooks_agent_status(request: web.Request) -> web.Response:
