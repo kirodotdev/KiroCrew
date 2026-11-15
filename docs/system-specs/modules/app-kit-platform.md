@@ -8195,7 +8195,20 @@ drag hand-off, the hidden notification owner it relays through, the panel beside
 avatar, the gallery, opening a session, opening an https link, turning itself off) has
 a generic counterpart above, so its own repository's copy needs no main-process code;
 the built-in keeps its windows until that copy is adopted, so nothing changes for a
-user before then. Its dashboard-routing check now lives in `dashboard-session.js`,
+user before then. Once the gateway's row for the name is no longer
+`origin: "builtin"` (an adopted copy is a registry record), the built-in's reconcile
+reads it as `released` and closes its windows whatever the row's enabled flag says, so
+the copy's own windows never run beside a second avatar and a second notification
+owner; a row with no `origin` (a gateway older than the field) is the built-in's, as
+before. Before the host starts, the built-in's own `initCrewCompanion` copies the display
+the built-in avatar last lived on (its userData `crew-companion-pet-position.json`) into the host's
+`app-window-displays.json` under `crew-companion/pet`, the avatar window the app's
+repository declares, and records the value copied (`crew-companion-display-handoff.json`);
+it copies again at a later start only while the host's entry still holds that recorded
+value, so a move of the built-in avatar before adoption reaches the host and a display
+the host chose itself after adoption is never overwritten
+(`crew-companion/displayHandOff.js`). A multi-display user finds the avatar where it
+was. Both live in the built-in's own shell directory and leave with it. Its dashboard-routing check now lives in `dashboard-session.js`,
 which the built-in and the kirocrew:// deep link share. Mochi's manifest already declares the three
 capabilities its shell code uses (the wheel copy first, so an external Mochi declaring
 them is no widening), and its reveal-file and open-image handlers run `app-local-files.js`.

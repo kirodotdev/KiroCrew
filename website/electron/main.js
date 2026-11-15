@@ -918,6 +918,7 @@ app.whenReady().then(async () => {
     glog,
     getMainWindow: () => windows.getMainWindow(),
   });
+  const appWindowDisplays = path.join(app.getPath("userData"), "app-window-displays.json");
   try {
     initCrewCompanion({
       backendUrl: BACKEND_URL,
@@ -929,6 +930,8 @@ app.whenReady().then(async () => {
       glog,
       getDashboardWindow: () => windows.focusedDashboardWindow() || null,
       surfaceApp: SURFACE_APP,
+      userDataDir: app.getPath("userData"),
+      displayMemoryPath: appWindowDisplays,
     });
   } catch (error) {
     glog("crew-companion: init failed — " + (error && error.message));
@@ -941,7 +944,7 @@ app.whenReady().then(async () => {
       cookieHeader: sessionCookieHeader,
       preloadPath: path.join(__dirname, "app-window-preload.js"),
       log: glog,
-      displayMemoryPath: path.join(app.getPath("userData"), "app-window-displays.json"),
+      displayMemoryPath: appWindowDisplays,
       showDashboardSession: (slotKey) => openDashboardSession(
         windows.focusedDashboardWindow() || null, BACKEND_URL, slotKey, SURFACE_APP,
       ),
