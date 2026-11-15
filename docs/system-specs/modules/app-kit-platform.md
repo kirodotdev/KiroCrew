@@ -8397,9 +8397,10 @@ because it must not trust a gateway of another version.
 
 **The lifecycle.** `app-window-host.js` runs a 5-second reconcile on `/api/apps` with
 the dashboard window's credential chain, the same answer shape Crew Companion's loop
-reads: only an enabled app the gateway did not skip at boot is served. It opens each
-`openOnEnable` window, registers each shortcut, and closes and releases everything for
-an app that is disabled, gone, or whose declaration changed. A probe that is refused is
+reads: only an app the gateway did not skip at boot is served, and an app switched off
+on this computer's gateway only from a crew (below). It opens each `openOnEnable`
+window, registers each shortcut, and closes and releases everything for an app that is
+disabled, gone, or whose declaration changed. A probe that is refused is
 re-resolved once; one that cannot be answered leaves every window and shortcut as it is.
 An update install suspends the host with Crew Companion and resumes it if the install
 does not proceed. A shortcut is never given to an app when the shell's own owners
@@ -8423,6 +8424,33 @@ window if it is closed and delivers the id once the page is ready. A panel takes
 only when a user action opened it (a shortcut, or `open()` from another of the app's
 windows); one opened for `openOnEnable` is shown inactive, and an overlay never takes
 focus unless its page asks.
+
+**Off here, served by its crew.** An app the operator switched off on this computer's
+gateway is still served while the crew its windows were pointed at (`gatewayChoice`,
+below) has it on, the rule a built-in's own shell code follows (Mochi's pet keeps a
+remote crew's Mochi while the local one is off, mochi.md). Switching an app off
+stops its backend work on that gateway; it does not take away windows another gateway
+serves. `desktopDeclarations(rows, log, {disabledToo: true})` lists such an app with
+`enabledHere: false`, from the declaration and the approvals installed here, and
+`servedDeclarations` serves it only when this computer's gateway approved
+`gatewayChoice` for it, a crew is stored, and that crew answered this tick (the same
+resolve as below: connected, the app on there, every window declared there,
+`gatewayChoice` approved there). A non-answer (the crew's `/api/apps` or core's
+registry check of a reused target) keeps the crew it was already on only while one of
+its windows is still open or a background page of it waits in `respawnDue`, and then
+keeps only those: the app is held for that tick,
+and `createWindow` creates none of its windows, so no `openOnEnable` window, shortcut
+press, `open()` or display copy appears, and a background page that dies waits in
+`respawnDue` for the tick that can tell: a yes reopens it, a no drops it. Not knowing therefore never creates a window
+for an app that is off here; a definite no (the choice is this computer, the crew went,
+the app is off there) closes its windows and opens nothing here. Its windows get what
+the app holds on both gateways, as any crew-served window: `screenCapture` is granted
+this computer's screen and `localFiles` acts on this computer's files, and its
+shortcuts are registered here. Switching an app off on this computer therefore stops
+its windows only once no crew they were pointed at still has it on; choosing this
+computer for them, or switching it off there, stops them. An app not installed here,
+or skipped at boot here, is served nothing: the host needs this computer's declaration
+and approvals.
 
 **One avatar across every display.** A spanning overlay gets one copy per display,
 each covering that display's bounds; the avatar lives on exactly one, the active copy
@@ -8457,7 +8485,7 @@ held in order (32 at most) until it is ready and following the avatar across a h
 Each page hears `onWindowChange(id, open)` when another of its app's windows opens
 (again, when a user brings an open panel forward) or closes, and on load hears which are
 already open. `close(id)` closes another of its app's windows and `closeAll()` all of
-them (the next tick reopens what is declared `openOnEnable` while the app is enabled).
+them (the next tick reopens what is declared `openOnEnable` while the app is served).
 `open(id, {anchor})` opens a panel beside a box in the opener's page pixels: to its right
 when the box's centre is on the left half of the work area, else to its left, the card's
 top level with the box's, clamped 8 px inside the work area, 12 px from the box, with the
@@ -8652,6 +8680,35 @@ them is no widening), and its reveal-file and open-image handlers run `app-local
 every built-in name and of app-owned shell code, and pins the app-owned shell
 directories and `main.js` requires as rows that only shrink.
 
+**Built-in shell code stands down for a record the host serves.**
+`hostOwnsAppWindows(rows, name)` (`app-window-host-rules.js`) answers whether the host,
+not an app's own built-in shell code, owns that app's windows on the gateway that sent
+`rows`: `true` exactly when that gateway's record for it carries a manifest `desktop`
+block, on or off there, whether or not this shell's rules accept the block; `null` for
+an unreadable body. It is keyed on the record, never on a name the host knows. Every
+app-owned shell directory asks it before it draws (pinned by
+`app-window-host-independence.test.js`): Mochi's probe of this computer's gateway
+answers `hosted` and its reconcile takes the full teardown, a remote pet included,
+and a remote crew whose Mochi record the host owns reads as a definite no for the
+built-in pet (`instanceGate.parseMochiEnabled`), so it stays on this computer; Crew
+Companion's `probeEnabled` reads such a record as `released`, as it reads a record
+whose `origin` is not `builtin`, and closes its windows on or off. The built-in records
+declare no `desktop` block, so for every current user the built-ins serve their apps
+exactly as before, and an adopted record that declares one is served by the host
+alone. The shell and gateway versions combine as follows. A gateway that predates the
+block sends none, so a new shell's built-in code serves as before. A block a shell's
+rules refuse (a newer grammar) still counts, so that shell shows nothing for the app
+rather than its built-in windows over a record that no longer ships their pages. A
+shell older than this rule reads the record by name: every stable shell before it has
+no window host, so it never draws both, while a 0.13.0 pre-release shell that has the
+host could; an adoption pin that replaces a built-in with shell code by a record that
+declares `desktop` therefore waits for the release that carries this rule. A
+built-in that stands down keeps the chords it is configured for reserved
+(`shell-shortcut-reservations.js`), so the host still gives none of them to an app.
+Neither this rule nor serving an app that is off here changes the manifest grammar,
+the gateway or a bridge call, so `APP_SDK_LEVEL` and the bridge `level` are unchanged:
+both are how this shell reads rows every gateway already sends.
+
 Writers: `apps/desktop_manifest.py`, `apps/desktop_capabilities.py`, `apps/manifest.py`,
 `apps/manifest_sections.py`, `apps/discovery.py`, `apps/point_grants.py`,
 `apps/manager_lookup.py`, `apps/official_catalog.py`, `apps/permissions.py`,
@@ -8662,6 +8719,8 @@ Writers: `apps/desktop_manifest.py`, `apps/desktop_capabilities.py`, `apps/manif
 `website/electron/app-window-prefs.js`, `website/electron/shell-shortcut-reservations.js`,
 `website/electron/mochi/hostHandOff.js`,
 `website/electron/dashboard-session.js`, `website/electron/main.js`, `scripts/adoption_pin.py`,
+`website/electron/mochi/index.js`, `website/electron/mochi/instanceGate.js`,
+`website/electron/crew-companion/index.js`,
 `website/src/desktopWindow/desktopWindowTarget.ts`,
 `website/src/desktopWindow/DesktopWindowRoot.tsx`, `website/src/components/AppHost.tsx`,
 `website/src/components/appstore/TrustAppDesktopBox.tsx`,
@@ -8681,6 +8740,9 @@ Tests: `test/test_app_manifest_desktop.py`, `test/test_app_desktop_capabilities.
 `website/electron/test/app-window-host-rules.test.js`,
 `website/electron/test/app-window-preload.test.js`,
 `website/electron/test/app-window-host-independence.test.js`,
+`website/electron/mochi/test/instanceGate.test.js`,
+`website/electron/mochi/test/instanceSwitchRules.test.js`,
+`website/electron/crew-companion/test/hostStandDown.test.js`,
 `website/src/desktopWindow/desktopWindow.test.tsx`,
 `website/src/test/AppHostCoverage.test.tsx`.
 
