@@ -10,6 +10,9 @@ through a browser that may be the person's logged-in Chrome, one hop past the
 gate. DNS rebinding (a public name resolving to a private address) is the one
 residual neither check can see without resolving names, and stays documented.
 
+Both callers then hold the host :func:`browser_host` reads to the governance
+``network.egress`` rule (``browser_harness.governance.egress_rule``).
+
 Imports nothing from the dashboard or ``mcp_core``, so the shim can import it
 without pulling the gateway in; the gateway's own port is a parameter.
 """
@@ -46,6 +49,44 @@ def _percent_decoded_host(host: str) -> str | None:
     return decoded
 
 
+def browser_host(url: str) -> str | None:
+    """The host the browser would open for *url*, lowercased; None when it is refused.
+
+    Refused: a backslash, a space or any control char anywhere in the URL (the
+    parser differential :func:`target_is_public` describes), a scheme other than
+    http(s), and a percent-encoded host the browser would reject once decoded. A
+    percent-encoded host is otherwise decoded as the browser decodes it. ``""``
+    is a URL with no host. An ASCII IP literal in any spelling the browser reads
+    (``0x01010101``, ``01.01.01.01``, ``16843009``, ``1.65793``,
+    ``[::ffff:1.1.1.1]``) comes back canonical, through the same
+    ``security.canonicalize_ip`` the address check uses, so a rule naming
+    ``1.1.1.1`` sees the address the browser will dial. The governance
+    ``network.egress`` check judges this host, so the rule and this gate never
+    read a URL two ways.
+    """
+    raw = url.strip()
+    if "\\" in raw or " " in raw or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw):
+        return None
+    parts = urlsplit(raw)
+    if parts.scheme.lower() not in ("http", "https"):
+        return None
+    host = parts.hostname or ""
+    if "%" in host and ":" not in host:  # bracketed IPv6 keeps its own path
+        decoded = _percent_decoded_host(host)
+        if decoded is None:
+            return None
+        host = decoded
+    host = host.lower().rstrip(".")
+    if not host.isascii():
+        # Left as written: :func:`target_is_public` refuses a non-ASCII host, and
+        # folding fullwidth digits into an address here would hide that.
+        return host
+    try:
+        return str(ipaddress.ip_address(canonicalize_ip(host)))
+    except ValueError:
+        return host
+
+
 def target_is_public(url: str) -> bool:
     """True iff ``url`` is an ordinary public http(s) page.
 
@@ -67,25 +108,15 @@ def target_is_public(url: str) -> bool:
     A percent-encoded host (``%31%32%37.0.0.1``, ``loc%61lhost``) is decoded
     first, as the browser does, so every check below sees the browser's host.
     """
-    raw = url.strip()
-    # Parser-differential SSRF: reject backslash (Chromium treats it as '/'),
-    # and any control/whitespace char (tab/CR/LF and the rest), which browsers
+    # Parser-differential SSRF, refused in :func:`browser_host`: reject backslash
+    # (Chromium treats it as '/'), and any control/whitespace char (tab/CR/LF and the rest), which browsers
     # strip or normalize but urlsplit does not -- e.g.
     # ``http://169.254.169.254\@example.com/`` parses to host ``example.com``
     # here yet Chromium navigates to the metadata endpoint. A legitimate URL
     # needs none of these (percent-encode instead), so refuse rather than parse.
-    if "\\" in raw or " " in raw or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw):
+    host = browser_host(url)
+    if host is None:
         return False
-    parts = urlsplit(raw)
-    if parts.scheme.lower() not in ("http", "https"):
-        return False
-    host = parts.hostname or ""
-    if "%" in host and ":" not in host:  # bracketed IPv6 keeps its own path
-        decoded = _percent_decoded_host(host)
-        if decoded is None:
-            return False
-        host = decoded
-    host = host.lower().rstrip(".")
     if not host or host in _LOOPBACK_HOST_NAMES or host.endswith(".localhost"):
         return False
     # Reject non-ASCII hosts: a fullwidth-digit / IDN form the browser may
@@ -151,4 +182,4 @@ def url_allowed(url: Any, allowed_local: frozenset[str], gateway_port: int | Non
     return target_is_public(url) or target_is_allowed_local(url, allowed_local, gateway_port)
 
 
-__all__ = ["target_is_allowed_local", "target_is_public", "url_allowed"]
+__all__ = ["browser_host", "target_is_allowed_local", "target_is_public", "url_allowed"]

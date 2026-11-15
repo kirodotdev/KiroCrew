@@ -31,7 +31,7 @@ from aiohttp import web
 from kiro_crew.browser_harness import quick_ask as qa
 from kiro_crew.browser_harness import vault_fill
 from kiro_crew.browser_harness.budgets import ASK_WAIT_S
-from kiro_crew.browser_harness.governance import DENIED_CODE
+from kiro_crew.browser_harness.governance import DASHBOARD_SURFACE_KEY, DENIED_CODE
 from kiro_crew.browser_harness.live_hub import LiveHub, get_live_hub
 from kiro_crew.browser_harness.takeover import USER
 from kiro_crew.dashboard.handlers._shared import (
@@ -108,8 +108,15 @@ def _refused(code: str) -> dict[str, Any]:
     return {"ok": True, "outcome": qa.REFUSED, "code": code}
 
 
-async def run_ask(hub: LiveHub, key: str, args: dict[str, Any]) -> dict[str, Any]:
-    """The ``ask`` op's result: ``{ok, ask_id, expires_at}``, or ``{ok, outcome: refused, code}``."""
+async def run_ask(
+    hub: LiveHub, key: str, args: dict[str, Any], *, caller_key: str = DASHBOARD_SURFACE_KEY
+) -> dict[str, Any]:
+    """The ``ask`` op's result: ``{ok, ask_id, expires_at}``, or ``{ok, outcome: refused, code}``.
+
+    Every frame the ask may bind to is judged against *caller_key*'s governance
+    ``network.egress`` rule, the runtime session key the op route vetted.
+    """
+    from kiro_crew.browser_harness.governance import egress_judge_async
     from kiro_crew.dashboard.handlers.browser_ops import committed_url_allowed
 
     try:
@@ -126,13 +133,14 @@ async def run_ask(hub: LiveHub, key: str, args: dict[str, Any]) -> dict[str, Any
         # No live card to answer on: the ask would wait ten minutes for nothing.
         return _refused("no_live_view")
     probe = qa.PageProbe(stream.relay, stream.session_id)
+    egress = await egress_judge_async(caller_key)
     try:
         ask = await qa.bind_ask(
             probe,
             spec,
             float(getattr(stream, "scale", 1.0) or 1.0),
             getattr(stream, "frames", None),
-            url_allowed=committed_url_allowed,
+            url_allowed=lambda url: committed_url_allowed(url, egress),
         )
     except qa.AskError as exc:
         _audit("browser_ask", "refused", exc.code)

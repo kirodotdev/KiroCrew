@@ -60,6 +60,7 @@ _ALLOWLIST: dict[str, tuple[str, tuple[str, ...]]] = {
     "js_isolated": ("_local_js_isolated", ("expression",)),
     "frame_owner_count": ("_local_frame_owner_count", ()),
     "closed_secret_count": ("_local_closed_secret_count", ()),
+    "focus_chain": ("_local_focus_chain", ()),
     "page_clock": ("_local_page_clock", ("state",)),
 }
 
@@ -249,6 +250,76 @@ def _local_js_isolated(helpers: Any, expression: str) -> Any:
     return (out.get("result") or {}).get("value")
 
 
+#: How many nested frames the focus guard follows before it calls the chain unread.
+_FOCUS_DEPTH_CAP = 16
+
+
+def _local_focus_chain(helpers: Any) -> dict[str, Any]:
+    """``{chain, complete}``: the committed URL of every frame holding focus, top down.
+
+    Each document is asked, in an isolated world page script cannot patch, which
+    element holds its focus; ``DOM.describeNode`` says whether that element owns
+    a frame, and that frame's document is asked next. ``chain`` is ``[]`` when
+    the top document holds focus. ``complete`` is False when a frame on the way
+    could not be asked (one another process runs, one mid-navigation): the chain
+    holds the frames read up to it. Raises when the tab's frame tree is unread.
+    """
+    tree = helpers.cdp("Page.getFrameTree")
+    root = tree.get("frameTree") if isinstance(tree, dict) else None
+    urls: dict[str, str] = {}
+    pending: list[Any] = [root]
+    while pending:
+        node = pending.pop()
+        if not isinstance(node, dict):
+            raise RuntimeError("focus_chain: malformed frame tree")
+        frame = node.get("frame") or {}
+        if isinstance(frame.get("id"), str):
+            urls[frame["id"]] = str(frame.get("url") or "")
+        pending.extend(node.get("childFrames") or [])
+    current = str(((root or {}).get("frame") or {}).get("id") or "")
+    if not current:
+        raise RuntimeError("focus_chain: the tab has no top frame")
+    chain: list[str] = []
+    for _ in range(_FOCUS_DEPTH_CAP):
+        try:
+            child = _focused_child_frame(helpers, current)
+        except Exception:  # noqa: BLE001 - this frame cannot be asked: the chain stops unread
+            return {"chain": chain, "complete": False}
+        if not child:
+            return {"chain": chain, "complete": True}
+        if child not in urls:
+            return {"chain": chain, "complete": False}
+        chain.append(urls[child])
+        current = child
+    return {"chain": chain, "complete": False}
+
+
+def _focused_child_frame(helpers: Any, frame_id: str) -> str:
+    """The id of the frame whose owner holds *frame_id*'s focus; "" when none does."""
+    made = helpers.cdp(
+        "Page.createIsolatedWorld",
+        frameId=frame_id,
+        worldName=_GUARD_WORLD,
+        grantUniveralAccess=False,
+    )
+    context_id = made.get("executionContextId")
+    if not isinstance(context_id, int) or isinstance(context_id, bool):
+        raise RuntimeError("focus_chain: no isolated world was created")
+    found = helpers.cdp(
+        "Runtime.evaluate", expression="document.activeElement", contextId=context_id
+    )
+    if found.get("exceptionDetails"):
+        raise RuntimeError("focus_chain: the focus read threw")
+    obj = (found.get("result") or {}).get("objectId")
+    if not obj:
+        return ""
+    try:
+        desc = helpers.cdp("DOM.describeNode", objectId=obj)
+    finally:
+        helpers.cdp("Runtime.releaseObject", objectId=obj)
+    return str((desc.get("node") or {}).get("frameId") or "")
+
+
 def _pierced_document(helpers: Any, who: str) -> dict[str, Any]:
     """The tab's whole DOM as the browser sees it (``DOM.getDocument`` with ``pierce``).
 
@@ -381,6 +452,7 @@ _LOCAL: dict[str, Callable[..., Any]] = {
     "_local_js_isolated": _local_js_isolated,
     "_local_frame_owner_count": _local_frame_owner_count,
     "_local_closed_secret_count": _local_closed_secret_count,
+    "_local_focus_chain": _local_focus_chain,
 }
 
 

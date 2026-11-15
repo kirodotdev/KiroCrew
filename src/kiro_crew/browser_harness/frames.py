@@ -33,7 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -359,7 +359,9 @@ class FrameOps:
             nodes.append(n)
         return tag, url, nodes
 
-    async def focused(self) -> dict[str, Any] | None:
+    async def focused(
+        self, url_allowed: Callable[[str], bool] = lambda _url: True
+    ) -> dict[str, Any] | None:
         """The focused field inside the child frame that holds focus, or ``None``.
 
         WHICH frame holds focus is read from the browser, not from any frame's
@@ -367,40 +369,50 @@ class FrameOps:
         script cannot patch it there), then ``DOM.describeNode`` for its frame id.
         Only that frame is asked what its field is; ``None`` when it is not one
         we read (a child session, or a same-process frame :meth:`adopt` took).
+        A frame whose committed URL *url_allowed* refuses is not read: the answer
+        is ``{"refused_url": url}``.
         """
         try:
-            tree = await self._send("Page.getFrameTree", {}, self.top)
-            top_id = str(((tree.get("frameTree") or {}).get("frame") or {}).get("id") or "")
-            made = await self._send(
-                "Page.createIsolatedWorld",
-                {"frameId": top_id, "worldName": "kirocrew_frames", "grantUniveralAccess": False},
-                self.top,
-            )
-            found = await self._send(
-                "Runtime.evaluate",
-                {
-                    "expression": "document.activeElement",
-                    "contextId": made.get("executionContextId"),
-                },
-                self.top,
-            )
-            obj = (found.get("result") or {}).get("objectId")
-            if not obj:
-                return None
-            try:
-                desc = await self._send("DOM.describeNode", {"objectId": obj}, self.top)
-            finally:
-                await self._send("Runtime.releaseObject", {"objectId": obj}, self.top)
-            frame_id = str((desc.get("node") or {}).get("frameId") or "")
+            frame_id = await self._focus_frame()
             where = await self.where(frame_id) if frame_id else None
             if where is None:
                 return None
+            url = await self.frame_url(frame_id, where)
+            if not url_allowed(url):
+                return {"refused_url": url}
             active = await self._walker(where, "activeField")
         except Exception:  # noqa: BLE001 - unreadable: the caller fails closed
             return None
         if not isinstance(active, dict) or not active.get("focused") or active.get("frame"):
             return None  # nothing focused there, or deeper than we read
         return active
+
+    async def _focus_frame(self) -> str:
+        """The id of the child frame whose element holds the top document's focus,
+        or "" when focus is in the top document. Raises what the reads raise."""
+        tree = await self._send("Page.getFrameTree", {}, self.top)
+        top_id = str(((tree.get("frameTree") or {}).get("frame") or {}).get("id") or "")
+        made = await self._send(
+            "Page.createIsolatedWorld",
+            {"frameId": top_id, "worldName": "kirocrew_frames", "grantUniveralAccess": False},
+            self.top,
+        )
+        found = await self._send(
+            "Runtime.evaluate",
+            {
+                "expression": "document.activeElement",
+                "contextId": made.get("executionContextId"),
+            },
+            self.top,
+        )
+        obj = (found.get("result") or {}).get("objectId")
+        if not obj:
+            return ""
+        try:
+            desc = await self._send("DOM.describeNode", {"objectId": obj}, self.top)
+        finally:
+            await self._send("Runtime.releaseObject", {"objectId": obj}, self.top)
+        return str((desc.get("node") or {}).get("frameId") or "")
 
     async def _isolated(self, sid: str) -> int | None:
         """An isolated world on the root frame of child session *sid*, or ``None``."""

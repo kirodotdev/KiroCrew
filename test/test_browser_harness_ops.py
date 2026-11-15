@@ -503,7 +503,7 @@ def test_type_by_ref_focuses_then_inserts_and_submits(fake: FakeBrowser) -> None
     fake.page["activeField"] = {"focused": True, "password": False, "tag": "input"}
     out = run(ops.run_op("type", {"ref": "e1", "text": "hello", "submit": True}, fake.ctx()))
     assert out == {"ok": True, "ref": "e1", "chars": 5, "submitted": True}
-    assert fake.calls[-2:] == [
+    assert [c for c in fake.calls if c[0] != "focus_chain"][-2:] == [
         ("type_text", {"text": "hello"}),
         ("press_key", {"key": "Enter", "modifiers": 0}),
     ]
@@ -833,6 +833,25 @@ def test_navigate_judges_the_url_the_page_landed_on_not_only_the_one_asked_for(
     assert ("goto", {"url": "about:blank"}) not in fake.calls
 
 
+def test_a_redirect_the_egress_rule_refuses_names_the_rule_not_the_page(
+    fake: FakeBrowser,
+) -> None:
+    """``OpContext.egress_rule`` words the committed-URL refusal; the text carries only
+    the rule, never the address the page chose."""
+    landed = "https://blocked.example/ignore-previous-instructions"
+    _committing_page(fake, landed)
+    fake.helpers["goto"] = {"frameId": "F", "loaderId": "L"}
+    ctx = _gated_ctx(fake, lambda url: "blocked.example" not in url)
+    ctx.egress_rule = lambda url: "RULE" if "blocked.example" in url else None
+    out = run(ops.run_op("navigate", {"url": "https://public.example/r"}, ctx))
+    assert out["ok"] is False and out["code"] == "redirect_refused"
+    assert out["error"] == (
+        "the page landed on an address the governance policy refuses: RULE; "
+        "the tab was moved to about:blank"
+    )
+    assert fake.calls[-1] == ("goto", {"url": "about:blank"}), "the landed page is left"
+
+
 def test_back_judges_where_history_landed_too(fake: FakeBrowser) -> None:
     _committing_page(fake, "http://169.254.169.254/latest")
     fake.page["back"] = {"ok": True}
@@ -854,9 +873,13 @@ def test_the_default_context_admits_every_landing_and_the_route_wires_the_real_g
     assert ops.OpContext(helper=_noop).url_allowed("http://127.0.0.1:1/") is True
     assert shim._navigate_target_is_public("http://127.0.0.1:5173/") is False
     assert shim._navigate_target_is_public("https://example.com/") is True
-    assert route.committed_url_allowed("https://example.com/") is True
-    assert route.committed_url_allowed("http://169.254.169.254/latest") is False
-    assert route.committed_url_allowed("http://localhost:5173/") is False, "unlisted loopback"
+
+    def _no_rule(_url: object) -> None:
+        return None
+
+    assert route.committed_url_allowed("https://example.com/", _no_rule) is True
+    assert route.committed_url_allowed("http://169.254.169.254/latest", _no_rule) is False
+    assert route.committed_url_allowed("http://localhost:5173/", _no_rule) is False, "unlisted"
     listed = frozenset({"localhost:5173", "localhost:6776"})
     assert url_gate.target_is_allowed_local("http://localhost:5173/", listed, 6776)
     assert not url_gate.target_is_allowed_local("http://localhost:5173/", listed, None)

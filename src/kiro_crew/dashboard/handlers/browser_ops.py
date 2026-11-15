@@ -89,7 +89,10 @@ from kiro_crew.browser_harness.governance import (
     DENIED_TEXT,
     HOST_KEY,
     BrowsingDenied,
+    EgressJudge,
     browse_denied_async,
+    egress_judge_async,
+    judges_a_rule,
     stop_running_harness,
 )
 from kiro_crew.browser_harness.live_hub import (
@@ -240,12 +243,15 @@ def build_context(
     hub: LiveHub | None = None,
     *,
     caller_key: str | None = None,
+    egress: EgressJudge,
 ) -> harness_ops.OpContext:
     """Bind the gateway's supervisor, relay and live hub to one caller's session.
 
     *caller_key* is the caller's own runtime session key, which governance binds on;
     *session_key* is the card's normalized key. With it, every helper re-asks the
-    ceiling for that caller (:func:`caller_checked_call`).
+    ceiling for that caller (:func:`caller_checked_call`). *egress* judges every
+    committed page against that caller's ``network.egress`` rule, read off the loop
+    (``governance.egress_judge_async``).
     """
     hub = hub if hub is not None else get_live_hub()
     helper = supervisor.call if caller_key is None else caller_checked_call(supervisor, caller_key)
@@ -284,7 +290,9 @@ def build_context(
         screenshot_dir=harness_ops.screenshot_dir(config_dir()),
         staging_dir=config_dir() / IPC_LEAF / "shots",
         sleep=asyncio.sleep,
-        url_allowed=committed_url_allowed,
+        url_allowed=lambda url: committed_url_allowed(url, egress),
+        egress_rule=lambda url: committed_egress_rule(url, egress),
+        egress_rule_set=judges_a_rule(egress),
         loop=_loop,
         mark=_mark,
         record=_record,
@@ -330,14 +338,33 @@ def frame_ops(hub: LiveHub, key: str, *, caller_key: str | None = None) -> Any:
     return FrameOps(relay, stream.session_id, registry, harness_ops.WALKER_SOURCE)
 
 
-def committed_url_allowed(url: str) -> bool:
+def committed_url_allowed(url: str, egress: EgressJudge) -> bool:
     """The navigate gate for the URL a navigation LANDED on, judged in the gateway.
 
     The same predicate the shim applies to the requested URL
     (``browser_harness.url_gate``), with the operator's loopback allowlist read
-    fresh and the gateway's own port refused. Fail-CLOSED: a config read failure
-    admits only public targets, an unknown port admits no local one.
+    fresh and the gateway's own port refused, then the caller's governance
+    ``network.egress`` rule, *egress* (:func:`committed_egress_rule`).
+    Fail-CLOSED: a config read failure admits only public targets, an unknown
+    port admits no local one.
     """
+    return _address_allowed(url) and egress(url) is None
+
+
+def committed_egress_rule(url: str, egress: EgressJudge) -> str | None:
+    """The ``network.egress`` rule part that refuses *url* for the caller, else None.
+
+    None too when the address gate refuses *url* on its own, so the refusal names
+    that cause. *egress* was read once per op, fail-closed, without an audit row
+    like the other per-page legs (``governance.egress_judge``), so this does no IO.
+    """
+    if not _address_allowed(url):
+        return None
+    return egress(url)
+
+
+def _address_allowed(url: str) -> bool:
+    """Public, or a loopback origin the operator listed (never the gateway's port)."""
     try:
         from kiro_crew.config import KiroCrewConfig
 
@@ -502,8 +529,9 @@ async def follow_current_tab(
         logger.debug("browser live: current tab %s belongs to %s, not streamed", target, owner)
         return None
     if url != "about:blank":
+        egress = await egress_judge_async(caller_key or HOST_KEY)
         refused = await harness_ops._refuse_committed_url(
-            build_context(key, supervisor, hub, caller_key=caller_key), url
+            build_context(key, supervisor, hub, caller_key=caller_key, egress=egress), url
         )
         if refused is not None:
             await hub.stop_stream(key)
@@ -589,7 +617,9 @@ async def api_browser_op(request: web.Request) -> web.Response:
                 "error": "browsing is not set up on this host; install it from Settings -> Browser",
             }
         )
-    ctx = build_context(key, supervisor, hub, caller_key=session_key)
+    ctx = build_context(
+        key, supervisor, hub, caller_key=session_key, egress=await egress_judge_async(session_key)
+    )
     # The optional decision-model hooks (``browser.step``), keyed by the caller's own
     # session key -- the identity the gate samples and governance binds on, not the
     # card's slot key. They ask the gate first and run the op exactly as written
@@ -805,7 +835,9 @@ async def _fenced_op(
                 return refused
             from kiro_crew.dashboard.handlers.browser_ask import run_ask
 
-            result = await asyncio.wait_for(run_ask(hub, key, args), timeout=OP_TIMEOUT_S)
+            result = await asyncio.wait_for(
+                run_ask(hub, key, args, caller_key=caller_key), timeout=OP_TIMEOUT_S
+            )
             denied = await _denied_after_op(request, caller_key)
             if denied is not None:
                 return denied

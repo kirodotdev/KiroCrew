@@ -21,7 +21,7 @@ import re
 import threading
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Dict, Mapping, Optional, Tuple
+from typing import Dict, FrozenSet, Mapping, Optional, Tuple
 
 from kiro_crew.constants import ENV_TRUTHY
 from kiro_crew.platform.context import PlatformCompositionError
@@ -751,6 +751,11 @@ class GovernanceCeiling:
     # Set per composition, never carried over: a refresh with no lower tier is False.
     # Read by ``redaction_switch.owner_may_disable``.
     lower_tier_folded: bool = False
+    # The scopes whose control an LTS build's baseline supplied because no tier's
+    # document named them (``tiers._with_baseline_controls``), so a reader can tell
+    # a policy's rule from the baseline's once both sit in ``controls``. Empty on
+    # every other ceiling. Read through ``evaluator.policy_names_scope``.
+    baseline_scopes: FrozenSet[str] = frozenset()
 
     def get(self, scope: str) -> Optional[object]:
         return self.controls.get(scope)

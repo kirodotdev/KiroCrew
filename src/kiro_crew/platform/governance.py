@@ -1339,6 +1339,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _every_operation_names_a_path,
         _policy_level,
         _query_level,
+        policy_names_scope,
         resolve,
         resolve_ordinal,
         resolve_pinned_commands,
