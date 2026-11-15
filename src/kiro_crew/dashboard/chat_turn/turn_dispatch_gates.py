@@ -286,7 +286,6 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     _trusted_prompt_tail = turn._trusted_prompt_tail
     _turn_msg_boundary = turn._turn_msg_boundary
     _turn_provenance_restored = turn._turn_provenance_restored
-    _turn_t0 = turn._turn_t0
     _user_msg_for_mirror = turn._user_msg_for_mirror
     _user_prepend_offset = turn._user_prepend_offset
     _user_span = turn._user_span
@@ -667,15 +666,16 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     turn._turn_refusal = _turn_refusal
 
     # ── Per-turn stats (elapsed / credits) ──
-    # Wall-clock start of the turn. kiro (acp) leaves TurnUsage.duration_ms
-    # at 0, so elapsed is measured here; claude_code's API-reported
+    # The turn's wall clock keeps the start ``_turn_open`` set when the message
+    # reached the runner: it must not restart here, after the session claim and
+    # the prompt build, or the footer leaves out a cold start's engine and MCP
+    # start the person sat through. kiro (acp) leaves TurnUsage.duration_ms
+    # at 0, so elapsed is measured from that start; claude_code's API-reported
     # duration_ms is preferred when present. Captured at EVENT_COMPLETE and
     # attached to the final assistant message via _attach_turn_stats so the
     # dashboard shows the same end-of-turn stats kiro-cli prints natively.
     # _turn_msg_boundary scopes the attach to THIS turn's messages so an
     # error-only turn can't overwrite the previous turn's stats.
-    _turn_t0 = time.monotonic()
-    turn._turn_t0 = _turn_t0
     _turn_elapsed_ms = 0
     turn._turn_elapsed_ms = _turn_elapsed_ms
     _turn_credits = 0.0

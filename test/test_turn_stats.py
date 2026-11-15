@@ -353,6 +353,48 @@ async def test_steer_cut_of_a_withheld_first_chunk_still_records_ttft(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_elapsed_counts_the_wait_before_the_prompt_goes_out(tmp_path, monkeypatch):
+    """A cold start claims its session and builds the prompt before dispatch. The
+    person waits through that too, so the footer's elapsed must include it, not
+    restart its clock once the prompt is about to go out."""
+    from test_dashboard_chat import TestRunChatTransientRetry as _Suite
+
+    from kiro_crew.acp.types import TurnUsage
+    from kiro_crew.dashboard import chat_runner
+    from kiro_crew.dashboard.chat import _run_chat
+    from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+    state = _Suite._make_state(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("s1")
+    slot._titled = True
+    real_build = chat_runner._turn_build_prompt
+
+    async def _slow_build(turn):
+        # Stands in for a session claim / prompt build the person sits through:
+        # move the turn's start 0.3 s back instead of sleeping, so a clock that
+        # restarts at dispatch drops it and one that keeps its start counts it.
+        turn._turn_t0 -= 0.3
+        return await real_build(turn)
+
+    monkeypatch.setattr(chat_runner, "_turn_build_prompt", _slow_build)
+
+    async def _stream(msg):
+        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="done. ")
+        # duration_ms=0, as kiro (acp) reports it: the footer uses the wall clock.
+        yield LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(duration_ms=0, credits=0.5))
+
+    _Suite._wire_sessions(state, _Suite._client(_stream))
+    await _run_chat(state, slot, "hi")
+    await _Suite._drain_bg(state)
+
+    stats = [
+        m["meta"]["turn_stats"] for m in slot.messages if (m.get("meta") or {}).get("turn_stats")
+    ]
+    assert stats, "the turn attached no stats"
+    assert stats[-1]["elapsed_ms"] >= 300
+
+
+@pytest.mark.asyncio
 async def test_recovery_turn_without_a_carried_clock_stores_no_ttft(tmp_path, monkeypatch):
     """A recovery that re-sends the ORIGINAL payload must not time from its own
     dispatch: the user message it answers belongs to an earlier turn."""
