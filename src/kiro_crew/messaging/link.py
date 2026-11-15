@@ -415,7 +415,8 @@ class ParsedSessionKey:
 
     ``{surface}:{agent}:{chat_type}:{scope…}[:genN]`` — the first segment is
     the surface and is the routing authority (``ChannelTurn.channel_type``
-    MUST equal it; the contract tests pin this). ``scope`` is one or more
+    MUST equal it; the contract tests pin that a built DM key parses back to its
+    channel type). ``scope`` is one or more
     segments carrying the transport's own topology; ``gen`` is the rotating
     generation (0 = bare bucket, no suffix).
     """

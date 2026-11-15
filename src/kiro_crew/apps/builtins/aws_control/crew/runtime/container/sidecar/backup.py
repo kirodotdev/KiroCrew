@@ -43,8 +43,9 @@ That rests on the backend publishing both files the way it publishes a transcrip
 temporary file and a rename, which leaves an open descriptor addressing the whole
 previous version. It does: ``session_map.json`` and ``open_slots.json`` are both written
 through an atomic replace. A writer that truncated one in place instead would take the
-snapshot property away without changing anything here, so it is pinned by a test rather
-than left as an assumption.
+snapshot property away without changing anything here. No test checks the backend's
+rename; ``test_sidecar_durability_gaps.py`` checks only this side's half, that the
+authority files are opened before the transcripts are listed.
 
 The authority phase is SKIPPED when the transcript phase suffered a refusal a LATER
 CYCLE COULD GET PAST -- a failed upload, an object the drain window could not fit, a

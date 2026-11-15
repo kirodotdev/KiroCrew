@@ -58,7 +58,8 @@ class ChannelDescriptor:
     member id, ``MessagingTransport.channel_type``, the session-key surface
     segment (except a ``dm_scope="unified"`` direct-DM key, which starts with
     ``unified``), the config section name, and the dashboard badge prefix. The
-    contract tests pin that these never diverge.
+    contract tests pin the transport ``channel_type`` and the session-key surface
+    together; the badge prefix is not pinned.
     """
 
     channel_type: str

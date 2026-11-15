@@ -772,7 +772,7 @@ class _MarkerMatcher:
 
     @property
     def pattern(self) -> str:
-        """The candidate pattern's source, for the tests that pin its shape."""
+        """The candidate pattern's source."""
         return self._pattern.pattern
 
     def finditer(self, text: str) -> Iterator[re.Match[str]]:
