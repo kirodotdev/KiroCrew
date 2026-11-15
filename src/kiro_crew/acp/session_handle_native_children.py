@@ -313,6 +313,17 @@ def _roster_event(self: AcpSessionHandle) -> list[AcpEvent]:
     ]
 
 
+def _native_child_roster(self: AcpSessionHandle) -> list[AcpEvent]:
+    """The roster of this session's announced children, or none while it has none.
+
+    What ``raw_sdk_tasks.pending_events`` lists ahead of a Workflow run's agents, so
+    that roster names every child and none of them reads as gone. Unlike
+    :func:`_roster_event` it marks nothing: a Workflow beat is no frame of the wave.
+    """
+    rows = [dict(row) for row in self._announced_subagent_roster.values()]
+    return [AcpEvent(kind=EVENT_SUBAGENT_LIST, subagents=rows)] if rows else []
+
+
 def _handle_announced_subagent(
     self: AcpSessionHandle, update: dict, frame_sid: str
 ) -> list[AcpEvent]:
@@ -516,7 +527,12 @@ def native_child_resume_refusal(self: NativeChildIds, conversation_id: str) -> s
     :data:`NATIVE_CHILD_NOT_RESUMABLE`) so a caller can act on it rather
     than on the generic ``conversation_gone`` a lookup miss would produce.
     """
-    if conversation_id not in self._native_child_sids:
+    # Imported here: ``raw_sdk_tasks`` imports this module's roster cap.
+    from kiro_crew.acp.raw_sdk_tasks import workflow_card_ids
+
+    if conversation_id not in self._native_child_sids and conversation_id.removeprefix(
+        "native:"
+    ) not in workflow_card_ids(self):
         return None
     return native_child_refusal(conversation_id, self._session_id)
 
@@ -542,7 +558,10 @@ def report_native_children(self: AcpSessionHandle, budget: Any) -> int:
     typed on ``report_uncharged(kind, count)`` so the daemon's budget and
     a gateway-side health mirror take the same call.
     """
-    count = len(self._native_child_sids) + self._native_child_overflow
+    # Imported here, as in ``native_child_resume_refusal``.
+    from kiro_crew.acp.raw_sdk_tasks import live_card_ids
+
+    count = len(self._native_child_sids) + self._native_child_overflow + len(live_card_ids(self))
     report = getattr(budget, "report_uncharged", None)
     if callable(report):
         report(NATIVE_CHILDREN_UNCHARGED_KIND, count, label=self._session_id)

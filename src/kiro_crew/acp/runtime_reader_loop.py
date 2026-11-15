@@ -15,7 +15,7 @@ Instance fields read: ``_acp_backend``, ``_announced_children``, ``_announced_ov
 ``_fold_mcp_frame``, ``_kas_host_auth``, ``_launch_cwd_roots``,
 ``_map_launch_cwd_paths``, ``_max_answer_tasks``,
 ``_mcp_secret_server``, ``_native_skill_projection``, ``_process``,
-``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``,
+``_session_harness_states``, ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``,
 ``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
 ``_turn_active_sessions``, ``mcp_connect_progress``, ``recording_allowed``.
 """
@@ -297,6 +297,15 @@ async def _reader_loop(self: AcpRuntime) -> None:
         _announces_children = "subagents" in self._harness.client_capabilities
     except ValueError:
         _announces_children = False
+    # The host's reader of its own session frames, resolved once with the
+    # declaration above; a backend with no runtime harness reads none.
+    try:
+        _take_session_frame = self._harness.take_session_frame
+    except ValueError:
+        _take_session_frame = None
+    # The live map, never a copy: sessions register after the reader starts.
+    # Read with getattr: a runtime built without __init__ has none.
+    _harness_states: dict[str, Any] = getattr(self, "_session_harness_states", {})
 
     try:
         while True:
@@ -589,6 +598,13 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 # session. Route to it if registered; otherwise DROP it.
                 # Broadcasting a known-but-unregistered session's frame to
                 # every other session would be cross-talk.
+                if (
+                    _take_session_frame is not None
+                    and _take_session_frame(_harness_states.get(session_id), msg) is True
+                ):
+                    # Read into that session's own harness state, as the host
+                    # reads it (``HarnessAdapter.take_session_frame``).
+                    continue
                 _child_frame = (
                     msg.is_method(METHOD_REQUEST_PERMISSION) or msg.method in _session_update
                 )

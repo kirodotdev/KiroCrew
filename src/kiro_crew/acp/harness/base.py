@@ -860,6 +860,17 @@ class HarnessAdapter(LaunchAdapter):
         """Release what :meth:`prepare_session` set up, once the session is over or
         never started. Must not raise."""
 
+    def take_session_frame(self, state: Any, msg: Any) -> bool:
+        """Whether the host reads the notification *msg* of a session into its *state*.
+
+        Read by the runtime's reader for a notification that names a registered
+        session, with what :meth:`prepare_session` returned for it (``None`` when
+        nothing). A frame taken here is put on no queue: no turn, waiting request or
+        idle reader of the session sees it. Every host answers ``False`` unless it
+        reads such frames itself. Must not raise.
+        """
+        return False
+
     def holds_replayed_permission(self, session_id: str) -> bool:
         """Whether a permission request for *session_id* arrived inside a resume hold.
 
