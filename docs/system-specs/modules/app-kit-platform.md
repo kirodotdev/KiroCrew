@@ -1107,10 +1107,12 @@ rebuild ran its server in the main agent while none of its tools were callable, 
 a skill that told the main agent to use them could not keep its promise until a
 restart.
 
-**Migration is finished at boot, not at disable.** `reconcile_enabled_app_resources`
-scrubs the app's entries out of the legacy shared file for every ENABLED app on
-every gateway start. Scrubbing only on deregister meant an already-enabled app
-kept leaking until the user happened to disable it.
+**Migration is finished at boot, not at disable.** The boot reconcile in
+`start_enabled_app_backends` scrubs the app's entries out of the legacy shared file
+for every ENABLED app on every gateway start: through
+`reconcile_enabled_app_resources` for an admitted app, and in the revoke of a denied
+one. Scrubbing only on deregister meant an already-enabled app kept leaking until the
+user happened to disable it.
 
 **The dashboard's whole-config PUT merges rather than replaces, for exactly this
 reason.** `PUT /api/agent/config` persists a whole-file snapshot the client read
@@ -1310,7 +1312,7 @@ calls `_reset_all_sessions`, which drains every active session **and** the warm
 pool, so the next cold start reads the reverted row rather than the revert lying
 dormant. And the only writer that puts the live port back is
 `reconcile_enabled_app_resources`, whose single call site is the gateway boot path
-(`dashboard/server_runtime/app_platform.py`) — the mid-turn rung `_recover_app_agent_binding` is gated
+(`apps/backend_runtime/startup.py::start_enabled_app_backends`) — the mid-turn rung `_recover_app_agent_binding` is gated
 on an UNRESOLVED agent binding, which a reverted port does not produce. So the
 self-heal is a restart, and nothing shorter. Both axes above plus this open cell
 are enumerated in one table by
@@ -1783,12 +1785,24 @@ Full-display window hosts additionally fail closed on their own network result. 
 Registration used to happen ONLY in the enable path, so an app that gained
 agents/skills in a later version never registered them for a user who had already
 enabled it — silently, because a missing resource only logs a warning.
-`reconcile_enabled_app_resources` re-registers every enabled gateway-managed app
-at boot, making on-disk state a function of the current manifests instead of of
+The boot reconcile re-registers every enabled, admitted gateway-managed app at
+boot, making on-disk state a function of the current manifests instead of of
 install history. Idempotent: agent configs are refreshed field-wise (§3), and
 skills/crons/MCP registration overwrite in place.
 
-Writer: `apps/bridges_register.py::reconcile_enabled_app_resources`.
+Boot registers each enabled app ONCE, and only after it is vetted. The one boot
+pass is the executable-resource reconcile in `start_enabled_app_backends`: per
+enabled app it vets governance, admission (non-builtin) and execution, revokes a
+denied app's agents, skills and MCP servers and scrubs its legacy shared MCP
+entries, and calls the per-app
+`reconcile_enabled_app_resources(name)` (prune what a manifest upgrade dropped,
+`register_app`, scrub the legacy shared MCP entries) and `reconcile_app_skills`
+for an admitted one. A denied app is never registered. `start_dashboard` runs no
+earlier unvetted registration pass. Pinned by
+`test_dashboard_server_boot_app_registration.py`.
+
+Writer: `apps/bridges_register.py::reconcile_enabled_app_resources`, called from
+`apps/backend_runtime/startup.py::start_enabled_app_backends`.
 
 Enablement also decides which of an app's **`kirocrew-core` tools are advertised**.
 The four built-in apps reached through that server — Issue Radar, Dev Fleet, Ops
@@ -6870,7 +6884,7 @@ records which module owns which part, so a change lands in its owner.
 | `bridges_skills.py` | `_register_skills`, `_deregister_skills` and the startup `reconcile_app_skills` |
 | `bridges_crons.py` | The app cron manifest (`load_app_cron_defs`), the manifest digest and the resync of a changed job, `register_app_crons_with_service`, deregistration, and the execution-driven disarm and reconcile passes |
 | `bridges_mcp.py` | Registering an app's MCP servers: `resolve_stdio_command` and its interpreter and launch-target rules, the `kirocrew` host-CLI pin, the live backend port rewrite (its launch-target anchor is also what adoption's E10 asks of a pinned tree's stdio server), the unresolvable-command and secret-reference warnings, backendless deps provisioning, `_register_mcp_servers` / `_deregister_mcp_servers`, re-registration and scrub, and the legacy shared `mcp.json` scrub |
-| `bridges_register.py` | `register_app` / `deregister_app` with `RegistrationResult`, `refresh_app_agents` and `refresh_app_agents_if_enabled`, the manifest-upgrade prune, `reconcile_enabled_app_resources`, and dropping the session resume pointers an app's conversations held (`discard_app_session_pointers`) |
+| `bridges_register.py` | `register_app` / `deregister_app` with `RegistrationResult`, `refresh_app_agents` and `refresh_app_agents_if_enabled`, the manifest-upgrade prune, the per-app boot reconcile `reconcile_enabled_app_resources(app_name)`, and dropping the session resume pointers an app's conversations held (`discard_app_session_pointers`) |
 
 Imports only point down, in the facade's `_OWNERS` order: sources, mcp_config, agents,
 skills, crons, mcp, register. No owner imports the facade; owners import the app manager

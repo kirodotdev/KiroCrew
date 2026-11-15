@@ -246,7 +246,6 @@ from kiro_crew.dashboard.server_runtime.app_platform import (  # noqa: F401
     _kick_builtin_adoption_staging,
     _kick_default_app_installs,
     _kick_interrupted_update_sweep,
-    _reconcile_app_resources,
     _start_app_backends,
     _warm_builtin_app_names,
     _warm_materialized_agents,
@@ -964,11 +963,11 @@ async def start_dashboard(
     # dirs, which must not block the event loop during startup.
     await asyncio.get_running_loop().run_in_executor(subprocess_executor(), register_builtin_apps)
 
-    # Warm the gate's builtin app names and the materialized-agent snapshot, then
-    # reconcile every enabled app's resources; each runs its I/O on the executor.
+    # Warm the gate's builtin app names and the materialized-agent snapshot; each
+    # runs its I/O on the executor. Enabled apps' resources are reconciled once,
+    # after each app's vet, by ``start_enabled_app_backends`` below.
     await _warm_builtin_app_names()
     await _warm_materialized_agents()
-    await _reconcile_app_resources()
 
     # One-time migration: disable stale deploy_web builtin installs (now core module).
     # Idempotent — logs once and silently succeeds if already gone.
