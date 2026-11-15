@@ -11,9 +11,6 @@ import json
 from typing import Any
 
 from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
-from kiro_crew.history import ConversationLog
-from kiro_crew.mcp_core_parts.identity import _resolve_session_key
-from kiro_crew.members import record_activity
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_local_paths
@@ -160,20 +157,6 @@ def _do_select_crew(crew: str) -> str:
             {"crew": crew, "error": _crew_memory_unavailable_reason(exc)},
             ensure_ascii=False,
         )
-    # Logs the routing DECISION (intent) for trigger generation; the run itself
-    # is logged as `via="spawn"` by the sub-agent turn.
-    #
-    # Resolve the memory mode, never default it: this log outlives session
-    # pruning, so logging a no-trace session would defeat its mode. An
-    # unreadable session falls back to "incognito", which skips the entry.
-    # No try/except on the write: record_activity never raises (it returns
-    # False), and this module has no logger.
-    _sk = _resolve_session_key()
-    try:
-        _mode = str(ConversationLog().get_metadata(_sk).get("memory_mode", "") or "")
-    except Exception:
-        _mode = "incognito"
-    record_activity(crew, _sk, _mode, via="select_crew")
     return json.dumps(
         {
             "crew": crew,

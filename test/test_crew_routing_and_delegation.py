@@ -195,7 +195,7 @@ class TestRouteCrew:
 
     @pytest.mark.parametrize("named", [False, True])
     def test_memory_refusal_redacts_before_bounding_and_does_not_record_a_binding(
-        self, crew_config, monkeypatch, named
+        self, crew_config, monkeypatch, named, gateway_posts
     ):
         from unittest.mock import Mock
 
@@ -208,11 +208,11 @@ class TestRouteCrew:
         monkeypatch.setattr(
             mcp_core, "resolve_agent_bindings", Mock(side_effect=UnknownMemoryStore(reason))
         )
-        activity = Mock()
-        monkeypatch.setattr(mcp_core, "record_activity", activity)
+
+        from kiro_crew.mcp_tools import control
 
         out = json.loads(
-            mcp_core._do_select_crew("coding crew")
+            control.select_crew("select_crew", {"crew": "coding crew"})
             if named
             else mcp_core._do_route_crew("fix the bug")
         )
@@ -223,7 +223,7 @@ class TestRouteCrew:
         assert "bound" not in out
         if not named:
             assert out["matches"] == []
-        activity.assert_not_called()
+        assert gateway_posts == []
 
     @pytest.mark.parametrize("named", [False, True])
     def test_unrelated_binding_errors_are_not_silenced(self, crew_config, monkeypatch, named):

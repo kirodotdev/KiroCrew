@@ -41,7 +41,7 @@ def record_activity(
     try/except: every failure path — a name that yields no usable slug, a
     read-only home, a torn write — is handled here and reported ``False``. This
     is best-effort by contract; a logging failure must never break the turn that
-    triggered it, and one call site (``mcp_core``) has no logger of its own.
+    triggered it.
 
     ``memory_mode`` is REQUIRED and positional, not an opt-in keyword: it gates
     whether the session may be recorded at all, and a caller that simply forgot
@@ -131,8 +131,7 @@ def record_activity(
     except Exception as exc:
         # ``already_owned`` is a LOST entry, so warn. The write lease is
         # non-blocking: a second process appending at the same instant
-        # (``kirocrew-core`` is its own subprocess) is refused and nothing is
-        # written. ``crew_log.lease`` says report the loss, do not retry; a
+        # is refused and nothing is written. ``crew_log.lease`` says report the loss, do not retry; a
         # debug line would hide a dropped routing decision.
         if getattr(exc, "code", "") == CODE_ALREADY_OWNED:
             logger.warning(
