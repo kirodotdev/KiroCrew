@@ -23,6 +23,7 @@ import {
 import { useWebPreviewPanelAnnotate } from './useWebPreviewPanelAnnotate'
 import { useFrameNavigationBlock } from './useFrameNavigationBlock'
 import WebPreviewPanelNativeSurface from './WebPreviewPanelNativeSurface'
+import { pollWhileVisible } from '../lib/pollWhileVisible'
 
 import { i18nT } from '../i18n/t'
 
@@ -218,8 +219,8 @@ function useLivenessProbe(url: string, enabled: boolean, resetKey = 0): boolean 
       }
     }
     void probe()
-    const id = setInterval(() => { void probe() }, PROBE_EVERY_MS)
-    return () => { cancelled = true; clearInterval(id) }
+    const stop = pollWhileVisible(() => { void probe() }, PROBE_EVERY_MS)
+    return () => { cancelled = true; stop() }
   }, [url, enabled, resetKey])
   return unreachable
 }
