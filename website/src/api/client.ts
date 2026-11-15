@@ -1484,8 +1484,9 @@ function jfetch(input: string, init?: RequestInit, send: (input: string, init?: 
   const generation = callerGeneration
   const start = () => (init === undefined ? send(input) : send(input, init))
   // A read takes its turn among the reads that are out, so they cannot hold every
-  // connection the browser has to the gateway; a write goes straight out.
-  const request = isRead ? gatedRead(input, init?.signal, start) : start()
+  // connection the browser has to the gateway; a write goes straight out. A read
+  // its caller asks for with fetch's own `priority: 'high'` waits ahead of the rest.
+  const request = isRead ? gatedRead(input, init?.signal, start, init?.priority === 'high') : start()
   return request.then((r) => (isRead ? keepIfRefused(input, r, generation) : r)).catch((error: unknown) => {
     if (!isDeliberateAbort(error)) {
       const report = recordTransportRejection({

@@ -60,6 +60,26 @@ describe('reads to the gateway', () => {
     expect(reads()).toBe(5)
   })
 
+  it('an opened transcript goes out ahead of re-reads asked for before it', async () => {
+    // Four re-reads are out and two more wait, as on a cold open.
+    for (let i = 0; i < 6; i++) void api.crewWorkers(`root-${i}`).catch(() => undefined)
+    void api.chatSlotDetail('chat-1', 100).catch(() => undefined)
+    await settle()
+    // It does not take a fifth place: a send must still find a free connection.
+    expect(reads()).toBe(READ_GATE_WIDTH)
+
+    // Each answer frees one place, and the next read out is the next one below.
+    const next = async (at: number) => {
+      calls[at].answer(json({ workers: [] }))
+      await settle()
+      return calls.at(-1)?.url
+    }
+    expect(await next(0)).toContain('/api/chat/slots/chat-1?')
+    // The re-reads that were already waiting follow, in the order they were asked for.
+    expect(await next(1)).toContain('root-4')
+    expect(await next(2)).toContain('root-5')
+  })
+
   it('worker lists keep their own cap of two inside the four, and nothing is left waiting', async () => {
     resetCrewWorkersPoll()
     const lists = Array.from({ length: 5 }, (_, i) => readCrewWorkers(`root-${i}`))
@@ -105,6 +125,42 @@ describe('gatedRead', () => {
     controller.abort()
     await expect(waiting).rejects.toMatchObject({ name: 'AbortError' })
     expect(started).not.toHaveBeenCalled()
+  })
+
+  it('reads asked for first go out before the others, each kind in its own order', async () => {
+    const finish: Array<() => void> = []
+    for (let i = 0; i < READ_GATE_WIDTH; i++) {
+      void gatedRead('/api/x', null, () => new Promise<Response>(resolve => { finish.push(() => resolve(new Response(null))) }))
+    }
+    const order: string[] = []
+    const read = (name: string, first: boolean) => void gatedRead('/api/x', null, () => { order.push(name); return never() }, first)
+    read('plain-1', false)
+    read('first-1', true)
+    read('plain-2', false)
+    read('first-2', true)
+    expect(order).toEqual([])
+    for (const done of finish) {
+      done()
+      await settle()
+    }
+    expect(order).toEqual(['first-1', 'first-2', 'plain-1', 'plain-2'])
+  })
+
+  it('a read asked for first and aborted while it waits is never sent, and the next one is', async () => {
+    let finish!: () => void
+    for (let i = 0; i < READ_GATE_WIDTH - 1; i++) void gatedRead('/api/x', null, never)
+    void gatedRead('/api/x', null, () => new Promise<Response>(resolve => { finish = () => resolve(new Response(null)) }))
+    const controller = new AbortController()
+    const left = vi.fn(never)
+    const waiting = gatedRead('/api/x', controller.signal, left, true)
+    const next = vi.fn(never)
+    void gatedRead('/api/x', null, next)
+    controller.abort()
+    await expect(waiting).rejects.toMatchObject({ name: 'AbortError' })
+    finish()
+    await settle()
+    expect(left).not.toHaveBeenCalled()
+    expect(next).toHaveBeenCalledTimes(1)
   })
 
   it('counts each origin on its own', () => {

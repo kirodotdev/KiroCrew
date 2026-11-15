@@ -264,8 +264,10 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
         // `before=next_before`; the app-sdk embed does not, so it never sends it.
         const q = new URLSearchParams(query)
         if (q.has('cursor') || q.has('digest')) q.set('page_bytes', '1')
+        // `priority: 'high'`: this is the page a person opening the chat waits
+        // for, so it goes ahead of the reads waiting at the gate (`api/readGate.ts`).
         const r = await fetch(chatSlotDetailPath(slot) + '?' + q, {
-          signal, ...(etag ? { headers: { 'If-None-Match': etag } } : {}),
+          signal, priority: 'high', ...(etag ? { headers: { 'If-None-Match': etag } } : {}),
         })
         if (r.status === 304 && etag) return { page: null, etag }
         const page: ChatSlotDetailResponse = await j(r)

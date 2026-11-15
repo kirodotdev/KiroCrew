@@ -12,15 +12,27 @@
  * out. Writes never wait here. A read holds its place until its answer's body has
  * arrived, because the connection is busy until then.
  *
- * shortcut: every read shares one line, so a read a person asked for (opening a
- * chat) can wait behind re-reads; let a caller mark such a read once one is seen
- * waiting. Counts this document only: a second browser tab on the same gateway
- * has its own count.
+ * A read a person is waiting on is marked by its caller and waits in its own
+ * line, which is served before the other one. One read is marked today: the
+ * newest page of a transcript, asked for when a chat is opened. A cold open
+ * asks for dozens of reads at once, and unmarked that page started only after
+ * every read still waiting when it was asked for.
+ *
+ * shortcut: a marked read is never held back for an unmarked one, so unmarked
+ * reads could wait without end if marked reads kept coming; give unmarked reads
+ * an age limit before many endpoints mark. Marking the session list, the
+ * branding, the theme and the setup check as well showed the transcript sooner
+ * still, but the sidebar then mounts early and is drawn again as each later
+ * read lands (long tasks +207 to +320 ms, the last read 263 to 368 ms later,
+ * measured); cut those redraws before marking them. Counts this document only:
+ * a second browser tab on the same gateway has its own count.
  */
 export const READ_GATE_WIDTH = 4
 
 interface Gate {
   out: number
+  /** Marked reads that are waiting; served before `waiting`, in their own order. */
+  first: Array<() => void>
   waiting: Array<() => void>
 }
 
@@ -40,14 +52,14 @@ function gateFor(input: string): Gate {
   }
   let gate = gates.get(origin)
   if (!gate) {
-    gate = { out: 0, waiting: [] }
+    gate = { out: 0, first: [], waiting: [] }
     gates.set(origin, gate)
   }
   return gate
 }
 
 function release(gate: Gate): void {
-  const next = gate.waiting.shift()
+  const next = gate.first.shift() ?? gate.waiting.shift()
   // The place passes straight to the next read in line, so `out` does not move.
   if (next) next()
   else gate.out -= 1
@@ -68,10 +80,12 @@ async function bodyArrived(response: Response): Promise<void> {
 /**
  * Run *start* (the read) now when fewer than `READ_GATE_WIDTH` reads to its origin
  * are out, otherwise when one of them finishes. A read whose *signal* aborts while
- * it waits rejects with the signal's reason and is never started.
+ * it waits rejects with the signal's reason and is never started. A read asked
+ * for with *first* waits ahead of every read asked for without it.
  */
-export function gatedRead(input: string, signal: AbortSignal | null | undefined, start: () => Promise<Response>): Promise<Response> {
+export function gatedRead(input: string, signal: AbortSignal | null | undefined, start: () => Promise<Response>, first = false): Promise<Response> {
   const gate = gateFor(input)
+  const line = first ? gate.first : gate.waiting
   const run = (): Promise<Response> => {
     let request: Promise<Response>
     try {
@@ -97,11 +111,11 @@ export function gatedRead(input: string, signal: AbortSignal | null | undefined,
       run().then(resolve, reject)
     }
     const leave = () => {
-      const at = gate.waiting.indexOf(turn)
-      if (at >= 0) gate.waiting.splice(at, 1)
+      const at = line.indexOf(turn)
+      if (at >= 0) line.splice(at, 1)
       reject(aborted())
     }
     signal?.addEventListener('abort', leave, { once: true })
-    gate.waiting.push(turn)
+    line.push(turn)
   })
 }
