@@ -905,7 +905,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   // The rows the virtualizer draws (see transcriptRows).
   const { renderedTranscript, renderedDisplayItems } = useTranscriptRows({
-    messages, slotRunning, activeSlot, appToolCallIds, displayItemsRef, scrollerRef,
+    messages, transcriptLoaded: !slotLoading && slotSwitchTarget !== activeSlot, slotRunning, activeSlot, appToolCallIds, displayItemsRef, scrollerRef,
   })
 
   // Pinned prompt: keep the enablement ref in sync (updatePinnedPrompt is declared

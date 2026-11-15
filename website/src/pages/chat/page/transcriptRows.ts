@@ -5,7 +5,7 @@ import { useSlotDeferredValue } from '../../../hooks/useSlotDeferredValue'
 import { mcpAppKey } from '../../../store/chatSlice'
 import type { ChatMessage } from '../../../types'
 import { anchorAltIdFor, stableAnchorIdFor, uniqueRowKeys, virtualKeyFor } from '../ChatPageMessageContent'
-import { applyRunningState, createTurnGrouper, isTurnEnd, opensDisplayTurn } from '../groupDisplayItems'
+import { applyRunningState, createTurnGrouper, isTurnEnd, opensDisplayTurn, opensRunTurn } from '../groupDisplayItems'
 import type { DisplayItem, TurnItem } from '../types'
 import { useBubbleVanishProbe } from '../useBubbleVanishProbe'
 import type { useScrollManager } from '../useScrollManager'
@@ -46,8 +46,35 @@ export function grewOnlyAtTail(
   return true
 }
 
+/**
+ * True when `next` is the first turn of a chat that `shown`, the transcript
+ * the deferral last committed, holds as loaded and empty: the first send and
+ * its reply. Nothing is on screen for those rows to disagree with, and one
+ * turn costs what a row added at the tail costs, so it is drawn while the
+ * deferral's own render of it is still pending.
+ *
+ * `grewOnlyAtTail` cannot say this. Every transcript is "rows added" to an
+ * empty one, so the deferral would keep the empty frame for the whole visit
+ * and nothing in that chat would be deferred again. Here the deferral still
+ * takes the frame, and what it holds moves on with the first rows.
+ *
+ * Not the first turn: an empty transcript that is still loading (what comes
+ * next is its page), and rows that hold a second turn (a page of history).
+ */
+export function isFirstTurnOfEmptyChat(
+  shown: { messages: ChatMessage[]; loaded?: boolean },
+  next: { messages: ChatMessage[] },
+): boolean {
+  const nm = next.messages
+  if (shown.messages.length !== 0 || shown.loaded !== true || nm.length === 0) return false
+  for (let i = 1; i < nm.length; i++) if (opensRunTurn(nm[i])) return false
+  return true
+}
+
 interface TranscriptRowsOptions {
   messages: ChatMessage[]
+  /** False while the active session's transcript is still loading. */
+  transcriptLoaded: boolean
   slotRunning: boolean
   activeSlot: string | null
   /** Tool-call ids with a live MCP App payload in this slot. */
@@ -63,7 +90,7 @@ interface TranscriptRowsOptions {
  * typing responsive while a landed page renders, and the promotion that keeps an
  * MCP App iframe in one stable turn.
  */
-export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCallIds, displayItemsRef, scrollerRef }: TranscriptRowsOptions) {
+export function useTranscriptRows({ messages, transcriptLoaded, slotRunning, activeSlot, appToolCallIds, displayItemsRef, scrollerRef }: TranscriptRowsOptions) {
   // Grouping depends ONLY on `messages`; `slotRunning` decides one boolean on the
   // trailing turn. Bundling both in one memo re-ran the whole O(N) grouping pass on
   // every turn start/stop just to flip that flag, and the new identity cascaded into
@@ -107,8 +134,11 @@ export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCa
   // One deferred frame carries both the rows the virtualizer draws and the
   // messages they came from, so every deferred reader (the transcript, the
   // turn minimap, the Navigation tab) sees the same snapshot by construction.
-  const liveTranscript = useMemo(() => ({ messages, displayItems }), [messages, displayItems])
-  const renderedTranscript = useSlotDeferredValue(activeSlot, liveTranscript, grewOnlyAtTail)
+  // `loaded` rides along so the first turn of an empty chat (a send) is told
+  // apart from the first rows of a chat still loading (its page): the first
+  // turn is drawn at once, see isFirstTurnOfEmptyChat.
+  const liveTranscript = useMemo(() => ({ messages, displayItems, loaded: transcriptLoaded }), [messages, displayItems, transcriptLoaded])
+  const renderedTranscript = useSlotDeferredValue(activeSlot, liveTranscript, grewOnlyAtTail, isFirstTurnOfEmptyChat)
   // MCP App payloads live outside the message list, so promote after the
   // transcript defer: the FIRST render that can draw an iframe must already use
   // the same TurnBlock subtree that later grouping will keep. Short turns are
