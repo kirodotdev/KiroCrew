@@ -24,6 +24,16 @@ contextBridge.exposeInMainWorld("kirocrew", {
   // via webPreferences.additionalArguments). The SPA reserves header space
   // for the injected caption controls only when this is set.
   linuxFrameless: process.argv.includes("--kc-linux-frameless"),
+  // This shell serves the in-app application menu on a frameless Linux window:
+  // `menuItems` and `executeMenu` in window-lifecycle.js answer for that
+  // surface, not Windows alone. The SPA and the shell install separately, so an
+  // older shell can serve a newer SPA; `linuxFrameless` cannot tell them apart,
+  // because a frameless window is what that shell always was. Without this
+  // flag the SPA would mount the trigger there and every popup would open
+  // empty, the old guard returning [] with nothing on screen saying why. A
+  // literal, not a runtime probe: the flag ships in the same bundle as the two
+  // functions it promises, so an older shell omits it by not having this line.
+  linuxAppMenu: true,
   // Absolute filesystem path for a File the OS handed the renderer (drag-drop,
   // file input). Browsers deliberately hide real paths, and Electron removed
   // File.path, so webUtils in the preload is the only remaining bridge. Returns

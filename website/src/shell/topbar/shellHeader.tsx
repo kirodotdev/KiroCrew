@@ -5,7 +5,7 @@ import { metricsSegment, MetricsErrorNotice } from './metricsReadout'
 import { ResourcePostureChip } from './resourcePostureChip'
 import { Bell, Fullscreen, Loader2, Menu, Plug, Unplug } from 'lucide-react'
 import { motion } from 'framer-motion'
-import { isWinElectron } from '../../lib/electron'
+import { isWinElectron, isLinuxFramelessElectron, shellServesLinuxAppMenu } from '../../lib/electron'
 import { setNativeBadgeCount } from '../platform/electronBridge'
 import { SELECTION_INERT_ATTR } from '../../pages/chat/useSelectionInertOverlays'
 import { PackLoaderImage } from '../../pages/chat/PackLoaderImage'
@@ -261,12 +261,32 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
         {!mobileSingle && (
         <div className="tb-left relative h-full">
           <div className="tb-measure">
-          {/* Windows only: the application menu shares this cluster. It needs no
-              width reservation of its own: the identity group is sized by its own
-              grid track, and the menu growing from the hamburger to its six
-              labels therefore consumes the GROUP's width -- which its collapse
-              ladder responds to -- instead of eating the centred search's. */}
-          {!isMobile && isWinElectron && <WindowsTitlebarMenu />}
+          {/* The application menu shares this cluster. Its name reflects the
+              platform it is modelled on, and it serves every frameless surface:
+              Windows, and Linux under a CSD Wayland compositor, which draws no
+              menu bar of its own. A framed window is excluded because its
+              compositor draws that bar itself.
+              It needs no width reservation of its own: the identity group is
+              sized by its own grid track, and the menu growing from the
+              hamburger to its six labels therefore consumes the GROUP's width
+              -- which its collapse ladder responds to -- instead of eating the
+              centred search's.
+              `!isMobile` is deliberate, and this surface stays desktop-only:
+              below MOBILE_BREAKPOINT the trigger is hidden, and the native
+              accelerators Menu.setApplicationMenu installs host every action
+              that carries one. The accelerator-less items in
+              electron/app-menu.js have no host at that width -- the same gap a
+              Windows window has, which hides its native bar outright.
+              The Linux term also asks the SHELL, not just the window:
+              `shellServesLinuxAppMenu` is the installed shell saying its
+              `menuItems` guard admits this surface. The two halves install
+              separately, so an older shell reports `linuxFrameless` while
+              still answering [] -- mounting on the window alone would paint a
+              trigger whose popups open empty. Windows keeps its original
+              single term, having never needed the capability. */}
+          {!isMobile
+            && (isWinElectron || (isLinuxFramelessElectron && shellServesLinuxAppMenu))
+            && <WindowsTitlebarMenu />}
 
           {/* Route-history Back/Forward (#8258). Desktop layout only: on mobile
               the platform owns Back (left-edge swipe), and the drill-in surfaces

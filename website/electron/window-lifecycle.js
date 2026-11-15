@@ -1586,7 +1586,7 @@ function createWindowLifecycle(options) {
   // silently no-ops when clicked. Strict `=== true` matches the fail-closed
   // rule executeMenuItem uses.
   function menuItems(sender, id, senderIsLocal) {
-    if (!IS_WINDOWS || !WINDOWS_TITLEBAR_MENU_IDS.has(id)) return [];
+    if (!(IS_WINDOWS || LINUX_FRAMELESS) || !WINDOWS_TITLEBAR_MENU_IDS.has(id)) return [];
     const menu = appMenu || Menu.getApplicationMenu();
     const item = menu && menu.getMenuItemById(id);
     const win = windowForWebContents(sender);
@@ -1601,7 +1601,7 @@ function createWindowLifecycle(options) {
   // exit says so explicitly.
   function executeMenu(sender, id, index, senderIsLocal) {
     if (
-      !IS_WINDOWS
+      !(IS_WINDOWS || LINUX_FRAMELESS)
       || !WINDOWS_TITLEBAR_MENU_IDS.has(id)
       || !Number.isInteger(index)
     ) return false;
