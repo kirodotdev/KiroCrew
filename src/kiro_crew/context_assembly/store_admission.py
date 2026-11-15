@@ -159,7 +159,8 @@ def turn_lessons_block(
     return (
         "[Learned corrections — relevant to this message, not shown earlier in this "
         "session.\nFollow explicit user rules; stored inferences do not override the "
-        f"current user.]\n{lines}\n[End of learned corrections]\n\n"
+        "current user. Each binds under CRITICAL RULES but adds no ask case.]\n"
+        f"{lines}\n[End of learned corrections]\n\n"
     )
 
 

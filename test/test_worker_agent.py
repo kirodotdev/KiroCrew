@@ -1724,6 +1724,10 @@ def test_both_workers_carry_the_same_coding_rules() -> None:
     rules = crewmate_prompts.text("worker.coding_rules")
     assert "smallest complete change" in rules
     assert "`shortcut: <the limit>, <when to upgrade>`" in rules
+    from kiro_crew.context_assembly.output_contract import ASK_CORE, WORKER_ASK_TAIL
+
+    # Both end with the coding rules, then the shared ask core and worker tail.
+    tail = f"{rules}\n\n{ASK_CORE}{WORKER_ASK_TAIL}"
     assert worker_prompt().startswith(agent._WORKER_SYSTEM_PROMPT.rstrip())
-    assert worker_prompt().rstrip().endswith(rules)
-    assert MATE_WORKER_PROMPT.endswith(rules)
+    assert worker_prompt().endswith(tail)
+    assert MATE_WORKER_PROMPT.endswith(tail)

@@ -24,12 +24,19 @@ import pytest
 
 from kiro_crew import agent
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES, TEAM_LEAD_AGENT_FILENAME
-from kiro_crew.agent_materialization import auto_approve, managed_mcp, service_agents
+from kiro_crew.agent_materialization import (
+    auto_approve,
+    conductor_agents,
+    managed_mcp,
+    service_agents,
+)
 
 #: The lead auto-approves ``session_create`` and not ``session_send``, so the
 #: governed tail closes its charter with the one line that says so.
 _SEED_RULE_TAIL = f"\n{auto_approve.SEED_AFTER_CREATE_RULE}\n"
-_INSTALLED_PROMPT = agent._TEAM_LEAD_SYSTEM_PROMPT + _SEED_RULE_TAIL
+_INSTALLED_PROMPT = (
+    conductor_agents.with_conductor_ask(agent._TEAM_LEAD_SYSTEM_PROMPT) + _SEED_RULE_TAIL
+)
 
 _SKILL = (
     pathlib.Path(__file__).resolve().parents[1]
@@ -272,11 +279,14 @@ class TestTheLeadCanDispatch:
         assert "`team-lead` skill" in prompt
         assert "`goal-conductor`" in prompt
         assert "session_create" in prompt
-        from kiro_crew.agent_parts.spec_prompts import _ASK_ONLY_WHEN_NEEDED_RULE
+        from kiro_crew.context_assembly.output_contract import ASK_CORE, CONDUCTOR_ASK_TAIL
 
-        shared = _ASK_ONLY_WHEN_NEEDED_RULE.splitlines()
+        rule = ASK_CORE + CONDUCTOR_ASK_TAIL
+        shared = rule.splitlines()
         charter = prompt.removesuffix(_SEED_RULE_TAIL)
-        assert len(charter.splitlines()) - len(shared) < 40
+        # The charter body, the shared ask rule's own lines left out, stays at 40 lines.
+        rule_lines = len(rule.rstrip("\n").splitlines())
+        assert len(charter.splitlines()) - rule_lines <= 40
         # Nothing copied from the conductor charter; the one shared rule is named, not copied.
         for line in agent._CONDUCTOR_SYSTEM_PROMPT.splitlines():
             if len(line) > 60 and line not in shared:
@@ -432,11 +442,9 @@ def test_a_failed_research_install_holds_the_ceiling_instead_of_syncing(
 
 def test_both_conductor_charters_carry_the_ask_only_when_needed_rule() -> None:
     """Conductor mode runs on the team lead, a goal on the conductor: both agent prompts
-    (not session context, which ranks below the skill) say when to stop and ask."""
-    from kiro_crew.agent_parts.spec_prompts import _ASK_ONLY_WHEN_NEEDED_RULE
-
-    rule = _ASK_ONLY_WHEN_NEEDED_RULE.strip()
-    assert rule.startswith("**Ask only when you must.**")
-    assert "A milestone report is a statement" in rule
-    for prompt in (agent._CONDUCTOR_SYSTEM_PROMPT, agent._TEAM_LEAD_SYSTEM_PROMPT):
-        assert rule in prompt
+    (not session context, which ranks below the skill) say when to stop and ask. The
+    rule is appended at install, so it is checked on what the installers write."""
+    for charter in (agent._CONDUCTOR_SYSTEM_PROMPT, agent._TEAM_LEAD_SYSTEM_PROMPT):
+        prompt = conductor_agents.with_conductor_ask(charter)
+        assert "**Reroute first; ask only when you must.**" in prompt
+        assert "A report of done work is a statement" in prompt

@@ -7468,8 +7468,8 @@ re-queuing — `dashboard/state_parts/injected_turns.py::should_queue_refusal_re
 prepends `REFUSAL_RECOVERY_PREFIX`, and `queue_insert(0, …)`s it. The existing
 finally-block dequeue loop renders it as an `inject` message (not a user bubble)
 and re-dispatches it on the same session, so the model receives the reason and
-can adapt (an allowed alternative, a different tool) or stop on its own with a
-stated reason. The synthetic prompt is never mirrored to a linked Slack thread
+can adapt (an allowed alternative that does not reach the same effect) or, with
+none left, say what it tried, give the exact step a person would run, and go on. The synthetic prompt is never mirrored to a linked Slack thread
 as user input: the mirror path guards recovery turns out, keyed off `is_synthetic_recovery_item`.
 
 The continuation **leads with remediation guidance** when the refusal classifies:

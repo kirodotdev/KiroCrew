@@ -290,7 +290,8 @@ class TestContextBuilder:
         assert "tool result" in dash
         assert "END YOUR TURN" not in dash
         assert "NON-BLOCKING" not in dash
-        assert "[OPTIONS:]" in dash
+        # Ending with buttons is no cheaper than a card: the nudge does not steer to it.
+        assert "[OPTIONS:] is cheaper" not in dash
         # A card is an interruption, so the nudge must also carry the restraint
         # contract: silence is the default and only a human-only decision that
         # actually blocks the work earns the interruption.

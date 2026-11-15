@@ -983,8 +983,8 @@ class LessonStore:
             directive_room,
             omission_kind=context_omissions.LESSON_RULES,
             header=(
-                "[Learned corrections — user-taught rules from past mistakes.\n"
-                "ALWAYS follow these. They override default behavior.]"
+                "[Learned corrections — retained rules from past mistakes.\n"
+                "Each binds under CRITICAL RULES but adds no ask case.]"
             ),
             footer="[End of learned corrections]",
             omission=(

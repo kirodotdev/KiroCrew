@@ -531,7 +531,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         for text in (prompt, body):
             assert "Round-0 go-ahead" in text
             assert "7-day runaway backstop" in text
-            assert "credentials, spend, deleting or overwriting someone's work" in text
+            assert "Is it one of the ask cases (a)-(e)?" in text
             assert "Park just this item" in text
 
     def test_needs_human_checklist_puts_the_risk_check_before_the_default(
@@ -544,7 +544,9 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
         for text in (prompt, body):
-            assert text.index("Is it credentials, spend") < text.index("Not risky? Pick a default")
+            assert text.index("Is it one of the ask cases") < text.index(
+                "Not risky? Pick a default"
+            )
             assert "Can you pick a default?" not in text
             assert "Can I pick a default?" not in text
 
@@ -556,7 +558,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
         for text in (prompt, body):
-            assert "spend is bounded" in text
+            assert "they are bounded" in text
             assert "two rounds in a row" in text
             assert "goal_concurrency_cap_reached" in text
             assert "concurrency_cap=<N>" in text
@@ -941,6 +943,9 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         assert "Assumptions" in text
         # And a goal that already authorizes execution must not be re-gated.
         assert "Skip the gate when the user already gave one" in text
+        # A turn nobody typed has nobody to give the go-ahead, so it is not gated.
+        assert "[cron notification" in text and "[sent by session" in text
+        assert "Then stop and wait for exactly one go-ahead" not in text
 
     def test_skill_states_the_real_approval_cost(self):
         """The cost note must match the spec, or patrol plans for wrong prompts.

@@ -71,7 +71,7 @@ itself based on current use.
 | Episode model | `ResourcePressureNotifier` in `src/kiro_crew/notifications/resource_pressure.py` | Samples every 30 s (`SAMPLE_INTERVAL_SECS`). An episode runs from the first non-ample probe to the first ample one. Alerts critical at once (re-alert every 30 min, `CRITICAL_REALERT_SECS`), tight after 600 s sustained (`SUSTAINED_TIGHT_SECS`), one recovery note. `unknown` is not a signal. | Talks to the notification bus (the person), not to conductors. |
 | Push to conductor | `_fire(svc, conductor_slot_key, item_id)` in `src/kiro_crew/conductor_wake.py`; boards from `_watched_boards` | `fire_now` on the conductor's work-ledger loop, batched, hourly budget per item. | Only a worker report in `WORK_WAKE_STATUSES` triggers it. |
 | Wake gate | `WorkLedgerProbe.observe` in `src/kiro_crew/probes/work_ledger.py` | Per-conductor dedupe by token and a 12/h budget per entry. A synthetic entry (`_ALL_CLOSED_ENTRY`) already carries the "all closed" wake. | No pressure observation. |
-| Conductor rules | goal-conductor skill, "Rounds are not gated, but spend is bounded" | Concurrency cap and no-progress check. | Nothing on pressure. |
+| Conductor rules | goal-conductor skill, "Rounds are not gated, but they are bounded" | Concurrency cap and no-progress check. | Nothing on pressure. |
 
 The signal exists and already has hysteresis. Three wires are missing: signal
 to a record the conductor can read, signal to a conductor wake, and a rule for
@@ -139,7 +139,7 @@ token `pressure:<episode>:<level>`, charged to a new synthetic entry
 ### 3.4 What the conductor does
 
 A short section in the goal-conductor skill after "Rounds are not gated, but
-spend is bounded", and the same rule in the Bot conductor text (parity with
+they are bounded", and the same rule in the Bot conductor text (parity with
 `test/test_mate_conductor_parity.py`):
 
 - `tight`: start nothing new (`create`, `bind`, `session_create`); let

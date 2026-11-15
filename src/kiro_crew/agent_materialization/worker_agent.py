@@ -31,6 +31,7 @@ from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME as _HEARTBEAT_FILENAM
 from kiro_crew.agent_files import WORKER_AGENT_FILENAME as _WORKER_AGENT_FILENAME
 from kiro_crew.agent_materialization import auto_approve, managed_mcp, skill_resources
 from kiro_crew.agent_spec_format import parse_markdown_spec, volatile_env_keys
+from kiro_crew.context_assembly.output_contract import ASK_CORE, WORKER_ASK_TAIL
 from kiro_crew.platform import safe_context_call
 
 #: The keys the worker spec MIRRORS from the resolved default agent spec, so its
@@ -556,9 +557,12 @@ def _refuse_foreign_worker_spec(path: Path, spec: dict[str, Any] | None) -> None
 
 def worker_prompt() -> str:
     """The kirocrew-worker prompt: its reporting contract, then the coding rules a
-    crewmate's worker carries too (``crewmate_prompts`` ``worker.coding_rules``)."""
+    crewmate's worker carries too (``crewmate_prompts`` ``worker.coding_rules``),
+    then the shared ask core and worker tail (``output_contract``)."""
     rules = crewmate_prompts.text("worker.coding_rules")
-    return f"{agent_mod._WORKER_SYSTEM_PROMPT.rstrip()}\n\n{rules}\n"
+    return (
+        f"{agent_mod._WORKER_SYSTEM_PROMPT.rstrip()}\n\n{rules}\n\n" f"{ASK_CORE}{WORKER_ASK_TAIL}"
+    )
 
 
 def _install_worker_agent() -> None:

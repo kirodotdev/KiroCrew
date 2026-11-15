@@ -246,6 +246,7 @@ def test_critical_rules_require_a_live_read_before_any_status_claim():
         ("kirocrew-mate-worker", "dashboard:f"),
         ("kirocrew-worker", "cron:g"),
         ("kirocrew", "subagent:h"),
+        ("kirocrew-team-lead", "dashboard:i"),
     ],
 )
 def test_shared_base_rules_tell_every_crew_agent_to_ask_only_when_needed(
@@ -254,7 +255,7 @@ def test_shared_base_rules_tell_every_crew_agent_to_ask_only_when_needed(
     """Conductor, worker, Bot and conductor mode all start from the critical-rules block."""
     from kiro_crew import context as ctx_mod
 
-    rule = "Ask a person only when human involvement is truly required."
+    rule = "**Reroute first; ask only when you must.**"
     for variant in ctx_mod._CRITICAL_RULES_VARIANTS:
         assert rule in variant
     monkeypatch.setattr(ctx_mod, "_INCLUDE_CREW_CONTEXT_CACHE", {})

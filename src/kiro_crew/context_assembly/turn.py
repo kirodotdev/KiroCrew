@@ -661,11 +661,11 @@ def interactive_guidance(
                 "\n\n(The ask_question tool shows a dashboard card and BLOCKS until the "
                 "user responds; the answers are its tool result. "
                 "DEFAULT TO SILENCE: use it only when work cannot continue without a "
-                "human-only decision (permission, irreversible/costly action, or an "
-                "uninferable preference). Decide anything you can read, run, search "
+                "human-only decision (one of the ask cases (a)-(e) in CRITICAL "
+                "RULES). Decide anything you can read, run, search "
                 "or infer yourself; never ask to reconfirm an authorized plan or "
                 "merely because a choice exists. Do not end your turn after calling "
-                "unless the result says so. When ending anyway, [OPTIONS:] is cheaper.)"
+                "unless the result says so.)"
             )
             # A follow-up card is distinct from both: it offers concrete NEXT
             # tasks after work is done, optionally handing one to a worktree.
