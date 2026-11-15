@@ -12,6 +12,12 @@
  * holds takes it back synchronously, so the owner's register() that follows
  * finds it free.
  *
+ * An owner that is the shell code of an app (`{ app: true }`, its owner name
+ * being that app's id) hands its reservation over to the host: the host serving
+ * that same app may bind the chords, because they are that app's own. Every
+ * other app is still refused them, and an owner that is not an app (the summon
+ * hotkey) is never handed over, whatever an app is named.
+ *
  * Pure (no Electron); one shared registry per process.
  */
 
@@ -53,10 +59,15 @@ function physicalChord(accelerator, platform = process.platform) {
 function createShortcutReservations({ platform = process.platform } = {}) {
   /** owner -> Set of physical chords. */
   const byOwner = new Map();
+  /** Owners that are an app's own shell code, named by that app's id. */
+  const appOwners = new Set();
   const listeners = new Set();
 
-  /** Replace everything `owner` reserves with `accelerators` (falsy entries skipped). */
-  function reserve(owner, accelerators) {
+  /**
+   * Replace everything `owner` reserves with `accelerators` (falsy entries skipped).
+   * `{ app: true }` marks `owner` as the id of the app this shell code serves.
+   */
+  function reserve(owner, accelerators, { app = false } = {}) {
     const chords = new Set();
     for (const accel of accelerators || []) {
       const chord = physicalChord(accel, platform);
@@ -64,9 +75,12 @@ function createShortcutReservations({ platform = process.platform } = {}) {
     }
     const prev = byOwner.get(owner);
     const same = prev && prev.size === chords.size && [...chords].every((c) => prev.has(c));
+    const handedOver = appOwners.has(owner);
+    if (app) appOwners.add(owner);
+    else appOwners.delete(owner);
     if (chords.size) byOwner.set(owner, chords);
     else byOwner.delete(owner);
-    if (same || (!prev && !chords.size)) return;
+    if ((same && handedOver === Boolean(app)) || (!prev && !chords.size)) return;
     for (const listener of [...listeners]) {
       try {
         listener();
@@ -76,10 +90,19 @@ function createShortcutReservations({ platform = process.platform } = {}) {
     }
   }
 
-  function isReserved(accelerator) {
+  /**
+   * Whether a shell owner keeps `accelerator` from the host. `forApp` names the
+   * app the host would bind it for: a chord only that app's own shell code
+   * reserves is not kept from it.
+   */
+  function isReserved(accelerator, forApp = "") {
     const chord = physicalChord(accelerator, platform);
     if (!chord) return false;
-    for (const chords of byOwner.values()) if (chords.has(chord)) return true;
+    for (const [owner, chords] of byOwner) {
+      if (!chords.has(chord)) continue;
+      if (forApp && owner === forApp && appOwners.has(owner)) continue;
+      return true;
+    }
     return false;
   }
 

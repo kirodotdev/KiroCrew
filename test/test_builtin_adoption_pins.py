@@ -450,6 +450,16 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
             {"app.json credentialMasks": 3, "app.json credentialMasks directory": 8},
         ),
         (
+            {
+                "desktop": {
+                    "shortcuts": [{"id": "a", "platformAccelerators": {"macos": "Cmd+Alt+A"}}],
+                }
+            },
+            {},
+            {"app.json desktop.shortcuts platformAccelerators": 8},
+        ),
+        ({"desktop": {"shortcuts": [{"id": "a", "accelerator": "Cmd+Alt+A"}]}}, {}, {}),
+        (
             {"permissions": {"webhookSource": True}},
             {},
             {"app.json permissions.webhookSource": 7},

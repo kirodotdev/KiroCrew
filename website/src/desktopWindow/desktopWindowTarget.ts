@@ -74,6 +74,32 @@ export interface DesktopWindowBridge {
   listGateways?(): Promise<DesktopGatewayList | null>
   /** Level 2, `gatewayChoice`: load this app's windows from gateway *id* (`"self"`: this computer's). */
   chooseGateway?(id: string): Promise<{ ok: boolean; chosen?: string; showing?: string | null }>
+  /** Level 3: the app's declared shortcuts on this computer, or null when refused. */
+  shortcuts?(): Promise<DesktopShortcutState[] | null>
+  /**
+   * Level 3: rebind a declared shortcut (`""` unbinds it, `null` restores its default).
+   * Answered only right after a press in this window, and a chord other than the
+   * declared default only when it is the one the user pressed there.
+   */
+  setShortcut?(id: string, accelerator: string | null): Promise<{
+    ok: boolean
+    reason?: 'undeclared' | 'refused' | 'not-pressed' | 'in-use' | 'unavailable'
+    shortcuts?: DesktopShortcutState[]
+  }>
+}
+
+/** One declared shortcut as this computer binds it. */
+export interface DesktopShortcutState {
+  id: string
+  window: string
+  /** The manifest's default on this platform. */
+  defaultAccelerator: string
+  /** The chord it is bound to; `""` when the user unbound it. */
+  accelerator: string
+  /** The user changed it here. */
+  custom: boolean
+  /** The chord is held now. */
+  registered: boolean
 }
 
 /** What `listGateways()` answers: no host names, ports or credentials. */
