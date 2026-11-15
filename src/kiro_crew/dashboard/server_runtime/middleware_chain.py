@@ -131,9 +131,10 @@ def _install_dashboard_middlewares(
 
     The order is a security contract: route latency outermost, then the relay-path
     header rule, the client-sent relay-header strip just inside it, the deny-audit
-    boundary outer to every barrier that can refuse, the host canonicalization, the
-    ``Host`` barrier, the header policy, CSRF, token auth, the SEL request audit and
-    the per-slot ownership checkpoint, with the SPA fallback innermost.
+    boundary outer to every barrier that can refuse, the app web origin router, the
+    host canonicalization, the ``Host`` barrier, the header policy, CSRF, token
+    auth, the SEL request audit and the per-slot ownership checkpoint, with the SPA
+    fallback innermost.
     ``_register_workflow_lifecycle`` and ``_register_crewmate_prune_gate`` append
     their gates after it. The barriers are built by the entrypoint from the shared
     factories; the layers only this chain uses are built here.
@@ -217,6 +218,7 @@ def _install_dashboard_middlewares(
                 raise
         return await handler(request)  # type: ignore[operator]
 
+    from kiro_crew.apps.app_web_origin import build_app_web_origin_middleware
     from kiro_crew.dashboard.card_send import (
         card_turn_arrival_middleware,
         card_turn_delegation_middleware,
@@ -252,6 +254,14 @@ def _install_dashboard_middlewares(
         # latency middleware and the two relay-header layers only, which keeps the
         # latency layer's "times the FULL in-gateway handling" contract intact.
         deny_audit_middleware,
+        # Inner to the deny-audit boundary and outer to the host canonicalization
+        # and the ``Host`` barrier: a request for an app web origin
+        # (``<app>.apps.localhost``) is served or refused here and reaches no
+        # dashboard layer, so it is never redirected, never answered by a dashboard
+        # route and never given dashboard credentials (apps/app_web_origin.py).
+        # It runs before token auth's SSM gate, so it is built with the same
+        # holder and refuses a request on the SSM listener by its socket.
+        build_app_web_origin_middleware(ssm_gate),
         host_canonical_redirect,
         host_validation_middleware,
         # Compressed request bodies are refused outright (415): the hardened
