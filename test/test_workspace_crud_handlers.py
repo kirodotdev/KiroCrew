@@ -373,6 +373,77 @@ class TestCreateHandler:
         assert leftovers == [], f"staged copy not cleaned up: {leftovers}"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("tilde_side", ["source", "destination"])
+    async def test_copy_expands_tilde_in_workspace_paths(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tilde_side: str
+    ) -> None:
+        user_home = tmp_path / "owner"
+        crew_home = user_home / "crew"
+        source = crew_home / "workspace"
+        source.mkdir(parents=True)
+        (source / "data.txt").write_text("copied content", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setenv("USERPROFILE", str(user_home))
+        monkeypatch.setenv("KIROCREW_HOME", str(crew_home))
+        source_dir = "~/crew/workspace" if tilde_side == "source" else "workspace"
+        cfg = _cfg(workspaces={"default": WorkspaceConfig(dir=source_dir)})
+        _seed_file(crew_home, cfg)
+        body = {"name": "copied", "copy_from": "default"}
+        if tilde_side == "destination":
+            body["dir"] = "~/crew/copied"
+        with (
+            patch(_LOAD, return_value=cfg),
+            patch(_CFGDIR, return_value=crew_home),
+            patch(_DATAHOME, return_value=crew_home),
+            patch(_SEL),
+        ):
+            resp = await api_workspaces_create(_req(body))
+        assert resp.status == 200
+        assert "warnings" not in json.loads(resp.body)
+        destination = crew_home / ("workspace-copied" if tilde_side == "source" else "copied")
+        assert (destination / "data.txt").read_text(encoding="utf-8") == "copied content"
+        assert not (crew_home / "~").exists()
+        entry = _read_doc(crew_home)["workspaces"]["copied"]
+        assert entry["dir"] == body.get("dir", "workspace-copied")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tilde_side", ["source", "destination"])
+    async def test_copy_refuses_a_tilde_path_outside_the_data_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tilde_side: str
+    ) -> None:
+        user_home = tmp_path / "owner"
+        crew_home = user_home / "crew"
+        source = crew_home / "workspace"
+        source.mkdir(parents=True)
+        outside = user_home / "outside"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("keep", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setenv("USERPROFILE", str(user_home))
+        monkeypatch.setenv("KIROCREW_HOME", str(crew_home))
+        source_dir = "~/outside" if tilde_side == "source" else "workspace"
+        cfg = _cfg(workspaces={"default": WorkspaceConfig(dir=source_dir)})
+        _seed_file(crew_home, cfg)
+        body = {"name": "copied", "copy_from": "default"}
+        if tilde_side == "destination":
+            body["dir"] = "~/outside"
+        with (
+            patch(_LOAD, return_value=cfg),
+            patch(_CFGDIR, return_value=crew_home),
+            patch(_DATAHOME, return_value=crew_home),
+            patch(_SEL),
+        ):
+            resp = await api_workspaces_create(_req(body))
+        assert resp.status == 400
+        error = (
+            "Invalid source directory path" if tilde_side == "source" else "Invalid directory path"
+        )
+        assert json.loads(resp.body)["error"] == error
+        assert "copied" not in _read_doc(crew_home)["workspaces"]
+        assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep"
+        assert not (crew_home / "~").exists()
+
+    @pytest.mark.asyncio
     async def test_copy_from_a_source_with_no_folder_warns_and_still_creates(
         self, tmp_path: Path
     ) -> None:

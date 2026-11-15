@@ -166,15 +166,18 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
                 {"error": f"Directory '{ws_dir}' is already used by another workspace"},
                 status=409,
             )
-        # Recursively copy source workspace data to the new directory
-        src_path = data_home() / cfg.workspaces[copy_from].dir
-        dst_path = data_home() / ws_dir
+        from kiro_crew.config.loader import workspace_dir_from_entry
+
         # Resolved once each; both checks below judge these same objects.
         try:
+            dst_path = await asyncio.to_thread(
+                workspace_dir_from_entry, WorkspaceConfig(dir=ws_dir)
+            )
             dst_resolved = await asyncio.to_thread(dst_path.resolve)
         except (RuntimeError, OSError, ValueError):
             return _invalid_dir(request, "workspace.create", name)
         try:
+            src_path = await asyncio.to_thread(workspace_dir_from_entry, cfg.workspaces[copy_from])
             src_resolved = await asyncio.to_thread(src_path.resolve)
         except (RuntimeError, OSError, ValueError):
             return _invalid_dir(request, "workspace.create", name, "Invalid source directory path")
