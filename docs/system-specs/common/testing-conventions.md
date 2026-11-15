@@ -88,7 +88,9 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
 - **D6. Seed every RNG that feeds an assertion** (`random.Random(SEED)`, or the
   `seeded_rng` fixture, seeded from the node id and printing the seed when the test
   fails), and give a fake PID a number no OS can allocate (`UNALLOCATABLE_PID` /
-  `unallocatable_pids()` in `kiro_crew.testing.ids`).
+  `unallocatable_pids()` in `kiro_crew.testing.ids`). A substring absence check over
+  a payload that carries random ids first replaces each id, matched by its exact
+  shape, with a fixed stand-in: a short fragment turns up inside a random id by chance.
   [Class 1](#1-nondeterministic-input).
 - **D7. No upper bound on a measured duration, rate or sample count, except a lost-run
   bound or a lower bound.** Assert the work, the schedule or the order. A wait's
@@ -4644,6 +4646,21 @@ NOT match a pattern is a coin flip.
 Fix: seed it. `random.Random(_SEED).randbytes(n)` keeps the payload high-entropy,
 which is usually the property under test, while fixing the outcome. Verify the chosen
 seed against the real predicate, and say in a comment that you did.
+
+**A random opaque id is fine until a substring check reads it.** An absence check
+such as `assert fragment not in json.dumps(rows)` also scans every random id in the
+rows, so a short fragment turns up in one by chance. A reveal handle is `rv_` and 22
+random url-safe characters: a four-character half of a credential is inside about one
+handle in 880,000, and that is how
+`test_chat_runner_redact_across_tool_boundary.py` reported a leaked key half that was
+only the handle (`rv_OEV1o4bO0kJp8nQh4TRSFA` holds `Qh4T`). Fix: before the check,
+replace every match of the id's exact shape with a fixed stand-in, as that file's
+`_queued_text` does (`re.sub(r"rv_[A-Za-z0-9_-]{22}", "rv_<handle>", json.dumps(rows))`).
+Everything outside those ids stays checked. Do not shorten the scan to `content` only,
+and do not lengthen the fragment: the half is the scenario. Prove it by pinning the id
+source to a value holding the fragment
+(`monkeypatch.setattr(reveal_store, "new_handle", lambda: handle)`), and assert that
+handle reaches the payload, so the test fails if the id stops being sent.
 
 **The host is an input too, and a PID is the one that catches people.** `999999` is
 not an impossible PID: Linux `pid_max` is 4194304, so on a long-running host it names

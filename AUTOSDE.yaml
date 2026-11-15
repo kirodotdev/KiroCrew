@@ -446,7 +446,11 @@ custom-rules:
          comparison. `gather`'s return list is in argument order; do not flag
          it.
       8. (D6) `os.urandom` or the module-level `random.*` feeding an assertion,
-         instead of `random.Random(SEED)`.
+         instead of `random.Random(SEED)`. Also a `not in` check of a short
+         fragment (under about 12 characters) over a serialized payload that
+         carries random ids (a reveal handle, a uuid, a `token_urlsafe` value)
+         without first replacing each id, matched by its exact shape, with a
+         fixed stand-in: the fragment turns up inside an id by chance.
       9. (D9) A literal TCP port passed to a real bind or listen, or a
          bind-close-return port handed to a listener that could bind port 0 and
          report the port it got. A port number used only as data (a config
