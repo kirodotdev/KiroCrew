@@ -575,7 +575,14 @@ class TestSelfModuleIndexIsLinear:
         (0.507s against a scan that costs about 0.08s of CPU under coverage). The
         budget holds the minimum of a fixed five readings: one collection or
         frequency dip charged to the thread can inflate a reading, but not all five.
+        The readings are taken with this thread's trace function removed. The
+        full-suite shards run under coverage, and its line tracer multiplies the
+        scan's CPU about fivefold, steadily, so every traced reading of the linear
+        scan is 0.6-0.7s on the Linux runners and no minimum helps.
+        Untraced, the linear scan reads about 0.03s and a quadratic one
+        still about 1s.
         """
+        import sys
         import time
 
         from kiro_crew import security
@@ -596,7 +603,14 @@ class TestSelfModuleIndexIsLinear:
             assert security._is_self_restart(text) is True
             return time.thread_time() - start
 
-        large = min(reading() for _ in range(5))
+        # Only these readings run untraced; coverage still records the scan from
+        # the instrumented calls below, which take the same path.
+        tracer = sys.gettrace()
+        sys.settrace(None)
+        try:
+            large = min(reading() for _ in range(5))
+        finally:
+            sys.settrace(tracer)
         # Base spent 1.94 s here; a quadratic scan cannot come near this ceiling.
         assert large < 0.5, f"2k tokens took {large:.3f}s"
 
