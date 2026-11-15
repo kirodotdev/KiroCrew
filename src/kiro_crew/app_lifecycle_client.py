@@ -74,6 +74,7 @@ def _gateway_error(exc: urllib.error.HTTPError) -> AppGatewayError:
             code = body.get("code")
             return AppGatewayError(body["error"], code=code if isinstance(code, str) else "")
     except Exception:
+        # An unreadable or non-JSON body falls back to the status line below.
         pass
     return AppGatewayError(f"{exc.code} {exc.reason}")
 

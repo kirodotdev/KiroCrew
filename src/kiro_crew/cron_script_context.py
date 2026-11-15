@@ -432,6 +432,7 @@ class ScriptContext:
                 body = exc.read().decode("utf-8", "replace")
                 detail = redact(body)[:500]
             except Exception:
+                # A body that fails to read falls back to the reason text.
                 pass
             logger.warning("ScriptContext %s refused: HTTP %s", where, exc.code)
             refusal: dict[str, Any] = {

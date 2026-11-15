@@ -57,6 +57,7 @@ async def api_skills_pending(request: web.Request) -> web.Response:
             ttl = KiroCrewConfig.load().skills.pending_ttl_days
             skills.prune_pending(ttl)
         except Exception:
+            # Pruning is housekeeping; a failed prune still lists what is pending.
             pass
         return skills.list_pending_skills()
 

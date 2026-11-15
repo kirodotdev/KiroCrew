@@ -91,6 +91,7 @@ async def _cleanup_run_sessions(self: TaskRunner, run: Project) -> None:
         try:
             self._sessions.release(key)
         except Exception:
+            # One key that fails to release must not stop the others.
             pass
         try:
             # Cancel cleanup: the run is over, so each step conversation ends and

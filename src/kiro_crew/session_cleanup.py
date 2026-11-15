@@ -542,6 +542,7 @@ class SessionCleanup:
                 if self._owner.get_pid(key) == pid:
                     keys.append(key)
             except Exception:
+                # A key whose pid cannot be read is not matched.
                 continue
         return keys
 

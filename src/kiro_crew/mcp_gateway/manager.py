@@ -1239,6 +1239,7 @@ class GatewayManager:
                 writer.close()
                 await writer.wait_closed()
             except Exception:
+                # The exchange is over; a close error changes nothing.
                 pass
 
     async def _ping_payload(self, *, timeout: Optional[float] = None) -> Optional[dict]:
@@ -1346,6 +1347,7 @@ class GatewayManager:
                 writer.close()
                 await writer.wait_closed()
             except Exception:
+                # The exchange is over; a close error changes nothing.
                 pass
 
     async def set_spawn_capacity(self, capacity: int) -> Optional[int]:
@@ -1391,6 +1393,7 @@ class GatewayManager:
                 writer.close()
                 await writer.wait_closed()
             except Exception:
+                # The exchange is over; a close error changes nothing.
                 pass
 
     async def _reconcile_adopted(self, pong: dict) -> bool:

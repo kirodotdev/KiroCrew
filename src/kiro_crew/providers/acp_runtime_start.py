@@ -996,6 +996,7 @@ async def _start_kiro_runtime_impl(
                     # own, so this only labels the genuinely-deliberate case.
                     await runtime.kill(expected=True, reason="reap before resume respawn")
                 except Exception:
+                    # The runtime is dead; the respawn below runs whether or not this reap worked.
                     pass
             if not runtime.is_alive() and share is not None:
                 # A shared placement: the dead runtime's tree is what the

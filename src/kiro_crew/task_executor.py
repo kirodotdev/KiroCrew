@@ -1552,6 +1552,7 @@ async def build_task_prompt(run: Project, task: Task, attempt: int, work_dir: Pa
             if git_ctx:
                 parts.append(git_ctx + "\n")
         except Exception:
+            # The prompt is built without git context when it cannot be read.
             pass
 
     memory_text = run.memory.summary()
@@ -1807,6 +1808,7 @@ async def _reap_process_group(proc: asyncio.subprocess.Process) -> None:
         await asyncio.wait_for(proc.wait(), timeout=_TEST_KILL_GRACE)
         return
     except Exception:
+        # The wait timed out or failed: escalate to SIGKILL below.
         pass
     try:
         await platform_compat.kill_process_tree_async(pid, platform_compat.SIGKILL)
@@ -1815,6 +1817,7 @@ async def _reap_process_group(proc: asyncio.subprocess.Process) -> None:
     try:
         await asyncio.wait_for(proc.wait(), timeout=_TEST_KILL_GRACE)
     except Exception:
+        # The tree is already SIGKILLed; there is nothing more to do here.
         pass
 
 

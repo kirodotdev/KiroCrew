@@ -413,6 +413,7 @@ async def _try_replan(self: TaskRunner, run: Project, failed_task: Task) -> bool
         try:
             memory_ctx = await git_coord.get_state_summary(run)
         except Exception:
+            # No readable summary: the fallback below fills it.
             pass
     if not memory_ctx:
         memory_ctx = run.memory.summary()
