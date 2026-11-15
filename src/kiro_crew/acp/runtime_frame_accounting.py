@@ -50,13 +50,12 @@ logger = logging.getLogger("kiro_crew.acp.runtime")
 # unbounded STEADY STATE, not a burst. Measured on an operator host: ~60
 # lines/second for 6+ hours from one gateway PID, taking 33–59% of every
 # gateway.log rotation — which, at RotatingFileHandler(maxBytes=2MB,
-# backupCount=3) (see cli_logging.py), rolls the genuine diagnostics needed for an
-# incident out of the retained 8MB window before anyone can read them.
+# backupCount=3) (see cli_logging.py), rolls the genuine diagnostics out of the
+# retained 8MB window before anyone can read them.
 #
 # So the per-frame line is collapsed into a periodic count keyed by
-# (sessionId, method). The key must stay PER SESSION: the incident's decisive
-# signal was that two DIFFERENT session UUIDs were flooding at once, which a
-# single global tally would hide.
+# (sessionId, method). The key must stay PER SESSION: two DIFFERENT session UUIDs
+# flooding at once is a decisive signal, which a single global tally would hide.
 _DROP_SUMMARY_INTERVAL_SECS = 60.0
 # Hard cap on distinct (sessionId, method) keys held between flushes. Both
 # halves of the key are backend-controlled, so an unbounded map would be a
@@ -405,7 +404,8 @@ def _note_dropped_frame(self: AcpRuntime, session_id: object, method: object) ->
     """
     key = (_drop_key_part(session_id), _drop_key_part(method))
     # Hang-resilience series: classify the drop by method so dashboards
-    # can alert on the pre-fix hang signature. ``method_class`` is a
+    # can alert on the hang signature (dropped permission requests or
+    # updates). ``method_class`` is a
     # closed 3-value enum — the raw method (backend-controlled) never
     # becomes an attribute value.
     _m = method if isinstance(method, str) else ""
@@ -413,7 +413,7 @@ def _note_dropped_frame(self: AcpRuntime, session_id: object, method: object) ->
         _mclass = "permission"
     elif _m in self._notification_aliases().session_update:
         # EVERY session-update spelling this host uses classifies as
-        # "update": a dashboard alerting on the pre-fix hang signature must
+        # "update": a dashboard alerting on the hang signature must
         # see a dropped extension-method child update the same way it sees
         # the plain spelling, and a spelling the host's aliases omit would be
         # counted as "other" and lost.

@@ -516,14 +516,13 @@ def __dir__() -> list[str]:
     return sorted(set(globals()) | set(_EXPORTS))
 
 
-# The ``runtime_*`` owner modules hold code that was this module's own: the
-# ``AcpRuntime`` members the class binds, and the module-level names re-imported
-# above, which this module keeps binding. ``_facade_mirror`` keeps the whole patch
-# surface: a name in ``_EXPORTS`` is forwarded to its one owner exactly as before
-# (read, write and delete there; ``dir()`` lists it), and a write of any other name
-# this module binds reaches every runtime owner binding the same object -- the
-# readers one global of this module had before the split. ``surface`` is this
-# module's own namespace, so an owner's private helper is never part of the facade.
+# The ``runtime_*`` owner modules hold the ``AcpRuntime`` members the class binds
+# and the module-level names re-imported above, which this module keeps binding.
+# ``_facade_mirror`` keeps the whole patch surface: a name in ``_EXPORTS`` is
+# forwarded to its one owner (read, write and delete there; ``dir()`` lists it), and
+# a write of any other name this module binds reaches every runtime owner binding
+# the same object. ``surface`` is this module's own namespace, so an owner's private
+# helper is never part of the facade.
 # ``test/test_runtime_bindings.py`` pins the reach.
 #: The runtime's owner modules, lowest layer first: an owner imports only owners
 #: listed before it.
