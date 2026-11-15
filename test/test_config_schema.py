@@ -692,3 +692,29 @@ class TestOptionalFieldMapping:
         entry = by_path["demo.plain"]
         assert entry.type == "integer"
         assert entry.nullable is False
+
+    def test_optional_enum_field_accepts_null(self) -> None:
+        # jsonschema checks ``enum`` apart from ``type``: a nullable enum field
+        # whose enum lacks null rejects its own None default on every load.
+        @dataclasses.dataclass
+        class _Demo:
+            mode: str | None = dataclasses.field(default=None, metadata={"enum": ["a", "b"]})
+            plain: str = dataclasses.field(default="a", metadata={"enum": ["a", "b"]})
+
+        js = _schema_module.build_json_schema(_Demo)
+        assert js["properties"]["mode"]["enum"] == ["a", "b", None]
+        assert js["properties"]["plain"]["enum"] == ["a", "b"]
+
+        by_path = {e.path: e for e in _schema_module.flatten_to_entries(js, prefix="demo")}
+        assert by_path["demo.mode"].enum_values == ["a", "b"]
+        assert by_path["demo.mode"].nullable is True
+        assert by_path["demo.plain"].enum_values == ["a", "b"]
+
+    def test_unset_code_channel_approval_mode_validates_silently(self, caplog) -> None:
+        from kiro_crew.config import validation
+
+        data = {"slack": {"code_channel_defaults": {"approval_mode": None}}}
+        with caplog.at_level("WARNING", logger="kiro_crew.config.loader"):
+            out = validation.validate_config_data(data)
+        assert not [r for r in caplog.records if "approval_mode" in r.getMessage()]
+        assert out["slack"]["code_channel_defaults"]["approval_mode"] is None

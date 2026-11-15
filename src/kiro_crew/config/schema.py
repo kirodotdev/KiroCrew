@@ -250,6 +250,11 @@ def _build_field_schema(
         schema["default"] = default
 
     if enum_values is not None:
+        # JSON Schema checks ``enum`` independently of ``type``, so a nullable
+        # field's null must be a member too; otherwise its own default (None,
+        # written by ``KiroCrewConfig().save()``) fails validation on every load.
+        if nullable and None not in enum_values:
+            enum_values = [*enum_values, None]
         schema["enum"] = enum_values
 
     schema["x-meta"] = {
@@ -392,7 +397,11 @@ def _flatten_recurse(
             label=label,
             help=help_text,
             has_children=has_children,
-            enum_values=list(enum_values) if enum_values is not None else None,
+            # A nullable field's null enum member is carried by ``nullable``;
+            # the entry lists only the values a user can pick.
+            enum_values=(
+                [v for v in enum_values if v is not None] if enum_values is not None else None
+            ),
             default_value=default_value,
             nullable=nullable,
             requires_restart=requires_restart,
