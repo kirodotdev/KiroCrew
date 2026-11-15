@@ -849,6 +849,14 @@ settings with defaults and help, editable in `config.json`:
   write-command prefixes (for example `myctl apply`) the batch write guard treats
   as write-class, for tools only a local install knows. Matched on the command's
   program and subcommand words, never on argument text. No effect unless `hooks.batch_write_guard` is on.
+- **`hooks.return_answer`** (boolean, default `false`). When `true`, a
+  `POST /api/hooks/agent` call that sends `wait` (seconds, capped at 300) is held
+  until its run ends or the wait runs out; a run that finished its turn answers
+  with its outcome and the redacted text delivery sends, and a `timeout` or
+  `error` run with its outcome alone. While it is off, `wait` is ignored with a
+  `warning` and the call returns the usual accept receipt. The Settings page
+  shows it read-only, because it sends agent output to an outside caller. See
+  [Inbound Webhooks](inbound-webhooks.md#waiting-for-the-answer).
 
 ### MCP Gateway
 

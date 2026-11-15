@@ -119,6 +119,10 @@ READONLY_REASONS: dict[str, str] = {
     # environment names (tracing/otlp.py:206-237); this route refuses the same
     # for telemetry.enabled (core_config_patch.py:664-690).
     "telemetry.traces_enabled": WHY_SHARE,
+    # On, a webhook caller that sends wait gets the agent's answer back
+    # (dashboard/handlers/hooks.py _answer_fields): agent output leaves to an
+    # outside system.
+    "hooks.return_answer": WHY_SHARE,
     # Markers the product sets; flipping one by hand skips a step a person must see.
     "dashboard.privacy_acked": WHY_MARKER,
     "dashboard.privacy_ack_version": WHY_MARKER,
