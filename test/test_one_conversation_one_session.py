@@ -477,17 +477,18 @@ class TestOneRedactionRule:
         """The stored copy carries no credential; the prompt is untouched."""
         from kiro_crew.llm_helpers import save_conversation_turn
 
-        save_conversation_turn(log, SLACK_KEY, "my key is AKIAIOSFODNN7EXAMPLE", "ack")
+        key = github_classic(seed=2)
+        save_conversation_turn(log, SLACK_KEY, f"my key is {key}", "ack")
 
         rows = log.read_messages(SLACK_KEY)
         assert [r["role"] for r in rows] == ["user", "assistant"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in str(
+        assert key not in str(
             rows[0]["content"]
         ), "a channel-persisted user row kept its credential at rest"
 
     def test_append_if_absent_stays_idempotent_under_redaction(self, log):
         """Dedup compares the stored form, so a scrubbed message is recognised."""
-        content = "leaked AKIAIOSFODNN7EXAMPLE here"
+        content = f"leaked {github_classic(seed=3)} here"
         assert log.append_if_absent(SLACK_KEY, "assistant", content) is True
         assert log.append_if_absent(SLACK_KEY, "assistant", content) is False
         assert len(log.read_messages(SLACK_KEY)) == 1

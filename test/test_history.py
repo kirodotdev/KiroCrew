@@ -822,12 +822,15 @@ class TestAMiscomposedHostPersistsAWholeTurn:
 
     def test_both_rows_persist(self, tmp_path, monkeypatch) -> None:
         from kiro_crew.history import ConversationLog
+        from kiro_crew.testing.synthetic_credentials import github_classic
+
         log = ConversationLog(tmp_path)
         key = "dashboard:miscomposed"
+        secret = github_classic()
         self._install(monkeypatch)
 
-        log.append(key, "user", "please deploy AKIAIOSFODNN7EXAMPLE")
-        log.append(key, "assistant", "done with AKIAIOSFODNN7EXAMPLE")
+        log.append(key, "user", f"please deploy {secret}")
+        log.append(key, "assistant", f"done with {secret}")
 
         rows = log.read_messages(key)
         roles = [r.get("role") for r in rows]
@@ -839,7 +842,7 @@ class TestAMiscomposedHostPersistsAWholeTurn:
         )
         user = str(rows[0].get("content", ""))
         assert user.startswith("please deploy"), "a user row must not be withheld"
-        assert "AKIAIOSFODNN7EXAMPLE" not in user, user
+        assert secret not in user, user
         assistant = str(rows[1].get("content", ""))
-        assert "AKIAIOSFODNN7EXAMPLE" not in assistant, assistant
+        assert secret not in assistant, assistant
         assert assistant.startswith("done with"), "an assistant row must not be withheld"
