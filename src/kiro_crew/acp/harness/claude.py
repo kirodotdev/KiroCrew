@@ -483,16 +483,11 @@ def _apply_claude_env_defaults(env: dict[str, str], backend: str, work_dir: Path
     """
     if backend in ACP_BACKENDS_PLAN_CHECKLIST:
         env.setdefault(CLAUDE_TODO_TOOLS_ENV, "1")
-    if (
-        backend not in ACP_BACKENDS_SUMMARIZED_THINKING
-        or CLAUDE_THINKING_DISPLAY_ENV in env
-    ):
+    if backend not in ACP_BACKENDS_SUMMARIZED_THINKING or CLAUDE_THINKING_DISPLAY_ENV in env:
         return
     # The child's own config directory when the environment names one.
     config_dir = env.get("CLAUDE_CONFIG_DIR")
-    if not a_source_decides_thinking(
-        work_dir, config_dir=Path(config_dir) if config_dir else None
-    ):
+    if not a_source_decides_thinking(work_dir, config_dir=Path(config_dir) if config_dir else None):
         env[CLAUDE_THINKING_DISPLAY_ENV] = CLAUDE_THINKING_DISPLAY_DEFAULT
 
 

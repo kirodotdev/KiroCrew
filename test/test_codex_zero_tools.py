@@ -360,7 +360,8 @@ def _codex_runtime() -> AcpRuntime:
 
 
 def _projection(*, zero_tools: bool):
-    async def _mirrored(agent, *, work_dir, session_key, channel_id):
+    async def _mirrored(agent, *, work_dir, session_key, channel_id, permission_surface_owned):
+        assert permission_surface_owned is False
         return _MirroredSessionMcp(
             servers=[],
             denied_tools=frozenset(),
