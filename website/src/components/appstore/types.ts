@@ -157,7 +157,7 @@ export type InstalledApp = {
   enabled: boolean
   sessionApprovalConsentPending?: boolean
   /** Approved api/events entries, present only while an update's new ones await approval. */
-  approvedGrants?: { api?: string[]; events?: string[] }
+  approvedGrants?: { api?: string[]; events?: string[]; bots?: string[] }
   /** Approved link-preview hosts and text patterns, and the ones an update holds back. */
   linkPreviewGrant?: LinkPreviewGrantRow
   /** Approved message actions, and the entries an update holds back. */
@@ -259,6 +259,8 @@ export type InstalledApp = {
       reachableByUserSessions?: string[]
       desktopCapabilities?: string[]
       webhookSource?: boolean
+      /** Bot scopes, `"read"` and `"wake"` (apps/bot_grants.py). */
+      bots?: string[]
     }
     setup?: { onInstall?: string; onUpdate?: string; onUninstall?: string; onEnable?: string; onDisable?: string }
     minKiroCrewVersion?: string

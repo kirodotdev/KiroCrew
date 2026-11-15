@@ -21,6 +21,7 @@
  */
 export const CORE_APP_ROUTE_SEGMENTS = new Set([
   '_jobs',
+  'bot-grants',
   'config',
   'dev',
   'disable',

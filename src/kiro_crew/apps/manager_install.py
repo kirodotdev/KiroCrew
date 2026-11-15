@@ -30,7 +30,7 @@ from kiro_crew.apps.manager_records import (
     InstalledApp,
     _approved_grants_after_manifest_change,
     _approved_grants_snapshot,
-    _declared_grant_entries,
+    _consented_grant_entries,
     _effective_approved_grants,
     _held_back_entries,
     _now_iso,
@@ -262,6 +262,18 @@ def install_app(
             ),
         )
 
+    # Ticked Bots that an earlier install under this name left behind go before
+    # this one exists; if they cannot be removed, nothing is installed.
+    # Deferred: an MCP server lists its tools without loading the Bot grant store.
+    from kiro_crew.apps.bot_grant_store import remove_granted_bots
+
+    try:
+        remove_granted_bots(name)
+    except (OSError, ValueError) as exc:
+        return AppResult(
+            ok=False, name=name, error=f"could not clear earlier Bot access for {name!r}: {exc}"
+        )
+
     source_repository = _effective_source_repository(source_repository)
     trust_denied = repository_bound_grant_denied(
         name, repository=market_coordinate or source_repository
@@ -477,7 +489,7 @@ def install_app(
     # outlive its record, and that set is restored byte for byte.
     prior_grants_text = _approved_grants_snapshot(name)
     try:
-        _write_approved_grants(name, _declared_grant_entries(grant_source(manifest)))
+        _write_approved_grants(name, _consented_grant_entries(grant_source(manifest)))
         _write_installed(name, meta)
 
         # Generate and write app secret for token-based auth (App Kit §5.1)

@@ -179,6 +179,14 @@ from kiro_crew.apps.desktop_capabilities import (  # noqa: E402
 register_permission_grants(
     DESKTOP_CAPABILITY_GRANT_FAMILIES, desktop_capability_grant_entries, explicit_only=True
 )
+# ``permissions.bots`` (``apps.bot_grants``): the Bot scopes an app holds. Explicit-only,
+# so a stored set that never named a scope approves none, whatever the manifest declares.
+from kiro_crew.apps.manifest_sections import (  # noqa: E402
+    BOT_GRANT_FAMILIES,
+    bot_grant_entries,
+)
+
+register_permission_grants(BOT_GRANT_FAMILIES, bot_grant_entries, explicit_only=True)
 
 
 __all__ = [

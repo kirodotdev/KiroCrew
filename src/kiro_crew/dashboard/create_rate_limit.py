@@ -72,6 +72,12 @@ TAG_COLUMN_CREATE = "tag_column_create"
 #: bounds what one session's title can cost, whoever asks.
 GENERATE_TITLE = "generate_title"
 MAX_TITLE_GENERATIONS_PER_WINDOW = 1
+#: An app waking a Bot (``app_bot_wake``), keyed ``"<app>/<bot slug>"``: each wake
+#: spends one of the Bot's turns. A proposal, not a measured value: it covers a chat
+#: app's bursts, and a Bot woken more often spends its turns on wakes. Confirm before
+#: the App SDK's Bot hooks leave preview.
+APP_BOT_WAKE = "app_bot_wake"
+MAX_APP_BOT_WAKES_PER_WINDOW = 20
 
 _BUDGETS = {
     SESSION_CREATE: MAX_SESSION_CREATES_PER_WINDOW,
@@ -79,6 +85,7 @@ _BUDGETS = {
     TAG_CREATE: MAX_TAG_CREATES_PER_WINDOW,
     TAG_COLUMN_CREATE: MAX_TAG_COLUMN_CREATES_PER_WINDOW,
     GENERATE_TITLE: MAX_TITLE_GENERATIONS_PER_WINDOW,
+    APP_BOT_WAKE: MAX_APP_BOT_WAKES_PER_WINDOW,
 }
 
 

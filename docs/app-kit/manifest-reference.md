@@ -1839,6 +1839,7 @@ packages at all.
     "reachableByUserSessions": [],
     "desktopCapabilities": [],
     "webhookSource": false,
+    "bots": [],
     "exposeToApps": []
   }
 }
@@ -1857,6 +1858,7 @@ packages at all.
 | `permissions.memberThreads` | boolean | Widens `sessionApproval` to a Bot's pinned DM thread (the live `member-*` slot the owner opened): the same actions, nothing else about the Bot. Grants nothing without `sessionApproval`; see [the scope below](#permissionsmemberthreads--a-bots-own-thread) |
 | `permissions.spawn` | boolean | May start a background agent through the host's subagent manager (`ctx.spawn`) |
 | `permissions.jobs` | boolean | May run durable background work through `ctx.job` and the app-owned `_jobs/*` routes |
+| `permissions.bots` | string[] | Bot scopes, `"read"` and `"wake"`; any other entry is dropped. `read` lists the Bots the owner ticked for this app with their status and goals; `wake` sends one of them a fixed line the gateway writes. The owner ticks Bots in the app's detail page, and a fresh install reaches none. Also declare `/api/members` in `permissions.api`. A scope an update adds waits for the owner's approval. Never reaches a Bot's chats, briefing or rules. Called from the app's backend with its app token ([api-reference](api-reference.md#bots-permissionsbots-from-your-backend)) |
 | `permissions.proposeCrewmate` | boolean | **Preview, switched off**: `ctx.crewmate` stays `None` until the owner view that lists the cards lands (#21718). May propose one Bot from a `.crewmate` bundle through `ctx.crewmate`. Gates a real capability like `spawn`: `ctx.crewmate` is absent unless the value is literally `true`. Each proposal is an owner change card; only the owner's press creates the Bot ([api-reference](api-reference.md#bot-proposals-ctxcrewmate)) |
 | `permissions.agentTurns` | boolean | May run agent turns on sessions keyed `<app>-<id>` through `ctx.turns`: every tool goes through the host's tool gate under this app's identity, and every turn is admitted as Crew automation. Gates a real capability like `spawn`: `ctx.turns` is absent unless the value is literally `true` ([api-reference](api-reference.md#agent-turns-ctxturns)) |
 | `permissions.chatSlots` | boolean | May open and drive dashboard chat slots keyed `<app>-<id>` through `ctx.chat_slots`: turns through the host's own chat runner under this app's identity, the slot's queue, stop, archive, transcript and the AutoNudge loops on those slots, never another slot. Shown at the trust prompt. `ctx.chat_slots` is absent unless the value is literally `true` (App Kit seam level 7, [api-reference](api-reference.md#chat-slots-ctxchat_slots)) |
