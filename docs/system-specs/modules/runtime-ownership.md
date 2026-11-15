@@ -356,7 +356,7 @@ than blurred:
 | `runtime_reconcile.RuntimeReconciler.reclaim_untracked` (through the same `_authorize` seam) | convention |
 
 A convention site that drops its gate call is not caught: the primitive call it
-still makes stays counted, so `BYPASS_BASELINE` does not move and the suite stays
+still makes stays counted, so `BYPASS_SITES` does not move and the suite stays
 green. Adding a site to `ATTRIBUTED_KILL_PATHS` is what promotes it.
 
 Releasing before the signal is shared rather than re-implemented:
@@ -783,7 +783,7 @@ Both are counts of a pattern the refactor is removing. Each may fall in any chan
 and may never rise, and a change that lowers one records the new number in the same
 commit.
 
-- `test/test_kill_chokepoint_ratchet.py` — `BYPASS_BASELINE` counts src sites that
+- `test/test_kill_chokepoint_ratchet.py` — `BYPASS_SITES` counts, per module, src sites that
   call a kill primitive without going through the gate. It also pins what a falling
   count has to MEAN: `ATTRIBUTED_KILL_PATHS` must call the gate
   (`test_attributed_kill_paths_consult_the_gate`), pass both `reason` and `caller`
