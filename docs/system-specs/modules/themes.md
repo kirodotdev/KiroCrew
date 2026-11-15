@@ -21,6 +21,55 @@ target token rather than the body's in-progress colour transition. Before CSS
 supplies a token, the HTML boot colour remains in place. Browsers decide whether
 and where to use this hint; it does not change the page's colours.
 
+## Contrast setting
+
+Settings → Display → View has a **Contrast** row, a browser-local choice like
+Translucent panels. It is one more input to the palette the shell paints, beside
+the color theme and the mode, and it never rewrites the stored theme pick.
+
+- **Key and event.** The choice lives in `localStorage` under `mc-contrast`
+  (`CONTRAST_STORAGE_KEY`, `website/src/utils/contrastPreference.ts`). `normal`
+  is the default and is stored as an absent key. Setting the choice also fires
+  the same-tab `mc-contrast-changed` event (`CONTRAST_CHANGED_EVENT`) with the new
+  value in `detail`, so a store that refuses the write cannot undo the flip.
+- **Three options.** `normal` paints the chosen theme. `auto` paints the built-in
+  High Contrast theme (`highcontrast`) while the OS reports `prefers-contrast:
+  more`, and the chosen theme otherwise. `more` paints it always. Mode still
+  picks the light or dark version of High Contrast.
+- **Where the swap happens.** Only `useTheme`'s `applyTheme` writes
+  `data-theme`, and it swaps the slug at that moment. `colorTheme`, the stored
+  `mc-color-theme` and the Theme dropdown's value are untouched, so turning
+  contrast off, or the OS dropping its request, brings the pick back. While the
+  swap is in effect the Theme page shows a notice, and the picked theme's entry
+  reads "paused for High Contrast". On the settings page the notice's button
+  opens the Contrast row through the settings link (`settingsRoute`, brought
+  into view by `useSettingHighlight`); the embedded settings page has no such
+  route, so its notice has no button.
+- **Pack overrides, code theme and experience layer.** An installed pack has
+  three more colour sources than the root palette, and none may undo the
+  setting. Its `overrides.css` can set the color tokens below the root palette:
+  while High Contrast is wanted, `useTheme` keeps the pack's scoped `<style>`
+  element out of the document (`suspendThemeOverrides`) and puts the same element
+  back when contrast is no longer wanted, so switching needs no refetch. Its
+  `assets.codeTheme` (read by `usePierreThemes`) and the paint of its Level-2
+  experience layer (overlays, top-bar strip and sounds in `ThemeExperienceLayer`)
+  follow `paintedTheme` from the theme context, which is `highcontrast` while
+  contrast is wanted and `colorTheme` otherwise. Code and diff blocks then use the
+  built-in pair and the layer draws no overlay, strip or sound. The layer still
+  resolves the pack, its saved choice and the persona consent dialog from
+  `colorTheme`, so turning Persona on stays possible while contrast is wanted.
+  Readers that edit or send the pick (the settings rows, the consent record, the
+  chat `color_theme` field) keep `colorTheme`. When the pick already is
+  `highcontrast`, nothing is paused, and the Theme page shows no paused label or
+  notice.
+- **Cross-tab repaint.** The hook (`useContrastPreference`) follows the
+  `mc-contrast-changed` event, the `storage` event for a change made in another
+  tab of the same origin, and the OS media query. A tab that receives a `storage`
+  event only reads the new value and writes nothing back. The `storage` event
+  counts only for the real `localStorage`; the onboarding look preview, which
+  swaps in its own storage facade, keeps the value it loaded with until it
+  reloads.
+
 ## Capability Tiers
 
 `theme.json` MUST declare `"formatVersion": 1` (required integer major,

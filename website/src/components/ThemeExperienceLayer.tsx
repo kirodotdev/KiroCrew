@@ -232,7 +232,11 @@ function ConsentDialogShell({ onEscape, initialFocusRef, children }: {
 }
 
 export default function ThemeExperienceLayer() {
-  const { theme: mode, colorTheme, customThemeDataMap } = useTheme()
+  // The pack is the STORED pick, so its choice and persona consent stay
+  // reachable. While the Contrast setting paints High Contrast instead
+  // (`paintedTheme` differs), the pack's overlays, top-bar strip and sounds stay off.
+  const { theme: mode, colorTheme, paintedTheme, customThemeDataMap } = useTheme()
+  const paintHeld = paintedTheme !== colorTheme
 
   // A remote Crew is a separate SPA in a full-bleed iframe; switching Crews only
   // toggles `display` on the local dashboard's wrapper inside `App`. This layer is
@@ -329,8 +333,8 @@ export default function ThemeExperienceLayer() {
   const dialogAnswered = failed ? failed.answered : experience.answered
   const showConsent = anyExperience && dialogAsk.length > 0
   // While the dialog is open nothing of the experience runs.
-  const soundsOn = experience.sounds && !showConsent
-  const overlaysOn = experience.overlays && !showConsent
+  const soundsOn = experience.sounds && !showConsent && !paintHeld
+  const overlaysOn = experience.overlays && !showConsent && !paintHeld
 
   const reduced = useReducedMotion()
   const [muted, setMuted] = useState(() => safeGetItem(MUTE_KEY) === '1')

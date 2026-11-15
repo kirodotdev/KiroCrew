@@ -61,6 +61,7 @@ function l2Assets(overrides: Record<string, unknown> = {}) {
 
 function setTheme(opts: {
   colorTheme?: string
+  paintedTheme?: string
   theme?: 'dark' | 'light'
   level?: number
   assets?: Record<string, unknown> | null
@@ -79,6 +80,7 @@ function setTheme(opts: {
   mockTheme = {
     theme: opts.theme ?? 'dark',
     colorTheme: opts.colorTheme ?? `custom-${slug}`,
+    paintedTheme: opts.paintedTheme ?? opts.colorTheme ?? `custom-${slug}`,
     customThemeDataMap: map,
     setColorTheme,
   }
@@ -379,6 +381,38 @@ describe('ThemeExperienceLayer', () => {
     const { container } = render(<ThemeExperienceLayer />)
     act(() => saveExperienceChoice('other-pack', { overlays: true }, null))
     expect(frames(container)).toHaveLength(0)
+  })
+
+  it('draws no pack overlay or top-bar strip while High Contrast is painted', () => {
+    localStorage.setItem('mc-theme-consent-bikini-bottom', 'consented-v2')
+    setTheme({ paintedTheme: 'highcontrast' })
+    const { container, rerender } = render(<ThemeExperienceLayer />)
+    expect(frames(container)).toHaveLength(0)
+    expect(muteButton()).not.toBeInTheDocument()
+    // Contrast off again: the same stored pick draws overlay + top-bar strip.
+    setTheme()
+    act(() => {
+      rerender(<ThemeExperienceLayer />)
+    })
+    expect(frames(container)).toHaveLength(2)
+  })
+
+  it('still asks for the persona grant while High Contrast is painted, and keeps overlays and the strip off', () => {
+    // What the Persona switch in Theme settings stores: wanted, no grant yet.
+    localStorage.setItem('mc-theme-experience-bikini-bottom', JSON.stringify({ sounds: false, overlays: true, persona: true }))
+    setTheme({ paintedTheme: 'highcontrast' })
+    const { container } = render(<ThemeExperienceLayer />)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(frames(container)).toHaveLength(0)
+    expect(muteButton()).not.toBeInTheDocument()
+  })
+
+  it('draws a pack the same under Normal, where the painted theme is the stored pick', () => {
+    localStorage.setItem('mc-theme-consent-bikini-bottom', 'consented-v2')
+    setTheme({ paintedTheme: 'custom-bikini-bottom' })
+    const { container } = render(<ThemeExperienceLayer />)
+    expect(frames(container).map((f) => f.getAttribute('src'))).toContain('/api/theme/bikini-bottom/topbar/dark')
+    expect(frames(container)).toHaveLength(2)
   })
 
   it('suppresses motion overlays under prefers-reduced-motion (topbar still shown)', () => {
@@ -1050,6 +1084,7 @@ describe('ThemeExperienceLayer', () => {
       mockTheme = {
         theme: 'dark',
         colorTheme: 'custom-alpha-town',
+        paintedTheme: 'custom-alpha-town',
         customThemeDataMap: mapA,
         setColorTheme,
       }
@@ -1062,6 +1097,7 @@ describe('ThemeExperienceLayer', () => {
       mockTheme = {
         theme: 'dark',
         colorTheme: 'custom-beta-town',
+        paintedTheme: 'custom-beta-town',
         customThemeDataMap: mapB,
         setColorTheme,
       }

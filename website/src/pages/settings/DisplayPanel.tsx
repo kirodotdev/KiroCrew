@@ -1,5 +1,6 @@
 import { Loader2, Eye, Type, SquareTerminal, FileCode, Palette, PanelLeft, Monitor, Sun, Moon, FolderOpen } from 'lucide-react'
 import { useState, useMemo, useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
 import type { FontFamily } from '../../hooks/useZoom'
@@ -48,6 +49,11 @@ import { REMOTE_EDITORS } from '../../utils/remoteEditorUrl'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useBranding } from '../../hooks/useBranding'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
+import { useContrastPreference } from '../../hooks/useContrastPreference'
+import { HIGH_CONTRAST_THEME } from '../../utils/contrastPreference'
+import type { ContrastPreference } from '../../utils/contrastPreference'
+import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegistry.gen'
+import { settingsRoute } from '../../components/commandPalette/settingsRoute'
 import { useExplorePreview } from '../../hooks/usePreviewFlag'
 import { useCloseAction } from '../../hooks/useCloseAction'
 import { useTrayIcon } from '../../hooks/useTrayIcon'
@@ -103,6 +109,7 @@ const INTENSITY_LABEL_KEYS = {
 const TRAY_ICON_LOCKED_NOTE_ID = 'tray-icon-locked-note'
 /** Why the minimize-to-tray switch is locked off. */
 const MINIMIZE_TO_TRAY_LOCKED_NOTE_ID = 'minimize-to-tray-locked-note'
+const CONTRAST_SETTING = SETTINGS_REGISTRY.find(e => e.id === 'display.contrast')
 
 export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const ime = useImeGuard()
@@ -137,6 +144,15 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const { uiMode, setUIMode } = useUIMode()
   const editor = useThemeEditor()
   const { liquidGlass, setLiquidGlass } = useLiquidGlass()
+  const { pref: contrast, active: contrastActive, setPref: setContrast } = useContrastPreference()
+  // Nothing is paused when the stored pick already is the High Contrast theme.
+  const contrastPaused = contrastActive && colorTheme !== HIGH_CONTRAST_THEME
+  const navigate = useNavigate()
+  // The Theme page notice's button follows the link every settings row uses: on
+  // the settings page (basePath set), settingsRoute opens the View item and the
+  // page's useSettingHighlight brings the Contrast row into view. The embedded
+  // settings page has no such route, so there the notice shows without it.
+  const contrastRoute = basePath && CONTRAST_SETTING ? settingsRoute(CONTRAST_SETTING) : null
   const { closeAction, closeActionSupported, closeActionPending, closeActionFailed, setCloseAction } = useCloseAction()
   const { trayIcon, trayIconSupported, trayIconPending, trayIconFailed, setTrayIcon } = useTrayIcon(closeAction)
   const {
@@ -789,6 +805,20 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             onChange={setLiquidGlass}
           />
           <TranslucentPanelsPreview placeholder={i18nT('components.chatInput.message_placeholder', { bot: botName })} />
+          {/* Browser-local like the Translucent panels switch. Normal (the default) paints the
+              chosen theme; the other two paint the built-in High Contrast theme
+              in its place (always, or while the OS asks for more contrast) and
+              hand the pick back when switched off. */}
+          <SettingsButtonGroup
+            label={i18nT('pages.settings.displayPanel.contrast')}
+            hint={i18nT('pages.settings.displayPanel.contrast_desc')}
+            value={contrast}
+            options={[
+              { value: 'normal', label: i18nT('pages.settings.displayPanel.contrast_normal') },
+              { value: 'auto', label: i18nT('pages.settings.displayPanel.contrast_auto') },
+              { value: 'more', label: i18nT('pages.settings.displayPanel.contrast_more') },
+            ]}
+            onChange={v => setContrast(v as ContrastPreference)} />
           {/* The top bar's search box, on by default. Browser-local like the
               switch above, because it is about how much room this window gives
               the top bar: off, the box's centre track goes to the controls on
@@ -1210,11 +1240,32 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           <div className="flex items-center gap-2">
             <div className="flex-1 min-w-0">
               <SettingsSelect label={i18nT('pages.settings.displayPanel.theme')} hint={i18nT('pages.settings.displayPanel.select_a_theme_for_the_dashboard')} value={colorTheme}
-                options={allThemes.map(t => t.value)} optionLabels={allThemes.map(t => t.label)}
+                options={allThemes.map(t => t.value)}
+                optionLabels={allThemes.map(t => contrastPaused && t.value === colorTheme
+                  ? i18nT('pages.settings.displayPanel.contrast_theme_kept', { theme: t.label })
+                  : t.label)}
                 onChange={v => setColorTheme(v as ColorTheme)} />
             </div>
             {themeSwitching && <StatusIndicator label={i18nT('pages.settings.displayPanel.applying')} />}
           </div>
+          {/* The Contrast setting paints the High Contrast theme over this pick
+              (the pick is kept), so the picker alone cannot explain the screen.
+              Names the cause and opens the row that controls it. */}
+          {contrastPaused && (
+            <div role="status" className="flex items-start gap-2 rounded-md border border-border bg-warn-subtle px-3 py-2">
+              <div className="flex flex-col gap-1 min-w-0">
+                <span className="text-[12px] font-medium text-text">{i18nT('pages.settings.displayPanel.contrast_on_title')}</span>
+                <span className="text-[12px] text-muted leading-relaxed">
+                  {i18nT(contrast === 'more'
+                    ? 'pages.settings.displayPanel.contrast_on_body_more'
+                    : 'pages.settings.displayPanel.contrast_on_body_auto')}
+                </span>
+                {contrastRoute && (
+                  <Btn type="button" className="self-start" onClick={() => navigate(contrastRoute)}>{i18nT('pages.settings.displayPanel.contrast_on_open')}</Btn>
+                )}
+              </div>
+            </div>
+          )}
           <ThemeExperienceSettings colorTheme={colorTheme} customThemeDataMap={customThemeDataMap} />
           {/* The installed-theme catalog failed to load (gateway still booting,
               tunnel error): without this the picker just lacks the installed

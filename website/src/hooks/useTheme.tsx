@@ -18,6 +18,8 @@ import { pendingRefresh } from '../api/refreshOnce'
 import { retryDelayPolicy, retryPolicy } from '../api/queryClient'
 import { reportSeamCollision } from '../apps/seamCollision'
 import { safeSetItem } from '../utils/safeStorage'
+import { HIGH_CONTRAST_THEME, contrastActive } from '../utils/contrastPreference'
+import { useContrastPreference } from './useContrastPreference'
 import {
   adoptServerLiquidGlass,
   readLiquidGlass,
@@ -209,9 +211,16 @@ export function themeDataAttribute(colorTheme: ColorTheme, mode: ResolvedMode): 
   return colorTheme === 'emerald' ? mode : `${colorTheme}-${mode}`
 }
 
-function applyTheme(colorTheme: ColorTheme, mode: ResolvedMode, pref: ModePreference) {
+function applyTheme(
+  colorTheme: ColorTheme,
+  mode: ResolvedMode,
+  pref: ModePreference,
+  highContrast: boolean = contrastActive(),
+) {
   const el = document.documentElement
-  el.dataset.theme = themeDataAttribute(colorTheme, mode)
+  // The Contrast setting swaps the painted palette only; `colorTheme` (the
+  // user's pick) is untouched, so turning the setting off restores it.
+  el.dataset.theme = themeDataAttribute(highContrast ? HIGH_CONTRAST_THEME : colorTheme, mode)
   el.dataset.mode = mode
   // The PREFERENCE, exposed separately from the resolved mode because the two
   // mean different things to the Electron shell. `data-mode` is what to paint;
@@ -299,6 +308,7 @@ export interface OverridesDropReport {
 function applyThemeOverrides(theme: CustomThemeData | undefined): Promise<OverridesDropReport | null> {
   const myToken = ++_overridesToken
   document.getElementById(_OVERRIDES_ID)?.remove()
+  _overridesEl = null
   const slug = theme ? safeSlug(theme.slug) : ''
   if (!theme?.assets?.hasOverrides || !slug) return Promise.resolve(null)
   if (typeof fetch !== 'function') return Promise.resolve(null)
@@ -327,13 +337,30 @@ function applyThemeOverrides(theme: CustomThemeData | undefined): Promise<Overri
       const style = document.createElement('style')
       style.id = _OVERRIDES_ID
       style.textContent = scoped
-      document.head.appendChild(style)
+      _overridesEl = style
+      if (!_overridesSuspended) document.head.appendChild(style)
       return report
     })
     .catch(() => {
       /* fetch failure → no overrides (silent) */
       return null
     })
+}
+
+/**
+ * While the High Contrast palette is painted, an installed pack's overrides.css
+ * must not apply: its allowed `body` rules can set the colour tokens below the
+ * root palette and undo the setting. The scoped style element is kept out of the
+ * document meanwhile and put back when contrast is no longer wanted, so
+ * switching needs no refetch.
+ */
+let _overridesSuspended = false
+let _overridesEl: HTMLStyleElement | null = null
+
+function suspendThemeOverrides(suspended: boolean) {
+  _overridesSuspended = suspended
+  if (suspended) _overridesEl?.remove()
+  else if (_overridesEl && !_overridesEl.isConnected) document.head.appendChild(_overridesEl)
 }
 
 interface ResolvedThemeBranding {
@@ -524,6 +551,14 @@ export interface ThemeContextValue {
   cycle: () => void
   setTheme: (pref: ModePreference) => void
   colorTheme: ColorTheme
+  /**
+   * The theme the shell paints: `HIGH_CONTRAST_THEME` while the Contrast setting
+   * wants it, otherwise `colorTheme`. Every reader that DRAWS from an installed
+   * pack (its code theme, overlays, top-bar strip) reads this, so the pack's
+   * own colour sources cannot undo the setting; a reader that edits or sends
+   * the user's pick (settings, consent, the chat wire) keeps `colorTheme`.
+   */
+  paintedTheme: ColorTheme
   setColorTheme: (t: ColorTheme) => void
   /**
    * True while an *installed* theme's async assets (branding + runtime-scoped
@@ -1273,6 +1308,7 @@ function useThemeState(): ThemeContextValue {
   // Computed from the same inputs on every render, it is right for the current
   // selection whenever the catalog or the detail map changes. False until the
   // catalog has loaded so an uncached cold load keeps its custom attribute.
+  const { active: highContrast } = useContrastPreference()
   const activeSlugForFailure = activeCustomSlug(colorTheme)
   const installedThemeLoadFailed =
     customThemesLoaded
@@ -1290,9 +1326,9 @@ function useThemeState(): ThemeContextValue {
     // A pack whose detail is merely pending (no error yet) keeps its custom
     // attribute, as does the render-cache seed path.
     const unstyledFailure = installedThemeLoadFailed
-    applyTheme(unstyledFailure ? DEFAULT_COLOR_THEME : colorTheme, resolved, mode)
+    applyTheme(unstyledFailure ? DEFAULT_COLOR_THEME : colorTheme, resolved, mode, highContrast)
     bumpThemeVersion()
-  }, [resolved, colorTheme, mode, bumpThemeVersion, installedThemeLoadFailed])
+  }, [resolved, colorTheme, mode, bumpThemeVersion, installedThemeLoadFailed, highContrast])
 
   // Tell the Electron shell which mode PREFERENCE is active, so it can set
   // `nativeTheme.themeSource` to match ('system' under Auto). Pushed on change
@@ -1430,6 +1466,9 @@ function useThemeState(): ThemeContextValue {
   // the previous cleanup even when the new run is skipped — a flag there would
   // orphan the in-flight settle and wedge the "Applying…" indicator.
   const applyGenerationRef = useRef(0)
+  useEffect(() => {
+    suspendThemeOverrides(highContrast)
+  }, [highContrast])
   useEffect(() => {
     const active = colorTheme.startsWith('custom-')
       ? customThemeDataMap.get(colorTheme.slice('custom-'.length))
@@ -1650,6 +1689,7 @@ function useThemeState(): ThemeContextValue {
     cycle: cycleMode,
     setTheme: setMode_,
     colorTheme,
+    paintedTheme: highContrast ? HIGH_CONTRAST_THEME : colorTheme,
     setColorTheme,
     themeSwitching,
     overridesDropReport,
