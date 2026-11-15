@@ -578,9 +578,11 @@ def _telemetry(args: argparse.Namespace) -> None:
     set_recording = True
     if want:
         try:
-            from kiro_crew.metrics.provider import otlp_egress_active
+            # The built-in Kiro destination does not count: the notice this
+            # command records below names it.
+            from kiro_crew.metrics.kiro_export import egress_needs_written_opt_in
 
-            set_recording = not otlp_egress_active(cfg.telemetry)
+            set_recording = not egress_needs_written_opt_in(cfg.telemetry)
         except Exception:  # noqa: BLE001 - unknown posture is treated as egress
             set_recording = False
     path = config_path()
@@ -671,10 +673,19 @@ def _telemetry(args: argparse.Namespace) -> None:
     # sets this key locally would keep sending while this command
     # printed "DISABLED" — a false promise on a privacy control is worse than an
     # error, so re-read the effective config and report the shadowing file.
+    exporting = False
+    loaded_cfg: object = None
     try:
-        loaded = KiroCrewConfig.load().telemetry
+        loaded_cfg = KiroCrewConfig.load()
+        loaded = loaded_cfg.telemetry
         effective = loaded.beacon_enabled
         recording = loaded.enabled
+        if want and not set_recording and recording:
+            from kiro_crew.metrics.provider import outbound_consented
+
+            # Recording on by default is not an opt-in to export, so a
+            # configured destination may still be sending nothing.
+            exporting = outbound_consented(loaded_cfg)
     except Exception:  # noqa: BLE001 - diagnostics must not mask the write
         effective = want
         recording = want
@@ -701,7 +712,7 @@ def _telemetry(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    if want and not set_recording and recording:
+    if want and not set_recording and recording and exporting:
         # Recording was already on before this command; saying it was "NOT turned
         # on" would tell the user both recording and export are off while both run.
         print("Anonymous usage beacon ENABLED (one heartbeat per day).")
@@ -710,6 +721,16 @@ def _telemetry(args: argparse.Namespace) -> None:
             "export metrics off the machine. This command changed neither; the "
             "config file, where the destination is configured, controls both."
         )
+    elif want and not set_recording and recording:
+        # On by default only: the destination is configured but nothing is sent.
+        print("Anonymous usage beacon ENABLED (one heartbeat per day).")
+        print(
+            "   Local metric recording is on by default. This host has an export "
+            "destination configured, but nothing is exported until "
+            "telemetry.enabled: true is written in the config file."
+        )
+        if _kiro_telemetry_exporting(loaded_cfg):
+            print("   Product usage metrics are sent to Kiro telemetry (kiro-telemetry).")
     elif want and not set_recording:
         print("Anonymous usage beacon ENABLED (one heartbeat per day).")
         print(
@@ -721,6 +742,13 @@ def _telemetry(args: argparse.Namespace) -> None:
     elif want:
         print("Usage data ENABLED: local metric recording and the anonymous beacon")
         print("   (one heartbeat per day).")
+        if _kiro_telemetry_listed():
+            print(
+                "   Product usage metrics are also sent to Kiro telemetry (kiro-telemetry), "
+                "labelled with a hashed install ID.",
+                flush=True,
+            )
+            _record_kiro_telemetry_ack(path)
         print("   Run 'kirocrew telemetry status' to see exactly what is sent.")
     else:
         print("Usage data DISABLED: local metric recording and the anonymous beacon")
@@ -729,33 +757,123 @@ def _telemetry(args: argparse.Namespace) -> None:
     _report_env_pin(want)
 
 
+def _record_kiro_telemetry_ack(path: Path) -> None:
+    """Record that this command's line naming Kiro telemetry reached a terminal.
+
+    Written after the line printed, and only to a terminal: a redirected or
+    closed stdout told nobody, so the Kiro destination keeps waiting for a notice
+    (``kiro_export.notice_shown``).
+    """
+    from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
+
+    try:
+        if not sys.stdout.isatty():
+            return
+
+        def _mutate(data: dict) -> dict:
+            if isinstance(data, dict):
+                dashboard = data.get("dashboard")
+                if isinstance(dashboard, dict):
+                    dashboard["kiro_telemetry_ack_version"] = PRIVACY_NOTICE_VERSION
+            return data
+
+        update_config_locked(path, mutate=_mutate, fsync=True, stamp_meta=False)
+    except Exception:  # noqa: BLE001 - not recorded: the notice still waits
+        return
+
+
+def _kiro_telemetry_exporting(cfg: object) -> bool:
+    """Whether recording on sends product usage metrics to Kiro telemetry now."""
+    try:
+        from kiro_crew.metrics import kiro_export
+
+        return bool(kiro_export.destinations()) and kiro_export.notice_shown(cfg or None)
+    except Exception:  # noqa: BLE001 - informational only
+        return False
+
+
+def _kiro_telemetry_listed() -> bool:
+    """Whether this build sends product usage metrics to Kiro telemetry."""
+    try:
+        from kiro_crew.metrics import kiro_export
+
+        return bool(kiro_export.destinations())
+    except Exception:  # noqa: BLE001 - informational only
+        return False
+
+
 def _format_recording_status(cfg: KiroCrewConfig) -> str:
     """The local metric recording half of ``kirocrew telemetry status``."""
     from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
-    from kiro_crew.metrics.provider import env_pin, pin_env_var
+    from kiro_crew.metrics.provider import _held_consent, env_pin, env_pin_is_soft, pin_env_var
 
     pin = env_pin()
-    effective = cfg.telemetry.enabled if pin is None else pin
+    # An unparseable config file holds consent as unknown (None): a new recorder is
+    # not built, but one a running gateway already holds keeps going until restart.
+    effective = _held_consent(cfg, bool(cfg.telemetry.enabled)) if pin is None else pin
     # Same resolver as the dashboard's disclosure. An unknown posture counts as
     # exporting: this is a privacy statement, so it must not promise local-only.
+    # A destination also means neither `telemetry enable` nor Settings will write
+    # telemetry.enabled (both refuse it), and export waits for that written opt-in.
     try:
-        from kiro_crew.metrics.provider import otlp_egress_active
+        from kiro_crew.metrics.provider import otlp_egress_active, outbound_consented
 
-        exports = otlp_egress_active(cfg.telemetry)
+        # Unknown consent: a running gateway may still export to a destination this
+        # (fallback) load cannot see, so never promise local-only.
+        egress_host = effective is None or otlp_egress_active(cfg.telemetry)
+        from kiro_crew.metrics import kiro_export
+
+        builtin = bool(kiro_export.destinations()) and kiro_export.notice_shown(cfg)
+        exports = egress_host and (effective is None or outbound_consented(cfg) or builtin)
     except Exception:  # noqa: BLE001 - unknown posture is treated as egress
-        exports = True
+        egress_host = exports = True
+    # Names only, never an endpoint (it can carry credentials). A build's own
+    # destination is marked so, since config cannot remove it.
+    sends_to = ""
+    try:
+        from kiro_crew.metrics.provider import otlp_egress_listing
+
+        sends_to = ", ".join(
+            (
+                f"{row.destination.name} (included by this build)"
+                if row.locked
+                else row.destination.name
+            )
+            for row in otlp_egress_listing(cfg.telemetry)
+        )
+    except Exception:  # noqa: BLE001 - the line is informational; the posture above stands
+        sends_to = ""
     lines = [
         "Local metric recording"
         + (
             " (when on, also sent to the metrics destination configured for this machine)"
             if exports
-            else " (stays on this machine)"
+            else (
+                " (stays on this machine until telemetry.enabled: true is written)"
+                if egress_host
+                else " (stays on this machine)"
+            )
         ),
         "",
-        f"  Enabled:     {'yes' if effective else 'no'}",
+        "  Enabled:     "
+        + (
+            "unknown (telemetry.enabled is not true or false; a running gateway keeps "
+            "recording until it restarts)"
+            if effective is None
+            else ("yes" if effective else "no")
+        ),
         f"  Config:      telemetry.enabled is {'true' if cfg.telemetry.enabled else 'false'}",
     ]
-    if pin is not None:
+    if sends_to:
+        lines.append(f"  Collectors:  {sends_to}")
+    if pin is not None and env_pin_is_soft():
+        remedy = (
+            "in the config file, where the export destination is configured"
+            if egress_host
+            else "(kirocrew telemetry enable, or Settings > Privacy)"
+        )
+        lines.append(f"  Held off by: {pin_env_var()} until telemetry.enabled is written {remedy}")
+    elif pin is not None:
         lines.append(f"  Pinned by:   {pin_env_var()} (the config value has no effect)")
     lines.append(
         f"  Notice:      privacy notice version {cfg.dashboard.privacy_ack_version} "

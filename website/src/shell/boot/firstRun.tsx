@@ -183,7 +183,7 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
   privacyAcked: boolean
   markOnboarded: () => void
   markImportOnboarded: () => void
-  markPrivacyAcked: (ack?: { noticeVersion: boolean }) => Promise<void> | void
+  markPrivacyAcked: (ack?: { noticeVersion: boolean; kiroTelemetry?: boolean }) => Promise<void> | void
 }) {
   const {
     showAgentImport, setShowAgentImport, keepEmptyImport, showPrivacy, setShowPrivacy, showOnboarding, setShowOnboarding,

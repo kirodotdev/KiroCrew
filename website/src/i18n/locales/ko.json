@@ -8477,12 +8477,16 @@
       "turnOffPinnedOverlay": "아직 켜져 있습니다. {{productName}} 데이터 폴더(KIROCREW_HOME을 설정하지 않았다면 ~/.kiro/crew)의 config.local.json 파일이 켜진 상태로 유지하고 있습니다. 에이전트에게 telemetry 섹션을 제거해 달라고 요청하거나 직접 제거한 다음 다시 시도하세요.",
       "turnOffUnconfirmed": "끄기를 완료하거나 확인하지 못해 일부 사용 데이터가 아직 켜져 있을 수 있습니다. 다시 시도하세요.",
       "turnOffScope": "끄면 성능 메트릭 기록, 일일 하트비트, 공식 앱 설치 영수증이 중지됩니다.",
+      "turnOffScopeKiro": "끄면 성능 메트릭 기록, Kiro 텔레메트리로 보내는 제품 사용 메트릭, 일일 하트비트, 공식 앱 설치 영수증이 중지됩니다.",
       "turnOffScopeHeartbeatOnly": "끄면 일일 하트비트와 공식 앱 설치 영수증이 중지됩니다.",
       "whereBody": "성능 메트릭은 이 컴퓨터에 남습니다. {{productName}}은(는) 하루에 한 번 아래 '익명 일일 하트비트'에 나열된 다섯 가지 항목을 담은 짧은 익명 하트비트를 보냅니다.",
       "whereBodyHeartbeatOnly": "이 컴퓨터에는 성능 메트릭이 기록되지 않습니다. {{productName}}은(는) 하루에 한 번 아래 '익명 일일 하트비트'에 나열된 다섯 가지 항목을 담은 짧은 익명 하트비트를 보냅니다.",
       "whereBodyNoHeartbeat": "성능 메트릭은 이 컴퓨터에 남습니다. 하트비트는 보내지 않습니다.",
       "whereBodyExport": "성능 메트릭은 이 컴퓨터에 기록되며, 이 컴퓨터에 설정된 메트릭 대상으로도 전송됩니다. {{productName}}은(는) 하루에 한 번 아래 '익명 일일 하트비트'에 나열된 다섯 가지 항목을 담은 짧은 익명 하트비트를 보냅니다.",
       "whereBodyExportNoHeartbeat": "성능 메트릭은 이 컴퓨터에 기록되며, 이 컴퓨터에 설정된 메트릭 대상으로도 전송됩니다. 하트비트는 보내지 않습니다.",
+      "whereBodyKiro": "{{productName}}은(는) 어떤 기능이 사용되는지, 작업에 걸린 시간 같은 제품 사용 메트릭도 무작위 설치 ID를 해시 처리한 값과 함께 Kiro 텔레메트리로 보냅니다.",
+      "whereBodyRecorded": "성능 메트릭은 이 컴퓨터에 기록됩니다. {{productName}}은(는) 하루에 한 번 아래 '익명 일일 하트비트'에 나열된 다섯 가지 항목을 담은 짧은 익명 하트비트를 보냅니다.",
+      "whereBodyRecordedNoHeartbeat": "성능 메트릭은 이 컴퓨터에 기록됩니다. 하트비트는 보내지 않습니다.",
       "whereBodyOff": "이 컴퓨터에는 성능 메트릭이 기록되지 않으며 하트비트도 보내지 않습니다.",
       "whereBodyUnknown": "메트릭 대상이 설정되어 있지 않으면 성능 메트릭은 이 컴퓨터에 남습니다. 하트비트가 켜져 있으면 {{productName}}은(는) 하루에 한 번 아래 '익명 일일 하트비트'에 나열된 다섯 가지 항목을 보냅니다.",
       "whereTitle": "데이터가 가는 곳"
@@ -19248,7 +19252,11 @@
         "recordMetricsEnvPinned": "{{envVar}} 환경 변수가 이 설정을 고정하고 있습니다. 여기에서 변경하려면 해제하세요.",
         "recordMetricsOverlayPinned": "config.local.json의 항목이 이 설정을 고정하고 있습니다. 여기에서 변경하려면 그 항목을 삭제하세요.",
         "recordMetricsEgressOff": "수집기가 설정되어 있으므로 기록하면 메트릭이 이 컴퓨터 외부로도 전송됩니다. 그렇게 하려면 config.json에서 켜세요.",
+        "recordMetricsEgressOffBuiltin": "기록을 켜면 제품 사용 메트릭도 Kiro 텔레메트리로 전송됩니다.",
+        "recordMetricsEgressKiroOn": "제품 사용 메트릭을 Kiro 텔레메트리로 보내고 있습니다.",
+        "recordMetricsEgressWaitingOwn": "직접 설정한 수집기에는 config.json에 telemetry.enabled: true가 기록될 때까지 아무것도 전송되지 않습니다.",
         "recordMetricsEgressOn": "메트릭이 이 컴퓨터 외부로, 아래에 나열된 수집기로 전송되고 있습니다.",
+        "recordMetricsEgressWaiting": "메트릭 수집기가 설정되어 있지만 config.json에 telemetry.enabled: true가 기록될 때까지 아무것도 보내지 않습니다.",
         "recordMetricsEgressDestinations": "수집기: {{names}}",
         "recordMetricsEgressLockedName": "{{name}} (이 빌드에 포함됨, '메트릭 기록'을 끄면 이것도 멈춤)",
         "recordMetricsEgressLockedNameOff": "{{name}} (이 빌드에 포함됨)",
@@ -20955,7 +20963,7 @@
       "range_to": "종료 날짜",
       "no_telemetry_in_window": "이 기간({{period}})에 기록된 텔레메트리가 없습니다.",
       "otel_retention_cap": "턴, 지연 시간, 시작 수치는 최근 {{days}}일만 포함합니다. 이전 메트릭은 삭제됩니다(<settingRef/>).",
-      "window_footer_shards_other": "OTEL 섹션 · 기간: {{period}} · 샤드 {{n}}개 · 소스: <dir/> · 로컬 전용, 외부 전송 없음",
+      "window_footer_shards_other": "OTEL 섹션 · 기간: {{period}} · 샤드 {{n}}개 · 소스: <dir/>",
       "daily_trend_point_other": "{{date}} · 콜드 {{cold}} · 웜 {{warm}} · 시작 {{n}}회"
     },
     "terminalPopoutFrame": {
@@ -21739,7 +21747,7 @@
     "installReceiptBody": "Kiro Crew 공식 카탈로그에서 설치 또는 업데이트가 성공하면 익명 영수증 하나가 전송됩니다. 외부 레지스트리, 로컬 앱, 자체 등록된 앱은 보고되지 않습니다.",
     "installReceiptFields": "공식 앱 슬러그 · 앱별 익명 토큰(앱 간 연결 불가) · 신규/업데이트 플래그 · Kiro Crew 버전",
     "installReceiptTitle": "공식 앱 설치 영수증",
-    "localDataBody": "사용 및 컨텍스트 기록. 성능 메트릭은 기본적으로 꺼져 있습니다.",
+    "localDataBody": "사용 및 컨텍스트 기록. 성능 메트릭은 기본적으로 이 기기에 기록됩니다. 지금 켜져 있는지는 설정 > 개인정보 보호의 '메트릭 기록' 스위치에서 확인할 수 있습니다.",
     "localDataTitle": "기기에 보관",
     "notSendingAlreadySentToday": "오늘의 하트비트는 이미 전송되었습니다.",
     "notSendingAwaitingAck": "아직 전송된 것이 없습니다. 첫 하트비트는 이 페이지를 확인할 때까지 대기합니다.",
@@ -21758,7 +21766,10 @@
     "toggleDescription": "이후 실행을 위해 저장됩니다.",
     "toggleLabel": "익명 사용 하트비트 전송",
     "toggleSaveFailed": "텔레메트리 선택을 저장할 수 없습니다. 다시 시도하세요.",
-    "envOverrideWithSettingRef": "<settingRef/>이(가) 이 환경에 설정되어 있어 하트비트가 꺼져 있습니다. 여기에서 텔레메트리를 관리하려면 해제하세요."
+    "envOverrideWithSettingRef": "<settingRef/>이(가) 이 환경에 설정되어 있어 하트비트가 꺼져 있습니다. 여기에서 텔레메트리를 관리하려면 해제하세요.",
+    "localDataBodyOn": "사용 및 컨텍스트 기록. 성능 메트릭이 지금 이 기기에 기록되고 있습니다.",
+    "localDataBodyOff": "사용 및 컨텍스트 기록. 성능 메트릭이 지금 이 기기에 기록되고 있지 않습니다.",
+    "doNotTrackCaption": "DO_NOT_TRACK=1을 설정하면 성능 메트릭과 하트비트가 꺼집니다."
   },
   "settings": {
     "chat": {

@@ -7,21 +7,24 @@ pushing the same metrics to an **OpenTelemetry Collector**, and from there to
 whatever backend you already run (Amazon CloudWatch, Datadog, or any service that
 accepts OTLP).
 
-Nothing here is on by default, and turning it on takes two separate decisions:
-collection, then egress.
+Local recording is on by default; export to a collector of your own is not.
+Sending metrics to it takes two separate decisions: an explicit opt-in to
+collection, then egress. The one destination the public build ships is the
+exception, described in [The Kiro telemetry destination](#the-kiro-telemetry-destination).
 
 ## Default posture
 
 | | Default | What it means |
 |---|---|---|
-| `telemetry.enabled` | `false` | Nothing is recorded. Metric call sites are cheap no-ops. |
+| `telemetry.enabled` | `true` | Metrics are recorded to the local JSONL sink. The default alone never permits export to your own collectors: that needs `"enabled": true` written in a config file, or `KIROCREW_TELEMETRY=1`. The public build's `kiro-telemetry` destination is the exception (see below). Turning it off (`false`, `KIROCREW_TELEMETRY=0`, `DO_NOT_TRACK=1`, or `kirocrew telemetry disable`) makes metric call sites cheap no-ops. |
 | `telemetry.otlp_endpoint` | `""` (empty) | Nothing leaves the machine. Local JSONL sink only. |
 | `telemetry.otlp_endpoints` | `[]` (empty) | Same: no extra collectors. See [Several collectors](#several-collectors-otlp_endpoints). |
-| OTLP exporter package | not installed | The OTLP exporter is not importable until installed separately. |
+| OTLP exporter package | installed | A base dependency. Installing it starts no egress. |
 
-Collection and egress are deliberately separate switches. Enabling collection
-gives you the local sink and the Telemetry panel; it does **not** send anything
-anywhere. Egress needs the endpoint set *and* the exporter package installed.
+Collection and egress to your own collector are deliberately separate switches.
+Collection gives you the local sink and the Telemetry panel and does **not** send
+anything to a collector of yours. That egress needs the endpoint set *and*
+collection turned on explicitly rather than by default.
 
 The local sink is never replaced by OTLP — it is additive. When you configure an
 endpoint you get both readers, so the dashboard keeps working and you keep a
@@ -31,8 +34,9 @@ local copy.
 
 ### 1. Install the exporter
 
-From a source checkout, install the declared extra without replacing the editable
-Kiro Crew install:
+The exporter is a base dependency, so a current install already has it. An
+install from before it became one can add it. From a source checkout, install the
+declared extra without replacing the editable Kiro Crew install:
 
 ```bash
 pip install -e ".[otlp]"
@@ -52,9 +56,10 @@ OTLP receiver's `http` protocol enabled (port 4318 by convention, not 4317).
 If the exporter package is missing but an endpoint is configured, Kiro Crew logs
 a warning and stays local-only rather than failing to start.
 
-### 2. Enable collection
+### 2. Opt in to collection explicitly
 
-Either edit `~/.kiro/crew/config.json`:
+Recording is on by default, but a default never permits export: write the
+switch yourself. Either edit `~/.kiro/crew/config.json`:
 
 ```json
 {
@@ -164,7 +169,8 @@ feedback survey, and does not show the first-run Privacy chapter.
 
 A build of Kiro Crew can ship a collector of its own. It does so in code, through
 its telemetry provider (`TelemetryProvider.otlp_destinations`), not as an entry in
-your `config.json`; the public build ships none. What that means for you:
+your `config.json`. The public build ships one, `kiro-telemetry`, described in
+[The Kiro telemetry destination](#the-kiro-telemetry-destination). What that means for you:
 
 - Your own entries still work next to it, as long as the build keeps them (the
   public provider's list is `otlp_endpoints.config_destinations(cfg)`, which a
@@ -178,14 +184,52 @@ An LTS build ignores `otlp_endpoint` and `otlp_endpoints` from local
 config, as it ignores `otlp_endpoint` today; collectors the build ships still
 apply, under the policy.
 
+#### The Kiro telemetry destination
+
+The public build sends the reviewed [`PRODUCT_METRICS`](#the-product_metrics-preset)
+list to the Kiro telemetry endpoint (`https://telemetry.us-east-1.kiro.dev/v1/metrics`),
+next to any collector of your own. It is listed as `kiro-telemetry` in Settings ->
+Privacy and in `kirocrew telemetry status`.
+
+Unlike your own collectors, it exports while recording is on by default: no
+`"enabled": true` has to be written. It waits for one thing first: the privacy
+notice that names it has been shown. That is the dashboard's Privacy chapter at
+notice version 3 showing the line that names it (Keep on, or
+`kirocrew telemetry enable`, records `dashboard.kiro_telemetry_ack_version`), or
+the one-line notice that names it, printed on a terminal by a start with no
+dashboard (`gateway --no-dashboard`, `run`, `chat`). A line that goes to a log or
+a pipe does not count, and neither does a notice from before version 3, which
+said metrics stay on this machine.
+
+Because the notice names it, it does not stop the Settings switch or
+`kirocrew telemetry enable` from turning recording on. Only your own collectors
+do that.
+
+| Host | Sent? |
+|---|---|
+| Recording on (by default or by choice), notice version 3 shown | Yes |
+| Recording on, notice version 3 not shown yet | No |
+| A dashboard gateway nobody opens (its stderr line goes to a log and does not count) | No, until someone clicks Keep on |
+| An upgrade that had turned the heartbeat off, `"enabled": false` or a non-bool value, `kirocrew telemetry disable`, `KIROCREW_TELEMETRY=0`, or `DO_NOT_TRACK=1` | No: recording is off |
+| A policy's `otlp_hosts` list that does not permit `telemetry.us-east-1.kiro.dev` | No |
+| LTS build (the policy names the collector, or none) | No: not part of that build's list |
+| CI runner (`CI`, `GITHUB_ACTIONS`, ...) or a non-default `KIROCREW_HOME` | No: not listed, same rule as the daily heartbeat |
+
+Each data point carries `ClientType=kiro-crew`. The batch's resource keeps
+only service name and version, Python runtime, `kirocrew.harness` and
+`kirocrew.process.role`: no install id, no pid, no OS type, nothing under `host.*`. Every
+request carries `x-kiro-machineid`, a SHA-256 of the install id, and no sign-in
+token or other credential. The process-wide `OTEL_EXPORTER_OTLP_*` header,
+credential and certificate variables are never applied to it.
+
 ### Other settings worth knowing
 
 | Key | Default | Notes |
 |---|---|---|
 | `telemetry.export_interval_seconds` | `60` | Applies to both readers. |
 | `telemetry.local_dir` | `~/.kiro/crew/metrics` | Local JSONL shard directory. |
-| `telemetry.retention_days` | `0` | `0` never prunes by age. |
-| `telemetry.max_total_mb` | `0` | `0` never prunes by size. |
+| `telemetry.retention_days` | `30` | `0` never prunes by age. |
+| `telemetry.max_total_mb` | `100` | `0` never prunes by size. |
 
 ## Temporality: the setting that decides whether your backend accepts the data
 
@@ -511,8 +555,9 @@ continuity is unavailable on that broken host.
 
 ### What these can and cannot tell you
 
-They describe **the machines you run and have opted in**, and nothing wider. Both
-switches default off and OTLP additionally needs the optional exporter package,
+They describe **the machines you run and have opted in**, and nothing wider.
+Export needs an explicit opt-in and an endpoint, and OTLP additionally needs the
+optional exporter package,
 so an aggregate over these gauges is a statement about your own fleet — useful
 for spotting a host that stopped scheduling crons or whose skills tree drifted,
 not a measurement of how a feature is used in general. Kiro Crew's own install
@@ -630,10 +675,11 @@ the collector, or temporality — not collection.
 | Symptom | Likely cause |
 |---|---|
 | No `telemetry OTLP export active` line | `otlp_endpoint` empty, or the OTLP exporter package is not installed — check for the warning naming the missing package. |
+| `telemetry export to configured destinations waits for an explicit opt-in to recording` | Recording is on by default, and a default does not permit export to your own collectors. Write `"enabled": true` under `telemetry` in `config.json`, or set `KIROCREW_TELEMETRY=1`. |
 | `OTLP exporter init failed` warning | Malformed endpoint. The message deliberately omits the URL, since it can carry a credential. |
 | Local shards fill, nothing at the backend | Endpoint missing `/v1/metrics`, collector on 4317 (gRPC) instead of 4318 (HTTP), or the collector's `http` protocol not enabled. |
 | `points at an OTLP traces route` warning | The endpoint ends in `/v1/traces` (or `/v1/logs`). Kiro Crew exports metrics only, so a trace backend such as Langfuse receives nothing. See "Traces are not exported". |
 | Metrics arrive but counters look like resets | Temporality mismatch. See the temporality section. |
 | `unknown type: "awsemf"` at collector startup | Running the core `otelcol`; vendor exporters need `otelcol-contrib`. |
 | One expected series is absent | That probe could not read its source. Absence is a gap, never a zero. |
-| Nothing recorded at all | Collection consent: `telemetry.enabled` is `false` and `KIROCREW_TELEMETRY` is unset. |
+| Nothing recorded at all | Collection is off: `telemetry.enabled` is `false`, `KIROCREW_TELEMETRY` is `0`, or `DO_NOT_TRACK` is set. |
