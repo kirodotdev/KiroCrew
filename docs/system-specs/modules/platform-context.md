@@ -1407,9 +1407,21 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   `package/<name>` request prefers `<root>/<name>/SKILL.md` over a nested
   `<root>/<Pkg>/<name>/SKILL.md`, and when two DISTINCT files tie within a tier
   it resolves to `None` — HTTP 404, with the competing candidates logged — rather
-  than picking one, because the key cannot express which was meant (paths that
-  merely symlink to the same file are not a tie). An edition that wants both of
-  two same-named skills reachable MUST therefore key them distinguishably);
+  than picking one (paths that merely symlink to the same file are not a tie).
+  **Each copy stays addressable by a qualified key:** `package/<qualifier>:<rel>`,
+  where `<qualifier>` (`package_root_qualifier`) is 16 lowercase hex of a blake2b
+  digest of the resolved package root, so a symlink alias of a root shares its
+  qualifier, and the resolver searches only the root it names
+  (`split_package_key` accepts that exact shape only, so a directory whose own
+  name holds `:` still resolves unqualified). The catalog walks each package
+  root on its own and `fold_package_keys` qualifies only a relative path that two
+  distinct files claim; every other key stays `package/<rel>`. `/api/skills`
+  rekeys each package row that shares its key with a different file to the
+  catalog's key for that file (`_qualify_colliding_package_rows`), so an edition
+  need not key same-named skills apart. The bare key two distinct files claim
+  still resolves to `None` and 404s on detail. The `$` picker and a skills-only
+  hook's directive both emit the qualifier-free leaf, because the `$` token
+  grammar stops at `:`);
   `async install_mcp/uninstall_mcp(server_id)`,
   `async install_skill/uninstall_skill(package)`,
   `async install_agent/uninstall_agent(package)` → `CapabilityResult(ok, message)`
