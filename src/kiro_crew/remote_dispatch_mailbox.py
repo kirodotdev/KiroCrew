@@ -36,8 +36,10 @@ from kiro_crew.work_ledger import (
     WorkEvent,
     WorkItem,
     WorkLedgerError,
+    _as_str,
     _commit_item_locked,
     _now_iso,
+    _read_json_record,
     _require_acceptance,
     _require_item_id,
     _require_record_fits,
@@ -47,6 +49,7 @@ from kiro_crew.work_ledger import (
     apply_conductor_action,
     binding_lock,
     binding_path,
+    bindings_dir,
     create_bound_item,
     ensure_conductor,
     item_events_path,
@@ -275,6 +278,37 @@ def bound_mailbox(worker_slot_key: str) -> tuple[str, str] | None:
     if binding is None or not is_mailbox(binding[0]):
         return None
     return binding
+
+
+def open_mailbox_workers() -> int:
+    """Worker slots on this crew bound to an open hub mailbox item. BLOCKING.
+
+    Walks the binding files. A binding counts when its board is a ``hub:`` board
+    and its item is open and names the worker back, the test :func:`close_mailbox`
+    uses: a deleted slot's item is closed or discarded, so it counts nothing.
+    A torn binding or item file counts nothing. Raises ``OSError`` when the
+    bindings directory cannot be listed; the caller decides how to fail.
+    """
+    root = bindings_dir()
+    if not root.is_dir():
+        return 0
+    count = 0
+    for path in root.glob("*.json"):
+        raw = _read_json_record(path, strict=False)
+        if not isinstance(raw, dict):
+            continue
+        board = _as_str(raw.get("conductor_slot_key"))
+        item_id = _as_str(raw.get("item_id"))
+        worker = _as_str(raw.get("worker_slot_key"))
+        if not worker or not is_mailbox(board) or not _slot_key_is_shaped(board):
+            continue
+        try:
+            item = read_work_item(board, item_id)
+        except WorkLedgerError:
+            continue
+        if item is not None and not item.is_terminal and item.worker_session_key == worker:
+            count += 1
+    return count
 
 
 def names_worker(bound: tuple[str, str], worker_slot_key: str) -> bool:
