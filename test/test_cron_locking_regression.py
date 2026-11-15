@@ -143,12 +143,29 @@ class TestReadPathsLocked:
         svc._dir.mkdir(parents=True, exist_ok=True)
         holder = (tmp_path / ".crons.lock").open("w")
         platform_compat.acquire_lock(holder.fileno(), exclusive=True)
+        asked: list[str] = []
+        reader = threading.get_ident()
+
+        def _refuse(name: str):  # type: ignore[no-untyped-def]
+            real = getattr(platform_compat, name)
+
+            def _fn(*a, **k):  # type: ignore[no-untyped-def]
+                if threading.get_ident() != reader:
+                    return real(*a, **k)  # another thread's lock call is not this read's
+                # With the lock held elsewhere, any lock call is the start of a wait:
+                # a blocking flock parks, the store's bounded spin sleeps to timeout.
+                asked.append(name)
+                raise AssertionError(f"a cache-only read called platform_compat.{name}")
+
+            return _fn
+
         try:
-            start = time.monotonic()
-            listed = svc.list_jobs(include_disabled=True)  # must not raise/block
-            got = svc.get_job(job.id)                      # must not raise/block
-            elapsed = time.monotonic() - start
-            assert elapsed < 1.0
+            with contextlib.ExitStack() as stack:
+                for name in ("open_lock_file", "try_acquire_lock", "acquire_lock"):
+                    stack.enter_context(patch.object(platform_compat, name, _refuse(name)))
+                listed = svc.list_jobs(include_disabled=True)  # must not raise/block
+                got = svc.get_job(job.id)                      # must not raise/block
+            assert asked == [], f"the reads asked for the held store lock: {asked}"
             assert {j.id for j in listed} == {job.id}
             assert got is not None and got.id == job.id
         finally:

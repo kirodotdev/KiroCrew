@@ -10,7 +10,6 @@ import asyncio
 import dataclasses
 import logging
 import threading
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -30,7 +29,7 @@ from kiro_crew.session_map import (
     SessionMap,
     set_unbind_listener,
 )
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, default_timeout
 
 
 @pytest.fixture()
@@ -1545,30 +1544,45 @@ class TestAuditDoesNotBlockTheLoop:
     async def test_the_loop_keeps_beating_while_the_audit_runs(self, session_map, unbind_calls):
         """The clear must RETURN while the sink is still blocked.
 
-        Timing the synchronous call is the only assertion that fails when ``sel()``
-        is resolved on the caller's thread: a heartbeat measured after the call
-        returns cannot tell a stall from a slow sink.
+        Asserted on the thread that ran ``sel()`` and on the sink's state when the
+        call returned, not on a clock: if ``sel()`` were resolved on the caller's
+        thread, the call could not return before the sink did, however fast the
+        host. A heartbeat measured after the call returns cannot tell a stall from
+        a slow sink.
         """
         entered = threading.Event()
         release = threading.Event()
+        returned = threading.Event()
+        lost_run = threading.Event()
+        caller = threading.get_ident()
+        sel_threads: list[int] = []
 
         def _blocking_sel():
+            sel_threads.append(threading.get_ident())
+            if threading.get_ident() == caller:
+                # Resolved inline: do not stall the test for the wait below; the
+                # thread assertion fails it by name instead.
+                return MagicMock()
             entered.set()
-            # Long enough that an inline resolution cannot finish inside the
-            # assertion below; released in the finally so nothing hangs.
-            release.wait(30)
+            # Held until the test releases it in the finally; the bound is only the
+            # lost-run ceiling, so ``returned`` cannot be set by a slow host.
+            if release.wait(default_timeout()):
+                returned.set()  # only an explicit release ends the sink normally
+            else:
+                lost_run.set()  # the lost-run bound ran out: reported apart below
             return MagicMock()
 
         session_map.set_mirror_link("dashboard:chat-1", INBOUND_LINK, accepts_inbound=True)
         try:
             with patch("kiro_crew.session_map.sel", _blocking_sel):
-                started = time.monotonic()
                 session_map.clear_mirror_link("dashboard:chat-1", reason="dashboard_unlink")
-                elapsed = time.monotonic() - started
-                # The audit is in flight on the executor...
+                # The loop-side caller did not run the audit itself...
+                assert caller not in sel_threads, "clear resolved sel() on the caller's thread"
+                # ...and the audit is in flight on the executor...
                 assert await asyncio.to_thread(entered.wait, 10) is True
-                # ...and the loop-side caller did not wait for it.
-                assert elapsed < 1.0, f"clear blocked the caller for {elapsed:.1f}s"
+                # ...still blocked, so the caller returned without waiting for it.
+                assert not lost_run.is_set(), "lost run: the held sink was never released"
+                assert not returned.is_set(), "clear returned only after the sink did"
                 # The loop is still able to run work.
                 beats = 0
                 for _ in range(5):

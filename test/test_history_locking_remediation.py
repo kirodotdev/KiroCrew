@@ -124,14 +124,49 @@ class TestCrossProcessLock:
         def _no_sleep_on_loop(_secs: float) -> None:
             raise AssertionError("on-loop acquire must never sleep/poll (blocks the event loop)")
 
-        monkeypatch.setattr(history_mod._time, "sleep", _no_sleep_on_loop)
+        # The loop thread's sleep is refused through ``_LoopTime`` below, on the
+        # defining module's own binding: patching ``time.sleep`` itself would hand
+        # every other thread in the worker this refusal too.
         log = ConversationLog(base_dir=tmp_path)
         log.append("k", "user", "seed")
         holder = os.open(str(log._lock_path("k")), os.O_RDWR | os.O_CREAT, 0o600)
 
-        async def _run() -> float:
+        import kiro_crew.history_locks as locks_mod
+
+        # Count the flock attempts, and refuse the off-loop deadline clock: the
+        # only reader of ``_time.monotonic`` in the defining module is the
+        # patient poll, so reaching it means the loop path used the long budget.
+        # Only the loop thread (this one: ``asyncio.run`` runs here) is counted and
+        # refused; any other thread in the worker gets the real functions.
+        loop_thread = threading.get_ident()
+        attempts: list[int] = []
+        real_try = locks_mod._try_acquire_named_sidecar
+        real_time = locks_mod._time
+
+        def _counted_try(*args, **kwargs):  # type: ignore[no-untyped-def]
+            if threading.get_ident() == loop_thread:
+                attempts.append(1)
+            return real_try(*args, **kwargs)
+
+        class _LoopTime:
+            def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+                return getattr(real_time, name)
+
+            def monotonic(self) -> float:
+                if threading.get_ident() == loop_thread:
+                    raise AssertionError("on-loop acquire started the off-loop deadline poll")
+                return real_time.monotonic()
+
+            def sleep(self, secs: float) -> None:
+                if threading.get_ident() == loop_thread:
+                    _no_sleep_on_loop(secs)
+                real_time.sleep(secs)
+
+        monkeypatch.setattr(locks_mod, "_try_acquire_named_sidecar", _counted_try)
+        monkeypatch.setattr(history_mod, "_time", _LoopTime())
+
+        async def _run() -> None:
             assert platform_compat.try_acquire_lock(holder, exclusive=True)
-            start = time.monotonic()
             # This test exercises the low-level on-loop acquire primitive
             # directly, so it deliberately bypasses the strict off-loop
             # discipline guard (which would otherwise raise OnLoopPersistError
@@ -140,13 +175,11 @@ class TestCrossProcessLock:
                 with pytest.raises(history_mod.HistoryLockTimeout):
                     # append runs synchronously on THIS loop thread.
                     log.append("k", "user", "under-contention")
-            return time.monotonic() - start
 
         try:
-            elapsed = _asyncio.run(_run())
-            # Single non-blocking attempt: returns effectively immediately and
-            # never used the long off-loop budget.
-            assert elapsed < 1.0, f"on-loop acquire blocked ({elapsed:.2f}s)"
+            _asyncio.run(_run())
+            # Single non-blocking attempt, and never the long off-loop budget.
+            assert attempts == [1], f"on-loop acquire made {len(attempts)} flock attempts"
         finally:
             platform_compat.release_lock(holder)
             os.close(holder)
@@ -200,6 +233,28 @@ class TestCrossProcessLock:
 class TestMessageCacheRewriteSerialization:
     """The cache FILL is ordered against writers, but a warm read is not, and
     an on-loop read never blocks on one."""
+
+    class _RefuseBlocking:
+        """Wrap the writer lock: record every acquire, refuse any that can block."""
+
+        def __init__(self, lock) -> None:  # type: ignore[no-untyped-def]
+            self._lock = lock
+            self.calls: list[tuple[bool, float]] = []
+
+        def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+            self.calls.append((blocking, timeout))
+            if blocking:
+                raise AssertionError(f"read blocked on the writer lock (timeout={timeout})")
+            return self._lock.acquire(blocking=False)
+
+        def release(self) -> None:
+            self._lock.release()
+
+        def __enter__(self) -> bool:
+            return self.acquire()
+
+        def __exit__(self, *_exc: object) -> None:
+            self.release()
 
     @staticmethod
     def _hold(lock, acquired, release):  # type: ignore[no-untyped-def]
@@ -263,10 +318,11 @@ class TestMessageCacheRewriteSerialization:
 
         acquired, release = threading.Event(), threading.Event()
         t = self._hold(log._file_lock("k"), acquired, release)
+        spy = self._RefuseBlocking(log._file_lock("k"))
+        log._file_lock = lambda _key: spy  # type: ignore[method-assign]
         try:
-            started = time.monotonic()
             assert len(log._read_messages("k")) == 1
-            assert time.monotonic() - started < 1.0, "warm hit blocked on the writer lock"
+            assert spy.calls == [], "warm hit tried the writer lock"
         finally:
             release.set()
             t.join(5)
@@ -280,14 +336,16 @@ class TestMessageCacheRewriteSerialization:
 
         acquired, release = threading.Event(), threading.Event()
         t = self._hold(log._file_lock("k"), acquired, release)
+        spy = self._RefuseBlocking(log._file_lock("k"))
+        log._file_lock = lambda _key: spy  # type: ignore[method-assign]
         try:
 
             async def on_loop() -> list[dict]:
                 return log._read_messages("k")
 
-            started = time.monotonic()
             assert len(asyncio.run(on_loop())) == 1
-            assert time.monotonic() - started < 1.0, "on-loop fill blocked on the writer"
+            # One non-blocking try that the writer refused, then an unlocked fill.
+            assert spy.calls == [(False, -1)], "on-loop fill blocked on the writer"
         finally:
             release.set()
             t.join(5)

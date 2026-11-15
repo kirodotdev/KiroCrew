@@ -5471,7 +5471,13 @@ cannot read a linear cost as an unbounded ratio). The long pumps' absolute budge
 `REDOS_LARGE_BUDGET_SECONDS` unless the caller passes the keyword-only `budget_seconds`:
 a guard converted from a wall-clock bound passes the constant it already carried, as
 `test/test_markdown_link_parentheses.py` does, since a ratchet may only tighten. Size any
-complexity guard so the regression it exists to catch FAILS it, not hangs it.
+complexity guard so the regression it exists to catch FAILS it, not hangs it. When the
+pattern itself is the guard, read its parse instead of pumping it:
+`test/regex_structure_helpers.py` has `unbounded_repeat_bodies` (one unbounded repeat of a
+fixed-width body, nothing unbounded nested in it, as
+`test_a_long_non_matching_run_is_rejected_promptly` asserts) and `run_cost_unproven` (no
+two run-consuming repeats separated only by items that match the run, as
+`test_long_untrusted_paste_is_linear` asserts on every pattern the scrub hands the run).
 
 **First check that the time is even the algorithm's.** A test that bounded `elapsed` around
 the bash gate took 144s under load — but with the gate's filesystem probes stubbed, the same
