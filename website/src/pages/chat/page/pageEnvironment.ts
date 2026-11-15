@@ -148,8 +148,8 @@ export function useChatPageEnvironment({
   const filteredSlots = useMemo(() => chatPageSlots(slots), [slots])
   // The person's rows: what the collapsed-sidebar flyout lists and the unread
   // count counts. The sidebar filters its own prop the same way.
-  // Keyed on the Crew Mode preview too, which decides whether crew members are
-  // left out: off, `crewModeView` hands the rows back unchanged.
+  // Keyed on whether this build offers conductor mode too, which decides whether
+  // crew members are left out: off (LTS), `crewModeView` hands the rows back unchanged.
   const crewMode = useCrewMode()
   // And on the mate sessions preview; the mate threads come from the full store,
   // since `chatPageSlots` leaves them out.

@@ -50,9 +50,10 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 import SidePanel, { newMenuSections, NEW_MENU_LABEL_KEY } from '../pages/chat/SidePanel'
 import { usePanelTabs, __resetPanelTabs } from '../hooks/usePanelTabs'
 import { LONG_PRESS_MS } from '../hooks/useLongPressReorder'
-import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
 import { api } from '../api/client'
 import { sseWorkflowEvent } from '../store/chatSlice'
+import { turnOffCrewModeAsLts } from './crewModeOff'
+import { applyLockedControls } from '../utils/editionLocks'
 
 let panelController: ReturnType<typeof usePanelTabs>
 
@@ -204,8 +205,8 @@ describe('side panel Dashboard view', () => {
   })
 })
 
-describe('side panel Crew tab with the Crew Mode preview off', () => {
-  beforeEach(() => { localStorage.clear() })
+describe('side panel Crew tab in a build without conductor mode (LTS)', () => {
+  beforeEach(() => { localStorage.clear(); turnOffCrewModeAsLts() })
   // A bucket restored from storage, as `usePanelTabs` does on a reload.
   const Seeded = () => {
     const tabsCtl = usePanelTabs('slot-a')
@@ -228,16 +229,16 @@ describe('side panel Crew tab with the Crew Mode preview off', () => {
     renderSeeded()
     expect(screen.queryByRole('tab', { name: /^Board/ })).toBeNull()
     expect(screen.queryByTestId('crew-workers-none')).toBeNull()
-    // Withheld, not closed: the stored tab is still there for when the preview comes back.
+    // Withheld, not closed: the stored tab is still there if the lock lifts.
     expect(panelController.tabs.some(t => t.kind === 'workers')).toBe(true)
     openMenu()
     expect(screen.queryByRole('menuitem', { name: 'Board' })).toBeNull()
   })
 
-  it('shows the stored Crew tab again when the preview is turned on', () => {
+  it('shows the stored Crew tab again when the lock lifts', () => {
     renderSeeded()
     expect(screen.queryByRole('tab', { name: /^Board/ })).toBeNull()
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
+    act(() => { applyLockedControls([]) })
     expect(screen.getByRole('tab', { name: /^Board/ })).toBeTruthy()
   })
 })

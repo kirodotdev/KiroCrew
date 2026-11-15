@@ -8,6 +8,7 @@ import type { ChatSlot, SessionInfo } from '../../types'
 import { api } from '../../api/client'
 import { resolveDefaultMemoryMode } from '../../api/queryClient'
 import { crewModeCatalogKnown, crewModeEnabled, newChatCrewModeAgent, setCrewModeCatalog } from '../../lib/crewMode'
+import { featurePreviewLockKnown, whenFeaturePreviewLockKnown } from '../../utils/editionLocks'
 import { addSlotOptimistic, updateSlot } from '../dashboardSlice'
 import { paletteSize, resolveDefaultColor } from '../../utils/sessionColors'
 import { isChatPageSurface } from '../../utils/channelOrigin'
@@ -61,10 +62,13 @@ type NewChatConfig = { default_memory_mode?: unknown; new_chat_crew_mode?: unkno
  * broadcast would otherwise leave the row showing the plain agent.
  */
 async function startNewChatInCrewMode(slot: ChatSlot, config: NewChatConfig | undefined, publish: (patch: Partial<ChatSlot> & { key: string }) => void): Promise<void> {
-  if (!crewModeEnabled() || !slot?.key) return
+  if (!slot?.key || (crewModeEnabled() === false && featurePreviewLockKnown())) return
   try {
     const cfg = config ?? await api.dashboardConfig() as NewChatConfig
     if (cfg?.new_chat_crew_mode !== true) return
+    // One-shot: the page's first chat can be made before the edition lock is known.
+    await whenFeaturePreviewLockKnown()
+    if (!crewModeEnabled()) return
     if (!crewModeCatalogKnown()) {
       const catalog = await api.agentCatalog(slot.key)
       setCrewModeCatalog(catalog.crew_mode_agent, catalog.conductor_agents, catalog.default_agent)

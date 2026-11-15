@@ -78,11 +78,11 @@ def test_nothing_is_on_by_default():
     [
         (None, {}),
         ([], {}),
-        ("crew_mode", {}),
-        ({"crew_mode": True, "webhooks": False}, {"crew_mode": True, "webhooks": False}),
-        ({"crew_mode": "yes", "webhooks": 1, "layout_harness": None}, {}),
+        ("explore", {}),
+        ({"explore": True, "webhooks": False}, {"explore": True, "webhooks": False}),
+        ({"explore": "yes", "webhooks": 1, "layout_harness": None}, {}),
         ({"layout-harness": True}, {}),
-        ({"crew_mode": True, "not_a_preview": True}, {"crew_mode": True}),
+        ({"explore": True, "not_a_preview": True}, {"explore": True}),
     ],
 )
 def test_the_loader_keeps_only_known_names_with_boolean_values(raw, expected):
@@ -91,10 +91,19 @@ def test_the_loader_keeps_only_known_names_with_boolean_values(raw, expected):
 
 def test_a_stored_switch_loads(tmp_config):
     tmp_config.write_text(
-        json.dumps({"dashboard": {"feature_previews": {"crew_mode": True}}}), encoding="utf-8"
+        json.dumps({"dashboard": {"feature_previews": {"explore": True}}}), encoding="utf-8"
     )
-    assert KiroCrewConfig.load().dashboard.feature_previews == {"crew_mode": True}
-    assert KiroCrewConfig.load().to_dict()["dashboard"]["feature_previews"] == {"crew_mode": True}
+    assert KiroCrewConfig.load().dashboard.feature_previews == {"explore": True}
+    assert KiroCrewConfig.load().to_dict()["dashboard"]["feature_previews"] == {"explore": True}
+
+
+def test_a_stored_switch_for_conductor_mode_is_ignored(tmp_config):
+    """Conductor mode left Feature previews, so an old ``crew_mode`` switch reads as nothing."""
+    tmp_config.write_text(
+        json.dumps({"dashboard": {"feature_previews": {"crew_mode": False, "webhooks": True}}}),
+        encoding="utf-8",
+    )
+    assert KiroCrewConfig.load().dashboard.feature_previews == {"webhooks": True}
 
 
 @pytest.mark.asyncio
@@ -118,9 +127,9 @@ async def test_each_known_switch_is_writable(tmp_config, name):
     [
         ("dashboard.feature_previews.not_a_preview", True),
         ("dashboard.feature_previews.layout-harness", True),
-        ("dashboard.feature_previews", {"crew_mode": True}),
-        ("dashboard.feature_previews.crew_mode", "true"),
-        ("dashboard.feature_previews.crew_mode", 1),
+        ("dashboard.feature_previews", {"explore": True}),
+        ("dashboard.feature_previews.explore", "true"),
+        ("dashboard.feature_previews.explore", 1),
     ],
 )
 async def test_an_unknown_name_or_non_boolean_writes_nothing(tmp_config, path, value):
@@ -136,24 +145,24 @@ async def test_the_one_time_carry_up_writes_a_switch_the_gateway_does_not_hold(t
     async with TestClient(TestServer(_make_app())) as c:
         resp = await c.patch(
             "/api/config/kirocrew",
-            json={"path": "dashboard.feature_previews.crew_mode", "value": True, "if_unset": True},
+            json={"path": "dashboard.feature_previews.explore", "value": True, "if_unset": True},
         )
         assert resp.status == 200, await resp.text()
     stored = json.loads(tmp_config.read_text(encoding="utf-8"))
-    assert stored["dashboard"]["feature_previews"] == {"crew_mode": True}
-    assert KiroCrewConfig.load().dashboard.feature_previews == {"crew_mode": True}
+    assert stored["dashboard"]["feature_previews"] == {"explore": True}
+    assert KiroCrewConfig.load().dashboard.feature_previews == {"explore": True}
 
 
 @pytest.mark.asyncio
 async def test_the_one_time_carry_up_never_replaces_a_stored_switch(tmp_config):
     tmp_config.write_text(
-        json.dumps({"dashboard": {"feature_previews": {"crew_mode": False}}}), encoding="utf-8"
+        json.dumps({"dashboard": {"feature_previews": {"explore": False}}}), encoding="utf-8"
     )
     before = tmp_config.read_bytes()
     async with TestClient(TestServer(_make_app())) as c:
         resp = await c.patch(
             "/api/config/kirocrew",
-            json={"path": "dashboard.feature_previews.crew_mode", "value": True, "if_unset": True},
+            json={"path": "dashboard.feature_previews.explore", "value": True, "if_unset": True},
         )
         assert resp.status == 409, await resp.text()
         assert (await resp.json())["code"] == "already_set"
@@ -170,7 +179,7 @@ async def test_a_non_owner_cannot_write_a_switch(tmp_config):
         async with TestClient(TestServer(_make_app())) as c:
             resp = await c.patch(
                 "/api/config/kirocrew",
-                json={"path": "dashboard.feature_previews.crew_mode", "value": True},
+                json={"path": "dashboard.feature_previews.explore", "value": True},
             )
             assert resp.status in (401, 403), await resp.text()
     assert tmp_config.read_bytes() == before

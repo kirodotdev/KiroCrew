@@ -312,9 +312,9 @@ interface ComposerDockViewProps {
    *  with the chip pressed (a toggle), the memory chip is held, and the agent
    *  slot shows nothing. */
   crewChipPressed?: boolean
-  /** The gateway refuses any agent switch of this chat (a Crew Mode chat with a
-   *  message, `crew_mode_locked`) while the Crew Mode preview is off on this
-   *  device: no agent picker, and no Crew Mode mark either. */
+  /** The gateway refuses any agent switch of this chat (a conductor mode chat with
+   *  a message, `crew_mode_locked`) in a build without conductor mode (LTS): no
+   *  agent picker, and no conductor mode mark either. */
   agentSwitchLocked?: boolean
   /** The main pane holds a Crew Mode worker: the composer is that worker's steer
    *  composer. It looks like the conductor's normal composer; a running turn
@@ -602,7 +602,7 @@ export default function ComposerDockView({
                     <CrewWorkerComposerGate root={steerWorkerRoot} worker={activeSlot} workerTitle={steerWorker ?? ''}
                       waitingForApproval={!!currentSlot?.pending_approval} />
                   ) : (
-                    // Without the gate (the Crew Mode preview off) a send the server
+                    // Without the gate (a build without conductor mode, LTS) a send the server
                     // still took as a steer can come back unrecorded: say so here.
                     <CrewSteerUnrecordedNotice worker={activeSlot}
                       workerTitle={currentSlot ? sessionDisplayTitle(currentSlot) : ''} />

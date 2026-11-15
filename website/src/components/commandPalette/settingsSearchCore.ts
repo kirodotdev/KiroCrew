@@ -33,8 +33,9 @@
  *  3. Any other part hit, discounted ×0.6 — the row merely mentions the term
  *     in its description/keywords/tab.
  */
+import { crewModeEnabled } from '../../lib/crewMode'
 import { fuzzyMatch } from '../../utils/fuzzyMatch'
-import { PREVIEW_CREW_MODE, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, previewFlagsLocked, readPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, previewFlagsLocked, readPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
 import { KIRO_SIGN_IN_SETTING_ID } from './kiroSignInSettingId'
 import { SETTINGS_KEYWORDS } from './settingsKeywords'
@@ -122,7 +123,6 @@ export const DECISIONS_SETTING_IDS: ReadonlySet<string> = new Set([
 export const PREVIEW_FLAG_SETTING_IDS: ReadonlySet<string> = new Set([
   'developer.artifact-deploy',
   'developer.webhooks',
-  'developer.conductor-mode',
   'developer.explore',
   'developer.mcp-sign-in-by-kiro-crew',
   'developer.chat-on-a-crew',
@@ -218,8 +218,8 @@ export function settingEntryOffered(
   }
   // Display > Explore is drawn only while the Explore preview is on.
   if (entry.configKey === 'dashboard.milestones_enabled') return readPreviewFlag(PREVIEW_EXPLORE)
-  // Chat > Sessions draws Start New Chats in conductor mode only while the conductor mode preview is on.
-  if (entry.configKey === 'dashboard.new_chat_crew_mode') return readPreviewFlag(PREVIEW_CREW_MODE)
+  // Chat > Sessions draws Start New Chats in conductor mode in every build that offers conductor mode.
+  if (entry.configKey === 'dashboard.new_chat_crew_mode') return crewModeEnabled()
   // Feature Previews draws the stale-wake switch only while the stale-fields mark is on.
   if (entry.labelKey === 'pages.developer.featurePreviewsTab.dashboard_stale_wake') {
     return readPreviewFlag(PREVIEW_DASHBOARD_STALE_FIELDS)

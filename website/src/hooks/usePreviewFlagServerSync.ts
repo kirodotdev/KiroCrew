@@ -6,7 +6,7 @@ import { setConfigPathValue } from '../pages/settings/useOptimisticConfigPaths'
 import { INSPECTOR_KEYS } from '../dev/scrollInspector'
 import { useConfigSchema } from '../components/settingRef/useConfigSchema'
 import type { SchemaEntry } from '../components/settingRef/resolveSettingRef'
-import { LOCKED_DEBUG_TOOLS, LOCKED_FEATURE_PREVIEWS, applyLockedControls, controlLocked } from '../utils/editionLocks'
+import { LOCKED_DEBUG_TOOLS, LOCKED_FEATURE_PREVIEWS, applyLockedControls, controlLocked, noteFeaturePreviewLockKnown } from '../utils/editionLocks'
 import {
   PREVIEW_FLAGS, PREVIEW_FLAG_EVENT, PREVIEW_INSTANCE_SESSIONS, cachePreviewFlag,
   previewFlagConfigPath, previewFlagName, previewFlagsLocked, readPreviewFlag, setPreviewFlagPersister,
@@ -186,6 +186,7 @@ export function applyConfigLocks(
     : PREVIEW_FLAGS.some(flag => schema.get(previewFlagConfigPath(flag))?.lockedByPolicy === true)
   const next = [...(debugTools ? [LOCKED_DEBUG_TOOLS] : []), ...(previews ? [LOCKED_FEATURE_PREVIEWS] : [])]
   const { added, removed } = applyLockedControls(next)
+  if (schema !== undefined) noteFeaturePreviewLockKnown()
   const flags = [...PREVIEW_FLAGS, PREVIEW_INSTANCE_SESSIONS]
   if (previewFlagsLocked()) {
     for (const key of flags) if (safeGetItem(key) === '1') safeRemoveItem(key)

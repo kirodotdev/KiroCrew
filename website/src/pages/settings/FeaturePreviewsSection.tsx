@@ -12,7 +12,7 @@ import { Badge, Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_MODE, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MATE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MATE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -127,7 +127,6 @@ function previewFlagLabel(flag: string): string {
   switch (flag) {
     case PREVIEW_ARTIFACT_DEPLOY: return i18nT('pages.developer.featurePreviewsTab.artifact_deploy')
     case PREVIEW_WEBHOOKS: return i18nT('pages.developer.featurePreviewsTab.webhooks')
-    case PREVIEW_CREW_MODE: return i18nT('pages.developer.featurePreviewsTab.crew_mode')
     case PREVIEW_EXPLORE: return i18nT('pages.developer.featurePreviewsTab.explore')
     case PREVIEW_CREW_OAUTH: return i18nT('pages.developer.featurePreviewsTab.crew_oauth')
     case PREVIEW_REMOTE_CREW_CHAT: return i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew')
@@ -200,7 +199,6 @@ export function FeaturePreviewsSection() {
   const secretsVault = usePreviewFlag(PREVIEW_SECRETS_VAULT)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   const sessionHarness = usePreviewFlag(PREVIEW_SESSION_HARNESS)
-  const crewMode = usePreviewFlag(PREVIEW_CREW_MODE)
   const explore = usePreviewFlag(PREVIEW_EXPLORE)
   const crewOauth = usePreviewFlag(PREVIEW_CREW_OAUTH)
   const writeError = usePreviewFlagWriteError()
@@ -294,19 +292,6 @@ export function FeaturePreviewsSection() {
       )}
 
       <PreviewGroup title={i18nT('pages.settings.developerPanel.group_crew_and_bots')}>
-        {/* Conductor mode (flag key `mc-preview-crew-mode`): every Crew Mode surface
-            reads this one flag through `lib/crewMode.ts`. A plain switch only,
-            with no preview dialog and no ingress link. Off, a chat already in
-            Crew Mode stays an ordinary chat on its agent. */}
-        {!previewsOff && (
-          <SettingsToggle
-            label={i18nT('pages.developer.featurePreviewsTab.crew_mode')}
-            description={i18nT('pages.developer.featurePreviewsTab.crew_mode_desc_summary')}
-            hint={i18nT('pages.developer.featurePreviewsTab.crew_mode_desc')}
-            checked={crewMode}
-            onChange={v => setPreviewFlag(PREVIEW_CREW_MODE, v)}
-          />
-        )}
         {/* Shared Crew (People, invites, shared sessions). Unlike the flags here, the
             switch is not a browser setting: it is the owner's stored choice behind
             `/api/shared-crew/preview` (a keystone file), which the gateway reads at
@@ -414,7 +399,7 @@ export function FeaturePreviewsSection() {
       <PreviewGroup title={i18nT('pages.settings.developerPanel.group_chats_and_dashboards')}>
         {/* Explore (flag key `mc-preview-explore`): the top-bar pill, its sheet,
             the milestone notice, the Try today card and Display > Explore. A
-            plain switch, like conductor mode's; on, Display > Explore is the inner
+            plain switch with no preview dialog; on, Display > Explore is the inner
             switch. */}
         {!previewsOff && (
           <SettingsToggle

@@ -37,7 +37,7 @@ The person sees the chat; the crew it dispatched is the chat's to show.
 | **The person closing a conductor closes its workers.** When `DELETE /api/chat/slots/{slot}` closes a conductor mode root or a Bot thread with no app token, the open sessions it still manages after its own close (`session_managers.holder`) close too, down the line, each archived to history, but only one that was in the conductor's tree just before that close (its stamped row names the conductor as `crew_root` or `mate_root`, read in one pass with no await before the close) or was opened while the line was closing; the response names them in `closed_workers` and any that stayed open in `failed_workers`. A session handed up or back by the conductor's own hand-back stays open, as does one that left the tree (`session_release`, an adoption elsewhere), which moves the tree edge and not the manager record, as do a plain chat's sessions and every close by an agent, an app or the idle sweep | `chat_api/slot_lifecycle.py` (`api_chat_slot_delete`), `chat_api/conductor_close.py` (`_conductor_line`, `_close_managed`) |
 | **The person's session list leaves crew members out.** `GET /api/chat/slots` drops `crew_root` rows for a person; `?crew=all` keeps them (the dashboard reads this and filters on the client); a read with `internal_auth` (an agent's folder, status and lineage tools) keeps every row | `crew_mode.list_view`, `chat_api/slot_detail.py` |
 | A conductor mode chat and its crew are filed in no folder: `session_create` and `session_fork` from inside the tree leave the child unfiled and say so | [session-control](session-control.md) § `session_create`'s folder |
-| `dashboard.new_chat_crew_mode` (default off; Settings → Chat → Sessions → **Start New Chats in conductor mode**, shown while the conductor mode preview is on) turns conductor mode on for the person's New chat the way a press of the chip does: the create is unchanged, then the ordinary agent switch moves the new chat to the conductor before it opens, so the chip starts pressed and can still be turned off before the first message. Only the entry points that pass `crewModeDefault` (New chat in the sidebar and a folder's `+`, the new-chat shortcut, the palette and command bar, the Sessions page, an embed tab, a Split View pane, the phone session menu's New chat, the empty chat page) ask for it, and only a created chat the chip would be offered on switches: still on the default agent after the server applied any folder or default-folder pin, no chat mode, Persistent, a default agent that is no conductor. A catalog not read yet is read first. A failed read or a refused switch leaves the plain chat. A first send from a chat page with no session open keeps the default agent | `store/chat/lifecycle.ts` (`createSlot`, `startNewChatInCrewMode`), `lib/crewMode.ts` (`newChatCrewModeAgent`) |
+| `dashboard.new_chat_crew_mode` (default off; Settings → Chat → Sessions → **Start New Chats in conductor mode**, shown wherever conductor mode is, so in every build but LTS) turns conductor mode on for the person's New chat the way a press of the chip does: the create is unchanged, then the ordinary agent switch moves the new chat to the conductor before it opens, so the chip starts pressed and can still be turned off before the first message. Only the entry points that pass `crewModeDefault` (New chat in the sidebar and a folder's `+`, the new-chat shortcut, the palette and command bar, the Sessions page, an embed tab, a Split View pane, the phone session menu's New chat, the empty chat page) ask for it, and only a created chat the chip would be offered on switches: still on the default agent after the server applied any folder or default-folder pin, no chat mode, Persistent, a default agent that is no conductor. A catalog not read yet is read first. A failed read or a refused switch leaves the plain chat. A first send from a chat page with no session open keeps the default agent | `store/chat/lifecycle.ts` (`createSlot`, `startNewChatInCrewMode`), `lib/crewMode.ts` (`newChatCrewModeAgent`) |
 | A new chat born on a conductor counts once in `kirocrew.crew_mode.turned_on`; every new chat counts once in `kirocrew.crew_mode.new_chats` with `crew_mode` true or false; no attribute carries a key, a title or an agent name | `metrics/crew_mode.py`, [metrics](metrics.md) |
 
 The design and its parts are recorded in
@@ -5730,25 +5730,37 @@ members** are the rows stamped `crew_root: <root key>`, the root carries
 and the live slot frame carries them all) and leaves crew members out of the
 person's lists on the client.
 
-**The dashboard's conductor mode is a feature preview, default off**
-(`PREVIEW_CREW_MODE` in `website/src/utils/previewFlags.ts`, the **Conductor mode** card
-in Settings > Developer > Feature Previews, a plain switch with no preview dialog). `crewModeEnabled()` in
-`website/src/lib/crewMode.ts` is the one read of it, and `useCrewMode()` subscribes
-to the same key for a component or memo that must redraw on a flip. Every rule in
-this section and in [Conductor mode](#conductor-mode)'s client half reads through it:
+**The dashboard's conductor mode is on in every build but LTS.** It left Feature
+Previews (`docs/decisions/2026-11-14-conductor-mode-graduates-from-feature-previews.md`):
+there is no switch, and a `crew_mode` key a person's `dashboard.feature_previews` or
+browser still holds is ignored. The LTS edition keeps it off by the maintainer's ruling, as it
+did while it was a preview there (RFC rfc-crew-lts-edition D12). `crewModeEnabled()` in
+`website/src/lib/crewMode.ts` is the one read of that: on only once the edition lock is
+known and is not LTS (`featurePreviewLockKnown() && !previewFlagsLocked()`). The lock
+is known from the `kc-locked-controls` cache (an oss gateway's answer is kept as `[]`)
+or once the config schema read answers, so an LTS dashboard opened with no cache never
+shows conductor mode, not even for one read. `useCrewMode()` subscribes to the same
+state for a component or memo that must redraw when the gateway's lock arrives. A one-shot
+action that is never redone waits for the lock through one helper
+(`whenFeaturePreviewLockKnown` / `useFeaturePreviewLockSettled` in
+`website/src/utils/editionLocks.ts`, bounded by `FEATURE_PREVIEW_LOCK_WAIT_MS`, 5 s)
+and goes ahead as if conductor mode were off when it lapses: the chat page's first
+pick (`useChatPageSessionController`) and a new chat's conductor mode default
+(`store/chat/lifecycle.ts`). A stored conductor mode filter is rewritten to off only in
+LTS, never while the lock is unknown. Every rule in this section and in
+[Conductor mode](#conductor-mode)'s client half reads through it:
 
-| Preview | What the client does |
+| Build | What the client does |
 |---|---|
-| on | Everything below, unchanged |
-| off | `gatewayRunsCrewMode()`, `isConductorAgent()` and `runsCrewMode()` answer `false`, as for a gateway without conductor mode: no composer switch, no welcome, and the agent picker and chords list every conductor. The one ungated read is the row's raw `crew_mode_root` stamp, the server's own classification of a conductor mode root (`crew_mode.slot_is_crew_mode_root`: a Persistent session nothing dispatched): a root that has a user message offers no agent picker (main pane or Split View pane, and no conductor mode mark), and `agentCycleTarget` answers `null` on it (its `locked` argument), since the gateway refuses every such switch (`409 crew_mode_locked`). A conductor chat that is no root (Incognito, Temporary, dispatched) keeps its picker and chords, as the gateway lets it switch; the chords still never land on a conductor. A Crew tab restored from storage is withheld from the side panel strip, its stored state kept. `crewModeRoot(row)` and `crewRootOf(row)`, the only reads of the two stamps, answer `false` and `''`: no crew card, eyebrow, filter row (a stored conductor mode filter is turned off, its key rewritten to `0`), Crew tab, breadcrumb or approval card; `crewModeView` hands the rows back unchanged, so a crew member is an ordinary row; its approval and finished turn alert like any chat's, in its own name and slot (`crewWorkerRoot` answers `''`, `crewWorkerQuiet`); and its approval is decided where it is shown |
+| every build but LTS | Everything below |
+| LTS | `gatewayRunsCrewMode()`, `isConductorAgent()` and `runsCrewMode()` answer `false`, as for a gateway without conductor mode: no composer switch, no welcome, and the agent picker and chords list every conductor. The one ungated read is the row's raw `crew_mode_root` stamp, the server's own classification of a conductor mode root (`crew_mode.slot_is_crew_mode_root`: a Persistent session nothing dispatched): a root that has a user message offers no agent picker (main pane or Split View pane, and no conductor mode mark), and `agentCycleTarget` answers `null` on it (its `locked` argument), since the gateway refuses every such switch (`409 crew_mode_locked`). A conductor chat that is no root (Incognito, Temporary, dispatched) keeps its picker and chords, as the gateway lets it switch; the chords still never land on a conductor. A Crew tab restored from storage is withheld from the side panel strip, its stored state kept. `crewModeRoot(row)` and `crewRootOf(row)`, the only reads of the two stamps, answer `false` and `''`: no crew card, eyebrow, filter row (a stored conductor mode filter is turned off, its key rewritten to `0`), Crew tab, breadcrumb or approval card; `crewModeView` hands the rows back unchanged, so a crew member is an ordinary row; its approval and finished turn alert like any chat's, in its own name and slot (`crewWorkerRoot` answers `''`, `crewWorkerQuiet`); and its approval is decided where it is shown |
 
-A chat already in conductor mode, read with the preview off, is an ordinary chat on its
+A chat already in conductor mode, read by an LTS dashboard, is an ordinary chat on its
 conductor agent: its transcript, composer and agent label as for any chat, and its
 crew members are rows of the list. Once it has a message it offers no agent switch,
 since the gateway keeps it on its conductor. Nothing is hidden or unreachable. The gateway
-does not read the flag: the conductor mode lock (`409 crew_mode_locked`), the unfiled
-crew members and the stamps all stay, so turning the preview back on shows the same
-conductor mode chat.
+does not read the edition lock for this: the conductor mode lock (`409 crew_mode_locked`),
+the unfiled crew members and the stamps all stay.
 
 | Rule | Where |
 |---|---|

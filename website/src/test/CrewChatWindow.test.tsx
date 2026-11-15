@@ -72,7 +72,6 @@ import {
   openCrewWindow, closeCrewWindow, useCrewWindow, reloadCrewWindowForTest, writeCrewDraft,
   capsRetryInterval,
 } from '../pages/chat/crew-window/crewWindowStore'
-import { crewModePreviewOn } from './crewModePreview'
 import { crewWindowSlot } from '../pages/chat/crew-window/crewWindowRenderers'
 import { DICTATION_NOTE, _resetDictationProvenance, isDictated, markDictated } from '../chat-core/composer/dictationProvenance'
 import { queryClient as globalQueryClient } from '../api/queryClient'
@@ -1512,6 +1511,3 @@ describe('CrewChatWindow', () => {
     expect(FakeEventSource.all[0].close).toHaveBeenCalled()
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

@@ -1258,7 +1258,7 @@ export default function ChatPane({
           <CrewWorkerComposerGate root={paneCrewRoot} worker={slotKey} workerTitle={title}
             waitingForApproval={!!paneSlot?.pending_approval} />
         ) : (
-          // Without the gate (the Crew Mode preview off) a send the server still
+          // Without the gate (a build without conductor mode, LTS) a send the server still
           // took as a steer can come back unrecorded: say so here.
           <CrewSteerUnrecordedNotice worker={slotKey} workerTitle={title} />
         )}

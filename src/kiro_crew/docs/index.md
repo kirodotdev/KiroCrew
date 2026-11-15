@@ -135,7 +135,7 @@ gracefully rather than failing the turn.
   output stays plain text otherwise
 - [Context management](https://github.com/kirodotdev/KiroCrew/blob/main/docs/architecture/context-management.md):
   what goes into the model's context — first-turn block order, per-turn additions,
-  sub-agents, custom agents, and Crew mode. A contributor document in the
+  sub-agents, custom agents, and conductor mode. A contributor document in the
   repository, not part of this installed package
 - [Settings deep links](settings-deeplink.md): answer "where is that setting?" with
   a link that opens the tab and flashes the control, from the generated

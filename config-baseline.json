@@ -10311,20 +10311,6 @@
       "defaultValue": false
     },
     {
-      "path": "dashboard.feature_previews.crew_mode",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Feature preview: crew_mode",
-      "help": "Turn on the 'crew_mode' feature preview.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": false
-    },
-    {
       "path": "dashboard.feature_previews.crew_oauth",
       "kind": "core",
       "type": "boolean",
@@ -10749,7 +10735,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Start new chats in conductor mode",
-      "help": "Open each new dashboard chat with conductor mode already on. It can still be turned off before the first message. Applies only where conductor mode is offered: a Persistent chat on the default agent, with the conductor mode preview on.",
+      "help": "Open each new dashboard chat with conductor mode already on. It can still be turned off before the first message. Applies only where conductor mode is offered: a Persistent chat on the default agent.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

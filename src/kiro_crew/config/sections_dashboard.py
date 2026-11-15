@@ -55,7 +55,6 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "artifact_deploy",
     "bridge_approvals",
     "chat_runtime_sharing",
-    "crew_mode",
     "crew_oauth",
     "dashboard_stale_fields",
     "dashboard_stale_wake",
@@ -521,8 +520,7 @@ class DashboardConfig:
             "Start new chats in conductor mode",
             "Open each new dashboard chat with conductor mode already on. It can "
             "still be turned off before the first message. Applies only where "
-            "conductor mode is offered: a Persistent chat on the default agent, "
-            "with the conductor mode preview on.",
+            "conductor mode is offered: a Persistent chat on the default agent.",
         ),
     )
     widget_density: str = field(

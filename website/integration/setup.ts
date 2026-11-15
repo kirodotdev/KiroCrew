@@ -9,6 +9,7 @@ import { initI18n, i18next } from '../src/i18n'
 import { __resetStagingForTests } from '../src/components/pierreStaging'
 import { clearSideChatDrafts } from '../src/chat-core/composer/sideChatDrafts'
 import { __resetSharedUnreadQueueForTests } from '../src/store/dashboard/unread'
+import { __setFeaturePreviewLockKnownForTests } from '../src/utils/editionLocks'
 
 // The Pierre mount queue is MODULE state — in a browser that is per-page, but a
 // vitest worker runs many test files in one process, so without this a file that
@@ -26,6 +27,10 @@ beforeEach(() => { clearSideChatDrafts() })
 // markSlotUnread queues its shared-record write on a timer; drop a previous
 // test's queue so it cannot land in this test's storage.
 beforeEach(() => { __resetSharedUnreadQueueForTests() })
+// The Feature Previews lock is MODULE state (utils/editionLocks): a test starts on a
+// dashboard whose gateway already answered as oss, so conductor mode is on.
+// A test of the not-yet-known state turns it off in its own body.
+beforeEach(() => { __setFeaturePreviewLockKnownForTests(true) })
 
 // lottie-web registers a module-scoped `setInterval(checkReady, 100)` purely by
 // being IMPORTED (`readyStateCheckInterval` in the prebuilt player bundles). That
