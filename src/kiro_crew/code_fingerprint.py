@@ -101,8 +101,19 @@ def _git_fingerprint(root: Path) -> str | None:
     git = trusted_git_bin()
     if git is None:
         return None
-    env = hardened_git_env()
+    # No lazy fetch: in a partial clone, resolving the tree or diffing a blob
+    # that is not on disk would fetch it through the repository's own remote
+    # settings, and a planted `remote.<name>.uploadpack` would run then.
+    env = hardened_git_env(GIT_NO_LAZY_FETCH="1")
     try:
+        # A repo-named driver (`filter.<name>.clean`, a remote's `uploadpack`) has
+        # no environment pin that reaches it, so it is refused before ANY git
+        # call below reads objects. Such a tree gets no git fingerprint; the
+        # mtime rule answers instead, which is the same fallback as "no trusted git".
+        from kiro_crew.platform.update_governance import repo_exec_driver_reason
+
+        if repo_exec_driver_reason(str(root)):
+            return None
         # `HEAD:./` is the tree of *root* itself (the path is relative to -C).
         # It fails when *root* is not tracked at HEAD; the mtime rule answers.
         head = subprocess.run(
@@ -116,14 +127,6 @@ def _git_fingerprint(root: Path) -> str | None:
         if head.returncode != 0 or not head.stdout.strip():
             return None
         sha = head.stdout.strip()
-        # The worktree diff below runs a repo-named `filter.<name>.clean` on
-        # every stat-dirty file, and no environment pin reaches a name the
-        # repository chose. Such a tree gets no git fingerprint; the mtime rule
-        # answers instead, which is the same fallback as "no trusted git".
-        from kiro_crew.platform.update_governance import repo_exec_driver_reason
-
-        if repo_exec_driver_reason(str(root)):
-            return None
         # Tracked-file changes only; an untracked scratch file is not code
         # the process runs differently for. The diff TEXT is digested, not
         # just its presence: two different uncommitted states of one HEAD

@@ -159,7 +159,16 @@ class TestCodeFingerprint:
         def commit(msg: str) -> None:
             for args in (("add", "-A"), ("commit", "-q", "-m", msg)):
                 subprocess.run(
-                    ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                    [
+                        "git",
+                        "-C",
+                        str(tmp_path),
+                        "-c",
+                        "user.name=t",
+                        "-c",
+                        "user.email=t@t",
+                        *args,
+                    ],
                     check=True,
                     capture_output=True,
                     cwd=tmp_path,
@@ -229,10 +238,18 @@ class TestCodeFingerprint:
             assert argv[0] == "/usr/bin/git"
             assert env["GIT_CONFIG_GLOBAL"] == os.devnull
             assert env["GIT_CONFIG_NOSYSTEM"] == "1"
-            # Beside those three, only the shared exec-key pins (GIT_CONFIG_COUNT/KEY_n/VALUE_n).
+            # Beside those, only the shared exec-key pins (GIT_CONFIG_COUNT/KEY_n/VALUE_n)
+            # and the lazy-fetch switch.
+            assert env["GIT_NO_LAZY_FETCH"] == "1"
             assert not any(
                 k.startswith("GIT_")
-                and k not in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT")
+                and k
+                not in (
+                    "GIT_CONFIG_GLOBAL",
+                    "GIT_CONFIG_NOSYSTEM",
+                    "GIT_TERMINAL_PROMPT",
+                    "GIT_NO_LAZY_FETCH",
+                )
                 and k != "GIT_CONFIG_COUNT"
                 and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
                 for k in env
@@ -245,6 +262,22 @@ class TestCodeFingerprint:
             assert "core.pager=cat" in argv
         diff_argv = seen[1][0]
         assert "--no-ext-diff" in diff_argv and "--no-textconv" in diff_argv
+
+    def test_a_repo_named_driver_is_refused_before_git_reads_any_object(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Resolving ``HEAD:./`` walks tree objects, and in a partial clone a missing
+        one is fetched through the repository's remote, whose ``uploadpack`` the
+        repository names. The preflight must refuse such a tree before that lookup."""
+        ran: list[list[str]] = []
+        monkeypatch.setattr(cf, "trusted_git_bin", lambda: "/usr/bin/git")
+        monkeypatch.setattr(cf.subprocess, "run", lambda argv, **_kw: ran.append(argv))
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.repo_exec_driver_reason",
+            lambda *_a, **_k: "remote.origin.uploadpack names a program",
+        )
+        assert cf._git_fingerprint(tmp_path) is None
+        assert ran == []
 
     def test_no_trusted_git_means_the_mtime_rule(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
