@@ -2042,7 +2042,7 @@ in any state is a claim on the name, keeps refusing.
 
 A Bot's worker runs on `kirocrew-mate-worker`, and both that base spec and
 the Bot's own file live in `~/.kiro/mates/agents/`, which the agents loop
-above reads for one file only (the conductor, below). So the gateway start
+above reads for two files only (the conductor and worker specs, below). So the gateway start
 passes that folder to the same pass (`rewrite_kwargs`' `mate_source_dir`), and
 `mcp_gateway/mate_overlays.py` writes one overlay per Bot file to
 `<overlay_dir>/mates/<id>.json`. That subdirectory
@@ -2052,7 +2052,9 @@ an `~/.kiro/agents` agent of the same name, or the reverse.
 A Bot's chat runs the stock conductor spec, `kirocrew-mate-conductor.json` in
 that same folder, one file shared by every Bot, and its session looks its stubs
 up by that agent name. So the agents loop rewrites that one file as if it sat in
-`~/.kiro/agents/` (`mate_overlays.with_conductor_source`): its overlay is
+`~/.kiro/agents/` (`mate_overlays.with_conductor_source`), and the stock worker
+spec `kirocrew-mate-worker.json` beside it the same way (read only through a worker
+session's own record, below): its overlay is
 `<overlay_dir>/kirocrew-mate-conductor.json`, its stubs carry
 `--agent kirocrew-mate-conductor` whatever `name` the file declares (that
 folder is outside the sandbox's read-only seal), and its signature joins the fingerprint's
@@ -2111,11 +2113,20 @@ name, and only on KAS: `_pooled_session_servers_and_ref_spec` passes the session
 key on a positive `backend == kas` check, and `session_servers` answers
 `kirocrew-mate-worker` with that key only through
 `mate_overlays.worker_overlay_spec(overlay_dir, session_key)`. Every other host
-passes no key and keeps the by-name lookup it had. The record must be a
-Bot's worker, its Bot must own its file (`mate_file_for_member`), and
-the overlay must carry that Bot's identity. Only a wrapped server the
-Bot ADDS is returned (a base server wins the merge), and only one the
-governed merged worker spec still mounts unmuted and not registry-governed
+passes no key and gets no stub for `kirocrew-mate-worker`: the stock worker spec is
+rewritten like the conductor's (`with_conductor_source`), so
+`<overlay_dir>/kirocrew-mate-worker.json` exists, and a lookup by that name would
+hand its base stubs to a session without that session's merged limits. The record
+must be a Bot's worker. The base servers' stubs come from that worker overlay
+(its `name` must be `kirocrew-mate-worker`, and its stubs carry
+`--agent kirocrew-mate-worker`), so every Bot's worker shares Crew's own servers
+whether or not its Bot owns a file; their launch argv equals the conductor's
+stubs' apart from `--agent`, which is no pool dimension, so a worker joins the
+conductor's backends. A Bot that owns its file (`mate_file_for_member`) adds the
+stubs its overlay carries, which must carry that Bot's identity; only a wrapped
+server the Bot ADDS is taken from it (a base server wins the merge). Every stub,
+base or added, is returned only when the
+governed merged worker spec still mounts it unmuted and not registry-governed
 (`mcp_cleanup.mcp_entry_is_registry_governed`): the overlay is the last pass's,
 so an entry retyped `type: registry` since must not keep its old local stub.
 Each carries that spec's
