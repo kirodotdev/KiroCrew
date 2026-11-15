@@ -278,11 +278,12 @@ def denied_command_notice(item: dict[str, Any]) -> str:
     """Format one structured deny for display; callers never parse this text."""
     if item["whole"]:
         return str(item["key"])
-    suffix = (
-        f" (past the first {_MAX_DENIES})"
-        if item["past_bound"]
-        else GATE_JUDGED_MARK if item["conditional"] else ""
-    )
+    if item["past_bound"]:
+        suffix = f" (past the first {_MAX_DENIES})"
+    elif item["conditional"]:
+        suffix = GATE_JUDGED_MARK
+    else:
+        suffix = ""
     return f"{item['key']}: {deny_entry_text(item)}{suffix}"
 
 
