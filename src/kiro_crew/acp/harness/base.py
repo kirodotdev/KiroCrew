@@ -216,9 +216,6 @@ class ProcessSession(Protocol):
         The session keeps its adapter before :meth:`ProcessAdapter.resolve_spawn`
         runs, so what the launch records here is what the session reads after it."""
 
-    def _opencode_session_mcp_servers(self) -> list[dict[str, Any]]:
-        """The opencode session's ``mcpServers`` entries."""
-
     def _mimocode_session_mcp_servers(self) -> list[dict[str, Any]]:
         """The MiMo Code session's ``mcpServers`` entries."""
 

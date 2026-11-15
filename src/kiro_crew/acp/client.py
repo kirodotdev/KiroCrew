@@ -155,6 +155,7 @@ from kiro_crew.acp.client_lifecycle import _T  # noqa: F401
 from kiro_crew.acp.client_model_selection import _JSONRPC_INVALID_PARAMS  # noqa: F401
 from kiro_crew.acp.client_model_selection import _is_config_value_rejection  # noqa: F401
 from kiro_crew.acp.client_model_selection import _push_model_via_effort_split  # noqa: F401
+from kiro_crew.acp.client_opencode import OpencodeAcpClient  # noqa: F401
 from kiro_crew.acp.client_permissions import PI_ACP_VERIFIED_VERSION  # noqa: F401
 from kiro_crew.acp.client_permissions import _pi_adapter_versions_noted  # noqa: F401
 from kiro_crew.acp.client_permissions import _scrub_observed  # noqa: F401
@@ -929,6 +930,7 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_spawn_env",
     "kiro_crew.acp.client_permissions",
     "kiro_crew.acp.client_goose_session",
+    "kiro_crew.acp.client_opencode_session",
     "kiro_crew.acp.client_elicitation",
     "kiro_crew.acp.client_copilot",
     "kiro_crew.acp.client_claude_session",
@@ -949,6 +951,7 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_class",
     "kiro_crew.acp.client_claude",
     "kiro_crew.acp.client_goose",
+    "kiro_crew.acp.client_opencode",
 )
 _MIRROR = _facade_mirror.install(
     sys.modules[__name__],

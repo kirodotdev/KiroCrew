@@ -35,7 +35,7 @@ from typing import Any
 import pytest
 
 from kiro_crew.acp import client as acp_client
-from kiro_crew.acp.client import AcpClient, ClaudeAcpClient, GooseAcpClient
+from kiro_crew.acp.client import AcpClient, ClaudeAcpClient, GooseAcpClient, OpencodeAcpClient
 from kiro_crew.acp.transport_errors import AcpError
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_client_bindings")
@@ -88,7 +88,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_decline_elicitation": ("function", True, "87459833bc5c", "client_elicitation"),
     "_deepseek_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
     "_defer_mimocode_shell_permission": ("function", True, "7c70a056d5ef", "client_turn"),
-    "_defer_opencode_shell_permission": ("function", True, "7c70a056d5ef", "client_turn"),
+    "_defer_shell_permission": ("function", True, "7c70a056d5ef", "client_class"),
+    "_defers_shell_permission": ("data", False, "", ""),
     "_delegate_launch_failure": ("function", True, "35f56320d7d1", "client_lifecycle"),
     "_deny_spec_disabled_tool": ("function", True, "2dfacffa6279", "client_permissions"),
     "_deny_zero_tools": ("function", True, "2dfacffa6279", "client_permissions"),
@@ -142,7 +143,6 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_is_deepseek": ("property", False, "a6632a57e602", "client_class"),
     "_is_kiro": ("property", False, "a6632a57e602", "client_class"),
     "_is_mimocode": ("property", False, "a6632a57e602", "client_class"),
-    "_is_opencode": ("property", False, "a6632a57e602", "client_class"),
     "_is_pi": ("property", False, "a6632a57e602", "client_class"),
     "_is_process_alive": ("function", False, "a6632a57e602", "client_lifecycle"),
     "_is_strands": ("property", False, "a6632a57e602", "client_class"),
@@ -184,7 +184,6 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_note_subagent_update": ("function", False, "58208c681b15", "client_native_children"),
     "_note_unhandled_session_update": ("function", False, "20ec496728df", "client_class"),
     "_note_worker_builtin_tools": ("function", False, "84f60ad5a315", "client_class"),
-    "_opencode_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
     "_parked_on_permission": ("data", False, "", ""),
     "_permission_surface_governed": ("property", False, "a6632a57e602", "client_class"),
     "_persist_advertised_models_if_changed": (
@@ -226,6 +225,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_release_accepted_steers": ("function", False, "9a0e503e4e3e", "client_turn_control"),
     "_release_held_steers": ("function", False, "b60c5fea256e", "client_turn_control"),
     "_release_stdout": ("function", False, "b60c5fea256e", "client_transport"),
+    "_refuse_harness_default_model": ("function", False, "b60c5fea256e", "client_class"),
     "_republish_pi_mcp_handoff": ("function", True, "b60c5fea256e", "client_mcp_array"),
     "_reseed_after_capture": ("function", True, "b60c5fea256e", "client_class"),
     "_reset_harness_compaction": ("function", False, "b60c5fea256e", "client_class"),
@@ -498,6 +498,31 @@ _GOOSE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_verify_session_mode": ("function", False, "4d0ed6879afd", "client_goose_session"),
 }
 
+#: ``OpencodeAcpClient``'s own members: what only an opencode session does, bound from the
+#: opencode owner, and the ``AcpClient`` hooks it fills.
+_OPENCODE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
+    "_defer_shell_permission": ("function", True, "7c70a056d5ef", "client_opencode_session"),
+    "_defers_shell_permission": ("data", False, "", ""),
+    "_harness_session_mcp_servers": (
+        "function",
+        False,
+        "f5423acdeebc",
+        "client_opencode_session",
+    ),
+    "_opencode_session_mcp_servers": (
+        "function",
+        False,
+        "f5423acdeebc",
+        "client_opencode_session",
+    ),
+    "_refuse_harness_default_model": (
+        "function",
+        False,
+        "b60c5fea256e",
+        "client_opencode_session",
+    ),
+}
+
 #: Class-level annotations the split adds: fields first set by a member an owner defines,
 #: declared in the class so type checkers know them. An annotation creates no attribute.
 _DECLARED = frozenset(
@@ -520,10 +545,16 @@ _INVENTORIES: dict[type, dict[str, tuple[str, object, str, str]]] = {
     AcpClient: _MEMBERS,
     ClaudeAcpClient: _CLAUDE_MEMBERS,
     GooseAcpClient: _GOOSE_MEMBERS,
+    OpencodeAcpClient: _OPENCODE_MEMBERS,
 }
 
 #: Every member name some client class binds.
-_ALL_MEMBERS = frozenset(_MEMBERS) | frozenset(_CLAUDE_MEMBERS) | frozenset(_GOOSE_MEMBERS)
+_ALL_MEMBERS = (
+    frozenset(_MEMBERS)
+    | frozenset(_CLAUDE_MEMBERS)
+    | frozenset(_GOOSE_MEMBERS)
+    | frozenset(_OPENCODE_MEMBERS)
+)
 
 
 def _owners() -> list[ModuleType]:
@@ -1058,7 +1089,8 @@ def test_the_backend_picks_the_client_class() -> None:
     backend whose settings file Crew seeds is refused by a class that seeds none."""
     assert type(AcpClient(acp_backend="claude")) is ClaudeAcpClient
     assert type(AcpClient(acp_backend="")) is AcpClient
-    assert type(AcpClient(acp_backend="opencode")) is AcpClient
+    assert type(AcpClient(acp_backend="opencode")) is OpencodeAcpClient
+    assert type(AcpClient(acp_backend="mimocode")) is AcpClient
     assert type(AcpClient.__new__(AcpClient)) is AcpClient
 
     class EditionClient(AcpClient):
@@ -1066,6 +1098,10 @@ def test_the_backend_picks_the_client_class() -> None:
 
     with pytest.raises(AcpError, match="seeds settings"):
         EditionClient(acp_backend="claude")
+    # A class that holds no shell permission back behind its command is refused
+    # opencode, whose permission can arrive ahead of the command it asks about.
+    with pytest.raises(AcpError, match="defers shell permissions"):
+        EditionClient(acp_backend="opencode")
     assert type(EditionClient(acp_backend="")) is EditionClient
 
 

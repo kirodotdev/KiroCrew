@@ -773,7 +773,7 @@ async def _initialize_session(self: AcpClient) -> None:
     # advertised ``mcpCapabilities``: every one of them either reads no array
     # or accepts the shapes Crew already sends, opencode being the measured
     # case of the latter (stdio, http and sse alike -- see
-    # ``_opencode_session_mcp_servers``). The harness that DOES narrow reads
+    # ``OpencodeAcpClient._opencode_session_mcp_servers``). The harness that DOES narrow reads
     # the handshake on the core that drives it, in
     # ``acp.harness.codex.session_mcp_servers``, so nothing is held here.
     self._agent_version = agent_version_from_init(init_resp)

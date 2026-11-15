@@ -2,7 +2,7 @@
 
 The kiro prompt loop, ``send_message`` and ``send_message_stream``, ``stream_events`` and
 ``stream_unsolicited``, the frame classifier and dispatcher, the prompt response reader, the
-opencode and MiMo Code shell-permission deferrals, the liveness consult and the redaction of a
+MiMo Code shell-permission deferral, the liveness consult and the redaction of a
 Claude native child's events, with the flush of their held text for a turn cut short.
 Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -56,7 +56,6 @@ from kiro_crew.acp.client_timeouts import (
     _EOF_EXIT_GRACE_SECS,
     _MAX_CONSECUTIVE_EMPTY,
     _MIMOCODE_PERMISSION_REFINEMENT_TIMEOUT,
-    _OPENCODE_PERMISSION_REFINEMENT_TIMEOUT,
     _READ_TIMEOUT,
     _STALE_TURN_TIMEOUT,
     _TOOL_STALL_TIMEOUT,
@@ -84,7 +83,6 @@ from kiro_crew.acp.transport_errors import (
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_MIMOCODE,
-    ACP_BACKEND_OPENCODE,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
@@ -281,57 +279,6 @@ def _process_message(self: AcpClient, msg: JsonRpcMessage, req_id: int) -> str:
         return "server_request_unknown"
 
     return "skip"
-
-
-async def _defer_opencode_shell_permission(
-    self: AcpClient, msg: JsonRpcMessage, remaining: float
-) -> bool:
-    """Queue a matching command update before its OpenCode shell permission."""
-    params = msg.params if isinstance(msg.params, dict) else {}
-    tool_call = params.get("toolCall")
-    tool_call = tool_call if isinstance(tool_call, dict) else {}
-    tool_call_id = tool_call.get("toolCallId")
-    if not isinstance(tool_call_id, str) or self._tool_call_is_shell.get(tool_call_id) is not True:
-        return False
-    cached = self._tool_call_params.get(tool_call_id, {})
-    if isinstance(cached, dict) and cached.get("command"):
-        return False
-
-    # OpenCode can ask permission before its command-bearing update. Read
-    # only the next frame to preserve unrelated event order. The request's
-    # own rawInput must never fill the trusted security cache.
-    following = await self._read_message(
-        timeout=min(_OPENCODE_PERMISSION_REFINEMENT_TIMEOUT, remaining)
-    )
-    if following is None:
-        return False
-
-    follow_params = following.params if isinstance(following.params, dict) else {}
-    update = follow_params.get("update")
-    update = update if isinstance(update, dict) else {}
-    raw_input = update.get("rawInput")
-    buffer_capacity = self._buffer.maxlen
-    if not (
-        following.is_method(METHOD_SESSION_UPDATE)
-        and isinstance(params.get("sessionId"), str)
-        and follow_params.get("sessionId") == params.get("sessionId")
-        and update.get("sessionUpdate") == "tool_call_update"
-        and update.get("toolCallId") == tool_call_id
-        and update.get("status") == "in_progress"
-        and isinstance(raw_input, dict)
-        and isinstance(raw_input.get("command"), str)
-        and raw_input["command"]
-        and not update.get("content")
-        and not update.get("rawOutput")
-        and (buffer_capacity is None or len(self._buffer) <= buffer_capacity - 2)
-    ):
-        self._buffer.appendleft(following)
-        return False
-
-    # The normal dispatcher caches the command before building permission.
-    self._buffer.appendleft(msg)
-    self._buffer.appendleft(following)
-    return True
 
 
 #: The permission categories MiMo Code's shell tool asks under with NO metadata,
@@ -729,8 +676,8 @@ async def _prompt_loop(
                 await self._tripwire_mimocode_governed_mcp(msg)
             if action == "permission" and (
                 (
-                    self.backend == ACP_BACKEND_OPENCODE
-                    and await self._defer_opencode_shell_permission(msg, remaining)
+                    self._defers_shell_permission
+                    and await self._defer_shell_permission(msg, remaining)
                 )
                 or (
                     self.backend == ACP_BACKEND_MIMOCODE
