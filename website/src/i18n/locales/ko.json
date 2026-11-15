@@ -5822,6 +5822,17 @@
     "agentLabel": {
       "builtin_conductor": "지휘자"
     },
+    "sharedCrews": {
+      "empty": "아직 열 수 있는 공유 Crew가 없습니다.",
+      "managed_by_admin": "공유 Crew는 관리자가 AWS Management Console에서 관리합니다.",
+      "open_console": "AWS Management Console 열기",
+      "refusal_list_generic": "공유 Crew를 불러오지 못했습니다.",
+      "refusal_not_configured": "릴레이를 통한 공유 Crew가 설정되어 있지 않습니다.",
+      "refusal_signed_out": "공유 Crew를 보려면 Kiro에 로그인하세요.",
+      "setup_desc": "공유 Crew는 관리자가 AWS Management Console에서 만들고 관리합니다. 팀용 공유 Crew를 설정해 달라고 관리자에게 요청하세요.",
+      "setup_title": "새 공유 Crew 설정",
+      "title": "공유 Crew"
+    },
     "warmBriefCard": {
       "asked": "요청하신 일",
       "checked": "확인함",

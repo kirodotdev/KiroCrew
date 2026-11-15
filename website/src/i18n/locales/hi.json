@@ -5992,6 +5992,17 @@
     "agentLabel": {
       "builtin_conductor": "कंडक्टर"
     },
+    "sharedCrews": {
+      "empty": "अभी तुम्हारे पास खोलने के लिए कोई साझा Crew नहीं है।",
+      "managed_by_admin": "साझा Crew को तुम्हारा एडमिन AWS Management Console में मैनेज करता है।",
+      "open_console": "AWS Management Console खोलो",
+      "refusal_list_generic": "तुम्हारे साझा Crew लोड नहीं हो सके।",
+      "refusal_not_configured": "रिले के ज़रिए साझा Crew सेट अप नहीं हैं।",
+      "refusal_signed_out": "अपने साझा Crew देखने के लिए Kiro में साइन इन करो।",
+      "setup_desc": "साझा Crew को एक एडमिन AWS Management Console में बनाता और मैनेज करता है। अपने एडमिन से अपनी टीम के लिए एक सेट अप करने को कहो।",
+      "setup_title": "नया साझा Crew सेट अप करो",
+      "title": "साझा Crew"
+    },
     "warmBriefCard": {
       "asked": "तुमने कहा था",
       "checked": "जाँचा गया",
