@@ -678,3 +678,128 @@ async def test_the_owners_rules_read_is_unchanged_by_the_teammate_branch(tmp_pat
             status_before, body_before = await _call(client, "GET", path, params=params)
     assert status == status_before == 200
     assert body == body_before
+
+
+def _dashboard_app(tmp_path) -> web.Application:
+    from kiro_crew.dashboard.handlers import member_dashboard
+
+    app = _app(tmp_path)
+    member_dashboard.register_member_dashboard_routes(app)
+    return app
+
+
+async def _dashboard_call(
+    client: TestClient, method: str, path: str, **kwargs: Any
+) -> tuple[int, dict[str, Any]]:
+    resp = await client.request(method, path, **kwargs)
+    return resp.status, await resp.json()
+
+
+@pytest.mark.asyncio
+async def test_a_relay_teammate_reads_a_bots_dashboard_as_the_owner_does(
+    tmp_path, monkeypatch
+) -> None:
+    records: list[dict] = []
+    monkeypatch.setattr(
+        m, "_sel", lambda: SimpleNamespace(log_api_access=lambda **kw: records.append(kw))
+    )
+    slug = await asyncio.to_thread(_saved_bot, "normal")
+    path = f"/api/members/{slug}/dashboard"
+    async with TestClient(TestServer(_dashboard_app(tmp_path))) as client:
+        status, body = await _dashboard_call(
+            client, "GET", path, params={"member": MADE}, headers=_teammate(client)
+        )
+        owner_status, owner_body = await _dashboard_call(
+            client, "GET", path, params={"member": MADE, "token": generate_token(OWNER)}
+        )
+    assert status == owner_status == 200, body
+    # The same page: the teammate reads what the owner reads, not an emptied copy.
+    assert body["state"] == owner_body["state"]
+    assert body.get("template") == owner_body.get("template")
+    assert {
+        "caller": f"relay:{ANA}",
+        "operation": "members.dashboard",
+        "outcome": "allowed",
+        "source": "dashboard",
+        "resources": "relay_teammate",
+    } in records
+
+
+@pytest.mark.asyncio
+async def test_a_relay_teammate_is_refused_a_bots_dashboard_refetch(tmp_path) -> None:
+    # The refetch answers gaps in the owner's pushes, and a teammate's tab gets none, so
+    # it stays owner-only; the owner past the gate gets the route's own 409.
+    slug = await asyncio.to_thread(_saved_bot, "normal")
+    path = f"/api/members/{slug}/dashboard/refetch"
+    query = {"member": MADE, "dashboard": "no-such-package"}
+    async with TestClient(TestServer(_dashboard_app(tmp_path))) as client:
+        status, body = await _dashboard_call(
+            client, "POST", path, params=query, headers=_teammate(client)
+        )
+        owner_status, owner_body = await _dashboard_call(
+            client, "POST", path, params={**query, "token": generate_token(OWNER)}
+        )
+    assert (status, body["code"]) == (403, "owner_only")
+    assert (owner_status, owner_body["code"]) == (409, "no_live_page")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "suffix", "query"),
+    [
+        # A staged page exists for the owner to Keep or Discard; both stay owner-only.
+        ("GET", "", {"preview": "1"}),
+        ("POST", "/preview/apply", {}),
+        ("POST", "/preview/discard", {}),
+    ],
+)
+async def test_a_relay_teammate_is_refused_a_bots_staged_dashboard(
+    tmp_path, method: str, suffix: str, query: dict[str, str]
+) -> None:
+    slug = await asyncio.to_thread(_saved_bot, "normal")
+    async with TestClient(TestServer(_dashboard_app(tmp_path))) as client:
+        status, body = await _dashboard_call(
+            client,
+            method,
+            f"/api/members/{slug}/dashboard{suffix}",
+            params={"member": MADE, **query},
+            json={"staged_ms": 1},
+            headers=_teammate(client),
+        )
+    assert status == 403, body
+    assert body["code"] == "owner_only"
+
+
+@pytest.mark.asyncio
+async def test_a_relay_teammate_is_refused_the_dashboard_of_a_bot_outside_their_roster(
+    tmp_path,
+) -> None:
+    async with TestClient(TestServer(_dashboard_app(tmp_path))) as client:
+        with patch.object(m.KiroCrewConfig, "load", return_value=_config()):
+            status, body = await _dashboard_call(
+                client,
+                "GET",
+                f"/api/members/{_slug(SYNCED)}/dashboard",
+                params={"member": SYNCED},
+                headers=_teammate(client),
+            )
+    assert status == 403, body
+    assert body["code"] == "owner_only"
+
+
+@pytest.mark.asyncio
+async def test_a_non_owner_who_is_not_a_relay_teammate_is_refused_a_bots_dashboard(
+    tmp_path,
+) -> None:
+    slug = await asyncio.to_thread(_saved_bot, "normal")
+    async with TestClient(TestServer(_dashboard_app(tmp_path))) as client:
+        status, body = await _dashboard_call(
+            client,
+            "GET",
+            f"/api/members/{slug}/dashboard",
+            params={"member": MADE, "token": generate_token("U0SOMEONE")},
+            # The relay's user header from a client is stripped, so it proves nothing.
+            headers={RELAY_USER_HEADER: ANA},
+        )
+    assert status == 403, body
+    assert body["code"] == "owner_only"

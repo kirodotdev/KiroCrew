@@ -643,12 +643,24 @@ async def test_every_route_denies_an_app_caller_and_gates_the_values_it_serves()
             assert "_resolve" in called, f"{name} does not resolve the member"
         if name in _VALUE_SERVING_READS:
             assert "_owner_only" in called, f"{name} is not owner-gated"
+    reader_gate = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_teammate_reader"
+    )
+    reader_calls = {
+        n.func.id
+        for n in ast.walk(reader_gate)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+    assert "_teammate_admitted" in reader_calls
 
 
 #: Reads that serve this crewmate's FOLD VALUES, which are work-ledger and crew-log
 #: data: task titles, summaries, PR links. ``work_ledger_board`` answers a non-owner
 #: ``owner_only`` for exactly those, so this one cannot answer 200 to the same caller
-#: just because its copy arrives as rendered html.
+#: just because its copy arrives as rendered html. The one non-owner a crewmate's page
+#: admits is a relay teammate on a Bot in their roster (``_teammate_reader``).
 #:
 #: A SET rather than a check inside the loop, so adding a route that serves values is a
 #: one-line change HERE and a visible one in review.
@@ -1491,6 +1503,14 @@ class TestAStagedPageReachesOnlyItsOwnersPreview:
             # Returned on refusal, not merely computed: a gate whose answer is dropped
             # is not a gate.
             assert "return owner_denied" in source, handler.__name__
+        # A relay teammate skips the crewmate read's owner gate only off the staged page.
+        gate = self._source(member_dashboard._teammate_reader)
+        preview_guard = 'if request.query.get("preview") == "1":\n        return False'
+        assert preview_guard in gate
+        assert gate.index(preview_guard) < gate.index("_teammate_admitted(")
+        assert "_teammate_reader(" not in self._source(
+            member_dashboard.api_member_dashboard_refetch
+        ), "the refetch answers owner pushes; a teammate gets none"
         # `_serve` is reached only from those two page routes.
         module_source = self._source(member_dashboard)
         assert module_source.count("await _serve(request") == 2
