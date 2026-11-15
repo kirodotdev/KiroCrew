@@ -682,6 +682,36 @@ members through `provision_member_memory`. Only the reserved `default` assistant
 can use V1. Workspace fallback and alias resolution assertions must not depend on
 an invalid member-to-global binding or disable private-file validation.
 
+### A faked host condition changes with the check that reads it
+
+A test often fakes a host condition the suite cannot have for real: the default
+data home (`beacon.is_default_home`), the platform, a privilege, a governance pin.
+The fake and the production check that reads it are one contract, split across
+two files. Change them in the SAME pull request:
+
+- **Adding a check** on a host condition (`if not is_default_home(): return False`)
+  means searching `test/` for every test that reaches that code, and giving the
+  ones that assert the "yes" branch the fake the check now needs.
+- **Removing a fake** (from a shared fixture such as `home`) means searching for
+  every assertion that still depends on it, not only the call the fake was added
+  for: `git grep -n "<function the fake answered>" -- src test`, then read each
+  production caller and the tests that reach it.
+
+MEASURED: one pull request removed the shared `home` fixture's
+`is_default_home() -> True` fake, because `destinations()` no longer read the home.
+A second pull request, written in parallel, made `off_offer_due()` return `False`
+off the default home. Each was green on its own base; once both merged, three
+`TestOffOffer` tests were red on every run of `main` (`assert False is True`) and
+blocked every open pull request until the fake came back, scoped to that class.
+Repeat runs cannot catch this shape, because it fails every time: the guard is the
+search, done by whichever change lands second, plus a rebase onto current `main`
+before the merge.
+
+Scope the fake to the tests that need it (a class-level autouse fixture), not the
+shared fixture, and keep one test that drops it and proves the "no" branch
+(`TestOffOffer`'s `home` case). A fake in a shared fixture outlives the check it
+was written for, and nothing reports that it now hides a branch.
+
 ### Transport readiness before event assertions
 
 Before triggering a broadcast, a WebSocket test waits for each connection's
