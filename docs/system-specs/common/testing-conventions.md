@@ -2999,6 +2999,12 @@ what it could see, and both are worth reusing:
   IS the assertion (git's ignore and ancestry semantics, openssl's DER output), and give
   those — production helper included — a `cwd=` the test owns. `cwd=` alone leaves a live
   `gh` token in play.
+- **Stubbing the spawn is not enough when a PATH probe gates it.** A test that fakes
+  `_run_gh` but not the adapter's `shutil.which("gh")` gate passes on a runner that ships
+  `gh` and fails on one that does not: the gate answers "unconfigured" first, the fake
+  never runs, and an `assertNotIsInstance` beside it passes for the trivial reason. Pin the
+  probe too (`_gh_available` in the ops-mission-control `github_issues` adapter), and run a
+  host-tool test once with the tool off `PATH` before calling it host-independent.
 - **A skip whose condition is a clock or a scheduler flips without any test failing.** Three
   tests skipped in some runs and passed in others: a ctime tick, whether a real `npm`
   answered in time, whether an earlier test had armed a fork hook in that worker. No
