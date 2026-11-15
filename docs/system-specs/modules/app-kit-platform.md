@@ -7816,6 +7816,19 @@ which registers the real wheel copy and asks `permission_refusal` of the reposit
 list (None), and `test/test_design_tweak_permission_parity.py`, which asks it of that
 list plus one more path (`permission_widening`). Agent Worlds declares the host paths its page calls the same way (§18j).
 
+The wheel pins Design Tweak (`apps/adoption-pins.json`) at
+`KiroCrewCaptain/kirocrew-app-design-tweak` with `minAppSdkLevel` 8. The tree's own
+seams (`agentTools`, the exact `=/api/chat` entry) are level 7, but the exact-entry
+grammar landed after the level-7 constant did, so a level-7 host cut before it would
+read `=/api/chat` as a literal no path equals and the page could not send; level 8 is
+the first that always carries it. A host whose record is builtin-owned swaps it in
+place onto that tree at a restart, keeping `data/`, `.app_secret`, the approved grants
+and `enabled`; the rail keeps `/design-tweak` and the `Paintbrush` glyph, and the
+wheel copy's `version` is the pinned one (D12). The repository's `app.json` declares
+the same `permissions`, `agentTools` and `skills` as the wheel copy, so E9 holds
+nothing back. A fix to the app lands in that repository first; a change to the wheel
+copy needs its `App repo:` line.
+
 **The trust prompt names the host paths.** `TrustAppModal` lists the manifest's
 `permissions.api` entries outside the app's own namespace in a box of their own, as
 declared, beside the boxes of the other declared grants. The box opens in plain words,
@@ -8903,6 +8916,17 @@ its own module is seen.
 **The built-in.** Spec Builder's wheel copy declares `chatSlots`, so an adopted copy
 that reads `ctx.chat_slots` is not a widening. The installed copy feature-detects the
 attribute and falls back to its named host lookups on an older host.
+
+The wheel pins Spec Builder (`apps/adoption-pins.json`, § 33) at
+`KiroCrewCaptain/kirocrew-app-spec-builder` with `minAppSdkLevel` 7, the level of
+`chatSlots`, `ctx.chat_slots` and the `agentReadOnlyDirs` entry `trust` (§39), so a
+host whose record is builtin-owned swaps it in place onto that tree at a restart,
+keeping `data/` (the decision record under `data/trust/` included), `.app_secret`, the approved grants and `enabled`; the rail keeps
+`/spec-builder` and the `ClipboardList` glyph, and the wheel copy's `version` is the
+pinned one (D12). The repository's `app.json` declares the same `permissions`,
+`agentReadOnlyDirs` and `skills` as the wheel copy, so E9 holds nothing back. A fix to
+the app lands in that repository first; a change to the wheel copy needs its
+`App repo:` line.
 
 Writers: `apps/chat_slot_sdk.py`, `apps/context.py`, `apps/manifest_sections.py`,
 `apps/builtin_adoption_checks.py`, `apps/permissions.py`, `apps/official_catalog.py`,

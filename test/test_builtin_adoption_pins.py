@@ -210,6 +210,26 @@ _SHIPPED_PINS = [
         "minAppSdkLevel": 2,
         "legacyNav": {"route": "/auto-improvement", "icon": "Brain"},
     },
+    {
+        "name": "design-tweak",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-design-tweak",
+        "commit": "deff125f4abf4657575f7c03f289bb25d3e37a8d",
+        "version": "0.10.1",
+        "treeSha256": "23affb46e3dc4db56aedd00f8b6338822507cd98b01eec10e0627da7d446f90c",
+        "archiveSha256": "b6093427ecfff4bea6811f7245567732e92f319baa62307dcf243c0023b16a5b",
+        "minAppSdkLevel": 8,
+        "legacyNav": {"route": "/design-tweak", "icon": "Paintbrush"},
+    },
+    {
+        "name": "spec-builder",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-spec-builder",
+        "commit": "79de0b4e3581bcbde1a021d9a335c63f45a44f30",
+        "version": "0.1.1",
+        "treeSha256": "05024a394b6c8f43791248b5d6eef63f1d23a1e61b015dafe76bf585ea7fe75a",
+        "archiveSha256": "039f1143d69bf27bc126659c5625d0d2a123f6ea0b3a42a8143c0701b8b43711",
+        "minAppSdkLevel": 7,
+        "legacyNav": {"route": "/spec-builder", "icon": "ClipboardList"},
+    },
 ]
 
 
