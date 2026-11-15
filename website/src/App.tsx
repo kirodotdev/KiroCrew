@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, useSyncExternalStore, createContext, lazy, Suspense, type ReactNode } from 'react'
+import { useEffect, useState, useCallback, useRef, useSyncExternalStore, createContext, lazy, memo, Suspense, type ReactNode } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from './store'
 import { setUpdateProgress } from './store/dashboardSlice'
@@ -92,6 +92,7 @@ import ReportProblemModal from './components/ReportProblemModal'
 import KiroAccountModal from './components/KiroAccountModal'
 
 import { i18nT } from './i18n/t'
+import { useLanguageGeneration } from './i18n/useLanguageGeneration'
 import { isAppNavId } from './appNotificationBadges'
 import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect } from './shell/routes'
 import { NAV_ITEMS } from './shell/nav/navItems'
@@ -319,78 +320,85 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
 export { MobileNavGlyph } from './shell/topbar/shellHeader'
 export { NavItem, NavBadge }
 
-// The shell's routes close over nothing from App, so the element is built once.
-// App renders this same element every time, and React then skips the routes
-// (and the page they show) when App renders again for a reason of its own;
-// a location change still reaches them through the router's context.
-const MAIN_ROUTES = (
-  <Routes>
-    <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
-    <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />
-    <Route path="/notifications" element={<ErrorBoundary><NotificationsPage /></ErrorBoundary>} />
-    {/* Bookmarkable session chooser: neutral list, no auto-select; rows
-        open the full /chat/<key> experience inside this same shell. */}
-    <Route path="/sessions" element={<ErrorBoundary><Suspense fallback={null}><SessionsPage /></Suspense></ErrorBoundary>} />
-    <Route path="/session-dashboards" element={<ErrorBoundary><Suspense fallback={null}><SessionDashboardsPage /></Suspense></ErrorBoundary>} />
-    {/* Knowledge moved into Agent Capabilities; old bookmarks land on its tab. */}
-    <Route path="/knowledge" element={<Navigate to="/capabilities?tab=knowledge" replace />} />
+// The shell's routes close over nothing from App, so they live in a component
+// of their own that takes no props. `memo` then skips the routes (and the page
+// they show) when App renders again for a reason of its own; a location change
+// still reaches them through the router's context. A language switch must also
+// reach them: most pages read `i18nT()` and subscribe to nothing, and
+// LanguageProvider's repaint stops at this `memo`, so the component subscribes
+// itself and builds the route elements again for the new language. The pages
+// are drawn again, not mounted again.
+const MainRoutes = memo(function MainRoutes() {
+  useLanguageGeneration()
+  return (
+    <Routes>
+      <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
+      <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />
+      <Route path="/notifications" element={<ErrorBoundary><NotificationsPage /></ErrorBoundary>} />
+      {/* Bookmarkable session chooser: neutral list, no auto-select; rows
+          open the full /chat/<key> experience inside this same shell. */}
+      <Route path="/sessions" element={<ErrorBoundary><Suspense fallback={null}><SessionsPage /></Suspense></ErrorBoundary>} />
+      <Route path="/session-dashboards" element={<ErrorBoundary><Suspense fallback={null}><SessionDashboardsPage /></Suspense></ErrorBoundary>} />
+      {/* Knowledge moved into Agent Capabilities; old bookmarks land on its tab. */}
+      <Route path="/knowledge" element={<Navigate to="/capabilities?tab=knowledge" replace />} />
 
-    <Route path="/members" element={<ErrorBoundary><Suspense fallback={null}><MembersPage /></Suspense></ErrorBoundary>} />
-    <Route path="/overview" element={<Navigate to="/settings/overview" replace />} />
-    <Route path="/crew-board" element={<ErrorBoundary><Suspense fallback={null}><CrewBoardPage /></Suspense></ErrorBoundary>} />
-    <Route path="/schedule" element={<SchedulePage />} />
-    {/* Task Runner: a core page, routed here rather than through the builtin app registry. */}
-    <Route path="/projects/*" element={<ProjectsPage />} />
-    {/* Channels: a core page too, shown in the rail by `dashboard.channels_enabled`. */}
-    <Route path="/channels/*" element={<ChannelPage />} />
-    {/* Agents live in the Agent Capabilities panel; Connections is a Settings tab. */}
-    <Route path="/agents" element={<Navigate to="/capabilities" replace />} />
-    <Route path="/mc-agents" element={<Navigate to="/capabilities" replace />} />
-    <Route path="/connections" element={<ConnectionsRedirect />} />
-    <Route path="/tasks" element={<TasksRedirect />} />
-    <Route path="/logs" element={<LogsPage />} />
-    <Route path="/hooks" element={<HooksPage />} />
-    <Route path="/webhooks" element={<ErrorBoundary><WebhooksPage /></ErrorBoundary>} />
-    <Route path="/capabilities" element={<CapabilitiesPage />} />
-    <Route path="/mcp" element={<McpRedirect />} />
-    {/* Instances setup moved into Settings; switching happens via the header tab strip. */}
-    <Route path="/instances" element={<Navigate to="/settings/instances" replace />} />
-    {/* Static segments (library, detail, migrate) MUST stay registered
-        before the /apps/:name installed-app catch-all -- they are
-        reserved app-name words enforced server-side. The '-/' prefix
-        (e.g. /apps/-/updates) needs NO server-side reservation: '-' is
-        not a valid app name, so it can never collide with an installed
-        app -- the reserved set stays frozen at 'library'. */}
-    <Route path="/apps" element={<Suspense fallback={null}><DiscoverPage /></Suspense>} />
-    <Route path="/apps/-/updates" element={<Suspense fallback={null}><DiscoverPage /></Suspense>} />
-    <Route path="/apps/library" element={<Suspense fallback={null}><LibraryPage /></Suspense>} />
-    <Route path="/apps/detail/:name" element={<AppDetailPage />} />
-    <Route path="/apps/migrate/:name" element={<MigrationPage />} />
-    <Route path="/apps/:name" element={<AppPage />} />
-    {/* Splat route: SettingsPage parses the trailing segments itself
-        (segment[0] = tab, segment[1] = sub; deeper segments reserved).
-        Matches bare /settings too (empty splat). */}
-    <Route path="/settings/*" element={<SettingsPage />} />
-    <Route path="/developer" element={<DeveloperPage />} />
-    {/* Dev-only layout-editor harness (RFC §7 PR 2) — a standalone route
-        to exercise the editor in isolation. Not linked from nav. */}
-    <Route path="/developer/layout-editor" element={<ErrorBoundary><Suspense fallback={null}><LayoutEditorHarnessPage /></Suspense></ErrorBoundary>} />
-    <Route path="/artifacts" element={<ArtifactsPage />} />
-    <Route path="/artifacts/deploy" element={<Navigate to="/deploy" replace />} />
-    <Route path="/artifacts/remote/:provider/:externalId" element={<ErrorBoundary><RemoteArtifactDetailPage /></ErrorBoundary>} />
-    <Route path="/artifacts/:slug" element={<ArtifactDetailPage />} />
-    <Route path="/deploy" element={<ArtifactDeployPage />} />
-    {/* Builtin app routes — auto-discovered from registry. React Router v6
-        ranks static paths higher than parameterized ones, so /settings, /agents
-        etc. still match first. Unrecognized paths fall through to /chat.
-        The trailing splat also matches the BARE app path (empty splat),
-        so this one arm serves /aws-control and /aws-control/usage alike —
-        an app carries sub-segments for its own path navigation, same
-        shape as /settings/<tab>. */}
-    <Route path="/:builtinApp/*" element={<BuiltinAppRoute />} />
-    <Route path="*" element={<ChatRedirect />} />
-  </Routes>
-)
+      <Route path="/members" element={<ErrorBoundary><Suspense fallback={null}><MembersPage /></Suspense></ErrorBoundary>} />
+      <Route path="/overview" element={<Navigate to="/settings/overview" replace />} />
+      <Route path="/crew-board" element={<ErrorBoundary><Suspense fallback={null}><CrewBoardPage /></Suspense></ErrorBoundary>} />
+      <Route path="/schedule" element={<SchedulePage />} />
+      {/* Task Runner: a core page, routed here rather than through the builtin app registry. */}
+      <Route path="/projects/*" element={<ProjectsPage />} />
+      {/* Channels: a core page too, shown in the rail by `dashboard.channels_enabled`. */}
+      <Route path="/channels/*" element={<ChannelPage />} />
+      {/* Agents live in the Agent Capabilities panel; Connections is a Settings tab. */}
+      <Route path="/agents" element={<Navigate to="/capabilities" replace />} />
+      <Route path="/mc-agents" element={<Navigate to="/capabilities" replace />} />
+      <Route path="/connections" element={<ConnectionsRedirect />} />
+      <Route path="/tasks" element={<TasksRedirect />} />
+      <Route path="/logs" element={<LogsPage />} />
+      <Route path="/hooks" element={<HooksPage />} />
+      <Route path="/webhooks" element={<ErrorBoundary><WebhooksPage /></ErrorBoundary>} />
+      <Route path="/capabilities" element={<CapabilitiesPage />} />
+      <Route path="/mcp" element={<McpRedirect />} />
+      {/* Instances setup moved into Settings; switching happens via the header tab strip. */}
+      <Route path="/instances" element={<Navigate to="/settings/instances" replace />} />
+      {/* Static segments (library, detail, migrate) MUST stay registered
+          before the /apps/:name installed-app catch-all -- they are
+          reserved app-name words enforced server-side. The '-/' prefix
+          (e.g. /apps/-/updates) needs NO server-side reservation: '-' is
+          not a valid app name, so it can never collide with an installed
+          app -- the reserved set stays frozen at 'library'. */}
+      <Route path="/apps" element={<Suspense fallback={null}><DiscoverPage /></Suspense>} />
+      <Route path="/apps/-/updates" element={<Suspense fallback={null}><DiscoverPage /></Suspense>} />
+      <Route path="/apps/library" element={<Suspense fallback={null}><LibraryPage /></Suspense>} />
+      <Route path="/apps/detail/:name" element={<AppDetailPage />} />
+      <Route path="/apps/migrate/:name" element={<MigrationPage />} />
+      <Route path="/apps/:name" element={<AppPage />} />
+      {/* Splat route: SettingsPage parses the trailing segments itself
+          (segment[0] = tab, segment[1] = sub; deeper segments reserved).
+          Matches bare /settings too (empty splat). */}
+      <Route path="/settings/*" element={<SettingsPage />} />
+      <Route path="/developer" element={<DeveloperPage />} />
+      {/* Dev-only layout-editor harness (RFC §7 PR 2) — a standalone route
+          to exercise the editor in isolation. Not linked from nav. */}
+      <Route path="/developer/layout-editor" element={<ErrorBoundary><Suspense fallback={null}><LayoutEditorHarnessPage /></Suspense></ErrorBoundary>} />
+      <Route path="/artifacts" element={<ArtifactsPage />} />
+      <Route path="/artifacts/deploy" element={<Navigate to="/deploy" replace />} />
+      <Route path="/artifacts/remote/:provider/:externalId" element={<ErrorBoundary><RemoteArtifactDetailPage /></ErrorBoundary>} />
+      <Route path="/artifacts/:slug" element={<ArtifactDetailPage />} />
+      <Route path="/deploy" element={<ArtifactDeployPage />} />
+      {/* Builtin app routes — auto-discovered from registry. React Router v6
+          ranks static paths higher than parameterized ones, so /settings, /agents
+          etc. still match first. Unrecognized paths fall through to /chat.
+          The trailing splat also matches the BARE app path (empty splat),
+          so this one arm serves /aws-control and /aws-control/usage alike —
+          an app carries sub-segments for its own path navigation, same
+          shape as /settings/<tab>. */}
+      <Route path="/:builtinApp/*" element={<BuiltinAppRoute />} />
+      <Route path="*" element={<ChatRedirect />} />
+    </Routes>
+  )
+})
 
 export default function App() {
   const shell = useAppShell()
@@ -959,7 +967,7 @@ export default function App() {
           <Suspense fallback={null}><LinkOpenLayer /></Suspense>
           {/* The shell's own nav read owns the shared app list here. */}
           <Suspense fallback={null}><SelectionActionLayer readApps={false} /></Suspense>
-          {MAIN_ROUTES}
+          <MainRoutes />
           </GuideProvider>
           </MobileRosterBarContext.Provider>
           </MobileNavRailContext.Provider>
