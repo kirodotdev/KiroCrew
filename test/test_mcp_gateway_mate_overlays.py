@@ -84,6 +84,11 @@ def _agent_flag(entry: dict) -> str:
     return flags[flags.index("--agent") + 1]
 
 
+def _stub_names(spec: dict | None) -> set[str]:
+    """The servers a worker lookup would inject; ``None`` injects nothing."""
+    return set((spec or {}).get("mcpServers") or {})
+
+
 class TestTheRewritePass:
     def test_a_crewmate_server_gets_a_stub_under_the_crewmate_identity(self, home):
         results, target_env = _rewrite(home)
@@ -303,19 +308,74 @@ class TestTheWorkerLookup:
         assert [e["name"] for e in injected] == [SERVER]
         assert all("autoApprove" not in json.dumps(e) for e in injected)
 
-    def test_without_a_kas_session_key_the_lookup_is_the_by_name_one(self, home, monkeypatch):
-        """Every host but KAS passes no key, and keeps the lookup it had on main."""
+    def test_without_a_kas_session_key_no_worker_stub_is_injected_by_name(self, home, monkeypatch):
+        """The stock worker overlay is written under the worker's name; a lookup by
+        that name would hand its base stubs to a session without its merged limits,
+        so every host but KAS (which passes the session key) gets none."""
+        base = {"command": sys.executable, "args": ["-V"]}
+        _write(
+            home.mates / f"{WORKER}.json",
+            {"name": WORKER, "tools": ["*"], "mcpServers": {SERVER: base}},
+        )
         _rewrite(home)
+        assert SERVER in json.loads((home.overlay / f"{WORKER}.json").read_text())["mcpServers"]
         _worker_session(monkeypatch, home, merged_servers={SERVER: {"command": "x"}})
-        # No leftover copy under the shared name: nothing, as on main.
         assert session_servers.pooled_session_servers(home.overlay, WORKER) == []
-        # A leftover ``~/.kiro/agents/kirocrew-mate-worker.json`` overlay still
-        # answers the by-name lookup, as on main.
-        _write(home.overlay / f"{WORKER}.json", _mate_overlay(home) | {"name": WORKER})
-        assert [
-            e["name"] for e in session_servers.pooled_session_servers(home.overlay, WORKER)
-        ] == [SERVER]
-        assert session_servers.injection_server_names(home.overlay, WORKER) == frozenset({SERVER})
+        assert session_servers.injection_server_names(home.overlay, WORKER) == frozenset()
+
+    def test_the_worker_gets_the_base_servers_stubs_from_the_worker_overlay(
+        self, home, monkeypatch
+    ):
+        """Every crewmate's worker shares the base servers, with the governed limits."""
+        base = {"command": sys.executable, "args": ["-V"], "autoApprove": ["*"]}
+        _write(
+            home.mates / f"{WORKER}.json",
+            {"name": WORKER, "tools": ["*"], "mcpServers": {SERVER: base}},
+        )
+        _rewrite(home)
+        entry = json.loads((home.overlay / f"{WORKER}.json").read_text())["mcpServers"][SERVER]
+        assert entry[_WRAPPER_MARKER] is True
+        assert _agent_flag(entry) == WORKER
+        _worker_session(
+            monkeypatch,
+            home,
+            merged_servers={SERVER: {"command": "x", "disabledTools": ["write"]}},
+            base_servers={SERVER: base},
+        )
+        spec = mate_overlays.worker_overlay_spec(home.overlay, "chat-1")
+        assert _stub_names(spec) == {SERVER}
+        assert "autoApprove" not in spec["mcpServers"][SERVER]
+        assert spec["mcpServers"][SERVER]["disabledTools"] == ["write"]
+        # The crewmate's own file has nothing to do with it.
+        monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member_id: "")
+        assert _stub_names(mate_overlays.worker_overlay_spec(home.overlay, "chat-1")) == {SERVER}
+        # A base server the merged spec mutes or drops is not injected.
+        _worker_session(
+            monkeypatch,
+            home,
+            merged_servers={SERVER: {"command": "x", "disabled": True}},
+            base_servers={SERVER: base},
+        )
+        assert _stub_names(mate_overlays.worker_overlay_spec(home.overlay, "chat-1")) == set()
+        _worker_session(monkeypatch, home, merged_servers={}, base_servers={SERVER: base})
+        assert _stub_names(mate_overlays.worker_overlay_spec(home.overlay, "chat-1")) == set()
+
+    def test_a_worker_overlay_with_another_identity_gives_no_base_stub(self, home, monkeypatch):
+        base = {"command": sys.executable, "args": ["-V"]}
+        _write(
+            home.mates / f"{WORKER}.json",
+            {"name": WORKER, "tools": ["*"], "mcpServers": {SERVER: base}},
+        )
+        _rewrite(home)
+        path = home.overlay / f"{WORKER}.json"
+        _write(path, json.loads(path.read_text()) | {"name": "kirocrew"})
+        _worker_session(
+            monkeypatch,
+            home,
+            merged_servers={SERVER: {"command": "x"}},
+            base_servers={SERVER: base},
+        )
+        assert _stub_names(mate_overlays.worker_overlay_spec(home.overlay, "chat-1")) == set()
 
     def test_a_server_the_merged_spec_drops_or_mutes_is_not_injected(self, home, monkeypatch):
         _rewrite(home)
@@ -364,7 +424,7 @@ class TestTheWorkerLookup:
         path = mate_overlays.mate_overlay_dir(home.overlay) / "pixel.json"
         _write(path, _mate_overlay(home) | {"name": "kirocrew"})
         _worker_session(monkeypatch, home, merged_servers={SERVER: {"command": "x"}})
-        assert mate_overlays.worker_overlay_spec(home.overlay, "chat-1") is None
+        assert _stub_names(mate_overlays.worker_overlay_spec(home.overlay, "chat-1")) == set()
 
     @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
     def test_a_symlinked_overlay_is_refused(self, home, monkeypatch):
@@ -374,14 +434,14 @@ class TestTheWorkerLookup:
         path.unlink()
         path.symlink_to(real)
         _worker_session(monkeypatch, home, merged_servers={SERVER: {"command": "x"}})
-        assert mate_overlays.worker_overlay_spec(home.overlay, "chat-1") is None
+        assert _stub_names(mate_overlays.worker_overlay_spec(home.overlay, "chat-1")) == set()
 
     @pytest.mark.parametrize("bound", ["../agents/kirocrew", "a\\b", ".."])
     def test_a_binding_that_names_a_path_is_refused(self, home, monkeypatch, bound):
         _rewrite(home)
         _worker_session(monkeypatch, home, merged_servers={SERVER: {"command": "x"}})
         monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member_id: bound)
-        assert mate_overlays.worker_overlay_spec(home.overlay, "chat-1") is None
+        assert _stub_names(mate_overlays.worker_overlay_spec(home.overlay, "chat-1")) == set()
 
     def test_an_unreadable_worker_kit_injects_nothing(self, home, monkeypatch):
         _rewrite(home)
@@ -691,7 +751,7 @@ class TestALinkedCrewmateOverlayFolder:
         elsewhere = self._plant(home)
         _write(elsewhere / "pixel.json", overlay)
         _worker_session(monkeypatch, home, merged_servers={SERVER: {"command": "x"}})
-        assert mate_overlays.worker_overlay_spec(home.overlay, "chat-1") is None
+        assert _stub_names(mate_overlays.worker_overlay_spec(home.overlay, "chat-1")) == set()
 
 
 class TestAnEditedCrewmateFile:
