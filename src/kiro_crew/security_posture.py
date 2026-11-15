@@ -322,6 +322,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # README requires rather than a boundary's own guarantee. The surfaces
         # that SHOW frame-derived text are the registered sinks.
         "acp/_frame_record.py",
+        # Capture-side the same way: `kirocrew eval capture` scrubs each user turn
+        # and tool name of a recorded chat as it WRITES the scenario file the
+        # operator named (or ./evals/), so a credential never lands in a file they
+        # may commit beside their evals. No transport and no audience: the file is
+        # on the operator's own disk and the command prints only counts and the path.
+        "eval/capture.py",
         # Internal coordinator partitions behind the single registered subagent
         # output boundary, ``subagent_parts/run_output.py``.  They redact lifecycle
         # payloads before handing them to facade-owned event/completion callbacks,
