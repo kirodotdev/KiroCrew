@@ -1,0 +1,544 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": false,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "delete": {},
+        "list": {}
+      }
+    },
+    "agent_version": "0.0.34",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "stub/stub-model",
+        "description": "Select the model for this session",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": null,
+            "name": "stub/Stub",
+            "value": "stub/stub-model"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "off",
+        "description": "Set the reasoning effort for this session",
+        "id": "thought_level",
+        "name": "Thinking",
+        "options": [
+          {
+            "description": null,
+            "name": "Thinking: off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "off",
+      "ids": [
+        "off"
+      ]
+    },
+    "session_id": "pi-session-1"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      0,
+      128000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "path": "/work/note.txt"
+        },
+        "title": "read",
+        "tool_call_id": "call_read_2",
+        "tool_input": "{\n  \"path\": \"/work/note.txt\"\n}",
+        "tool_kind": "read",
+        "wire_title": "read"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "path": "/work/note.txt"
+        },
+        "tool_call_id": "call_read_2",
+        "tool_input": "{\n  \"path\": \"/work/note.txt\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "yes",
+            "label": "Yes"
+          },
+          {
+            "id": "no",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "path": "/work/note.txt"
+        },
+        "shell_classified": true,
+        "title": "read",
+        "tool_call_id": "call_read_2",
+        "tool_input": "{\n  \"path\": \"/work/note.txt\"\n}",
+        "tool_kind": "read"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "yes",
+      "once": "yes",
+      "reject": "no"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_read_2",
+        "tool_final": true,
+        "tool_output": "hello from the side probe\n",
+        "tool_output_bytes": 26,
+        "tool_output_digest": "9e27d0be2015b5ffadfb90e144bff0e0f7fd0285e7159576c70d8446b588820e",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "TOOL-RESULT-SEEN"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "TOOL-RESULT-SEEN",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      1407,
+      128000
+    ],
+    "usage_cost": null
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "path": "/work",
+          "pattern": "hello"
+        },
+        "title": "grep",
+        "tool_call_id": "call_grep_6",
+        "tool_input": "{\n  \"pattern\": \"hello\",\n  \"path\": \"/work\"\n}",
+        "tool_kind": "other",
+        "wire_title": "grep"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "path": "/work",
+          "pattern": "hello"
+        },
+        "tool_call_id": "call_grep_6",
+        "tool_input": "{\n  \"pattern\": \"hello\",\n  \"path\": \"/work\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "yes",
+            "label": "Yes"
+          },
+          {
+            "id": "no",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "path": "/work",
+          "pattern": "hello"
+        },
+        "request_id": 1,
+        "shell_classified": true,
+        "title": "grep",
+        "tool_call_id": "call_grep_6",
+        "tool_input": "{\n  \"pattern\": \"hello\",\n  \"path\": \"/work\"\n}",
+        "tool_kind": "search"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "yes",
+      "once": "yes",
+      "reject": "no"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_grep_6",
+        "tool_final": true,
+        "tool_output": "note.txt:1: hello from the side probe",
+        "tool_output_bytes": 37,
+        "tool_output_digest": "c041f64b2e22c0a7e14098566eff81325678604aedd91154ee10ce1be0eb85a9",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "TOOL-RESULT-SEEN"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "TOOL-RESULT-SEEN",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      1521,
+      128000
+    ],
+    "usage_cost": null
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "path": "/work",
+          "pattern": "*.txt"
+        },
+        "title": "find",
+        "tool_call_id": "call_find_10",
+        "tool_input": "{\n  \"pattern\": \"*.txt\",\n  \"path\": \"/work\"\n}",
+        "tool_kind": "other",
+        "wire_title": "find"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "path": "/work",
+          "pattern": "*.txt"
+        },
+        "tool_call_id": "call_find_10",
+        "tool_input": "{\n  \"pattern\": \"*.txt\",\n  \"path\": \"/work\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "yes",
+            "label": "Yes"
+          },
+          {
+            "id": "no",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "path": "/work",
+          "pattern": "*.txt"
+        },
+        "request_id": 2,
+        "shell_classified": true,
+        "title": "find",
+        "tool_call_id": "call_find_10",
+        "tool_input": "{\n  \"pattern\": \"*.txt\",\n  \"path\": \"/work\"\n}",
+        "tool_kind": "search"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "yes",
+      "once": "yes",
+      "reject": "no"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_find_10",
+        "tool_final": true,
+        "tool_output": "note.txt",
+        "tool_output_bytes": 8,
+        "tool_output_digest": "59700155e034d16d95b0e6916ee23373f40422648201778db4b19ad28398ca6f",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "TOOL-RESULT-SEEN"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "TOOL-RESULT-SEEN",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      1629,
+      128000
+    ],
+    "usage_cost": null
+  },
+  {
+    "frame": "response",
+    "id": 5,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "path": "/work"
+        },
+        "title": "ls",
+        "tool_call_id": "call_ls_14",
+        "tool_input": "{\n  \"path\": \"/work\"\n}",
+        "tool_kind": "other",
+        "wire_title": "ls"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "path": "/work"
+        },
+        "tool_call_id": "call_ls_14",
+        "tool_input": "{\n  \"path\": \"/work\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "yes",
+            "label": "Yes"
+          },
+          {
+            "id": "no",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "path": "/work"
+        },
+        "request_id": 3,
+        "shell_classified": true,
+        "title": "ls",
+        "tool_call_id": "call_ls_14",
+        "tool_input": "{\n  \"path\": \"/work\"\n}",
+        "tool_kind": "search"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "yes",
+      "once": "yes",
+      "reject": "no"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_ls_14",
+        "tool_final": true,
+        "tool_output": "note.txt",
+        "tool_output_bytes": 8,
+        "tool_output_digest": "59700155e034d16d95b0e6916ee23373f40422648201778db4b19ad28398ca6f",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "TOOL-RESULT-SEEN"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "TOOL-RESULT-SEEN",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      1728,
+      128000
+    ],
+    "usage_cost": null
+  },
+  {
+    "frame": "response",
+    "id": 6,
+    "stop_reason": "end_turn"
+  }
+]

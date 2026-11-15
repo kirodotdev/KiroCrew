@@ -373,7 +373,7 @@ def test_core_counts_per_harness_are_pinned() -> None:
         # without joining the running turn, so it is not a steer channel.
         "mimocode": 4,
         "opencode": 6,
-        "pi": 6,
+        "pi": 7,
         # Crew's tools, read-only side chat, and effort and model (both moved by a
         # relaunch that reloads the session): no member dispatch, no steer, no compact.
         "strands": 4,
