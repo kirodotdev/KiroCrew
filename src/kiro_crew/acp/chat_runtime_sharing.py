@@ -47,7 +47,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKENDS_CHAT_RUNTIME_SHARING
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_KAS,
+    ACP_BACKENDS_CHAT_RUNTIME_SHARING,
+    CHAT_RUNTIME_SHARING_HARNESSES,
+)
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.runtime_ownership import CHAT_RUNTIME_CAP
 
@@ -93,6 +97,20 @@ def chat_runtime_sharing_enabled(cfg: Any) -> bool:
 
     previews = feature_previews(getattr(getattr(cfg, "dashboard", None), "feature_previews", None))
     return isinstance(previews, Mapping) and previews.get(CHAT_RUNTIME_SHARING_PREVIEW) is True
+
+
+def chat_runtime_sharing_harness_enabled(cfg: Any, backend: str) -> bool:
+    """Whether *backend*'s own switch under the preview is on in *cfg*.
+
+    The switch is ``agent.chat_runtime_sharing_harnesses[backend]``; one that is
+    absent or not a bool takes its default in ``CHAT_RUNTIME_SHARING_HARNESSES``. A
+    backend outside that table is False whatever is stored.
+    """
+    if backend not in CHAT_RUNTIME_SHARING_HARNESSES:
+        return False
+    stored = getattr(getattr(cfg, "agent", None), "chat_runtime_sharing_harnesses", None)
+    value = stored.get(backend) if isinstance(stored, Mapping) else None
+    return value if isinstance(value, bool) else CHAT_RUNTIME_SHARING_HARNESSES[backend]
 
 
 def engine_shares_chats(version: str | None) -> bool:
@@ -249,6 +267,7 @@ def chat_sharing_ineligible_reason(
     member_context: bool,
     remote_workspace: bool = False,
     kas_engine_ready: bool = False,
+    harness_enabled: bool = False,
 ) -> str:
     """WHY this session may not share a chat runtime, or ``""`` when it may.
 
@@ -256,7 +275,9 @@ def chat_sharing_ineligible_reason(
     remote workspace or a Kiro Cloud sandbox): that placement is attached to the
     PROCESS, so a second session on it would run in the first one's environment.
     ``kas_engine_ready`` is :func:`kas_chat_sharing_ready`, read by the caller off
-    the loop; it is asked only for a KAS start.
+    the loop; it is asked only for a KAS start. ``harness_enabled`` is
+    :func:`chat_runtime_sharing_harness_enabled` for *backend*: the harness's own
+    switch under the preview. Off, it refuses before the engine is asked.
 
     The decision itself lives here, and :func:`eligible_for_chat_sharing` is the
     boolean over it, so there is exactly one place the branches are written. The
@@ -272,6 +293,8 @@ def chat_sharing_ineligible_reason(
         return "sharing_disabled"
     if backend not in ACP_BACKENDS_CHAT_RUNTIME_SHARING:
         return "backend_not_chat_shareable"
+    if not harness_enabled:
+        return "harness_switched_off"
     if backend == ACP_BACKEND_KAS and not kas_engine_ready:
         return "kas_engine_not_shareable"
     if remote_workspace:
@@ -294,6 +317,7 @@ def eligible_for_chat_sharing(
     member_context: bool,
     remote_workspace: bool = False,
     kas_engine_ready: bool = False,
+    harness_enabled: bool = False,
 ) -> bool:
     """Whether this session may join (or found) a shared chat runtime.
 
@@ -336,6 +360,7 @@ def eligible_for_chat_sharing(
         backend=backend,
         remote_workspace=remote_workspace,
         kas_engine_ready=kas_engine_ready,
+        harness_enabled=harness_enabled,
     )
 
 
@@ -817,6 +842,7 @@ __all__ = [
     "agent_spec_generation",
     "chat_runtime_cap",
     "chat_runtime_sharing_enabled",
+    "chat_runtime_sharing_harness_enabled",
     "chat_sharing_ineligible_reason",
     "eligible_for_chat_sharing",
     "engine_shares_chats",

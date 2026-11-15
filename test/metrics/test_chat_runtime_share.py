@@ -234,8 +234,8 @@ def test_a_founding_and_a_joining_placement_are_counted_with_their_tenants(rec):
 
     asyncio.run(scenario())
     assert _named(rec, crs.PLACED) == [
-        {"outcome": "spawned", "reason": "none", "tenants": "1"},
-        {"outcome": "joined", "reason": "none", "tenants": "2"},
+        {"outcome": "spawned", "reason": "none", "tenants": "1", "harness": "kiro"},
+        {"outcome": "joined", "reason": "none", "tenants": "2", "harness": "kiro"},
     ]
 
 
@@ -266,7 +266,51 @@ def test_a_refused_start_is_counted_with_its_reason(rec):
 
     assert asyncio.run(scenario()) is None
     assert _named(rec, crs.PLACED) == [
-        {"outcome": "refused", "reason": "session_environment", "tenants": "none"}
+        {
+            "outcome": "refused",
+            "reason": "session_environment",
+            "tenants": "none",
+            "harness": "kas",
+        }
+    ]
+
+
+def test_a_harness_switched_off_is_counted_under_that_harness(rec):
+    from chat_runtime_sharing_helpers import _PlacementProvider
+
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS
+    from kiro_crew.providers import chat_share
+    from kiro_crew.providers.chat_share import resolve_chat_share
+
+    cfg = _cfg(True)
+    cfg.agent.chat_runtime_sharing_harnesses = {ACP_BACKEND_KAS: False}
+
+    async def scenario():
+        with (
+            patch("kiro_crew.config.live.snapshot", return_value=cfg),
+            patch.object(chat_share, "kas_chat_sharing_ready", return_value=True),
+        ):
+            return await resolve_chat_share(
+                _PlacementProvider(backend=ACP_BACKEND_KAS),
+                work_dir="/home/u/.kirocrew/workspace",
+                agent="kirocrew",
+                sandbox_mode="auto",
+                extra_env={},
+                mcp_gateway_overlay=None,
+                mcp_gateway_socket=None,
+                configured_model="",
+                launch_agent="",
+                remote_workspace=False,
+            )
+
+    assert asyncio.run(scenario()) is None
+    assert _named(rec, crs.PLACED) == [
+        {
+            "outcome": "refused",
+            "reason": "harness_switched_off",
+            "tenants": "none",
+            "harness": "kas",
+        }
     ]
 
 

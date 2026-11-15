@@ -215,6 +215,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // group (`dashboard.crewmate_threads`). Same tab, so a SettingRef to that
   // key deep-links to the row.
   'ReplyThreadsRow.tsx': DEVELOPER_PREVIEWS,
+  // The per-harness switches under ACP runtime sharing, mounted inside that
+  // preview's row while it is on. Their labels come from a table, so the
+  // extractor skips them as dynamic; the parent preview row is the search hit.
+  'ChatRuntimeSharingHarnessRows.tsx': DEVELOPER_PREVIEWS,
   // The default agent's opt-in MCP sets, mounted below the preview groups.
   'DefaultMcpGrantsSection.tsx': DEVELOPER_PREVIEWS,
   // The Decision models card, which FeaturePreviewsSection mounts. Its own file

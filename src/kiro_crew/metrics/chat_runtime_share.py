@@ -113,6 +113,7 @@ PLACED_OUTCOMES: tuple[str, ...] = ("spawned", "joined", "refused")
 REFUSAL_REASONS: tuple[str, ...] = (
     "sharing_disabled",
     "backend_not_chat_shareable",
+    "harness_switched_off",
     "kas_engine_not_shareable",
     "session_environment",
     "memory_mode_not_shareable",
@@ -250,16 +251,25 @@ def record_toggled(on: bool) -> None:
     emit_counter(TOGGLED, {"state": "on" if on else "off"})
 
 
-def record_refused(reason: Any) -> None:
-    """An eligible-looking chat start, preview on, kept its own process."""
+def record_refused(reason: Any, *, backend: Any = None) -> None:
+    """An eligible-looking chat start, preview on, kept its own process.
+
+    ``harness`` names the backend it asked for, so a refusal reads per harness:
+    ``reason=harness_switched_off`` with ``harness=kas`` is KAS's own switch off.
+    """
     _note_sharing_in_use()
     emit_counter(
         PLACED,
-        {"outcome": "refused", "reason": _closed(reason, REFUSAL_REASONS), "tenants": NONE},
+        {
+            "outcome": "refused",
+            "reason": _closed(reason, REFUSAL_REASONS),
+            "tenants": NONE,
+            ATTR_HARNESS: harness_for_backend(backend),
+        },
     )
 
 
-def record_placed(*, joined: bool, tenants: Any) -> None:
+def record_placed(*, joined: bool, tenants: Any, backend: Any = None) -> None:
     """A chat start landed: founded a process or joined one, with *tenants* after it."""
     _note_sharing_in_use()
     emit_counter(
@@ -268,6 +278,7 @@ def record_placed(*, joined: bool, tenants: Any) -> None:
             "outcome": "joined" if joined else "spawned",
             "reason": NONE,
             "tenants": tenants_bucket(tenants),
+            ATTR_HARNESS: harness_for_backend(backend),
         },
     )
 

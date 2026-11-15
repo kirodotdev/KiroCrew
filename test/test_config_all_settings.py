@@ -248,6 +248,9 @@ _REVIEWED_EDITABLE = frozenset(
         # How many chat sessions one shared agent process serves before another
         # starts: a pooling size, not sharing with another person.
         "agent.chat_runtime_sharing_max_sessions",
+        # Whether one harness's chats may pool into one agent process: the same
+        # pooling, per harness, still under the preview. Not sharing with a person.
+        "agent.chat_runtime_sharing_harnesses.kas",
         # Local trace and metric sizes and ages: how much a cron run's trace field
         # keeps, how long and how large the on-disk shards grow. They send nothing.
         "cron_history.cron_trace_cap_kb",
