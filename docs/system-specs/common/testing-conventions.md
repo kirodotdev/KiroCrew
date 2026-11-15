@@ -1647,7 +1647,14 @@ measures, never above.
   `mkdir(parents=True)`, which re-creates it. The crew-log eager fold worker is one: a
   fold still running when a test removes its private `KIROCREW_HOME` re-creates that
   home. Use the conftest's per-test `KIROCREW_HOME` pin instead of a private home,
-  because the conftest stops that worker before the pin lifts.
+  because the conftest stops that worker before the pin lifts. A store that `mkdir`s
+  its root on READ is another: the Issue Radar store's `data_dir(root)` does, so any
+  reader still running after a `unittest` cleanup re-creates a `TemporaryDirectory`
+  root that cleanup just removed. In a `unittest` class, take that root from
+  `tmp_path` through an autouse fixture method (`test_issue_radar_deps.py`'s
+  `_per_test_dirs`), because pytest owns that directory and this guard does not scan it.
+  `kirocrew.test-radar-store-root-self-removed` in `semgrep/test-determinism.yaml`
+  refuses a new `TemporaryDirectory()` or `mkdtemp()` in the Issue Radar tests.
 
   Why it is worth a guard rather than a convention: `/tmp` is commonly a tmpfs with a
   fixed **inode** budget (1,048,576 on the hosts this was measured on), and it returns
