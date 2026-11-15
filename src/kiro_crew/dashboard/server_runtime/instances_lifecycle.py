@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         SshTunnelManager,
         TunnelState,
+        _sweep_remote_closes,
         logger,
         register_pre_exec_stop,
         shutdown_event,
@@ -63,6 +64,10 @@ async def _retake_hops_then_revive(
                 sorted(unheld),
             )
     await _revive_intended_instances(registry, manager, state)
+    if state is not None:
+        # Remote dispatch (preview): close retired remote worker slots once, now that
+        # the revived crews read connected. Off, it does nothing.
+        await _sweep_remote_closes(state)
 
 
 async def _revive_intended_instances(

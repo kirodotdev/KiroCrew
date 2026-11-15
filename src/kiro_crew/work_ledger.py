@@ -1073,7 +1073,6 @@ from kiro_crew.work_ledger_remote import (  # noqa: E402, F401
     MAX_RETIRED_BINDINGS,
     REMOTE_DIR,
     REMOTE_PULL_FRESH_SECS,
-    REMOTE_PULL_INTERVAL_SECS,
     RETIRE_REASONS,
     RemoteState,
     _binding,
@@ -1087,7 +1086,8 @@ from kiro_crew.work_ledger_remote import (  # noqa: E402, F401
     apply_remote_report,
     apply_remote_retire,
     binding_id,
-    boards_with_open_remote,
+    board_has_open_remote,
+    boards_with_pending_close,
     is_peer_event_id,
     item_liveness,
     open_remote_bindings,
@@ -1256,6 +1256,7 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # the project names this module imported that only its owners read
     from kiro_crew import resource_status, work_preview  # noqa: F401
     from kiro_crew.atomic_write import read_bytes_with_retry  # noqa: F401
+    from kiro_crew.conductor_patrol import PATROL_INTERVAL_SECS  # noqa: F401
     from kiro_crew.config.paths import data_home  # noqa: F401
     from kiro_crew.platform_compat import (  # noqa: F401
         file_lock,

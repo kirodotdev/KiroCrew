@@ -165,7 +165,7 @@ _BASE_REACHED_IMPORTS = frozenset(
 #: twelve hex digits of the SHA-256 of ``_signature_text`` -- every parameter, ``self``/``cls``
 #: included, with its kind, default and annotation, and the return annotation.
 _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
-    "__init__": ("method", "38ac57f125dd"),
+    "__init__": ("method", "00c8ff5ae4ba"),
     "_acquire_mutation_lock": ("method+async", "34bd8c98b4d6"),
     "_add_locked": ("method+async", "71d798975d9e"),
     "_add_monitor_locked": ("method+async", "243682becc96"),
@@ -238,6 +238,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_terminal_still_holds": ("method+async", "938b69872e36"),
     "_extend_for_open_ledger": ("method+async", "1d8c864f30a4"),
     "_holds_for_person_wait": ("method+async", "3a33d55b099b"),
+    "_pull_remote_reports": ("method+async", "fa9fb3019298"),
     "_timer": ("method+async", "e290ef84f151"),
     "_unpublish": ("method", "35d06f40fb45"),
     "_update_locked": ("method+async", "426a50e84b7e"),
@@ -1173,6 +1174,7 @@ _BINDINGS = {
     "_run_timer_callback": "firing",
     "_extend_for_open_ledger": "firing",
     "_holds_for_person_wait": "firing",
+    "_pull_remote_reports": "firing",
     "_run_fire_cycle": "firing",
     "_settle_fire_cycle": "firing",
     "_finish_fire_cycle": "firing",
