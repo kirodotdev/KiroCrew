@@ -22889,6 +22889,7 @@
         "your_code": "Ton code : {{code}}",
         "reported_host": "{{host}} (annoncé)",
         "reported_host_hint": "Cette équipe annonce se trouver sur cette machine. Ce tableau de bord n'y a aucune route et ne l'appelle jamais — la connexion passe par l'équipe qui l'atteint.",
+        "restart_clears_draft": "Le redémarrage efface ton formulaire de crew non enregistré.",
         "results_stale": "Le profil ou la région a changé depuis cette vérification. Revérifie pour mettre à jour.",
         "crew_enabled": "Connexions : activées",
         "crew_disabled": "Connexions : éteintes",

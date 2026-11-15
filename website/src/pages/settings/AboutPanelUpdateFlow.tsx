@@ -7,7 +7,7 @@
  * (`AGENT_REQUEST_POLL_MS`, `AgentUpdateRequestCard`, `InAppUpdateFlow`,
  * `RestartGatewayButton`, `resolveUnarmedPhase`), so their importers keep that path.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, AlertCircle, GitBranch, ArrowUp, X, Download, Copy } from 'lucide-react'
 import { Btn } from '../../components/ui'
@@ -102,6 +102,10 @@ export async function copyCommand(
  *
  * Rendered at two call sites with the same behaviour and different emphasis, so
  * the confirm step cannot drift between them.
+ *
+ * `armedNote` is a line shown beside the button only while it is armed, and the
+ * armed button's description, for a caller whose restart loses something the
+ * user can still see (an unsaved form). Without it the button renders alone.
  */
 export function RestartGatewayButton({
   primary,
@@ -111,6 +115,7 @@ export function RestartGatewayButton({
   testId,
   disabled,
   describedBy,
+  armedNote,
 }: {
   primary?: boolean
   pending: boolean
@@ -121,8 +126,10 @@ export function RestartGatewayButton({
   disabled?: boolean
   /** Id of the element that says why the button is disabled. */
   describedBy?: string
+  armedNote?: string
 }) {
   const [armed, setArmed] = useState(false)
+  const noteId = useId()
   useEffect(() => {
     if (!armed) return
     const timer = window.setTimeout(() => setArmed(false), ARM_TIMEOUT_MS)
@@ -135,30 +142,34 @@ export function RestartGatewayButton({
   // React's pattern for a prop change; it settles in one pass).
   if (disabled && armed) setArmed(false)
   const live = armed && !disabled
+  const showNote = live && !!armedNote
   return (
-    <Btn
-      primary={primary && !live}
-      className={live ? '!bg-[var(--warn)] !text-[var(--warn-fg)] hover:!opacity-80' : undefined}
-      disabled={busy || disabled}
-      aria-describedby={describedBy}
-      data-testid={testId}
-      // No static aria-label: the visible text IS the accessible name, and it is
-      // what changes to announce the armed step. Pinning the label to "Restart
-      // gateway" made a screen reader say the same thing on both clicks, hiding
-      // the confirm from exactly the users who cannot see the colour change.
-      onClick={() => {
-        if (busy || disabled) return
-        if (!live) { setArmed(true); return }
-        setArmed(false)
-        onConfirm()
-      }}
-    >
-      <RefreshCw size={13} className={`lucide-inline ${busy ? 'animate-spin' : ''}`} /> {restarting
-        ? i18nT('pages.settings.aboutPanel.restarting')
-        : live
-          ? i18nT('pages.settings.aboutPanel.restart_confirm')
-          : i18nT('pages.settings.aboutPanel.restart_gateway')}
-    </Btn>
+    <>
+      <Btn
+        primary={primary && !live}
+        className={live ? '!bg-[var(--warn)] !text-[var(--warn-fg)] hover:!opacity-80' : undefined}
+        disabled={busy || disabled}
+        aria-describedby={showNote ? noteId : describedBy}
+        data-testid={testId}
+        // No static aria-label: the visible text IS the accessible name, and it is
+        // what changes to announce the armed step. Pinning the label to "Restart
+        // gateway" made a screen reader say the same thing on both clicks, hiding
+        // the confirm from exactly the users who cannot see the colour change.
+        onClick={() => {
+          if (busy || disabled) return
+          if (!live) { setArmed(true); return }
+          setArmed(false)
+          onConfirm()
+        }}
+      >
+        <RefreshCw size={13} className={`lucide-inline ${busy ? 'animate-spin' : ''}`} /> {restarting
+          ? i18nT('pages.settings.aboutPanel.restarting')
+          : live
+            ? i18nT('pages.settings.aboutPanel.restart_confirm')
+            : i18nT('pages.settings.aboutPanel.restart_gateway')}
+      </Btn>
+      {showNote && <span id={noteId} className="ml-2 text-[12px] text-warn-text">{armedNote}</span>}
+    </>
   )
 }
 

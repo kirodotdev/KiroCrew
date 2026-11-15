@@ -22339,6 +22339,7 @@
         "your_code": "Dein Code: {{code}}",
         "reported_host": "{{host}} (gemeldet)",
         "reported_host_hint": "Diese Crew gibt an, auf dieser Maschine zu laufen. Dieses Dashboard hat keine Route dorthin und wählt sie nie an — die Verbindung läuft über die Crew, die sie erreicht.",
+        "restart_clears_draft": "Ein Neustart leert dein ungespeichertes Crew-Formular.",
         "results_stale": "Profil oder Region haben sich seit dieser Prüfung geändert. Prüfe erneut, um zu aktualisieren.",
         "crew_enabled": "Verbindungen: An",
         "crew_disabled": "Verbindungen: Aus",

@@ -21789,6 +21789,7 @@
         "your_code": "Your code: {{code}}",
         "reported_host": "{{host}}（对方告知）",
         "reported_host_hint": "这个团队自称在这台机器上。本面板没有到它的路由，也从不拨它；连接要靠能到达它那个团队转。",
+        "restart_clears_draft": "重启会清除你尚未保存的 Crew 表单。",
         "results_stale": "这次检查后，配置文件或区域已更改。重新检查即可更新。",
         "crew_enabled": "连接：开",
         "crew_disabled": "连接：关",

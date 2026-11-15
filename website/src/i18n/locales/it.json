@@ -22889,6 +22889,7 @@
         "your_code": "Il tuo codice: {{code}}",
         "reported_host": "{{host}} (dichiarato)",
         "reported_host_hint": "Questo gruppo dichiara di essere su questa macchina. Questa dashboard non ha alcuna rotta verso di essa e non la contatta mai: la connessione passa dal gruppo che la raggiunge.",
+        "restart_clears_draft": "Il riavvio cancella il modulo della crew non salvato.",
         "results_stale": "Il profilo o la regione sono cambiati da questo controllo. Ricontrolla per aggiornare.",
         "crew_enabled": "Connessioni: attive",
         "crew_disabled": "Connessioni: spente",

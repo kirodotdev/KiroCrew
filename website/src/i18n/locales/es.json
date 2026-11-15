@@ -22889,6 +22889,7 @@
         "your_code": "Tu código: {{code}}",
         "reported_host": "{{host}} (declarado)",
         "reported_host_hint": "Este equipo declara estar en esta máquina. Este panel no tiene ruta hasta ella y nunca la marca: la conexión pasa por el equipo que sí la alcanza.",
+        "restart_clears_draft": "Al reiniciar se borra el formulario del crew que no has guardado.",
         "results_stale": "El perfil o la región cambiaron desde esta comprobación. Vuelve a comprobar para actualizar.",
         "crew_enabled": "Conexiones: activadas",
         "crew_disabled": "Conexiones: apagadas",
