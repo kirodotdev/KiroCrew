@@ -630,6 +630,10 @@ def fresh_table(monkeypatch):
 
     table = RuntimeOwnership()
     monkeypatch.setattr(share_mod, "RUNTIME_OWNERSHIP", table)
+    # The post-acquisition admission re-read (a KAS key carries no spec): no
+    # native subagents, as the fake agents here grant none.
+    monkeypatch.setattr(share_mod, "agent_spawns_native_subagents", lambda w, a, b="": False)
+    monkeypatch.setattr(share_mod, "agent_pins_tool_surface", lambda w, a, t: False)
     return table
 
 
@@ -973,6 +977,36 @@ class TestChatSharePlacement:
         assert fresh_table.leases_on_runtime(rt) == 0
         assert rt.kills == ["failed session setup cleanup (last holder)"]
 
+    def test_a_cancel_during_the_native_subagent_recheck_returns_the_lease(self, fresh_table):
+        # The KAS recheck runs after the acquisition; a start cancelled while it
+        # is pending must release the lease and kill the process it founded.
+        rt = _PlacedRuntime(backend=ACP_BACKEND_KAS)
+        spawn = spawner(rt)
+        pending = asyncio.Event()
+
+        async def recheck_until_cancelled() -> bool:
+            pending.set()
+            await asyncio.Event().wait()
+            return False
+
+        async def scenario():
+            p = make_placement(provider=_PlacementProvider(backend=ACP_BACKEND_KAS))
+            p._read_confirmation = confirming(
+                (p._spec_generation, "acct-A", "auto", False, p._kas_telemetry)
+            )
+            p._spec_needs_own_process_now = recheck_until_cancelled
+            task = asyncio.ensure_future(p.place(spawn))
+            await asyncio.wait_for(pending.wait(), 30)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            return p
+
+        p = asyncio.run(scenario())
+        assert p.lease is None
+        assert fresh_table.leases_on_runtime(rt) == 0
+        assert rt.kills, "the founded process outlived its cancelled start"
+
 
 class TestResolveChatShare:
     """The preview gate on the start path: off is one config read and ``None``."""
@@ -1002,7 +1036,10 @@ class TestResolveChatShare:
             share_mod, "kas_chat_sharing_ready", lambda pin="": kw.get("kas_ready", False)
         )
         monkeypatch.setattr(
-            share_mod, "agent_spawns_native_subagents", lambda w, a: kw.get("native", False)
+            share_mod, "agent_spawns_native_subagents", lambda w, a, b="": kw.get("native", False)
+        )
+        monkeypatch.setattr(
+            share_mod, "agent_pins_tool_surface", lambda w, a, t: kw.get("pinned", False)
         )
         import kiro_crew.sandbox as sandbox_mod
 

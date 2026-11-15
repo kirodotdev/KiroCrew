@@ -135,6 +135,12 @@ _OBSERVED_KEYED = {
         "member id. A store is per member, so a session of another store must never "
         "land on this Bot's process even when a lineage names one root."
     ),
+    "tool_surface_pinned": (
+        "Whether the session's own spec grants no tool_search loader while Tool Search "
+        "is on, read from its projected spec at the start. The handshake decides the "
+        "deferral once per process from the founder's spec, so such a session keys its "
+        "agent and spec and never shares with another spec's process."
+    ),
 }
 
 #: Every ``kas_cli_settings`` call the KAS ``initialize`` handshake makes -> what

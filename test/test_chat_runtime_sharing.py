@@ -1048,7 +1048,7 @@ class TestThePlacementIsConfirmedAgainstTheSpecAfterwards:
         assert "bool(era) and era == self._raw_era" in place
         region = place
         # Every release in the placement settles through the shielded helper.
-        assert region.count("_settle_release(placed.lease)") == 2
+        assert region.count("_settle_release(placed.lease)") == 3
         assert "self.key = self._build_key()" in region, "the retry does not rebuild the key"
 
         # Text cannot tell live code from dead, so no confirmation in the

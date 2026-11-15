@@ -1292,6 +1292,12 @@ async def _start_kiro_runtime_impl(
             # pushes a keyless claim gatewayd throws away.
             session_key=self._owning_session_key(),
             channel_id=self._owning_channel_id(),
+            # The values this session's cold create_session ran with, so a fresh
+            # conversation (Edit & Resend) on a shared process keeps them rather
+            # than the founder's.
+            agent=agent or "",
+            crew_agent=self._crew_agent,
+            member_context=self.member_context,
         )
         provider.kas_default_model_notice = _default_model_notice
         provider.memory_mode = self.memory_mode

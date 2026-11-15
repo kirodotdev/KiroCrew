@@ -216,7 +216,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "agent_version": ("property", False, "bb418bb7ece8", "runtime_class"),
     "begin_mcp_reattempt": ("function", False, "dc7c165669b1", "runtime_host_requests"),
     "begin_mcp_sign_in": ("function", False, "dc7c165669b1", "runtime_host_requests"),
-    "create_session": ("function", True, "155a6120083d", "runtime_session_create"),
+    "create_session": ("function", True, "76e4a6b519f6", "runtime_session_create"),
     "death_summary": ("function", False, "f21e39ec5ffb", "runtime_liveness"),
     "entitlement_probe_result_at": ("property", False, "59162e39f6f1", "runtime_class"),
     "evict_session": ("function", True, "c284282f8a1d", "runtime_session_registry"),

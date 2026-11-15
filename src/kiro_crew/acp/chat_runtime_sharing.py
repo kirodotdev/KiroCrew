@@ -567,6 +567,11 @@ class ChatRuntimeKey:
         The Bot (crew member) and memory store of the session, ``""`` for a
         session that is no member. Beside ``tree_root`` so that, whatever a
         lineage claims, a session of one Bot never lands on another Bot's process.
+    ``tool_surface_pinned``
+        Whether the session's agent decides the process's MCP Tool Search alone
+        (:func:`agent_pins_tool_surface`: Tool Search on, spec grants no loader).
+        Such a session keys ``agent`` and ``spec_generation`` even on KAS, so it
+        neither joins another spec's process nor lets another spec join its own.
 
     On KAS, ``agent``, ``model``, ``reasoning_effort``, ``spec_generation`` and
     ``launch_agent`` are left EMPTY (:data:`KAS_PER_SESSION_FIELDS`). Each reason
@@ -603,6 +608,7 @@ class ChatRuntimeKey:
     tree_root: str = ""
     member_id: str = ""
     memory_store: str = ""
+    tool_surface_pinned: bool = False
 
     @classmethod
     def build(
@@ -630,6 +636,7 @@ class ChatRuntimeKey:
         tree_root: str | None = None,
         member_id: str | None = None,
         memory_store: str | None = None,
+        tool_surface_pinned: bool = False,
     ) -> "ChatRuntimeKey":
         """Build the key from the values a caller is about to spawn with.
 
@@ -642,8 +649,13 @@ class ChatRuntimeKey:
         AND the workspace ``cli.json`` writers against these fields, and fails on
         any name that is neither keyed nor listed with a reason. Two channels
         because an input can reach the process as a parameter or as a file.
+
+        *tool_surface_pinned* (:func:`agent_pins_tool_surface`) keys ``agent`` and
+        ``spec_generation`` even where the harness takes them per session.
         """
         per_session = per_session_fields(acp_backend)
+        if tool_surface_pinned:
+            per_session = per_session - TOOL_SURFACE_FIELDS
         return cls(
             work_dir=_freeze_path(work_dir),
             agent="" if "agent" in per_session else agent or "",
@@ -667,6 +679,7 @@ class ChatRuntimeKey:
             tree_root=tree_root or "",
             member_id=member_id or "",
             memory_store=memory_store or "",
+            tool_surface_pinned=bool(tool_surface_pinned),
         )
 
 
@@ -688,6 +701,54 @@ PER_SESSION_FIELDS_BY_BACKEND: Final[Mapping[str, frozenset[str]]] = MappingProx
 def per_session_fields(backend: str) -> frozenset[str]:
     """The key fields *backend* takes per session (empty for an unlisted harness)."""
     return PER_SESSION_FIELDS_BY_BACKEND.get(backend, frozenset())
+
+
+#: The key fields that name the agent spec. KAS takes the spec per session, but
+#: MCP Tool Search is decided once per process at ``initialize`` from the
+#: founder's spec (``runtime_spawn_launch`` handshake), and a session whose spec
+#: grants no ``tool_search`` loader is refused on a process that defers
+#: (``_refuse_if_loader_unreachable``). Such a session keeps these fields keyed.
+TOOL_SURFACE_FIELDS: Final[frozenset[str]] = frozenset({"agent", "spec_generation"})
+
+
+def agent_pins_tool_surface(
+    work_dir: str | Path | None, agent: str, tool_search: "ToolSearchSettings | None"
+) -> bool:
+    """Whether *agent* must not share a process founded by another agent spec.
+
+    The founder's spec decides two things for the whole process at spawn: whether
+    MCP runs at all (a spec that mounts nothing switches it off,
+    ``_send_mcp_off_if_toolless``) and, whenever Tool Search settings are sent
+    (enabled or not), the deferral and its ``neverDefer`` list. So the session
+    keys its own agent and spec when its projected spec mounts nothing, when
+    Tool Search settings are sent and the spec grants no loader, or when the
+    spec cannot be read. A loader-granting agent with tools
+    shares across agents: whatever the founder's ``neverDefer`` leaves deferred,
+    its own loader can still reach. Blocking (reads the spec); call it off the
+    event loop.
+
+    shortcut: a loader-granting joiner's job tools may sit behind the loader when
+    the founder is another agent; key ``job_tool_ids`` too if that costs turns.
+    """
+    try:
+        from kiro_crew.acp.client_mcp_array import spec_is_toolless
+        from kiro_crew.acp.harness.kas import resolve_projected_spec
+        from kiro_crew.agent_sdk.tool_search import spec_grants_tool_search
+        from kiro_crew.config.paths import kiro_agents_dir
+
+        # A read, not a spawn: no materialization here. A spec not written yet is
+        # unreadable, which pins the session to its own agent (the safe answer).
+        spec = resolve_projected_spec(kiro_agents_dir(), agent, work_dir)[0]
+    except Exception:  # noqa: BLE001 - an unreadable spec keeps its own agent's process
+        logger.debug("chat-runtime-sharing: tool surface unreadable for %s", agent, exc_info=True)
+        return True
+    if spec_is_toolless(spec):
+        return True
+    # Any Tool Search settings on the wire, enabled or not, carry the founder's
+    # ``neverDefer`` list, which KAS applies even with ``enabled`` false.
+    if tool_search is None:
+        return False
+    return not spec_grants_tool_search(spec)
 
 
 #: Largest agent spec this will hash. A spec is a few kilobytes of JSON or
@@ -838,6 +899,12 @@ def agent_spec_generation(work_dir: str | Path | None, agent: str) -> str:
         if work_dir:
             scopes.append(project_agents_dir(work_dir))
         scopes.append(kiro_agents_dir_path())
+        # The crewmate folder too: KAS resolves the Bot conductor and worker, and a
+        # Bot's own spec, from there (``acp.harness.kas.resolve_projected_spec``),
+        # so an edit there is a different process configuration as well.
+        from kiro_crew.config.paths import mate_agents_dir
+
+        scopes.append(mate_agents_dir())
         for scope in scopes:
             try:
                 candidates.append(agent_spec_path(agent, agents_dir=scope))
@@ -894,12 +961,16 @@ def spec_grants_native_subagents(spec: object) -> bool:
     return any(t.startswith(("subagent/", "@builtin/subagent")) for t in entries)
 
 
-def agent_spawns_native_subagents(work_dir: str | Path | None, agent: str) -> bool:
+def agent_spawns_native_subagents(
+    work_dir: str | Path | None, agent: str, backend: str = ""
+) -> bool:
     """:func:`spec_grants_native_subagents` for the spec a spawn of *agent* loads.
 
-    Resolved in kiro-cli's order (the work directory's agents, then the user's),
-    with the projection's own reader. Blocking: call it off the event loop. Any
-    failure to find or read the spec answers True (fail closed).
+    On KAS, the spec KAS is handed (``resolve_projected_spec``), which also finds
+    the Bot conductor and worker in the crewmate folder. Elsewhere, kiro-cli's
+    order (the work directory's agents, then the user's), with the projection's
+    own reader. Blocking: call it off the event loop. Any failure to find or read
+    the spec answers True (fail closed).
 
     shortcut: read once before placement, not re-confirmed after acquisition
     like the keyed inputs; a spec edited to grant subagents in that window can
@@ -912,6 +983,12 @@ def agent_spawns_native_subagents(work_dir: str | Path | None, agent: str) -> bo
 
         if not is_registered_agent_name(agent):
             return True
+        if backend == ACP_BACKEND_KAS:
+            from kiro_crew.acp.harness.kas import resolve_projected_spec
+            from kiro_crew.config.paths import kiro_agents_dir
+
+            spec = resolve_projected_spec(kiro_agents_dir(), agent, work_dir)[0]
+            return spec_grants_native_subagents(spec)
         scopes: list[Path] = []
         if work_dir:
             scopes.append(project_agents_dir(work_dir))
@@ -929,7 +1006,9 @@ __all__ = [
     "KAS_CHAT_SHARING_MIN_ENGINE",
     "KAS_PER_SESSION_FIELDS",
     "PER_SESSION_FIELDS_BY_BACKEND",
+    "TOOL_SURFACE_FIELDS",
     "ChatRuntimeKey",
+    "agent_pins_tool_surface",
     "agent_spawns_native_subagents",
     "agent_spec_generation",
     "chat_runtime_cap",

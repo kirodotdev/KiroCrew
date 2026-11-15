@@ -39,7 +39,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew.acp.chat_runtime_sharing import (
+    TOOL_SURFACE_FIELDS,
     ChatRuntimeKey,
+    agent_pins_tool_surface,
     agent_spawns_native_subagents,
     agent_spec_generation,
     chat_runtime_cap,
@@ -124,14 +126,20 @@ class ChatSharePlacement:
         kas_telemetry: bool = True,
         tree_root: str = "",
         member_scope: tuple[str, str] = ("", ""),
+        tool_surface_pinned: bool = False,
     ) -> None:
         self._provider = provider
         # The sharing scope, read once at this start: sessions share only inside
         # one tree, and a Bot session only with its own member and store.
         self._tree_root = tree_root or session_key
         self._member_scope = member_scope
+        # An agent whose spec decides the process's Tool Search keeps its agent and
+        # spec keyed (``agent_pins_tool_surface``), so it never joins another spec.
+        self._tool_surface_pinned = tool_surface_pinned
         # A harness that takes the spec per session does not key it, so it is not re-read.
-        self._keys_spec = "spec_generation" not in per_session_fields(provider._client.backend)
+        self._keys_spec = tool_surface_pinned or "spec_generation" not in per_session_fields(
+            provider._client.backend
+        )
         # ``agent.env`` as this start read it: a child takes it at spawn and never
         # re-reads it, so a saved change must found a new process rather than join
         # one that carries the old values. A founding spawn launches with this same
@@ -197,6 +205,7 @@ class ChatSharePlacement:
             tree_root=self._tree_root,
             member_id=self._member_scope[0],
             memory_store=self._member_scope[1],
+            tool_surface_pinned=self._tool_surface_pinned,
         )
 
     @property
@@ -272,6 +281,10 @@ class ChatSharePlacement:
             )
             try:
                 generation, era, tier, forward, telemetry = await self._read_confirmation()
+                # A KAS key carries no spec, so the spec-decided admission (native
+                # subagents, tool surface) is read again here, inside the same
+                # release guard.
+                native = not self._keys_spec and await self._spec_needs_own_process_now()
             except BaseException:
                 await _kill_stranded(
                     await _settle_release(placed.lease),
@@ -294,6 +307,15 @@ class ChatSharePlacement:
                 and forward == self._forward_ssh
                 and telemetry == self._kas_telemetry
             ):
+                if native:
+                    # The spec changed after the admission read in a way that
+                    # fixes the process (native subagents, tool surface), so this
+                    # session takes a process nothing else can join.
+                    await _kill_stranded(
+                        await _settle_release(placed.lease),
+                        "chat runtime sharing: spec changed during placement",
+                    )
+                    return await self._place_alone(spawn, "spec changed during placement")
                 if placed.joined:
                     await self._admit_joiner(placed)
                 return self._accept(placed)
@@ -317,19 +339,44 @@ class ChatSharePlacement:
             self._forward_ssh = forward
             self._kas_telemetry = telemetry
             self.key = self._build_key()
-        # Still moving: a key nothing can match founds this session its own
-        # process, the answer ``agent_spec_generation`` gives an unobservable file.
+        return await self._place_alone(
+            spawn, f"keyed inputs kept moving across {_PLACEMENT_ATTEMPTS} placements"
+        )
+
+    async def _spec_needs_own_process_now(self) -> bool:
+        """Re-read the spec-decided admission after the acquisition (fails closed).
+
+        True when the spec now grants native subagents, or now fixes the process's
+        tool surface (``agent_pins_tool_surface``) though the key was built without.
+        """
+        backend = self._provider._client.backend
+        try:
+            if await asyncio.to_thread(
+                agent_spawns_native_subagents, self._work_dir, self._agent, backend
+            ):
+                return True
+            if not per_session_fields(backend) & TOOL_SURFACE_FIELDS:
+                return False
+            return await asyncio.to_thread(
+                agent_pins_tool_surface,
+                self._work_dir,
+                self._agent,
+                self._provider._tool_search_settings(),
+            )
+        except Exception:  # noqa: BLE001 - unreadable admission keeps its own process
+            return True
+
+    async def _place_alone(
+        self, spawn: Callable[[], Awaitable[AcpRuntime]], why: str
+    ) -> AcpRuntime:
+        """Found this session a process under a key nothing can match."""
+        # A unique spec generation and tree root: a KAS key leaves the spec
+        # generation out, so only a unique root makes that key unmatchable.
         self._spec_generation = f"unsettled-{uuid.uuid4().hex}"
-        # The tree root too: a KAS key leaves the spec generation out, so only a
-        # unique root makes that key unmatchable.
         self._tree_root = self._spec_generation
         self.joinable = False
         self.key = self._build_key()
-        logger.warning(
-            "chat runtime sharing: keyed inputs kept moving across %d placements; "
-            "this session takes its own process",
-            _PLACEMENT_ATTEMPTS,
-        )
+        logger.warning("chat runtime sharing: %s; this session takes its own process", why)
         placed = await RUNTIME_OWNERSHIP.acquire(self.key, self.session_key, spawn, cap=self.cap)
         return self._accept(placed)
 
@@ -449,6 +496,25 @@ async def resolve_chat_share(
         return None
     backend = provider._client.backend
     session_key = provider._owning_session_key()
+    # The rules that need no reads first, with the read-backed inputs at their
+    # permissive values: a start they refuse (a backend that never shares, a
+    # remote or incognito session) walks no tree and reads no member record. Each
+    # read-backed rule only adds refusals, so this pass refuses nothing the full
+    # one below would admit.
+    refusal = chat_sharing_ineligible_reason(
+        session_key=session_key,
+        memory_mode=provider.memory_mode,
+        sharing_enabled=enabled,
+        backend=backend,
+        member_context=provider.member_context,
+        remote_workspace=remote_workspace,
+        kas_engine_ready=True,
+        member_shares_root=True,
+    )
+    if refusal:
+        logger.warning("chat-runtime-sharing ineligible reason=%s session=%s", refusal, session_key)
+        record_refused(refusal)
+        return None
     # Read on the loop: the reader walks the gateway's live slots.
     tree_root = share_tree_root_of(session_key)
     kas_ready = False
@@ -475,7 +541,9 @@ async def resolve_chat_share(
         kas_engine_ready=kas_ready,
         member_shares_root=member_shares_root,
     )
-    if not refusal and await asyncio.to_thread(agent_spawns_native_subagents, work_dir, agent):
+    if not refusal and await asyncio.to_thread(
+        agent_spawns_native_subagents, work_dir, agent, backend
+    ):
         refusal = "native_subagents"
     if refusal:
         logger.warning("chat-runtime-sharing ineligible reason=%s session=%s", refusal, session_key)
@@ -484,22 +552,28 @@ async def resolve_chat_share(
     from kiro_crew.acp.agent_env import agent_env_overlay
     from kiro_crew.sandbox import _forward_ssh_auth_sock, effective_sandbox_mode
 
-    def _read_placement_inputs() -> tuple[str, str, bool, dict[str, str], bool]:
+    per_session = per_session_fields(backend)
+
+    def _read_placement_inputs() -> tuple[str, str, bool, dict[str, str], bool, bool]:
         configured_env = agent_env_overlay()
         telemetry = _kas_telemetry_for(backend, work_dir, configured_env, extra_env)
+        pinned = bool(per_session & TOOL_SURFACE_FIELDS) and agent_pins_tool_surface(
+            work_dir, agent, provider._tool_search_settings()
+        )
         return (
             (
                 agent_spec_generation(work_dir, agent)
-                if "spec_generation" not in per_session_fields(backend)
+                if pinned or "spec_generation" not in per_session
                 else ""
             ),
             effective_sandbox_mode(sandbox_mode),
             _forward_ssh_auth_sock(sandbox_mode, ()),
             configured_env,
             telemetry,
+            pinned,
         )
 
-    generation, tier, forward, configured_env, telemetry = await asyncio.to_thread(
+    generation, tier, forward, configured_env, telemetry, pinned = await asyncio.to_thread(
         _read_placement_inputs
     )
     return ChatSharePlacement(
@@ -521,6 +595,7 @@ async def resolve_chat_share(
         kas_telemetry=telemetry,
         tree_root=tree_root,
         member_scope=member_scope,
+        tool_surface_pinned=pinned,
     )
 
 

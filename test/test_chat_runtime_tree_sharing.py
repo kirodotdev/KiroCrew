@@ -67,13 +67,22 @@ def _kas_placement(session_key: str, tree_root: str, **overrides):
     return p
 
 
-def _place_all(placements, cap: int = 10) -> list[_Runtime]:
+def _place_all(
+    placements,
+    cap: int = 10,
+    native=lambda w, a, b="": False,
+    pins=lambda w, a, t: False,
+) -> list[_Runtime]:
     spawn, made = _spawner()
 
     async def scenario():
         chat_share.RUNTIME_OWNERSHIP = RuntimeOwnership()
         try:
-            return [await p.place(spawn) for p in placements]
+            with (
+                patch.object(chat_share, "agent_spawns_native_subagents", native),
+                patch.object(chat_share, "agent_pins_tool_surface", pins),
+            ):
+                return [await p.place(spawn) for p in placements]
         finally:
             chat_share.RUNTIME_OWNERSHIP = ro.RUNTIME_OWNERSHIP
 
@@ -118,6 +127,117 @@ def test_a_lead_conductor_and_workers_with_different_agents_land_on_one_kas_proc
     assert len({rt.pid for rt in placed}) == 1
     assert [p.joined for p in tree] == [False, True, True, True]
     assert tree[-1].leases_on_runtime == 4
+
+
+def test_an_agent_without_a_tool_search_loader_never_joins_another_agents_process():
+    # Tool Search is decided per process from the founder's spec; a joiner whose spec
+    # grants no loader would be refused at session/new on a process that defers.
+    lead = _kas_placement(LEAD, LEAD, agent="kirocrew-team-lead", spec_generation="lead")
+    bare = _kas_placement(
+        WORKER_A, LEAD, agent="no-loader", spec_generation="nl", tool_surface_pinned=True
+    )
+    bare_twin = _kas_placement(
+        WORKER_B, LEAD, agent="no-loader", spec_generation="nl", tool_surface_pinned=True
+    )
+    placed = _place_all([lead, bare, bare_twin])
+    assert placed[0].pid != placed[1].pid
+    assert placed[1].pid == placed[2].pid
+    assert bare.key.agent == "no-loader" and bare.key.spec_generation == "nl"
+
+
+def _tool_search(enabled: bool):
+    return SimpleNamespace(enabled=enabled)
+
+
+def test_a_spec_that_gains_native_subagents_during_placement_takes_its_own_process():
+    # Admission is read before placement and the KAS key carries no spec, so the
+    # grant is read again once the process is in hand.
+    lead = _kas_placement(LEAD, LEAD, agent="kirocrew-team-lead")
+    worker = _kas_placement(WORKER_A, LEAD, agent="kirocrew-worker")
+    placed = _place_all([lead, worker], native=lambda w, a, b="": a == "kirocrew-worker")
+    assert placed[0].pid != placed[1].pid
+    assert worker.joinable is False and lead.joined is False and worker.joined is False
+
+
+def test_a_spec_that_loses_its_loader_during_placement_takes_its_own_process():
+    # The key was built while the worker's spec granted the loader; the grant is
+    # read again once the process is in hand.
+    lead = _kas_placement(LEAD, LEAD, agent="kirocrew-team-lead")
+    worker = _kas_placement(WORKER_A, LEAD, agent="kirocrew-worker")
+    placed = _place_all([lead, worker], pins=lambda w, a, t: a == "kirocrew-worker")
+    assert placed[0].pid != placed[1].pid
+    assert worker.joinable is False and worker.joined is False
+
+
+@pytest.mark.parametrize(
+    "spec, tool_search, pinned",
+    [
+        ({"tools": ["*"]}, _tool_search(True), False),
+        # A spec that mounts nothing switches MCP off for the whole process.
+        ({"tools": [], "includeMcpJson": False}, None, True),
+        ({"tools": [], "includeMcpJson": False}, _tool_search(True), True),
+        ({"tools": ["@kirocrew-core"]}, _tool_search(True), True),
+        # Settings sent with Tool Search off still carry the founder's neverDefer.
+        ({"tools": ["@kirocrew-core"]}, _tool_search(False), True),
+        ({"tools": ["@kirocrew-core"]}, None, False),
+    ],
+)
+def test_only_a_loader_free_agent_under_tool_search_pins_its_process(spec, tool_search, pinned):
+    with (
+        patch("kiro_crew.agent.ensure_agent_materialized"),
+        patch("kiro_crew.acp.harness.kas.resolve_projected_spec", return_value=(spec, None)),
+    ):
+        assert sharing.agent_pins_tool_surface("/w", "a", tool_search) is pinned
+
+
+def test_an_edit_to_a_crewmate_folder_spec_changes_the_spec_generation(tmp_path, monkeypatch):
+    # KAS resolves the Bot service agents from the crewmate folder, so a pinned
+    # key must see an edit there.
+    from kiro_crew.config import paths
+
+    mates, user = tmp_path / "mates", tmp_path / "user"
+    mates.mkdir()
+    user.mkdir()
+    spec = mates / "kirocrew-mate-worker.json"
+    spec.write_text('{"name": "kirocrew-mate-worker", "tools": []}')
+    monkeypatch.setattr(paths, "mate_agents_dir", lambda: mates)
+    monkeypatch.setattr("kiro_crew.agent.kiro_agents_dir_path", lambda: user)
+    before = sharing.agent_spec_generation(None, "kirocrew-mate-worker")
+    spec.write_text('{"name": "kirocrew-mate-worker", "tools": ["@kirocrew-core"]}')
+    assert sharing.agent_spec_generation(None, "kirocrew-mate-worker") != before
+
+
+def test_a_bot_service_agent_in_the_crewmate_folder_is_admitted_on_kas(tmp_path, monkeypatch):
+    # The Bot conductor and worker specs live only in the crewmate folder; the
+    # kiro-cli lookup (project, then user) misses them and refuses every Bot tree.
+    from kiro_crew.config import paths
+
+    mates, user = tmp_path / "mates", tmp_path / "user"
+    mates.mkdir()
+    user.mkdir()
+    (mates / "kirocrew-mate-worker.json").write_text(
+        '{"name": "kirocrew-mate-worker", "tools": ["@kirocrew-core"]}'
+    )
+    monkeypatch.setattr(paths, "mate_agents_dir", lambda: mates)
+    monkeypatch.setattr(paths, "kiro_agents_dir", lambda: user)
+    monkeypatch.setattr("kiro_crew.agent.kiro_agents_dir_path", lambda: user)
+    assert (
+        sharing.agent_spawns_native_subagents(None, "kirocrew-mate-worker", ACP_BACKEND_KAS)
+        is False
+    )
+
+
+def test_an_unreadable_kas_spec_still_refuses_native_subagent_admission():
+    with patch("kiro_crew.acp.harness.kas.resolve_projected_spec", side_effect=OSError("x")):
+        assert sharing.agent_spawns_native_subagents(None, "kirocrew-worker", ACP_BACKEND_KAS)
+
+
+def test_an_unreadable_spec_pins_its_process():
+    with (
+        patch("kiro_crew.agent.ensure_agent_materialized"),
+        patch("kiro_crew.acp.harness.kas.resolve_projected_spec", side_effect=OSError("x")),
+    ):
+        assert sharing.agent_pins_tool_surface("/w", "a", _tool_search(True)) is True
 
 
 @pytest.mark.parametrize("field", sorted(sharing.KAS_PER_SESSION_FIELDS))
@@ -251,6 +371,27 @@ def test_a_cycle_in_the_records_stops_the_walk():
     assert crew_mode.share_tree_root(slots, WORKER_A) in {WORKER_A, WORKER_B}
 
 
+def test_the_gateway_reader_finds_the_lead_root_from_a_prefixed_worker_session_key():
+    # The provider hands ``dashboard:<slot>`` while slots are keyed by slot name: an
+    # unfolded lookup misses every row and each chat becomes its own tree.
+    from kiro_crew.dashboard.state_parts.dashboard_state import _share_tree_root
+
+    state = SimpleNamespace(
+        _slots={
+            LEAD: _slot(LEAD),
+            CONDUCTOR: _slot(CONDUCTOR, LEAD),
+            WORKER_A: _slot(WORKER_A, CONDUCTOR),
+        }
+    )
+    sharing.set_share_tree_reader(lambda key: _share_tree_root(state, key))
+    try:
+        assert share_tree_root_of(f"dashboard:{WORKER_A}") == f"dashboard:{LEAD}"
+        assert share_tree_root_of(f"dashboard:{CONDUCTOR}") == f"dashboard:{LEAD}"
+        assert share_tree_root_of(f"dashboard:{LEAD}") == f"dashboard:{LEAD}"
+    finally:
+        sharing.set_share_tree_reader(None)
+
+
 @pytest.mark.parametrize(
     "reader", [None, lambda key: "", lambda key: (_ for _ in ()).throw(RuntimeError("x"))]
 )
@@ -361,6 +502,45 @@ def test_two_bots_never_share_even_when_a_lineage_names_one_root():
         member_scope=OTHER_BOT,
     )
     assert a.key != b.key
+
+
+def test_a_resolved_loader_free_worker_keys_its_agent():
+    with patch.object(chat_share, "agent_pins_tool_surface", return_value=True):
+        placement = _resolve(_Provider(WORKER_A, member=False), roots={WORKER_A: LEAD})
+    assert placement is not None and placement.key.agent == "kirocrew-worker"
+
+
+def test_a_backend_that_never_shares_reads_no_tree_and_no_member_record():
+    walked: list[str] = []
+    provider = _Provider(WORKER_A, member=True)
+    provider._client.backend = ACP_BACKEND_KIRO
+
+    async def scenario():
+        sharing.set_share_tree_reader(lambda key: walked.append(key) or LEAD)
+        try:
+            with (
+                patch("kiro_crew.config.live.snapshot", return_value=_cfg(True)),
+                patch.object(chat_share, "member_scope_of") as scope,
+            ):
+                placed = await resolve_chat_share(
+                    provider,
+                    work_dir="/w",
+                    agent="kirocrew-worker",
+                    sandbox_mode="auto",
+                    extra_env={},
+                    mcp_gateway_overlay=None,
+                    mcp_gateway_socket=None,
+                    configured_model="",
+                    launch_agent="",
+                    remote_workspace=False,
+                )
+                return placed, scope.call_count
+        finally:
+            sharing.set_share_tree_reader(None)
+
+    placed, scope_reads = asyncio.run(scenario())
+    assert placed is None
+    assert walked == [] and scope_reads == 0
 
 
 def test_an_ultra_mode_worker_is_placed_in_its_lead_s_tree():
