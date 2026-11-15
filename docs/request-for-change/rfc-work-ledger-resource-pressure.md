@@ -1,12 +1,12 @@
 ---
 title: Host resource pressure goes on the work ledger and wakes the conductor, which pauses dispatch
-status: partial
+status: in-progress
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-13
-last-audited: 2026-11-13
-audited-at: 00c5418f06
+last-audited: 2026-11-14
+audited-at: 16e11a1870
 doc-pr: 36304
-implementation-prs: [36481, 36657]
+implementation-prs: [36481, 37164]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,29 +14,29 @@ superseded-by: []
 
 # RFC: Host resource pressure goes on the work ledger and wakes the conductor
 
-Status: partial. §3 to §10 ship in #36481; §12 (a pressure level change
-releases a person-wait hold once) ships separately in
-[#36657](https://github.com/kirodotdev/KiroCrew/pull/36657). The repository
-owner asked for this on 2026-11-13 in the conductor chat and chose the design
-below (option C of the design study). This document merged first in #36304; the
-code shipped in [#36481](https://github.com/kirodotdev/KiroCrew/pull/36481), which names
-three placements the design left open:
+Status: in-progress, narrowed. **Withdrawn 2026-11-14 by the repository owner:**
+the `host_pressure` record (§3.1, §3.2), the conductor wake (§3.3), the
+conductor pause rule (§3.4, the tight advice in §3.5) and the §12 amendment.
+The owner's words: "我的想法是缩小，其实只要给个简单指示，说明派活要先查资源，然后给AI工具查资源不就好了？为什么改那么多代码"
+and "开精简 PR，只留 critical 拒绝。" So the conductor checks `resource_status`
+before it dispatches (the existing tool), and only one piece of code stays: a
+work-ledger `create` is refused 409 `host_memory_critical` while
+`admission_check()` refuses (critical memory). All of it shipped in
+[#36481](https://github.com/kirodotdev/KiroCrew/pull/36481). The trim
+[#37164](https://github.com/kirodotdev/KiroCrew/pull/37164) removes the
+withdrawn parts and renames the refusal code from `host_pressure_critical` to
+`host_memory_critical`, since nothing named `host_pressure` is left. This
+withdrawal lands first in its own PR, so that trim rebases onto it.
 
-- The record is `<data home>/work-ledger/host/pressure.json`
-  (`host_pressure.path`): a reserved `host/` directory of the
-  `work-ledger/` tree (in `RESERVED_ROOT_DIRS`, so board scans step over it),
-  under the tree's sandbox mask, so a worker cannot forge it. A read accepts
-  only a short episode id and caps `reading` at 200 characters.
-- The critical refusal sits in `_create_item` only. `create_bound_item` (a
-  remote peer's create for a hub's item) already has the peer's own `crew_busy`
-  gate.
-- The refusal calls `admission_check()`, a live probe, not
-  `cached_admission_check()` as §3.5 says: that cache refreshes only when asked,
-  so the first `create` after recovery could be refused on a stale verdict. The
-  store runs off the event loop, so the probe blocks nothing.
+What stays, as shipped in #36481: `_refuse_if_host_critical` in
+`src/kiro_crew/work_ledger_writes.py`, called from `_create_item` only (a
+remote peer's `create_bound_item` keeps its own `crew_busy` gate). It calls the
+live `admission_check()`, not `cached_admission_check()` as §3.5 says: that
+cache refreshes only when asked, so the first `create` after recovery could be
+refused on a stale verdict.
 
-The design text below was read at `9b32941be6`; the shipped code at
-`00c5418f06`.
+The text below is the original design, kept as the record. Read it with the
+withdrawal above: only the critical refusal of §3.5 and §5 test 6 are in force.
 
 This document lands on its own because it changes what the goal conductor does
 by default (it pauses dispatch on host pressure) and which `create` the work
@@ -269,6 +269,10 @@ Exit criteria:
 None open.
 
 ## 12. Amendment (2026-11-13): a level change releases a person-wait hold once
+
+**Withdrawn 2026-11-14 by the repository owner**, with the record and the
+wake it relied on (see the status above). Its code PR
+[#36657](https://github.com/kirodotdev/KiroCrew/pull/36657) closed unmerged.
 
 This section reverses the pin in §5 item 7 and the "held boards stay held"
 limit in §7. It builds on this document (on main) and on its code PR
