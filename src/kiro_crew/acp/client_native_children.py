@@ -36,10 +36,11 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_native_child_by_tool_use``, ``_native_child_cancellable``,
-``_native_child_overflow``, ``_native_child_requests``, ``_native_child_rows``,
+``_native_child_overflow``, ``_native_child_rows``,
 ``_native_child_turn``, ``_prompt_or_tool_seen``.
 
-Instance fields read: ``_native_child_sids``, ``_process``, ``_session_id``.
+Instance fields read: ``_native_child_requests``, ``_native_child_sids``, ``_process``,
+``_session_id``.
 """
 
 from __future__ import annotations
@@ -204,18 +205,24 @@ def _reset_native_child_turn(self: AcpClient) -> None:
     """
     if not self._native_children_declared():
         return
-    self._native_child_turn.clear()
+    _start_native_child_turn(self)
+
+
+def _start_native_child_turn(client: Any) -> None:
+    """The turn-start reset of :func:`_reset_native_child_turn`, for a session that
+    reads children; the shared runtime's session handle runs the same one."""
+    client._native_child_turn.clear()
     # A request is read and answered within the turn that reads it.
-    self._native_child_requests.clear()
-    if self._native_child_overflow:
+    client._native_child_requests.clear()
+    if client._native_child_overflow:
         logger.warning(
             "native child store made %d refusal(s) at its bound of %d last turn; "
             "those children got no card, their text was dropped and their tool calls "
             "rendered as ordinary rows",
-            self._native_child_overflow,
+            client._native_child_overflow,
             NATIVE_CHILD_ROSTER_CAP,
         )
-        self._native_child_overflow = 0
+        client._native_child_overflow = 0
 
 
 def _native_child_roster(self: AcpClient) -> list[AcpEvent]:
@@ -427,6 +434,25 @@ def _child_text(backend: str, kind: object, update: dict[str, Any]) -> str:
     return ""
 
 
+def native_child_cancellable(client: Any, child_sid: str) -> bool:
+    """Whether a Stop may name *child_sid*: the gate :func:`cancel_native_child` asks.
+
+    A backend in ``ACP_BACKENDS_NATIVE_CHILD_CANCEL``, a child this session tracks
+    whose last report granted ``capabilities.cancel`` and left it running
+    (``working``), and never this session's own id, which would cancel the parent's
+    turn. The shared runtime's session handle asks the same gate.
+    """
+    row = client._native_child_rows.get(child_sid)
+    return not (
+        client.backend not in ACP_BACKENDS_NATIVE_CHILD_CANCEL
+        or not child_sid
+        or child_sid == client._session_id
+        or child_sid not in client._native_child_cancellable
+        or row is None
+        or row["status"].get("type") != "working"
+    )
+
+
 async def cancel_native_child(self: AcpClient, child_sid: str) -> bool:
     """Ask the harness to stop the native child *child_sid*; whether it was asked.
 
@@ -440,15 +466,7 @@ async def cancel_native_child(self: AcpClient, child_sid: str) -> bool:
     turn's own cancel is; a failed write answers False, so the caller closes the
     card itself.
     """
-    row = self._native_child_rows.get(child_sid)
-    if (
-        self.backend not in ACP_BACKENDS_NATIVE_CHILD_CANCEL
-        or not child_sid
-        or child_sid == self._session_id
-        or child_sid not in self._native_child_cancellable
-        or row is None
-        or row["status"].get("type") != "working"
-    ):
+    if not native_child_cancellable(self, child_sid):
         return False
     process = self._process
     if process is None or process.stdin is None or process.returncode is not None:

@@ -10,7 +10,9 @@ frames here, one session at a time, through the same readers:
   carries (``acp.plan_checklist.todo_event``) are events before the frame's own;
 * a ``read`` tool call names the argument the row previews (``acp.read_path_arg``);
 * a native compaction's summary (``acp.compaction_summary``): its streamed chunks are
-  kept and are no frame of the turn, and the ``completed`` card's title carries it.
+  kept and are no frame of the turn, and the ``completed`` card's title carries it;
+* a claude Agent-tool child's frame (``session_handle_claude_children``), read before
+  any of these.
 
 Each reader checks its own ``ACP_BACKENDS_*`` set and that the frame names this
 session, so a frame of another session, or of a backend outside the sets, passes
@@ -22,7 +24,8 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: none (the readers it calls write the handle's own fields).
 
-Instance fields read: ``_session_id``.
+Instance fields read: none (the helper that reads this session's own frames is
+handed the handle).
 """
 
 from __future__ import annotations
@@ -47,15 +50,29 @@ if TYPE_CHECKING:
 
 
 def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent]:
-    """A ``session/update`` notification's events, with this session's harness surfaces."""
+    """A ``session/update`` notification's events, with this session's harness surfaces.
+
+    A claude child's frame is read first (``session_handle_claude_children``): one it
+    consumes makes only its card's events, and any other goes on with what that
+    reading put ahead of it.
+    """
+    child = self._claude_child_events(msg)
+    if child is None:
+        return _own_update(self, msg)
+    events, consumed = child
+    return events if consumed else [*events, *_own_update(self, msg)]
+
+
+def _own_update(handle: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent]:
+    """What the frame parser makes of *msg*, with this session's own surfaces."""
     params = msg.params if isinstance(msg.params, dict) else {}
     update = params.get("update")
     frame_sid = str(params.get("sessionId") or "")
-    if not isinstance(update, dict) or (frame_sid and frame_sid != self._session_id):
-        return self._handle_update_frame(msg)
+    if not isinstance(update, dict) or (frame_sid and frame_sid != handle._session_id):
+        return handle._handle_update_frame(msg)
     # The readers take the per-chat client; they read the fields this handle names
     # alike (``_session_id``, ``backend``, ``_compaction_summaries``, the mode fields).
-    reader: Any = self
+    reader: Any = handle
     kind = update.get("sessionUpdate")
     if kind == UPDATE_NOTICE:
         notice = harness_notices.adapter_notice(reader, msg)
@@ -70,8 +87,8 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
     mode = harness_notices.mode_notice_event(reader, msg)
     if mode is not None:
         before.append(mode)
-    events = self._handle_update_frame(msg)
-    read_arg = read_path_arg(self.backend, update.get("kind"))
+    events = handle._handle_update_frame(msg)
+    read_arg = read_path_arg(handle.backend, update.get("kind"))
     if read_arg:
         for event in events:
             if event.kind in (EVENT_TOOL_CALL, EVENT_TOOL_CALL_UPDATE):

@@ -919,6 +919,13 @@ because the child's tracker record was marked `stop_requested` before the send (
 `harness_cancel: true`. The parent's Stop and every recovery cancel name the parent
 alone.
 
+On the shared runtime the slot's client is an `AcpSessionProvider`: its
+`cancel_native_child` and `native_child_requests` forward to the session handle
+(`session_provider_native_children`), which asks the client's own gate
+(`client_native_children.native_child_cancellable`) and sends the `session/cancel`
+naming the child as a notification on the shared connection; the parent's turn and
+every other session on the process go on.
+
 Claude Code withdraws a stopped child's open permission and question requests
 (`$/cancel_request`, which the turn reader skips), so the client records which child
 each request belongs to (`client_native_children._note_native_child_request`, ids up
