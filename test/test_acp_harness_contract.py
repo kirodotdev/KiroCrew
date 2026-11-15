@@ -37,6 +37,7 @@ from kiro_crew.acp.kas_transport import METHOD_KAS_AUTH_GET_ACCESS_TOKEN
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_CLIENT_CAPABILITIES,
@@ -49,11 +50,17 @@ from kiro_crew.agent_sdk.backends import ACP_BACKEND_LAUNCH
 from kiro_crew.config import paths as paths_mod
 from kiro_crew.mcp_gateway import session_servers as session_servers_mod
 
-ALL_BACKENDS = [ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE]
+ALL_BACKENDS = [
+    ACP_BACKEND_KIRO,
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_GOOSE,
+]
 
 #: Hosts with a shared-runtime harness that no session is routed to yet: they keep
 #: their per-process adapter until the routing change names them.
-REGISTERED_AHEAD_OF_ROUTING = {ACP_BACKEND_CLAUDE}
+REGISTERED_AHEAD_OF_ROUTING = {ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE}
 
 #: The hosts reached through kiro-cli's own binary and ACP relay. They share a
 #: notification vocabulary, an agent-spec permission routing and a spawn-time effort

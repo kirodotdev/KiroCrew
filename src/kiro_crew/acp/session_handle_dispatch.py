@@ -60,6 +60,7 @@ from kiro_crew.acp.liveness import (
     VERDICT_UNKNOWN,
     VERDICT_WORKING,
 )
+from kiro_crew.acp.session_handle_runtime_contract import host_checks_sessions
 from kiro_crew.acp.session_handle_watchdog import INTERACTIVE_POLICY_WAIT
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.tool_silence import named_tool_call_id
@@ -933,6 +934,10 @@ async def _dispatch_events(
                     continue
                 if await self._refuse_unreadable_mcp_identity(_perm_event):
                     continue
+                if host_checks_sessions(self._runtime) and await self._refuse_by_harness(
+                    _perm_event
+                ):
+                    continue
                 if await self._refuse_unretained_provenance(msg, _perm_event):
                     continue
                 if _perm_event.child_low_fidelity and not self.child_fidelity_aware:
@@ -1011,6 +1016,12 @@ async def _dispatch_events(
                 # frame for it of a kind the silence timer cannot read.
                 self._retire_call_timer(named_tool_call_id(msg.params))
             elif action == "update":
+                # A session that left the permission state its host requires is
+                # closed before any of the frame is yielded. Read only on a host
+                # with per-session state, so every other host makes no call.
+                if host_checks_sessions(self._runtime):
+                    self._note_permission_state(msg)
+                    await self._refuse_moved_permission_state()
                 for ev in self._handle_update(msg):
                     # Before the yield, so the observation is recorded even for a
                     # consumer that stops pulling: the call already ran, and this

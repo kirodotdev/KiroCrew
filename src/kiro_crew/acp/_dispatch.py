@@ -637,6 +637,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _WORKSPACE_PATH_ARGUMENTS,
         CLAUDE_CREW_PLACED_MCP_SOURCE,
         GATE_ENVELOPE_MARKER,
+        REFUSAL_FOREIGN_SERVER,
+        REFUSAL_UNCLASSIFIED_CALL,
         STRANDS_BUILTIN_TOOL_KINDS,
         STRANDS_SIDE_READ_ONLY_REFUSAL,
         StrandsCallIdentity,
@@ -648,6 +650,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         bridged_title_identity,
         build_permission_event,
         claude_mcp_identity,
+        foreign_server_refused,
         gate_envelope,
         identified_mcp_call,
         is_mcp_tool_approval,
@@ -656,6 +659,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         pi_mcp_title,
         reject_option_id,
         strands_envelope_identity,
+        unclassified_call_refused,
     )
     from kiro_crew.acp._dispatch_parts.session_update_parser import (  # noqa: F401
         _MESSAGE_ID_MAX_CHARS,

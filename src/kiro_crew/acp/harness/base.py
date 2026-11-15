@@ -863,6 +863,29 @@ class HarnessAdapter(LaunchAdapter):
         """Release what :meth:`prepare_session` set up, once the session is over or
         never started. Must not raise."""
 
+    def permission_refusal(
+        self, state: Any, event: Any, *, unclassified: bool
+    ) -> tuple[str, str] | None:
+        """``(reason, tool_name)`` when this host refuses a permission request, or None.
+
+        For a host whose tool identity Crew reads from the harness's own channel
+        (goose's ``_meta.goose.toolCall``): a call that channel classified as nothing
+        (*unclassified*: the session's ``tool_call`` frame said neither a command
+        nor a server), or one naming a server this session never placed, is refused
+        before any gate reads it. Only where :attr:`per_session_state` is True.
+        """
+        return None
+
+    def session_update_issue(self, state: Any, update: dict[str, Any]) -> str:
+        """Why this session must stop on *update*, a ``session/update`` it sent, or ``""``.
+
+        For a host whose permission state a session can move mid-session (goose's
+        mode): the runtime closes that session and fails its turn with the gate's
+        reason. Read on every update the session's turn and its pre-turn drain see,
+        and only where :attr:`per_session_state` is True.
+        """
+        return ""
+
     def holds_replayed_permission(self, session_id: str) -> bool:
         """Whether a permission request for *session_id* arrived inside a resume hold.
 

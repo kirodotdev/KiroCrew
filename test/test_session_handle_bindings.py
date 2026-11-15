@@ -182,6 +182,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_note_mcp_sign_in_status": ("function", False, "d0d2b0689553", "session_handle_mcp"),
     "_note_native_child": ("function", False, "09a8133eda4c", "session_handle_native_children"),
     "_note_native_roster": ("function", False, "7a20326749ff", "session_handle_native_children"),
+    "_note_permission_state": ("function", False, "aa7b59b6efad", "session_handle_permissions"),
     "_note_status_rejected": ("function", False, "a9ff3d5a4447", "session_handle_updates"),
     "_note_steering_denial": ("function", False, "b60c5fea256e", "session_handle_steering"),
     "_offer_mcp_sign_in": ("function", False, "b60c5fea256e", "session_handle_mcp"),
@@ -200,6 +201,13 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "session_handle_model_selection",
     ),
     "_reattempt_failed_mcp_servers": ("function", False, "b60c5fea256e", "session_handle_mcp"),
+    "_refuse_by_harness": ("function", True, "2dfacffa6279", "session_handle_permissions"),
+    "_refuse_moved_permission_state": (
+        "function",
+        True,
+        "b60c5fea256e",
+        "session_handle_permissions",
+    ),
     "_refuse_unidentifiable_mcp_approval": (
         "function",
         True,
@@ -274,6 +282,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "session_handle_updates",
     ),
     "_tool_kind_cache_for_wire": ("function", False, "b7b9268c0112", "session_handle_updates"),
+    "_tool_call_unclassified": ("function", False, "2dfacffa6279", "session_handle_permissions"),
     "_track_metadata": ("function", False, "87459833bc5c", "session_handle_compaction"),
     "_track_prompt_usage": ("function", False, "c8d5c402278d", "session_handle_compaction"),
     "_tripwire_spec_disabled_tool": (

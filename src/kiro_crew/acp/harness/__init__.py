@@ -35,7 +35,7 @@ from kiro_crew.acp.harness.claude import ClaudeHarness, ClaudeLaunch
 from kiro_crew.acp.harness.codex import CodexHarness
 from kiro_crew.acp.harness.copilot import CopilotLaunch
 from kiro_crew.acp.harness.deepseek import DeepseekLaunch
-from kiro_crew.acp.harness.goose import GooseLaunch
+from kiro_crew.acp.harness.goose import GooseHarness, GooseLaunch
 from kiro_crew.acp.harness.kas import KasHarness
 from kiro_crew.acp.harness.kiro import KiroHarness
 from kiro_crew.acp.harness.mimocode import MimoCodeLaunch
@@ -62,6 +62,7 @@ __all__ = [
     "CodexHarness",
     "CopilotLaunch",
     "DeepseekLaunch",
+    "GooseHarness",
     "GooseLaunch",
     "HarnessAdapter",
     "KasHarness",
@@ -98,6 +99,9 @@ _HARNESSES: dict[str, type[HarnessAdapter]] = {
     # the shared runtime for claude yet, and a process-per-session client still
     # launches it through ``ClaudeLaunch`` below.
     ACP_BACKEND_CLAUDE: ClaudeHarness,
+    # The same: no goose session is routed to the shared runtime yet, and a
+    # process-per-session client still launches goose through ``GooseLaunch``.
+    ACP_BACKEND_GOOSE: GooseHarness,
 }
 
 

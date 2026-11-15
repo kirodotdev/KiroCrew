@@ -2,16 +2,19 @@
 
 The permission event, approve and reject, the zero-tool deny and its session-start
 notice, the spec-disabled deny and tripwire, the unidentifiable, unreadable and
-unretained MCP identity refusals, the reject audit, and session permission routing.
+unretained MCP identity refusals, a host's own per-session refusals (a permission
+request its identity channel cannot vouch for, a session that left its required
+permission state), the reject audit, and session permission routing.
 
 Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_audit_tasks``, ``_permission_gate_events``,
-``_permission_options``.
+``_permission_options``, ``_permission_state_issue``.
 
-Instance fields read: ``_config_options``, ``_runtime``, ``_session_id``, ``_session_key``,
+Instance fields read: ``_config_options``, ``_runtime``,
+``_session_id``, ``_session_key``,
 ``_tool_call_cache_overflow``, ``_tool_call_diff_path``,
 ``_tool_call_harness_tool_name``, ``_tool_call_input_redacted``, ``_tool_call_inputs``,
 ``_tool_call_is_shell``, ``_tool_call_mcp_server``, ``_tool_call_raw_params``,
@@ -29,6 +32,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import acp_tool_gate, mediated_request_capability, permission_floor
+from kiro_crew import sel as sel_module
 from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     TOOL_CALL_CACHE_MAX_ENTRIES,
@@ -42,6 +46,7 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp.client import AcpError, AcpToolGateUnroutable, _loggable_request_id
 from kiro_crew.acp.client_permissions import once_for_always
+from kiro_crew.acp.session_handle_runtime_contract import host_checks_sessions
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
@@ -860,3 +865,109 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
         event.spec_granted_paths = tuple(getattr(self, "kas_crew_answered_paths", ()))
         event.spec_granted_read_paths = tuple(getattr(self, "kas_crew_answered_read_paths", ()))
     return event
+
+
+# ── A host's own per-session refusals (``HarnessAdapter.per_session_state``) ──
+
+
+def _tool_call_unclassified(self: AcpSessionHandle, event: AcpEvent) -> bool:
+    """True when this session saw the call's ``tool_call`` frame and it classified nothing.
+
+    Positive evidence only: the frame was cached (its MCP-server slot is written for
+    every ``tool_call``) with no server and no ``kind``. A call whose frame this
+    session never saw is not evidence, so it answers False.
+    """
+    if not event.tool_call_id:
+        return False
+    key = scoped_tool_cache_key(event.sub_session_id or self._session_id, event.tool_call_id)
+    if key not in self._tool_call_mcp_server:
+        return False
+    return not self._tool_call_mcp_server.get(key) and key not in self._tool_call_is_shell
+
+
+async def _refuse_by_harness(self: AcpSessionHandle, event: AcpEvent) -> bool:
+    """Refuse a permission request this session's host refuses (``permission_refusal``).
+
+    Every host without per-session state reads one flag and returns.
+    """
+    runtime = self._runtime
+    if not host_checks_sessions(runtime):
+        return False
+    state = runtime._session_harness_states.get(self._session_id)
+    refusal = runtime._harness.permission_refusal(
+        state, event, unclassified=self._tool_call_unclassified(event)
+    )
+    if refusal is None:
+        return False
+    reason, tool_name = refusal
+    logger.warning(
+        "session MCP: refusing a tool approval the harness's identity channel cannot "
+        "vouch for (%s) [session=%s]",
+        reason,
+        self._session_id,
+    )
+    self._audit_handle_reject(
+        event.request_id, tool_name, reason, sub_session_id=event.sub_session_id or ""
+    )
+    await self.reject_tool(event.request_id)
+    return True
+
+
+def _note_permission_state(self: AcpSessionHandle, msg: JsonRpcMessage | None) -> None:
+    """Record why this session must stop, when one of its updates moved its permission state.
+
+    Synchronous and non-raising, so the pre-turn drain can read every frame through
+    it; :meth:`_refuse_moved_permission_state` acts on what it recorded. The first
+    issue is kept. Only this session's own frames count, never a child's.
+    """
+    if msg is None or self._permission_state_issue:
+        return
+    runtime = self._runtime
+    if not host_checks_sessions(runtime):
+        return
+    params = msg.params if isinstance(msg.params, dict) else {}
+    update = params.get("update")
+    if not isinstance(update, dict) or str(params.get("sessionId") or "") != self._session_id:
+        return
+    issue = runtime._harness.session_update_issue(
+        runtime._session_harness_states.get(self._session_id), update
+    )
+    if issue:
+        self._permission_state_issue = issue
+
+
+async def _refuse_moved_permission_state(self: AcpSessionHandle) -> None:
+    """Close this session and fail its turn when it left its required permission state.
+
+    In the state the host reports (goose: ``auto``) the harness asks about nothing,
+    so no permission request reaches Crew to refuse. Only this session is closed;
+    the process and every other session on it keep running.
+    """
+    issue = self._permission_state_issue
+    if not issue:
+        return
+    backend = self._runtime.acp_backend
+    logger.error(
+        "%s routing: session reported leaving its required permission state; closing "
+        "it before the harness approves on its own [session=%s]",
+        backend,
+        self._session_id,
+    )
+    try:
+        sel_module.sel().log_tool_invocation(
+            session_key=self._session_key or "",
+            source="acp",
+            tool_name="session/set_mode",
+            tool_kind="other",
+            outcome="denied",
+            metadata={"reason": "permission_state_tripwire", "backend": backend},
+        )
+    except Exception:  # pragma: no cover - audit is best-effort
+        logger.debug("audit of the permission-state tripwire failed", exc_info=True)
+    await asyncio.shield(self._runtime.terminate_session(self._session_id))
+    try:
+        acp_tool_gate.enforce_runtime_routing(
+            backend, issue, remedy=acp_tool_gate.remediation_for(backend)
+        )
+    except acp_tool_gate.ToolGateUnroutable as exc:
+        raise AcpToolGateUnroutable(str(exc)) from None

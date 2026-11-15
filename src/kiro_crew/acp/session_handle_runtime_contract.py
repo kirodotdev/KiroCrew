@@ -12,6 +12,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
+    from kiro_crew.acp.harness.base import HarnessAdapter
     from kiro_crew.acp.session_handle import AcpSessionHandle
 
 
@@ -169,6 +170,16 @@ class AcpRuntimeProtocol(Protocol):
     that converts it to an idle duration, so a runtime that later publishes a
     public accessor is adopted in one line instead of at every call site.
     """
+
+    @property
+    def _harness(self) -> HarnessAdapter:
+        """The host this runtime serves. A handle reads its per-session refusals
+        (``permission_refusal``, ``session_update_issue``) only where
+        ``per_session_state`` is True."""
+        ...
+
+    _session_harness_states: dict[str, Any]
+    """What the host prepared for each session, by session id."""
 
     @property
     def pid(self) -> int | None:
@@ -355,3 +366,13 @@ AcpModeNotFound.__module__ = "kiro_crew.acp.session_handle"
 AcpAgentUnavailable.__module__ = "kiro_crew.acp.session_handle"
 AcpRequestTimeout.__module__ = "kiro_crew.acp.session_handle"
 AcpRuntimeOverloaded.__module__ = "kiro_crew.acp.session_handle"
+
+
+def host_checks_sessions(runtime: object) -> bool:
+    """Whether *runtime*'s host runs its own per-session refusals.
+
+    Read before every call into them (``HarnessAdapter.per_session_state``), so a
+    host without per-session state, and a runtime stand-in with no harness, makes
+    none.
+    """
+    return bool(getattr(getattr(runtime, "_harness", None), "per_session_state", False))
