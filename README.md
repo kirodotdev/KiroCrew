@@ -351,8 +351,8 @@ While they are on, the public build also sends the reviewed product usage metric
 (which features are used and how long things take; no prompts, files, paths or
 credentials) to Kiro telemetry, labelled with a hashed install ID. Nothing is sent
 until the Privacy screen, or the one-line terminal notice, has named it. It is
-not sent from an enterprise (LTS) build, a CI runner, or a non-default
-`KIROCREW_HOME`, and every off switch above stops it. See
+not sent from an enterprise (LTS) build or a CI runner, and every off switch
+above stops it. See
 [docs/guides/telemetry-otlp-export.md](docs/guides/telemetry-otlp-export.md#the-kiro-telemetry-destination)
 and [docs/system-specs/modules/metrics.md](docs/system-specs/modules/metrics.md).
 

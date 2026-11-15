@@ -59,8 +59,6 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(kiro_export, "_suppressed_for_tests", False)
     monkeypatch.setattr(kiro_export, "_session", None)
-    # The private home is not the default one, which hides the destination.
-    monkeypatch.setattr(beacon, "is_default_home", lambda: True)
     monkeypatch.setattr(pm, "_telemetry_provider", DefaultTelemetryProvider)
     monkeypatch.setattr(pm, "_policy_ceiling", lambda: None)
     _write_config(tmp_path, {})
@@ -423,18 +421,21 @@ class TestProvider:
         assert "Collectors:  kiro-telemetry (included by this build)" in text
         assert "also sent to the metrics destination" in text
 
-    @pytest.mark.parametrize("hidden_by", ["ci", "home", "lts", "tests"])
+    @pytest.mark.parametrize("hidden_by", ["ci", "lts", "tests"])
     def test_it_is_not_listed_where_it_must_not_send(self, home, monkeypatch, hidden_by):
         if hidden_by == "ci":
             monkeypatch.setenv("GITHUB_ACTIONS", "true")
-        elif hidden_by == "home":
-            monkeypatch.setattr(beacon, "is_default_home", lambda: False)
         elif hidden_by == "lts":
             monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
         else:
             monkeypatch.setattr(kiro_export, "_suppressed_for_tests", True)
         assert kiro_export.destinations() == ()
         assert DefaultTelemetryProvider().otlp_destinations(TelemetryConfig()) == ()
+
+    def test_a_non_default_home_gets_it(self, home):
+        """A dev home, a pod or a worktree preview exports like any other home."""
+        assert beacon.is_default_home() is False
+        assert [d.name for d in kiro_export.destinations()] == ["kiro-telemetry"]
 
     def test_an_lts_policy_collector_is_the_only_destination(self, home, monkeypatch):
         from kiro_crew import edition_locks

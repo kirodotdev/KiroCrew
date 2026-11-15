@@ -260,7 +260,7 @@ one exception is the public build's own Kiro telemetry destination
 (`metrics/kiro_export.py`, owner decision of 2026-11-14): it gets the reviewed
 `PRODUCT_METRICS` under the recording default, once the Privacy chapter (notice
 version 3, which names it) or the CLI notice has been shown, and never in an LTS
-build, on CI or under a non-default `KIROCREW_HOME`. An enterprise policy
+build or on CI (a non-default `KIROCREW_HOME` gets it too). An enterprise policy
 can pin the whole thing off through the `capabilities.telemetry` governance
 scope. The enterprise build never shows the Privacy chapter, refuses the
 heartbeat, and applies the same export rule to the collector the admin policy

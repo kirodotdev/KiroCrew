@@ -555,7 +555,7 @@ def _ack_version_for_the_chapter(cfg: Any) -> int:
     """The acknowledged notice version, held back while Kiro telemetry is owed.
 
     An acknowledgement whose text never named the build's Kiro telemetry
-    destination (a chapter shown under a non-default home, a redirected
+    destination (a chapter whose text did not name it, a redirected
     ``kirocrew telemetry enable``) leaves that destination waiting, so the
     chapter, which names it, shows once more. Unreadable: the stored value.
     """
