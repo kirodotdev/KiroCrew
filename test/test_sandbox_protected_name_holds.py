@@ -518,7 +518,13 @@ class TestLeafOnlyPopulationIsRecorded:
     #: removes temporary trees INSIDE this masked directory, never replacing the
     #: directory itself. Its parent is the data-home root beside writable siblings,
     #: so no enclosing stand-in can hold it: leaf-only by design, like update-staging.
-    EXPECTED: dict[str, int] = {"standard": 354, "cc": 361, "strict": 362}
+    #:
+    #: Six more per tier, one app-declared directory: Notes' ``state/`` under its data
+    #: directory (``credentialMasks``), at both data-home spellings and their move-aside
+    #: spellings, plus the relocated home. Its parent ``data/`` holds the app's logs, so
+    #: it cannot take a stand-in; nothing republishes ``state`` itself (its writers rename
+    #: files INSIDE it), and its parents are pinned against rename.
+    EXPECTED: dict[str, int] = {"standard": 360, "cc": 367, "strict": 368}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

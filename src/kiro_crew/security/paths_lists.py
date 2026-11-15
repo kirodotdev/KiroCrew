@@ -225,10 +225,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     # and after a crash between write and rename — a file in this directory holds
     # the same bytes as the leaves above, PAT included. Classified as the whole
     # DIRECTORY (like ``whatsapp``) so every temp name, present and future, is
-    # covered. A TOP-LEVEL leaf, not one under ``workspace/md-notebook``, so an
-    # agent-writable ancestor cannot be renamed out from under it. The app's own
-    # backend opens it directly rather than through this gate, so writes keep
-    # working.
+    # covered. The previous layout's state directory: ``md_notebook_state`` copies it
+    # into the app's own ``data/state/``, which the Notes manifest declares in
+    # ``credentialMasks`` and so reaches this gate through the shipped declarations,
+    # and the copies it keeps here stay fenced.
     "md-notebook-staging",
     # Where the sandbox launcher stages the live-target pointer's absent-equivalent
     # stub before linking it into place. Classified as the whole DIRECTORY so the

@@ -796,7 +796,7 @@ class TestTheCacheOnlyChildCanSeeTheCacheItMustBootFrom:
 class TestTheMdNotebookBackendCanSeeItsOwnStateFiles:
     """The md-notebook spawn's isolated startup, which rides with its mask carve-out.
 
-    The carve-out (``app_backend_visible_targets``) is pinned in
+    The carve-out (``app_declared_mask_targets``, from its ``credentialMasks``) is pinned in
     ``test_sandbox_governance_mask.py``. This spawn's namespace holds an unmasked PAT, so
     a bare ``python -m`` would run ``sitecustomize`` and ``.pth`` files from an
     agent-writable directory; it starts with ``-I``, scoped to this spawn alone.
@@ -822,7 +822,7 @@ class TestTheMdNotebookBackendCanSeeItsOwnStateFiles:
     ):
         import kiro_crew.apps.backend as bmod
         from kiro_crew.apps.manager import register_builtin_apps
-        from kiro_crew.sandbox import MD_NOTEBOOK_APP_NAME, app_backend_visible_targets
+        from kiro_crew.sandbox import MD_NOTEBOOK_APP_NAME, app_declared_mask_targets
 
         register_builtin_apps()
         seen = self._spy(bmod, monkeypatch)
@@ -830,7 +830,9 @@ class TestTheMdNotebookBackendCanSeeItsOwnStateFiles:
         bmod.start_app_backend("md-notebook")
 
         assert seen.get("visible"), "the spawn passed no visible dirs at all"
-        for path in app_backend_visible_targets(MD_NOTEBOOK_APP_NAME):
+        lifted = app_declared_mask_targets(MD_NOTEBOOK_APP_NAME, builtin=True)
+        assert lifted, "the Notes manifest declares no mask, so this pins nothing"
+        for path in lifted:
             assert path in seen["visible"], (
                 "md-notebook's own state stays masked from the one spawn that "
                 f"owns it, so attach/clone still EPERMs (missing {path!r}, "

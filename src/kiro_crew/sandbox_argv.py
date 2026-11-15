@@ -796,13 +796,15 @@ def namespace_argv(
     # The mask loop has the same guard (``isdir``), so the on-demand hidden
     # directories get the same treatment for the same reason.
     _materialize_maskable_dirs(_required_targets)
-    # The same for the directories apps declare in ``credentialMasks``, under their own
-    # ``data/``: a directory the backend creates after this spawn would otherwise be in view.
-    _materialize_declared_mask_dirs(_required_targets)
     # The Notes move runs BEFORE the stubs below: it reads real state at the bare names
     # (and empties the legacy PAT in place), and the materialiser then plants the stub
     # the launcher masks at any bare name left absent. A failed move is logged, not raised.
+    # It also creates Notes' declared ``data/state/`` until its own move seals, so it runs
+    # before the declared directories are established, and every spawn names that one.
     _migrate_md_notebook_legacy_state()
+    # The same for the directories apps declare in ``credentialMasks``, under their own
+    # ``data/``: a directory the backend creates after this spawn would otherwise be in view.
+    _materialize_declared_mask_dirs(_required_targets)
     # The crewmate records' one-time move out of ``trust/`` runs here too, so it is
     # done before an agent of this build starts. Unlike the Notes move, one that did not
     # finish while old records remain REFUSES the spawn (``SandboxCeilingUnsealable``).

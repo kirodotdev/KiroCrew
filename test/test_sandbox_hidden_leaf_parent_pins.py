@@ -186,7 +186,7 @@ class TestARetiredLeafGuardsOnlyTheFoldersThatExist:
         Rendered for the backend's own spawn, the one that clones vaults there. Once a folder
         exists it is guarded like any parent, so no spawn can rename it.
         """
-        lifted = sandbox.app_backend_visible_targets(MD_NOTEBOOK_APP_NAME)
+        lifted = sandbox.app_declared_mask_targets(MD_NOTEBOOK_APP_NAME, builtin=True)
         assert lifted, "the Notes backend lifted nothing, so this pins nothing"
         chain = ("workspace", f"workspace/{MD_NOTEBOOK_APP_NAME}")
         roots = (home, *(Path.home() / prefix for prefix in _CREW_HOME_PREFIXES))
