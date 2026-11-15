@@ -2572,8 +2572,10 @@ reap ending, the activity stamp and the lifecycle events, the turn cap and the
 completion keep), `run_turn.py` (`_run_inner_impl`: the session, the prompt and the
 streamed turn with its nested `_stream_with_transient_retry`; the pre-stream steps it
 calls -- the inherited approval policy, the shared or dedicated session acquisition,
-the cleanup identity, the child's memory and folder steering, the spawn records and
-the `AgentSpawn`/`UserPromptSubmit` hooks -- are plain functions in `turn_session.py`,
+the cleanup identity, the child's memory and folder steering, the spawn records,
+the `AgentSpawn`/`UserPromptSubmit` hooks, and on a new claude session the line
+naming what of a named agent's `tools` and `model` it does not apply, prepended to
+the prompt and logged as a warning (`spec_builtin_tools_notice`) -- are plain functions in `turn_session.py`,
 which read the names tests patch on `kiro_crew.subagent` through a call-time
 `sys.modules` lookup, and which is not an owner: every `run_*.py` sibling is one),
 `run_yields.py` (the
