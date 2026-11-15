@@ -19,12 +19,14 @@ import asyncio
 import logging
 import os
 import shutil
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Protocol, cast
 
 from kiro_crew import model_registry, platform_compat
 from kiro_crew.acp import launch as launch_mod
+from kiro_crew.acp import raw_sdk_tasks
 from kiro_crew.acp.claude_settings_sources import a_source_decides_thinking
 from kiro_crew.acp.harness._common import MembershipHarness
 from kiro_crew.acp.harness.base import (
@@ -537,6 +539,18 @@ class ClaudeHarness(MembershipHarness):
     #: The process's working directory, recorded by :meth:`resolve_spawn`.
     _work_dir: Path | None = None
 
+    #: What an ended session's raw SDK state keeps for the next session of the
+    #: same id (``raw_sdk_tasks.forget_tasks``): a reload after an MCP change ends
+    #: the old state and registers a new one, as the per-session client replaces
+    #: its session on one object. Per instance (:meth:`_carried_raw_sdk`).
+    _CARRIED_RAW_SDK_CAP = 64
+
+    def _carried_raw_sdk(self) -> OrderedDict[str, Any]:
+        carried = self.__dict__.get("_carried_raw_sdk_by_session")
+        if carried is None:
+            carried = self.__dict__["_carried_raw_sdk_by_session"] = OrderedDict()
+        return carried
+
     # ── Seam 1: spawn ──
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
@@ -688,6 +702,14 @@ class ClaudeHarness(MembershipHarness):
         """
         if state is None:
             return
+        # A session of this id that just ended (a reload) hands its dashboard mark
+        # and the Workflow card ids it saw to this one.
+        carried = self._carried_raw_sdk().pop(session_id, None)
+        if carried is not None:
+            own = state._raw_sdk
+            own.dashboard_turn = own.dashboard_turn or carried.dashboard_turn
+            for card in carried.seen_cards:
+                own.seen_cards.setdefault(card, None)
         state.bind_started(
             session_id,
             agent_version,
@@ -704,6 +726,19 @@ class ClaudeHarness(MembershipHarness):
         if state is None or getattr(state, "_shared_session_ended", False):
             return
         state._shared_session_ended = True
+        # Its background tasks end with it: the cards a dashboard kept open for
+        # them are closed (``raw_sdk_tasks.forget_tasks``), as on the per-session
+        # client when its session or process goes.
+        raw_sdk_tasks.forget_tasks(state)
+        session_id = getattr(state, "_session_id", None)
+        if session_id:
+            carried = self._carried_raw_sdk()
+            carried[session_id] = state._raw_sdk
+            carried.move_to_end(session_id)
+            # shortcut: a session closed for good leaves its entry until the cap
+            # drops it; key the carry on evict only if this ever holds much.
+            while len(carried) > self._CARRIED_RAW_SDK_CAP:
+                carried.popitem(last=False)
         try:
             await state._discard_settings_seed()
         except Exception:
@@ -712,6 +747,23 @@ class ClaudeHarness(MembershipHarness):
             )
         finally:
             state._reset_settings_seed_state()
+
+    def take_session_frame(self, state: Any, msg: Any) -> bool:
+        """Read a ``_claude/sdkMessage`` of this session into its state.
+
+        Claude Code's background-task and API-retry messages
+        (``acp.raw_sdk_tasks.take``), read as the per-session client's transport
+        reader reads them: into the session's own ``_raw_sdk``, put on no queue, so
+        a turn, a waiting request and an idle reader all read past them. Any other
+        frame is not taken.
+        """
+        if state is None:
+            return False
+        try:
+            return raw_sdk_tasks.take(state, msg)
+        except Exception:  # noqa: BLE001 - one bad message must not stop the reader
+            logger.debug("reading a claude SDK message failed", exc_info=True)
+            return getattr(msg, "method", None) == raw_sdk_tasks.METHOD_CLAUDE_SDK_MESSAGE
 
     # ── Seam 4: inbound requests the host answers ──
 

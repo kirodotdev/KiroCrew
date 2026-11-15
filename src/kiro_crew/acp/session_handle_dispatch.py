@@ -29,8 +29,9 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import raw_sdk_tasks
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
     classify_notification,
@@ -171,6 +172,10 @@ async def _dispatch_events(
 
     _buffered: list[JsonRpcMessage] = []
     _last_yield = time.monotonic()
+    # Whether this is the dashboard turn that draws the session's background work.
+    # The readers take the per-chat client; they read the fields this handle names alike.
+    _raw_reader: Any = self
+    _draws_background = raw_sdk_tasks.begin_draw(_raw_reader)
     try:
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
@@ -716,6 +721,13 @@ async def _dispatch_events(
             if msg is None:
                 # Runtime process died — sentinel
                 raise self._died("Runtime process died during prompt")
+
+            # What Claude Code's background work sent before this frame, drawn
+            # above it by the dashboard turn alone (``raw_sdk_tasks``), as the
+            # per-chat client draws it.
+            if _draws_background:
+                for _raw_event in raw_sdk_tasks.pending_events(_raw_reader):
+                    yield _raw_event
 
             last_data_ts = time.monotonic()
             parked_at_data = self._parked_total

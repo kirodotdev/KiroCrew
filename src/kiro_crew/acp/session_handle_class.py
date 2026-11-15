@@ -42,6 +42,7 @@ from kiro_crew.acp.liveness import (
 )
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.prompt_blocks import SentImageLedger
+from kiro_crew.acp.raw_sdk_tasks import RawSdkState
 from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
 from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeProtocol
 from kiro_crew.acp.session_handle_watchdog import (
@@ -179,6 +180,7 @@ class AcpSessionHandle:
     _handle_legacy_codex_subagent = _sh_children._handle_legacy_codex_subagent
     _announced_row = _sh_children._announced_row
     _roster_event = _sh_children._roster_event
+    _native_child_roster = _sh_children._native_child_roster
     _child_text_activity = _sh_children._child_text_activity
     _flush_announced_child_text = _sh_children._flush_announced_child_text
     flush_native_child_text = _sh_children.flush_native_child_text
@@ -513,6 +515,8 @@ class AcpSessionHandle:
         self._native_compaction_states = NativeCompactionStates()
         # What each native compaction in flight streamed (``acp.compaction_summary``).
         self._compaction_summaries = CompactionSummaries()
+        # Background-task state for a session whose host keeps none (``_raw_sdk``).
+        self._raw_sdk_own = RawSdkState()
         self._cancelled = False
         # Unresponsive-cancel tracking (mirrors AcpClient._cancel_ts /
         # _cancel_grace_secs). Set by cancel(); the dispatch loop uses them to
@@ -1165,6 +1169,28 @@ class AcpSessionHandle:
     def _acp_config_options(self) -> list[dict[str, Any]]:
         """``config_options`` under the per-chat client's name, for the mode notice."""
         return self._config_options
+
+    @property
+    def _raw_sdk(self) -> RawSdkState:
+        """What Claude Code's background work reported for this session.
+
+        The runtime's reader reads it into the session's harness state
+        (``ClaudeHarness.take_session_frame``); a session whose host keeps none, or
+        one already ended, reads the handle's own, which nothing fills.
+        """
+        state = getattr(self._runtime, "_session_harness_states", {}).get(self._session_id)
+        held = getattr(state, "_raw_sdk", None)
+        if isinstance(held, RawSdkState):
+            return held
+        return self._raw_sdk_own
+
+    @_raw_sdk.setter
+    def _raw_sdk(self, value: RawSdkState) -> None:
+        state = getattr(self._runtime, "_session_harness_states", {}).get(self._session_id)
+        if state is not None and isinstance(getattr(state, "_raw_sdk", None), RawSdkState):
+            state._raw_sdk = value
+        else:
+            self._raw_sdk_own = value
 
     # The mode names the session advertised and its last mode report, for the
     # mode-change notice (``acp.harness_notices``). Each is replaced, never mutated.

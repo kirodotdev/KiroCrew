@@ -59,6 +59,13 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_harness_mode": ("data", False, "", ""),
     "_harness_mode_names": ("data", False, "", ""),
     "backend": ("property", False, "bb418bb7ece8", "session_handle_class"),
+    "_native_child_roster": (
+        "function",
+        False,
+        "58ee5ea89856",
+        "session_handle_native_children",
+    ),
+    "_raw_sdk": ("property", False, "b028d93ed84c", "session_handle_class"),
     "__init__": ("function", False, "a01004fc4c51", "session_handle_class"),
     "_accept_oauth_request": ("function", False, "668a15b0478d", "session_handle_mcp"),
     "_active_tool_calls": ("property", False, "d150141e37db", "session_handle_class"),
