@@ -47,6 +47,7 @@ from kiro_crew.acp.runtime_session_setup import (
     _drop_withdrawn_stubs,
     _kas_worker_stub_names,
     _pooled_session_servers_and_ref_spec,
+    host_state_kwargs,
 )
 from kiro_crew.acp.runtime_start import _START_COLLECT_TIMEOUT_DEFAULT, StartCollector, StartPermit
 from kiro_crew.acp.session_handle import (
@@ -254,6 +255,13 @@ async def create_session(
                 permission_surface_owned=(
                     harness_state is not None
                     and self._harness.permission_surface_owned(harness_state)
+                ),
+                # Only a host with per-session state adds to the projection call,
+                # so every other host's call stays exactly as it was.
+                **(
+                    {"projection_extras": self._harness.projection_extras(harness_state)}
+                    if harness_state is not None
+                    else {}
                 ),
             )
         if mirrored is not None:
@@ -658,6 +666,7 @@ async def _create_session_with_harness_state(self: AcpRuntime, **kwargs: Any) ->
         session_key=kwargs["session_key"],
         channel_id=kwargs["channel_id"],
         memory_mode=kwargs["memory_mode"],
+        **host_state_kwargs(self),
     )
     try:
         return await self.create_session(**kwargs, harness_state=state)

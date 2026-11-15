@@ -18,7 +18,7 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_native_launch_sources``, ``_native_launch_view_alias``, ``_native_skill_projection``,
 ``_pid``, ``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_prompt_capabilities``, ``_reader_task``, ``_sandbox_cleanup``, ``_scope_unit``,
-``_skill_projection_generation``, ``_spawn_agent_env``, ``_spawn_monotonic``,
+``_skill_projection_generation``, ``_spawn_agent_env``, ``_spawn_host_state``, ``_spawn_monotonic``,
 ``_spawn_skill_projection``, ``_kas_telemetry_sent``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``,
 ``_tool_search_wire``.
 
@@ -347,6 +347,10 @@ async def _resolve_spawn_plan(self: AcpRuntime) -> SpawnPlan:
             sandbox_mode=self._sandbox_mode,
             member_context=self._member_context,
             harness_pin=self._harness_pin,
+            # The environment the child is launched under, for a host whose pre-spawn
+            # read-back must resolve the same config files the child will.
+            agent_env=getattr(self, "_agent_env_override", None),
+            extra_env=dict(getattr(self, "_extra_env", None) or {}),
         )
     )
     # The ONE derived-spec gate on this path, and the one host-level gate that is
@@ -552,6 +556,8 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
     try:
         plan = await self._resolve_spawn_plan()
         self._max_rss_depth = plan.rss_depth
+        # Every session on this process is held to what the spawn's gates found.
+        self._spawn_host_state = plan.host_state
         argv = plan.argv
         if self._launch_agent and "--agent" in argv:
             # The harness built ``--agent <identity>`` and ran its spawn gates
@@ -786,6 +792,9 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             self._harness.apply_spawn_env(
                 env, spawned_binary=spawned_binary, cli_owned_auth=not plan.host_auth
             )
+            # What the spawn's own gates verified for this child (opencode's routing
+            # seed), last, so nothing above can replace it.
+            env.update(plan.spawn_env)
             # A host that keeps private state may prepare it before the child
             # exists; one more blocking file copy, so it rides here.
             _seed_private_state(env, plan, private_state_dir)

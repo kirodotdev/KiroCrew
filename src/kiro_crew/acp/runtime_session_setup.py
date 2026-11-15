@@ -29,6 +29,7 @@ import functools
 import logging
 import os
 import weakref
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -652,6 +653,7 @@ async def _mirrored_session_mcp(
     session_key: str,
     channel_id: str,
     permission_surface_owned: bool = False,
+    projection_extras: Mapping[str, Any] | None = None,
 ) -> _MirroredSessionMcp | None:
     """This session's ``mcpServers``, built by the host's agent-config MIRROR.
 
@@ -695,6 +697,10 @@ async def _mirrored_session_mcp(
     session). False is the fail-CLOSED direction: a mirror in claude's class -- one
     whose tools could be pre-approved in a file Crew does not own, where Crew's gate
     never fires -- withholds its array here rather than delivering it.
+
+    ``projection_extras`` is what the host's per-session state adds to the projection
+    call (``HarnessAdapter.projection_extras``: opencode's deny rules in force on the
+    process), empty for every other host.
 
     Blocking work (an agent-spec parse, an overlay read) runs off the loop, the
     same as the pooled resolution it replaces.
@@ -769,6 +775,9 @@ async def _mirrored_session_mcp(
             # previous owner. The token is per session and its mapping is
             # republished, so it stays right in both cases.
             session_token=stub_token,
+            # What this session's host adds to the call (``projection_extras``):
+            # opencode's deny rules in force on the process. Empty for every other.
+            **(projection_extras or {}),
         )
         return projection, _ref_spec_snapshot(active_agent, work_dir)
 
@@ -1271,3 +1280,11 @@ def _start_mount_check(
         opened_at=request_sent_at,
         alive=lambda: session_id in self._session_queues,
     )
+
+
+def host_state_kwargs(runtime: object) -> dict[str, Any]:
+    """``{"host_state": ...}`` when this process's spawn left one (``SpawnPlan.host_state``),
+    else empty, so a host whose plan carries none is asked ``prepare_session`` exactly as
+    before. Read by both session-start paths."""
+    host_state = getattr(runtime, "_spawn_host_state", None)
+    return {} if host_state is None else {"host_state": host_state}

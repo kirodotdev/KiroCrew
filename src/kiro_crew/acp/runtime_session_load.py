@@ -49,6 +49,7 @@ from kiro_crew.acp.runtime_session_setup import (
     _drop_withdrawn_stubs,
     _kas_worker_stub_names,
     _pooled_session_servers_and_ref_spec,
+    host_state_kwargs,
 )
 from kiro_crew.acp.session_handle import (
     AcpFrameTooLarge,
@@ -201,6 +202,13 @@ async def load_session(
             channel_id=channel_id,
             permission_surface_owned=(
                 harness_state is not None and self._harness.permission_surface_owned(harness_state)
+            ),
+            # Only a host with per-session state adds to the projection call, so
+            # every other host's call stays exactly as it was.
+            **(
+                {"projection_extras": self._harness.projection_extras(harness_state)}
+                if harness_state is not None
+                else {}
             ),
         )
     # The Connection bridge snapshots the array below wrote, for shutdown.
@@ -926,6 +934,7 @@ async def _load_session_with_harness_state(
         session_key=kwargs["session_key"],
         channel_id=kwargs["channel_id"],
         memory_mode="persistent",
+        **host_state_kwargs(self),
     )
     try:
         return await self.load_session(session_file, resume_sid, **kwargs, harness_state=state)

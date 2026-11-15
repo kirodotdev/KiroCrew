@@ -376,3 +376,13 @@ def host_checks_sessions(runtime: object) -> bool:
     none.
     """
     return bool(getattr(getattr(runtime, "_harness", None), "per_session_state", False))
+
+
+def host_defers_shell_permission(runtime: object) -> bool:
+    """Whether *runtime*'s host can ask for a shell permission ahead of its command.
+
+    Read before the turn waits for the command update
+    (``HarnessAdapter.defers_shell_permission``), so every other host, and a runtime
+    stand-in with no harness, waits for nothing.
+    """
+    return bool(getattr(getattr(runtime, "_harness", None), "defers_shell_permission", False))

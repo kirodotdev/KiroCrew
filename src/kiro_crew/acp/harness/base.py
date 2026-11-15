@@ -122,6 +122,17 @@ class SpawnContext:
     seed) and records there the facts the session's turn-time code reads back (a
     gate nonce, a resolved adapter version)."""
 
+    agent_env: Mapping[str, str] | None = field(default=None, kw_only=True)
+    """The ``agent.env`` snapshot this spawn applies, or ``None`` when the runtime holds
+    none and the harness reads the live one (``acp.agent_env.agent_env_overlay``).
+
+    Read by a host whose pre-spawn read-back must run under the child's own
+    environment (opencode finds its config files from it)."""
+
+    extra_env: Mapping[str, str] = field(default_factory=dict, kw_only=True)
+    """The per-process overlay the child is launched with (a chat's ``extra_env``),
+    applied over ``agent.env`` in the launch's order. Read for the same reason."""
+
 
 @dataclass
 class HarnessReadBack:
@@ -314,6 +325,20 @@ class SpawnPlan:
     denied home. Every entry must sit inside a directory :attr:`extra_hidden_dirs`
     hides, or it re-exposes something nothing denied.
     """
+
+    spawn_env: Mapping[str, str] = field(default_factory=dict, kw_only=True)
+    """Variables this spawn's own gates resolved for the child, set after
+    :meth:`HarnessAdapter.apply_spawn_env`.
+
+    For a host whose routing seed is verified at the spawn (opencode's
+    ``OPENCODE_CONFIG_CONTENT``): the child gets exactly the value read back. Carried
+    on the plan because a harness holds no state of its own."""
+
+    host_state: Any = field(default=None, kw_only=True)
+    """What this spawn's gates found that every session on the process is held to,
+    handed to :meth:`HarnessAdapter.prepare_session` as ``host_state`` (opencode: the
+    read-back of its resolved config). ``None`` for every other host, which is then
+    asked exactly as before."""
 
     private_state_env: str | None = None
     """Environment variable this host needs pointed at a per-process directory.
@@ -885,6 +910,32 @@ class HarnessAdapter(LaunchAdapter):
         and only where :attr:`per_session_state` is True.
         """
         return ""
+
+    def projection_extras(self, state: Any) -> dict[str, Any]:
+        """Keyword arguments this host adds to its mirror's ``session_projection`` call.
+
+        For a host whose per-tool deny rules are seeded once per process and read back
+        (opencode): the rules the read-back found in force, so a session whose rule is
+        not in force has that server withheld whole. Only where
+        :attr:`per_session_state` is True; empty means the call is unchanged.
+        """
+        return {}
+
+    def harness_mcp_server_names(self, state: Any) -> tuple[str, ...]:
+        """Every MCP server name this session's harness may state a tool of.
+
+        For a host that names an MCP call only by a fused ``<server>_<tool>`` title
+        (opencode): the servers this session placed, then those the host mounts from
+        its own config, so the permission parser splits the title back exactly. Only
+        where :attr:`per_session_state` is True.
+        """
+        return ()
+
+    #: True on a host that can ask permission for a shell call before the
+    #: ``tool_call_update`` carrying its command (opencode). The turn reads the next
+    #: frame of that session first, so the command reaches the security cache before
+    #: the permission is judged. Read before any wait, so every other host makes none.
+    defers_shell_permission: bool = False
 
     def holds_replayed_permission(self, session_id: str) -> bool:
         """Whether a permission request for *session_id* arrived inside a resume hold.

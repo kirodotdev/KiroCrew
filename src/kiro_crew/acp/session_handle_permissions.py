@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -815,6 +816,9 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
         cache_scope=str(_perm_params.get("sessionId") or self._session_id),
         kas_consent_meta=self._runtime.acp_backend == ACP_BACKEND_KAS,
         harness_backend=self._runtime.acp_backend,
+        # A host that names an MCP call by a fused title only (opencode) splits it
+        # against this session's own server names; empty for every other host.
+        harness_mcp_servers=_harness_mcp_server_names(self),
         # Set only on a runtime that attached a remote workspace server, with the
         # guest workdir its relative path arguments resolve in.
         remote_workspace_server=(WORKSPACE_SERVER_NAME if _remote is not None else ""),
@@ -868,6 +872,87 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
 
 
 # ── A host's own per-session refusals (``HarnessAdapter.per_session_state``) ──
+
+
+def _harness_mcp_server_names(handle: AcpSessionHandle) -> tuple[str, ...]:
+    """The server names this session's host states MCP tools under, or ``()``.
+
+    Every host without per-session state reads one flag and gets ``()``, which is the
+    parser's own default, so its permission event is built exactly as before.
+    """
+    runtime = handle._runtime
+    if not host_checks_sessions(runtime):
+        return ()
+    state = runtime._session_harness_states.get(handle._session_id)
+    return tuple(runtime._harness.harness_mcp_server_names(state))
+
+
+async def defer_shell_permission(
+    handle: AcpSessionHandle,
+    msg: JsonRpcMessage,
+    remaining: float,
+    front: deque[JsonRpcMessage | None],
+) -> bool:
+    """Hold a shell permission back behind the update carrying its command.
+
+    The shared-runtime twin of ``OpencodeAcpClient._defer_shell_permission``:
+    opencode can ask permission for a shell call before the ``tool_call_update`` that
+    states its command, and the gate must judge the command from the trusted cache,
+    never from the request's own ``rawInput``. When this session's cache knows the
+    call is a shell call and holds no command yet, the next frame of this session's
+    queue is read, at most the harness's bound. A same-session, same-call,
+    in-progress update with a non-empty command and no output is put on *front*
+    ahead of *msg*, so the loop handles the update (filling the cache) and then the
+    permission again; True. Any other frame goes back on *front* alone and the
+    permission is judged now; False. Only where the host defers
+    (``host_defers_shell_permission``).
+    """
+    from kiro_crew.acp.client_timeouts import _OPENCODE_PERMISSION_REFINEMENT_TIMEOUT
+    from kiro_crew.acp.types import METHOD_SESSION_UPDATE
+
+    params = msg.params if isinstance(msg.params, dict) else {}
+    tool_call = params.get("toolCall")
+    tool_call = tool_call if isinstance(tool_call, dict) else {}
+    tool_call_id = tool_call.get("toolCallId")
+    session_id = params.get("sessionId")
+    if not isinstance(tool_call_id, str) or not isinstance(session_id, str):
+        return False
+    key = scoped_tool_cache_key(session_id, tool_call_id)
+    if handle._tool_call_is_shell.get(key) is not True:
+        return False
+    cached = handle._tool_call_raw_params.get(key, {})
+    if isinstance(cached, dict) and cached.get("command"):
+        return False
+    try:
+        following = await asyncio.wait_for(
+            handle._queue.get(), timeout=min(_OPENCODE_PERMISSION_REFINEMENT_TIMEOUT, remaining)
+        )
+    except asyncio.TimeoutError:
+        return False
+    if following is None:
+        # The runtime's death sentinel: the loop reads it next.
+        front.append(following)
+        return False
+    follow_params = following.params if isinstance(following.params, dict) else {}
+    update = follow_params.get("update")
+    update = update if isinstance(update, dict) else {}
+    raw_input = update.get("rawInput")
+    if not (
+        following.is_method(METHOD_SESSION_UPDATE)
+        and follow_params.get("sessionId") == session_id
+        and update.get("sessionUpdate") == "tool_call_update"
+        and update.get("toolCallId") == tool_call_id
+        and update.get("status") == "in_progress"
+        and isinstance(raw_input, dict)
+        and isinstance(raw_input.get("command"), str)
+        and raw_input["command"]
+        and not update.get("content")
+        and not update.get("rawOutput")
+    ):
+        front.append(following)
+        return False
+    front.extend((following, msg))
+    return True
 
 
 def _tool_call_unclassified(self: AcpSessionHandle, event: AcpEvent) -> bool:

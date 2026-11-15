@@ -510,6 +510,9 @@ class AcpRuntime:
         # descendant subtree, which is every kiro-family host. The spawn plan carries
         # a bounded host's depth relative to the exact pid Crew launches.
         self._max_rss_depth: int | None = None
+        # What this process's spawn found that each session on it is held to
+        # (``SpawnPlan.host_state``); None for a host whose plan carries none.
+        self._spawn_host_state: Any = None
 
         # session/new + session/load budget — resolved lazily on first use
         # (never in __init__: KiroCrewConfig.load() is a synchronous disk

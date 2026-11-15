@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
@@ -60,7 +61,11 @@ from kiro_crew.acp.liveness import (
     VERDICT_UNKNOWN,
     VERDICT_WORKING,
 )
-from kiro_crew.acp.session_handle_runtime_contract import host_checks_sessions
+from kiro_crew.acp.session_handle_permissions import defer_shell_permission
+from kiro_crew.acp.session_handle_runtime_contract import (
+    host_checks_sessions,
+    host_defers_shell_permission,
+)
 from kiro_crew.acp.session_handle_watchdog import INTERACTIVE_POLICY_WAIT
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.tool_silence import named_tool_call_id
@@ -171,6 +176,9 @@ async def _dispatch_events(
     silence_due = float("-inf")
 
     _buffered: list[JsonRpcMessage] = []
+    # Frames the shell-permission deferral read ahead and handed back, in the order
+    # the loop must handle them (``defer_shell_permission``). Read before the queue.
+    _front: deque[JsonRpcMessage | None] = deque()
     _last_yield = time.monotonic()
     try:
         while time.monotonic() < deadline:
@@ -288,6 +296,7 @@ async def _dispatch_events(
                 self._tool_dispatched
                 and not self._cancelled
                 and self._queue.qsize() == 0
+                and not _front
                 and not self._awaited_responses
             ):
                 _silence_now = time.monotonic()
@@ -337,12 +346,16 @@ async def _dispatch_events(
             # A proven steer is reported consumed only at a clean terminal
             # (``_release_proven_steers``).
             self._steers_proven.extend(
-                self._take_injected_steers(can_settle=self._queue.qsize() == 0)
+                self._take_injected_steers(can_settle=self._queue.qsize() == 0 and not _front)
             )
 
             try:
-                msg = await asyncio.wait_for(
-                    self._queue.get(), timeout=min(remaining, QUEUE_POLL_SECS)
+                msg = (
+                    _front.popleft()
+                    if _front
+                    else await asyncio.wait_for(
+                        self._queue.get(), timeout=min(remaining, QUEUE_POLL_SECS)
+                    )
                 )
             except asyncio.TimeoutError:
                 # ── Verdict-driven watchdogs ──
@@ -909,6 +922,12 @@ async def _dispatch_events(
             action = self._classify(msg)
 
             if action == "permission":
+                # A host whose shell permission can arrive ahead of its command
+                # (opencode) has that command read into the trusted cache first.
+                if host_defers_shell_permission(self._runtime) and await defer_shell_permission(
+                    self, msg, remaining, _front
+                ):
+                    continue
                 _perm_event = self._build_permission_event(msg)
                 if _perm_event is None:
                     if msg.id is not None:
@@ -1391,6 +1410,9 @@ async def _dispatch_events(
             usage=self.last_prompt_stats.to_turn_usage(),
         )
     finally:
+        # Read-ahead frames first: they were dequeued before anything buffered here.
+        for _f in _front:
+            self._queue.put_nowait(_f)
         for _m in _buffered:
             self._queue.put_nowait(_m)
 

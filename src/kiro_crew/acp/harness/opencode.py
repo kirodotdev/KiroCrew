@@ -1,4 +1,5 @@
-"""OpenCode, launched one process per session by ``AcpClient``.
+"""OpenCode, launched one process per session by ``AcpClient``, or one process several
+sessions share on ``AcpRuntime`` (:class:`OpencodeHarness`).
 
 OpenCode serves ACP from its OWN binary: ``opencode acp``. There is no npm adapter to
 resolve and no Node floor to satisfy -- the published package ships an executable --
@@ -22,24 +23,37 @@ import logging
 import os
 import re
 import subprocess as subprocess_mod
-from typing import Any, Collection
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import Any, Collection, NoReturn
 
 from kiro_crew import acp_tool_gate, platform_compat
 from kiro_crew.acp import launch as launch_mod
-from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
+from kiro_crew.acp.harness._common import MembershipHarness
+from kiro_crew.acp.harness.base import (
+    HarnessReadBack,
+    NotificationAliases,
+    ProcessAdapter,
+    ProcessSession,
+    SessionExtras,
+    SpawnContext,
+    SpawnPlan,
+    TeardownPolicy,
+)
 from kiro_crew.acp.harness_tool_names import (
     MAX_HARNESS_CONFIG_MCP_SERVERS,
     MAX_HARNESS_TOOL_NAME_LEN,
     opencode_rewrites_name,
 )
-from kiro_crew.acp.transport_errors import AcpToolGateUnroutable
+from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
+from kiro_crew.acp.types import METHOD_SESSION_CLOSE, METHOD_SESSION_UPDATE
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_OPENCODE, launch_for
 from kiro_crew.sandbox import scrub_agent_subprocess_env, wrap_argv, wrap_argv_async
 
 # The client's logger name: these lines have always been filed under it.
 logger = logging.getLogger("kiro_crew.acp.client")
 
-__all__ = ["OPENCODE_BIN", "OPENCODE_INSTALL_COMMAND", "OpencodeLaunch"]
+__all__ = ["OPENCODE_BIN", "OPENCODE_INSTALL_COMMAND", "OpencodeHarness", "OpencodeLaunch"]
 
 # The launch facts live in this harness's ``ACP_BACKEND_LAUNCH`` row, and every shared
 # path reads them from there: the resolver, the spawn, the install probe and the
@@ -950,3 +964,427 @@ class OpencodeLaunch(ProcessAdapter):
         """
         if self._config_content:
             env[_ENV_OPENCODE_CONFIG_CONTENT] = self._config_content
+
+
+# ── opencode on the shared runtime (``AcpRuntime``) ──
+
+
+class _SpawnProbe:
+    """The session facts the spawn gates above read, for a process no session owns yet.
+
+    ``_opencode_version_refusal``, ``_verify_opencode_routing`` and
+    ``settle_opencode_denies`` were measured against a ``ProcessSession``. On the
+    shared runtime the process is spawned before any session exists, so this object
+    answers the same reads from the spawn's own inputs: the environment the child is
+    launched under, its folder, and the deny rules the seed carries. The gates then
+    run unchanged, and what they record lands on :attr:`read_back`.
+    """
+
+    def __init__(
+        self,
+        *,
+        agent_env: dict[str, str],
+        extra_env: dict[str, str],
+        work_dir: str,
+        deny_rules: tuple[str, ...],
+        unhonoured: frozenset[str],
+    ) -> None:
+        self._agent_env = agent_env
+        self._extra_env = extra_env
+        self._spawn_work_dir = work_dir
+        self._session_harness_deny_rules = deny_rules
+        self._session_mcp_unhonoured = unhonoured
+        self.read_back = HarnessReadBack()
+
+    def _agent_env_for_spawn(self) -> dict[str, str]:
+        return self._agent_env
+
+    def _harness_read_back(self) -> HarnessReadBack:
+        return self.read_back
+
+    @staticmethod
+    def _scrub_observed(value: object) -> object:
+        from kiro_crew.acp.client_permissions import _scrub_observed
+
+        return _scrub_observed(value)
+
+
+def _spec_disabled_tools(agent: str | None, work_dir: object) -> tuple[tuple[str, str], ...]:
+    """The ``(server, tool)`` pairs *agent*'s spec switches off, from the projection's
+    own parse (``session_mcp_projection``). Blocking; callers run it off the loop."""
+    from kiro_crew.acp.session_mcp import session_mcp_projection
+
+    projection = session_mcp_projection(agent, work_dir=work_dir)  # type: ignore[arg-type]
+    return tuple(projection.disabled_tools)
+
+
+def _withheld_servers(
+    disabled_tools: Collection[tuple[str, str]], in_force: Collection[str]
+) -> frozenset[str]:
+    """The servers the mirror withholds whole: a switched-off tool whose rule is not in force.
+
+    The answer ``opencode_projection`` computes from the same two inputs, so the
+    harness and the mirror agree on which servers a session goes without.
+    """
+    from kiro_crew.providers.mirrors.opencode import opencode_tool_id
+
+    ruled = frozenset(in_force)
+    return frozenset(
+        server for server, tool in disabled_tools if opencode_tool_id(server, tool) not in ruled
+    )
+
+
+def _refuse(issue: str, remedy: str) -> NoReturn:
+    """Raise the tool gate's refusal for *issue*, as the ACP-layer type."""
+    try:
+        acp_tool_gate.enforce_runtime_routing(ACP_BACKEND_OPENCODE, issue, remedy=remedy)
+    except acp_tool_gate.ToolGateUnroutable as exc:
+        raise AcpToolGateUnroutable(str(exc)) from None
+    # ``enforce_runtime_routing`` returns only for a harness the gate does not
+    # enforce, which opencode is not; refuse anyway rather than run unverified.
+    raise AcpToolGateUnroutable(f"{ACP_BACKEND_OPENCODE} launch refused: {issue}. {remedy}")
+
+
+class _OpencodeSession:
+    """What the shared runtime keeps per opencode session.
+
+    *placed* is the server names its last ``session/new`` or ``session/load`` put on
+    the array, ``()`` until one went out. *inherits_model* is whether the session
+    runs the model ``session/new`` picks (no pin), the only case the hosted fall-back
+    check reads. *read_back* is what the process's spawn read back
+    (``SpawnPlan.host_state``), which every check below is held to.
+    """
+
+    __slots__ = ("inherits_model", "placed", "read_back", "session_key")
+
+    def __init__(
+        self, session_key: str, *, inherits_model: bool, read_back: HarnessReadBack
+    ) -> None:
+        self.session_key = session_key
+        self.inherits_model = inherits_model
+        self.read_back = read_back
+        self.placed: tuple[str, ...] = ()
+
+
+class OpencodeHarness(MembershipHarness):
+    """opencode as one ``opencode acp`` process that several sessions share.
+
+    Registered so the shared runtime can drive it and so it can be tested, and not
+    yet a member of ``ACP_BACKENDS_ACP_RUNTIME``: no session takes this path until the
+    routing change names it, and a process-per-session client still launches opencode
+    through :class:`OpencodeLaunch`.
+
+    opencode 1.19.1 keeps its sessions in one process and runs their turns in
+    parallel (a 60 s command in one session, the other answering in 0.13 s);
+    ``session/close`` drops one session and keeps its record, which a later
+    ``session/load`` restores on the same process.
+
+    What differs from :class:`OpencodeLaunch`, and why:
+
+    * the routing seed is the child's environment (``OPENCODE_CONFIG_CONTENT``), so it
+      is one per process. The version gate and the read-back run once, at the spawn,
+      under the environment and in the folder the child gets, with the deny rules of
+      the agent the process is spawned for. Each session's own projection is handed
+      the rules the read-back found in force (:meth:`projection_extras`), so a server
+      whose rule is not in force is withheld whole, as on ``AcpClient``.
+    * a session whose withheld server opencode also mounts from its own config is
+      refused before its ``session/new`` (:meth:`prepare_session`): withholding the
+      array element cannot reach that mount.
+    * the hosted fall-back refusal reads each session's own ``session/new`` answer
+      (:meth:`after_session_start`) and closes that session alone.
+    * a shell permission that arrives ahead of its command waits for the command
+      update (:attr:`defers_shell_permission`), as ``OpencodeAcpClient`` does.
+
+    opencode registers a session's MCP servers on its FOLDER, not on the session, and
+    never removes them on ``session/close``: two sessions in one folder see each
+    other's tools, and a same-named server is replaced. Which sessions may share a
+    process is the placement's to decide; this class serves whichever it is handed.
+    """
+
+    backend = ACP_BACKEND_OPENCODE
+
+    per_session_state = True
+
+    defers_shell_permission = True
+
+    # ── Seam 1: spawn ──
+
+    async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
+        """The resolved ``opencode acp`` argv, its mask, and the verified routing seed.
+
+        The same gates as :meth:`OpencodeLaunch.resolve_spawn`, in the same order: the
+        credential mask preflight, the version gate, then the seed and its read-back
+        under the same sandbox. A refusal aborts the spawn.
+        """
+        from kiro_crew.acp.agent_env import agent_env_overlay
+        from kiro_crew.acp.session_handle import AcpRuntimeError
+
+        try:
+            opencode_bin, argv, spawn_label, stderr_label = (
+                await launch_mod.resolve_self_served_launch(self.backend)
+            )
+        except AcpError as exc:
+            raise AcpRuntimeError(str(exc)) from exc
+        hidden = await launch_mod._run_preflight_bounded(
+            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
+        )
+        expose = acp_tool_gate.adapter_expose_files(self.backend, hidden)
+        agent_env = (
+            dict(ctx.agent_env)
+            if ctx.agent_env is not None
+            # shortcut: read here and again by the launch, so a config save between
+            # the two could point the child at another agent.env than the one read
+            # back. A chat-sharing placement always freezes it; read it once in the
+            # runtime if another caller ever routes opencode here.
+            else await asyncio.to_thread(agent_env_overlay)
+        )
+        from kiro_crew.providers.mirrors.opencode import opencode_deny_rules
+
+        disabled = await asyncio.to_thread(_spec_disabled_tools, ctx.agent, ctx.work_dir)
+        rules = opencode_deny_rules(disabled)
+        probe = _SpawnProbe(
+            agent_env=agent_env,
+            extra_env=dict(ctx.extra_env),
+            work_dir=str(ctx.work_dir) if ctx.work_dir is not None else str(ctx.home),
+            deny_rules=rules,
+            unhonoured=_withheld_servers(disabled, rules),
+        )
+        version_issue, version_remedy = await _opencode_version_refusal(
+            probe,  # type: ignore[arg-type]
+            opencode_bin,
+            sandbox_mode=ctx.sandbox_mode,
+            hidden=hidden,
+            expose=expose,
+        )
+        if version_issue:
+            raise AcpToolGateUnroutable(
+                f"{self.backend} launch refused: {version_issue}. {version_remedy}"
+            )
+        config_content = _opencode_routing_config(self.backend, rules)
+        readback_argv, readback_cleanup = await wrap_argv_async(
+            [opencode_bin, *_OPENCODE_CONFIG_READBACK_ARGS],
+            mode=ctx.sandbox_mode,
+            strip_python_env=True,
+            extra_hidden_dirs=hidden,
+            extra_expose_files=expose,
+            _prepare=wrap_argv,
+        )
+        try:
+            routing_issue, routing_remedy = await asyncio.to_thread(
+                _verify_opencode_routing,
+                probe,  # type: ignore[arg-type]
+                self.backend,
+                readback_argv,
+                config_content,
+            )
+        finally:
+            if readback_cleanup:
+                await asyncio.to_thread(launch_mod._unlink_readback_launcher, readback_cleanup)
+        if routing_issue:
+            _refuse(routing_issue, routing_remedy)
+        settle_opencode_denies(probe, config_content)  # type: ignore[arg-type]
+        return SpawnPlan(
+            argv=argv,
+            spawn_label=spawn_label,
+            stderr_label=stderr_label,
+            extra_hidden_dirs=hidden,
+            extra_expose_files=expose,
+            # The child gets exactly the seed read back, and every session on it is
+            # held to what the read-back found.
+            spawn_env={_ENV_OPENCODE_CONFIG_CONTENT: config_content},
+            host_state=probe.read_back,
+        )
+
+    def apply_spawn_env(
+        self,
+        env: dict[str, str],
+        *,
+        spawned_binary: str | None = None,
+        cli_owned_auth: bool = False,
+    ) -> None:
+        """No Kiro credential. The routing seed rides the plan (``spawn_env``)."""
+        from kiro_crew.config import loader as loader_mod
+
+        loader_mod.strip_kiro_cli_api_key(env)
+
+    @property
+    def verifies_agent_activation(self) -> bool:
+        """No: opencode takes no ``--agent``; Crew's agent reaches it as the array."""
+        return False
+
+    # ── Seam 2: initialize ──
+
+    @property
+    def protocol_version(self) -> Any:
+        return launch_for(self.backend).protocol_version
+
+    @property
+    def client_capabilities(self) -> dict[str, Any]:
+        """What ``AcpClient`` declares to opencode, unchanged."""
+        from kiro_crew.acp.client_native_children import client_capabilities_for
+
+        return client_capabilities_for(self.backend)
+
+    # ── Seam 3: session/new and session/load ──
+
+    async def session_extras(self, agent: str, **_kwargs: Any) -> SessionExtras:
+        """Empty: opencode's per-session payload is the mirrored array."""
+        return SessionExtras()
+
+    def session_mcp_servers(
+        self,
+        requested: list[dict[str, Any]],
+        *,
+        agent_capabilities: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """The mirrored array as built: opencode mounts stdio, http and sse alike."""
+        return requested
+
+    @property
+    def wants_session_file_on_load(self) -> bool:
+        """No: opencode finds the session from its id."""
+        return False
+
+    async def prepare_session(
+        self,
+        *,
+        work_dir: str | Path,
+        agent: str | None,
+        model: str,
+        session_key: str,
+        channel_id: str,
+        memory_mode: str,
+        host_state: Any = None,
+    ) -> Any:
+        """Refuse a session whose withheld server opencode mounts natively.
+
+        *host_state* is the process's read-back (``SpawnPlan.host_state``); a process
+        without one never had its routing verified, so the session is refused. The
+        session's rules are read from its own spec and judged against the rules in
+        force on this process: a server none of them narrows is withheld from the
+        array, which cannot reach a server opencode mounts from its own config.
+        """
+        if not isinstance(host_state, HarnessReadBack):
+            _refuse(
+                "this process's resolved configuration was never read back",
+                _opencode_readback_remedy(),
+            )
+        read_back: HarnessReadBack = host_state
+        disabled = await asyncio.to_thread(_spec_disabled_tools, agent, work_dir)
+        withheld = _withheld_servers(disabled, read_back.denies_in_force or frozenset())
+        native = sorted(read_back.native_mounts & withheld)
+        if native:
+            names = ", ".join(repr(_SpawnProbe._scrub_observed(n)) for n in native)
+            _refuse(
+                f"a switched-off tool on {names} is not denied in the resolved config, and "
+                "opencode mounts that server from its own config, where withholding it "
+                "from Crew's array cannot reach",
+                "remove that tool's key from your opencode config, or stop mounting the "
+                "server there",
+            )
+        inherits = (model or "").strip().lower() in ("", "auto", "default")
+        return _OpencodeSession(session_key, inherits_model=inherits, read_back=read_back)
+
+    def projection_extras(self, state: Any) -> dict[str, Any]:
+        """The rules the read-back found in force, for the mirror to hold the array to."""
+        in_force = state.read_back.denies_in_force if isinstance(state, _OpencodeSession) else None
+        # No state means no read-back: an empty set withholds every narrowed server.
+        return {"harness_denies_in_force": frozenset() if in_force is None else in_force}
+
+    def session_meta(
+        self, state: Any, mcp_servers: list[dict[str, Any]], *, zero_tools: bool = False
+    ) -> dict[str, Any] | None:
+        """No envelope; record the servers this request places on the session."""
+        if isinstance(state, _OpencodeSession):
+            state.placed = tuple(
+                element["name"]
+                for element in mcp_servers
+                if isinstance(element, dict) and isinstance(element.get("name"), str)
+            )
+        return None
+
+    def harness_mcp_server_names(self, state: Any) -> tuple[str, ...]:
+        """The servers this session placed, then those opencode's own config mounts."""
+        if not isinstance(state, _OpencodeSession):
+            return ()
+        return tuple(dict.fromkeys([*state.placed, *state.read_back.config_mcp_servers]))
+
+    async def after_session_start(
+        self,
+        state: Any,
+        session_id: str,
+        resp: dict[str, Any],
+        *,
+        send_request: Callable[[str, dict[str, Any]], Awaitable[Any]],
+        close_session: Callable[[], Awaitable[None]],
+        agent_version: str = "",
+    ) -> None:
+        """Refuse an inheriting session that landed on opencode's hosted model.
+
+        The same three facts ``OpencodeAcpClient`` reads: the model this session's
+        answer reports, the models it advertises, and the model opencode's own config
+        names (from the read-back). The session is closed alone; the process and
+        every other session on it keep running.
+        """
+        if not isinstance(state, _OpencodeSession) or not state.inherits_model:
+            return
+        from kiro_crew.acp.no_model_provider import (
+            AcpNoModelProvider,
+            is_opencode_hosted_fallback,
+            opencode_hosted_fallback_message,
+        )
+        from kiro_crew.acp.session_handle_model_selection import (
+            advertised_models_from_session,
+            session_models_envelope,
+        )
+
+        envelope = session_models_envelope(resp, self.backend)
+        current = envelope.get("currentModelId") if isinstance(envelope, dict) else ""
+        current = current if isinstance(current, str) else ""
+        advertised = [
+            row["modelId"]
+            for row in advertised_models_from_session(resp, self.backend)
+            if row.get("modelId")
+        ]
+        if not is_opencode_hosted_fallback(current, advertised, state.read_back.config_model):
+            return
+        logger.error(
+            "opencode: session %s inherited opencode's hosted model; closing it",
+            session_id,
+        )
+        await close_session()
+        shown = _SpawnProbe._scrub_observed(current)
+        raise AcpNoModelProvider(opencode_hosted_fallback_message(str(shown)))
+
+    # ── Seam 4: inbound requests the host answers ──
+
+    @property
+    def host_answered_methods(self) -> tuple[str, ...]:
+        """None: opencode asks Crew for no connection-level callback."""
+        return ()
+
+    async def answer_request(self, method: str) -> dict[str, Any]:
+        """Never called: :attr:`host_answered_methods` is empty."""
+        raise NotImplementedError(
+            f"opencode harness answers no inbound request, including {method!r}"
+        )
+
+    # ── Seam 5: notification aliases ──
+
+    @property
+    def notification_aliases(self) -> NotificationAliases:
+        """Plain ACP ``session/update`` only."""
+        return NotificationAliases(session_update=(METHOD_SESSION_UPDATE,))
+
+    # ── Seam 6: teardown ──
+
+    @property
+    def teardown(self) -> TeardownPolicy:
+        """``session/close``, awaited: it ends one session and keeps its record.
+
+        opencode 1.19.1's ``closeSession`` removes the session from its ACP table and
+        aborts its run; the backing session stays in opencode's store, and a later
+        ``session/load`` on the same process restores it. It does NOT remove the MCP
+        servers the session registered on its folder.
+        """
+        return TeardownPolicy(method=METHOD_SESSION_CLOSE, notification=False)

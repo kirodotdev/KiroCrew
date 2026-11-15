@@ -39,7 +39,7 @@ from kiro_crew.acp.harness.goose import GooseHarness, GooseLaunch
 from kiro_crew.acp.harness.kas import KasHarness
 from kiro_crew.acp.harness.kiro import KiroHarness
 from kiro_crew.acp.harness.mimocode import MimoCodeLaunch
-from kiro_crew.acp.harness.opencode import OpencodeLaunch
+from kiro_crew.acp.harness.opencode import OpencodeHarness, OpencodeLaunch
 from kiro_crew.acp.harness.pi import PiLaunch
 from kiro_crew.acp.harness.strands import StrandsLaunch
 from kiro_crew.acp.types import (
@@ -70,6 +70,7 @@ __all__ = [
     "LaunchAdapter",
     "MimoCodeLaunch",
     "NotificationAliases",
+    "OpencodeHarness",
     "OpencodeLaunch",
     "PiLaunch",
     "ProcessAdapter",
@@ -102,6 +103,9 @@ _HARNESSES: dict[str, type[HarnessAdapter]] = {
     # The same: no goose session is routed to the shared runtime yet, and a
     # process-per-session client still launches goose through ``GooseLaunch``.
     ACP_BACKEND_GOOSE: GooseHarness,
+    # The same for opencode: a process-per-session client still launches it through
+    # ``OpencodeLaunch``.
+    ACP_BACKEND_OPENCODE: OpencodeHarness,
 }
 
 

@@ -40,6 +40,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_CLIENT_CAPABILITIES,
     KAS_CLIENT_CAPABILITIES,
     METHOD_KAS_SESSION_DELETE,
@@ -56,11 +57,12 @@ ALL_BACKENDS = [
     ACP_BACKEND_CODEX,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_GOOSE,
+    ACP_BACKEND_OPENCODE,
 ]
 
 #: Hosts with a shared-runtime harness that no session is routed to yet: they keep
 #: their per-process adapter until the routing change names them.
-REGISTERED_AHEAD_OF_ROUTING = {ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE}
+REGISTERED_AHEAD_OF_ROUTING = {ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE}
 
 #: The hosts reached through kiro-cli's own binary and ACP relay. They share a
 #: notification vocabulary, an agent-spec permission routing and a spawn-time effort
