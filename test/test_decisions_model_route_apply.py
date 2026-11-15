@@ -118,8 +118,9 @@ def _turn_client(state, client) -> None:
 
 async def _run(tmp_path, slot, message="please redesign the scheduler", **kwargs):
     # ``_directive_user_origin`` defaults to what the dashboard's own send passes
-    # (`not bool(request_app)` in `api_chat_send`), because "a normal chat turn" is
-    # what most of these tests mean. An app-authored dispatch overrides it to False.
+    # (`_person_send` in `_api_chat_send`: no app and not agent-origin), because
+    # "a normal chat turn" is what most of these tests mean. An app-authored
+    # dispatch overrides it to False.
     kwargs.setdefault("_directive_user_origin", True)
     state, client = _runner_state(tmp_path)
     _turn_client(state, client)

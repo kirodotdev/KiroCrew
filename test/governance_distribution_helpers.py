@@ -208,8 +208,9 @@ def transport_fixture():
             # Assigned directly rather than through ``register_policy_fetcher``: a test
             # that walks several fetchers (each failure mode in turn) re-registers the
             # same scheme, and the public seam RAISES on that by design — the behaviour
-            # ``test_a_conflicting_fetcher_registration_raises_rather_than_shadowing``
-            # pins. The table is snapshotted and restored below, so this cannot leak.
+            # ``test_a_conflicting_registration_raises_rather_than_shadowing``
+            # (test_governance_distribution.py) pins. The table is snapshotted and
+            # restored below, so this cannot leak.
             with pd._FETCHER_LOCK:
                 pd._FETCHERS[scheme] = fetcher
             return f"{scheme}://policy.example/security_policy.json"
