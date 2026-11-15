@@ -597,6 +597,18 @@ def _fresh_host_unservable_backends(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_kiro_signin_hold(_floor_monkeypatch):
+    """Start every test with the warm pool's signed-out hold released.
+
+    A pool start that fails on ``AcpAuthRequired`` records the hold as process
+    state, so it would otherwise keep a later test's pool from filling.
+    """
+    from kiro_crew.acp import kiro_signin_hold
+
+    _floor_monkeypatch.setattr(kiro_signin_hold, "_HELD", {})
+
+
+@pytest.fixture(autouse=True)
 def _fresh_mcp_oauth_provenance(_floor_monkeypatch):
     """Give every test its own record of the MCP sign-in links children sent.
 
