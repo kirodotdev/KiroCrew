@@ -266,6 +266,13 @@ def _register_config_watch(
         if change.touched("dashboard.command_bar_enabled"):
             state.push_refresh("config")
 
+    def _push_channels_switch(change: ConfigChange) -> None:
+        # Channels' sidebar row, its Search Everywhere result and its Settings row
+        # read the shared config query, so a switch set from the CLI, $EDITOR or
+        # another dashboard reaches every open one only through a refresh frame.
+        if change.touched("dashboard.channels_enabled"):
+            state.push_refresh("config")
+
     async def _sync_stale_wake(change: ConfigChange) -> None:
         # The `dashboard_stale_wake` preview's one cron job exists only while the
         # preview is on, from whichever writer flipped it (dashboard, CLI, $EDITOR).
@@ -366,6 +373,11 @@ def _register_config_watch(
             "dashboard.command_bar_enabled",
             callback=_push_command_bar,
             name="dashboard.command_bar_enabled",
+        ),
+        live.subscribe(
+            "dashboard.channels_enabled",
+            callback=_push_channels_switch,
+            name="dashboard.channels_enabled",
         ),
         live.subscribe(
             "dashboard.terminal.enabled",

@@ -8,6 +8,7 @@ import type { NavigateFunction } from 'react-router-dom'
 const { surfaces } = vi.hoisted(() => ({
   surfaces: [
     { navId: 'projects', label: 'Task Runner', route: '/projects', icon: null, configSwitch: 'taskrunner.enabled' },
+    { navId: 'channels', label: 'Channels', route: '/channels', icon: null, configSwitch: 'dashboard.channels_enabled', configSwitchDefault: false },
     { navId: 'schedule', label: 'Schedule', route: '/schedule', icon: null },
   ],
 }))
@@ -32,6 +33,12 @@ describe('pages provider and a page switch', () => {
     const off = { taskrunner: { enabled: false } }
     expect(routes(off, 'Task Runner')).not.toContain('/projects')
     expect(routes(off, 'Schedule')).toContain('/schedule')
+  })
+
+  it('offers a default-off page only once its setting is read as on', () => {
+    expect(routes(undefined, 'Channels')).not.toContain('/channels')
+    expect(routes({ dashboard: { channels_enabled: false } }, 'Channels')).not.toContain('/channels')
+    expect(routes({ dashboard: { channels_enabled: true } }, 'Channels')).toContain('/channels')
   })
 
   it('takes the /tasks alias, which redirects to Task Runner, out with it', () => {

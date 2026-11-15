@@ -259,7 +259,9 @@ export function buildUiIndex(inputs) {
     surfaceIds.add(s.navId)
     const requires = [...previewRequires(s.previewFlag, `surface '${s.navId}'`)]
     if (s.appOnly) requires.push({ kind: 'condition', id: 'app_enabled' })
-    if (s.configSwitch) requires.push({ kind: 'condition', id: 'page_switched_on' })
+    if (s.configSwitch) {
+      requires.push({ kind: 'condition', id: s.configSwitchDefault === false ? 'page_turned_on' : 'page_switched_on' })
+    }
     addLocation({
       id: `page.${s.navId}`,
       kind: 'page',
@@ -404,7 +406,10 @@ export function buildUiIndex(inputs) {
         // A setting on a preview-gated tab, or one its panel draws only while a
         // preview is on, is reachable only once that preview is on.
         parent_ids: ['page.settings', tabId, ...(subId ? [subId] : [])], entry_kind: 'tab',
-        requires: previewRequires(inputs.settingPreview?.[e.id] ?? inputs.settingsTabPreview[tab], `setting '${e.id}'`),
+        requires: [
+          ...previewRequires(inputs.settingPreview?.[e.id] ?? inputs.settingsTabPreview[tab], `setting '${e.id}'`),
+          ...(inputs.settingCondition?.[e.id] ? [{ kind: 'condition', id: inputs.settingCondition[e.id] }] : []),
+        ],
       }],
     }, 'setting')
   }
@@ -412,6 +417,9 @@ export function buildUiIndex(inputs) {
     if (!settingIds.has(a.id) && !inputs.settingsEntries.some((e) => e.id === a.id)) {
       errors.push(`setting '${a.id}' is in the agent registry but not settingsRegistry.gen.ts; run npm run gen:settings`)
     }
+  }
+  for (const sid of Object.keys(inputs.settingCondition ?? {})) {
+    if (!settingIds.has(sid)) errors.push(`SETTING_CONDITION names unknown setting '${sid}'`)
   }
   for (const [flag, sid] of Object.entries(inputs.previewEnablers)) {
     if (!settingIds.has(sid)) errors.push(`PREVIEW_FLAG_ENABLERS['${flag}'] names unknown setting '${sid}'`)

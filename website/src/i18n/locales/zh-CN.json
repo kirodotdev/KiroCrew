@@ -813,20 +813,6 @@
         "tablist_label": "自动分诊流水线视图"
       }
     },
-    "channels": {
-      "manifest": {
-        "use_case_1": "让多个具名角色的代理在一份可审计的共享记录中协作处理事件响应、研究或代码审查。",
-        "configuration_1": "运行 `kirocrew app enable channels` 启用隐藏的应用，使用预设或 Custom 创建频道，分配代理和收听模式，再用 @提及交接工作。",
-        "description": "一个共享房间，多个代理在这里一起解决问题，而不是单个代理独自干。你给每个代理分配角色，它们把进展发到频道里，公开回应彼此的 @提及 — 代理之间没有私聊，因此整段交流始终可读，而任何改变状态的操作仍由你批准。代理会一直留在频道里，直到被解散、频道关闭或代理失败。",
-        "display_name": "频道",
-        "highlight_1": "多个分配了角色的代理在同一份共享、可读的记录中协作",
-        "highlight_2": "代理之间没有私聊 — 每一次交流都发生在频道里",
-        "highlight_3": "任何改变状态的操作，最终都由你批准",
-        "highlight_4": "代理会一直留在频道里，直到被解散、频道关闭或代理失败",
-        "highlight_5": "在应用商店网格中隐藏；用 `kirocrew app enable channels` 启用",
-        "page_label": "频道"
-      }
-    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_other": "{{count}} 个待处理 PR",
@@ -11417,6 +11403,7 @@
     "agent_capabilities_short": "自定义",
     "settings": "设置",
     "task_runner": "Task Runner",
+    "channels": "频道",
     "webhooks": "Webhook",
     "crew_members": "Bot",
     "badge_unread_conversations": "未读对话",
@@ -19281,7 +19268,10 @@
         "command_bar_save_failed": "无法保存命令栏设置。",
         "task_runner": "显示 Task Runner",
         "task_runner_hint": "关闭后，Task Runner 会从左侧导航栏和“全局搜索”中移除，并停止新的任务运行。不会删除任何内容：你的计划、过往运行和正在进行的运行都会保留。",
-        "task_runner_save_failed": "无法保存 Task Runner 设置。请重试。"
+        "task_runner_save_failed": "无法保存 Task Runner 设置。请重试。",
+        "channels": "显示频道",
+        "channels_hint": "关闭后，频道会从左侧导航栏和“全局搜索”中移除。不会删除或停止任何内容：你的频道以及其中正在工作的智能体都会保留。",
+        "channels_save_failed": "无法保存频道设置。请重试。"
       },
       "importPanel": {
         "agent_data": "代理数据",

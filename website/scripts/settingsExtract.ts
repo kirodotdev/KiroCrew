@@ -123,6 +123,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ThemeExperienceSettings.tsx': { tab: 'display', params: { sub: 'theme' } },
   // Task Runner's switch, mounted by DisplayPanel's View page.
   'TaskRunnerSetting.tsx': { tab: 'display', params: { sub: 'view' } },
+  // Channels' switch, mounted by DisplayPanel's View page. Drawn only while Channels
+  // is on, so a search offers it only then (`settingEntryOffered`).
+  'ChannelsSetting.tsx': { tab: 'display', params: { sub: 'view' } },
   'BrowserPanel.tsx': 'browser',
   // The Browser tab's sections (RFC browser-live-harness section 8), each mounted
   // by BrowserPanel: the live-view and Advanced controls, and the Preview tab's

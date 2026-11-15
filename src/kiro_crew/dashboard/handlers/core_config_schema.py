@@ -380,6 +380,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Display -> View). Default on; only a literal `false` opens the search
     # palette instead.
     "dashboard.command_bar_enabled": {"type": "bool"},
+    # Channels' sidebar row and Search Everywhere result (the former `channels`
+    # app's enabled state). Default off; only a literal `true` shows them.
+    "dashboard.channels_enabled": {"type": "bool"},
     # The terminal app "Open in external terminal" starts (Settings → Display →
     # Terminal). "" = unset, the default, which withholds the action. Limited
     # to the desktop shell's launch allowlist; the launch gate in

@@ -867,20 +867,6 @@
         "tablist_label": "Vistas del flujo de triaje automático"
       }
     },
-    "channels": {
-      "manifest": {
-        "description": "Una sala compartida donde varios agentes trabajan juntos en un problema en lugar de que uno lo haga solo. Le asignas un rol a cada agente, y publican su avance en el canal y responden a las @menciones de los demás a la vista de todos — no hay mensajería privada entre agentes, así que todo el intercambio queda legible, y tú sigues siendo quien aprueba cualquier cosa que cambie el estado. Los agentes siguen activos en el canal hasta que los retiras, se cierra el canal o el agente falla.",
-        "display_name": "Canales",
-        "highlight_1": "Varios agentes con roles asignados colaboran en una sola transcripción compartida y legible",
-        "highlight_2": "Sin mensajería privada entre agentes — cada intercambio ocurre en el canal",
-        "highlight_3": "Tú sigues siendo quien aprueba al final cualquier operación que modifique el estado",
-        "highlight_4": "Los agentes permanecen en el canal hasta que los retiras, se cierra el canal o el agente falla",
-        "highlight_5": "Oculto en la cuadrícula de la App Store; actívalo con `kirocrew app enable channels`",
-        "page_label": "Canales",
-        "use_case_1": "Gestiona la respuesta a incidentes, la investigación o la revisión de código con varios roles de agente identificados en una transcripción compartida y auditable.",
-        "configuration_1": "Activa la app oculta con kirocrew app enable channels, crea un canal desde una plantilla o con Custom, asigna agentes y modos de escucha y usa @menciones para transferir el trabajo."
-      }
-    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_many": "{{count}} PR abiertos",
@@ -11931,6 +11917,7 @@
     "agent_capabilities_short": "Persona­lizar",
     "settings": "Configuración",
     "task_runner": "Task Runner",
+    "channels": "Canales",
     "webhooks": "Webhooks",
     "crew_members": "Bots",
     "badge_unread_conversations": "conversaciones sin leer",
@@ -20299,7 +20286,10 @@
         "command_bar_save_failed": "No se pudo guardar el ajuste de la Command Bar.",
         "task_runner": "Mostrar Task Runner",
         "task_runner_hint": "Desactivado, Task Runner sale de la barra lateral izquierda y de Buscar en todo, y se detienen las nuevas ejecuciones de tareas. No se borra nada: tus planes, las ejecuciones anteriores y las que están en curso se conservan.",
-        "task_runner_save_failed": "No se pudo guardar el ajuste de Task Runner. Inténtalo de nuevo."
+        "task_runner_save_failed": "No se pudo guardar el ajuste de Task Runner. Inténtalo de nuevo.",
+        "channels": "Mostrar Canales",
+        "channels_hint": "Desactivado, Canales sale de la barra lateral izquierda y de Buscar en todo. No se borra ni se detiene nada: tus canales y los agentes que trabajan en ellos se conservan.",
+        "channels_save_failed": "No se pudo guardar el ajuste de Canales. Inténtalo de nuevo."
       },
       "importPanel": {
         "agent_data": "Datos del agente",

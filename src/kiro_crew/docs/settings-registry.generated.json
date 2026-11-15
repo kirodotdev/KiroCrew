@@ -1676,6 +1676,14 @@
       "configKey": "dashboard.terminal.reuse_current"
     },
     {
+      "id": "display.show-channels",
+      "label": "Show Channels",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=key%3Adashboard.channels_enabled",
+      "description": "Off takes Channels off the left rail and out of Search Everywhere. Nothing is deleted or stopped: your channels and the agents working in them are kept.",
+      "configKey": "dashboard.channels_enabled"
+    },
+    {
       "id": "display.show-search-in-the-top-bar",
       "label": "Show search in the top bar",
       "tab": "display",

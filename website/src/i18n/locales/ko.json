@@ -813,20 +813,6 @@
         "tablist_label": "자동 분류 파이프라인 보기"
       }
     },
-    "channels": {
-      "manifest": {
-        "use_case_1": "이름이 지정된 여러 에이전트 역할과 감사 가능한 공유 대화 기록에서 인시던트 대응, 조사 또는 코드 리뷰를 진행합니다.",
-        "configuration_1": "`kirocrew app enable channels`로 숨겨진 앱을 활성화하고, 프리셋 또는 Custom으로 채널을 만든 다음 에이전트와 수신 모드를 배정하세요. 이후 @멘션으로 작업을 넘기세요.",
-        "description": "에이전트 하나가 혼자 일하는 대신 여러 에이전트가 함께 문제를 다루는 공유 공간입니다. 각 에이전트에 역할을 지정하면 채널에 진행 상황을 올리고 서로의 @mentions에 공개적으로 답합니다 — 에이전트 간 비공개 메시지가 없어 전체 대화를 그대로 읽을 수 있고, 상태를 바꾸는 작업의 승인자는 계속 사용자입니다. 에이전트는 해제되거나, 채널이 닫히거나, 에이전트가 실패할 때까지 채널에 남아 있습니다.",
-        "display_name": "채널",
-        "highlight_1": "역할이 지정된 여러 에이전트가 하나의 읽기 쉬운 공유 기록에서 협업합니다",
-        "highlight_2": "에이전트 간 비공개 메시지 없음 — 모든 대화가 채널에서 이루어집니다",
-        "highlight_3": "상태를 바꾸는 모든 작업의 최종 승인자는 계속 사용자입니다",
-        "highlight_4": "에이전트는 해제되거나, 채널이 닫히거나, 에이전트가 실패할 때까지 채널에 남아 있습니다",
-        "highlight_5": "App Store 그리드에서 숨겨져 있습니다. `kirocrew app enable channels`로 활성화하세요",
-        "page_label": "채널"
-      }
-    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_other": "열린 PR {{count}}개",
@@ -11417,6 +11403,7 @@
     "agent_capabilities_short": "맞춤 설정",
     "settings": "설정",
     "task_runner": "Task Runner",
+    "channels": "채널",
     "webhooks": "Webhooks",
     "crew_members": "Bot",
     "badge_unread_conversations": "읽지 않은 대화",
@@ -19281,7 +19268,10 @@
         "command_bar_save_failed": "커맨드 바 설정을 저장할 수 없습니다.",
         "task_runner": "Task Runner 표시",
         "task_runner_hint": "끄면 Task Runner가 왼쪽 레일과 전체 검색에서 사라지고 새 작업 실행이 중지됩니다. 삭제되는 것은 없습니다. 계획, 지난 실행, 진행 중인 실행은 그대로 유지됩니다.",
-        "task_runner_save_failed": "Task Runner 설정을 저장하지 못했습니다. 다시 시도하세요."
+        "task_runner_save_failed": "Task Runner 설정을 저장하지 못했습니다. 다시 시도하세요.",
+        "channels": "채널 표시",
+        "channels_hint": "끄면 채널이 왼쪽 레일과 전체 검색에서 사라집니다. 삭제되거나 중지되는 것은 없습니다. 채널과 그 안에서 일하는 에이전트는 그대로 유지됩니다.",
+        "channels_save_failed": "채널 설정을 저장하지 못했습니다. 다시 시도하세요."
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",

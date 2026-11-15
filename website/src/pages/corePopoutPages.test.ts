@@ -13,12 +13,23 @@ import { appRouteOf } from '../utils/appPopoutRoute'
 vi.mock('./ProjectsPage', () => ({
   default: () => createElement('div', { 'data-testid': 'projects-page' }),
 }))
+vi.mock('./ChannelPage', () => ({
+  default: () => createElement('div', { 'data-testid': 'channel-page' }),
+}))
 
 describe('core pop-out pages', () => {
   it('Task Runner is a core page, no longer a built-in app route, and still pops out', () => {
     expect(hasBuiltinComponent('/projects')).toBe(false)
     expect(hasPopoutPage('/projects')).toBe(true)
     expect(corePopoutPage('/projects')?.labelKey).toBe('nav.task_runner')
+  })
+
+  it('Channels is a core page too, and still pops out', async () => {
+    expect(hasBuiltinComponent('/channels')).toBe(false)
+    expect(hasPopoutPage('/channels')).toBe(true)
+    expect(corePopoutPage('/channels')?.labelKey).toBe('nav.channels')
+    render(createElement(CorePopoutPage, { entry: corePopoutPage('/channels')! }))
+    expect(await screen.findByTestId('channel-page', {}, { timeout: 5000 })).toBeInTheDocument()
   })
 
   it('a sub-path stays inside its window, and an unknown route is not a pop-out', () => {

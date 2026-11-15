@@ -840,20 +840,6 @@
         "tablist_label": "Ansichten der Auto-Triage-Pipeline"
       }
     },
-    "channels": {
-      "manifest": {
-        "description": "Ein gemeinsamer Raum, in dem mehrere Agenten ein Problem zusammen bearbeiten, statt dass ein Agent allein arbeitet. Du weist jedem Agenten eine Rolle zu; sie posten ihren Fortschritt in den Kanal und beantworten die @-Erwähnungen der anderen offen — es gibt keine private Kommunikation zwischen Agenten, der gesamte Austausch bleibt also lesbar, und du genehmigst weiterhin alles, was den Zustand ändert. Agenten bleiben im Kanal aktiv, bis sie entlassen werden, der Kanal geschlossen wird oder der Agent fehlschlägt.",
-        "display_name": "Kanäle",
-        "highlight_1": "Mehrere Agenten mit zugewiesenen Rollen arbeiten in einem gemeinsamen, lesbaren Protokoll zusammen",
-        "highlight_2": "Keine private Kommunikation zwischen Agenten — jeder Austausch findet im Kanal statt",
-        "highlight_3": "Du bleibst die letzte Instanz für jede Operation, die den Zustand verändert",
-        "highlight_4": "Agenten bleiben im Kanal, bis sie entlassen werden, der Kanal geschlossen wird oder der Agent fehlschlägt",
-        "highlight_5": "Im App-Store-Raster ausgeblendet; aktivieren mit `kirocrew app enable channels`",
-        "page_label": "Kanäle",
-        "use_case_1": "Bearbeite Vorfälle, Recherchen oder Code-Reviews mit mehreren benannten Agentenrollen in einem gemeinsamen, nachvollziehbaren Transkript.",
-        "configuration_1": "Aktiviere die ausgeblendete App mit kirocrew app enable channels, erstelle einen Kanal aus einer Vorlage oder mit Custom, weise Agenten und Zuhörmodi zu und übergib Arbeit per @-Erwähnung."
-      }
-    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_one": "{{count}} offener PR",
@@ -11674,6 +11660,7 @@
     "agent_capabilities_short": "Anpassen",
     "settings": "Einstellungen",
     "task_runner": "Task Runner",
+    "channels": "Kanäle",
     "webhooks": "Webhooks",
     "crew_members": "Bots",
     "badge_unread_conversations": "ungelesene Unterhaltungen",
@@ -19790,7 +19777,10 @@
         "command_bar_save_failed": "Die Einstellung für die Befehlsleiste konnte nicht gespeichert werden.",
         "task_runner": "Task Runner anzeigen",
         "task_runner_hint": "Ausgeschaltet verschwindet Task Runner aus der linken Leiste und aus „Überall suchen“, und neue Aufgabenläufe werden gestoppt. Nichts wird gelöscht: Deine Pläne, frühere Läufe und laufende Läufe bleiben erhalten.",
-        "task_runner_save_failed": "Die Einstellung für Task Runner konnte nicht gespeichert werden. Versuch es noch einmal."
+        "task_runner_save_failed": "Die Einstellung für Task Runner konnte nicht gespeichert werden. Versuch es noch einmal.",
+        "channels": "Kanäle anzeigen",
+        "channels_hint": "Ausgeschaltet verschwinden Kanäle aus der linken Leiste und aus „Überall suchen“. Nichts wird gelöscht oder gestoppt: Deine Kanäle und die Agenten, die darin arbeiten, bleiben erhalten.",
+        "channels_save_failed": "Die Einstellung für Kanäle konnte nicht gespeichert werden. Versuch es noch einmal."
       },
       "importPanel": {
         "agent_data": "Agenten-Daten",

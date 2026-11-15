@@ -262,6 +262,9 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         # Which surface the quick-search shortcut opens; both show only what the
         # dashboard already shows this person.
         "dashboard.command_bar_enabled",
+        # Only whether Channels has a sidebar row; its page and `/api/channels`
+        # are served either way.
+        "dashboard.channels_enabled",
         "dashboard.crewmate_threads",
         "dashboard.dynamic_dashboard_cards",
         # A feature preview only decides whether the dashboard OFFERS an

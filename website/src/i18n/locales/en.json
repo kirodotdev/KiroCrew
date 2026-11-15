@@ -485,20 +485,6 @@
         "tablist_label": "Auto triage pipeline views"
       }
     },
-    "channels": {
-      "manifest": {
-        "description": "A shared room where several agents work a problem together instead of one agent working alone. You assign each agent a role, and they post progress into the channel and answer each other's @mentions in the open — there is no private agent-to-agent messaging, so the whole exchange stays readable, and you remain the approver for anything that changes state. Agents stay alive in the channel until dismissed, the channel closes, or the agent fails.",
-        "display_name": "Channels",
-        "highlight_1": "Several role-assigned agents collaborate in one shared, readable transcript",
-        "highlight_2": "No private agent-to-agent messaging — every exchange happens in the channel",
-        "highlight_3": "You stay the final approver for any operation that mutates state",
-        "highlight_4": "Agents persist in the channel until dismissed, the channel closes, or the agent fails",
-        "highlight_5": "Hidden from the App Store grid; enable with `kirocrew app enable channels`",
-        "page_label": "Channels",
-        "use_case_1": "Run incident response, research, or code review with several named agent roles in one auditable shared transcript.",
-        "configuration_1": "Enable the hidden app with kirocrew app enable channels, create a channel from a preset or Custom, assign agents and listen modes, then use @mentions to hand off work."
-      }
-    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_one": "{{count}} open PR",
