@@ -332,6 +332,23 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    from kiro_crew.config.sections_session import BOT_MAX_WORKERS_MAX, BOT_MAX_WORKERS_MIN
+
+    if "max_workers" in body and (
+        isinstance(body["max_workers"], bool)
+        or not isinstance(body["max_workers"], int)
+        or not BOT_MAX_WORKERS_MIN <= body["max_workers"] <= BOT_MAX_WORKERS_MAX
+    ):
+        return web.json_response(
+            {
+                "error": (
+                    f"max_workers must be an integer from {BOT_MAX_WORKERS_MIN} "
+                    f"to {BOT_MAX_WORKERS_MAX}"
+                ),
+                "code": "invalid_max_workers",
+            },
+            status=400,
+        )
     if "dynamic_capabilities" in body and not isinstance(body["dynamic_capabilities"], bool):
         return web.json_response(
             {
@@ -600,6 +617,10 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "worker_reasoning_effort" in body:
             agent.worker_reasoning_effort = body["worker_reasoning_effort"].strip()
             changed.append("worker_reasoning_effort")
+        if "max_workers" in body:
+            # Validated above. Only this owner route writes it: no Bot tool does.
+            agent.max_workers = body["max_workers"]
+            changed.append("max_workers")
         if pending_backend is not None:
             # Validated above. "" clears the pin: the crewmate inherits again.
             harness_changed = pending_backend != (agent.acp_backend or "")

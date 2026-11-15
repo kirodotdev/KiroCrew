@@ -48,8 +48,13 @@ from kiro_crew.dashboard.state import (
     SlotOrigin,
     _safe_folder_tree,
     append_and_surface,
+    count_restored_workers,
     creator_slot_cap_refusal,
     load_window_off_loop,
+    note_new_worker,
+    own_worker_member,
+    read_worker_execution,
+    worker_cap_refusal,
 )
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
 
@@ -300,6 +305,11 @@ async def fork_session(
     # see the child born with the grant they just withdrew. The values are
     # recorded for the audit line after the stamp has taken them.
     posture: dict[str, bool] = {}
+    # The child runs under the source's record, so a fork of a Bot's own worker is
+    # one more of its workers and takes a seat under its `max_workers`.
+    source_execution = await asyncio.to_thread(read_worker_execution, slot_history_key(source_slot))
+    if own_worker_member(source_execution):
+        await count_restored_workers(state)
 
     def _folder_exists_now() -> bool:
         # The COMMITTED folder list, read synchronously: folder mutations run on
@@ -359,6 +369,8 @@ async def fork_session(
             )
         if (cap_reason := creator_slot_cap_refusal(state, caller_key)) is not None:
             raise SessionControlError(cap_reason, code="creator_slot_cap_reached", status=409)
+        if (worker_reason := worker_cap_refusal(state, source_execution)) is not None:
+            raise SessionControlError(worker_reason, code="bot_worker_cap_reached", status=409)
 
     in_crew_tree = False
     # The caller's folder principal: an inherited folder in a mate's home stays
@@ -377,6 +389,7 @@ async def fork_session(
         nonlocal in_crew_tree
 
         child._created_by = caller_key
+        note_new_worker(child.key, source_execution)
         child._created_by_sid = _creator_sid if len(_creator_sid) <= MAX_ACP_SESSION_ID_LEN else ""
         child._lineage_minted = True
         from kiro_crew.dashboard.approval_posture import trust_carries

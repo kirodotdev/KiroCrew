@@ -26,6 +26,16 @@ from kiro_crew.config.sections_defaults import (
 # hand; it only bounds a hand-edited or hostile value.
 STAR_ORDER_MAX = 10_000
 
+# How many worker sessions one Bot may have open at once (``max_workers``). The
+# owner sets it on the Bot's settings page; no Bot tool writes it. 0, the
+# default, sets no limit of the Bot's own: the bound on parallel work comes from
+# the host's resources unless the owner chooses a number
+# (rfc-work-ledger-concurrency-cap.md section 7). The ceiling is the work
+# ledger's own open bound (``work_ledger_records.MAX_ITEMS_PER_CONDUCTOR``).
+BOT_MAX_WORKERS_DEFAULT = 0
+BOT_MAX_WORKERS_MIN = 0
+BOT_MAX_WORKERS_MAX = 32
+
 
 def _archive_retention_days(session_data: dict) -> int:
     """Resolve session.archive_retention_days, normalizing the disable sentinel.
@@ -370,6 +380,18 @@ class KiroCrewAgentConfig:
             "decides as usual (its own crew pin if it runs as a Bot, else "
             "agent.reasoning_effort, else the model default). Set, one of the five "
             "standard levels. An explicit effort on the call wins.",
+        ),
+    )
+    max_workers: int = field(
+        default=BOT_MAX_WORKERS_DEFAULT,
+        metadata=_meta(
+            "Workers at once",
+            "How many of this Bot's own worker sessions (on its worker template) "
+            "may be open at once. A session_create, session_revive or "
+            "session_fork past it is refused with bot_worker_cap_reached until "
+            "one of them is closed. Set by the owner on the Bot's settings page; "
+            "the Bot cannot change it. 0 (the default) sets no limit; otherwise "
+            "1 to 32.",
         ),
     )
     acp_backend: str = field(
