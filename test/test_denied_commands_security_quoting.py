@@ -622,23 +622,69 @@ class TestDenyMatchingIsQuoteNormalized:
         than a slowdown (BLOCKING from the Opus 4.8 lane; measured at 9 ms for 24
         backslashes, growing ~1.6x per character added).
 
-        Asserted two ways: structurally, that neither class admits a backslash, and
-        with a budget a Fibonacci-time scan could not possibly meet.
+        Asserted two ways, and neither reads a clock: the spelling of the two classes,
+        and the property that makes the scan linear, read off the parsed regex. Inside
+        every repeated alternation, no character can start more than one alternative,
+        so a run of ``n`` characters has exactly one tiling instead of ~1.618**n. That
+        is checked BEFORE the hostile payload runs, so a regression fails here instead
+        of never returning from the decode.
         """
-        import time
+        import re
+        from re import _constants as sre
+        from re import _parser
 
         from kiro_crew import security
 
         pattern = security._ANSI_C_QUOTE_RE.pattern
         assert "[^'\\\\]" in pattern and '[^\\"\\\\]' in pattern, pattern
 
+        def starts(item: "tuple[object, object]", ch: int) -> bool:
+            """Whether the first unit of one alternative can consume character ``ch``."""
+            op, arg = item
+            if op is sre.LITERAL:
+                return ch == arg
+            if op is sre.ANY:
+                return True
+            if op is sre.IN:
+                negated = arg[0][0] is sre.NEGATE
+                hit = False
+                for member, value in arg[negated:]:
+                    if member is sre.LITERAL:
+                        hit = hit or ch == value
+                    elif member is sre.RANGE:
+                        hit = hit or value[0] <= ch <= value[1]
+                    else:
+                        raise AssertionError(f"teach starts() the class member {member}")
+                return hit != negated
+            raise AssertionError(f"teach starts() the opcode {op}")
+
+        def repeated_alternations(tree: "list[tuple[object, object]]"):
+            for op, arg in tree:
+                if op in (sre.MAX_REPEAT, sre.MIN_REPEAT):
+                    body = list(arg[2])
+                    if len(body) == 1 and body[0][0] is sre.BRANCH:
+                        yield [list(alt) for alt in body[0][1][1]]
+                    yield from repeated_alternations(body)
+                elif op is sre.SUBPATTERN:
+                    yield from repeated_alternations(list(arg[3]))
+                elif op is sre.BRANCH:
+                    for alt in arg[1]:
+                        yield from repeated_alternations(list(alt))
+
+        bodies = list(repeated_alternations(list(_parser.parse(pattern, re.DOTALL))))
+        assert len(bodies) == 2, f"expected the $'' and $\"\" bodies, found {len(bodies)}"
+        for alternatives in bodies:
+            for ch in range(0x80):
+                openers = sum(starts(alt[0], ch) for alt in alternatives)
+                assert openers <= 1, (
+                    f"{chr(ch)!r} can start {openers} alternatives of one repeated body -- "
+                    "a run of it can be tiled exponentially many ways"
+                )
+
+        # The end-to-end shape the hang came from: unterminated, so nothing matches
+        # and the command comes back unchanged.
         payload = "AA $'" + ("\\" * 2000)
-        # Thread CPU: the decode runs on this thread, and a wall reading would bill
-        # a loaded runner's scheduling to it.
-        start = time.thread_time()
-        security._decode_shell_quoted_literals(payload)
-        elapsed = time.thread_time() - start
-        assert elapsed < 1.0, f"decode took {elapsed:.3f}s -- the ambiguity is back"
+        assert security._decode_shell_quoted_literals(payload) == payload
 
     def test_the_audit_fields_redact_before_truncating(self):
         """``redact_and_truncate``, never a bare slice.
