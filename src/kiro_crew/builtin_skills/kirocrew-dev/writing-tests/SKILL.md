@@ -83,6 +83,8 @@ of anything. The floor helps, but it is not your discipline: the rootdir conftes
 set `KIROCREW_TMP_RESIDUE_STRICT=1`, so a leak of yours turns that shard red; a local run
 only warns unless you set it. Need a data home? Use the conftest's per-test `KIROCREW_HOME`
 pin, not a private temp home: a background worker can re-create a home you removed.
+The same goes for a store root that its own reads `mkdir` (the Issue Radar store does):
+in a `unittest` class, set it from `tmp_path` in an autouse fixture method.
 (Details: testing-conventions.md § Rules.)
 
 Running the suite from a Kiro Crew agent needs no setup. The agent's shell inherits the
