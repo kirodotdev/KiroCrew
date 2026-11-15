@@ -315,6 +315,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _run_cleanup_shielded _isolated_group_of_live_child _discard_output_until_exit
         terminate_and_reap terminate_and_reap_sync
         _POST_KILL_DRAIN_SECS _STDLIB_RUN run_killing_tree_on_timeout
+        stdlib_run_killing_tree_on_timeout
         """.split()),
     "kiro_crew.platform_compat_metrics": tuple("""
         _MACH_TASK_BASIC_INFO _MachTimeValue _MachTaskBasicInfo _MACH_TASK_BASIC_INFO_COUNT
