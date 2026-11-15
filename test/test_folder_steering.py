@@ -844,8 +844,14 @@ def test_walk_opens_the_root_pinned_and_children_relative_to_descriptors(tmp_pat
     assert [Path(p).name for p, _ in docs] == ["top.md", "inner.md"]
     assert pinned_roots == [str(root.resolve())]
     # Every listing took a descriptor, never a path: the root and its one
-    # subdirectory, both opened relative to a pinned handle.
-    assert len(scandir_args) == 2 and all(isinstance(a, int) for a in scandir_args)
+    # subdirectory, both opened relative to a pinned handle. The sensitive-path gate
+    # lists the data home's apps/ through the same patched scandir; that is not the walk.
+    walked = [
+        a
+        for a in scandir_args
+        if isinstance(a, int) or Path(os.path.realpath(a)).is_relative_to(root.resolve())
+    ]
+    assert len(walked) == 2 and all(isinstance(a, int) for a in walked)
     # Every pinned open (the root's ancestor chain and the child) used the
     # no-follow directory flags; the count depends on the tmp path's depth.
     assert flag_calls and all(f & os.O_NOFOLLOW and f & os.O_DIRECTORY for f in flag_calls)

@@ -7301,7 +7301,8 @@ window host's spanning overlay, background window, panel gutter and the messages
 an app's windows and `permissions.desktopCapabilities` (§35), the exact `permissions.api` entry (§ Scoped frontend HTTP
 transport), `ctx.chat_slots` (§41), the SDK's project picker (§18i) and `ctx.webhook_source` (§42); level 8 adds directory entries in `credentialMasks`
 (§37), the SDK's `useHostSessions` (§18j) and the desktop block's `platformAccelerators`
-(§35); level 9 adds `permissions.bots` (§32c). Several seams share level 7, and three share level 8, so an app that needs one
+(§35); level 9 adds `permissions.bots` (§32c); level 10 adds the agent tool gate's fence
+on an installed app's `credentialMasks` (§37). Several seams share level 7, and three share level 8, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
@@ -7599,7 +7600,7 @@ memory, so a restart drops both.
 token (`POST /api/apps/{name}/token`), which every gate here applies to. The
 dashboard SDK has no Bot hooks: a dashboard page holds the owner's session, not an app
 token. They come back once a gateway relay gives an app page its own identity.
-`APP_SDK_LEVEL` is 9 on both sides: level 9 means an app may declare
+The seam is `APP_SDK_LEVEL` 9 on both sides: level 9 means an app may declare
 `permissions.bots` and call these routes with its app token. The Crew API draft's
 `/v1/crew/bots` carries the same shapes, so only the paths change when the routes move
 there.
@@ -8829,11 +8830,44 @@ keeps its credential in. The namespace plan pins the same parents (`parent_pins`
 the agent could rename: a namespace mask is a mount, which moves with a renamed parent inside
 that spawn, but on disk the leaf then sits at a name no mask covers, so the next spawn would
 read it there. No seal or keystone disposition reads a declaration, the
-tool gate reads the shipped built-ins' only, as more refusals (`declared_crew_leaves(installed=False)`, in
-`security._CREW_SECRET_LEAVES`), and the one carve-out that does (the app's own backend,
-below) never lifts a core leaf, so a manifest can only add masks. A built-in's declared
+tool gate reads it only as more refusals (below), and the one carve-out that does (the
+app's own backend, below) never lifts a core leaf, so a manifest can only add masks. A built-in's declared
 leaf on the tool-gate floor is HIDDEN in the spawn plan, so
 `test_sandbox_governance_mask.py`'s pin over the three dispositions holds for it.
+
+**The agent tool gate (seam level 10).** The agent's file tools refuse every declared
+leaf to read and to write, as a core crew-home secret leaf, with everything beneath it
+and the `.tmp` / `.lock` publish artifacts in its directory. The shipped built-ins'
+declarations are static rows (`declared_crew_leaves(installed=False)`, in
+`security._CREW_SECRET_LEAVES`). Every installed tree's and retained record's, so an
+adopted former built-in's too, comes from a listing:
+`credential_masks.tool_gate_crew_leaves` (rows: `tool_gate_home_rows`), which
+`security.paths._matches_gate_rows` matches in the read gate, the write gate and the
+inline gate after the static list, with the declared leaves' directories joining
+`_KEYSTONE_ARTIFACT_PARENTS`, and `path_contains_sensitive` in the bulk-root check. The
+listing runs on the `mc-pathres` threads within the anchor rebuild's budget, a miss
+refuses as a stall, and every thread reuses it for at most a second
+(`paths_targets._app_credential_mask_rows`). It leaves out a row the static lists already
+hold, as a built-in's record repeats its shipped declaration, so with only the built-ins
+installed the gate checks exactly the static lists. A check resolves the path once for
+every list, and an installed mask adds one anchor lookup, for its rows; the listing is a
+cache hit. `remember_declaration` bumps
+`declarations_generation`, so the install, update and uninstall the gateway records are
+seen on the next check, with no restart: no check is served a listing taken at an
+earlier generation, in flight or cached. Where a
+declaration cannot be known the gate fails closed over the app's own data: an `app.json`
+or record that is there but does not read cleanly (`_read_declaration`: not a regular
+file under the size cap, unparseable, another app's `name`, an invalid entry) fences its
+app's whole `data/` and move-aside directory and what is beneath them
+(`ToolGateLeaves.unreadable`, which gets no artifact rule), and an `apps/` that exists
+but cannot be listed fences `apps/`. Only a declared leaf's own directory gets the
+`.tmp` / `.lock` rule, so for a directory entry that is `data/` itself, as for a
+built-in's. No listed row can name anything outside `apps/<name>/data/` or
+`apps/.<name>-data-tmp/`, and `security.sensitive_home_dirs()` keeps only the static
+rows, so a fence derived from that view keeps its scope. Below level 10 an installed
+app's masks are fenced by the OS sandbox only, so `scripts/adoption_pin.py` reports any
+`credentialMasks` as a level-10 use and a former built-in that declares one is pinned at
+`minAppSdkLevel` 10 or higher. Pinned by `test/test_app_credential_masks_tool_gate.py`.
 
 **The app's own backend.** `sandbox_tiers.app_declared_mask_targets(name, builtin=...)`
 returns the declared leaves as every mask spells them, minus any leaf that is a core
@@ -8886,8 +8920,8 @@ alias pass refuses a non-directory at a directory entry and still refuses a dire
 file entry. The backend gets a directory entry back while it is absent or a real directory
 (`_liftable_declared_dir`). The hard-link pass judges regular files at the declared names
 only, so the files inside a declared directory get what a core `HIDDEN` directory's files
-get: nothing outside the backend can name them. The tool gate needs no change: a
-directory leaf in `security._CREW_SECRET_LEAVES` already fences what is under it. An older
+get: nothing outside the backend can name them. The tool gate treats a directory leaf
+as any other: a row fences what is under it. An older
 host's grammar refuses the `/` ending (an empty segment), so it refuses to install such a
 manifest rather than run the app with the directory unmasked; `scripts/adoption_pin.py`
 reports a directory entry as a level-8 use.
@@ -8910,17 +8944,19 @@ store moves under `apps/ops-mission-control/data/` (#32681; see `ops-mission-con
 
 **Seam level.** The masks are level 3 (level 4 adds §30.1's tool keys, level 5
 `ctx.app_token` and `ctx.gateway_origin`, level 6 §18h's issue list, level 7 §39's
-`agentReadOnlyDirs` and §35's `permissions.desktopCapabilities`, and level 9 §32c's
-`permissions.bots`):
+`agentReadOnlyDirs` and §35's `permissions.desktopCapabilities`, level 8 directory
+entries, level 9 §32c's `permissions.bots`, and level 10 the tool gate's fence on an
+installed app's masks):
 an app that stores a credential reads `ctx.sdk_level` and, below 3, knows nothing masks
-the file.
+the file; below 10, that only the OS sandbox does.
 
 Writers: `apps/credential_masks.py`, `apps/manifest.py`, `apps/app_sdk_level.py`,
 `website/src/app-sdk/sdkLevel.ts`, `sandbox_aliases.py`, `sandbox_argv.py`,
 `sandbox_tiers.py`, `sandbox.py` (facade), `apps/backend.py`, `apps/manager_records.py`,
-`apps/manager_install.py`, `apps/manager_uninstall.py`, `apps/discovery.py`. Tests:
-`test/test_app_credential_masks.py`, `test/test_app_backend_spawn_env.py`
-(`TestTheBackendSpawnLiftsTheAppsDeclaredMasks`).
+`apps/manager_install.py`, `apps/manager_uninstall.py`, `apps/discovery.py`,
+`security/paths.py`, `security/paths_targets.py`, `scripts/adoption_pin.py`. Tests:
+`test/test_app_credential_masks.py`, `test/test_app_credential_masks_tool_gate.py`,
+`test/test_app_backend_spawn_env.py` (`TestTheBackendSpawnLiftsTheAppsDeclaredMasks`).
 
 ## 38. A git URL install is a folder install of the operator's own clone
 

@@ -2018,9 +2018,10 @@ level 7 adds the manifest's `agentReadOnlyDirs` (see
 [`ctx.webhook_source`](#webhook-source-ctxwebhook_source), level 8 adds
 directory entries in `credentialMasks` (`"state/"`), the dashboard's
 [host sessions](#host-sessions) (`useHostSessions`), and the manifest's
-`backend.webOrigin` with the dashboard's `appWebOrigin(name)`, and level 9 adds
+`backend.webOrigin` with the dashboard's `appWebOrigin(name)`, level 9 adds
 `permissions.bots`, which an app's backend uses with its app token
-([Bots](#bots-permissionsbots-from-your-backend)); each level
+([Bots](#bots-permissionsbots-from-your-backend)), and level 10 refuses an
+installed app's `credentialMasks` to the agent's file tools too; each level
 includes every level below it. Several seams share level 7, and three share level 8, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call

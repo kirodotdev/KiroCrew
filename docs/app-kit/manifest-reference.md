@@ -2040,9 +2040,15 @@ in-gateway code your app runs.
   (`apps/<name>/data` and the ones between); it can still create and edit files in them.
 - The installed app folder is writable from inside the sandbox, so this protects your
   file from an agent that reads it, not from one that rewrites your `app.json`.
+- The agent's own file tools (read, write, edit) refuse every listed file and listed
+  directory too, with the `.tmp` and `.lock` files in the folder that holds each one
+  (for `"state/"`, that is `data/`), on every host, sandbox or not. If your `app.json`
+  (or Kiro Crew's copy of the list) is there but cannot be read, they refuse your whole
+  data directory until it can.
 - Hosts at App Kit seam level 3 or later honour the field; read `ctx.sdk_level` and
   treat a lower level as "nothing masks the file". A directory entry needs level 8: an
-  older host refuses to install a manifest that has one.
+  older host refuses to install a manifest that has one. Below level 10 only the sandbox
+  masks the files, not the agent's file tools.
 
 ## Agent read-only directories
 

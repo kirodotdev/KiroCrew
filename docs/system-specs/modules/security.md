@@ -1712,11 +1712,36 @@ the file is absent or a regular file with one name. Tightening
 only: no seal, carve-out or keystone disposition reads a declaration. The tool gate reads
 the shipped built-ins' declarations once, at import (`credential_masks.declared_crew_leaves(installed=False)`,
 splatted into `_CREW_SECRET_LEAVES`), so the agent's file tools refuse a built-in's
-credential file as they refuse a core one with no core row naming the app; an installed
-app's declaration does not reach the gate, because its manifest is sandbox-writable and
-read per spawn, which a static list cannot follow. A declared leaf is HIDDEN in the
-spawn plan, so `test_sandbox_governance_mask.py`'s pin that every tool-gate crew entry has
-a sandbox disposition holds for it. A directory entry (`"state/"`, seam level 8) is masked
+credential file as they refuse a core one with no core row naming the app. An installed
+app's declaration (every installed tree and retained record, so an adopted former
+built-in's too; seam level 10) reaches the read and the write gate through a listing
+instead, because an install changes it while the gateway runs:
+`paths._matches_gate_rows` matches `credential_masks.tool_gate_home_rows()` after the
+gate's static list, and adds the declared leaves' own directories to
+`_KEYSTONE_ARTIFACT_PARENTS`, in `sensitive_path_refusal`, `sensitive_write_path_refusal`
+and `is_sensitive_resolved_path`; `path_contains_sensitive` adds the rows to its targets.
+A check resolves the path once for every list (`_candidate_forms`), matches the static
+list before it takes the listing, and pays one more anchor lookup only while an
+installed app declares a mask. `paths_targets._app_credential_mask_rows` takes the listing on the
+`mc-pathres` threads within the anchor rebuild's budget (on the calling thread for the
+inline caller), refuses as a stall when it misses it unless a static row matched, and
+reuses it on every thread for at most a second; a
+recorded install, update or uninstall retires it at once
+(`credential_masks.declarations_generation`, bumped by `remember_declaration`): a check
+never joins a listing begun at an earlier generation, a listing a recorded change
+overtook is discarded and taken again within the same budget, and one overtaken twice
+refuses as a stall. A pooled listing that starts after `KIROCREW_HOME` changed refuses
+too rather than list another data home (`paths_targets._list_for_home`). It leaves
+out a row the static lists already hold (a built-in's record repeats its shipped
+declaration), so a host with only the built-ins checks the static lists unchanged. It
+fails closed over the app's own data only: an `app.json` or record that is there but
+does not read cleanly fences that app's whole data directory at both spellings, with no
+artifact rule beside it, and an `apps/` that cannot be listed fences `apps/`. `sensitive_home_dirs()` stays the static rows, so
+the fences derived from it (the ENFORCED harness's credential mask, the posture page)
+keep their scope. A declared leaf is HIDDEN in the spawn plan, so
+`test_sandbox_governance_mask.py`'s pin that every tool-gate crew entry has a sandbox
+disposition holds for it; the listed rows are not in that pin's static view, and the
+spawn plan masks them from the same declaration. A directory entry (`"state/"`, seam level 8) is masked
 whole instead: a non-directory at its name refuses the spawn, the Linux spawn prep creates
 it when absent in each of the app's existing data directories, `data/` and the move-aside
 spelling (`sandbox_staging._materialize_declared_mask_dirs`), so its mask is in place

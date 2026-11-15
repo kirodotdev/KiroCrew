@@ -425,6 +425,20 @@ def _forget_legacy_auth_sweep_clean_roots(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _forget_app_declared_row_listings():
+    """Forget the tool gate's listings of the apps' declared rows before each test.
+
+    ``paths_targets._APP_CREDENTIAL_MASK_ROWS`` is reused on every thread for up to a
+    second, keyed on ``KIROCREW_HOME``, so a test that patches ``config_dir`` under the
+    same variable would otherwise read the previous test's installed apps.
+    """
+    from kiro_crew.security import paths_targets
+
+    paths_targets._APP_CREDENTIAL_MASK_ROWS.reset()
+    paths_targets._APP_READONLY_ROWS.reset()
+
+
+@pytest.fixture(autouse=True)
 def _forget_mount_source_sweep_pacing(_floor_monkeypatch):
     """Forget when the periodic mount-source pass last ran and where it stopped.
 
