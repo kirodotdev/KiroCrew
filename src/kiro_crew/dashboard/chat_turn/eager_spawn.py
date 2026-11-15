@@ -51,8 +51,15 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_context import _require_session_memory_assignment
 
 # Debounce before a speculative spawn. Absorbs rapid consecutive signals
-# (slot create immediately followed by a project set, or a user re-picking
-# the project) so only the settled state spawns a session.
+# (a user re-picking the project or the agent) so only the settled state
+# spawns a session. The owner's own new chat skips it (``debounce=0.0`` from
+# the slot-create handler): measured on a pod, a message sent 2 s after "New
+# chat" waited a median 4.3-4.5 s (two runs of five) for its first output with
+# the debounce and 3.0 s without it, because the start had 1.5 s less of its 3 s left to run. A
+# create that a binding change follows (the client sets the project right after
+# it, ``no_session_folder``, or switches it to the Crew Mode conductor) keeps
+# the debounce: that change landing on a start that already reserved the key
+# would throw the start away, and for a project would owe a session reset.
 _EAGER_SPAWN_DEBOUNCE_SECS = 1.5
 
 
@@ -444,6 +451,7 @@ def schedule_eager_spawn(
     start_priority: StartPriority = StartPriority.BACKGROUND,
     on_ended: Callable[[Exception | None], None] | None = None,
     focus_resume: bool = False,
+    debounce: float | None = None,
 ) -> "asyncio.Task | None":
     """Speculatively create *slot*'s session ahead of its first message.
 
@@ -454,6 +462,10 @@ def schedule_eager_spawn(
 
     At most one pending task per slot: a newer signal cancels the older task,
     so the spawn always reflects the slot's settled agent/model/project.
+
+    ``debounce`` overrides the wait before the start
+    (``_EAGER_SPAWN_DEBOUNCE_SECS`` when ``None``); the owner's new chat passes
+    ``0.0`` because a person is about to type into it.
 
     ``allow_resume`` opts this spawn into resume prefetch (the slot-focused
     intent signal): a resumable key performs the speculative ``session/load``
@@ -525,6 +537,7 @@ def schedule_eager_spawn(
             start_priority=start_priority,
             on_ended=on_ended,
             focus_resume=focus_resume,
+            debounce=debounce,
         )
     )
     slot._eager_spawn_task = task
@@ -587,6 +600,7 @@ async def _eager_spawn(
     start_priority: StartPriority = StartPriority.BACKGROUND,
     on_ended: Callable[[Exception | None], None] | None = None,
     focus_resume: bool = False,
+    debounce: float | None = None,
 ) -> None:
     """Debounce, re-validate, then create the slot's session and release it.
 
@@ -622,7 +636,7 @@ async def _eager_spawn(
         # a concurrent signal, and the admission below must not evict it.
         if signal_generation is None:
             signal_generation = _arm_generation
-        await asyncio.sleep(_EAGER_SPAWN_DEBOUNCE_SECS)
+        await asyncio.sleep(_EAGER_SPAWN_DEBOUNCE_SECS if debounce is None else debounce)
         sessions = getattr(state, "sessions", None)
         if sessions is None:
             return
