@@ -10,8 +10,12 @@ trigger token.
 
 from __future__ import annotations
 
+import os
+import sys
 import time
 from collections import Counter
+from types import FrameType
+from typing import Any
 
 import pytest
 from denied_commands_security_helpers import _own_address_probe_stays_local  # noqa: F401
@@ -567,20 +571,19 @@ class TestSelfModuleIndexIsLinear:
              predicate once per walked token, so that count goes quadratic and
              breaks its progression.
 
-        The absolute budget stays as the machine-independent catastrophic-blowup
-        backstop: the pre-fix quadratic spent 1.94s where the bound is 0.5s, and it
-        also catches cost added outside the instrumented calls, where the counts
-        cannot see it. It is read on thread CPU, not the wall clock: the scan runs
-        on this thread, and a wall reading bills a loaded runner's scheduling to it
-        (0.507s against a scan that costs about 0.08s of CPU under coverage). The
-        budget holds the minimum of a fixed five readings: one collection or
-        frequency dip charged to the thread can inflate a reading, but not all five.
-        The readings are taken with this thread's trace function removed. The
-        full-suite shards run under coverage, and its line tracer multiplies the
-        scan's CPU about fivefold, steadily, so every traced reading of the linear
-        scan is 0.6-0.7s on the Linux runners and no minimum helps.
-        Untraced, the linear scan reads about 0.03s and a quadratic one
-        still about 1s.
+        The absolute budget stays at its original constant (testing-conventions D7,
+        class 5) as the catastrophic-blowup backstop: the pre-fix quadratic spent
+        1.94s where the bound is 0.5s. Python-level cost added outside these two
+        calls is counted by ``test_the_floor_path_executes_linear_work``; work hidden
+        inside one C call is seen by neither count, only by this budget. It is read
+        on thread CPU, not the wall clock: the scan runs on this thread, and a wall
+        reading bills a loaded runner's scheduling to it. It is read with this
+        thread's trace function removed. The full-suite shards run under coverage,
+        and its line tracer multiplies the scan's CPU about fivefold, steadily, so
+        every traced reading of the linear scan is 0.6-0.7s on the Linux runners.
+        Untraced, the linear scan reads about 0.03s and a quadratic one still about
+        1s. It is ONE reading: the cheapest of several would pass a slowdown that
+        reproduces only some of the time, which makes the minimum a retry.
         """
         import sys
         import time
@@ -598,17 +601,14 @@ class TestSelfModuleIndexIsLinear:
         security._is_self_restart(build(250))
         text = build(2000)
 
-        def reading() -> float:
-            start = time.thread_time()
-            assert security._is_self_restart(text) is True
-            return time.thread_time() - start
-
-        # Only these readings run untraced; coverage still records the scan from
+        # Only this reading runs untraced; coverage still records the scan from
         # the instrumented calls below, which take the same path.
         tracer = sys.gettrace()
         sys.settrace(None)
         try:
-            large = min(reading() for _ in range(5))
+            start = time.thread_time()
+            assert security._is_self_restart(text) is True
+            large = time.thread_time() - start
         finally:
             sys.settrace(tracer)
         # Base spent 1.94 s here; a quadratic scan cannot come near this ceiling.
@@ -666,6 +666,72 @@ class TestSelfModuleIndexIsLinear:
                 "per-token cost grows with the input, which is the super-linear "
                 "re-walk this precompute exists to prevent"
             )
+
+    # Ceiling on security-package lines a padded token may cost at 2,000 tokens, about
+    # 3x the 672 the linear path executes on CPython 3.12: room for a linear check
+    # added to the floor, while the pre-fix re-walk misses it by an order of magnitude.
+    _LINES_PER_TOKEN_CEILING = 2000
+
+    def test_the_floor_path_executes_linear_work(self):
+        """The WHOLE floor path's work is linear, counted in executed lines, not timed.
+
+        The call counts above see two primitives. A per-token walk written inline,
+        or a per-token call to anything else on the path (``_argv_programs``, the
+        payload walk), leaves both of them linear, so only the thread-CPU budget can
+        see it, and an inline walk at 2,000 tokens costs less than that budget. A
+        clock also reads the runner, not only the path. This counts the work
+        itself, as testing-conventions class 5 asks: every source line the
+        security package executes for one call. A line tracer is per thread and the
+        path keeps no memo outside ``sharing_views``, so the count is identical on
+        every runner, under coverage or not.
+
+        MEASURED: 671 lines a token plus a constant, 2.00x per doubling. An inline
+        forward walk per interpreter token reads 3.2x, a per-token
+        ``_argv_programs`` 3.8x and the pre-fix re-normalizing walk 3.9x, so each
+        fails the 2.5x ratio. No line count sees work hidden inside one C call (a
+        slice or a join per token), which is why the thread-CPU budget above stays.
+        """
+        from kiro_crew import security
+
+        package = os.path.dirname(security.__file__) + os.sep
+
+        def build(n: int) -> str:
+            return " ".join(["python"] * n + ["kirocrew", "restart"])
+
+        def executed_lines(n: int) -> int:
+            text = build(n)
+            count = 0
+
+            def local(frame: FrameType, event: str, _arg: Any) -> Any:
+                nonlocal count
+                if event == "line":
+                    count += 1
+                return local
+
+            def tracer(frame: FrameType, _event: str, _arg: Any) -> Any:
+                return local if frame.f_code.co_filename.startswith(package) else None
+
+            before = sys.gettrace()
+            sys.settrace(tracer)
+            try:
+                verdict = security._is_self_restart(text)
+            finally:
+                sys.settrace(before)
+            # Reached THROUGH the traced path, or the count measures nothing.
+            assert verdict is True
+            return count
+
+        # A first call can import a module, running its body inside the package.
+        security._is_self_restart(build(250))
+        small, large = executed_lines(1000), executed_lines(2000)
+        assert small > 1000, f"{small} lines for 1000 tokens: the tracer missed the path"
+        assert (
+            large <= small * 5 // 2
+        ), f"{small} -> {large} package lines for twice the tokens is super-linear"
+        assert large <= self._LINES_PER_TOKEN_CEILING * 2000, (
+            f"{large} package lines for 2000 tokens is over "
+            f"{self._LINES_PER_TOKEN_CEILING} a token"
+        )
 
     def test_the_padded_shape_that_does_not_open_the_gate_stays_cheap(self):
         """Pins the reason the reported reproduction did not reproduce: without a
