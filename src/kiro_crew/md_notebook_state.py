@@ -20,7 +20,9 @@ file were separate mount points, so every state write failed with ``EXDEV``. Tho
 names stay masked and fenced; :func:`migrate_legacy_state` moves real state out of them.
 
 This module imports no app code and no aiohttp, so the sandbox's spawn prep and the
-gateway's app spawner can both call it, and the Notes backend can read its names.
+gateway (the app spawner and adoption, both through Notes' row in
+:mod:`kiro_crew.apps.legacy_state_moves`) can call it, and the Notes backend can read its
+names.
 """
 
 from __future__ import annotations
@@ -349,9 +351,10 @@ def move_state_to_app_data(app_state_dir: Path, state_dir: Path) -> list[str]:
     (``md-notebook.md``, "An older build does not mask the moved token") says what an
     operator who installs one by hand does first. Any failure before
     the seal stops the pass UNSEALED (``OSError``), so the next pass copies again; until
-    then the shipped Notes backend does not start. Its one caller,
-    :func:`sealed_default_legacy_state`, runs it only while no sandbox of an earlier build
-    is alive, since such a sandbox masks *state_dir* but not *app_state_dir*. Passes hold
+    then the Notes backend does not start and adoption does not swap its record
+    (:mod:`kiro_crew.apps.legacy_state_moves`). Its one caller, :func:`sealed_legacy_state`,
+    runs it only while no sandbox of an earlier build is alive, since such a sandbox masks
+    *state_dir* but not *app_state_dir*. Passes hold
     :func:`_pass_lock` on *state_dir*. Returns the destinations it wrote.
     """
     written: list[str] = []
@@ -494,18 +497,27 @@ def older_sandboxes_masking_only_the_old_dir() -> list[int] | None:
 def sealed_default_legacy_state() -> bool:
     """Run both moves on the live data home; whether the state is now final in the app dir.
 
+    :func:`sealed_legacy_state` on the default directories. Called by the gateway
+    through the app's row in :mod:`kiro_crew.apps.legacy_state_moves`: before the Notes
+    backend spawns, which refuses to start until this is true, so every later start
+    retries; and before adoption swaps the record onto its repository, which waits
+    until this is true, whether or not Notes is enabled.
+    """
+    return sealed_legacy_state(default_state_dir(), default_legacy_dir(), default_app_state_dir())
+
+
+def sealed_legacy_state(state_dir: Path, legacy_dir: Path, app_state_dir: Path) -> bool:
+    """Run both moves; whether the state is now final in *app_state_dir*.
+
     :func:`migrate_legacy_state` first, then :func:`move_state_to_app_data`, which waits
     while :func:`older_sandboxes_masking_only_the_old_dir` names any process (or cannot
     read the process table): until those end, the token stays where every running sandbox
-    masks it, and Notes stays off. Called by the gateway before the shipped Notes backend
-    spawns, which refuses to start until this is true, so every later start retries. Never
-    raises: a failure is logged, and the next start tries again. True only when
-    :func:`move_state_to_app_data` returned, so the marker's name is synced; a marker that
-    merely exists does not start the backend.
+    masks it, and Notes stays off. Never raises: a failure is logged, and the next caller
+    tries again. True only when :func:`move_state_to_app_data` returned, so the marker's
+    name is synced; a marker that merely exists does not count.
     """
-    state_dir = default_state_dir()
     try:
-        migrate_legacy_state(state_dir, default_legacy_dir())
+        migrate_legacy_state(state_dir, legacy_dir)
         if not (state_dir / APP_MOVE_MARKER).is_file():
             older = older_sandboxes_masking_only_the_old_dir()
             if older is None or older:
@@ -518,12 +530,47 @@ def sealed_default_legacy_state() -> bool:
                     "not moving the Notes state into %s yet: a sandbox started by an earlier "
                     "build may still run (%s), and its masks do not cover that directory. "
                     "Notes starts once it has ended; every start retries",
-                    default_app_state_dir(),
+                    app_state_dir,
                     who,
                 )
                 return False
-        move_state_to_app_data(default_app_state_dir(), state_dir)
+        move_state_to_app_data(app_state_dir, state_dir)
     except Exception:
         logger.warning("Notes state move did not finish; will retry", exc_info=True)
         return False
     return True
+
+
+def backend_start_refusal() -> str | None:
+    """Why the Notes backend must not start now, or ``None``: its row's start gate.
+
+    Runs both moves first (:func:`sealed_default_legacy_state`); until they seal the
+    backend does not start, so no backend write can race the move. Then refuses while
+    the sandbox masks the legacy directory wholesale because a link reaches it
+    (``sandbox_staging._md_notebook_degraded_mask_dirs``): every attach, clone or PAT
+    save would succeed in a namespace-only stand-in and vanish on restart.
+    """
+    if not sealed_default_legacy_state():
+        return (
+            "not starting until its one-time state move finishes (see the warning above); "
+            "the next start retries it"
+        )
+    # Deferred: the Notes backend imports this module for its names, never calls this,
+    # and must not load the sandbox modules.
+    from kiro_crew.sandbox import _md_notebook_degraded_mask_dirs
+
+    active_home = str(_crew_home())
+
+    def _under_active_home(path: str) -> bool:
+        try:
+            return os.path.commonpath([active_home, path]) == active_home
+        except ValueError:  # another drive on Windows: not under this home
+            return False
+
+    if any(_under_active_home(d) for d in _md_notebook_degraded_mask_dirs()):
+        legacy = "/".join(LEGACY_DIR_PARTS)
+        return (
+            f"not starting: {legacy} is reached through a link, so its writes would be "
+            "lost on restart; replace the link with a real directory"
+        )
+    return None

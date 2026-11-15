@@ -902,6 +902,163 @@ class TestTheMdNotebookBackendCanSeeItsOwnStateFiles:
         )
 
 
+class TestTheSpawnAsksALegacyStateMoveOnProvenance:
+    """``apps/backend.py`` asks a former built-in's legacy state move on the provenance of
+    the code the spawn executes (``apps/legacy_state_moves``).
+
+    The row's move writes the built-in's state into ``apps/<name>/data/``, so it is asked
+    for the shipped built-in and for a record adopted under pin trust, never for another
+    app that took the name; and while the row refuses, the backend does not start. A
+    recording row stands in for Notes' so each case sees exactly who asked.
+    """
+
+    @staticmethod
+    def _spy(bmod, monkeypatch):
+        seen: dict = {}
+
+        def _spy_wrap(argv, **kwargs):
+            seen["wrapped"] = True
+            return (list(argv), None)
+
+        monkeypatch.setattr(bmod, "wrap_argv", _spy_wrap)
+        monkeypatch.setattr(
+            bmod.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("stop"))
+        )
+        return seen
+
+    @staticmethod
+    def _recording_row(monkeypatch, refusal):
+        from types import MappingProxyType
+
+        from kiro_crew.apps import legacy_state_moves as moves
+
+        asked: list[str] = []
+
+        def _start_refusal():
+            asked.append("start")
+            return refusal
+
+        row = moves.LegacyStateMove(seal=lambda: True, start_refusal=_start_refusal)
+        monkeypatch.setattr(moves, "LEGACY_STATE_MOVES", MappingProxyType({"md-notebook": row}))
+        return asked
+
+    @staticmethod
+    def _install_wearing_the_name(tmp_path):
+        src = tmp_path / "source" / "md-notebook"
+        src.mkdir(parents=True)
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": "md-notebook",
+                    "version": "9.9.9",
+                    "displayName": "Another Notes",
+                    "description": "an installed app under the built-in's name",
+                    "backend": {"entryPoint": "server.py", "healthCheck": "/health"},
+                }
+            )
+        )
+        # Never runs: the spawn stops at a stubbed Popen.
+        (src / "server.py").write_text("raise SystemExit(0)\n")
+        install_app(src)
+
+    def test_the_shipped_built_in_does_not_start_while_its_row_refuses(
+        self, app_env, monkeypatch, caplog
+    ):
+        import logging
+
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.apps.manager import register_builtin_apps
+
+        register_builtin_apps()
+        seen = self._spy(bmod, monkeypatch)
+        asked = self._recording_row(monkeypatch, "held by the row")
+
+        with caplog.at_level(logging.ERROR, logger="kiro_crew.apps.backend"):
+            assert bmod.start_app_backend("md-notebook") is None
+
+        assert asked == ["start"], "the shipped built-in's spawn never asked its row"
+        assert "wrapped" not in seen, "the backend launched while its state move refused"
+        assert "App md-notebook: held by the row" in [r.getMessage() for r in caplog.records]
+
+    def test_the_shipped_built_in_starts_once_its_row_answers_none(self, app_env, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.apps.manager import register_builtin_apps
+
+        register_builtin_apps()
+        seen = self._spy(bmod, monkeypatch)
+        asked = self._recording_row(monkeypatch, None)
+
+        bmod.start_app_backend("md-notebook")
+
+        assert asked == ["start"]
+        assert seen.get("wrapped"), "a sealed move still kept the backend from launching"
+
+    def test_another_app_under_the_name_is_never_asked_and_starts(
+        self, app_env, tmp_path, monkeypatch
+    ):
+        """Asking would run the built-in's move into this app's data directory."""
+        import kiro_crew.apps.backend as bmod
+
+        self._install_wearing_the_name(tmp_path)
+        seen = self._spy(bmod, monkeypatch)
+        asked = self._recording_row(monkeypatch, "held by the row")
+
+        bmod.start_app_backend("md-notebook")
+
+        assert asked == [], "an app that took the name was asked the built-in's move"
+        assert seen.get("wrapped"), "an app without the built-in's provenance was held"
+
+    def test_a_record_adopted_under_pin_trust_waits_for_its_row(
+        self, app_env, tmp_path, monkeypatch
+    ):
+        """Not the shipped built-in, so only the adopted-record branch can ask."""
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.apps import builtin_adoption_gate
+
+        self._install_wearing_the_name(tmp_path)
+        monkeypatch.setattr(
+            builtin_adoption_gate, "adopted_under_pin_trust", lambda name: name == "md-notebook"
+        )
+        seen = self._spy(bmod, monkeypatch)
+        asked = self._recording_row(monkeypatch, "held by the row")
+
+        assert bmod.start_app_backend("md-notebook") is None
+
+        assert asked == ["start"], "an adopted record's spawn never asked its row"
+        assert "wrapped" not in seen, "an adopted record launched while its move refused"
+
+    @pytest.mark.skipif(os.name != "posix", reason="the real Notes moves are POSIX")
+    def test_the_real_notes_row_holds_the_shipped_built_in_for_an_older_sandbox(
+        self, app_env, monkeypatch, caplog
+    ):
+        """Notes' own row, end to end: state still in ``md-notebook-staging/`` and an
+        older build's sandbox alive, so the move waits and the backend does not start."""
+        import logging
+
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew import md_notebook_state as mns
+        from kiro_crew.apps.manager import register_builtin_apps
+
+        register_builtin_apps()
+        state = app_env / mns.STATE_DIR_LEAF
+        state.mkdir()
+        (state / "pat").write_bytes(b"ghp_the_users_token")
+        (state / mns.MIGRATION_MARKER).write_text("{}\n", encoding="utf-8")
+        monkeypatch.setattr(mns, "older_sandboxes_masking_only_the_old_dir", lambda: [4242])
+        seen = self._spy(bmod, monkeypatch)
+
+        with caplog.at_level(logging.ERROR, logger="kiro_crew.apps.backend"):
+            assert bmod.start_app_backend("md-notebook") is None
+
+        assert "wrapped" not in seen
+        assert (
+            "App md-notebook: not starting until its one-time state move finishes (see the "
+            "warning above); the next start retries it"
+        ) in [r.getMessage() for r in caplog.records]
+        assert (state / "pat").read_bytes() == b"ghp_the_users_token"
+        assert not app_env.joinpath(*mns.APP_STATE_PARTS, "pat").exists()
+
+
 class TestTheBackendSpawnLiftsTheAppsDeclaredMasks:
     """``apps/backend.py`` hands an app's ``credentialMasks`` back to its own backend spawn.
 

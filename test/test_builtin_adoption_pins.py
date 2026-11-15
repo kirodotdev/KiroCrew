@@ -249,7 +249,18 @@ _ADOPTION_MODULES = (
     "apps/builtin_adoption_state.py",
     "apps/manager_adopt.py",
     "apps/agent_config_writer.py",
+    "apps/legacy_state_moves.py",
 )
+
+#: The one stated exception to "no adoption module names a built-in": the row keys of
+#: ``legacy_state_moves.LEGACY_STATE_MOVES``. A row binds a move out of a layout core
+#: itself created (so the move's code is core's) to the app it moves state for, and goes
+#: with that move once no supported upgrade path can still hold the layout
+#: (app-kit-platform.md § 33, "A legacy state move holds the swap"). A new row fails here
+#: until it is listed with the same reason.
+_STATED_NAME_EXCEPTIONS: dict[str, frozenset[str]] = {
+    "apps/legacy_state_moves.py": frozenset({"md-notebook"}),
+}
 
 
 def _builtin_identifiers() -> set[str]:
@@ -275,7 +286,15 @@ def test_no_adoption_module_names_a_shipped_built_in(rel):
     builtins = _builtin_identifiers()
     assert builtins, "the census found no shipped built-in"
     literals = _string_literals((_SRC / rel).read_text(encoding="utf-8"))
-    assert sorted(literals & builtins) == []
+    assert sorted(literals & builtins) == sorted(_STATED_NAME_EXCEPTIONS.get(rel, ()))
+
+
+def test_the_legacy_state_move_rows_are_the_stated_exception():
+    """The live keys, not only the literals: a key spelled through a constant counts too."""
+    from kiro_crew.apps.legacy_state_moves import LEGACY_STATE_MOVES
+
+    assert set(LEGACY_STATE_MOVES) == _STATED_NAME_EXCEPTIONS["apps/legacy_state_moves.py"]
+    assert set(LEGACY_STATE_MOVES) <= _builtin_identifiers()
 
 
 def test_the_literal_scan_finds_a_planted_name():

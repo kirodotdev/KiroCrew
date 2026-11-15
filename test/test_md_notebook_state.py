@@ -372,7 +372,7 @@ class TestPromotionClosesAfterTheFirstPass:
         from kiro_crew.apps import backend as backend_mod
 
         source = inspect.getsource(backend_mod._start_app_backend_body)
-        guard = source.index("if not _md_notebook_state.sealed_default_legacy_state():")
+        guard = source.index("_legacy_state_moves.backend_start_refusal(")
         assert "return None" in source[guard : guard + 400]
 
 
@@ -384,9 +384,13 @@ class TestTheMoveRunsBeforeAnySandboxLaunches:
     def test_the_notes_backend_spawn_runs_it(self):
         """A host with no sandbox wrap (Windows) reaches the backend without spawn prep."""
         from kiro_crew.apps import backend as backend_mod
+        from kiro_crew.apps import legacy_state_moves
 
         source = inspect.getsource(backend_mod._start_app_backend_body)
-        assert "sealed_default_legacy_state()" in source
+        assert "_legacy_state_moves.backend_start_refusal(" in source
+        assert "sealed_default_legacy_state()" in inspect.getsource(mns.backend_start_refusal)
+        row = legacy_state_moves.legacy_state_move(sb.MD_NOTEBOOK_APP_NAME)
+        assert row is not None
 
     @_POSIX_ONLY
     def test_a_namespace_spawn_moves_bare_state_first(self, tmp_path, monkeypatch):
@@ -402,8 +406,9 @@ class TestTheMoveRunsBeforeAnySandboxLaunches:
         sb.namespace_argv(["/bin/true"])
 
         # Into ``md-notebook-staging/``, which every build masks, and no further: the move
-        # into the app's own directory waits for the Notes backend's start, which checks
-        # that no sandbox of an earlier build is alive.
+        # into the app's own directory waits for a gateway caller of Notes' row in
+        # ``apps/legacy_state_moves`` (the backend's start, or adoption), which checks that
+        # no sandbox of an earlier build is alive.
         assert (home / mns.STATE_DIR_LEAF / "pat").read_text() == "ghp_real"
         assert (home / mns.STATE_DIR_LEAF / mns.MIGRATION_MARKER).exists()
         assert not (home / mns.STATE_DIR_LEAF / mns.APP_MOVE_MARKER).exists()

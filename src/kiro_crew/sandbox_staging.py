@@ -610,9 +610,12 @@ def _md_notebook_degraded_mask_dirs() -> list[str]:
     whole purpose.
 
     When a component of the chain is a planted link the calculus inverts. The Notes
-    backend does not start while this list is non-empty (``apps/backend.py``), so nothing
-    writes into the namespace-only stand-in this mask leaves, where a note would be lost on
-    restart; hiding the directory costs nothing that still works. What it buys is the one exposure skipping leaves behind: a legacy staging orphan
+    backend does not start while this list is non-empty
+    (``md_notebook_state.backend_start_refusal``, the start gate of Notes' row in
+    ``apps/legacy_state_moves`` that ``apps/backend.py`` asks), so nothing writes into the
+    namespace-only stand-in this mask leaves, where a note would be lost on restart; hiding
+    the directory costs nothing that still works. What it buys is the one exposure skipping
+    leaves behind: a legacy staging orphan
     holding real PAT bytes that :func:`_sweep_one_md_notebook_state_dir` cannot delete
     through a link, and that the three leaf masks do not cover because its name is neither
     ``pat`` nor a state file. A directory mask covers every name inside it, orphans
@@ -1268,9 +1271,10 @@ def _migrate_md_notebook_legacy_state() -> list[str]:
     a directory every build masks, so it is safe while a sandbox of any build runs. The
     second move, out of that directory into the app's own ``data/state/``, is NOT run here:
     an older build's sandbox masks the first directory but not the second, so that move
-    waits until no such sandbox is alive, which only the Notes backend's start checks
-    (``sealed_default_legacy_state`` in ``apps/backend.py``). Until it seals, this creates
-    the empty ``data/state/`` so the sandbox about to start masks it.
+    waits until no such sandbox is alive, which only the gateway's callers of Notes' row in
+    ``apps/legacy_state_moves`` check (``md_notebook_state.sealed_legacy_state``: the Notes
+    backend's start, and adoption before and after it swaps the record). Until it seals,
+    this creates the empty ``data/state/`` so the sandbox about to start masks it.
 
     Spawn prep runs it, not only the Notes backend's own spawn, so the first pass and its
     marker that closes promotion happen as early as possible, before an agent of this build
