@@ -2676,7 +2676,12 @@ mounted.
 **Sessions** lists every session the Bot dispatched, at any depth: the live
 slots whose `mate_root` is the Bot's DM slot (birth `created_by` alone does not count), merged
 with the Bot's `GET .../crew-workers` answer, which adds closed sessions, the
-ledger line and the server's group (`MateSessionsList`, `liveMateWorkers`). The tab keeps its name (a recorded decision), but its empty
+ledger line and the server's group (`MateSessionsList`, `liveMateWorkers`). While
+the Bot's thread is live, the same sessions leave the person's own lists (sidebar,
+Recents, grid, unread counts and a person's `GET /api/chat/slots`; `crewModeView`,
+`crew_mode.list_view`) unless the Bot's Settings switch **Show in my Sessions list**
+(`show_sessions_in_list`, off by default, stamped on the thread's slot row) is on.
+The Sessions tab lists them either way. The tab keeps its name (a recorded decision), but its empty
 box speaks the reader's words, not the mechanism's: a first-time user has no
 model for why a Bot would "drive sessions", so the box says session, chat or
 driving nowhere. The

@@ -30,7 +30,7 @@ import { useModelPickerModels, useNewSessionPicks, useSessionChoices, useSlotSel
 import { useCrewModeSwitch } from './chat/page/crewModeSwitch'
 import ConductorModeEffect from '../components/crew/ConductorModeEffect'
 import { crewModeRoot, crewRootOf, mateRootOf, runsCrewMode } from '../lib/crewMode'
-import { useCrewMode, useMateSessionsHidden } from '../hooks/usePreviewFlag'
+import { useCrewMode } from '../hooks/usePreviewFlag'
 import { useCrewRoot } from '../components/crew/useCrewRoot'
 import { useSteerDelivery, useRefusedPress, useRegenerate } from './chat/page/turnActions'
 import { useTranscriptScrollRefs, useTranscriptPaging } from './chat/page/transcriptPaging'
@@ -728,9 +728,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // (ComposerDockView's gate); the voice auto-submit below honours it too.
   const currentCrewRoot = crewRootOf(currentSlot)
   // ChatTitleOverlay shows the worker breadcrumb for a Crew worker and for a
-  // crewmate's session the mate sessions preview hides.
-  const mateSessionsHidden = useMateSessionsHidden()
-  const workerBreadcrumb = !!currentCrewRoot || (mateSessionsHidden && !!mateRootOf(currentSlot))
+  // crewmate's session, which its Bot's Sessions tab lists.
+  const workerBreadcrumb = !!currentCrewRoot || !!mateRootOf(currentSlot)
   const { rootClosed: crewRootClosedRaw } = useCrewRoot(currentCrewRoot)
   const crewRootClosed = !!currentCrewRoot && crewRootClosedRaw
   // From the chip press to the first message the transcript shows the Crew Mode

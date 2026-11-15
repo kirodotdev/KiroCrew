@@ -3,9 +3,8 @@ import {
   DEFAULT_CREW_MODE_AGENT, autoOpenRows, crewModeAgent, crewModeView, openingHidesSessionList, isConductorAgent, isDefaultAgentName, runsCrewMode,
   memoryModeAllowsCrewMode, runsConductor, resetCrewModeCatalog, setCrewModeCatalog, withoutConductors, agentCycleTarget,
   gatewayRunsCrewMode, CREW_APPROVAL_SURFACES, crewApprovalDecidableHere, crewModeEnabled, crewModeRoot, crewRootOf,
-  hiddenMateRootOf, liveMateThreads, mateSessionsHidden, busySlotKeys,
+  mateThreadsHidingSessions, busySlotKeys,
 } from './crewMode'
-import { PREVIEW_MATE_SESSIONS, setPreviewFlag } from '../utils/previewFlags'
 import { applyLockedControls } from '../utils/editionLocks'
 import { crewMemberKeys } from '../store/dashboard/unread'
 import { selectPersonSlots } from '../store/personSlots'
@@ -306,7 +305,7 @@ describe('conductor mode, on in every build but LTS', () => {
   })
 })
 
-describe('the mate sessions preview', () => {
+describe("a Bot's sessions in the person's lists", () => {
   const rows = [
     { key: 'mate', mode: 'member', agent: 'ada' },
     { key: 'mw', mate_root: 'mate' },
@@ -314,40 +313,36 @@ describe('the mate sessions preview', () => {
     { key: 'orphan', mate_root: 'gone' },
     { key: 'plain' },
   ]
-  beforeEach(() => { localStorage.removeItem(PREVIEW_MATE_SESSIONS) })
-  afterEach(() => { localStorage.removeItem(PREVIEW_MATE_SESSIONS) })
+  const shown = rows.map(r => (r.key === 'mate' ? { ...r, show_sessions_in_list: true } : r))
 
-  it('is off by default, and off every row stays', () => {
-    expect(mateSessionsHidden()).toBe(false)
-    expect(hiddenMateRootOf(rows[1])).toBe('')
-    expect(crewModeView(rows).map(r => r.key)).toEqual(['mate', 'mw', 'deep', 'orphan', 'plain'])
-    expect(autoOpenRows(rows).map(r => r.key)).toEqual(['mate', 'mw', 'deep', 'orphan', 'plain'])
-    expect(crewMemberKeys(rows).size).toBe(0)
-  })
-
-  it('on, leaves out every session a live mate thread dispatched, and keeps the mate thread', () => {
-    setPreviewFlag(PREVIEW_MATE_SESSIONS, true)
+  it('by default leaves out every session a live mate thread dispatched, and keeps the mate thread', () => {
     expect(crewModeView(rows).map(r => r.key)).toEqual(['mate', 'orphan', 'plain'])
     expect([...crewMemberKeys(rows)].sort()).toEqual(['deep', 'mw'])
     // The page never opens one on its own, whether or not its mate is live.
     expect(autoOpenRows(rows).map(r => r.key)).toEqual(['mate', 'plain'])
   })
 
-  it('on, reads the mate threads from the full store when the list holds none', () => {
-    setPreviewFlag(PREVIEW_MATE_SESSIONS, true)
-    const pageRows = rows.filter(r => r.mode !== 'member')
-    expect(crewModeView(pageRows).map(r => r.key)).toEqual(['mw', 'deep', 'orphan', 'plain'])
-    expect(crewModeView(pageRows, false, liveMateThreads(rows)).map(r => r.key)).toEqual(['orphan', 'plain'])
+  it('keeps them when the Bot shows its sessions in the list', () => {
+    expect(crewModeView(shown).map(r => r.key)).toEqual(['mate', 'mw', 'deep', 'orphan', 'plain'])
+    expect(crewMemberKeys(shown).size).toBe(0)
+    expect(mateThreadsHidingSessions(shown).size).toBe(0)
   })
 
-  it('the person\'s list and unread count follow a flip without a new slot list', () => {
-    const state = { dashboard: { slots: rows, unreadSlots: ['mw', 'plain'] }, chat: {} } as never
+  it('reads the mate threads from the full store when the list holds none', () => {
+    const pageRows = rows.filter(r => r.mode !== 'member')
+    expect(crewModeView(pageRows).map(r => r.key)).toEqual(['mw', 'deep', 'orphan', 'plain'])
+    expect(crewModeView(pageRows, false, mateThreadsHidingSessions(rows)).map(r => r.key)).toEqual(['orphan', 'plain'])
+    expect(crewModeView(pageRows, false, mateThreadsHidingSessions(shown)).map(r => r.key)).toEqual(['mw', 'deep', 'orphan', 'plain'])
+  })
+
+  it("the person's list and unread count follow the switch on a new slot list", () => {
     const select = selectUnreadByMode('')
-    expect(selectPersonSlots(state).map(r => r.key)).toContain('mw')
-    expect(select(state)).toBe(2)
-    setPreviewFlag(PREVIEW_MATE_SESSIONS, true)
-    expect(selectPersonSlots(state).map(r => r.key)).not.toContain('mw')
-    expect(select(state)).toBe(1)
+    const hidden = { dashboard: { slots: rows, unreadSlots: ['mw', 'plain'] }, chat: {} } as never
+    expect(selectPersonSlots(hidden).map(r => r.key)).not.toContain('mw')
+    expect(select(hidden)).toBe(1)
+    const listed = { dashboard: { slots: shown, unreadSlots: ['mw', 'plain'] }, chat: {} } as never
+    expect(selectPersonSlots(listed).map(r => r.key)).toContain('mw')
+    expect(select(listed)).toBe(2)
   })
 })
 

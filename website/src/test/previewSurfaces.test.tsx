@@ -376,7 +376,6 @@ describe('Settings > Developer > Feature Previews', () => {
   const FEATURE_PREVIEW_ROWS: Record<string, boolean> = {
     'Chat on a crew': true,
     'Folder conductor': true,
-    "Bot sessions on the bot's profile": true,
     'Quick worker check before a hard choice': true,
     'Reply threads on bot chat messages': true,
     'Explore': true,

@@ -128,7 +128,6 @@ export const PREVIEW_FLAG_SETTING_IDS: ReadonlySet<string> = new Set([
   'developer.chat-on-a-crew',
   'developer.composable-layout',
   'developer.folder-conductor',
-  'developer.bot-sessions-on-the-bot-s-profile',
   'developer.mark-out-of-date-dashboard-fields',
   'developer.wake-bots-to-update-out-of-date-fields',
   'developer.agent-harness-for-worker-chats',
