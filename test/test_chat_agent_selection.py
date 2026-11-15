@@ -916,6 +916,31 @@ async def test_discovery_before_first_allocation_preserves_owner_template_pick(
 
 
 @pytest.mark.asyncio
+async def test_picking_the_same_agent_again_after_a_restart_vouches_nothing(tmp_path, monkeypatch):
+    """A restart drops the process-held vouch, and picking the agent again must not
+    restore it: every value on that path resolves through the session's own record."""
+    from collections import OrderedDict
+
+    from kiro_crew import execution_context
+
+    await _template_chat(tmp_path, monkeypatch)
+    key = "dashboard:template-chat"
+    cfg = KiroCrewConfig.load()
+    selected = resolve_agent_bindings(cfg, TEMPLATE)
+    await asyncio.to_thread(
+        record_agent_selection, key, TEMPLATE, selected, replace=True, vouch=True
+    )
+    restarted: OrderedDict = OrderedDict()
+    monkeypatch.setattr(execution_context, "_VOUCHED_EXECUTIONS", restarted)
+
+    again = resolve_session_agent_bindings(resolve_agent_bindings, cfg, key, TEMPLATE)
+    change = await asyncio.to_thread(record_agent_selection, key, TEMPLATE, again, vouch=True)
+
+    assert change is None, "an unchanged pick must publish nothing"
+    assert dict(restarted) == {}, "re-picking the agent re-vouched a record the session wrote"
+
+
+@pytest.mark.asyncio
 async def test_late_template_resolution_cannot_replace_owner_member_pick(tmp_path, monkeypatch):
     await _template_chat(tmp_path, monkeypatch)
     key = "dashboard:template-chat"

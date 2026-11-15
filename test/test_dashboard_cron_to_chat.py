@@ -257,6 +257,24 @@ class TestInjectCronResultToDashboard:
         assert len(slot.messages) == 2
         assert [m["role"] for m in slot.messages] == ["user", "assistant"]
 
+    def test_a_long_instruction_injected_twice_still_renders_one_pair(self):
+        """The same, for an instruction long enough to be written as a reference.
+
+        Past the length where a repeat instruction is replaced by a reference to the
+        previous run, the second call must still skip this run's OWN earlier row as a
+        precedent; reading it would write a reference where the first call wrote the
+        instruction, and the two rows would dedup to neither.
+        """
+        from kiro_crew.dashboard import cron_inject
+
+        message = "do the thing " * (cron_inject._MIN_PROMPT_CHARS_TO_REFERENCE // 10)
+        state = _make_state()
+        job = _make_job(message=message, last_result_ts=1_756_000_000.0)
+        _inject(state, job, "same result")
+        _inject(state, job, "same result")
+        slot = state.get_or_create_slot(name=f"cron-{job.id}")
+        assert [m["role"] for m in slot.messages] == ["user", "assistant"]
+
     def test_two_runs_with_identical_text_stay_two_rows(self):
         """Different runs must not collapse into one undated row.
 
