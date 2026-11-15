@@ -221,7 +221,8 @@ so it starts from a blank slate. Manual member persona, rules and project contex
 remain available without opening memory. The agent's own chat-history tools
 (`search_chat_history`, `get_chat_session`, `list_sessions`) never return an
 Incognito or Temporary chat, so what you said there does not reach another
-session.
+session. The Spend tab still counts such a chat's cost, but lists it without
+its title.
 
 ## Teaching Kiro Crew
 

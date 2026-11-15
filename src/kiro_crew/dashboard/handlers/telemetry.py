@@ -54,6 +54,7 @@ from kiro_crew.dashboard.handlers.usage import (
     slot_turn_usage,
 )
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
+from kiro_crew.history import is_incognito_transcript
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.jsonl_util import bounded_records
 from kiro_crew.metrics import kiro_export
@@ -1722,7 +1723,10 @@ def _app_is_enabled(app_name: str) -> bool:
 
 
 def _persisted_titles(
-    conversation_log: Any, slot_keys: list[str], transcripts: dict[str, str]
+    conversation_log: Any,
+    slot_keys: list[str],
+    transcripts: dict[str, str],
+    withheld: set[str] | None = None,
 ) -> dict[str, str]:
     """Read the persisted title for each of *slot_keys*. Blocking; call off-loop.
 
@@ -1740,8 +1744,11 @@ def _persisted_titles(
     Keyed by SLOT key on the way out. Distinct slots can share one transcript (a
     channel-born slot's conversation IS the channel's), so the read is
     deduplicated by transcript key rather than by slot.
+
+    A private line (its ``memory_mode``) withholds the title, judged from the same
+    read; such slots join *withheld*, so a caller can drop a title it holds.
     """
-    by_transcript: dict[str, str] = {}
+    by_transcript: dict[str, str | None] = {}
     out: dict[str, str] = {}
     for slot_key in slot_keys:
         try:
@@ -1754,9 +1761,13 @@ def _persisted_titles(
             except Exception:
                 logger.debug("no persisted title for %s", transcript_key, exc_info=True)
                 meta = {}
-            by_transcript[transcript_key] = str(meta.get("title") or "")
+            private = is_incognito_transcript(meta.get("memory_mode"))
+            by_transcript[transcript_key] = None if private else str(meta.get("title") or "")
         title = by_transcript[transcript_key]
-        if title and title != NEW_SESSION_TITLE:
+        if title is None:
+            if withheld is not None:
+                withheld.add(slot_key)
+        elif title and title != NEW_SESSION_TITLE:
             out[slot_key] = title
     return out
 
@@ -1814,6 +1825,8 @@ async def _with_conversation_titles(request: web.Request, cost: dict[str, Any]) 
         if not slot_key:
             continue
         slot = get_slot(slot_key)
+        if slot is not None and is_incognito_transcript(getattr(slot, "memory_mode", "")):
+            continue
         title = getattr(slot, "display_title", "") if slot is not None else ""
         if title and title != NEW_SESSION_TITLE:
             titles[slot_key] = str(title)
@@ -1821,10 +1834,13 @@ async def _with_conversation_titles(request: web.Request, cost: dict[str, Any]) 
             unresolved.append(slot_key)
 
     conversation_log = getattr(state, "conversation_log", None)
-    if unresolved and conversation_log is not None:
-        titles.update(
-            await asyncio.to_thread(_persisted_titles, conversation_log, unresolved, transcripts)
+    if (titles or unresolved) and conversation_log is not None:
+        # The live slot's mode can lag the file, so a titled slot is checked too.
+        withheld: set[str] = set()
+        persisted = await asyncio.to_thread(
+            _persisted_titles, conversation_log, [*titles, *unresolved], transcripts, withheld
         )
+        titles = {k: v for k, v in {**persisted, **titles}.items() if k not in withheld}
 
     rows = []
     for row in conversations:
