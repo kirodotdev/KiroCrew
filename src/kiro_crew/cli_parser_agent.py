@@ -1030,6 +1030,32 @@ def register_agent_parser(sub: _Commands) -> None:
     )
 
 
+def register_trace_parser(sub: _Commands) -> None:
+    trace_parser = cli_help.add_command(
+        sub,
+        "trace",
+        epilog="""
+Examples:
+  kirocrew trace show 3f2a9c1e5b7d4a6c8e0f1a2b3c4d5e6f
+  kirocrew trace show <session key>
+""",
+        formatter_class=_fmt,
+    )
+    trace_sub = trace_parser.add_subparsers(dest="trace_action", required=True)
+    trace_show = trace_sub.add_parser(
+        "show",
+        help="Print one turn's spans as a waterfall",
+        description=(
+            "Read <data home>/traces/spans-*.jsonl (written while telemetry.traces_enabled "
+            "is on) and print the most recent trace holding KEY: its model calls, tool "
+            "calls, sub-agents and the gaps between them. Reads files only."
+        ),
+    )
+    trace_show.add_argument(
+        "key", help="A turn id, a session key or id, an ACP session id or a trace id"
+    )
+
+
 def register_workspace_parser(sub: _Commands) -> None:
     ws_parser = cli_help.add_command(sub, "workspace")
     ws_sub = ws_parser.add_subparsers(dest="workspace_action")

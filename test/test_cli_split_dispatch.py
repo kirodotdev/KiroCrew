@@ -105,6 +105,7 @@ _NAMESPACE_HANDLERS = [
     (("agent", "list"), "kiro_crew.cli_commands", "_handle_agent"),
     (("workspace", "list"), "kiro_crew.cli_commands", "_handle_workspace"),
     (("app", "list"), "kiro_crew.cli_commands", "_handle_app"),
+    (("trace", "show", "some-turn"), "kiro_crew.tracing.render", "trace_show"),
     (("logs",), "kiro_crew.cli_server", "_logs_cmd"),
     (("token",), "kiro_crew.cli_server", "_token"),
     (("status",), "kiro_crew.cli_server", "_status"),

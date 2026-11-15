@@ -179,6 +179,17 @@ trace per turn instead, set `"traces_conductor_mode": "turn"` in `telemetry`; th
 of one run then share `kirocrew.crew.root`, and one item's `kirocrew.work.item_id`.
 No goal, title or report text is ever on a span.
 
+## Reading one turn locally
+
+`kirocrew trace show <key>` prints the most recent trace holding the key as a
+waterfall, from the local span files alone (no collector, no gateway). The key is a
+turn id, a session key or id, an ACP session id or a trace id. Each row is one span
+with its start, its duration and a time bar; a `gap` row marks a stretch where
+nothing under a parent was running, such as time spent before the first model call.
+A span that failed shows its `error.type`. It prints names and timings only. When
+several traces match, it says how many others do; pass a trace id to pick one.
+A long trace stops after 500 rows and ends with the number of spans not shown.
+
 ## Checking it works
 
 - `~/.kiro/crew/traces/spans-*.jsonl` fills as soon as the switch is on, with or
