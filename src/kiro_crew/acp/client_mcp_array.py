@@ -22,7 +22,7 @@ Instance fields read: ``_agent``, ``_channel_id``, ``_child_env_names``,
 ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``, ``_mcp_json_names``,
 ``_mcp_notifications``, ``_mcp_ref_spec``, ``_mcp_report``, ``_native_skill_projection``,
 ``_pi_gate_nonce``, ``_pi_mcp_server_names``, ``_session_id``, ``_session_key``,
-``_side_read_only``, ``_spawn_work_dir``, ``_stub_session_token``, ``_work_dir``,
+``_spawn_work_dir``, ``_stub_session_token``, ``_work_dir``,
 ``member_context``.
 """
 
@@ -1243,55 +1243,6 @@ async def _discard_copilot_mcp_config(self: AcpClient) -> None:
     self._copilot_mcp_config_path = ""
     if path:
         await asyncio.to_thread(discard_copilot_mcp_config, path)
-
-
-def _goose_session_mcp_servers(self: AcpClient) -> list:
-    """MCP server array passed to a goose ``session/new`` / ``session/load``.
-
-    The goose twin of :meth:`_opencode_session_mcp_servers`, and it must stay
-    non-empty: ``goose acp`` reads no ``~/.kiro/agents/<name>.json``, so without
-    this a goose session has none of Crew's tools (no ``spawn_run``,
-    ``cron_add``, ``send_message``). :meth:`_pooled_mcp_servers` answers ``[]``
-    for backends in ``MIRRORS``, so pooled stubs come from here too.
-
-    No transport filter: goose 1.50.1 mounts the stdio element (measured round
-    trip through ``initialize``, ``notifications/initialized``, ``tools/list``
-    and ``tools/call``).
-
-    An element whose command cannot start does not fail ``session/new``; it is
-    dropped, and the drop is unobservable: goose sends no per-server MCP
-    notification (so ``_mcp_timeout_progress`` has nothing to read), and
-    ``available_commands_update`` is identical either way.
-    ``test/fixtures/acp_frames/goose/mcp-stdio-mount-live.jsonl`` pins the
-    round trip so a release that stops mounting goes red in the corpus. This is
-    accepted because a dropped mount loses functionality, not a gate: permission
-    routing on this harness rides on the seeded mode and its read-back, not on
-    MCP, so every tool call still reaches ``HookManager.on_tool_call``. The
-    follow-up is a shared broker-side check that the child sends
-    ``initialize`` within N seconds of ``session/new`` for every member of
-    ``ACP_BACKENDS_SESSION_MCP_ARRAY``.
-
-    The translation lives in :mod:`kiro_crew.providers.mirrors.goose`. Keep this
-    method as the seam: an edition may override it, and a capability-set test
-    at the call site would skip that override. In-memory only: the spawn path
-    warms ``_session_mcp_cache`` off the loop (harness-parity H13).
-
-    The count is logged here because it is the only greppable fact a degraded
-    goose session leaves; it says what was offered, not what mounted.
-    """
-    if getattr(self, "_side_read_only", False):
-        # A Side Chat session mounts no MCP server, as on claude: READ_ONLY
-        # refuses every MCP call, and a server named after goose's builtin
-        # extension would replace its read tools.
-        return []
-    servers = self._session_mcp_servers()
-    logger.info(
-        "goose session MCP: %d server(s) placed on the session array; this harness "
-        "reports neither a mount nor a drop per server [session=%s]",
-        len(servers),
-        self._session_id,
-    )
-    return servers
 
 
 def _invalidate_session_mcp_projection(self: AcpClient) -> None:

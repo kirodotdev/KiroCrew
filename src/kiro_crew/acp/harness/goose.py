@@ -6,7 +6,7 @@ things make its launch its own: the builtin extension it is told to load beside
 Crew's servers, and where its permission route comes from -- goose resolves
 ``GOOSE_MODE`` out of its own ENVIRONMENT, above its config file, so the mode is
 seeded on the session's environment here and read back off the very response that
-opens or restores the session (``AcpClient._verify_goose_routing``), not by a
+opens or restores the session (``GooseAcpClient._verify_goose_routing``), not by a
 read-back child of its own.
 
 A Side Chat session (``side_read_only``) also gets a goose home of its own
@@ -26,7 +26,7 @@ import yaml  # type: ignore[import-untyped]
 
 from kiro_crew import acp_tool_gate
 from kiro_crew.acp import launch as launch_mod
-from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
+from kiro_crew.acp.harness.base import ProcessAdapter, SpawnContext, SpawnPlan
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_GOOSE
 
@@ -241,10 +241,6 @@ class GooseLaunch(ProcessAdapter):
             )
         root = await to_thread(build_side_goose_root, goose_config_dir(env), Path(scratch))
         env[_ENV_GOOSE_PATH_ROOT] = str(root)
-
-    def session_mcp_servers(self, session: ProcessSession) -> list[dict[str, Any]]:
-        """The goose session's own ``mcpServers`` entries, warmed by the spawn."""
-        return session._goose_session_mcp_servers()
 
     def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
         """Nothing beyond the seed, which reaches the child through the session's overlay."""

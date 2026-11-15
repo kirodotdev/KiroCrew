@@ -781,7 +781,6 @@ async def _initialize_session(self: AcpClient) -> None:
     self._steering_advertised = steering_advertised(init_resp)
     self._initialize_result = init_resp if isinstance(init_resp, dict) else {}
     self._note_pi_adapter_version()
-    self._note_goose_version()
     self._note_harness_adapter_version()
     # Copilot only: a release other than the verified one is refused here, before
     # any session exists; the AcpToolGateUnroutable it raises ends the child with no
@@ -946,8 +945,8 @@ async def _initialize_session(self: AcpClient) -> None:
                 # ``_resumed`` because a load that returned no ``modes`` block did
                 # not take: that path falls through to session/new, which does its
                 # own read-back on the response that replaces this one.
-                if self._is_goose and self._resumed:
-                    self._verify_goose_routing(load_resp)
+                if self._reads_back_session_mode and self._resumed:
+                    self._verify_session_mode(load_resp)
                 if self._pins_starting_mode and self._resumed:
                     await self._pin_starting_mode(load_resp)
         else:
@@ -977,8 +976,8 @@ async def _initialize_session(self: AcpClient) -> None:
         # Crew's tool controls execute. Gated HERE rather than inside the method so
         # the first-class kiro path gains no call and no failure point in service of
         # an adapter (harness-parity H13).
-        if self._is_goose:
-            self._verify_goose_routing(session_resp)
+        if self._reads_back_session_mode:
+            self._verify_session_mode(session_resp)
         if not self._session_id:
             # Both the initial attempt and the substitution retry failed to
             # yield a session. Raise a clear, actionable error instead of

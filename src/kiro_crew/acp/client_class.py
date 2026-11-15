@@ -88,6 +88,13 @@ if TYPE_CHECKING:
 #: The client's own logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.client")
 
+#: Backends whose ``session/new`` and ``session/load`` answers report the permission mode
+#: the harness resolved from Crew's seed, which the session's client class reads back
+#: (``_reads_back_session_mode``). ``AcpClient.__new__`` refuses one to a class that
+#: reads none. goose: ``GOOSE_MODE`` (``acp.harness.goose``), read back by
+#: ``client_goose``.
+_SESSION_MODE_READ_BACK_BACKENDS = frozenset({ACP_BACKEND_GOOSE})
+
 
 class AcpClient:
     """JSON-RPC 2.0 client over stdio with kiro-cli acp."""
@@ -164,6 +171,13 @@ class AcpClient:
             # started by a class that seeds none, would run with that surface
             # unmanaged: refused before any process exists.
             raise AcpError(f"no client class that seeds settings serves the {backend!r} backend")
+        if backend in _SESSION_MODE_READ_BACK_BACKENDS and not cls._reads_back_session_mode:
+            # The same refusal for a backend whose permission mode Crew reads back
+            # off the session answers: a class that reads none would run the
+            # session with a mode nothing checked.
+            raise AcpError(
+                f"no client class that reads back the session mode serves the {backend!r} backend"
+            )
         return object.__new__(cls)
 
     def __init__(
@@ -833,7 +847,6 @@ class AcpClient:
     _republish_pi_mcp_handoff = _client_mcp_array._republish_pi_mcp_handoff
     _discard_pi_mcp_handoff = _client_mcp_array._discard_pi_mcp_handoff
     _discard_copilot_mcp_config = _client_mcp_array._discard_copilot_mcp_config
-    _goose_session_mcp_servers = _client_mcp_array._goose_session_mcp_servers
     _invalidate_session_mcp_projection = _client_mcp_array._invalidate_session_mcp_projection
     _prepare_session_mcp = _client_mcp_array._prepare_session_mcp
     _mcp_timeout_progress = _client_mcp_array._mcp_timeout_progress
@@ -904,10 +917,6 @@ class AcpClient:
         return self.backend == ACP_BACKEND_PI
 
     @property
-    def _is_goose(self) -> bool:
-        return self.backend == ACP_BACKEND_GOOSE
-
-    @property
     def _is_deepseek(self) -> bool:
         return self.backend == ACP_BACKEND_DEEPSEEK
 
@@ -961,15 +970,30 @@ class AcpClient:
         return getattr(self, "_member_dispatch_mounted", None)
 
     # What a backend whose session contract lives in a client class of its own
-    # (``client_claude``) adds to a session. Each hook here is the behaviour every
-    # other backend keeps; that class overrides it. A hook the kiro-cli path calls
-    # adds no branch and no failure mode to it (harness-parity H13): it was already
-    # calling the step it replaces, and the step does nothing here.
+    # (``client_claude``, ``client_goose``) adds to a session. Each hook here is the
+    # behaviour every other backend keeps; that class overrides it. A hook the kiro-cli
+    # path calls adds no branch and no failure mode to it (harness-parity H13): it was
+    # already calling the step it replaces, and the step does nothing here.
 
     #: True on a backend that pins the starting permission mode once the session
     #: exists (``_pin_starting_mode``). Read before the await, so a session that pins
     #: nothing makes no call at all.
     _pins_starting_mode: bool = False
+
+    #: True on a backend whose ``session/new`` and ``session/load`` answers report the
+    #: permission mode the harness resolved, which Crew reads back
+    #: (``_verify_session_mode``) and holds the session to mid-session
+    #: (``_tripwire_session_mode``). Read before either call, so every other session
+    #: makes neither.
+    _reads_back_session_mode: bool = False
+
+    def _verify_session_mode(self, resp: dict) -> None:
+        """Refuse a session whose answer *resp* reports a mode Crew does not allow.
+        Reached only where ``_reads_back_session_mode`` is True."""
+
+    async def _tripwire_session_mode(self, msg: JsonRpcMessage) -> None:
+        """Stop a session that reports leaving the required mode mid-session. Reached
+        only where ``_reads_back_session_mode`` is True."""
 
     @property
     def _permission_surface_governed(self) -> bool:
@@ -1271,7 +1295,6 @@ class AcpClient:
 
     # Answer an ``AcpClient`` session's permission requests and enforce its tool restrictions: ``kiro_crew.acp.client_permissions``.
     _apply_session_permission_routing = _client_permissions._apply_session_permission_routing
-    _verify_goose_routing = _client_permissions._verify_goose_routing
     approve_tool = _client_permissions.approve_tool
 
     def take_batch_refusal(self, request_id: str | int) -> str | None:
@@ -1286,9 +1309,7 @@ class AcpClient:
     _unclassified_tool_call = _client_permissions._unclassified_tool_call
     _tripwire_spec_disabled_tool = _client_permissions._tripwire_spec_disabled_tool
     _note_pi_adapter_version = _client_permissions._note_pi_adapter_version
-    _note_goose_version = _client_permissions._note_goose_version
     _refuse_unverified_copilot_version = _client_copilot._refuse_unverified_copilot_version
-    _tripwire_goose_mode = _client_permissions._tripwire_goose_mode
     _tripwire_session_config = _client_permissions._tripwire_session_config
     _seed_copilot_edit_targets = _client_copilot._seed_copilot_edit_targets
     _restore_copilot_edit_seed = _client_copilot._restore_copilot_edit_seed

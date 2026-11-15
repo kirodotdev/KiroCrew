@@ -467,10 +467,9 @@ async def test_a_side_session_with_no_scratch_window_is_refused(monkeypatch, tmp
 
 @pytest.mark.parametrize("side_read_only", [True, False], ids=["side", "normal"])
 def test_a_side_session_mounts_no_mcp_server(side_read_only):
-    from kiro_crew.acp.client import AcpClient
+    from kiro_crew.acp.client import GooseAcpClient
 
-    client = AcpClient.__new__(AcpClient)
-    client._acp_backend = ACP_BACKEND_GOOSE
+    client = GooseAcpClient.__new__(GooseAcpClient)
     client._session_id = "goose-1"
     client._side_read_only = side_read_only
     placed = [{"name": "kirocrew-core", "command": "x", "args": [], "env": []}]

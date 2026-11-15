@@ -35,7 +35,7 @@ from typing import Any
 import pytest
 
 from kiro_crew.acp import client as acp_client
-from kiro_crew.acp.client import AcpClient, ClaudeAcpClient
+from kiro_crew.acp.client import AcpClient, ClaudeAcpClient, GooseAcpClient
 from kiro_crew.acp.transport_errors import AcpError
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_client_bindings")
@@ -116,7 +116,6 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_foreign_mcp_identity": ("function", False, "2dfacffa6279", "client_permissions"),
     "_forget_sent_images": ("function", False, "b60c5fea256e", "client_turn"),
     "_fork_session": ("function", True, "bca802976336", "client_class"),
-    "_goose_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
     "_guard_unresolved_mcp_refs": ("function", False, "779b51571c73", "client_mcp_array"),
     "_handle_compaction_status": ("function", False, "50405edf7b6a", "client_usage"),
     "_handle_config_option_update": ("function", False, "87459833bc5c", "client_model_selection"),
@@ -141,7 +140,6 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_invalidate_session_mcp_projection": ("function", False, "b60c5fea256e", "client_mcp_array"),
     "_is_copilot": ("property", False, "a6632a57e602", "client_class"),
     "_is_deepseek": ("property", False, "a6632a57e602", "client_class"),
-    "_is_goose": ("property", False, "a6632a57e602", "client_class"),
     "_is_kiro": ("property", False, "a6632a57e602", "client_class"),
     "_is_mimocode": ("property", False, "a6632a57e602", "client_class"),
     "_is_opencode": ("property", False, "a6632a57e602", "client_class"),
@@ -177,7 +175,6 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_note_agent_switched": ("function", False, "d552841f483c", "client_model_selection"),
     "_note_asked_tool_call": ("function", False, "87459833bc5c", "client_tool_events"),
     "_note_background_launch": ("function", False, "87459833bc5c", "client_turn_control"),
-    "_note_goose_version": ("function", False, "b60c5fea256e", "client_permissions"),
     "_note_harness_adapter_version": ("function", False, "b60c5fea256e", "client_class"),
     "_note_pi_adapter_version": ("function", False, "b60c5fea256e", "client_permissions"),
     "_note_pi_gate_asked": ("function", False, "87459833bc5c", "client_permissions"),
@@ -210,6 +207,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_prune_unstartable_mcp": ("function", True, "4dfb79f9f73b", "client_mcp_array"),
     "_push_model_config_option": ("function", True, "e60b4fb0cbfc", "client_model_selection"),
     "_read_mcp_ref_spec": ("function", False, "e7ed4605a35e", "client_mcp_array"),
+    "_reads_back_session_mode": ("data", False, "", ""),
     "_read_message": ("function", True, "1159757afded", "client_transport"),
     "_read_new_tool_results": ("function", True, "58ee5ea89856", "client_tool_events"),
     "_read_new_tool_results_sync": ("function", False, "58ee5ea89856", "client_tool_events"),
@@ -284,17 +282,17 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_track_prompt_usage": ("function", False, "c8d5c402278d", "client_usage"),
     "_track_tool_call": ("function", False, "87459833bc5c", "client_tool_events"),
     "_track_usage_update": ("function", False, "87459833bc5c", "client_usage"),
-    "_tripwire_goose_mode": ("function", True, "87459833bc5c", "client_permissions"),
     "_tripwire_mimocode_governed_mcp": ("function", True, "cdc60cf69a99", "client_permissions"),
     "_tripwire_permission_state": ("function", True, "87459833bc5c", "client_permissions"),
     "_tripwire_pi_gate": ("function", True, "87459833bc5c", "client_permissions"),
     "_tripwire_session_config": ("function", True, "87459833bc5c", "client_permissions"),
+    "_tripwire_session_mode": ("function", True, "87459833bc5c", "client_class"),
     "_tripwire_spec_disabled_tool": ("function", False, "42c6e584f488", "client_permissions"),
     "_unanswered_steering_id_set": ("annotation", False, "", ""),
     "_unanswered_steering_ids": ("function", False, "6e67e49bb5fd", "client_turn_control"),
     "_unclassified_tool_call": ("function", False, "2dfacffa6279", "client_permissions"),
     "_uses_advertised_model_selection": ("property", False, "a6632a57e602", "client_class"),
-    "_verify_goose_routing": ("function", False, "4d0ed6879afd", "client_permissions"),
+    "_verify_session_mode": ("function", False, "4d0ed6879afd", "client_class"),
     "_wait_for_response": ("function", True, "9d13604697d8", "client_transport"),
     "_withhold_is_the_only_deny_channel": ("function", False, "a6632a57e602", "client_mcp_array"),
     "_worker_settings_lag": ("function", False, "61b6ef5a7c97", "client_class"),
@@ -483,6 +481,20 @@ _CLAUDE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "settings_withheld_cause": ("function", False, "bb418bb7ece8", "client_seed_ownership"),
 }
 
+#: ``GooseAcpClient``'s own members: what only a goose session does, bound from the goose
+#: owner, and the ``AcpClient`` hooks it fills.
+_GOOSE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
+    "_goose_session_mcp_servers": ("function", False, "f5423acdeebc", "client_goose_session"),
+    "_harness_session_mcp_servers": ("function", False, "f5423acdeebc", "client_goose_session"),
+    "_note_goose_version": ("function", False, "b60c5fea256e", "client_goose_session"),
+    "_note_harness_adapter_version": ("function", False, "b60c5fea256e", "client_goose_session"),
+    "_reads_back_session_mode": ("data", False, "", ""),
+    "_tripwire_goose_mode": ("function", True, "87459833bc5c", "client_goose_session"),
+    "_tripwire_session_mode": ("function", True, "87459833bc5c", "client_goose_session"),
+    "_verify_goose_routing": ("function", False, "4d0ed6879afd", "client_goose_session"),
+    "_verify_session_mode": ("function", False, "4d0ed6879afd", "client_goose_session"),
+}
+
 #: Class-level annotations the split adds: fields first set by a member an owner defines,
 #: declared in the class so type checkers know them. An annotation creates no attribute.
 _DECLARED = frozenset(
@@ -504,10 +516,11 @@ _PACKAGE = "kiro_crew.acp"
 _INVENTORIES: dict[type, dict[str, tuple[str, object, str, str]]] = {
     AcpClient: _MEMBERS,
     ClaudeAcpClient: _CLAUDE_MEMBERS,
+    GooseAcpClient: _GOOSE_MEMBERS,
 }
 
 #: Every member name some client class binds.
-_ALL_MEMBERS = frozenset(_MEMBERS) | frozenset(_CLAUDE_MEMBERS)
+_ALL_MEMBERS = frozenset(_MEMBERS) | frozenset(_CLAUDE_MEMBERS) | frozenset(_GOOSE_MEMBERS)
 
 
 def _owners() -> list[ModuleType]:

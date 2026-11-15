@@ -434,7 +434,7 @@ ACP_BACKEND_PI = "pi"
 # ``session-load-live.jsonl``). Re-verify all three against a fresh capture before raising
 # this range, and re-capture the mode move deliberately -- it is the one a routine
 # re-record would not exercise. A session on a release outside the range is named at the
-# handshake (``AcpClient._note_goose_version`` reads ``agentInfo.version`` off
+# handshake (``GooseAcpClient._note_goose_version`` reads ``agentInfo.version`` off
 # ``initialize``), so the one silent loss has a signal before the first prompt.
 ACP_BACKEND_GOOSE = "goose"
 # DeepSeek Harness: a plugin host whose ``acp`` profile serves ACP v1 over stdio
