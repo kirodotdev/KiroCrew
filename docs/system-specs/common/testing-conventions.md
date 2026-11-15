@@ -97,7 +97,10 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   tick) or a bound relative to a span the test measured itself. An existing complexity
   guard keeps its thread-CPU budget at the original constant, or replaces it with a
   count of work proven to fail on what the budget caught (class 5); a new one counts
-  work instead. [Class 5](#5-absolute-time-budgets-on-instrumented-runs).
+  work instead. Reshaping a kept budget's reading (the minimum of N readings, the
+  tracer paused around it) is not a fix: it still asserts seconds, and the K8 ratchet
+  counts `thread_time` and `process_time` deltas like any other clock.
+  [Class 5](#5-absolute-time-budgets-on-instrumented-runs).
 - **D8. Every await, join or `communicate` the test itself must unblock is bounded and
   fails by name** (`asyncio.wait_for`; `join(timeout)` followed by an `is_alive()`
   assertion; `communicate(timeout=...)`).

@@ -119,7 +119,21 @@ _CLOCK_ATTRS = {
     "asyncio": frozenset({"sleep"}),
     "datetime": frozenset({"datetime", "date"}),
 }
-_CLOCK_CALLS = frozenset({"monotonic", "perf_counter", "time", "monotonic_ns", "perf_counter_ns"})
+#: A CPU clock is a clock too: coverage's tracer multiplies the CPU every traced line
+#: costs, so a ``thread_time`` budget reads the shard's instrumentation, not the code.
+_CLOCK_CALLS = frozenset(
+    {
+        "monotonic",
+        "perf_counter",
+        "time",
+        "monotonic_ns",
+        "perf_counter_ns",
+        "thread_time",
+        "thread_time_ns",
+        "process_time",
+        "process_time_ns",
+    }
+)
 _DELTA_NAMES = re.compile(r"(elapsed|duration|took|delta|wall)", re.IGNORECASE)
 _STAMP_NAMES = re.compile(
     r"^(start|started|end|ended|before|after|began|finished|now|then|t\d|t_\w+|\w+_at)$"
@@ -1263,6 +1277,8 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
             "def test_x():\n    assert (\n        elapsed < 5.0\n    ), 'took too long'\n",
             "def test_x():\n    assert 0.15 < elapsed < 1.0\n",
             "def test_x():\n    assert after - before < 0.05\n",
+            "import time\ndef test_x():\n    start = time.thread_time()\n    run()\n"
+            "    assert time.thread_time() - start < 0.5\n",
         ),
         "import time\ndef test_x():\n    t = time.monotonic()\n    run()\n"
         "    assert time.monotonic() - t < LOST_RUN_SECS\n    assert elapsed > 0.1\n",
