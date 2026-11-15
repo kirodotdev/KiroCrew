@@ -95,7 +95,7 @@ EXPECTED_SITES = {
     # sample SEPARATELY (keyed on the effective session_key so a linked-channel
     # turn is attributed to its channel surface, and surviving the
     # usage_has_billing gate), and the abnormal-end seam emits NOTHING —
-    # abnormal-turn sampling is out of this change's scope, and letting its
+    # abnormal-turn sampling is out of this test's scope, and letting its
     # persist emit (default True) would mis-file a linked-channel turn under the
     # slot's `dashboard` key.
     "dashboard/handlers/hooks.py": 1,

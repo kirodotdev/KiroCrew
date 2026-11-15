@@ -781,8 +781,8 @@ class TestGrantValidatesUnderTheLock:
         self, home, no_pinned, mock_sel, monkeypatch
     ) -> None:
         # The distinguishing property: the config-row validation runs UNDER the
-        # shared lock. A pre-fix handler validated before acquiring it, so this
-        # probe would see the lock free. `LoopBoundLock.locked()` answers True from
+        # shared lock. A handler that validated before acquiring it would let
+        # this probe see the lock free. `LoopBoundLock.locked()` answers True from
         # the executor thread when any live loop holds the lock.
         from kiro_crew.dashboard.handlers.agents import _get_config_lock
 
