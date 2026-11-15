@@ -1173,6 +1173,26 @@ class TestRendererApprovalPause:
         assert [p["status"] for _, p in web.calls] == ["suspended", "processing"]
 
     @pytest.mark.asyncio
+    async def test_a_rejected_tool_card_never_closes_as_error(self) -> None:
+        # One ``error`` task makes Slack title the whole plan "Something went
+        # wrong" on a turn that is still running.
+        from kiro_crew.slack.handler_runtime.stream import _AnswerStream
+
+        answer = _AnswerStream.__new__(_AnswerStream)
+        calls: list[tuple] = []
+
+        async def append_task(task_id, title, status, details=""):
+            calls.append((task_id, title, status, details))
+            return True
+
+        answer.append_task = append_task  # type: ignore[method-assign]
+        answer.cancel_tool_timer = lambda: None  # type: ignore[method-assign]
+        answer.use_slack_stream, answer.stream_ts = True, "1700.2"
+        answer.active_task_id, answer.active_task_title = "t1", "rm"
+        await answer.on_tool_rejected()
+        assert calls == [("t1", "rm", "complete", "rejected")]
+
+    @pytest.mark.asyncio
     async def test_no_resume_without_an_approval_status(self) -> None:
         from kiro_crew.slack.handler_runtime.stream import _AnswerStream
 
