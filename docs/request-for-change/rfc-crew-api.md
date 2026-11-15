@@ -1,6 +1,6 @@
 ---
 title: Crew API — a stable, versioned HTTP API for clients of the Kiro Crew gateway
-status: draft
+status: accepted
 author: headless-crew (crewmate), with kirocrew-worker
 created: 2026-10-31
 last-audited: 2026-10-31
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Crew API
 
-- Status: draft. Nothing is built. This document changes no code.
+- Status: accepted. A maintainer accepted the design on 2026-11-14, with open question Q7 decided. Nothing is built. This document changes no code.
 - Machine-readable contract: the OpenAPI 3.1 drafts in [`assets/crew-api/`](assets/crew-api/crew-public.yaml):
   `crew-public.yaml` (the Public tier), `crew-owner.yaml` (the Owner tier) and `components.yaml`
   (shared schemas). Both `openapi-spec-validator` and `@redocly/cli lint` pass on them with the
@@ -557,11 +557,8 @@ when it is back). A grant also carries its Bot range, its wake limits, `notify_p
 or `local` (local authorization, issued by this gateway).
 
 **The one wrapper so far** is the Bot roster. In the contract its path is `GET /v1/crew/owner/bots`,
-and it wraps `GET /api/members`. Its code is in
-[#34104](https://github.com/kirodotdev/KiroCrew/pull/34104), which is not merged, and there the
-route is `GET /v1/crew/owner/members`: it keeps the name `members` today because it wraps the body
-of the existing `/api/members` unchanged. Renaming it to `bots` is proposed
-([Q7](#open-questions)). It is the Owner view of the same roster the Public `GET /v1/crew/bots`
+and it wraps `GET /api/members` from the same handler. The response keeps the `members` field
+of `/api/members`, the body it wraps unchanged ([Q7](#open-questions)). It is the Owner view of the same roster the Public `GET /v1/crew/bots`
 projects:
 
 | | Owner roster | Public `GET /v1/crew/bots` |
@@ -591,7 +588,7 @@ listed here so the count is not read as "everything the gateway exposes":
 | Routes | What they do | Who can call | Phase | Specification |
 |---|---|---|---|---|
 | `/v1/crew/owner/instance/*` | Control plane: health, configuration, upgrade and rollback, start and stop | The owner | 3 | No OpenAPI yet |
-| The wrapped Owner route for the Bot roster | Wraps `GET /api/members` | The owner | 1b | In `crew-owner.yaml`; code in #34104, not merged |
+| The wrapped Owner route for the Bot roster | Wraps `GET /api/members` | The owner | 1b | In `crew-owner.yaml` |
 | Local authorization: `GET /oauth/authorize`, `POST /oauth/token`, `POST /oauth/revoke`, `GET /.well-known/oauth-authorization-server` on the local gateway | A client on the same machine asks for a grant | Programs on the same machine; consent needs the owner in the dashboard | 1a | No OpenAPI; parameters follow OAuth 2.1 and RFC 8414 |
 | Embed page: `GET /embed` and its sign-in routes | The embedded page where the user signs in and answers approvals; `/embed?approval=<id>` shows one approval | Reachable without a token; reads no conversation data | 2 | No OpenAPI yet |
 | Site connection: `GET /connect/start`, `GET /connect/callback` | Connects the user's account at an app's site when the app's MCP server needs it | Reachable without a token; accepts only a one-time code and `state` | 2 | No OpenAPI yet |
@@ -707,7 +704,7 @@ local apps. It stays as it is and gets no new features. A delegated credential c
 | Q4 | The Owner tier's compatibility promise | Three months from deprecation to removal (proposal, not final); experimental in the SDK |
 | Q5 | Whether a dashboard session that is not the owner's may use the Owner tier | No. What such a session needs goes through the Public tier with its own credential; until then it keeps using `/api/*` |
 | Q6 | How a user answers an approval when the app has only a backend: the `approval_url` field, a reminder to the owner over the gateway's existing Web Push, and making the engine's 5-minute limit configurable | Do all three, in phase 2 |
-| Q7 | Owner naming: everything under `/v1/crew/owner/`, the resource called `bots` in both tiers, renaming the wrapper in #34104 from `members`, and which existing routes are worth wrapping | As proposed; wrap only what the three callers in [Owner tier](#8-owner-tier) need |
+| Q7 | Owner naming: everything under `/v1/crew/owner/`, the resource called `bots` in both tiers, and which existing routes are worth wrapping | Decided: the Bot roster is `GET /v1/crew/owner/bots`, because the contract, the `BotRoster` schema and the Public tier already call the resource `bots`; `members` is the dashboard's internal name. Still leaning: wrap only what the three callers in [Owner tier](#8-owner-tier) need |
 | Q8 | The periods in [Versioning](#9-versioning-and-compatibility) (12 months for preview operations, 24 months for `/v1`), how old a Kiro Crew the contract tests cover (proposal: releases of the last 12 months), and who specifies the routes that are reachable without a token | All proposals without usage data |
 | Q9 | Helper Bot templates and the per-grant cap | At most 16 helper Bots per grant (proposal) |
 | Q10 | Whether the stream shape in [Public API](#3-public-api) stands: Responses subset for a turn, Kiro Crew's own event stream for the rest, no ACP-shaped stream to third parties | Yes |
