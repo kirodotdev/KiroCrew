@@ -46,7 +46,7 @@ const TARGETS: Record<TopbarSide, [number, () => HTMLElement][]> = {
     [1, () => el('span', 'tb-drop-metrics')],
     [3, () => el('span', 'tb-drop-usage')],
     [4, () => el('span', 'tb-drop-feedback', [el('span', 'tb-drop-feedback-label')])],
-    [5, () => el('div', 'tb-capsule', [el('span', '', [], { 'data-liquid-glass-layer': '' }), el('span', ''), el('span', '')])],
+    [5, () => el('div', 'tb-capsule', [el('span', '', [], { 'data-liquid-glass-layer': '' }), el('span', 'tb-capsule-keep'), el('span', '')])],
   ],
 }
 
@@ -351,9 +351,9 @@ describe('index.css measured ladders', () => {
       '.tb-right .tb-drop-usage',
       '.tb-right .tb-drop-feedback',
       // The capsule is a Liquid Glass host whose effect layers come first, so the
-      // rung skips `[data-liquid-glass-layer]` on both sides, as the container
-      // ladder's terminal rung does.
-      '.tb-right .tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer])',
+      // rung hides what follows the connection dot, as the container ladder's
+      // terminal rung does.
+      '.tb-right .tb-capsule > .tb-capsule-keep ~ *',
       // Last, so the update pill's label cannot push the bell out of the group.
       '.tb-right .tb-drop-update-label',
     ],

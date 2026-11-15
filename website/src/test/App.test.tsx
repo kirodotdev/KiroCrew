@@ -1453,8 +1453,8 @@ describe('App routing', () => {
     const GROUP_GAP = 6
     const SHIFT_LABELED = Math.ceil(PILL_WIDEST_LABELED + GROUP_GAP)
     // The capsule is a Liquid Glass host whose effect layers precede the
-    // segments, so the rung skips `[data-liquid-glass-layer]` on both sides.
-    const TERMINAL = '.tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer])'
+    // segments, so the rung hides what follows the connection dot.
+    const TERMINAL = '.tb-capsule > .tb-capsule-keep ~ *'
     // ≥640px (label visible): every rung, terminal included, shifts by the
     // labeled footprint, inside the media gate.
     for (const sel of ['.tb-drop-metrics', '.tb-drop-usage', '.tb-drop-feedback', TERMINAL]) {
