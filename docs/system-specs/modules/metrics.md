@@ -1974,7 +1974,7 @@ returns the state already resolved and never reads or awaits anything, so a turn
 no suspension point before its prompt is written. A turn that starts before the boot
 read finishes is not traced, nor is a process that never registers the watcher (the
 `kirocrew chat` CLI). The service boot registers `watch_config()`: after a `telemetry.*` write that
-moves `traces_enabled`, `retention_days`, `max_total_mb`, `traces_conductor_mode` or a `traces_otlp_*` key, the worker
+moves `traces_enabled`, `retention_days`, `max_total_mb`, `traces_conductor_mode`, `accept_traceparent` or a `traces_otlp_*` key, the worker
 thread applying it re-reads the switch at once, and any other write changes nothing. A process builds at most one tracer and
 never shuts it down for a settings write: switched off, it is no longer served to new
 turns, while a turn already streaming keeps ending its spans on it; switched back on,
@@ -2138,6 +2138,36 @@ the dispatch runs in a task of its own, and `admitted_cron_dispatch` hands the r
 to it (`turns.adopt_root`). A root opened inside another root bound in the
 same task (a one-liner a dashboard turn awaits) owns its turns until it closes, then
 the outer binding is back. Off, a root is one context-variable write.
+
+**Inbound traceparent** (`tracing/inbound.py`). `telemetry.accept_traceparent`, default
+`false`, read with the switch (`provider.accepts_traceparent()` never reads), lets a
+service that calls Kiro Crew over HTTP put its turn in the caller's trace. Only two
+routes read the header, `POST /v1/chat/completions` (`dashboard/openai_compat.py`) and
+`POST /api/hooks/agent` (`dashboard/handlers/hooks.py`), and only after the caller has
+authenticated, at the point the turn is about to start. `begin(headers)` binds nothing
+unless the setting and tracing are both on and exactly one `traceparent` header was
+sent; `ids.parse_traceparent` accepts only a version `00` value of 55 characters (four
+`-` separated lowercase hex fields of 2, 32, 16 and 2 digits, the trace and parent ids
+not all zero), and anything else is ignored with a debug line, never refused. The
+sampled flag and `tracestate` are ignored: the gateway's own switch decides whether a
+turn is recorded. `begin` mints the turn id, so the turn span's id
+(`H(turn, turn_id, 1)`) is known before the turn runs, and the response carries
+`traceparent` built from the caller's trace id and that span id, never an echo of the
+request; the header names the first attempt, and nothing is sent with tracing off. The
+turn takes the minted id through `claim_turn_id`, once: `dashboard/chat_turn/turn_entry.py::_turn_open`
+for a dashboard turn, `surfaces.root` for a webhook turn that roots itself, and a
+`/prompts get` expansion hands it on to the nested turn with `hand_back`, because the
+outer turn returns before it binds a root and the nested one is the turn that produces
+the reply. The bound turn joins the caller's span (`join_for`, a `runs.RunRef` of kind
+`caller` that is never emitted as a span, with no root session, so the spans keep the
+turn's own `session.id`) and `trace_binding.bind_turn` lets it override any join the
+turn would otherwise take (a Bot or conductor round, a run); only the join is replaced,
+so a conductor round's `rollup_key` stays and the round's roll-up still receives the
+turn's spend. An attempt retried within the turn is another child of the caller's span
+with the same `kirocrew.turn_id`. A turn that ends and queues a recovery turn is
+different: the recovery turn mints its own turn id and runs outside the caller's trace.
+Tests: `test/tracing/test_tracing_inbound.py`, `test_tracing_inbound_routes.py`,
+`test/test_trace_inbound_prompt_expansion.py`.
 
 **Workflow runs** (`tracing/workflows.py`). The `workflow` root above opens the anchor,
 named by the script's `META["name"]`, and the outcome: `finished`, `failed` or

@@ -7,6 +7,8 @@ one the gateway would build.
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import uuid
 from types import SimpleNamespace
 
@@ -18,7 +20,7 @@ from kiro_crew import crew_mode
 from kiro_crew import work_ledger as wl
 from kiro_crew.acp.types import EVENT_COMPLETE, AcpEvent, TurnUsage
 from kiro_crew.dashboard import trace_binding
-from kiro_crew.tracing import correlation, provider, runs, turns, work
+from kiro_crew.tracing import correlation, inbound, provider, runs, turns, work
 
 _isolated = helpers._isolated
 recorded = helpers.recorded
@@ -455,6 +457,57 @@ async def test_a_round_ends_once_with_every_conductor_turns_spend(spans, recorde
     (closed,) = _named(spans.get_finished_spans(), "conductor_mode outcome closed")
     assert closed.attributes["kirocrew.usage.credits_total"] == pytest.approx(5.0)
     assert closed.attributes["kirocrew.usage.turns_total"] == 3
+
+
+class _CallerHeaders:
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def getall(self, name: str, default: list[str]) -> list[str]:
+        return [self._value]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_joining_a_caller_keeps_its_round_rollup(spans, recorded):
+    """A completion request with a ``traceparent`` to an idle conductor slot parents its turn
+    on the caller's span, and the turn's spend still goes to the board round it ran under."""
+    trace_id, caller_span = "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7"
+    provider._accept_traceparent = True
+    await _goal(1)
+    ctx = contextvars.copy_context()
+    ctx.run(inbound.begin, _CallerHeaders(f"00-{trace_id}-{caller_span}-01"))
+
+    async def caller_turn() -> str:
+        turn_id = inbound.claim_turn_id()
+        assert turn_id
+        token = await trace_binding.bind_turn(
+            SimpleNamespace(), SimpleNamespace(key=CONDUCTOR), turn_id, top=True
+        )
+
+        async def events():
+            yield AcpEvent(
+                kind=EVENT_COMPLETE, stop_reason="end_turn", usage=TurnUsage(credits=2.0)
+            )
+
+        try:
+            async for _ in turns.traced(_Source(CONDUCTOR, "kirocrew-conductor"), events()):
+                pass
+        finally:
+            turns.release_turn_root(token)
+        return turn_id
+
+    joined = await asyncio.get_running_loop().create_task(caller_turn(), context=ctx)
+
+    async def bump():
+        await _goal(2)
+
+    await _turn(CONDUCTOR, bump, credits=3.0)
+    span = _turn_span(spans.get_finished_spans(), joined)
+    assert format(span.context.trace_id, "032x") == trace_id
+    assert _parent(span) == caller_span
+    (closed,) = _named(spans.get_finished_spans(), "conductor_mode outcome closed")
+    assert closed.attributes["kirocrew.usage.credits_total"] == pytest.approx(5.0)
+    assert closed.attributes["kirocrew.usage.turns_total"] == 2
 
 
 @pytest.mark.asyncio

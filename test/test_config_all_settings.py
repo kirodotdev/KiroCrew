@@ -263,6 +263,9 @@ _REVIEWED_EDITABLE = frozenset(
         # Whether a conductor-mode round is one trace or one per turn: the shape of
         # spans that Traces Enabled (read only here) already exports, never a switch.
         "telemetry.traces_conductor_mode",
+        # Whether an authenticated caller's traceparent header parents the turn it
+        # starts. It adds no listener, route or credential and needs Traces Enabled.
+        "telemetry.accept_traceparent",
     }
 )
 

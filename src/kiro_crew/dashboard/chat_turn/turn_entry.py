@@ -330,7 +330,11 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
         )
     )
     # Local to this invocation, including failures before provider dispatch.
-    _recovery_turn_id = uuid.uuid4().hex
+    from kiro_crew.tracing import inbound as trace_inbound
+
+    # A caller's traceparent (tracing/inbound.py) names the id its response header
+    # already carries; every other turn mints its own.
+    _recovery_turn_id = trace_inbound.claim_turn_id() or uuid.uuid4().hex
     turn._recovery_turn_id = _recovery_turn_id
     turn_exit.actor = _crew_log_actor
     turn_exit.turn_id = _recovery_turn_id

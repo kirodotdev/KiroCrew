@@ -190,6 +190,21 @@ A span that failed shows its `error.type`. It prints names and timings only. Whe
 several traces match, it says how many others do; pass a trace id to pick one.
 A long trace stops after 500 rows and ends with the number of spans not shown.
 
+## Joining a caller's trace
+
+A service that calls Kiro Crew over HTTP can pass its W3C `traceparent` header on
+`POST /v1/chat/completions` or `POST /api/hooks/agent`. With `accept_traceparent` set
+to `true` in `telemetry` (default `false`) and Traces Enabled on, a valid version `00`
+header makes the turn span a child of the caller's span, so the turn's spans appear
+inside the caller's trace. The response carries a `traceparent` header whose span id is
+the turn span's; the response body is unchanged. The header is read only after the
+request has authenticated, a value that is not valid is ignored, and the caller's
+sampled flag never switches recording on. With tracing off nothing is recorded and no
+header is returned. The header names the turn's first attempt; an attempt retried
+within the same turn is recorded as another child of the caller's span, with the same
+`kirocrew.turn_id`. A turn that ends and queues a recovery turn is different: the
+recovery runs as a new turn with its own `kirocrew.turn_id`, outside the caller's trace.
+
 ## Checking it works
 
 - `~/.kiro/crew/traces/spans-*.jsonl` fills as soon as the switch is on, with or

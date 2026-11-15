@@ -204,6 +204,19 @@ class TelemetryConfig:
             enum=["run", "turn"],
         ),
     )
+    accept_traceparent: bool = field(
+        default=False,
+        metadata=_meta(
+            "Traces: join the caller's trace",
+            "While Traces Enabled is on, a W3C 'traceparent' header on an authenticated "
+            "POST /v1/chat/completions or POST /api/hooks/agent request parents the turn "
+            "it starts under the caller's span, so the turn's trace id is the caller's, "
+            "and the response carries a 'traceparent' header for the turn span. A header "
+            "that is not a valid version 00 value is ignored. The caller's sampled flag "
+            "never turns recording on, and nothing is returned while tracing is off. "
+            "Off (default): the header is ignored.",
+        ),
+    )
     beacon_enabled: bool = field(
         default=True,
         metadata=_meta(

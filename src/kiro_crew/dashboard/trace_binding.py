@@ -23,6 +23,7 @@ import logging
 from typing import Any
 
 from kiro_crew.tracing import crew as trace_crew
+from kiro_crew.tracing import inbound as trace_inbound
 from kiro_crew.tracing import provider as trace_provider
 from kiro_crew.tracing import steps as trace_steps
 from kiro_crew.tracing import subagents as trace_subagents
@@ -107,6 +108,11 @@ async def bind_turn(state: Any, slot: Any, turn_id: str, *, top: bool) -> contex
             # After the crew read, so its failure cannot strip the run id off a joined turn.
             attrs = {**(attrs or {}), **wf_attrs}
         links = tuple(links) + sent_links
+    caller = trace_inbound.join_for(turn_id)
+    if caller is not None:
+        # The caller asked (``telemetry.accept_traceparent``): its span parents the turn;
+        # a board round keeps this turn's spend through its own ``rollup_key``.
+        join = caller
     return trace_turns.bind_turn_root(
         turn_id,
         join=join,

@@ -30,7 +30,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Any, Callable, Coroutine, Iterator, Mapping, ParamSpec, TypeVar
 
-from kiro_crew.tracing import provider, runs, turns
+from kiro_crew.tracing import inbound, provider, runs, turns
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,11 @@ def root(
         surface.run, step_span = _open_run(
             state, trigger, run_name, run_key, root_session_key, step, common, attrs, links
         )
-    token = turns.bind_turn_root(uuid.uuid4().hex, join=surface.run, attrs=common)
+    # A caller's traceparent (tracing/inbound.py) names this turn's id and parents it.
+    turn_id = inbound.claim_turn_id() or uuid.uuid4().hex
+    token = turns.bind_turn_root(
+        turn_id, join=inbound.join_for(turn_id) or surface.run, attrs=common
+    )
     error: BaseException | None = None
     try:
         yield surface
