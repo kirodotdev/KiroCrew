@@ -132,6 +132,7 @@ const LibraryPage = lazy(() => import('./pages/apps/LibraryPage'))
 const NotificationsPage = lazyPage(() => import('./pages/NotificationsPage'))
 const WebhooksPage = lazyPage(() => import('./pages/WebhooksPage'))
 const ProjectsPage = lazyPage(() => import('./pages/ProjectsPage'))
+const ChannelPage = lazyPage(() => import('./pages/ChannelPage'))
 const CapabilitiesPage = lazyPage(() => import('./pages/CapabilitiesPage'))
 const ArtifactsPage = lazyPage(() => import('./pages/ArtifactsPage'))
 const RemoteArtifactDetailPage = lazyPage(() => import('./pages/RemoteArtifactDetailPage'))
@@ -902,6 +903,8 @@ export default function App() {
             <Route path="/schedule" element={<SchedulePage />} />
             {/* Task Runner: a core page, routed here rather than through the builtin app registry. */}
             <Route path="/projects/*" element={<ProjectsPage />} />
+            {/* Channels: a core page too, shown in the rail by `dashboard.channels_enabled`. */}
+            <Route path="/channels/*" element={<ChannelPage />} />
             {/* Agents live in the Agent Capabilities panel; Connections is a Settings tab. */}
             <Route path="/agents" element={<Navigate to="/capabilities" replace />} />
             <Route path="/mc-agents" element={<Navigate to="/capabilities" replace />} />

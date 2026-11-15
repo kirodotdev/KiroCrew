@@ -2587,8 +2587,9 @@ behind it.
 
 `hidden: true` on a builtin manifest removes it from the Discover catalog while
 leaving its code and routes fully intact. It stays installable and enablable by
-name from the CLI, and remains visible in the Library once enabled. **Channels**
-carries this flag. **Board** is not hidden but removed: it is listed alongside
+name from the CLI, and remains visible in the Library once enabled. **Workflows**
+carries this flag; **Channels** carried it until it folded into core (§33, "Folding a
+built-in into core"). **Board** is not hidden but removed: it is listed alongside
 `knowledge` (promoted to a built-in surface) and `orchestrated` (merged into the
 unified Chat surface) in the escalation-cleanup sweep, which deletes stale
 installed-app directories so an orphaned entry cannot resurface in the store.
@@ -7863,32 +7864,41 @@ next start a no-op. The owner's records under `member-records/` are left as they
 
 When the app's enabled state was the feature's switch, `_FOLDED_BUILTIN_SWITCHES`
 maps the name to the dotted `config.json` path that is the switch now, and
-`apps/builtin_fold.carry_folded_switch` writes the record's off state there before
+`apps/builtin_fold.carry_folded_switch` writes the record's state there before
 the record is retired. The state is `manager_builtins.folded_switch_state`: a record
 of an app that reached installs as a default-on promotion (`_FOLDED_PROMOTED_BUILTINS`,
 the Command Bar) still owed that promotion reads as on unless the owner's protected
 disable or the `apps` allowlist held it off; any other folded app's off record is the
-user's opt-out. Only an off state is written, because every such
-setting defaults on as the app did, and a key already in the file is kept, because
-only Settings writes it. A failed write keeps the record, so
-the next start tries again instead of dropping the opt-out, and until the record is
+user's opt-out. Every such setting defaults to what its app's `defaultEnabled` was,
+on unless the name is in `_FOLDED_OFF_BY_DEFAULT`, and only a state that differs
+from that default is written: an opt-out for a default-on switch, an opt-in for a
+default-off one. A key already in the file is kept, because only Settings (or
+`kirocrew config set`) writes it. A failed write keeps the record, so
+the next start tries again instead of dropping the choice, and until the record is
 retired, and while no config file holds the setting itself, the feature's own check
 reads its off state too (`task_runner_off` for Task Runner, the `builtin`-origin
 record only), since a gateway started without the dashboard never runs the cleanup.
 The Migrate page's
-removal of the same record carries the switch the same way.
+removal of the same record carries the switch the same way. `kirocrew app enable <name>`
+and `app disable <name>` for a name in `_FOLDED_BUILTIN_SWITCHES` write its setting
+(`builtin_fold.set_folded_switch`, called by `cli_commands_app` before it asks a
+gateway), so the command that worked before the fold still does; an app a user
+installed under that name is its own app and takes the ordinary path.
 
 | Former app | Switch | Where it is turned on and off |
 |---|---|---|
 | `command-bar` (Command Bar) | `dashboard.command_bar_enabled` | Settings > Display > View ([command-bar](command-bar.md)) |
 | `projects` (Task Runner) | `taskrunner.enabled` | Settings > Display > View; every start reads it through `taskrunner_switch.task_runner_off`, which also keeps the `apps` governance allowlist deciding it under the old name |
+| `channels` (Channels) | `dashboard.channels_enabled`, default off | `kirocrew app enable channels` or `kirocrew config set`, then Settings > Display > View, whose row is drawn and offered by a settings search only while it is on, as the hidden app was listed in Library only while enabled ([persistent-agent-channels](persistent-agent-channels.md)). It decides only the sidebar row and Search Everywhere result: the page and `/api/channels` were served whatever the app's state, so there is no start gate to carry and no `apps` allowlist read |
 
 On the dashboard the page becomes an ordinary surface (`surfaces/surfaceData.ts`)
 and keeps what its app row had: the nav id (the app's bare name, so the rail's saved
 order and unpinned set still find it), its icon, its place in the Apps group until
 the user drags the group (`formerApp`, `naturalAppGroupOrder`), and its pop-out
 window (`pages/corePopoutPages.tsx`). The surface's `configSwitch` takes it off the
-rail and out of Search Everywhere while its setting is off; its route stays. The
+rail and out of Search Everywhere while its setting is off; its route stays. A
+default-off switch (`configSwitchDefault: false`) reads a config not read yet as off,
+so the row never flashes in before the gateway answers. The
 setting's own row shows the gateway's value alone; Library no longer lists the row,
 so turning the setting on also pins back a row Library had unpinned in a browser. A
 built-in record the former app left behind (its cleanup could not retire it yet)
@@ -7899,8 +7909,11 @@ user installs under the same name is its own app on both, and only the built-in
 record is read by the feature's own check.
 
 Tests: `test/test_task_runner_fold.py`, `test/test_taskrunner_switch.py`,
+`test/test_channels_fold.py`,
 `website/src/shell/nav/appRail.formerApp.test.tsx`,
+`website/src/shell/nav/appRail.channels.test.tsx`,
 `website/src/pages/settings/TaskRunnerSetting.test.tsx`,
+`website/src/pages/settings/ChannelsSetting.test.tsx`,
 `website/src/pages/corePopoutPages.test.ts`,
 `website/src/components/commandPalette/providers/pagesProvider.configSwitch.test.ts`,
 `website/src/appNav.test.ts`.

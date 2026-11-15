@@ -46,6 +46,11 @@ _MIGRATED_BUILTINS: list[str] = [
     # kept per install, whether it was on, so that moves to the setting named in
     # _FOLDED_BUILTIN_SWITCHES before the record is retired.
     "projects",
+    # Channels is a core page (``website/src/pages/ChannelPage.tsx`` over the host's
+    # ``/api/channels``). Its app record carried the one thing the feature kept per
+    # install, whether it was on, so that moves to the setting named in
+    # _FOLDED_BUILTIN_SWITCHES before the record is retired.
+    "channels",
 ]
 
 # A migrated built-in whose enabled state was its feature's switch, mapped to the
@@ -54,7 +59,13 @@ _MIGRATED_BUILTINS: list[str] = [
 _FOLDED_BUILTIN_SWITCHES: dict[str, str] = {
     "command-bar": "dashboard.command_bar_enabled",
     "projects": "taskrunner.enabled",
+    "channels": "dashboard.channels_enabled",
 }
+
+# The folded switches that default OFF, as their app did (``defaultEnabled: false``).
+# The carry writes a record's state only where it differs from the setting's default,
+# so for these it writes an opt-in and for every other switch an opt-out.
+_FOLDED_OFF_BY_DEFAULT: frozenset[str] = frozenset({"channels"})
 
 # The folded built-ins that reached existing installs as a default-on PROMOTION
 # (``manager_builtins._DEFAULT_ON_BACKFILL`` before they folded). A record of one

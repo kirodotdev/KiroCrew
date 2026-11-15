@@ -173,6 +173,13 @@ export const SETTING_PREVIEW: Record<string, string> = {
   'developer.wake-bots-to-update-out-of-date-fields': PREVIEW_DASHBOARD_STALE_FIELDS,
 }
 
+/** Single settings a panel draws only while a `UI_CONDITIONS` condition holds.
+ *  Keyed by setting id. */
+export const SETTING_CONDITION: Record<string, string> = {
+  // Display > View draws Channels' switch only while Channels is turned on.
+  'display.show-channels': 'page_turned_on',
+}
+
 /** Settings tabs `SettingsPage` hides behind a preview flag (its `buildTabs` filter).
  *  Every setting and sub-page on such a tab carries the same requirement. */
 export const SETTINGS_TAB_PREVIEW: Record<string, string> = {

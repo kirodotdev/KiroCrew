@@ -2870,6 +2870,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.terminal.reuse_current"
   },
   {
+    "id": "display.show-channels",
+    "label": "Show Channels",
+    "labelKey": "pages.settings.displayPanel.channels",
+    "description": "Off takes Channels off the left rail and out of Search Everywhere. Nothing is deleted or stopped: your channels and the agents working in them are kept.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    },
+    "configKey": "dashboard.channels_enabled"
+  },
+  {
     "id": "display.show-search-in-the-top-bar",
     "label": "Show search in the top bar",
     "labelKey": "pages.settings.displayPanel.show_topbar_search",

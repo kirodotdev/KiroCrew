@@ -22,6 +22,9 @@ import type { RootState } from '../store'
 /** Task Runner's rail mark: a theme-painted SVG, inlined by `AppIcon` like an app's. */
 const TASK_RUNNER_ICON_URL = '/app-assets/projects/icon.svg'
 
+/** Channels' rail mark, the one its app row showed, inlined the same way. */
+const CHANNELS_ICON_URL = '/app-assets/channels/icon.svg'
+
 // Memoized at the source so `selectAllSurfacesAttention`'s per-dispatch
 // invocation only re-runs the .filter().length when the items array changes
 // reference (which is the standard Redux Toolkit pattern).
@@ -91,6 +94,12 @@ registerBuiltinSurface({
   // is what the fallback path's aria-label uses.
   badgeLabel: 'approvals needed',
   badgeLabelKey: 'nav.badge_approvals_needed',
+})
+
+registerBuiltinSurface({
+  ...BUILTIN_SURFACE_NAV.channels,
+  // The mark and size its app row had, so the row looks as it did among the apps.
+  icon: <AppIcon iconUrl={CHANNELS_ICON_URL} icon="Users" size={20} />,
 })
 
 registerBuiltinSurface({

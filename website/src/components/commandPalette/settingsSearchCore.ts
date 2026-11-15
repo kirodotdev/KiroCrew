@@ -143,6 +143,9 @@ export const FEATURE_TIPS_SETTING_ID = 'chat.feature-tips'
 export const GATEWAY_AUTO_UPDATE_SETTING_ID = 'about.update-the-gateway-automatically'
 export const APP_AUTO_DOWNLOAD_SETTING_ID = 'about.install-app-updates-automatically'
 
+/** The config key of Channels' switch, which `ChannelsSetting` draws only while it is on. */
+export const CHANNELS_SWITCH_KEY = 'dashboard.channels_enabled'
+
 /** Registry ids of the Instances tab's two rows: RemoteCrewPanel draws the enable
  *  card only while remote crews are off, and the auto-connect switch only while on. */
 export const ENABLE_REMOTE_CREWS_SETTING_ID = 'instances.enable-remote-crew-management'
@@ -180,6 +183,13 @@ export interface SettingsSearchGovernance {
    * unknown, and both Instances rows are offered.
    */
   remoteCrewsEnabled?: boolean
+  /**
+   * Whether Channels is turned on (`dashboard.channels_enabled`), from the
+   * `['kirocrewConfig']` read. Display > View draws Channels' switch only while it
+   * is, because Channels is an opt-in the dashboard does not advertise, so its
+   * entry is offered only once the read SUCCEEDED and said `true`.
+   */
+  channelsOn?: boolean
 }
 
 /**
@@ -220,6 +230,7 @@ export function settingEntryOffered(
   if (entry.id === KIRO_SIGN_IN_SETTING_ID) return governance.kiroSignInOffered !== false
   if (entry.id === ENABLE_REMOTE_CREWS_SETTING_ID) return governance.remoteCrewsEnabled !== true
   if (entry.id === AUTO_CONNECT_CREWS_SETTING_ID) return governance.remoteCrewsEnabled !== false
+  if (entry.configKey === CHANNELS_SWITCH_KEY) return governance.channelsOn === true
   if (!DECISIONS_SETTING_IDS.has(entry.id)) return true
   return governance.decisionsEnabled
 }

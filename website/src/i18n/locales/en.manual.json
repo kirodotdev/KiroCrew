@@ -5239,6 +5239,7 @@
     "agent_capabilities_short": "Customize",
     "settings": "Settings",
     "task_runner": "Task Runner",
+    "channels": "Channels",
     "webhooks": "Webhooks",
     "crew_members": "Bots",
     "badge_unread_conversations": "unread conversations",
@@ -9581,7 +9582,10 @@
         "remote_editor_host_save_error": "Couldn’t save the SSH host.",
         "task_runner": "Show Task Runner",
         "task_runner_hint": "Off takes Task Runner off the left rail and out of Search Everywhere and stops new task runs. Nothing is deleted: your plans, past runs and runs already going are kept.",
-        "task_runner_save_failed": "Could not save the Task Runner setting. Try again."
+        "task_runner_save_failed": "Could not save the Task Runner setting. Try again.",
+        "channels": "Show Channels",
+        "channels_hint": "Off takes Channels off the left rail and out of Search Everywhere. Nothing is deleted or stopped: your channels and the agents working in them are kept.",
+        "channels_save_failed": "Could not save the Channels setting. Try again."
       },
       "instancesPanel": {
         "add_remote_crew": "Add remote crew",

@@ -1007,10 +1007,11 @@ custom-rules:
         generic seam every app can use, never the app in core. An explicit
         maintainer decision recorded on the PR (the /ai-review override flow)
         is the only exception — the default is closed.
-      - FLAG restoring a withdrawn built-in (the Board app) or un-hiding the
-        Channels app from the App Store (flipping "hidden": true in
-        src/kiro_crew/apps/builtins/channels/app.json). Both are deliberate
-        fork divergences an upstream sync must not undo.
+      - FLAG restoring a withdrawn built-in (the Board app), restoring the
+        Channels app, or offering Channels where it was not offered (it is the
+        default-off core setting dashboard.channels_enabled, whose Settings
+        row is drawn only while it is on). Both are deliberate fork
+        divergences an upstream sync must not undo.
 
       Allowed (do NOT flag):
       - Changes inside an EXISTING built-in app directory or its existing

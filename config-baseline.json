@@ -9867,6 +9867,7 @@
         "recent_tint_count": 0,
         "show_unread_dot": true,
         "command_bar_enabled": true,
+        "channels_enabled": false,
         "folder_sort": "custom",
         "session_sort": "date-desc",
         "unfiled_sessions_above_folders": false,
@@ -11384,6 +11385,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "dashboard.channels_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Channels Enabled",
+      "help": "Show Channels, where several agents work a problem together in one shared room, in the sidebar and in Search Everywhere. Off by default; off only hides the sidebar row and the search result, so the channels you made and the Channels page itself are kept.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.folder_sort",

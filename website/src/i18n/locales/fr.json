@@ -867,20 +867,6 @@
         "tablist_label": "Vues du pipeline de triage automatique"
       }
     },
-    "channels": {
-      "manifest": {
-        "description": "Un espace partagé où plusieurs agents traitent un problème ensemble, au lieu qu’un seul agent travaille seul. Tu attribues un rôle à chaque agent, et ils publient leur progression dans le canal et se répondent via des @mentions au grand jour — il n’existe aucune messagerie privée entre agents, donc tout l’échange reste lisible, et c’est toujours toi qui approuves ce qui modifie un état. Les agents restent actifs dans le canal jusqu’à ce qu’ils soient congédiés, que le canal soit fermé ou que l’agent échoue.",
-        "display_name": "Canaux",
-        "highlight_1": "Plusieurs agents dotés d’un rôle collaborent dans une seule transcription partagée et lisible",
-        "highlight_2": "Aucune messagerie privée entre agents — chaque échange a lieu dans le canal",
-        "highlight_3": "C’est toujours toi qui donnes l’approbation finale pour toute opération qui modifie un état",
-        "highlight_4": "Les agents persistent dans le canal jusqu’à ce qu’ils soient congédiés, que le canal soit fermé ou que l’agent échoue",
-        "highlight_5": "Masqué dans la grille des applications ; à activer avec `kirocrew app enable channels`",
-        "page_label": "Canaux",
-        "use_case_1": "Gère une réponse à incident, une recherche ou une revue de code avec plusieurs rôles d'agent nommés dans une transcription partagée et auditable.",
-        "configuration_1": "Active l'app masquée avec kirocrew app enable channels, crée un canal depuis un modèle ou avec Custom, attribue les agents et leurs modes d'écoute, puis utilise les @mentions pour transmettre le travail."
-      }
-    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_many": "{{count}} PR ouvertes",
@@ -11911,6 +11897,7 @@
     "agent_capabilities_short": "Person­naliser",
     "settings": "Paramètres",
     "task_runner": "Task Runner",
+    "channels": "Canaux",
     "webhooks": "Webhooks",
     "crew_members": "Bots",
     "badge_unread_conversations": "conversations non lues",
@@ -20279,7 +20266,10 @@
         "command_bar_save_failed": "Impossible d’enregistrer le réglage de la Command Bar.",
         "task_runner": "Afficher Task Runner",
         "task_runner_hint": "Désactivé, Task Runner disparaît de la barre latérale gauche et de Rechercher partout, et les nouvelles exécutions de tâches sont arrêtées. Rien n’est supprimé : tes plans, les exécutions passées et celles en cours sont conservés.",
-        "task_runner_save_failed": "Impossible d'enregistrer le réglage Task Runner. Réessaie."
+        "task_runner_save_failed": "Impossible d'enregistrer le réglage Task Runner. Réessaie.",
+        "channels": "Afficher Canaux",
+        "channels_hint": "Désactivé, Canaux disparaît de la barre latérale gauche et de Rechercher partout. Rien n’est supprimé ni arrêté : tes canaux et les agents qui y travaillent sont conservés.",
+        "channels_save_failed": "Impossible d'enregistrer le réglage Canaux. Réessaie."
       },
       "importPanel": {
         "agent_data": "Données de l'agent",
