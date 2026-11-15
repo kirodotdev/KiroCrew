@@ -216,6 +216,39 @@ class TestExport:
         assert not any(".pid" in n for n in names)
         zf.close()
 
+    def test_export_leaves_out_folders_tools_rebuild(self, patched_config_dir):
+        proj = patched_config_dir / "workspace" / "proj"
+        for folder in ("node_modules/pkg", ".venv/lib", ".mypy_cache/3.12"):
+            (proj / folder).mkdir(parents=True)
+            (proj / folder / "blob.bin").write_bytes(b"x" * 64)
+        (proj / "notes.md").write_text("keep me")
+        zip_bytes, _ = create_export_zip()
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            names = zf.namelist()
+        assert any(n.endswith("workspace/proj/notes.md") for n in names)
+        assert not any("blob.bin" in n for n in names)
+
+    def test_export_keeps_a_store_or_skill_named_like_a_rebuildable_folder(
+        self, patched_config_dir
+    ):
+        # The rebuildable-folder rule is for the workspace only: a memory store
+        # or a skill may be named ``venv``, and its files are user data.
+        store = patched_config_dir / "memory_stores" / "venv"
+        store.mkdir(parents=True)
+        (store / "notes.md").write_text("store note")
+        skill = patched_config_dir / "skills" / "venv"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("skill body")
+        modules = patched_config_dir / "workspace" / "proj" / "node_modules"
+        modules.mkdir(parents=True)
+        (modules / "blob.bin").write_bytes(b"x" * 64)
+        zip_bytes, _ = create_export_zip()
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            names = zf.namelist()
+        assert any(n.endswith("memory_stores/venv/notes.md") for n in names)
+        assert any(n.endswith("skills/venv/SKILL.md") for n in names)
+        assert not any("node_modules" in n for n in names)
+
     def test_export_skips_symlinks(self, patched_config_dir):
         link = patched_config_dir / "workspace" / "memory" / "evil_link.md"
         try:
