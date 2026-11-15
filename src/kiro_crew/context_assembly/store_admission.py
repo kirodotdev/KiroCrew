@@ -486,25 +486,14 @@ def _lstat(path: Any) -> tuple[int, int] | None:
     return (st.st_mtime_ns, st.st_size)
 
 
-def _dir_lstat(path: Any) -> tuple[int, int, int] | None:
-    try:
-        with os.scandir(path) as entries:
-            stats = [entry.stat(follow_symlinks=False) for entry in entries]
-    except (OSError, TypeError, ValueError):
-        return None
-    return (
-        len(stats),
-        max((s.st_mtime_ns for s in stats), default=0),
-        sum(s.st_size for s in stats),
-    )
-
-
 def _admitted_file_stats(memory: MemoryStore) -> tuple[Any, ...] | None:
     """The Markdown sources' metadata, or ``None`` when it cannot be read safely.
 
     Taken only behind the memory reader's own admission: the local file seam's
     root gate (a UNC workspace, a linked ancestor on Windows, a linked root or
     history dir) and its leaf link check, then ``lstat`` with no link followed.
+    The history directory is described by ``MemoryStore._history_signature``, the
+    same signature the recent-history reuse compares.
     A store served by another file provider has no local metadata that tracks its
     content, so it has none either. ``None`` means the prefetch is not used.
     """
@@ -518,7 +507,10 @@ def _admitted_file_stats(memory: MemoryStore) -> tuple[Any, ...] | None:
         leaves = (memory._preferences_file, memory._projects_file)
         if any(is_link_or_junction(leaf) for leaf in leaves):
             return None
-        return (*(_lstat(leaf) for leaf in leaves), _dir_lstat(memory._history_dir))
+        history = memory._history_signature()
+        if history is None:
+            return None
+        return (*(_lstat(leaf) for leaf in leaves), history)
     except Exception:  # noqa: BLE001 - unreadable metadata is never a match
         return None
 

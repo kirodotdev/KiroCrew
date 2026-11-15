@@ -713,7 +713,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_spawn_admitted_prefetch",
             "async function",
-            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", sessions: 'Any', session_key: 'str', _t0: 'float', *, kiro_agent: 'str | None', crew_alias: 'str', agent_model: 'str', allow_resume: 'bool', _bound: 'tuple', start_priority: 'StartPriority', focus_resume: 'bool' = False) -> 'None'",
+            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", sessions: 'Any', session_key: 'str', _t0: 'float', *, kiro_agent: 'str | None', crew_alias: 'str', agent_model: 'str', allow_resume: 'bool', _bound: 'tuple', start_priority: 'StartPriority', focus_resume: 'bool' = False, store_to_warm: 'str | None' = None) -> 'None'",
         ),
         (
             "_schedule_prefetch_ttl",

@@ -361,6 +361,21 @@ keyed on `(days, today)` so the decay window shifting at midnight invalidates
 naturally; `append_history` and `prune_history` call `_invalidate_history_cache()`
 so a new or pruned entry is visible immediately.
 
+A new chat's pre-warm calls `warm_recent_history(days=14)` in the background
+(`dashboard/chat_turn/eager_spawn.py`). That read writes no TTL entry. It is kept
+with the history directory's `_history_signature()`, and the next
+`read_recent_history` for the same window reuses it once, within
+`_HISTORY_REUSE_MAX_SECS = 60.0`, only while the signature is unchanged; any
+other outcome reads every file again through the hardened reader. Reads nobody
+warmed keep the plain TTL. The signature is one `lstat` row per entry (name,
+mode, inode, size, mtime, ctime, link count) plus the directory's own inode,
+mtime and ctime, capped at `_HISTORY_SIGNATURE_MAX_ENTRIES = 2048` (past it:
+no signature, no reuse). The session memory prefetch
+(`context_assembly/store_admission._admitted_file_stats`) compares the same
+signature, behind the file seam's root guard. The reuse and the warm are
+POSIX-only (`HISTORY_REUSE_SUPPORTED`): on Windows `DirEntry.stat` reports no
+inode or link count, and the reuse path runs no root guard.
+
 ### History Pruning
 
 For V1, `prune_history(keep_days)` deletes daily files older than `keep_days` (default 365). It runs once per day via heartbeat (`_PRUNE_TICKS = 1440`), parses `YYYY-MM-DD.md` filenames and skips non-date files. For V2 it returns zero without deleting anything, regardless of the age setting.
