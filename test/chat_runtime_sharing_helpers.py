@@ -49,6 +49,8 @@ def make_placement(era: str = "acct-A", provider=None, **overrides):
         spec_generation="gen-1",
         sandbox_tier="auto",
         forward_ssh=False,
+        # Every placement here is a session of one tree unless a test says not.
+        tree_root="dashboard:chat-1-1790000000",
     )
     args.update(overrides)
     return ChatSharePlacement(provider or _PlacementProvider(era=era), **args)

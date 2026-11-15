@@ -102,6 +102,31 @@ def set_build_info(info: tuple[str, str]) -> None:
     _build_info = info
 
 
+def _share_tree_root(state: Any, session_key: str) -> str:
+    """The session key of *session_key*'s tree root, over this gateway's live slots.
+
+    The provider hands a session key (``dashboard:chat-...``) while the slots, the
+    creator edges and the persisted lineage are all keyed by slot name, so the key
+    is folded to its slot name before the walk and the root slot is mapped back to
+    the session key its turns run on (the member record is read by that key). No I/O.
+    """
+    from kiro_crew import crew_mode
+    from kiro_crew.dashboard.chat_utils_slots import _history_key_for, effective_session_key
+    from kiro_crew.dashboard.session_control_parts.crew_filing import _frame_parents
+
+    slot_key = _slot_directory._normalize_slot_key(session_key)
+    root = crew_mode.share_tree_root(
+        state._slots,
+        slot_key,
+        _frame_parents(state),
+        settled=crew_mode.lineage_is_settled(),
+    )
+    if root == slot_key:
+        return session_key
+    root_slot = state._slots.get(root)
+    return effective_session_key(root_slot) if root_slot is not None else _history_key_for(root)
+
+
 # ── Constants ──
 
 
@@ -984,6 +1009,10 @@ class DashboardState:
             self.subagents._parent_steering_dirs = lambda key: session_folder_steering_dirs(
                 self, key
             )
+        # Chat runtime sharing places a chat only inside its own session tree.
+        from kiro_crew.agent_sdk.chat_runtime_sharing import set_share_tree_reader
+
+        set_share_tree_reader(lambda key: _share_tree_root(self, key))
         if self.context_builder is not None:
             self.context_builder.live_memory_mode_for_session = (
                 lambda key: live_session_memory_mode(self, key)

@@ -965,10 +965,14 @@ class TestThePlacementIsConfirmedAgainstTheSpecAfterwards:
 
             share_mod.RUNTIME_OWNERSHIP = RuntimeOwnership()
             try:
-                # Two CHATS, so the second one joins: two starts of ONE chat go
-                # on separate processes (``_Entry.admits``).
+                # Two CHATS of one tree, so the second one joins: two starts of ONE
+                # chat go on separate processes (``_Entry.admits``), and two trees
+                # never share.
                 for n in (1, 2):
-                    p = make_placement(session_key=f"dashboard:chat-{n}-1790000000")
+                    p = make_placement(
+                        session_key=f"dashboard:chat-{n}-1790000000",
+                        tree_root="dashboard:chat-1-1790000000",
+                    )
                     p._read_confirmation = confirming(("gen-1", "acct-A", "auto", False, True))
                     await p.place(spawn)
             finally:
@@ -1044,7 +1048,7 @@ class TestThePlacementIsConfirmedAgainstTheSpecAfterwards:
         assert "bool(era) and era == self._raw_era" in place
         region = place
         # Every release in the placement settles through the shielded helper.
-        assert region.count("_settle_release(placed.lease)") == 2
+        assert region.count("_settle_release(placed.lease)") == 3
         assert "self.key = self._build_key()" in region, "the retry does not rebuild the key"
 
         # Text cannot tell live code from dead, so no confirmation in the

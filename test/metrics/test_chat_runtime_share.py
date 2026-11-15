@@ -228,14 +228,17 @@ def test_a_founding_and_a_joining_placement_are_counted_with_their_tenants(rec):
 
     async def scenario():
         for n in (1, 2):
-            p = make_placement(session_key=f"dashboard:chat-{n}-1790000000")
+            p = make_placement(
+                session_key=f"dashboard:chat-{n}-1790000000",
+                tree_root="dashboard:chat-1-1790000000",
+            )
             p._read_confirmation = confirming(("gen-1", "acct-A", "auto", False, True))
             await p.place(spawn)
 
     asyncio.run(scenario())
     assert _named(rec, crs.PLACED) == [
-        {"outcome": "spawned", "reason": "none", "tenants": "1"},
-        {"outcome": "joined", "reason": "none", "tenants": "2"},
+        {"outcome": "spawned", "reason": "none", "tenants": "1", "tree": "chat"},
+        {"outcome": "joined", "reason": "none", "tenants": "2", "tree": "chat"},
     ]
 
 
@@ -266,7 +269,7 @@ def test_a_refused_start_is_counted_with_its_reason(rec):
 
     assert asyncio.run(scenario()) is None
     assert _named(rec, crs.PLACED) == [
-        {"outcome": "refused", "reason": "session_environment", "tenants": "none"}
+        {"outcome": "refused", "reason": "session_environment", "tenants": "none", "tree": "none"}
     ]
 
 

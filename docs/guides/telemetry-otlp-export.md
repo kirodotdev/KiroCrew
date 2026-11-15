@@ -545,7 +545,7 @@ a shared process.
 | Metric | Attributes |
 |---|---|
 | `kirocrew.chat_runtime_share.toggled` | `state` (`on` / `off`) |
-| `kirocrew.chat_runtime_share.placed` | `outcome` (`spawned` / `joined` / `refused`), `reason` (a refusal branch name or `none`), `tenants` (after the placement, or `none` on a refusal) |
+| `kirocrew.chat_runtime_share.placed` | `outcome` (`spawned` / `joined` / `refused`), `reason` (a refusal branch name or `none`), `tenants` (after the placement, or `none` on a refusal), `tree` (`chat` / `bot`, or `none` on a refusal) |
 | `kirocrew.chat_runtime_share.processes`, `.tenants` | none; gauges over live processes placed by sharing, so `tenants - processes` is processes saved |
 | `kirocrew.chat_runtime_share.rss_sampled` | `tenants`, `rss` (`le_512m` … `gt_8g`); one per shared process per RSS watchdog tick |
 | `kirocrew.chat_runtime_share.reclaimed` | `reason` (`rss`) |

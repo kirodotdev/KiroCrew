@@ -100,8 +100,13 @@ says WHICH sessions may share: the preview on, a backend in
 `ACP_BACKENDS_CHAT_RUNTIME_SHARING` (asked separately from the subagent
 `ACP_BACKENDS_SESSION_SHARING`, because it is the chat teardown this membership
 asserts is safe), on KAS an engine `kas_chat_sharing_ready` accepts, no session
-environment, persistent memory mode, a dashboard chat origin, and not a crew member.
-`ChatRuntimeKey` is the compatibility key they share ON, and `chat_runtime_cap`
+environment, persistent memory mode, a dashboard chat origin, and for a Bot (crew
+member) session a tree root that is the same member on the same memory store.
+`ChatRuntimeKey` is the compatibility key they share ON. It carries the session
+tree's root (`share_tree_root_of`, the top of the creator chain the slot list nests
+on, read once at the start) and the session's member and store, so sessions share
+only inside one tree and two Bots never share. On KAS it leaves out the agent, its
+spec generation, the model and the effort, which KAS takes per session. `chat_runtime_cap`
 reads `agent.chat_runtime_sharing_max_sessions`, forced back to `CHAT_RUNTIME_CAP`
 whenever the preview is off. With the preview off the paragraph above is the
 shipped behaviour exactly.

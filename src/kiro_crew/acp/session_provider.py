@@ -141,9 +141,20 @@ class AcpSessionProvider(LLMProvider):
         shared_runtime: bool = False,
         session_key: str = "",
         channel_id: str | None = None,
+        agent: str = "",
+        crew_agent: str | None = None,
+        member_context: bool | None = None,
     ) -> None:
         self._handle = handle
         self._runtime = runtime
+        # The agent, crew identity and member projection THIS session was created
+        # with. On a shared chat runtime the process's own (``runtime._agent`` and
+        # its siblings) are the founder's, so a fresh conversation, the loaded
+        # template and the session-info agent read these. Empty / None: the
+        # runtime's, as before (an unshared session's are the same values).
+        self._session_agent = agent
+        self._session_crew_agent = crew_agent
+        self._session_member_context = member_context
         # When True, shutdown() kills the runtime (parent session owns it).
         # When False, shutdown() only destroys the session handle (subagent).
         self._owns_runtime = owns_runtime
@@ -413,7 +424,9 @@ class AcpSessionProvider(LLMProvider):
         # so a chat's fresh conversation carries the ones its cold start passed.
         new_handle = await self._runtime.create_session(
             cwd=self._runtime._work_dir,
-            agent=self._runtime._agent or None,
+            agent=getattr(self, "_session_agent", "") or self._runtime._agent or None,
+            crew_agent=getattr(self, "_session_crew_agent", None),
+            member_context=getattr(self, "_session_member_context", None),
             memory_mode=self.memory_mode,
             session_key=self._session_key,
             member_session_key=member_session_key,
@@ -1355,7 +1368,7 @@ class AcpSessionProvider(LLMProvider):
         from kiro_crew.acp.types import ACP_BACKEND_KAS  # noqa: PLC0415
 
         if self._runtime.acp_backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS):
-            if self._handle.active_agent == self._runtime._agent:
+            if self._handle.active_agent == self._agent:
                 return self._handle.active_agent
             return ""
         return self._handle.confirmed_projection_template
@@ -1402,6 +1415,9 @@ class AcpSessionProvider(LLMProvider):
         self._session_key = session_key
         self._channel_id = channel_id
         self._runtime._crew_agent = crew_agent
+        # This session's own identity too: new_conversation passes it, so a pooled
+        # provider built before the claim must not keep the empty one it was made with.
+        self._session_crew_agent = crew_agent
         self._handle.rebind_watchdog(crew_agent, settings=watchdog)
         self._handle.bind_session_key(session_key)
         self._runtime._last_activity = time.monotonic()
@@ -1473,8 +1489,9 @@ class AcpSessionProvider(LLMProvider):
         """Agent/mode name from the backing runtime (parity with AcpClient._agent).
         Read by session.py session-info introspection via provider.client._agent;
         a missing attribute AttributeErrors that (unguarded) code path whenever a
-        kiro-shared session is listed."""
-        return self._runtime._agent
+        kiro-shared session is listed. This session's own agent on a shared chat
+        runtime, whose process agent is the founder's."""
+        return getattr(self, "_session_agent", "") or self._runtime._agent
 
     # ── AcpClient-compatible API ──
     # These methods mirror AcpClient's public interface so AcpProvider can

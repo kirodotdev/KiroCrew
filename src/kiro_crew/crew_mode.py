@@ -675,6 +675,72 @@ def live_stamp_rows(
     return {str(row["key"]): row for row in rows}
 
 
+def share_tree_root(
+    slots: Mapping[str, Any],
+    slot_key: str,
+    parents: Mapping[str, Any] | None = None,
+    *,
+    settled: bool = False,
+) -> str:
+    """The top of live slot *slot_key*'s creator chain: its session tree's root.
+
+    Read by chat runtime sharing (``acp.chat_runtime_sharing.share_tree_root_of``)
+    once per session start. The walk follows the creators :func:`stamp_rows` nests
+    on (the crew log's ``parent`` edge, then ``created_by``, then the saved one),
+    past a closed creator through the frame's live ancestor or the persisted
+    lineage. Unlike the Crew Mode root it asks nothing of the root's agent or
+    mode: a Bot thread, a conductor and a plain chat all root their own tree. A
+    slot with no creator is its own root, and the walk stops on a repeat, so a
+    cycle in forged records cannot loop. No I/O.
+    """
+    rows: dict[str, dict[str, Any]] = {}
+    for slot in list(slots.values()):
+        row = _live_row(slot)
+        if parents is not None:
+            row["parent"] = parents.get(row["key"])
+        else:
+            row.pop("parent", None)
+        rows[str(row["key"])] = row
+    settled = settled and parents is not None
+    tree: list[frozenset[str] | None] = []
+
+    def creator_of(key: str, row: Mapping[str, Any]) -> str:
+        saved = row.get("saved_created_by") or ""
+        if not isinstance(saved, str) or saved == key:
+            saved = ""
+        untracked = False
+        if saved and settled:
+            if not tree:
+                tree.append(persisted_tree_slots())
+            known = tree[0]
+            untracked = known is not None and key not in known and f"dashboard:{key}" not in known
+        return _creator_of(row, settled, saved, untracked)
+
+    lineage: list[Mapping[str, str]] = []
+
+    def persisted(key: str) -> str:
+        if not lineage:
+            lineage.append(persisted_parents())
+        return lineage[0].get(key, "") or ""
+
+    root = slot_key
+    seen = {slot_key}
+    current: Mapping[str, Any] | None = rows.get(slot_key)
+    creator = creator_of(slot_key, current) if current is not None else persisted(slot_key)
+    while creator and creator not in seen:
+        root = creator
+        seen.add(creator)
+        above = rows.get(creator)
+        if above is None:
+            live_ancestor = _live_ancestor_of(current) if current is not None else ""
+            current = None
+            creator = live_ancestor or persisted(creator)
+            continue
+        current = above
+        creator = creator_of(creator, above)
+    return root
+
+
 def mate_workers_of(rows: Iterable[Mapping[str, Any]], root_key: str) -> list[Mapping[str, Any]]:
     """The stamped rows whose mate root is *root_key*: :func:`workers_of` for a mate."""
     return [row for row in rows if root_key and row.get(MATE_ROOT_FIELD) == root_key]
