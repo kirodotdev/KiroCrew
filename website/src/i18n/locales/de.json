@@ -8600,7 +8600,8 @@
     "onboardingChapterShell": {
       "kiro_crew": "{{productName}}",
       "skip_all": "Alle überspringen",
-      "skip_all_setup_and_onboarding": "Gesamte Einrichtung und Einführung überspringen"
+      "skip_all_setup_and_onboarding": "Gesamte Einrichtung und Einführung überspringen",
+      "owner_check_failed": "Es ließ sich nicht bestätigen, dass das deine Crew ist, daher wartet die Ersteinrichtung."
     },
     "meetCrewmatesFlow": {
       "done": "Fertig",

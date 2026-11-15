@@ -8388,7 +8388,8 @@
     "onboardingChapterShell": {
       "kiro_crew": "{{productName}}",
       "skip_all": "全部跳过",
-      "skip_all_setup_and_onboarding": "跳过所有设置与引导"
+      "skip_all_setup_and_onboarding": "跳过所有设置与引导",
+      "owner_check_failed": "无法确认这是你的 Crew，因此首次设置已暂停。"
     },
     "meetCrewmatesFlow": {
       "done": "完成",

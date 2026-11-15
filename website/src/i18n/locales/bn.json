@@ -8600,7 +8600,8 @@
     "onboardingChapterShell": {
       "kiro_crew": "{{productName}}",
       "skip_all": "সব বাদ দিন",
-      "skip_all_setup_and_onboarding": "সব সেটআপ ও অনবোর্ডিং বাদ দিন"
+      "skip_all_setup_and_onboarding": "সব সেটআপ ও অনবোর্ডিং বাদ দিন",
+      "owner_check_failed": "এটি তোমার Crew কি না তা নিশ্চিত করা যায়নি, তাই প্রথমবারের সেটআপ আটকে আছে।"
     },
     "meetCrewmatesFlow": {
       "done": "হয়ে গেছে",

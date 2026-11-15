@@ -8812,7 +8812,8 @@
     "onboardingChapterShell": {
       "kiro_crew": "{{productName}}",
       "skip_all": "Ignorar tudo",
-      "skip_all_setup_and_onboarding": "Ignorar toda a configuração e introdução"
+      "skip_all_setup_and_onboarding": "Ignorar toda a configuração e introdução",
+      "owner_check_failed": "Não foi possível confirmar que esta Crew é sua, então a configuração inicial está em espera."
     },
     "meetCrewmatesFlow": {
       "done": "Concluído",

@@ -9024,7 +9024,8 @@
     "onboardingChapterShell": {
       "kiro_crew": "{{productName}}",
       "skip_all": "Пропустить всё",
-      "skip_all_setup_and_onboarding": "Пропустить всю настройку и знакомство"
+      "skip_all_setup_and_onboarding": "Пропустить всю настройку и знакомство",
+      "owner_check_failed": "Не удалось подтвердить, что это твой Crew, поэтому первоначальная настройка приостановлена."
     },
     "meetCrewmatesFlow": {
       "done": "Готово",

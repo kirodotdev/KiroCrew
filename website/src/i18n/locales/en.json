@@ -5413,7 +5413,8 @@
     "onboardingChapterShell": {
       "kiro_crew": "{{productName}}",
       "skip_all": "Skip all",
-      "skip_all_setup_and_onboarding": "Skip all setup and onboarding"
+      "skip_all_setup_and_onboarding": "Skip all setup and onboarding",
+      "owner_check_failed": "Couldn't confirm this is your Crew, so first-run setup is on hold."
     },
     "onboardingFlow": {
       "answers_set_how_kiro_explains_things_plain_langu": "Answers set how Kiro explains things — plain language or full technical detail. Saved on this device; change anytime in Settings → Chat.",
