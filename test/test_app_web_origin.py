@@ -54,6 +54,10 @@ _HOST = f"demo.apps.localhost:{_PORT}"
         (f"a.b.apps.localhost:{_PORT}", False),
         (f"-x.apps.localhost:{_PORT}", False),
         (f"{'a' * 64}.apps.localhost:{_PORT}", False),
+        (f"{'a' * 63}.apps.localhost:{_PORT}", ("a" * 63, _PORT)),
+        (f"0.apps.localhost:{_PORT}", ("0", _PORT)),
+        (f"x-.apps.localhost:{_PORT}", False),
+        (f"a_b.apps.localhost:{_PORT}", False),
         (f".apps.localhost:{_PORT}", False),
         ("demo.apps.localhost:x", False),
     ],
@@ -463,8 +467,12 @@ class _Audit:
 async def test_each_serve_and_refusal_is_audited(
     gateway: TestClient, backend: _Backend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Every admission and every refusal leaves a row: reads, writes and WebSocket opens."""
     audit = _Audit()
     monkeypatch.setattr(awo, "sel", lambda: audit)
+    for read in (gateway.get, gateway.head, gateway.options):
+        response = await read("/asset.js", headers={"Host": _HOST})
+        assert response.status == 200
     served = await gateway.post("/doc/1?x=2", data=b"edit", headers={"Host": _HOST})
     assert served.status == 200
     async with asyncio.timeout(FALLBACK_TIMEOUT_SECS):
@@ -473,11 +481,15 @@ async def test_each_serve_and_refusal_is_audited(
     refused = await gateway.get("/", headers={"Host": f"nosuch.apps.localhost:{_PORT}"})
     assert refused.status == 404
     assert [(r["outcome"], r["operation"], r["resources"]) for r in audit.rows] == [
+        ("granted", "GET app web origin", f"{_HOST}/asset.js"),
+        ("granted", "HEAD app web origin", f"{_HOST}/asset.js"),
+        ("granted", "OPTIONS app web origin", f"{_HOST}/asset.js"),
         ("granted", "POST app web origin", f"{_HOST}/doc/1"),
         ("granted", "GET app web origin", f"{_HOST}/live"),
         ("denied", "GET app web origin", f"nosuch.apps.localhost:{_PORT}"),
     ]
     assert {r["source"] for r in audit.rows} == {"app_web_origin"}
+    assert [s["method"] for s in backend.seen if not s.get("ws")][:3] == ["GET", "HEAD", "OPTIONS"]
 
 
 class _BrokenSel:

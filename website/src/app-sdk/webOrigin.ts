@@ -8,19 +8,32 @@
  * Only a dashboard opened on one of its own loopback names over plain http has
  * one: the gateway serves app web origins only to direct local peers, and a
  * tunnel or published HTTPS host has no wildcard name to offer. Everywhere else
- * this answers `null`, and the app keeps whatever it did before. App Kit seam
- * level 8.
+ * this answers `null`, and the app keeps whatever it did before. The answer reads
+ * the dashboard's host name only, so an app probes the origin (a `no-cors` fetch)
+ * before it switches its frame. App Kit seam level 8.
  */
 
-/** One DNS label, as the gateway requires of the app name. */
-const LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
+/** The characters of one DNS label, as the gateway requires of the app name. */
+const LABEL_CHARS = new Set('abcdefghijklmnopqrstuvwxyz0123456789-')
+const LABEL_MAX_LENGTH = 63
+
+/** One DNS label: 1 to 63 of `a-z0-9-`, not starting or ending with `-`. */
+function isDnsLabel(name: string): boolean {
+  return (
+    name.length >= 1
+    && name.length <= LABEL_MAX_LENGTH
+    && [...name].every((char) => LABEL_CHARS.has(char))
+    && !name.startsWith('-')
+    && !name.endsWith('-')
+  )
+}
 
 /** The dashboard's own loopback names, as `location.hostname` spells them. */
 // CSP frame-ancestors cannot express a bracketed IPv6 host source.
 const DASHBOARD_LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', 'kirocrew.localhost'])
 
 export function appWebOrigin(appName: string, location: Pick<Location, 'protocol' | 'hostname' | 'port'> = window.location): string | null {
-  if (!LABEL_RE.test(appName)) return null
+  if (!isDnsLabel(appName)) return null
   if (location.protocol !== 'http:') return null
   if (!DASHBOARD_LOOPBACK_HOSTS.has(location.hostname.toLowerCase())) return null
   const port = location.port || '80'
