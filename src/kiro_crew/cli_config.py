@@ -14,13 +14,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew import beacon
-from kiro_crew.config import KiroCrewConfig
+from kiro_crew.config import KiroCrewConfig, loader
 from kiro_crew.config.loader import (
     ConfigReadError,
     ConfigWriteRefused,
     ResourceLimitsConfig,
-    config_local_path,
-    config_path,
     read_config_text,
     read_endorsed_config_text,
     update_config_locked,
@@ -57,6 +55,22 @@ if TYPE_CHECKING:
     from kiro_crew.config.schema import ConfigEntry
 
 _MISSING = object()
+
+
+def config_path() -> Path:
+    """The base ``config.json``, looked up on the loader at call time.
+
+    A name bound by ``from loader import config_path`` keeps whatever object the loader
+    held at this module's first import, so a substitute in force then (a test's
+    monkeypatch) would outlive its own undo and redirect every later save.
+    """
+    return loader.config_path()
+
+
+def config_local_path() -> Path:
+    """The ``config.local.json`` overlay, looked up on the loader at call time."""
+    return loader.config_local_path()
+
 
 #: How the OS sandbox refuses a write to a sealed config file: Seatbelt answers
 #: ``EPERM``, and a Linux read-only file bind answers ``EROFS`` for an in-place write
