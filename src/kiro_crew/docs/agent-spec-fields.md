@@ -866,9 +866,17 @@ On KAS, `to_client_custom_agent` sends a valid object with only the keys KAS's
 `file://` with a path; `~` and `$VAR` are expanded; an absolute path must not be
 a sensitive location and a relative one may not use `..`; each other key must
 have its schema type. Any other object is dropped and the session-start notice
-names it as `resources[<index>]`, because one KAS refuses drops the whole agent. `agent_capabilities._rows` still requires strings, because
-each entry is a catalog key: a member enrolled in capability management cannot
-carry the object until that model represents it.
+names it as `resources[<index>]`, because one KAS refuses drops the whole agent.
+In capability management (`agent_capabilities._rows`) each object is a
+`resources` row of its own, keyed `<type>:<name>` (`<type>:<source>` when it has
+no name; `agent_capabilities_resources.py`). The key comes from the object's
+identity, not its content, so an edited knowledge base stays one changed row. Two
+different entries sharing a key leave the spec `invalid_spec`, since a row's key
+may not depend on what else the list holds. The row's value is the object. An
+enrolled member carries it into its copy unchanged and in place, the owner can
+remove it and set it back to Inherited, and a Parent that adds or changes one
+waits for approval like any other `resources` change. The editor cannot set an
+object row, since no string spells it.
 
 `_skills_injection_plan` is the single decision for `skill://`. It reads the
 mapping, and only an unmapped custom agent's row also depends on the harness:
