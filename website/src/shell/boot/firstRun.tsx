@@ -262,6 +262,8 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
         // Hidden, not acknowledged: privacyAcked stays false, so the chapter
         // opens again at the next load.
         onAskAgent={() => setShowPrivacy(false)}
+        // Same, from Close or Escape once a save failed.
+        onClose={() => setShowPrivacy(false)}
         // Off by the user's own setting: Continue's ack is recorded without the
         // screen, and onContinue above moves on as it would.
         passWhenOff

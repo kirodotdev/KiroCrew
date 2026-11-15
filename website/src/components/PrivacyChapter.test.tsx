@@ -357,6 +357,56 @@ describe('PrivacyChapter', () => {
     expect(screen.getByRole('button', { name: 'Keep on' })).toBeEnabled()
   })
 
+  describe('a way out once a save failed', () => {
+    it('offers no Close, and Escape does nothing, while a choice can still be saved', async () => {
+      const onClose = vi.fn()
+      renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} onClose={onClose} />)
+
+      await readyButton('Keep on')
+      expect(screen.queryByRole('button', { name: 'Close' })).not.toBeInTheDocument()
+      fireEvent.keyDown(document, { key: 'Escape' })
+      expect(onClose).not.toHaveBeenCalled()
+    })
+
+    it('after a failed Keep on, Close hides it without recording a choice', async () => {
+      const onContinue = vi.fn().mockRejectedValue(new Error('403'))
+      const onClose = vi.fn()
+      renderWithProviders(<PrivacyChapter open onContinue={onContinue} onClose={onClose} />)
+
+      fireEvent.click(await readyButton('Keep on'))
+      fireEvent.click(await screen.findByRole('button', { name: 'Close' }))
+      expect(onClose).toHaveBeenCalledTimes(1)
+      // The one call is the failed save itself; closing records nothing more.
+      expect(onContinue).toHaveBeenCalledTimes(1)
+    })
+
+    it('after a failed Turn off, Escape hides it without recording a choice', async () => {
+      // The gateway refuses the write (a caller that is not the owner, say).
+      patchConfig.mockRejectedValue(new Error('403'))
+      const onContinue = vi.fn()
+      const onClose = vi.fn()
+      renderWithProviders(<PrivacyChapter open onContinue={onContinue} onClose={onClose} />)
+
+      fireEvent.click(await readyButton('Turn off'))
+      await screen.findByText(/Turn off could not be finished or confirmed/)
+      fireEvent.keyDown(document, { key: 'Escape' })
+      expect(onClose).toHaveBeenCalledTimes(1)
+      expect(onContinue).not.toHaveBeenCalled()
+    })
+
+    it('offers no Close when Turn off is held by a pin, since Keep on still saves', async () => {
+      collectionStatus.mockImplementation(async () => ({ enabled: true, env_pinned: false, overlay_override: true }))
+      const onClose = vi.fn()
+      renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} onClose={onClose} />)
+
+      fireEvent.click(await readyButton('Turn off'))
+      await screen.findByText(/keeps it on/)
+      expect(screen.queryByRole('button', { name: 'Close' })).not.toBeInTheDocument()
+      fireEvent.keyDown(document, { key: 'Escape' })
+      expect(onClose).not.toHaveBeenCalled()
+    })
+  })
+
   it('says it is off, with the reason and one Continue, when DO_NOT_TRACK pins it', async () => {
     beaconStatus.mockImplementation(async () => ({ ...BEACON_ON, env_override: true, env_var: 'DO_NOT_TRACK', would_send: false }))
     collectionStatus.mockImplementation(async () => ({ enabled: false, env_pinned: true, env_var: 'DO_NOT_TRACK' }))
