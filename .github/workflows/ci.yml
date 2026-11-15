@@ -4271,7 +4271,18 @@ jobs:
       - name: Install Playwright browser (Chromium)
         timeout-minutes: 6
         working-directory: website
-        run: npx playwright install chromium
+        # Playwright 1.58 has no ubuntu26.04 host entry, and the fork runner
+        # (kirocrew-linux-4-core) now boots ubuntu-26.04, so `install` refuses
+        # with "does not support chromium on ubuntu26.04-x64". On that
+        # image only, use the ubuntu24.04 build; GITHUB_ENV carries it to the
+        # steps that launch the browser. Every other host is left as it was.
+        run: |
+          if [ -r /etc/os-release ] && . /etc/os-release && [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID%%.*}" -ge 26 ] 2>/dev/null; then
+            export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="ubuntu24.04-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')"
+            echo "PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=$PLAYWRIGHT_HOST_PLATFORM_OVERRIDE" >> "$GITHUB_ENV"
+            echo "ubuntu ${VERSION_ID}: Playwright host platform set to $PLAYWRIGHT_HOST_PLATFORM_OVERRIDE"
+          fi
+          npx playwright install chromium
 
       - name: Resolve base for the i18n render-time gate
         # The base must be fetched first because this checkout is shallow; the
@@ -4336,7 +4347,18 @@ jobs:
         working-directory: website
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
-        run: npx playwright install chromium
+        # Playwright 1.58 has no ubuntu26.04 host entry, and the fork runner
+        # (kirocrew-linux-4-core) now boots ubuntu-26.04, so `install` refuses
+        # with "does not support chromium on ubuntu26.04-x64". On that
+        # image only, use the ubuntu24.04 build; GITHUB_ENV carries it to the
+        # steps that launch the browser. Every other host is left as it was.
+        run: |
+          if [ -r /etc/os-release ] && . /etc/os-release && [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID%%.*}" -ge 26 ] 2>/dev/null; then
+            export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="ubuntu24.04-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')"
+            echo "PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=$PLAYWRIGHT_HOST_PLATFORM_OVERRIDE" >> "$GITHUB_ENV"
+            echo "ubuntu ${VERSION_ID}: Playwright host platform set to $PLAYWRIGHT_HOST_PLATFORM_OVERRIDE"
+          fi
+          npx playwright install chromium
 
       - name: Build the profiling bundle and check render budgets
         working-directory: website
@@ -4490,7 +4512,18 @@ jobs:
         timeout-minutes: 6
         shell: bash
         working-directory: website
-        run: npx playwright install chromium
+        # Playwright 1.58 has no ubuntu26.04 host entry, and the fork runner
+        # (kirocrew-linux-4-core) now boots ubuntu-26.04, so `install` refuses
+        # with "does not support chromium on ubuntu26.04-x64". On that
+        # image only, use the ubuntu24.04 build; GITHUB_ENV carries it to the
+        # steps that launch the browser. Every other host is left as it was.
+        run: |
+          if [ -r /etc/os-release ] && . /etc/os-release && [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID%%.*}" -ge 26 ] 2>/dev/null; then
+            export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="ubuntu24.04-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')"
+            echo "PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=$PLAYWRIGHT_HOST_PLATFORM_OVERRIDE" >> "$GITHUB_ENV"
+            echo "ubuntu ${VERSION_ID}: Playwright host platform set to $PLAYWRIGHT_HOST_PLATFORM_OVERRIDE"
+          fi
+          npx playwright install chromium
 
       - name: MCP-App message rows render both delivery states (asserting harness)
         # The same self-asserting harness that produced the PR's screenshot
