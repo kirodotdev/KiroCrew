@@ -249,8 +249,9 @@ class _PeerUnavailable(Exception):
     share how a peer target is *resolved* without sharing their error contracts:
     each maps ``kind`` onto its own machine-readable code. Those codes are
     deliberately NOT derived from ``kind`` here — the ``proxy_``/``transfer_``/
-    ``search_`` families belong to three separate route contracts pinned by
-    ``test_error_code_contract.py``, and a reader grepping for one of them must
+    ``search_`` families belong to three separate route contracts
+    (``test_instances_proxy.py``, ``test_session_transfer.py`` and
+    ``test_instances_search_federation.py`` assert them), and a reader grepping for one of them must
     land on the site that returns it.
 
     ``kind`` is ``"not_connected"``, ``"no_credential"`` or

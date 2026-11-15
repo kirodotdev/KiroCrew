@@ -8,7 +8,8 @@ Nothing in this package imports a tool handler, the config loader, or anything e
 tool call needs and a listing does not. An agent engine starts every MCP server of a
 session at session start and holds the first prompt until each has listed its tools, so
 what these modules import is paid on every session start
-(``kiro_crew.mcp_shared_listing``); ``test_mcp_listing_import_budget`` holds it.
+(``kiro_crew.mcp_shared_listing``); ``test_mcp_listing_import_budget`` holds the
+handler modules out and caps the module count.
 
 A name a test patches stays patchable on the module it was patched on before the
 declarations moved here: a domain's handler module, or ``kiro_crew.mcp_core`` for the

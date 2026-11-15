@@ -191,9 +191,9 @@ def _apply_update(reg, instance_id: str, changes: dict) -> object:
     """Write *changes* to *instance_id*. Blocking — callers offload it.
 
     Module level on purpose: the registry write must never run on the event loop,
-    and a closure defined inside the async handler reads (to a human and to the
-    AST ratchet in ``test_apps_instances_loop_offload``) as a call on the loop
-    even when every caller hands it to a thread.
+    and a closure defined inside the async handler reads to a human as a call on
+    the loop even when every caller hands it to a thread. The AST ratchet in
+    ``test_apps_instances_loop_offload`` skips nested bodies, so it cannot check one.
     """
     return reg.update(instance_id, **changes)
 

@@ -556,8 +556,9 @@ def monitor_stall_reason(state: MonitorState, *, now: float) -> str:
     Reorder the fold, let a non-counted tick leave the streak standing, count a
     decision other than ``NO_CHANGE``, or unfence that rollback, and the reason
     composition in both callers needs a decision guard it does not have.
-    ``test_monitor_controller_realert_stall`` pins the invariant, so breaking
-    one of the three reddens a test that names this docstring.
+    ``test_monitor_controller_realert_stall`` pins the second and third, and
+    ``test/test_monitor_decision.py`` the first, so breaking one of the three reddens
+    a test that names this docstring.
 
     ``now`` is passed in, as everywhere in this module, so the reason cannot
     disagree with the fold that decided the stop on the same tick.

@@ -759,8 +759,8 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
                 )
     # Turn-end diagnostics. Read only from `event`, which nothing in
     # this arm mutates, so the position is free — kept below the
-    # consumption gate because that gate's adjacency to the arm's start
-    # is pinned by test_subagent_delivery_ttl_anchor.
+    # consumption gate, which must stay at the arm's start
+    # (test_subagent_delivery_ttl_anchor pins when consumption is reported).
     # `synthetic_completion` is readable ONLY here, and the
     # empty-response verdict that needs it runs in _turn_settle_answer.
     _saw_terminal_event = True

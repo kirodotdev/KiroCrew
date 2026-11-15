@@ -1218,7 +1218,8 @@ def pod_plane_mutex(cfg: PodConfig):
 # Slack is deliberately absent: it has no config-level enable, being gated purely
 # on credentials that ``build_pod_env`` scrubs.
 #
-# ``test_pod.py`` pins this tuple against ``channels.builtin_channel_descriptors()``
+# ``test_pod_env.py::TestSeedSanitization`` pins this tuple against
+# ``channels.builtin_channel_descriptors()``
 # so a channel added to the roster cannot reach a pod ungated.
 SEED_DISABLED_SECTIONS: tuple[str, ...] = (
     "tunnel",

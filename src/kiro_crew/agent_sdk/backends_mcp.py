@@ -479,7 +479,8 @@ ACP_BACKENDS_REMOTE_MCP_OAUTH = frozenset({ACP_BACKEND_KIRO})
 # on the request), claude ``acp_frames/claude/mcp-stdio-mount-live.jsonl`` (the placed
 # server on ``_meta.claudeCode.mcpServer``), goose
 # ``acp_frames/goose/crew-oauth-bridge-args-live.jsonl``, deepseek
-# ``acp_frames/deepseek/crew-oauth-bridge-args-live.jsonl``; replayed into an approval by
+# ``acp_frames/deepseek/crew-oauth-bridge-args-live.jsonl``; the claude, goose and
+# deepseek frames are replayed into an approval by
 # ``test/test_crew_oauth_bridge_harnesses.py``.
 # codex: ``rawInput`` is ``{server, tool, arguments}`` and ``arguments`` is what the
 # server's ``tools/call`` carried, ``acp_frames/codex/crew-oauth-bridge-args-live.jsonl``;

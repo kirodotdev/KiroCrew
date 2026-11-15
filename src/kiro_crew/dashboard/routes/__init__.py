@@ -14,8 +14,9 @@ are contiguous and called in sequence, so global ordering holds by construction;
 reordering this tuple, or the lines inside any slice, can silently shadow a
 route.
 
-``test_dashboard_route_table.py`` pins the resulting (method, path, handler)
-sequence, so a reordering shows up as a failing test rather than as a 404 or a
+``test_dashboard_route_table.py`` pins that every slice registers in its declared
+order and that no route shadows another, so a reordering that shadows a route shows
+up as a failing test rather than as a 404 or a
 handler quietly answering the wrong path.
 """
 

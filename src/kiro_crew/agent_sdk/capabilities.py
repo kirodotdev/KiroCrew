@@ -15,7 +15,8 @@ So this module carries one frozen record per session, with one field per questio
 a consumer OUTSIDE ``kiro_crew.agent_sdk`` actually asks, and consumers read the
 field. The identity of the backend is still in :attr:`SessionCapabilities.backend`
 because a log line and an error message need to name it — but nothing branches on
-it, and ``test_agent_sdk_capabilities`` pins that.
+it. ``test_agent_sdk_capabilities`` pins that the migrated consumers do not
+read the old backend-identity checks.
 
 Every field is a TRANSLATION of a table that already existed in
 :mod:`kiro_crew.agent_sdk.backends`, not a new judgement. That is deliberate and

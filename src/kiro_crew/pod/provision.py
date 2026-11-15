@@ -143,7 +143,8 @@ def _find_python_via_launcher(version: str) -> str | None:
 
 
 #: The interpreter floor, ``requires-python`` in ``pyproject.toml`` (pinned by
-#: ``test_pod``). A worktree venv on any newer minor is as valid as one on this.
+#: ``test_pod_provision.py::test_min_python_is_pyproject_requires_python``). A worktree
+#: venv on any newer minor is as valid as one on this.
 MIN_PYTHON = (3, 12)
 
 #: Minor versions asked for by name (``python3.N``), after the gateway's own.

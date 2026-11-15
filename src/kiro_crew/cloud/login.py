@@ -79,8 +79,8 @@ _LOGIN_FIFO_PATH = "$KC_LOGIN_DIR/kiro-login.stdin"
 # resolves to a path whose basename is `kiro-cli` (see `_KIRO_BIN_RESOLVE`), so
 # the launched command line contains this fragment whether or not `stdbuf` wraps
 # it and whatever flags follow. It does not match `kiro-cli logout` or `kiro-cli
-# acp`. `test_cloud_signin_recovery.py` asserts the coupling against the real
-# builders, so a rename on either side fails a test rather than silently
+# acp`. `test_cloud_signin_recovery.py` asserts the device-login form against the
+# real builder, so a rename on that side fails a test rather than silently
 # matching nothing on the box.
 _LOGIN_PROCESS_PATTERN = "kiro-cli login"
 # Printed (and the launch skipped) when the pty driver could not be staged in a

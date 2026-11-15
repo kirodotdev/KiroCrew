@@ -1247,7 +1247,8 @@ async def run(self: GatewayOrchestrator) -> None:
     # runner lane now that both consumers exist (the WorkflowService is
     # built by the dashboard server). AFTER the READY print, not before it:
     # the coordinator's first build runs `rebuild()` over every waiting row,
-    # and `test_memory_startup` pins that no such work precedes readiness.
+    # and `test_memory_startup` pins that nothing is awaited between
+    # `_init_api_server` and the READY print.
     # Nothing dispatches in between -- the subagent pump is held closed
     # (``defer_queue_dispatch``) and the dashboard workers and cron start
     # further down, after the memory barrier.
