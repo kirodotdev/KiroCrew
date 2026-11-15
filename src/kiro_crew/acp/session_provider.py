@@ -124,6 +124,10 @@ class AcpSessionProvider(LLMProvider):
     _prompts_written: int = 0
     # The open turn's handle and that handle's count when the turn began.
     _open_turn_count: tuple[Any, Any] | None = None
+    #: The chat's own choices a per-session harness reads at each session start
+    #: (``HarnessAdapter.prepare_session``), set by the start that built this
+    #: provider. None: the host reads none.
+    _harness_options: dict[str, Any] | None = None
 
     # Applying a dashboard MCP config change to this live session by re-sending
     # its projection: ``kiro_crew.acp.session_provider_mcp_reinject``.
@@ -431,6 +435,7 @@ class AcpSessionProvider(LLMProvider):
             agent=getattr(self, "_session_agent", "") or self._runtime._agent or None,
             crew_agent=getattr(self, "_session_crew_agent", None),
             member_context=getattr(self, "_session_member_context", None),
+            harness_options=self._harness_options,
             memory_mode=self.memory_mode,
             session_key=self._session_key,
             member_session_key=member_session_key,
@@ -1447,6 +1452,21 @@ class AcpSessionProvider(LLMProvider):
         session under the kiro label.
         """
         return self._runtime.acp_backend
+
+    def settings_withheld_cause(self) -> str:
+        """Why Crew's MCP tools are withheld from this session, or ``""``.
+
+        A claude session on the shared runtime keeps the per-chat client's answer
+        on its own harness state (``ClaudeSharedSession``); every other session
+        has none and reads ``""``, as ``LLMProvider`` does.
+        """
+        handle = self._handle
+        states = getattr(self._runtime, "_session_harness_states", None) or {}
+        read = getattr(
+            states.get(handle.session_id) if handle else None, "settings_withheld_cause", None
+        )
+        value = read() if callable(read) else ""
+        return value if isinstance(value, str) else ""
 
     def effective_spec_declares_zero_tools(self, *, authored_before_spawn: bool = False) -> bool:
         """``AcpClient.effective_spec_declares_zero_tools``, judged on the runtime serving this session.

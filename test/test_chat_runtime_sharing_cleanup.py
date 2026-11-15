@@ -23,7 +23,12 @@ from test_chat_runtime_sharing import (
 )
 
 import kiro_crew.runtime_ownership as ro
-from kiro_crew.acp_backends import ACP_BACKEND_CODEX, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
+)
 from kiro_crew.runtime_ownership import RuntimeOwnership, authorize_runtime_kill
 from kiro_crew.testing.wait import async_wait_until, await_until
 
@@ -1430,6 +1435,65 @@ class TestResolveChatShare:
         )
         assert placement is None and reads == []
 
+    @pytest.mark.parametrize("agent_turns, shares", [(True, False), (False, True)])
+    def test_a_claude_chat_shares_only_with_agent_started_turns_off(
+        self, monkeypatch, agent_turns, shares
+    ):
+        """The shared session has no idle reader, so a turn claude starts on its own
+        would be dropped there: with the setting on, the chat keeps its own process."""
+        import kiro_crew.providers.chat_share as share_mod
+
+        real_cfg = self._cfg
+
+        def cfg(previews, harnesses=None):
+            c = real_cfg(previews, harnesses)
+            c.agent.agent_started_turns = agent_turns
+            return c
+
+        monkeypatch.setattr(self, "_cfg", cfg)
+        monkeypatch.setattr(share_mod, "_self_signed_era", lambda backend, env=None: "claude:x")
+        placement, _ = self._resolve(
+            monkeypatch,
+            {"chat_runtime_sharing": True},
+            _PlacementProvider(backend=ACP_BACKEND_CLAUDE),
+            harnesses={"claude": True},
+        )
+        assert (placement is not None) is shares
+
+    @pytest.mark.parametrize(
+        "mode, env, shares",
+        [("auto", "", False), (None, "auto", False), (None, "", True), ("plan", "", True)],
+    )
+    def test_a_claude_chat_in_auto_permission_mode_keeps_its_own_process(
+        self, monkeypatch, caplog, mode, env, shares
+    ):
+        """Only the per-chat client audits the calls Claude's classifier approves
+        unasked, so an ``auto`` chat (its own ask, or the operator's lever) never takes
+        the shared process; asking whether says nothing about another mode."""
+        import kiro_crew.providers.chat_share as share_mod
+        from kiro_crew.agent_sdk.backends_models import CC_PERMISSION_MODE_ENV
+
+        real_cfg = self._cfg
+
+        def cfg(previews, harnesses=None):
+            c = real_cfg(previews, harnesses)
+            c.agent.agent_started_turns = False
+            return c
+
+        monkeypatch.setattr(self, "_cfg", cfg)
+        monkeypatch.delenv(CC_PERMISSION_MODE_ENV, raising=False)
+        if env:
+            monkeypatch.setenv(CC_PERMISSION_MODE_ENV, env)
+        monkeypatch.setattr(share_mod, "_self_signed_era", lambda backend, env=None: "claude:x")
+        provider = _PlacementProvider(backend=ACP_BACKEND_CLAUDE)
+        provider._client._permission_mode = mode
+        with caplog.at_level("WARNING"):
+            placement, _ = self._resolve(
+                monkeypatch, {"chat_runtime_sharing": True}, provider, harnesses={"claude": True}
+            )
+        assert (placement is not None) is shares
+        assert "is not recognised" not in caplog.text
+
 
 class TestTheCodexEraIsCodexsOwnCredential:
     """A codex process authenticates from ``$CODEX_HOME/auth.json``, never from Kiro's
@@ -1585,6 +1649,73 @@ class TestTheCodexEraIsCodexsOwnCredential:
         (tmp_path / "auth.json").mkdir()
         assert codex_spawn_identity({"CODEX_HOME": str(tmp_path)}) == ""
 
+    def test_the_claude_era_follows_the_signed_in_account(self, tmp_path):
+        import json
+
+        from kiro_crew.providers.chat_share import _self_signed_era, claude_spawn_identity
+
+        env = {"CLAUDE_CONFIG_DIR": str(tmp_path)}
+        cfg = tmp_path / ".claude.json"
+        missing = claude_spawn_identity(env)
+        assert missing and missing == claude_spawn_identity(env)
+        cfg.write_text(json.dumps({"numStartups": 1}), encoding="utf-8")
+        no_account = claude_spawn_identity(env)
+        assert no_account and no_account not in (missing,)
+
+        def signed_in(account: str, **rest: object) -> str:
+            data = {"oauthAccount": {"accountUuid": account, "organizationUuid": "org-1"}, **rest}
+            cfg.write_text(json.dumps(data), encoding="utf-8")
+            return claude_spawn_identity(env)
+
+        a = signed_in("acct-A")
+        assert a.startswith("claude:") and a not in (missing, no_account)
+        # Claude Code rewrites its config and its credentials file all the time
+        # (counters, token refresh, MCP sign-ins); none of that moves the era.
+        assert signed_in("acct-A", numStartups=7) == a
+        (tmp_path / ".credentials.json").write_text('{"token": "x"}', encoding="utf-8")
+        assert claude_spawn_identity(env) == a
+        assert signed_in("acct-B") not in (a, missing, no_account)
+        assert "acct" not in claude_spawn_identity(env)
+        cfg.write_text("{not json", encoding="utf-8")
+        assert claude_spawn_identity(env) == ""
+        # KAS reads Kiro's sign-in, so it has no self-signed era.
+        assert _self_signed_era(ACP_BACKEND_KAS) is None
+
+    def test_the_claude_era_follows_the_credential_the_process_inherits(self, tmp_path):
+        """With no Claude Code account, a key or endpoint the gateway's environment
+        or the start's ``extra_env`` changes founds a new process."""
+        from kiro_crew.providers.chat_share import _self_signed_era, claude_spawn_identity
+
+        env = {"CLAUDE_CONFIG_DIR": str(tmp_path), "ANTHROPIC_API_KEY": "sk-old"}
+        old = claude_spawn_identity(env)
+        assert old == claude_spawn_identity(dict(env))
+        assert "sk-old" not in old
+        rotated = claude_spawn_identity({**env, "ANTHROPIC_API_KEY": "sk-new"})
+        assert rotated != old
+        moved = claude_spawn_identity({**env, "ANTHROPIC_BASE_URL": "https://proxy.example"})
+        assert moved not in (old, rotated)
+        bedrock = claude_spawn_identity({**env, "CLAUDE_CODE_USE_BEDROCK": "1"})
+        assert bedrock not in (old, rotated, moved)
+        # A Claude Code token, an AWS identity and a Vertex credential each move it.
+        seen = {old, rotated, moved, bedrock}
+        for name, value in (
+            ("CLAUDE_CODE_OAUTH_TOKEN", "tok-2"),
+            ("AWS_PROFILE", "other"),
+            ("AWS_ACCESS_KEY_ID", "AKIDOTHER"),
+            ("CLOUD_ML_REGION", "europe-west4"),
+            ("GOOGLE_APPLICATION_CREDENTIALS", "/creds/other.json"),
+        ):
+            era = claude_spawn_identity({**env, name: value})
+            assert era not in seen, name
+            seen.add(era)
+        # An unrelated variable is no credential.
+        assert claude_spawn_identity({**env, "HOME_THEME": "dark"}) == old
+        # The start's extra_env counts, over the gateway's environment.
+        assert claude_spawn_identity(env, {"ANTHROPIC_API_KEY": "sk-new"}) == rotated
+        assert (
+            _self_signed_era(ACP_BACKEND_CLAUDE, {"CLAUDE_CONFIG_DIR": str(tmp_path)}) is not None
+        )
+
     def _real_confirmation(self, monkeypatch, codex_eras):
         import kiro_crew.providers.chat_share as share_mod
         import kiro_crew.sandbox as sandbox_mod
@@ -1611,7 +1742,7 @@ class TestTheCodexEraIsCodexsOwnCredential:
                 make_placement(
                     provider=_PlacementProvider(era="", backend=ACP_BACKEND_CODEX),
                     session_key=f"dashboard:chat-{i}-1790000000",
-                    codex_era="codex:aaa",
+                    harness_era="codex:aaa",
                 )
                 for i in (1, 2)
             ]
@@ -1635,12 +1766,12 @@ class TestTheCodexEraIsCodexsOwnCredential:
         async def scenario():
             founder = make_placement(
                 provider=_PlacementProvider(era="", backend=ACP_BACKEND_CODEX),
-                codex_era="codex:aaa",
+                harness_era="codex:aaa",
             )
             joiner = make_placement(
                 provider=_PlacementProvider(era="", backend=ACP_BACKEND_CODEX),
                 session_key="dashboard:chat-2-1790000000",
-                codex_era="codex:aaa",
+                harness_era="codex:aaa",
             )
             self._real_confirmation(monkeypatch, ["codex:aaa"])
             await founder.place(spawn)

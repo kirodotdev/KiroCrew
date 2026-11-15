@@ -842,7 +842,8 @@ recover.
   a runtime handle, or a reading whose owner is the module that holds the pid.
 - **Chat sharing is a preview.** The `chat_runtime_sharing` feature preview is off
   by default, so a default install still serves one chat per runtime. The members
-  are KAS (its switch on by default) and codex (off by default); kiro-cli is not,
+  are KAS (its switch on by default), codex (off by default) and claude (off by
+  default, dashboard chats only); kiro-cli is not,
   because some of its session-control frames name no session. A shared codex
   process takes no new chat once any chat leaves it and dies with its last chat
   (`chat_closes_on_departure`, read by `RuntimeOwnership.release`): codex's

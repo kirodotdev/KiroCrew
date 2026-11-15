@@ -28,6 +28,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_CHAT_RUNTIME_SHARING,
     ACP_BACKENDS_SESSION_SHARING,
 )
@@ -194,12 +195,37 @@ class TestChatSharingEligibility:
                 session_key="dashboard:chat-12-1790000000",
                 memory_mode="persistent",
                 sharing_enabled=True,
-                backend=ACP_BACKEND_CLAUDE,
+                backend=ACP_BACKEND_OPENCODE,
                 member_context=False,
                 kas_engine_ready=True,
                 harness_enabled=True,
             )
             == "backend_not_chat_shareable"
+        )
+
+    def test_a_claude_chat_shares_only_from_the_dashboard_with_its_switch_on(self):
+        """claude shares only for a dashboard chat whose switch is on; a channel,
+        a member or a switched-off chat keeps its own process."""
+        args = dict(
+            session_key="dashboard:chat-12-1790000000",
+            memory_mode="persistent",
+            sharing_enabled=True,
+            backend=ACP_BACKEND_CLAUDE,
+            member_context=False,
+            harness_enabled=True,
+        )
+        assert ACP_BACKEND_CLAUDE in ACP_BACKENDS_CHAT_RUNTIME_SHARING
+        assert chat_sharing_ineligible_reason(**args) == ""
+        assert (
+            chat_sharing_ineligible_reason(**{**args, "harness_enabled": False})
+            == "harness_switched_off"
+        )
+        assert (
+            chat_sharing_ineligible_reason(**{**args, "session_key": "slack:C1:1790000000.1"})
+            == "origin_not_dashboard"
+        )
+        assert (
+            chat_sharing_ineligible_reason(**{**args, "member_context": True}) == "member_session"
         )
 
     def test_a_kiro_cli_chat_keeps_its_own_process_with_the_preview_on(self):
@@ -343,9 +369,17 @@ class TestPerHarnessSwitches:
     def test_a_stored_true_cannot_switch_on_a_harness_outside_the_table(self):
         from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_harness_enabled
 
-        cfg = self._cfg({ACP_BACKEND_CLAUDE: True, ACP_BACKEND_KIRO: True})
-        assert chat_runtime_sharing_harness_enabled(cfg, ACP_BACKEND_CLAUDE) is False
+        cfg = self._cfg({ACP_BACKEND_OPENCODE: True, ACP_BACKEND_KIRO: True})
+        assert chat_runtime_sharing_harness_enabled(cfg, ACP_BACKEND_OPENCODE) is False
         assert chat_runtime_sharing_harness_enabled(cfg, ACP_BACKEND_KIRO) is False
+
+    def test_claude_is_off_until_its_switch_is_stored_true(self):
+        from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_harness_enabled
+
+        assert chat_runtime_sharing_harness_enabled(self._cfg({}), ACP_BACKEND_CLAUDE) is False
+        assert chat_runtime_sharing_harness_enabled(self._cfg(None), ACP_BACKEND_CLAUDE) is False
+        on = self._cfg({ACP_BACKEND_CLAUDE: True})
+        assert chat_runtime_sharing_harness_enabled(on, ACP_BACKEND_CLAUDE) is True
 
     def test_codex_is_off_until_its_switch_is_stored_true(self):
         from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_harness_enabled
@@ -359,13 +393,15 @@ class TestPerHarnessSwitches:
         from kiro_crew.config.loader_builders import _chat_runtime_sharing_harnesses
         from kiro_crew.config.sections import AgentConfig
 
-        assert AgentConfig().chat_runtime_sharing_harnesses == {"kas": True, "codex": False}
+        defaults = {"kas": True, "codex": False, "claude": False}
+        assert AgentConfig().chat_runtime_sharing_harnesses == defaults
         assert _chat_runtime_sharing_harnesses({"kas": False, "codex": True, "kiro": True}) == {
             "kas": False,
             "codex": True,
+            "claude": False,
         }
-        assert _chat_runtime_sharing_harnesses({"kas": 0}) == {"kas": True, "codex": False}
-        assert _chat_runtime_sharing_harnesses("x") == {"kas": True, "codex": False}
+        assert _chat_runtime_sharing_harnesses({"kas": 0}) == defaults
+        assert _chat_runtime_sharing_harnesses("x") == defaults
 
     def test_only_table_harnesses_are_writable_from_the_dashboard(self):
         from kiro_crew.dashboard.handlers.core_config_schema import _EDITABLE_CONFIG

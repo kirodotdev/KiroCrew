@@ -31,7 +31,7 @@ import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 from kiro_crew import session_head
 from kiro_crew.acp import kas_cli_settings, kas_env_launch, runtime_start
@@ -42,6 +42,7 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
+from kiro_crew.acp.runtime_models import _substitute_model_from_advisory
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
     _drop_withdrawn_stubs,
@@ -131,6 +132,7 @@ async def create_session(
     start_priority: StartPriority = StartPriority.BACKGROUND,
     bg_runtime_start: bool = False,
     member_context: bool | None = None,
+    harness_options: Mapping[str, Any] | None = None,
     harness_state: Any = None,
 ) -> AcpSessionHandle:
     """Create a new ACP session on this runtime. Returns a session handle.
@@ -200,6 +202,7 @@ async def create_session(
             on_gate_queued=on_gate_queued,
             start_priority=start_priority,
             bg_runtime_start=bg_runtime_start,
+            harness_options=harness_options,
         )
     agent = await self._source_agent(agent)
     if memory_mode != "persistent":
@@ -460,7 +463,9 @@ async def create_session(
     )
     if harness_state is not None:
         # This session's own envelope, built after the array it travels with.
-        meta = self._harness.session_meta(harness_state, wire_servers, zero_tools=zero_tools)
+        meta = self._harness.session_meta(
+            harness_state, wire_servers, zero_tools=zero_tools, stub_token=stub_token
+        )
         if meta is not None:
             params["_meta"] = {**(params.get("_meta") or {}), **meta}
 
@@ -515,7 +520,36 @@ async def create_session(
     # Wall time the request went out, for the session-open mount check.
     request_sent_at = time.time()
     try:
-        resp = await self._send_and_await(METHOD_SESSION_NEW, params, timeout=budget)
+        try:
+            resp = await self._send_and_await(METHOD_SESSION_NEW, params, timeout=budget)
+        except AcpRuntimeError as exc:
+            # An organization-policy advisory refused the model and named one it
+            # serves: a host that adopts it (claude) is asked once more, with this
+            # session's envelope rebuilt on the substitute. Any other error stands.
+            substitute = _substitute_model_from_advisory(getattr(exc, "rpc_error", None))
+            owned_before = harness_state is not None and self._harness.permission_surface_owned(
+                harness_state
+            )
+            if (
+                harness_state is None
+                or not substitute
+                or not await self._harness.adopt_substituted_model(harness_state, substitute)
+            ):
+                raise
+            if owned_before and not self._harness.permission_surface_owned(harness_state):
+                # The re-seed found Crew's settings file replaced: the array this
+                # start carries was authorized under a surface Crew does not govern
+                # now, so it is not sent again (as the per-chat client refuses a
+                # fresh conversation in this case).
+                raise AcpRuntimeError(
+                    "the session's settings file was replaced; start the chat again"
+                ) from exc
+            meta = self._harness.session_meta(
+                harness_state, wire_servers, zero_tools=zero_tools, stub_token=stub_token
+            )
+            if meta is not None:
+                params["_meta"] = {**(params.get("_meta") or {}), **meta}
+            resp = await self._send_and_await(METHOD_SESSION_NEW, params, timeout=budget)
         session_id = str(resp.get("sessionId") or "")
         permit.release()
         if not session_id:
@@ -600,7 +634,7 @@ async def create_session(
                 close_session=lambda: self.terminate_session(session_id),
                 agent_version=self._agent_version,
             )
-        return await self._finish_create_session(
+        handle = await self._finish_create_session(
             session_id,
             resp,
             buffered_init=buffered_init,
@@ -630,6 +664,10 @@ async def create_session(
             withheld_notice=withheld_notice,
             start_priority=start_priority,
         )
+        if harness_state is not None:
+            # What the host's own setup decided that the handle enforces.
+            self._harness.bind_session_handle(harness_state, handle)
+        return handle
     except BaseException:
         if session_id in self._unclaimed_new_sessions:
             await asyncio.shield(self.terminate_session(session_id))
@@ -658,6 +696,7 @@ async def _create_session_with_harness_state(self: AcpRuntime, **kwargs: Any) ->
         session_key=kwargs["session_key"],
         channel_id=kwargs["channel_id"],
         memory_mode=kwargs["memory_mode"],
+        options=kwargs.get("harness_options"),
     )
     try:
         return await self.create_session(**kwargs, harness_state=state)

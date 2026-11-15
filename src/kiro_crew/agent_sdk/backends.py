@@ -91,6 +91,9 @@ with no row here.
      - pre-session registry query (whether a top-level dashboard chat slot may
        share a runtime -- distinct from subagent sharing because the chat
        teardown must leave this session's own resume record intact)
+   * - ``ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS``
+     - pre-session registry query (which chat-sharing members take the shared
+       runtime only for a chat that shares, and keep their own process otherwise)
    * - ``ACP_BACKENDS_MEMBER_CAPABILITIES``
      - pre-session registry query (whether enrolled members can load a full saved spec)
    * - ``ACP_BACKENDS_MEMBER_TOOL_LIMITS``
@@ -1473,6 +1476,7 @@ from kiro_crew.agent_sdk.backends_sessions import (  # noqa: E402,F401 - re-expo
     ACP_BACKENDS_SERIAL_SESSION_STARTS,
     ACP_BACKENDS_SESSION_EVICTION,
     ACP_BACKENDS_SESSION_SHARING,
+    ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS,
     CHAT_RUNTIME_SHARING_HARNESSES,
 )
 from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exported vocabulary

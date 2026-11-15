@@ -106,7 +106,8 @@ PLACED_OUTCOMES: tuple[str, ...] = ("spawned", "joined", "refused")
 
 #: Why an eligible-looking start kept its own process: the branch names
 #: ``chat_runtime_sharing.chat_sharing_ineligible_reason`` returns, plus
-#: ``native_subagents`` (``providers/chat_share.py``), plus ``none`` on a placement.
+#: ``native_subagents``, ``agent_started_turns`` and ``auto_permission_mode``
+#: (``providers/chat_share.py``), plus ``none`` on a placement.
 #: ``sharing_disabled`` is listed because the function can return it, though the
 #: placement path returns before asking it while the preview is off.
 #: ``test_refusal_reasons_are_every_branch_the_eligibility_rule_returns`` holds this
@@ -121,6 +122,8 @@ REFUSAL_REASONS: tuple[str, ...] = (
     "origin_not_dashboard",
     "member_session",
     "native_subagents",
+    "agent_started_turns",
+    "auto_permission_mode",
 )
 
 TENANT_BUCKETS: tuple[str, ...] = ("0", "1", "2", "3", "4+")

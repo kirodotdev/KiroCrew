@@ -54,6 +54,7 @@ from kiro_crew.acp.types import (
     rejection_reason_meta,
 )
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED,
     permission_value_for,
 )
@@ -859,4 +860,13 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
         event.spec_shell_readonly = bool(getattr(self, "kas_spec_shell_readonly", False))
         event.spec_granted_paths = tuple(getattr(self, "kas_crew_answered_paths", ()))
         event.spec_granted_read_paths = tuple(getattr(self, "kas_crew_answered_read_paths", ()))
+    if self._runtime.acp_backend in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS:
+        # A harness that never reads ``toolsSettings`` (claude): the shell and write
+        # allowlists its own setup stamped on this handle
+        # (``HarnessAdapter.bind_session_handle``), as the per-chat client stamps them.
+        # A native sub-agent's request, under its own sessionId, carries them too:
+        # the child runs inside the parent's spec.
+        event.spec_shell_allowlist = self.spec_shell_allowlist
+        event.spec_write_allowlist = self.spec_write_allowlist
+        event.spec_write_cwd = self.spec_write_cwd
     return event

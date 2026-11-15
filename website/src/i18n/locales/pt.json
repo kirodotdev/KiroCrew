@@ -16259,6 +16259,8 @@
         "chat_runtime_sharing_harness_kas_desc": "Ativado: os chats novos deste harness compartilham um programa em segundo plano e usam menos memória. Desativado: cada chat roda o próprio programa.",
         "chat_runtime_sharing_harness_codex": "Chats que usam OpenAI Codex",
         "chat_runtime_sharing_harness_codex_desc": "Ativado: os chats novos deste harness compartilham um programa em segundo plano e usam menos memória. Desativado: cada chat roda o próprio programa.",
+        "chat_runtime_sharing_harness_claude": "Chats que usam Claude Code",
+        "chat_runtime_sharing_harness_claude_desc": "Ativado: compartilham um programa e usam menos memória enquanto Agent-started Turns estiver desativado. Desativado: cada chat novo tem o seu.",
         "chat_runtime_sharing_harness_save_failed": "Não foi possível salvar a opção. Tente novamente.",
         "chat_runtime_sharing_harness_load_failed": "Não foi possível carregar estas opções.",
         "chat_runtime_sharing_desc_summary": "Economiza memória do computador executando vários chats em um único programa em segundo plano. Você escolhe quais tipos de chat o compartilham. Eles respondem ao mesmo tempo e não veem as mensagens uns dos outros. Desative e cada chat novo volta a ter seu próprio programa.",

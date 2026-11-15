@@ -209,7 +209,11 @@ def _runtime_rpc_exception(error: object) -> AcpRuntimeError:
         match = _MODE_NOT_FOUND_RE.search(str(error.get("data", "") or ""))
         if match:
             return AcpModeNotFound(message, match.group("name"))
-    return AcpRuntimeError(message)
+    exc = AcpRuntimeError(message)
+    # The error frame itself, for a caller that reads more than the sentence (the
+    # model-substitution advisory a refused ``session/new`` carries).
+    exc.rpc_error = error
+    return exc
 
 
 #: The reason a child's question declined with no turn of its owner running is

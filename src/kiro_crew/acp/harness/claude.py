@@ -20,7 +20,7 @@ import logging
 import os
 import shutil
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -635,8 +635,12 @@ class ClaudeHarness(MembershipHarness):
         session_key: str,
         channel_id: str,
         memory_mode: str,
+        options: Mapping[str, Any] | None = None,
     ) -> Any:
         """Write THIS session's settings seed in its own folder, before its request.
+
+        *options* carry the chat's own ``permission_mode``, ``side_read_only`` and
+        ``include_memory``, the three a per-chat client takes at construction.
 
         On a process-per-session client the seed is written at spawn, which on a
         shared process would seed only the first session: a later one, in another
@@ -655,6 +659,7 @@ class ClaudeHarness(MembershipHarness):
             agent=agent,
             session_key=session_key,
             channel_id=channel_id,
+            **dict(options or {}),
         )
         state.memory_mode = memory_mode
         argv = await _resolve_claude_argv()
@@ -671,9 +676,22 @@ class ClaudeHarness(MembershipHarness):
         return bool(state is not None and state._permission_surface_governed)
 
     def session_meta(
-        self, state: Any, mcp_servers: list[dict[str, Any]], *, zero_tools: bool = False
+        self,
+        state: Any,
+        mcp_servers: list[dict[str, Any]],
+        *,
+        zero_tools: bool = False,
+        stub_token: str = "",
     ) -> dict[str, Any] | None:
-        """The ``_meta.claudeCode`` envelope the per-session client sends, for this session."""
+        """The ``_meta.claudeCode`` envelope the per-session client sends, for this session.
+
+        Plus this session's identity in ``options.env``. A per-chat client puts the
+        session key and its stub token on its process's environment, and the tools
+        Claude Code runs (a ``kirocrew`` call from Bash) read them there. On a shared
+        process that environment is the founding session's, so each session carries
+        its own here instead; the adapter spreads ``options.env`` over the process
+        environment for that session's ``claude`` child only.
+        """
         if state is None:
             return None
         # The spec's "tools": [] as the mirror's projection read it: a zero-tool
@@ -683,7 +701,15 @@ class ClaudeHarness(MembershipHarness):
         # session carrying Crew's tools from one with none (on the per-session
         # client, ``_begin_session_report`` records it).
         state._mcp_mount_servers = list(mcp_servers)
-        return state._harness_session_meta(mcp_servers)
+        # The same array as the session's own cache: the envelope's forced asks for
+        # Crew-owned Connection servers are read from it (``_bridged_server_asks``).
+        state._session_mcp_cache = list(mcp_servers)
+        meta = state._harness_session_meta(mcp_servers)
+        identity = state.session_identity_env(stub_token)
+        if identity:
+            options = meta.setdefault("claudeCode", {}).setdefault("options", {})
+            options["env"] = {**dict(options.get("env") or {}), **identity}
+        return meta
 
     async def after_session_start(
         self,
@@ -764,6 +790,48 @@ class ClaudeHarness(MembershipHarness):
         except Exception:  # noqa: BLE001 - one bad message must not stop the reader
             logger.debug("reading a claude SDK message failed", exc_info=True)
             return getattr(msg, "method", None) == raw_sdk_tasks.METHOD_CLAUDE_SDK_MESSAGE
+
+    async def adopt_substituted_model(self, state: Any, substitute: str) -> bool:
+        """Adopt the model an organization-policy advisory names, and re-seed, once.
+
+        The advisory ("Model X is restricted ... Using Y instead.") answers
+        ``session/new`` with a ``-32603`` error and no session; the runtime parses
+        *substitute* out of it. The per-chat client pins the substitute and re-seeds
+        ``settings.local.json`` before re-issuing (``_retry_after_model_substitution``);
+        this does the same on the session's own state, so the runtime's one retry
+        starts on the model the gateway serves. A substitute already in use answers
+        False: the gateway refused it again.
+        """
+        if state is None or not substitute or substitute == state._model:
+            return False
+        # The name comes from the backend's advisory, so the log line does not
+        # carry it: the session's own model row shows which model it runs.
+        logger.warning(
+            "claude shared session: session/new named a substitute model; "
+            "adopting it and retrying once"
+        )
+        state._model = substitute
+        state._adopted_substitute_model = substitute
+        try:
+            await asyncio.to_thread(state._write_claude_local_settings)
+        except (OSError, ValueError, TypeError):
+            logger.warning(
+                "claude shared session: re-seed after substitution failed", exc_info=True
+            )
+        return True
+
+    def bind_session_handle(self, state: Any, handle: Any) -> None:
+        """Stamp the spec's ``toolsSettings`` shell and write allowlists on the handle.
+
+        Claude never reads ``toolsSettings``; the per-chat client stamps these on its
+        own permission requests (``client_mcp_array``), and on the shared runtime the
+        session handle builds the requests, so it carries them instead.
+        """
+        if state is None:
+            return
+        handle.spec_shell_allowlist = getattr(state, "_spec_shell_allowlist", None)
+        handle.spec_write_allowlist = getattr(state, "_spec_write_allowlist", None)
+        handle.spec_write_cwd = str(getattr(state, "_spec_write_cwd", "") or "")
 
     # ── Seam 4: inbound requests the host answers ──
 

@@ -1071,6 +1071,13 @@ class AcpSessionHandle:
     # the session stops offering a pending steer back. See ``clear_pending_steers``.
     _steer_clear_refused: bool = False
 
+    # The spec's ``toolsSettings`` shell and write allowlists on a harness that never
+    # reads them, stamped by its own setup (``HarnessAdapter.bind_session_handle``)
+    # and carried on this session's permission requests. None: no allowlist.
+    spec_shell_allowlist: tuple[str, ...] | None = None
+    spec_write_allowlist: tuple[str, ...] | None = None
+    spec_write_cwd: str = ""
+
     @property
     def last_steer_monotonic(self) -> float:
         """Monotonic time of the last steer written to the backend (0.0 if none)."""

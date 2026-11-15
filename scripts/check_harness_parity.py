@@ -482,6 +482,7 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_POD_HOME_REMAP": "off the wire: pod HOME relocation",
     "ACP_BACKENDS_SESSION_SHARING": "standard ACP: session/load after teardown",
     "ACP_BACKENDS_CHAT_RUNTIME_SHARING": "Crew-side: which chats Crew places on one AcpRuntime process",
+    "ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS": "routing-only: AcpRuntime only for a shared dashboard chat",
     "ACP_BACKENDS_HARNESS_OWNED_SESSIONS": "standard ACP: session/load by id",
     "ACP_BACKENDS_RESUME_WITHOUT_LOAD": "standard ACP: session/resume capability",
     "ACP_BACKENDS_LOAD_WITHOUT_MODES": "standard ACP: session/load result shape",

@@ -148,6 +148,10 @@ class AcpProvider(LLMProvider):
 
     # Fields an owner member first sets, declared so the class names them.
     _picker_probe_at: float
+    #: A chat-sharing placement resolved before the start chose its arm, for a
+    #: harness shared only for chats (``acp_lifecycle._chat_takes_shared_runtime``),
+    #: consumed by the runtime start. None otherwise.
+    _prejoined_chat_share: Any = None
 
     reports_effort_support = True
     approval_withdrawable = True

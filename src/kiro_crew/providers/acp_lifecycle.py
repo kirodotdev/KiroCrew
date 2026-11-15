@@ -26,7 +26,10 @@ from typing import TYPE_CHECKING, AsyncContextManager
 
 from kiro_crew.acp.client import DEFAULT_MODEL, AcpClient
 from kiro_crew.acp.types import METHOD_SESSION_DELETE
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_EFFORT_AT_LAUNCH
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_EFFORT_AT_LAUNCH,
+    ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS,
+)
 from kiro_crew.agent_sdk.claude_transcripts import delete_claude_session_files
 from kiro_crew.agent_sdk.codex_transcripts import delete_codex_session_files, spawn_env_overrides
 from kiro_crew.agent_sdk.opencode_transcripts import delete_opencode_session_rows
@@ -55,6 +58,21 @@ def _bound_remotely(session_key: str | None) -> bool:
     )
 
 
+async def _chat_takes_shared_runtime(provider: AcpProvider) -> bool:
+    """Whether this start, on a harness shared only for chats, got a shared placement.
+
+    The placement is resolved here, before the arm is chosen, and kept for the
+    runtime start to use (``_start_kiro_runtime_impl``), so a start the placement
+    refuses keeps its own ``AcpClient`` process exactly as before. A session bound
+    to a remote workspace never shares: the per-chat arm refuses it as it always has.
+    """
+    from kiro_crew.providers.acp_runtime_start import resolve_prejoined_chat_share
+
+    if await asyncio.to_thread(_bound_remotely, getattr(provider._client, "_session_key", None)):
+        return False
+    return await resolve_prejoined_chat_share(provider)
+
+
 async def start(self: AcpProvider) -> None:
     if self.memory_mode not in {"persistent", "incognito", "temporary"}:
         raise ValueError("Invalid session memory mode")
@@ -80,7 +98,13 @@ async def start(self: AcpProvider) -> None:
     await asyncio.to_thread(self._apply_effort_overlay)
     await asyncio.to_thread(self._apply_tool_search_overlay)
 
-    if self.is_acp_runtime_backend:
+    if self.is_acp_runtime_backend or (
+        # A harness the shared runtime serves only for a chat that shares (claude):
+        # the placement is asked first, and only a chat that got one takes this arm.
+        # Every other backend reads the set and goes on (harness-parity H13).
+        self._client.backend in ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS
+        and await _chat_takes_shared_runtime(self)
+    ):
         # ── Kiro unified path: AcpRuntime + AcpSessionHandle ──
         # Spawn a runtime, create/resume a session, wrap in
         # AcpSessionProvider. One process hosts parent + all subagent

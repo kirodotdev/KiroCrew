@@ -164,6 +164,7 @@ async def apply_pending_mcp_reinjection(self: AcpSessionProvider) -> None:
                 member_session_key=member_session_key,
                 session_key=self._session_key,
                 channel_id=self._channel_id or "",
+                harness_options=self._harness_options,
             )
     except BaseException as exc:
         # Restored on EVERY exit that is not a loaded session, a cancel included,

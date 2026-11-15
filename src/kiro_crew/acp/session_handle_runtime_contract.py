@@ -18,6 +18,10 @@ if TYPE_CHECKING:
 class AcpRuntimeError(Exception):
     """Base error for AcpRuntime operations."""
 
+    #: The JSON-RPC error frame an awaited request was answered with, when the
+    #: error came from the backend (``runtime_reader_loop._runtime_rpc_exception``).
+    rpc_error: object = None
+
 
 class AcpRuntimeDead(AcpRuntimeError):
     """Raised when the underlying process has died.
