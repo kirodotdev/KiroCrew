@@ -197,6 +197,7 @@ def build_session_context(
             steering_dirs=steering_dirs,
             desk_withheld=ctx._desk_withheld(execution_context, desk_member),
             provider_type=provider_type,
+            dispatch_mounted=member_dispatch_mounted,
         )
 
     # Minimal V1 is date/time + agent identity (~30-50k tokens less per cron
@@ -372,6 +373,7 @@ def build_session_context(
             member,
             include_briefing=not blocks_reads,
             desk_withheld=ctx._desk_withheld(execution_context, desk_member),
+            dispatch_mounted=member_dispatch_mounted,
         )
         if _member_section:
             append_required(_member_section)

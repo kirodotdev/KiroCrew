@@ -529,6 +529,11 @@ CONDUCTOR_MODE_SKILL_ANCHORS: dict[str, tuple[str, ...]] = {
     "close_item": ("work_ledger_record action=close with the item's state",),
     "resource_wave": ("resource_status decides the wave", "never ask to raise the cap"),
     "goal_plan": ("a finding rewrites the plan at once", "rewrite the goal text's plan and"),
+    "patrol_requested": ("a reply saying requested confirms receipt only", "monitor_inspect"),
+    "dependent_calls": (
+        "a call that depends on another goes in a later step, never the same block",
+        "calls that truly do not depend on each other",
+    ),
     # The rule IS "read goal-conductor"; its conductor mode counterpart is the chain itself.
     "skill_first": ("name: goal-conductor",),
 }
@@ -536,17 +541,7 @@ CONDUCTOR_MODE_SKILL_ANCHORS: dict[str, tuple[str, ...]] = {
 #: Shared rules the team lead does not reach today, as ``key -> (anchor, reason)``.
 #: The anchor is the rule's own phrase; once ``goal-conductor/SKILL.md`` carries it
 #: the entry is stale and the test says so. Remove it then and add the key above.
-CONDUCTOR_MODE_GAPS: dict[str, tuple[str, str]] = {
-    "dependent_calls": (
-        "depends on another goes in a later step",
-        "the team-lead prompt and both skills lack the general rule; only accept_eval's "
-        "settle step says 'in a later step'",
-    ),
-    "patrol_requested": (
-        "confirms receipt only",
-        "the skill reads patrol= outcomes but never says a 'requested' reply is not a retry cue",
-    ),
-}
+CONDUCTOR_MODE_GAPS: dict[str, tuple[str, str]] = {}
 
 
 def _skill_text(name: str) -> str:
