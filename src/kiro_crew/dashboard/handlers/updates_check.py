@@ -22,13 +22,14 @@ import aiohttp
 from aiohttp import web
 
 from kiro_crew import __version__ as _local_version
-from kiro_crew import platform_compat, update_next_start, update_restart_ready
-from kiro_crew.changelog import release_of_build
+from kiro_crew import platform_compat, release_channel, update_next_start, update_restart_ready
+from kiro_crew.changelog import base_version, release_of_build
 from kiro_crew.config.loader import (  # noqa: F401 - overlay_pins: the updates facade serves it
     KiroCrewConfig,
     overlay_pins,
 )
 from kiro_crew.config.overlay_owners import overlay_pin
+from kiro_crew.dashboard.handlers import _update_image
 from kiro_crew.dashboard.handlers._update_feed import fetch_feed_bytes
 from kiro_crew.dashboard.handlers.updates_verdict import (
     _capability_fields,
@@ -60,6 +61,7 @@ from kiro_crew.platform.update_capability import (
     ERR_VERSION_UNPARSEABLE,
     EXTERNALLY_MANAGED_MESSAGES,
     MANAGED_BY_COMMAND,
+    MANAGED_BY_CONTAINER,
     MANAGED_BY_GIT,
     MODE_NONE,
     MODE_NOTIFY,
@@ -487,9 +489,15 @@ async def _run_update_check() -> None:
             capability = await asyncio.get_running_loop().run_in_executor(None, derive_capability)
             if capability.defers:
                 reason = capability.unavailable_reason or ""
+                image: dict[str, str] = {}
+                if capability.managed_by == MANAGED_BY_CONTAINER:
+                    # A container has no channel file and refuses a switch, so
+                    # its lane is the one its own build was cut from.
+                    image = await _container_image_fields(release_channel.channel(_local_version))
                 _set_update_info(
                     **_capability_fields(capability),
                     check_status=CHECK_DEFERRED,
+                    **image,
                 )
                 logger.debug(
                     "Update check deferred: %s", EXTERNALLY_MANAGED_MESSAGES.get(reason, "")
@@ -842,6 +850,87 @@ async def _upcoming_for_feed(
     return dict(_update_announce.compose_upcoming(announcement, version=version))
 
 
+async def _read_feed_manifest(url: str, channel: str) -> tuple[dict[str, object] | None, str]:
+    """Fetch and validate *channel*'s CLI manifest: ``(manifest, "")`` or ``(None, error_code)``.
+
+    A returned manifest carries a ``version`` string that passed ``_VERSION_RE``.
+    """
+    try:
+        status, raw = await _fetch_feed_bytes(url)
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+        logger.debug("Release feed fetch failed: %s", url, exc_info=True)
+        return None, ERR_FEED_UNREACHABLE
+    if status != 200:
+        logger.warning("Release feed %s returned HTTP %s", url, status)
+        return None, ERR_FEED_UNREACHABLE
+    if len(raw) > _FEED_MAX_BYTES:
+        logger.warning("Release feed %s exceeded %d bytes", url, _FEED_MAX_BYTES)
+        return None, ERR_FEED_MALFORMED
+    try:
+        manifest = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        logger.warning("Release feed %s is not valid JSON", url)
+        return None, ERR_FEED_MALFORMED
+    if not isinstance(manifest, dict):
+        return None, ERR_FEED_MALFORMED
+    # The channel assertion is what stops a mis-wired or swapped feed from
+    # advertising another lane's build to this install.
+    if manifest.get("schema") != _CLI_MANIFEST_SCHEMA or manifest.get("channel") != channel:
+        logger.warning("Release feed %s is not a %s for %s", url, _CLI_MANIFEST_SCHEMA, channel)
+        return None, ERR_FEED_MALFORMED
+    remote_version = manifest.get("version")
+    if not isinstance(remote_version, str) or not _VERSION_RE.match(remote_version):
+        logger.warning("Release feed %s carries no usable version", url)
+        return None, ERR_FEED_MALFORMED
+    return manifest, ""
+
+
+async def _container_image_fields(channel: str) -> dict[str, str]:
+    """The newer release a container can pull, as panel fields, or ``{}``.
+
+    Availability only: a container is replaced by pulling a newer image, so
+    nothing here offers to apply anything. The release feed is the only version
+    source; the version is named only when its image answers 200 on GHCR, since
+    the feed lists a release before its image is published. Every failure
+    returns ``{}``, which leaves the panel on its existing deferral line.
+    """
+    feed_base, _artifact_base = _cdn_bases()
+    manifest: dict[str, object] | None = None
+    if channel == "insider":
+        # Promotion republishes an insider candidate's bytes as stable, so a
+        # stable image can still run an rc stamp, and stable never moves back
+        # past a release it shipped. So an rc build whose release is NOT ahead
+        # of stable's is treated as stable, now and after stable advances; only
+        # a candidate for a release stable has not reached reads insider. A
+        # failed or unordered read names nothing, never a newer RC.
+        stable, _error = await _read_feed_manifest(
+            f"{feed_base}/feed/stable/latest-cli.json", "stable"
+        )
+        if stable is None:
+            return {}
+        ahead = _is_newer(base_version(_local_version), base_version(str(stable["version"])))
+        if ahead is None:
+            return {}
+        if not ahead:
+            channel, manifest = "stable", stable
+    if manifest is None:
+        manifest, _error = await _read_feed_manifest(
+            f"{feed_base}/feed/{channel}/latest-cli.json", channel
+        )
+    if manifest is None:
+        return {}
+    remote_version = str(manifest["version"])
+    if _is_newer(remote_version, _local_version) is not True:
+        return {}
+    ref = _update_image.image_ref(_display_version(remote_version, channel))
+    if ref is None or not await _update_image.image_is_pullable(ref):
+        return {}
+    return {
+        "image_available_version": ref[1:],
+        "image_release_notes_url": _update_image.release_notes_url(ref),
+    }
+
+
 async def _check_release_feed(capability: UpdateCapability) -> None:
     """Compare a feed-checkable install against the release channel it came from.
 
@@ -883,42 +972,11 @@ async def _check_release_feed(capability: UpdateCapability) -> None:
         "can_arm": can_arm,
     }
     url = f"{feed_base}/feed/{channel}/latest-cli.json"
-
-    try:
-        status, raw = await _fetch_feed_bytes(url)
-    except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
-        logger.debug("Release feed fetch failed: %s", url, exc_info=True)
-        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_FEED_UNREACHABLE)
+    manifest, error_code = await _read_feed_manifest(url, channel)
+    if manifest is None:
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=error_code)
         return
-    if status != 200:
-        logger.warning("Release feed %s returned HTTP %s", url, status)
-        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_FEED_UNREACHABLE)
-        return
-
-    if len(raw) > _FEED_MAX_BYTES:
-        logger.warning("Release feed %s exceeded %d bytes", url, _FEED_MAX_BYTES)
-        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_FEED_MALFORMED)
-        return
-    try:
-        manifest = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        logger.warning("Release feed %s is not valid JSON", url)
-        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_FEED_MALFORMED)
-        return
-    if not isinstance(manifest, dict):
-        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_FEED_MALFORMED)
-        return
-    # The channel assertion is what stops a mis-wired or swapped feed from
-    # advertising another lane's build to this install.
-    if manifest.get("schema") != _CLI_MANIFEST_SCHEMA or manifest.get("channel") != channel:
-        logger.warning("Release feed %s is not a %s for %s", url, _CLI_MANIFEST_SCHEMA, channel)
-        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_FEED_MALFORMED)
-        return
-    remote_version = manifest.get("version")
-    if not isinstance(remote_version, str) or not _VERSION_RE.match(remote_version):
-        logger.warning("Release feed %s carries no usable version", url)
-        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_FEED_MALFORMED)
-        return
+    remote_version = str(manifest["version"])
 
     available = _is_newer(remote_version, _local_version)
     if available is None:
