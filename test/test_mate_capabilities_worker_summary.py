@@ -477,3 +477,47 @@ def test_the_summary_resolves_the_skills_root_once_however_many_skill_links(monk
 
     assert one <= 1
     assert len(calls) == one
+
+
+def test_the_remove_checks_expand_and_match_the_catalog_once_not_once_per_row(monkeypatch):
+    """Each added row's Remove check re-derives the candidate spec's skills. Done by
+    re-expanding and re-matching the whole catalog per row, a Bot with ~120 added
+    rows and a ~700-skill catalog took over 30 s and the Abilities pane timed out,
+    so the work must not grow with rows x catalog."""
+    from kiro_crew import agent_discovery
+    from kiro_crew import skills as sk
+    from kiro_crew.skill_runtime import catalog as skill_catalog
+
+    root = sk.skills_dir().as_posix()
+    catalog = {f"c{i}": f"skill://{root}/c{i}/SKILL.md" for i in range(500)}
+    added = list(catalog.values())[:100]
+    base = {"mcpServers": {}, "tools": [], "resources": []}
+    file_spec = {"resources": list(added)}
+    monkeypatch.setattr(mate_worker, "member_worker_spec", lambda member: dict(file_spec))
+    monkeypatch.setattr(mate_capabilities, "_load_spec", lambda member: (None, file_spec))
+    _patch_base(monkeypatch, base)
+    counts = {"expand": 0, "match": 0}
+    real_expand, real_match = agent_discovery.expand_skill_uri, skill_catalog._matches_any
+
+    def expand(*a, **kw):
+        counts["expand"] += 1
+        return real_expand(*a, **kw)
+
+    def match(*a, **kw):
+        counts["match"] += 1
+        return real_match(*a, **kw)
+
+    monkeypatch.setattr(agent_discovery, "expand_skill_uri", expand)
+    monkeypatch.setattr(skill_catalog, "_matches_any", match)
+
+    rows = mate_capabilities.worker_summary("ben", catalog)["rows"]
+
+    skills = {row["id"]: row for row in rows if row["section"] == "skills"}
+    assert all(
+        skills[f"c{i}"]["remove"] == {"section": "skills", "id": f"c{i}"} for i in range(100)
+    )
+    assert all(skills[f"c{i}"]["state"] == "local" for i in range(100))
+    # Once per catalog entry and once per distinct resource used as a glob.
+    assert counts["expand"] <= len(catalog) + len(added)
+    # Each distinct resource is matched against the catalog once.
+    assert counts["match"] <= len(added) * len(catalog)
