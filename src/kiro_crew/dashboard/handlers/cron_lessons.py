@@ -703,7 +703,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # predicate, the blocked-content screen and the row cap -- and all answer
         # with the bare ``refused`` string, so the cause has to be re-derived here.
         # Re-running the predicates is exact rather than a guess: they are the same
-        # pure-text calls the store made, and ``_lesson_withheld`` above re-derives
+        # pure-text calls the store made, and the listing's ``_safe_lesson`` re-derives
         # the first the same way for its own surface. Reporting every refusal as
         # ``volatile_session_fact`` told a user at the row cap to reword a rule
         # whose wording was never the problem. The blocked-content reason is the

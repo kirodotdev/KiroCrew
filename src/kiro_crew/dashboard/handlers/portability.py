@@ -105,7 +105,7 @@ _SPOOL_FILE = "import.zip"
 UNBUNDLED_TEMPLATES_HEADER = "X-Kirocrew-Unbundled-Templates"
 
 #: Export response header: how many chats were left out so the archive stays within
-#: what import accepts (`portability._export_sessions`). A bare non-negative integer.
+#: what import accepts (`portability_export._plan_sessions`). A bare non-negative integer.
 SESSIONS_SKIPPED_SIZE_HEADER = "X-Kirocrew-Sessions-Skipped-Size"
 
 
