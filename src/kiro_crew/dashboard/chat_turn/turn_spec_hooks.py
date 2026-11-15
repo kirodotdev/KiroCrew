@@ -89,6 +89,7 @@ if TYPE_CHECKING:
         redact_credentials,
         redact_exfiltration_urls,
     )
+    from kiro_crew.dashboard.chat_turn.builtin_tools_notice import _notice_unapplied_builtin_tools
     from kiro_crew.dashboard.chat_turn.deny_chokepoints import _redact_display_text
     from kiro_crew.dashboard.chat_turn.mcp_oauth_notice import _notice_dropped_mcp_oauth
     from kiro_crew.dashboard.chat_turn.recipient import (
@@ -217,12 +218,14 @@ async def _prepare_spec_hooks(
     entries, and one where nothing applies the spec's ``toolsSettings``
     (``spec_tools_settings_applied_nowhere``) gets one naming what of it goes
     unapplied, and one that drops a remote MCP server's ``oauth`` block gets one
-    naming those servers. None of them runs silently.
+    naming those servers, and a claude one that leaves the spec's `tools` or `model`
+    unapplied gets one naming them. None of them runs silently.
     """
     if is_new and spec_steering_read_nowhere(client):
         await _notice_unread_steering(state, slot, client, agent)
     if is_new:
         await _notice_dropped_mcp_oauth(state, slot, client, agent)
+        await _notice_unapplied_builtin_tools(state, slot, client, agent)
     if not capabilities_of(client).crew_fires_spec_hooks:
         if is_new and spec_hooks_run_nowhere(client):
             await _notice_spec_hooks_run_nowhere(state, slot, client, agent)

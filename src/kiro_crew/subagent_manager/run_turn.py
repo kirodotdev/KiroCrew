@@ -467,6 +467,11 @@ async def _run_inner_impl(
     # run never spends a turn discovering the absence for itself. Empty for a
     # healthy session, which leaves this prompt exactly as it was.
     message = self._spawn_mcp_notice(mcp_problems) + message
+    # A spec field the claude session does not apply is named the same way.
+    notice = await _session.spec_builtin_tools_notice(
+        client, info, session_key, fresh=is_new and not _resumed
+    )
+    message = notice + message
     # Scale the injected-context budget to this subagent's model window (a
     # subagent can be pinned to a smaller model). Resolved from the live
     # client; None ⇒ 1M reference.

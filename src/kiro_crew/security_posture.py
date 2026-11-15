@@ -740,6 +740,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # agent-switch name, the /compact summary and failure reason, the partial reply and stream
         # flushes, spec-hook notices, the stats footer). Their output reaches the runner's surfaces.
         "dashboard/chat_turn/acp_recovery.py",
+        "dashboard/chat_turn/builtin_tools_notice.py",
         "dashboard/chat_turn/deny_chokepoints.py",
         "dashboard/chat_turn/eager_spawn.py",
         "dashboard/chat_turn/elicitation_prompt.py",
