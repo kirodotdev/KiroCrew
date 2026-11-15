@@ -339,6 +339,15 @@ class EmbeddingBackend(abc.ABC):
         must not change what a later ``embed`` returns, only when it can start.
         """
 
+    def keep_warm(self) -> None:
+        """A person is about to need vectors: load the model, or keep it loaded. Never blocks.
+
+        The default is :meth:`prefetch`; a backend that unloads when idle also
+        restarts its idle clock, so the model is not released under a person who
+        has just shown up. Called by ``embeddings_shared.warm_embedder_for_person``.
+        """
+        self.prefetch()
+
     @abc.abstractmethod
     def embed(self, text: str, *, priority: int = PRIORITY_NORMAL) -> "list[float] | None":
         """Embed one text, or None when unavailable.
@@ -583,6 +592,23 @@ class LlamaCppEmbedder(EmbeddingBackend):
         """
         if self._closed or not self._serving or self._llm is not None:
             return
+        self._kick_background_load()
+
+    def keep_warm(self) -> None:
+        """:meth:`prefetch`, and a loaded model's idle clock starts again.
+
+        Same gates as :meth:`prefetch`. A person who opens a chat, sends a message
+        or writes to a channel keeps the model loaded for another idle period, and
+        one arriving after an unload has it loading before their context build asks
+        for a vector.
+        """
+        if self._closed or not self._serving:
+            return
+        if self._llm is not None:
+            self._last_used = time.monotonic()
+            if self._llm is not None:
+                return
+            # The evictor retired it between the two reads: load it again.
         self._kick_background_load()
 
     def _kick_background_load(self) -> None:

@@ -728,3 +728,22 @@ async def test_patch_refuses_a_safety_switch(tmp_config, path: str, value: bool)
     status, body = await _send({"path": path, "value": value})
     assert status == 400, body
     assert key not in _stored(tmp_config).get(section, {})
+
+
+async def test_the_idle_unload_row_takes_a_number_or_auto(tmp_config) -> None:
+    """The field is ``int | str``; the row stays an editable number box that also takes "auto"."""
+    record = all_settings.descriptor(_BY_PATH["memory.embedding_idle_evict_secs"])
+    assert record is not None and record["mode"] == "edit" and record["control"] == "int"
+
+    status, body = await _send({"path": "memory.embedding_idle_evict_secs", "value": 900})
+    assert status == 200, body
+    assert _stored(tmp_config)["memory"]["embedding_idle_evict_secs"] == 900
+
+    status, body = await _send({"path": "memory.embedding_idle_evict_secs", "value": "auto"})
+    assert status == 200, body
+    assert _stored(tmp_config)["memory"]["embedding_idle_evict_secs"] == "auto"
+
+    for bad in ("soon", -1, 365 * 24 * 3600 + 1):
+        status, body = await _send({"path": "memory.embedding_idle_evict_secs", "value": bad})
+        assert status == 400, (bad, body)
+    assert _stored(tmp_config)["memory"]["embedding_idle_evict_secs"] == "auto"

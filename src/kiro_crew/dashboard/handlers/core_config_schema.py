@@ -529,6 +529,15 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Memory → Repeated failures: the opt-in weekly bell note
     # (dashboard/repeated_failures_notice.py). Default OFF in MemoryConfig.
     "memory.repeated_failures_notice": {"type": "bool"},
+    # Seconds, or "auto" (600 on a machine with 16 GiB or less, 3600 elsewhere). The
+    # field is ``int | str``, which the schema-derived rule cannot edit, so the row
+    # keeps its number box here and also takes the one word.
+    "memory.embedding_idle_evict_secs": {
+        "type": "int",
+        "min": 0,
+        "max": 365 * 24 * 3600,
+        "allow_auto": True,
+    },
     # Knowledge Library ingestion. Chunk budget max mirrors the point past which
     # a single sweep stops being a trickle; dedup cadence max is ~a day of sweeps.
     "knowledge.auto_add_documents": {"type": "bool"},

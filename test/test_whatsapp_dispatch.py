@@ -1535,3 +1535,23 @@ def test_a_hand_written_false_keeps_the_billed_voice_reply_off():
 
     assert _build_whatsapp_config({"auto_reply_to_voice": "false"}).auto_reply_to_voice is False
     assert _build_whatsapp_config({"auto_reply_to_voice": True}).auto_reply_to_voice is True
+
+
+@pytest.mark.parametrize("conv, warmed", [(_GROUP, [1]), (_DM, [])])
+def test_a_group_message_starts_the_embedding_model_load_itself(monkeypatch, conv, warmed):
+    """A group message is admitted with no route, so admission does not warm the model.
+
+    The dispatcher does it instead (a DM's routed admission already did).
+    """
+    import kiro_crew.whatsapp.transport_dispatch as wa_dispatch
+
+    calls: list[int] = []
+    monkeypatch.setattr(wa_dispatch, "warm_embedder_for_person_soon", lambda: calls.append(1))
+    d, _client, _sessions, transport = _make()
+    inbound = _msg("hi", conv=conv)
+    transport.pending_original[id(inbound)] = ("hi", ())
+    transport.pending_verdicts[id(inbound)] = GroupVerdict(respond=True)
+
+    _captured_turn(monkeypatch, d, inbound)
+
+    assert calls == warmed

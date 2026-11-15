@@ -339,6 +339,8 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         # The weekly repeated-failures bell note: a reminder to the owner, which
         # writes no memory and grants nothing.
         "memory.repeated_failures_notice",
+        # How long the idle embedding model stays loaded: memory use only, grants nothing.
+        "memory.embedding_idle_evict_secs",
         # Local recording only: the write route refuses the enable on a host
         # where it would start sending data out.
         "telemetry.enabled",
