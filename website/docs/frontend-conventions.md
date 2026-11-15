@@ -976,6 +976,22 @@ files own it:
   whole subtree. Anchor on a data attribute instead, as `cli-mode.css` does with
   `[data-chat-scope]`. `src/test/styleAttributeSelectorAnchor.test.ts` enforces it.
 
+  Three more rules keep one inserted node from restyling the whole app. Every
+  Radix layer inserts a focus guard at the start of `<body>` when it opens, so
+  each of these costs a full style recalc per open and per close;
+  `src/test/styleRecalcScope.test.ts` enforces them.
+  - No sibling combinator between two compounds that name no class, id, tag or
+    attribute (`* + *`, `:not(…) ~ :not(…)`, the `[&>*+*]:` variant). Chrome has
+    nothing to key such a rule on, so a node inserted anywhere restyles the whole
+    subtree of the elements after it. Write "all but the first" as
+    `:not(:first-child)`, or give the left side a class.
+  - `#root` is never the first element of `<body>` (`index.html` keeps an empty
+    hidden element before it): the element that loses `:first-child` to the focus
+    guard has its subtree restyled.
+  - The custom property the scroll lock writes on `<body>`
+    (`--removed-body-scroll-bar-size`) stays registered with `@property` as
+    non-inherited. Unregistered, it inherits to every element.
+
 The build runs through `@tailwindcss/vite`; there is no PostCSS config. A
 downstream edition's sources are added to the content scan by
 `editionExtensionPlugin` in `vite.config.ts`, which swaps the

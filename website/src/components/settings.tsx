@@ -575,10 +575,16 @@ export const SETTINGS_CARD_STAGGER_MS = 60
  * hairline. A card nested inside a row loses its own bottom gap, so a card-shaped
  * row (an edition row, the KAS card) sits flush like the others.
  * `data-settings-box` lets a caller test for an empty box with `:empty`.
+ *
+ * The hairline selects "every row but the first" as `:not(:first-child)`, never
+ * as `* + *`: a sibling combinator between two bare `*` gives the browser no
+ * class to key on, so any node inserted anywhere restyles the whole subtree of
+ * the elements after it (frontend-conventions.md, Styling). `:where()` keeps the
+ * specificity of a single class.
  */
 const SETTINGS_BOX_CLASS =
   'rounded-xl overflow-hidden border border-[var(--border)] bg-[var(--card)] empty:hidden '
-  + '[&>*]:px-4 [&>*]:py-3 [&>*+*]:border-t [&>*+*]:border-[var(--border)] [&_[data-settings-card]]:mb-0'
+  + '[&>*]:px-4 [&>*]:py-3 [&>:where(:not(:first-child))]:border-t [&>:where(:not(:first-child))]:border-[var(--border)] [&_[data-settings-card]]:mb-0'
 
 export function SettingsCard({ index, boxed, children }: {
   /**
