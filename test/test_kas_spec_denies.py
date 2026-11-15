@@ -9,6 +9,7 @@ Anything Crew cannot read keeps asking.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from test_tool_call_classification_kas import _kas_builtin_flow
 from kiro_crew.acp import kas_agents
 from kiro_crew.acp._dispatch import attach_kas_custom_agents
 from kiro_crew.acp.kas_permissions import CREW_ANSWERED_COMMANDS_KEY, CREW_SPEC_DENIES_KEY
-from kiro_crew.acp.kas_spec_denies import GATE_JUDGED_MARK, projected_spec_denies
+from kiro_crew.acp.kas_spec_denies import projected_spec_denies
 from kiro_crew.acp.types import AcpEvent
 from kiro_crew.hooks import (
     TOOL_ALLOW,
@@ -267,8 +268,11 @@ def test_an_unreadable_uncarried_deny_refuses_nothing_and_is_named() -> None:
     lost = kas_agents.spec_keys_without_carrier(
         {"name": "a", **spec}, translates_tools_settings=True
     )
-    assert "toolsSettings.shell.deniedCommands: curl|wget" in lost
-    assert rf"toolsSettings.shell.deniedCommands: docker\s+push.*{GATE_JUDGED_MARK}" in lost
+    decoded = [json.loads(item)["deniedCommand"] for item in lost]
+    assert {(item["entry"], item["conditional"]) for item in decoded} == {
+        ("curl|wget", False),
+        (r"docker\s+push.*", True),
+    }
     notice = spec_keys_notice("a", lost)
     assert "curl|wget" in notice and "is not refused" in notice
     assert "It does not judge any other command" in notice
@@ -290,7 +294,10 @@ def test_a_redirect_deny_refuses_nothing_and_is_named(regex: str) -> None:
     lost = kas_agents.spec_keys_without_carrier(
         {"name": "a", **spec}, translates_tools_settings=True
     )
-    assert lost == [f"toolsSettings.execute_bash.deniedCommands: {regex}"]
+    assert len(lost) == 1
+    item = json.loads(lost[0])["deniedCommand"]
+    assert item["key"] == "toolsSettings.execute_bash.deniedCommands"
+    assert item["entry"] == regex and item["conditional"] is False
     assert "is not refused" in spec_keys_notice("a", lost)
 
 
@@ -315,7 +322,10 @@ def test_a_carried_dollar_anchored_deny_is_not_named_beside_an_uncarried_one() -
     lost = kas_agents.spec_keys_without_carrier(
         {"name": "a", **spec}, translates_tools_settings=True
     )
-    assert lost == ["toolsSettings.shell.deniedCommands: curl|wget"]
+    assert len(lost) == 1
+    item = json.loads(lost[0])["deniedCommand"]
+    assert item["key"] == "toolsSettings.shell.deniedCommands"
+    assert item["entry"] == "curl|wget" and item["conditional"] is False
 
 
 def test_readable_entries_past_the_bound_are_named_as_not_refused() -> None:
@@ -327,11 +337,10 @@ def test_readable_entries_past_the_bound_are_named_as_not_refused() -> None:
     lost = kas_agents.spec_keys_without_carrier(
         {"name": "a", **spec}, translates_tools_settings=True
     )
-    past = [key for key in lost if key.endswith("(past the first 64)")]
-    assert past == [
-        rf"toolsSettings.shell.deniedCommands: docker\s+push img{i} (past the first 64)"
-        for i in (64, 65)
-    ]
+    decoded = [json.loads(item)["deniedCommand"] for item in lost]
+    past = [item for item in decoded if item["past_bound"]]
+    assert [item["entry"] for item in past] == [rf"docker\s+push img{i}" for i in (64, 65)]
+    assert all(not item["conditional"] for item in past)
     assert len(lost) == 66
 
 
@@ -353,10 +362,9 @@ def test_a_readable_uncarried_deny_is_named_as_refused_by_the_gate() -> None:
         {"name": "a", **{"toolsSettings": _UNCARRIED}}, translates_tools_settings=True
     )
     # `npm publish.*` reaches KAS as a rule, so only the other two are named.
-    assert sorted(lost) == sorted(
-        f"toolsSettings.shell.deniedCommands: {entry}{GATE_JUDGED_MARK}"
-        for entry in (r"docker\s+push.*", r"rm -rf \w+")
-    )
+    decoded = [json.loads(item)["deniedCommand"] for item in lost]
+    assert sorted(item["entry"] for item in decoded) == sorted((r"docker\s+push.*", r"rm -rf \w+"))
+    assert all(item["conditional"] for item in decoded)
     notice = spec_keys_notice("a", lost)
     assert "no effect" not in notice and "is not refused" not in notice
     assert "refuses a plain command they name, and each command of a plain chain" in notice

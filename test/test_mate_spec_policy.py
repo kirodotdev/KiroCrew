@@ -459,32 +459,24 @@ def test_a_subagent_worker_turn_fires_the_hooks_of_its_own_session(monkeypatch):
 _UNCARRIED_SETTINGS = {
     "a_tool_restriction_kas_cannot_enforce_is_refused_by_name": [
         (
-            {"execute_bash": {"deniedCommands": ["git push (origin|upstream) .*"]}},
-            "toolsSettings.execute_bash.deniedCommands",
-        ),
-        (
             {"web_fetch": {"blocked": ["https://example.com/private/.*"]}},
             "toolsSettings.web_fetch.blocked",
         ),
     ],
     "a_tools_setting_outside_the_allowlist_is_refused_by_name": [
-        ({"fs_write": {"allowedPaths": ["/srv/**"]}}, "toolsSettings.fs_write.allowedPaths"),
         ({"fs_write": {"fallbackAction": "deny"}}, "toolsSettings.fs_write.fallbackAction"),
-        ({"execute_bash": {"denyByDefault": True}}, "toolsSettings.execute_bash.denyByDefault"),
         ({"web_fetch": {"trusted": ["docs\\.example\\.com"]}}, "toolsSettings.web_fetch.trusted"),
         (
             {"use_subagent": {"availableAgents": ["reviewer"]}},
             "toolsSettings.use_subagent.availableAgents",
         ),
-        ({"subagent": {"trustedAgents": ["reviewer"]}}, "toolsSettings.subagent.trustedAgents"),
+        (
+            {"use_subagent": {"trustedAgents": ["reviewer"]}},
+            "toolsSettings.use_subagent.trustedAgents",
+        ),
         ({"use_aws": {"allowedServices": ["s3"]}}, "toolsSettings.use_aws.allowedServices"),
         ({"use_aws": {}}, "toolsSettings.use_aws"),
         ({"execute_bash": "deny"}, "toolsSettings.execute_bash"),
-        # Read over ASCII by Crew, over Unicode by kiro-cli: not exact, so refused.
-        (
-            {"execute_bash": {"allowedCommands": ["make \\w+"]}},
-            "toolsSettings.execute_bash.allowedCommands",
-        ),
     ],
 }
 
@@ -503,31 +495,24 @@ def test_a_tools_setting_crew_cannot_carry_is_refused_by_name(settings, named):
     assert named in caught.value.fields
 
 
-def test_a_template_with_a_subagent_allowlist_is_added_and_trusted_agents_still_refused(home):
+def test_a_template_with_a_subagent_allowlist_and_trusted_agents_is_added(home):
     user, mates = home
-    allow = {"subagent": {"availableAgents": ["gpu-*"]}}
-    _use(user, {**TEMPLATE, "toolsSettings": allow})
+    trusted = {"subagent": {"availableAgents": ["gpu-*"], "trustedAgents": ["gpu-coder"]}}
+    _use(user, {**TEMPLATE, "toolsSettings": trusted})
     preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
     mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
-    assert _file(mates)["toolsSettings"] == allow
-    trusted = {"subagent": {"availableAgents": ["gpu-*"], "trustedAgents": ["gpu-*"]}}
-    _use(user, {**TEMPLATE, "toolsSettings": trusted})
-    with pytest.raises(WorkerKitError) as caught:
-        mate_worker_kit.preview("pixel", {"template": "release-bot"})
-    assert "toolsSettings.subagent.trustedAgents" in caught.value.detail
-    assert "toolsSettings.subagent.availableAgents" not in caught.value.detail
+    assert _file(mates)["toolsSettings"] == trusted
 
 
-def test_the_kit_copy_refuses_a_template_whose_deny_kas_cannot_enforce(home):
+def test_the_kit_copy_carries_a_deny_kas_cannot_enforce_and_names_it(home):
     user, mates = home
-    before = _file(mates)
     bad = {"execute_bash": {"deniedCommands": ["git push (origin|upstream) .*"]}}
     _use(user, {**TEMPLATE, "toolsSettings": bad})
-    with pytest.raises(WorkerKitError) as caught:
-        mate_worker_kit.preview("pixel", {"template": "release-bot"})
-    assert caught.value.code == "template_restrictions_uncarried"
-    assert "toolsSettings.execute_bash.deniedCommands" in caught.value.detail
-    assert _file(mates) == before
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert preview["unenforced_denies"] == ["git push (origin|upstream) .*"]
+    mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
+    assert _file(mates)["toolsSettings"] == bad
+    assert mate_worker_kit.view("pixel")["unenforced_denies"] == ["git push (origin|upstream) .*"]
 
 
 @pytest.mark.parametrize(
@@ -621,12 +606,14 @@ def test_a_carried_allowed_command_is_answered_by_crews_gate():
     assert crew_answered_commands(spec["toolsSettings"]) == ["git status"]
 
 
-def test_an_allowed_command_crews_gate_cannot_answer_is_refused():
-    """A listed grant must take effect too: an unusable entry is refused."""
-    settings = {"execute_bash": {"allowedCommands": ["make -j\\p{N}+"]}}
-    with pytest.raises(SpecPolicyUncarried) as caught:
-        mate_spec_policy.layer_policy({}, {"toolsSettings": settings})
-    assert "toolsSettings.execute_bash.allowedCommands" in caught.value.fields
+@pytest.mark.parametrize("entry", ["make -j\\p{N}+", "make \\w+"])
+def test_an_allowed_command_crews_gate_cannot_answer_is_carried(entry):
+    """An entry the gate cannot read, or reads narrower than kiro-cli, grants
+    nothing more than it should: the command asks, so the list is carried whole."""
+    settings = {"execute_bash": {"allowedCommands": [entry]}}
+    spec: dict = {}
+    mate_spec_policy.layer_policy(spec, {"toolsSettings": settings})
+    assert spec["toolsSettings"] == settings
 
 
 def test_a_dedicated_worker_provider_fires_its_sessions_hooks(monkeypatch):

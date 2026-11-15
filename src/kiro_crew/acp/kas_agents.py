@@ -63,6 +63,7 @@ the field absent, which is the all-``ask`` case above.
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 from collections.abc import Callable, Mapping
@@ -161,9 +162,9 @@ from kiro_crew.acp.kas_skill_scope import _skill_scope_summary
 from kiro_crew.acp.kas_spec_carry import projected_resources, user_tool_aliases, with_use_aws_denies
 from kiro_crew.acp.kas_spec_denies import commands_lifted_by_denies as _commands_lifted_by_denies
 from kiro_crew.acp.kas_spec_denies import (
+    denied_command_items,
     spec_denies_record,
     uncarried_denied_commands,
-    unread_denied_commands,
     web_fetch_carried,
     web_fetch_gate,
 )
@@ -339,17 +340,20 @@ def spec_keys_without_carrier(
     )
     # A `deniedCommands` KAS did not carry is enforced at Crew's gate
     # (`uncarried_denied_commands`): only the entries neither enforces are lost.
-    unread_denies = unread_denied_commands(tools_settings, translated)
-    named = [
-        entry
-        for path in named
-        for entry in (
-            [e for e in unread_denies if e.partition(":")[0] == path]
-            if path in {f"{key}.deniedCommands" for key in SHELL_SETTINGS_KEYS}
-            else [path]
+    deny_items = denied_command_items(tools_settings, translated)
+    deny_keys = {f"{key}.deniedCommands" for key in SHELL_SETTINGS_KEYS}
+    # JSON preserves structured facts across the existing list[str] notice API.
+    # Only the final notice renderer formats the raw rule for a person.
+    deny_notices = [
+        json.dumps(
+            {"deniedCommand": {**item, "key": f"toolsSettings.{as_authored(raw, item['key'])}"}}
         )
+        for item in deny_items
+        if item["key"] in named
     ]
-    lost.extend(f"toolsSettings.{as_authored(raw, path)}" for path in named)
+    lost.extend(
+        f"toolsSettings.{as_authored(raw, path)}" for path in named if path not in deny_keys
+    )
     if authored is not None and not projection_accepts(authored):
         lost.append("permissions")
     lost.extend(f"permissions.rules[{i}]" for i in projection_dropped_rules(authored))
@@ -401,7 +405,9 @@ def spec_keys_without_carrier(
                 f"toolsSettings.{as_authored(raw, key)}.allowedPaths"
                 for key in ("fs_write", "write")
             }
-    return sorted({f"{key}{GATE_READ_MARK}" if key in gate_read else key for key in lost})
+    return sorted(
+        {f"{key}{GATE_READ_MARK}" if key in gate_read else key for key in lost} | set(deny_notices)
+    )
 
 
 def _allowed_commands_withheld(

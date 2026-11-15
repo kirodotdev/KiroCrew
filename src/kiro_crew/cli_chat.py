@@ -1151,6 +1151,8 @@ async def _answer_permission(
             spec_write_cwd=getattr(event, "spec_write_cwd", "") or "",
             # Lifts the shell allowlist only for a read-only command, as above.
             spec_shell_readonly=getattr(event, "spec_shell_readonly", False) is True,
+            # A Bot worker's denies nobody judges: a refusal too.
+            spec_unjudged_denies=getattr(event, "spec_unjudged_denies", ()) or (),
         )
         spec_refusal: str | None = None
         if decision.action != TOOL_DENY:

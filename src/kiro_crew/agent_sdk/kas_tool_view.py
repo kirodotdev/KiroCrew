@@ -256,3 +256,126 @@ def unreadable_allowed_commands(raw: Any) -> list[tuple[str, str, str]]:
         (aliases.as_authored(raw, key), entry, reason)
         for key, entry, reason in kas_unread_commands.unreadable_allowed_commands(settings)
     ]
+
+
+def spec_unjudged_denies(spec: dict[str, Any], *, conditional: bool = False) -> list[str]:
+    """The deny entries neither KAS nor Crew's gate can fully judge for *spec*.
+
+    Combine authored and translated rules as the worker projection does, then
+    use its classifier so the Add-abilities notice names the same shell hold.
+    With *conditional*, the entries only the gate checks, in a simple command or
+    chain (``kas_spec_denies.unjudged_denied_commands``).
+    """
+    from kiro_crew.acp.kas_permissions import tools_settings_to_permissions
+    from kiro_crew.acp.kas_spec_denies import unjudged_denied_commands
+    from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
+
+    settings, _dropped = canonical_tools_settings(spec.get("toolsSettings"))
+    if not isinstance(settings, dict):
+        return []
+    translated, _lost = tools_settings_to_permissions(settings)
+    permissions = spec.get("permissions")
+    authored = permissions.get("rules") if isinstance(permissions, dict) else None
+    rules = [
+        *(authored if isinstance(authored, list) else []),
+        *(translated or {}).get("rules", []),
+    ]
+    return unjudged_denied_commands(settings, {"rules": rules}, conditional=conditional)
+
+
+def worker_deny_records(value: Any) -> tuple[dict[str, Any] | str, ...]:
+    """Validate the Crew-only record; legacy strings and malformed items hold unconditionally."""
+    if not isinstance(value, (list, tuple)):
+        return (str(value),)
+    return tuple(
+        (
+            dict(item)
+            if (
+                isinstance(item, dict)
+                and isinstance(item.get("key"), str)
+                and "entry" in item
+                and all(
+                    isinstance(item.get(key), bool)
+                    for key in ("conditional", "past_bound", "whole")
+                )
+                and (
+                    not item["conditional"]
+                    or (
+                        isinstance(item["entry"], str)
+                        and not item["whole"]
+                        and not item["past_bound"]
+                    )
+                )
+            )
+            else str(item)
+        )
+        for item in value
+    )
+
+
+def unjudged_denies_for_command(
+    entries: tuple[dict[str, Any] | str, ...], command: str | None
+) -> tuple[str, ...]:
+    """Worker denies without a definite no-match, using structured classification."""
+    from kiro_crew.acp.kas_spec_denies import deny_entry_text
+    from kiro_crew.platform.spec_denied_gate import shell_denies_match
+
+    return tuple(
+        deny_entry_text(item) if isinstance(item, dict) else item
+        for item in worker_deny_records(entries)
+        if not isinstance(item, dict)
+        or not item["conditional"]
+        or shell_denies_match((item["entry"],), command) is not False
+    )
+
+
+def split_deny_notices(keys: list[str]) -> tuple[list[str], list[str], list[str]]:
+    """Render serialized deny records into judged/unjudged groups and leave other keys intact."""
+    import json
+
+    from kiro_crew.acp.kas_spec_denies import denied_command_notice
+
+    judged: list[str] = []
+    unjudged: list[str] = []
+    plain: list[str] = []
+    for key in keys:
+        if key.startswith('{"deniedCommand":'):
+            item = json.loads(key)["deniedCommand"]
+            target = judged if item["conditional"] else unjudged
+            target.append(denied_command_notice({**item, "conditional": False}))
+        else:
+            plain.append(key)
+    return judged, unjudged, plain
+
+
+def deny_sentences(agent: str, judged: list[str], unjudged: list[str], worker: bool) -> list[str]:
+    """The session-start notice's sentences for rendered deny records.
+
+    *judged* are gate-only entries; *unjudged* are ones nothing checks, passed
+    only for a Bot's *worker* (``kirocrew-mate-worker``, the agent the KAS
+    projection records them for, ``kas_spec_denies.with_unjudged_denies``). There
+    the ``spec-unjudged-denies`` row refuses a shell command that is not read-only
+    and that an entry cannot be checked against, so the notice says so instead of
+    "no effect" or "runs without a refusal".
+    """
+    out = []
+    if unjudged:
+        out.append(
+            f"Agent {agent} sets {' and '.join(unjudged)}, which this backend does not "
+            "receive and Kiro Crew cannot check, so this Bot's worker refuses every "
+            "shell command that is not read-only."
+        )
+    if judged:
+        out.append(
+            f"Agent {agent} sets {' and '.join(judged)}, which this backend does not "
+            "receive. Kiro Crew's own approval gate refuses a plain command they name, "
+            "and each command of a plain chain (&&, ||, ;, |). It does not judge any "
+            "other command, such as one with $(...), a backtick, a redirect, a newline, "
+            "a trailing &, a tab, a ( ) group, or a quote, # or [[ in a chain, so "
+            + (
+                "this Bot's worker refuses such a command unless it is read-only."
+                if worker
+                else "such a command runs without a refusal."
+            )
+        )
+    return out
