@@ -582,6 +582,15 @@ flags. The BSD `stat -f %Lp` fixture reads real permission bits with Python's
 Reject unsupported arguments and verify actual modes; never substitute a fixed
 successful response for the permission check. Quote paths and bound subprocesses.
 
+A test that runs a GNU-only shell form through bash (`date -d`, `grep -P`, `sed -i`
+with no attached suffix, `stat -c`, a bare `sha256sum -c` on stdin, `find -printf`,
+`base64 -w`) probes the host first and puts a shim or a skip in front of it, the way
+`_has_gnu_date`, `_pcre_grep_path` and `_host_has_gnu_sha256sum` do; the macOS
+shards run it on BSD tools. This covers a workflow step the test extracts, since
+Actions runs that step on Linux but the test does not. A shell script outside
+`.github/` uses the portable form. `test/test_gnu_only_shell_usage.py` enforces both
+and holds the reviewed exceptions.
+
 ### Links: use the conftest helpers, do not skip on Windows
 
 Creating a symlink on Windows needs `SeCreateSymbolicLinkPrivilege`; an unelevated
