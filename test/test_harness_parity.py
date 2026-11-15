@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import inspect
+import logging
 import os
 import re
 import subprocess
@@ -218,6 +219,11 @@ def test_config_load_never_reads_the_platform_context(monkeypatch) -> None:
     reached: list = []
     monkeypatch.setattr(pc, "current_context", lambda: reached.append("current_context"))
     monkeypatch.setattr(pc, "installed_context", lambda: reached.append("installed_context"))
+    # The pin is the normalization itself, not whatever handlers an earlier test in
+    # this worker left on ``kiro_crew``: a dashboard server test installs the live log
+    # ring handler for the life of the process, and its redaction reads the
+    # installed context for every warning the unselectable values below log.
+    monkeypatch.setattr(logging.getLogger("kiro_crew"), "handlers", [])
 
     for value in ("", "kas", "byo-harness", "claude", None, 7):
         assert _normalize_acp_backend(value) in ACP_BACKENDS_KNOWN
