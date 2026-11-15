@@ -27,6 +27,7 @@ import base64
 import copy
 import json
 import logging
+import re
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
@@ -47,7 +48,7 @@ from kiro_crew.constants import reflow_and_label_glued_option_marker
 from kiro_crew.dashboard import chat_runner, openai_compat
 from kiro_crew.dashboard.chat_turn import turn_reply_seams
 from kiro_crew.dashboard.chat_utils import _build_stream_chunk
-from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact
+from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact, reveal_store
 from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 #: A synthetic 40-character AWS secret access key, split so no literal sits here.
@@ -171,6 +172,14 @@ async def _read_turn(
 
     record = await _turn(kind, *segments, setup=_attach)
     return record, queue.seen
+
+
+def _queued_text(queued: list[dict[str, Any]]) -> str:
+    """Every queued row as JSON, each reveal handle masked. A handle is 22 random
+    url-safe characters minted for the placeholder, not text the model wrote, so
+    it can spell any 4 characters (one did spell the key's head in CI); the
+    leak checks read only what came from the reply."""
+    return re.sub(r"rv_[A-Za-z0-9_-]{22}", "rv_<handle>", json.dumps(queued))
 
 
 def _sse_reply(queued: list[dict[str, Any]]) -> str:
@@ -308,7 +317,7 @@ class TestCredentialSplitAcrossABoundary:
         assert "".join(_saved(record)) == whole
         assert "".join(_shown(record)) == whole
         assert _sse_reply(queued) == whole
-        sent = _sent_text(record) + json.dumps(queued)
+        sent = _sent_text(record) + _queued_text(queued)
         assert _VALUE not in sent, sent
         [reply] = mirrored
         assert _VALUE not in redact(reply), reply
@@ -326,7 +335,7 @@ class TestCredentialSplitAcrossABoundary:
         assert "".join(_saved(record)) == f"Before {_TAG}{after}"
         assert "".join(_shown(record)) == f"Before {_TAG}{after}"
         assert _sse_reply(queued) == f"Before {_TAG}{after}"
-        sent = _sent_text(record) + json.dumps(queued)
+        sent = _sent_text(record) + _queued_text(queued)
         assert _TAIL not in sent and _HEAD not in sent, sent
 
     @pytest.mark.asyncio
@@ -360,7 +369,23 @@ class TestCredentialSplitAcrossABoundary:
 
         assert _sse_reply(queued) == f"Before {_TAG} after."
         assert await _openai_reply(queued) == f"Before {_TAG} after."
-        sent = json.dumps(queued)
+        sent = _queued_text(queued)
+        assert _TAIL not in sent and _HEAD not in sent, sent
+
+    @pytest.mark.asyncio
+    async def test_a_reveal_handle_that_spells_part_of_the_key_is_no_leak(
+        self, kind: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The placeholder's reveal handle is random, so it can contain the key's
+        head by chance. That is not the reply's text: the stream still carries the
+        placeholder alone, and the leak check still passes."""
+        handle = "rv_" + (_HEAD + "x" * 22)[:22]
+        monkeypatch.setattr(reveal_store, "new_handle", lambda: handle)
+        _record, queued = await _read_turn(kind, f"Before {_HEAD}", f"{_TAIL} after.")
+
+        assert handle in json.dumps(queued), "the turn no longer queues the handle"
+        assert _sse_reply(queued) == f"Before {_TAG} after."
+        sent = _queued_text(queued)
         assert _TAIL not in sent and _HEAD not in sent, sent
 
     @pytest.mark.asyncio
