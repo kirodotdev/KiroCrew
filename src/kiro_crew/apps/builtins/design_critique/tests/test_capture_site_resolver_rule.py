@@ -9,7 +9,9 @@ program), so the test calls the shipped function directly under ``node``.
 
 Running ``node`` is a subprocess spawn, and ``test_spawn_audit`` holds every spawn
 under ``src/kiro_crew`` to the sandbox chokepoint or its allowlist, so ``_rules`` is a
-row of ``test/spawn_audit_app_spawns.py``.
+row of ``test/spawn_audit_app_spawns.py``. It runs once for the module, over every
+input the tests below use, on one worker: one cold Node start per run, not one per
+test on as many workers (testing-conventions § Determinism 6).
 """
 
 from __future__ import annotations
@@ -18,8 +20,13 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Callable
 
 import pytest
+
+from kiro_crew.testing.wait import default_timeout
+
+pytestmark = pytest.mark.xdist_group(name="node_probe_capture_site_resolver_rule")
 
 # tests/<this file> -> parents[1] is the app's own directory.
 CAPTURE_SITE = (
@@ -46,32 +53,54 @@ def _rules(*resolves: str | None) -> list[str | None]:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        timeout=60,
+        timeout=default_timeout(),
     )
     assert done.returncode == 0, done.stderr
     return list(json.loads(done.stdout.strip().splitlines()[-1]))
 
 
-def test_an_ipv4_address_is_written_as_it_is() -> None:
-    assert _rules("example.com:93.184.215.14") == [
+#: Every input a test below asks about, computed in one node child.
+_INPUTS: tuple[str | None, ...] = (
+    "example.com:93.184.215.14",
+    "example.com:2606:2800:21f:cb07:6820:80da:af6b:8b2c",
+    "example.com:[2001:db8::1]",
+    "example.com:2001:db8::1,93.184.215.14",
+    "example.com:93.184.215.14,2001:db8::1",
+    None,
+    "",
+    "example.com",
+    ":1.2.3.4",
+    "example.com:",
+)
+
+
+@pytest.fixture(scope="module")
+def rule() -> Callable[..., list[str | None]]:
+    """``hostResolverRule`` for each input, from the module's one node child."""
+    table = dict(zip(_INPUTS, _rules(*_INPUTS)))
+    return lambda *resolves: [table[r] for r in resolves]
+
+
+def test_an_ipv4_address_is_written_as_it_is(rule) -> None:
+    assert rule("example.com:93.184.215.14") == [
         "--host-resolver-rules=MAP example.com 93.184.215.14"
     ]
 
 
-def test_an_ipv6_address_is_bracketed() -> None:
-    assert _rules("example.com:2606:2800:21f:cb07:6820:80da:af6b:8b2c") == [
+def test_an_ipv6_address_is_bracketed(rule) -> None:
+    assert rule("example.com:2606:2800:21f:cb07:6820:80da:af6b:8b2c") == [
         "--host-resolver-rules=MAP example.com [2606:2800:21f:cb07:6820:80da:af6b:8b2c]"
     ]
 
 
-def test_an_already_bracketed_address_keeps_one_pair() -> None:
-    assert _rules("example.com:[2001:db8::1]") == [
+def test_an_already_bracketed_address_keeps_one_pair(rule) -> None:
+    assert rule("example.com:[2001:db8::1]") == [
         "--host-resolver-rules=MAP example.com [2001:db8::1]"
     ]
 
 
-def test_only_the_first_vetted_address_is_pinned() -> None:
-    assert _rules(
+def test_only_the_first_vetted_address_is_pinned(rule) -> None:
+    assert rule(
         "example.com:2001:db8::1,93.184.215.14", "example.com:93.184.215.14,2001:db8::1"
     ) == [
         "--host-resolver-rules=MAP example.com [2001:db8::1]",
@@ -79,8 +108,8 @@ def test_only_the_first_vetted_address_is_pinned() -> None:
     ]
 
 
-def test_nothing_to_pin_gives_no_flag() -> None:
-    assert _rules(None, "", "example.com", ":1.2.3.4", "example.com:") == [
+def test_nothing_to_pin_gives_no_flag(rule) -> None:
+    assert rule(None, "", "example.com", ":1.2.3.4", "example.com:") == [
         None,
         None,
         None,

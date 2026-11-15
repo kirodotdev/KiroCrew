@@ -334,6 +334,13 @@ log: the named test is one that can wait forever. Wait on the observable state, 
 `sleep`, and bound the await whose refusal is under test with `asyncio.wait_for` so a missed
 refusal fails by name at that line.
 
+On Linux the same class shows up as **a whole shard stalling at one moment**: four tests that
+each start a real `node` land on four workers and cold-start four ~100 MB binaries in the same
+second, on a runner already near its memory ceiling, and every test in flight times out. Start
+one module-scoped child for all the cases, put the module in its own `xdist_group`, and give
+the child a ceiling of half the test's own timeout, never a literal equal to `--timeout`
+(testing-conventions § Determinism 6, "A real interpreter child is started once per module").
+
 An adjacent trap: **a patch target that misses.** Patch the namespace whose
 globals the code under test actually reads. It fails in both directions — patching a
 package re-export when the caller reads its own defining module, or patching
@@ -533,7 +540,8 @@ naming the shape; the contract line holds the detail and its numbers. The helper
       ([class 1](../../../../../docs/system-specs/common/testing-conventions.md#1-nondeterministic-input))
 - [ ] D7: no upper bound on a measured duration beyond what the contract allows
       ([class 5](../../../../../docs/system-specs/common/testing-conventions.md#5-absolute-time-budgets-on-instrumented-runs))
-- [ ] D8: every self-unblocked await, join or communicate bounded, failing by name
+- [ ] D8: every self-unblocked await, join or communicate bounded, failing by name; a real
+      `node`/interpreter child starts once per module, its deadline half the test's timeout
       ([class 6](../../../../../docs/system-specs/common/testing-conventions.md#6-a-hang-is-a-lost-run-not-a-failed-test))
 - [ ] D9: listeners bind port 0 and report the port ([Rules](../../../../../docs/system-specs/common/testing-conventions.md#rules))
 - [ ] D10: loopback only, the network stubbed at the product's seam
