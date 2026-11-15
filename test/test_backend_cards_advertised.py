@@ -47,7 +47,8 @@ SET_GATE_ALLOWLIST: Dict[Tuple[str, str], int] = {
     ("acp/client_mcp_array.py", "ACP_BACKENDS_SESSION_MCP_ARRAY"): 2,
     ("acp/client_model_selection.py", "ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION"): 2,
     ("acp/client_permissions.py", "ACP_BACKENDS_SESSION_MCP_ARRAY"): 1,
-    ("acp/client_start.py", "ACP_BACKENDS_FORK_AT_MESSAGE"): 1,
+    # Moved out of client_start.py with the fork, which only the claude client makes.
+    ("acp/client_claude_session.py", "ACP_BACKENDS_FORK_AT_MESSAGE"): 1,
     ("acp/client_start.py", "ACP_BACKENDS_RESUME_WITHOUT_LOAD"): 2,
     ("acp/client_start.py", "ACP_BACKENDS_SESSION_MCP_ARRAY"): 1,
     ("acp/client_turn_control.py", "ACP_BACKENDS_STEERING_REQUEST"): 2,

@@ -317,13 +317,17 @@ def test_goose_gets_its_own_mcp_array_at_both_session_call_sites() -> None:
     import inspect
     import textwrap
 
-    # Three arrays are composed across two methods: the initial session/new and
-    # its substitution retry live in ``_new_session_following_substitution``;
-    # session/load lives in ``_initialize_session``.
+    # Three arrays are composed across three methods: the initial session/new in
+    # ``_new_session_following_substitution``, session/load in ``_initialize_session``,
+    # and the substitution retry, which only the claude client makes, in its
+    # ``_retry_after_model_substitution``.
+    from kiro_crew.acp.client import ClaudeAcpClient
+
     splices = 0
     for method in (
         AcpClient._new_session_following_substitution,
         AcpClient._initialize_session,
+        ClaudeAcpClient._retry_after_model_substitution,
     ):
         tree = ast.parse(textwrap.dedent(inspect.getsource(method)))
         splices += sum(

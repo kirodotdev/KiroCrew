@@ -23,7 +23,7 @@ import pytest
 from kiro_crew import agent as agent_mod
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import session_mcp
-from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.client import ClaudeAcpClient
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 
 _CORE = {"command": "/opt/kirocrew", "args": ["mcp-core"]}
@@ -61,7 +61,9 @@ def _installed_claude_adapter_version(_floor_monkeypatch):
     directly never run the spawn arm, so the floor release is set as the class
     default. A test about the floor sets its own.
     """
-    _floor_monkeypatch.setattr(AcpClient, "_claude_adapter_disk_version", "0.84.0", raising=False)
+    _floor_monkeypatch.setattr(
+        ClaudeAcpClient, "_claude_adapter_disk_version", "0.84.0", raising=False
+    )
 
 
 @pytest.fixture(autouse=True)

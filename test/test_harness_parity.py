@@ -1007,10 +1007,11 @@ def test_codex_resolves_its_own_adapter_and_declares_its_own_handshake() -> None
 #: The MCP seams spliced into ``AcpClient``'s session-setup paths. Declared rather
 #: than discovered so a DELETED splice fails the test below. ``adapter`` is the one
 #: splice that asks the process adapter for ``self.backend``
-#: (``_adapter_session_mcp_servers``); claude keeps its own gated splice. codex is
-#: absent because its seam is on the harness, and kiro-cli has none (``--agent``
-#: carries its servers).
-_MCP_SEAM_HOOKS = ["adapter", "claude"]
+#: (``_adapter_session_mcp_servers``); ``harness`` asks the client class of
+#: ``self.backend`` (``_harness_session_mcp_servers``: empty on ``AcpClient``, claude's
+#: own array on ``ClaudeAcpClient``). codex is absent because its seam is on the
+#: harness, and kiro-cli has none (``--agent`` carries its servers).
+_MCP_SEAM_HOOKS = ["adapter", "harness"]
 
 #: The client hook each process adapter's ``session_mcp_servers`` asks, by adapter.
 #: An adapter absent here keeps the base default, which adds no server.
@@ -1062,15 +1063,35 @@ def test_each_mcp_seam_is_spliced_only_for_its_own_harness() -> None:
         # session is the worst-consequence version of this defect, not the mildest.
         for m in splice.finditer(source):
             h = m.group("h")
-            if h == "adapter":
+            if h in ("adapter", "harness"):
                 # Gated by construction: the adapter is the one for ``self.backend``,
-                # and each adapter asks only its own hook (the test below).
+                # and each adapter asks only its own hook (the test below); the
+                # harness hook is the client class's own, and only ClaudeAcpClient
+                # fills it (pinned below).
                 continue
             tail = source[m.end() : m.end() + 80]
             assert re.match(rf"\s+if\s+self\._is_{h}\b", tail), (
                 f"{fn.__name__}: the {h} seam is spliced without its own "
                 f"`if self._is_{h}` guard on that same element"
             )
+
+
+def test_only_the_claude_client_fills_the_harness_mcp_seam() -> None:
+    """The ``harness`` splice adds nothing on the shared class, and claude's array on
+    its own: the gate is which class the backend builds."""
+    shared = acp_client.AcpClient(acp_backend="")
+    assert shared._harness_session_mcp_servers() == []
+    filled = [
+        cls.__name__
+        for cls in (acp_client.AcpClient, acp_client.ClaudeAcpClient)
+        if "_harness_session_mcp_servers" in vars(cls)
+        and vars(cls)["_harness_session_mcp_servers"]
+        is not vars(acp_client.AcpClient)["_harness_session_mcp_servers"]
+    ]
+    assert filled == ["ClaudeAcpClient"]
+    assert "self._claude_session_mcp_servers()" in inspect.getsource(
+        acp_client.ClaudeAcpClient._harness_session_mcp_servers
+    )
 
 
 def test_each_process_adapter_asks_only_its_own_mcp_seam() -> None:

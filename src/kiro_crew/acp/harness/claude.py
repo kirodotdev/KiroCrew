@@ -21,11 +21,11 @@ import os
 import shutil
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 
 from kiro_crew import model_registry, platform_compat
 from kiro_crew.acp import launch as launch_mod
-from kiro_crew.acp.harness.base import ProcessAdapter, SpawnContext, SpawnPlan
+from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
@@ -257,6 +257,73 @@ def _claude_adapter_known_version(argv: list[str]) -> str:
     )
 
 
+class ClaudeProcessSession(ProcessSession, Protocol):
+    """The claude-agent-acp session :class:`ClaudeLaunch` launches: a
+    :class:`ProcessSession` that also seeds its own settings file and carries the
+    adapter's argv and on-disk version, which the settings writer and the
+    handshake read back. ``ClaudeAcpClient`` is the production implementation.
+    """
+
+    _claude_adapter_argv: tuple[str, ...]
+    _claude_adapter_disk_version: str
+
+    async def _seed_session_settings(self) -> None:
+        """Seed the session's own settings file, best-effort."""
+
+    async def _prepare_claude_side_read_denies(self) -> None:
+        """Build a Side Chat session's sensitive-path deny rules off the loop, fail closed."""
+
+    def _refuse_claude_session_below_floor_before_spawn(self, installed_version: str) -> None:
+        """Refuse an option-bound session the installed claude-agent-acp is too old for."""
+
+
+async def prepare_claude_session(session: ClaudeProcessSession, argv: list[str]) -> None:
+    """Do the per-session work a claude session needs before ``session/new``.
+
+    Everything here reads or writes THIS session's state and nothing about the
+    process it will run in, so it is a function of the session and the adapter
+    argv rather than a step of one spawn: a process serving several sessions
+    runs it once per session. ``ClaudeLaunch.resolve_spawn`` calls it for the
+    one session its process serves. The order is load-bearing; each step says why.
+    """
+    # The adapter's version, read BEFORE the seed: the writer
+    # applies the settingSources floor with it, so the exclusion is decided
+    # before the MCP array below is first resolved and nothing has to be
+    # re-resolved on the loop after the handshake. Off-loop: it reads files.
+    session._agent_version_read = False
+    session._claude_adapter_argv = tuple(argv)
+    # The package's own version is kept apart from the handshake fallback: only
+    # it may refuse a session before spawn, because a remembered handshake is
+    # never refreshed for a session that does not start.
+    installed = await asyncio.to_thread(_claude_adapter_installed_version, argv)
+    session._claude_adapter_disk_version = installed or _claude_adapter_handshake_versions.get(
+        tuple(argv), ""
+    )
+    # Per-session settings seed: permissions.defaultMode, the served ``model``
+    # once the advertised cache is warm, and the availableModels allowlist when
+    # another settings source defines one. It MUST run on the PRIMARY spawn
+    # path — not only the rare model-substitution retry — or the session
+    # starts without them.
+    await session._seed_session_settings()
+    # A Side Chat session carries deny rules for the host's sensitive paths in
+    # its session options; they are built here, off the loop, because the
+    # envelope that ships them is built synchronously at session/new.
+    await session._prepare_claude_side_read_denies()
+    # Translate the agent spec into the session MCP array HERE, and only AFTER
+    # the seed above: the array is withheld entirely unless Crew authored
+    # settings.local.json, so resolving it first would read the ownership flag
+    # before the writer had set it and withhold the tools of every session. Not
+    # at the session/new call site either: that site is shared with kiro-cli,
+    # and the translation reads disk. Resolving it here keeps the shared site a
+    # synchronous in-memory read, so the kiro construction path gains no
+    # executor hop and no new failure mode (harness-parity H13).
+    await session._prepare_session_mcp()
+    # Known before any process starts: an installed adapter below the
+    # session-options floor cannot serve a session that needs them, so it is
+    # refused here rather than after an adapter and a Claude Code process start.
+    session._refuse_claude_session_below_floor_before_spawn(installed)
+
+
 class ClaudeLaunch(ProcessAdapter):
     """claude-agent-acp: a Node adapter, seeded before it starts."""
 
@@ -295,42 +362,7 @@ class ClaudeLaunch(ProcessAdapter):
                 f"dependency), or set CLAUDE_AGENT_ACP_BIN to its entry script."
             )
         argv: list[str] = claude_argv
-        # The adapter's version, read BEFORE the seed: the writer
-        # applies the settingSources floor with it, so the exclusion is decided
-        # before the MCP array below is first resolved and nothing has to be
-        # re-resolved on the loop after the handshake. Off-loop: it reads files.
-        session._agent_version_read = False
-        session._claude_adapter_argv = tuple(argv)
-        # The package's own version is kept apart from the handshake fallback: only
-        # it may refuse a session before spawn, because a remembered handshake is
-        # never refreshed for a session that does not start.
-        installed = await asyncio.to_thread(_claude_adapter_installed_version, argv)
-        session._claude_adapter_disk_version = installed or _claude_adapter_handshake_versions.get(
-            tuple(argv), ""
-        )
-        # Per-session settings seed: permissions.defaultMode, the served ``model``
-        # once the advertised cache is warm, and the availableModels allowlist when
-        # another settings source defines one. It MUST run on the PRIMARY spawn
-        # path — not only the rare model-substitution retry — or the session
-        # starts without them.
-        await session._seed_session_settings()
-        # A Side Chat session carries deny rules for the host's sensitive paths in
-        # its session options; they are built here, off the loop, because the
-        # envelope that ships them is built synchronously at session/new.
-        await session._prepare_claude_side_read_denies()
-        # Translate the agent spec into the session MCP array HERE, and only AFTER
-        # the seed above: the array is withheld entirely unless Crew authored
-        # settings.local.json, so resolving it first would read the ownership flag
-        # before the writer had set it and withhold the tools of every session. Not
-        # at the session/new call site either: that site is shared with kiro-cli,
-        # and the translation reads disk. Resolving it here keeps the shared site a
-        # synchronous in-memory read, so the kiro construction path gains no
-        # executor hop and no new failure mode (harness-parity H13).
-        await session._prepare_session_mcp()
-        # Known before any process starts: an installed adapter below the
-        # session-options floor cannot serve a session that needs them, so it is
-        # refused here rather than after an adapter and a Claude Code process start.
-        session._refuse_claude_session_below_floor_before_spawn(installed)
+        await prepare_claude_session(cast(ClaudeProcessSession, session), argv)
         # Bound here rather than in AcpClient.__init__ for the same reason: the
         # constructor is shared with kiro-cli.
         if self.backend in ACP_BACKENDS_AGENT_STARTED_TURNS:
