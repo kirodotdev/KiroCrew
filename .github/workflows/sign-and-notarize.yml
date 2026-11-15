@@ -239,12 +239,18 @@ jobs:
           ls -la release/
 
       - name: Attest build provenance
+        id: attest_build
         # Signed SLSA provenance for the wheel/sdist/AppImage (CWE-1104).
         # Runs right after flatten, before anything leaves the runner.
         # Universal leg only: a single-arch leg downloaded nothing but its
         # mac zip and DMG, neither of which is attested here (see below), and
         # the action fails on an empty subject set.
+        # A network failure minting the attestation (Sigstore Fulcio/Rekor)
+        # gets one paused retry of the identical step below; the retry has no
+        # continue-on-error, so two failures fail the job. Pinned by
+        # test/test_workflow_attest_retry.py.
         if: ${{ inputs.mac_variant == '' }}
+        continue-on-error: true
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           # Attest only artifacts whose bytes are final here. The macOS .zip is
@@ -252,6 +258,19 @@ jobs:
           # would bind a digest that never ships -- omit *.zip. Same for *.dmg:
           # the electron-builder DMG is only a layout template; the unsigned
           # bytes are replaced before the shipping DMG is signed and attested.
+          subject-path: |
+            release/*.whl
+            release/*.tar.gz
+            release/*.AppImage
+
+      - name: Pause before retrying build provenance
+        if: ${{ (inputs.mac_variant == '') && steps.attest_build.outcome == 'failure' }}
+        run: sleep 45
+
+      - name: Attest build provenance (retry)
+        if: ${{ (inputs.mac_variant == '') && steps.attest_build.outcome == 'failure' }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
           subject-path: |
             release/*.whl
             release/*.tar.gz
@@ -653,7 +672,25 @@ jobs:
       # Attest the DMG that actually ships -- AFTER staple, because stapling
       # embeds the ticket into the DMG file (the final released bytes).
       - name: Attest final shipping artifacts
+        id: attest_final
         if: env.HAS_SIGNING_SECRETS
+        # A network failure minting the attestation (Sigstore Fulcio/Rekor)
+        # gets one paused retry of the identical step below; the retry has no
+        # continue-on-error, so two failures fail the job before the gated
+        # artifact is attached. Pinned by test/test_workflow_attest_retry.py.
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            work/${{ env.NOTARIZED_ZIP }}
+            work/*.dmg
+
+      - name: Pause before retrying final shipping artifacts
+        if: ${{ (env.HAS_SIGNING_SECRETS) && steps.attest_final.outcome == 'failure' }}
+        run: sleep 45
+
+      - name: Attest final shipping artifacts (retry)
+        if: ${{ (env.HAS_SIGNING_SECRETS) && steps.attest_final.outcome == 'failure' }}
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
