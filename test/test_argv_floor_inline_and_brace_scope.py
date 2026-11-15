@@ -1117,9 +1117,8 @@ class TestBraceExpansionMirrorsBash:
                     # A host-stamped filename -- literal text, then a substitution, then a glob --
                     # under a program that is NOT a data consumer, with a product-named path later
                     # in the same argv.  The word expands to something starting with its literal
-                    # prefix, so it cannot be the verb; the body (``hostname``) is harmless.  Every
-                    # row was confirmed newly-refused by the scope review of the revision that read
-                    # the whole word as ``.*``.
+                    # prefix, so it cannot be the verb; the body (``hostname``) is harmless.
+                    # Reading the whole word as ``.*`` would refuse every row here.
                     "tar czf logs_$(hostname)_*.tar.gz -C /w/kirocrew-scratch/logs .",
                     "zip -q /tmp/bench.zip bench_`hostname`_*.json /w/kirocrew-scratch/notes.md",
                     "gh run download 12345678 --pattern coverage_$(hostname)_* --repo kirodotdev/KiroCrew",
@@ -1300,14 +1299,13 @@ class TestAGlobArgumentIsNotAKillProgram:
             "cp $(git rev-parse --show-toplevel)/src/kiro_crew/x.py /tmp/",
             # A substitution INSIDE a filename glob: the word reads as ``.*`` (so it
             # "could be" the verb), but it is a filename under a mover, and the body
-            # (``hostname``) is harmless.  Confirmed newly-refused by the scope review
-            # of an earlier revision, which refused every substitution-carrying word.
+            # (``hostname``) is harmless.  Refusing every substitution-carrying word
+            # would refuse these.
             "cp report_$(hostname)_*.log /w/kirocrew-scratch/archive/",
             "mv $(date +%F)_*.log /w/kirocrew-scratch/",
             "ls report_`hostname`_* /w/kirocrew/",
             # A substitution as the first alternative of a BRACE GROUP: the word is two
-            # filenames, the body (``date``) is walked on its own.  Confirmed newly-refused
-            # by the scope review of an earlier revision.
+            # filenames, the body (``date``) is walked on its own.
             "mv {$(date +%F),current}.log /w/kirocrew-scratch/archive/",
             "rsync -a {$(date +%F),default}.conf /w/kirocrew-scratch/etc/",
             "cp {$(hostname),local}.log /w/kirocrew-scratch/",

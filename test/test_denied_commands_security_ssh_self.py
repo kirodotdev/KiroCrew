@@ -168,7 +168,7 @@ class TestSandboxEscapeSshSelf:
             "sftp user@localhost",
             "ssh ssh://localhost:22 id",
             # Option-shadow fail-closed: a valueless-in-scp/rsync flag must
-            # not swallow the target (the shape that defeated round one).
+            # not swallow the target.
             "scp -r localhost:/dir .",
             "rsync -r localhost:/src /dst",
             "ssh -q localhost id",
@@ -355,7 +355,7 @@ class TestSandboxEscapeSshSelf:
             # ``export`` makes the value persist for the rest of the line, so it
             # crosses the ``;`` into the later rsync.
             "export RSYNC_RSH='ssh localhost' ; rsync remote-host:/x .",
-            # Regression: the base leading-assignment form stays denied.
+            # The base leading-assignment form stays denied.
             "RSYNC_RSH='ssh localhost' rsync remote-host:/x .",
             # a leading ``RSYNC_RSH`` is inherited into a NESTED
             # ``sh -c``/``bash -c`` payload frame, where rsync execs it FROM HERE.

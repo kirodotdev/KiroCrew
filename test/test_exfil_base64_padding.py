@@ -18,8 +18,8 @@ import re
 from kiro_crew.security import redact_exfiltration_urls, scan_exfiltration_urls
 from kiro_crew.security.exfil import _EXFIL_PATTERNS
 
-# The spelling this change replaced, kept only to show which fixtures it
-# matched; nothing in the product uses it.
+# A retired spelling, kept only to show which fixtures it matched; nothing in
+# the product uses it.
 _OLD_B64_RE = re.compile(r"[A-Za-z0-9+/=]{40,}")
 
 # Invented, shape-matched course id: 32 alphanumerics, under the 40-char bar.

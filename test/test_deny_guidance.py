@@ -530,7 +530,7 @@ class TestRuleIdentityRoutesTheRegexTier:
             reason = security._deny_reason(edition.pattern, None)
             # First denial: the seam raised, so the rule is unknown and the scan
             # answers from its pattern text -- which names the credential env var,
-            # so it lands on the credential-READ prose this PR exists to stop.
+            # so it lands on the credential-READ prose, which is the wrong guidance.
             assert dg.classify_deny(reason) == dg.DENY_CLASS_AWS_CREDENTIAL
             # Caching that would pin the wrong answer for the process lifetime.
             assert dg.classify_deny(reason) == dg.DENY_CLASS_EXFIL_SHAPE

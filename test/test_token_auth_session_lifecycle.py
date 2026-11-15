@@ -1081,7 +1081,7 @@ async def test_repeated_query_param_exchange_does_not_evict_link_nonces() -> Non
     assert uid == "slackuser"
 
 
-# -- extract_numeric_claim (round-2 bugfix: api_auth_me session_exp=0) ---------
+# -- extract_numeric_claim (api_auth_me with session_exp=0) ---------------------
 
 
 def test_extract_numeric_claim_returns_float_session_exp() -> None:

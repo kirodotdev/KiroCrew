@@ -1052,9 +1052,8 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
             assert (
                 is_denied(cmd, denied_regexes=custom) is not None
             ), f"an existing denial was lost: {cmd!r}"
-        # The canonical spelling was never covered by that rule, before or after,
-        # which is what makes the rows above denials to PRESERVE rather than a
-        # coverage claim this change should be making.
+        # The canonical spelling is not covered by that rule, which is what makes
+        # the rows above denials to PRESERVE rather than a coverage claim.
         assert is_denied("rm -rf ./data", denied_regexes=custom) is None
 
     def test_benign_commands_with_an_empty_word_stay_allowed(self):

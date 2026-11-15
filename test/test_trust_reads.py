@@ -917,9 +917,9 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("date -u") is True
         assert is_read_only_bash("date -Iseconds") is True
         assert is_read_only_bash("date +%Y-%m-%d") is True
-        # `-d` IS on the accept-list. An earlier revision left it off on the belief
-        # that BSD/macOS `date -d` sets the kernel daylight-saving value; that came
-        # from documentation and the implementations say otherwise. See
+        # `-d` IS on the accept-list. The belief that BSD/macOS `date -d` sets the
+        # kernel daylight-saving value comes from documentation; the implementations
+        # say otherwise. See
         # `_DATE_READONLY_SHORT` for the per-project `getopt(3)` strings.
         assert is_read_only_bash("date -d yesterday") is True
         assert is_read_only_bash("date --date=yesterday") is True
@@ -1001,9 +1001,9 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("date --reference /tmp/f") is True
         assert is_read_only_bash("date --file /tmp/dates") is True
         assert is_read_only_bash("date --date=yesterday") is True
-        # `-d` IS on the accept-list. An earlier revision left it off on the belief
-        # that BSD/macOS `date -d` sets the kernel daylight-saving value; that came
-        # from documentation and the implementations say otherwise. See
+        # `-d` IS on the accept-list. The belief that BSD/macOS `date -d` sets the
+        # kernel daylight-saving value comes from documentation; the implementations
+        # say otherwise. See
         # `_DATE_READONLY_SHORT` for the per-project `getopt(3)` strings.
         assert is_read_only_bash("date -d yesterday") is True
         assert is_read_only_bash("date --date=yesterday") is True
@@ -1102,9 +1102,9 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("date -Iseconds") is True
         assert is_read_only_bash("date -u") is True
         assert is_read_only_bash("date -R") is True
-        # `-d` IS on the accept-list. An earlier revision left it off on the belief
-        # that BSD/macOS `date -d` sets the kernel daylight-saving value; that came
-        # from documentation and the implementations say otherwise. See
+        # `-d` IS on the accept-list. The belief that BSD/macOS `date -d` sets the
+        # kernel daylight-saving value comes from documentation; the implementations
+        # say otherwise. See
         # `_DATE_READONLY_SHORT` for the per-project `getopt(3)` strings.
         assert is_read_only_bash("date -d yesterday") is True
         assert is_read_only_bash("date --date=yesterday") is True
