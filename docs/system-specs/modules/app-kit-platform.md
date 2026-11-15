@@ -5830,8 +5830,9 @@ wheel copy first so adoption is no widening): `=/api/chat`, `/api/chat/slots`,
 `/api/approvals`, `=/api/crons`, `=/api/spawn`, `=/api/config/default-agent` and
 `=/api/dashboard/config`. The two families are bare because their key is a path segment;
 every other entry is exact. The app repository declares the same list. Pinned by
-`test/test_agent_worlds_permission_parity.py`, which registers the real wheel copy and asks
-`permission_refusal` of that list (None), of the list plus one path and of a bare
+`test/test_builtin_permission_parity.py`, which registers the real wheel copy and asks
+`permission_refusal` of that list (None), and `test/test_agent_worlds_permission_parity.py`,
+which asks it of the list plus one path and of a bare
 `/api/chat` (`permission_widening`). The built-in page itself is unchanged.
 `AppSdkHostSessions.test.tsx` pins the three answers, each member's own admission, that
 every request the members send is admitted by the documented list, the create without
