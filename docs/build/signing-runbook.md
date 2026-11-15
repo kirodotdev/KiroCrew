@@ -183,7 +183,7 @@ out of both files.
 
 ## Supply-chain ordering inside the jobs
 
-Two orderings in the workflow are deliberate and must be preserved:
+These rules in the workflow are deliberate and must be preserved:
 
 - **`awscurl` is installed BEFORE AWS credentials are configured**, in both the
   `sign` and `notarize` jobs, so a compromised or version-drifted release of that
@@ -198,6 +198,13 @@ Two orderings in the workflow are deliberate and must be preserved:
   attestation would bind a digest that never ships. The shipping DMG is attested in
   the `notarize` job **after** stapling, since stapling embeds the ticket into the
   file and therefore changes the released bytes.
+- **Every attestation gets one paused retry.** `actions/attest-build-provenance`
+  mints over the network (Sigstore Fulcio and Rekor) and has no retry of its own.
+  Each attest step in this and the `publish-*` workflows runs with
+  `continue-on-error: true`; on failure a pause step sleeps, then the identical
+  step runs once more without `continue-on-error`, so two failures fail the job.
+  Same action pin, same subjects, same permissions.
+  `test/test_workflow_attest_retry.py` pins the shape for every attest step.
 
 ## OIDC subject alignment and the `prod` environment
 

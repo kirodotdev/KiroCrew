@@ -148,11 +148,28 @@ jobs:
           echo "Wheel: $WHEEL_NAME (version $WHEEL_VERSION, label '${VERSION_LABEL}')"
 
       - name: Attest wheel provenance
+        id: attest_wheel
         if: ${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && !inputs.promote }}
         # Signed SLSA provenance binding the published wheel's digest to this
         # repo/workflow/commit (CWE-1104) — complements the self-hosted
         # SHA256SUMS (integrity, not authenticity). Runs before the wheel is
         # published to S3/CloudFront.
+        # The attestation is minted over the network (Sigstore Fulcio/Rekor),
+        # which fails transiently, and the action has no retry of its own. A
+        # failed first attempt pauses and runs the same attestation once more;
+        # that retry has no continue-on-error, so two failures fail the job.
+        # Pinned by test/test_workflow_attest_retry.py.
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ steps.wheel.outputs.path }}
+
+      - name: Pause before retrying wheel provenance
+        if: ${{ (env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && !inputs.promote) && steps.attest_wheel.outcome == 'failure' }}
+        run: sleep 45
+
+      - name: Attest wheel provenance (retry)
+        if: ${{ (env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && !inputs.promote) && steps.attest_wheel.outcome == 'failure' }}
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ steps.wheel.outputs.path }}
