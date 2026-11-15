@@ -604,6 +604,12 @@ naming the shape; the contract line holds the detail and its numbers. The helper
       pristine value
 - [ ] A source ratchet strips docstrings with `ast`, not by subtracting `__doc__` from
       `inspect.getsource` (3.13 dedents docstrings)
+- [ ] A ratchet or count test survives two changes merging untested: its record is one
+      line per file, site or change, never one shared total that two changes would
+      both rewrite to the same number; a budget grows by per-change rows holding the
+      change's own delta, not the amount over (testing-conventions § Merge-safe
+      ratchets and counts; the flake-pattern ratchet's K21 refuses a new count pinned
+      `==` a literal or a `_BASELINE`/`_TOTAL`-style constant in a tree-scanning test)
 - [ ] A test whose contract IS a real symlink is listed in `test/requires-real-symlinks.txt`;
       one that needs a directory that resolves elsewhere uses `make_dir_link`
 - [ ] No `AsyncMock` standing in for a synchronous method; every `cancel()` awaited. A

@@ -32,6 +32,12 @@ from pathlib import Path
 import pytest
 import yaml
 from flake_pattern_js_detectors import JS_DETECTORS
+from flake_pattern_shared_total import (
+    K21_CASES,
+    K21_FIXTURE_WALK,
+    K21_TRIGGERS,
+    k21_shared_total_pin,
+)
 from source_corpus import repo_files, repo_root
 from test_ratchet_scope import (
     _GIT_COMMAND_LINE_CONFIG,
@@ -952,10 +958,13 @@ PY_TRIGGERS: dict[str, tuple[str, ...]] = {
     "K18-xfail-strict-false": ("xfail",),
     "K19-short-literal-duration-arg": ("(",),
     "K20-on-loop-session-write": ("update_metadata",),
+    "K21-shared-total-pin": K21_TRIGGERS,
 }
 
 #: The classes whose detector also reads the source text.
-_READS_SOURCE = frozenset({"K3-stdlib-clock-patch", "K14-unpaused-crew-log-rmtree"})
+_READS_SOURCE = frozenset(
+    {"K3-stdlib-clock-patch", "K14-unpaused-crew-log-rmtree", "K21-shared-total-pin"}
+)
 
 #: class -> detector.
 PY_DETECTORS: dict[str, Callable[..., Iterable[ast.AST]]] = {
@@ -972,6 +981,7 @@ PY_DETECTORS: dict[str, Callable[..., Iterable[ast.AST]]] = {
     "K18-xfail-strict-false": _k18_xfail_strict_false,
     "K19-short-literal-duration-arg": _k19_short_literal_duration_arg,
     "K20-on-loop-session-write": _k20_on_loop_session_write,
+    "K21-shared-total-pin": k21_shared_total_pin,
 }
 
 
@@ -1443,7 +1453,15 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
         "    await asyncio.to_thread(lambda: log.update_metadata(k, {}))\n"
         "    def seed():\n        log.update_metadata(k, {})\n",
     ),
+    "K21-shared-total-pin": K21_CASES,
 }
+
+
+def test_k21_reads_only_a_module_that_walks_the_product_tree() -> None:
+    assert count_python(K21_FIXTURE_WALK)[0]["K21-shared-total-pin"] == 0
+    tree = K21_FIXTURE_WALK.replace("parent / 'fixtures'", "parents[1] / 'src'")
+    assert count_python(tree)[0]["K21-shared-total-pin"] == 2
+
 
 #: Sources the pinned semgrep reads no line of, each holding one ``time`` patch.
 _UNREAD = (

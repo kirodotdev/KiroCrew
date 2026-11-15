@@ -908,8 +908,13 @@ def test_the_package_stays_within_its_line_budget() -> None:
     budget = _package_line_budget(_BUDGET_ROWS_DIR)
     assert total <= budget, (
         f"package grew to {total} lines, over its budget of {budget}: {counts}. If the "
-        f"growth is meant, add test/security_line_budget/<change>.txt: first line "
-        f"+{total - budget}, then the reason (see README.md there)."
+        f"growth is meant, add test/security_line_budget/<change>.txt: first line your "
+        f"diff's OWN net line change under src/kiro_crew/security/*.py (lines added minus "
+        f"lines removed, e.g. from `git diff --numstat origin/main...HEAD -- "
+        f"src/kiro_crew/security/`), then the "
+        f"reason (see README.md there). Not the {total - budget} over: that is your growth "
+        f"minus whatever headroom this base had, and two rows written that way under-count "
+        f"once both merge."
     )
 
 
