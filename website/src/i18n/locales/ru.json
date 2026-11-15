@@ -16492,7 +16492,16 @@
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Показывает поверх чата диагностику прокрутки и якорей в реальном времени",
-        "scroll_inspector": "Инспектор прокрутки"
+        "scroll_inspector": "Инспектор прокрутки",
+        "slow_frame_log": "Журнал медленных кадров",
+        "slow_frame_log_desc": "Хранит самые медленные кадры и взаимодействия этой вкладки и скрипт, который стоит за каждым. Данные остаются в этой вкладке и никуда не отправляются. При выключении журнал очищается.",
+        "slow_frame_log_empty": "Пока ничего медленного не записано.",
+        "slow_frame_log_interactions": "Медленные взаимодействия",
+        "slow_frame_log_frames": "Долгие кадры",
+        "slow_frame_log_interaction_parts": "ожидание {{delay}}, обработчики {{processing}}, отрисовка {{presentation}}",
+        "slow_frame_log_frame": "{{duration}}, ввод заблокирован на {{blocking}}",
+        "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · принудительная компоновка {{forced}}",
+        "slow_frame_log_frames_unsupported": "Этот браузер не сообщает о долгих кадрах."
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Чат на Crew",

@@ -15268,7 +15268,16 @@
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "실시간 스크롤 및 앵커 진단 정보를 채팅 위에 표시합니다",
-        "scroll_inspector": "스크롤 검사기"
+        "scroll_inspector": "스크롤 검사기",
+        "slow_frame_log": "느린 프레임 기록",
+        "slow_frame_log_desc": "이 탭에서 가장 느린 프레임과 상호작용을, 각각의 원인이 된 스크립트와 함께 보관합니다. 이 탭에만 남고 아무것도 전송되지 않습니다. 끄면 기록이 지워집니다.",
+        "slow_frame_log_empty": "아직 기록된 느린 항목이 없습니다.",
+        "slow_frame_log_interactions": "느린 상호작용",
+        "slow_frame_log_frames": "긴 프레임",
+        "slow_frame_log_interaction_parts": "대기 {{delay}}, 핸들러 {{processing}}, 페인트 {{presentation}}",
+        "slow_frame_log_frame": "{{duration}}, 입력 차단 {{blocking}}",
+        "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · 강제 레이아웃 {{forced}}",
+        "slow_frame_log_frames_unsupported": "이 브라우저는 긴 프레임을 보고하지 않습니다."
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "크루에서 채팅",

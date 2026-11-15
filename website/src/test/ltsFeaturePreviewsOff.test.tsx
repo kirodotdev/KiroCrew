@@ -26,6 +26,7 @@ import LocalStorageDebug from '../pages/LocalStorageDebug'
 import { useCrewMode, usePreviewFlag } from '../hooks/usePreviewFlag'
 import { applyConfigLocks } from '../hooks/usePreviewFlagServerSync'
 import { INSPECTOR_KEYS, inspectorOn } from '../dev/scrollInspector'
+import { SLOW_FRAME_LOG_KEYS, slowFrameSnapshot } from '../dev/slowFrameLog'
 import {
   PREVIEW_FLAGS, PREVIEW_WEBHOOKS, cachePreviewFlag, previewFlagConfigPath, readPreviewFlag, setPreviewFlag, setPreviewFlagPersister,
 } from '../utils/previewFlags'
@@ -310,6 +311,18 @@ describe('LTS: Debug tools hidden', () => {
     localStorage.setItem(INSPECTOR_KEYS.ENABLED_KEY, '1')
     window.dispatchEvent(new CustomEvent(INSPECTOR_KEYS.ENABLED_EVENT, { detail: true }))
     expect(inspectorOn()).toBe(false)
+  })
+
+  it('a slow frame log that was recording stops when the lock arrives after the page loaded', () => {
+    // The first paint of an LTS browser with no lock cache: the stored flag starts the log.
+    localStorage.setItem(SLOW_FRAME_LOG_KEYS.ENABLED_KEY, '1')
+    window.dispatchEvent(new CustomEvent(SLOW_FRAME_LOG_KEYS.ENABLED_EVENT))
+    expect(slowFrameSnapshot().enabled).toBe(true)
+    lockLts()
+    expect(slowFrameSnapshot().enabled).toBe(false)
+    // And it stays off whatever its key or switch says.
+    window.dispatchEvent(new CustomEvent(SLOW_FRAME_LOG_KEYS.ENABLED_EVENT, { detail: true }))
+    expect(slowFrameSnapshot().enabled).toBe(false)
   })
 })
 

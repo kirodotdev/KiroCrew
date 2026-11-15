@@ -16084,7 +16084,16 @@
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Sovrappone alla chat una diagnostica live di scorrimento e ancoraggi",
-        "scroll_inspector": "Ispettore di scorrimento"
+        "scroll_inspector": "Ispettore di scorrimento",
+        "slow_frame_log": "Registro dei frame lenti",
+        "slow_frame_log_desc": "Conserva i frame e le interazioni più lenti di questa scheda, con lo script dietro a ciascuno. Resta in questa scheda e non viene inviato nulla. Disattivandolo si svuota.",
+        "slow_frame_log_empty": "Ancora niente di lento registrato.",
+        "slow_frame_log_interactions": "Interazioni lente",
+        "slow_frame_log_frames": "Frame lunghi",
+        "slow_frame_log_interaction_parts": "attesa {{delay}}, gestori {{processing}}, disegno {{presentation}}",
+        "slow_frame_log_frame": "{{duration}}, input bloccato per {{blocking}}",
+        "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · layout forzato {{forced}}",
+        "slow_frame_log_frames_unsupported": "Questo browser non segnala i frame lunghi."
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chatta su un Crew",

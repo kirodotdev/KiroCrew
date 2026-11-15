@@ -4,6 +4,7 @@ import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-quer
 import { api } from '../api/client'
 import { setConfigPathValue } from '../pages/settings/useOptimisticConfigPaths'
 import { INSPECTOR_KEYS } from '../dev/scrollInspector'
+import { SLOW_FRAME_LOG_KEYS } from '../dev/slowFrameLog'
 import { useConfigSchema } from '../components/settingRef/useConfigSchema'
 import type { SchemaEntry } from '../components/settingRef/resolveSettingRef'
 import { LOCKED_DEBUG_TOOLS, LOCKED_FEATURE_PREVIEWS, applyLockedControls, controlLocked, noteFeaturePreviewLockKnown } from '../utils/editionLocks'
@@ -159,7 +160,8 @@ function persist(qc: QueryClient, flag: string, on: boolean): void {
 
 /**
  * Take the controls this build locks, and tell the readers of a control that
- * changed: every preview flag's readers, and the Debug tools scroll inspector.
+ * changed: every preview flag's readers, and the Debug tools (the scroll
+ * inspector and the slow frame log).
  *
  * - Feature Previews: locked when the config schema marks a preview path
  *   `lockedByPolicy` (an LTS build marks every one).
@@ -198,8 +200,9 @@ export function applyConfigLocks(
     }
   }
   if (added.includes(LOCKED_DEBUG_TOOLS) || removed.includes(LOCKED_DEBUG_TOOLS)) {
-    // No boolean detail: the inspector re-reads its own key, which the lock gates.
+    // No boolean detail: each tool re-reads its own key, which the lock gates.
     window.dispatchEvent(new CustomEvent(INSPECTOR_KEYS.ENABLED_EVENT))
+    window.dispatchEvent(new CustomEvent(SLOW_FRAME_LOG_KEYS.ENABLED_EVENT))
   }
 }
 
