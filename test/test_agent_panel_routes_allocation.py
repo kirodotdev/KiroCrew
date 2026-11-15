@@ -806,3 +806,22 @@ async def test_the_gateway_registers_exactly_these_paths_without_importing_us():
         "does not bind them through the deferred binder, so they are either "
         "unserved or imported eagerly"
     )
+
+
+def test_the_gateway_binds_no_agent_panel_path_this_module_does_not_register():
+    """The other direction: a path the boot path still binds after the module dropped it.
+
+    That path would answer from a handler the module does not route, so the two
+    spellings would disagree while the check above stays green.
+    """
+    import inspect
+    import re
+
+    from kiro_crew.dashboard import server
+
+    ours = {str(r.resource.canonical) for r in _mounted().router.routes()}
+    flat = " ".join(inspect.getsource(server._register_mcp_routes).split())
+    bound = set(re.findall(r'"([^"]+)", _deferred\("agent_panel",', flat))
+    assert bound, "found no deferred agent_panel binding; the scan broke"
+    stale = bound - ours
+    assert not stale, f"the gateway boot path binds {sorted(stale)}, which this module does not"
