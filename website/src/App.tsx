@@ -60,6 +60,7 @@ import InstancesViewport from './components/InstancesViewport'
 import { LocalOverlayRoot, OffScreenOverlayScope } from './components/overlayRoot'
 import EmbeddedHostBridge from './components/EmbeddedHostBridge'
 import AppConfirmHost from './components/AppConfirmHost'
+import MemoryProviderSheetHosts from './components/MemoryProviderSheetHosts'
 import EmbeddedDragRegionReporter from './components/EmbeddedDragRegionReporter'
 import EmbedTabStrip from './components/EmbedTabStrip'
 // Dev-only layout-editor harness (RFC §7 PR 2). Lazy so it never weighs the main
@@ -1053,6 +1054,8 @@ export default function App() {
         the sidebar's destructive actions), mounted outside the layout branches
         so pop-out and embedded windows have it too. */}
     <AppConfirmHost />
+    {/* The sheets an app's memory verbs open, behind the memory provider preview. */}
+    <MemoryProviderSheetHosts />
     <QuickSearchSurface
       owners={slotOwners}
       commandBar={commandBarOn}

@@ -4,17 +4,18 @@ Every route works for every provider, Crew's own memory included.
 
 | Route | Who may call |
 |---|---|
-| ``GET /`` | the owner |
+| ``GET /`` | the owner, or an app holding ``permissions.memoryAdmin`` |
 | ``PUT /`` | the owner's own dashboard session only (never an app or an agent) |
-| ``GET/POST /items``, ``GET/PATCH/DELETE /items/{id}`` | the owner |
-| ``GET /items/{id}/revisions`` | the owner |
+| ``GET/POST /items``, ``GET/PATCH/DELETE /items/{id}`` | owner, ``memoryAdmin`` app |
+| ``GET /items/{id}/revisions`` | owner, ``memoryAdmin`` app |
 | ``POST /conformance`` | the owner |
 
 Moves, export and import live in ``memory_provider_migrations.py``.
 
 Agent sessions never reach these routes: none is an internal path, so the internal
-secret opens nothing here, and no app token is admitted (``_caller`` answers the owner
-only and audits every refusal). ``?store=`` names a configured store; the
+secret opens nothing here, and an app token reaches them only through
+``permissions.memoryAdmin`` (``token_auth_app_scope``), checked again below. Every app
+call is an audit record naming the app. ``?store=`` names a configured store; the
 provider gets that store id and never picks one itself.
 
 While a provider replaces Crew's memory for a store, Crew's own memory for that store
@@ -48,6 +49,8 @@ from kiro_crew.memory_provider.contract import (
 logger = logging.getLogger("kiro_crew.dashboard.handlers.memory_provider")
 
 CODE_PROVIDER_ACTIVE = "memory_provider_active"
+#: The API grant ``permissions.memoryAdmin`` stands for (``apps.point_grants``).
+MEMORY_ADMIN_API_PREFIX = "/api/memory/provider"
 #: One item's body: a ``document`` carries up to 64,000 characters, and JSON escaping
 #: can spend 12 bytes on one astral character, so 1 MiB covers it with the envelope.
 MAX_ITEM_BODY_BYTES = 1024 * 1024
@@ -125,13 +128,48 @@ def _is_owner(request: web.Request) -> bool:
     return request.get("internal_auth") is not True and is_owner_dashboard_request(request)
 
 
-async def _caller(request: web.Request, operation: str) -> str:
-    """``"owner"``; raises a 403 for anyone else (an app token, an agent's secret)."""
+def _app_holds_memory_admin(app: str) -> bool:
+    """Whether *app* declares ``memoryAdmin`` AND the owner approved its exact grant.
+
+    The approval is the ``/api/memory/provider`` entry itself: an approved parent such
+    as ``/api/memory`` does not stand in for it, so an update that adds the flag waits
+    for the owner like any other new grant.
+    """
+    from kiro_crew.apps.manager import get_app_manifest, is_app_enabled, staged_app_grants
+    from kiro_crew.memory_provider.preview import preview_enabled
+
+    if not preview_enabled():
+        return False
+    manifest = get_app_manifest(app)
+    if not (manifest and manifest.permissions.memoryAdmin and is_app_enabled(app)):
+        return False
+    approved = staged_app_grants(app, "api", lambda: [MEMORY_ADMIN_API_PREFIX])
+    return MEMORY_ADMIN_API_PREFIX in approved
+
+
+async def _caller(request: web.Request, operation: str, *, owner_only: bool = False) -> str:
+    """``"owner"`` or ``"app:<name>"``; raises a 403 response for anyone else."""
     if _is_owner(request):
         return "owner"
-    _audit(str(request.get("app") or request.get("user") or "unknown"), operation, "denied")
+    app = str(request.get("app") or "")
+    if (
+        app
+        and not owner_only
+        and request.get("internal_auth") is not True
+        and await asyncio.to_thread(_app_holds_memory_admin, app)
+    ):
+        _audit(f"app:{app}", operation, "allowed", resources=request.path)
+        # nosemgrep: python.flask.security.audit.directly-returned-format-string.directly-returned-format-string
+        return f"app:{app}"
+    _audit(app and f"app:{app}" or str(request.get("user") or "unknown"), operation, "denied")
     raise web.HTTPForbidden(
-        text=json.dumps({"error": "Only the owner may use this route.", "code": "owner_only"}),
+        text=json.dumps(
+            {
+                "error": "Only the owner, or an app the owner allowed to manage memory, "
+                "may use this route.",
+                "code": "owner_only" if owner_only else "memory_admin_required",
+            }
+        ),
         content_type="application/json",
     )
 
@@ -190,6 +228,34 @@ def _target(store: str, requested: str | None) -> tuple[str, MemoryProvider | No
     return resolver.BUILTIN_PROVIDER_ID, builtin.BUILTIN, ""
 
 
+def app_may_name(caller: str, store: str, provider_id: str) -> bool:
+    """Whether *caller* may name *provider_id* on *store*.
+
+    The owner may name any provider. A ``memoryAdmin`` app may name Crew's own
+    memory, the provider active for the store, or a provider it declares itself:
+    never another app's provider, which would let it read and write that app's
+    memory through signed calls to that app's backend.
+    """
+    if caller == "owner" or provider_id in ("", resolver.BUILTIN_PROVIDER_ID):
+        return True
+    app = caller.removeprefix("app:")
+    if provider_id.startswith(f"app:{app}/"):
+        return True
+    route = resolver.route_for(store)
+    return route.provider_id == provider_id and (route.replaces or route.augments)
+
+
+def _app_may_name_refusal(caller: str, store: str, provider_id: str) -> web.Response | None:
+    if app_may_name(caller, store, provider_id):
+        return None
+    _audit(caller, "provider.name", "denied", error="foreign_provider", resources=provider_id)
+    return _json_error(
+        "An app may reach Crew's own memory, the active provider, or its own provider only.",
+        "foreign_provider",
+        403,
+    )
+
+
 def _builtin_dark(store: str) -> bool:
     return not resolver.builtin_writes_allowed(store)
 
@@ -215,6 +281,11 @@ async def _prepare_builtin(store: str, provider: MemoryProvider) -> web.Response
     return await _prepare_member_lesson_store(store)
 
 
+def _request_caller(request: web.Request) -> str:
+    """The caller ``_caller`` admitted: ``"owner"`` or ``"app:<name>"``."""
+    return "owner" if _is_owner(request) else f"app:{request.get('app') or ''}"
+
+
 async def _resolve(
     request: web.Request, *, writing: bool
 ) -> tuple[str, str, MemoryProvider] | web.Response:
@@ -223,6 +294,11 @@ async def _resolve(
     except ValueError as exc:
         return _json_error(str(exc), "invalid_store")
     requested = request.query.get("provider")
+    caller = _request_caller(request)
+    if requested:
+        refused = await asyncio.to_thread(_app_may_name_refusal, caller, store, requested)
+        if refused is not None:
+            return refused
     provider_id, provider, refusal = await asyncio.to_thread(_target, store, requested)
     if provider is None:
         return _json_error(refusal, "provider_unavailable", 503)
@@ -304,6 +380,7 @@ def _overview(store: str, probe: bool) -> dict[str, Any]:
         },
         "providers": rows,
         "shared_crew": resolver._shared_crew_on(),
+        "policy_allows": resolver._governance_permits(None),
     }
     route = resolver.route_for(store)
     body["active"] = {
@@ -348,6 +425,8 @@ def _switch_refusal(body: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
     provider = app_client.provider_for_id(provider_id)
     if provider is None:
         return "the provider's app is not installed or not enabled", "provider_unavailable", {}
+    if not resolver._governance_permits(None):
+        return "External memory providers are blocked by policy.", "policy_denied", {}
     try:
         # A switch always asks afresh, so it decides on the provider's current answer.
         caps = provider.connect(want_mode=mode)
@@ -457,7 +536,7 @@ def _grant_for_checked_install(
 
 async def api_memory_provider_put(request: web.Request) -> web.Response:
     """PUT /api/memory/provider: switch. The owner's own dashboard session only."""
-    caller = await _caller(request, "switch")
+    caller = await _caller(request, "switch", owner_only=True)
     from kiro_crew.dashboard.handlers._shared import read_bounded_json
 
     body, refusal = await read_bounded_json(request)
@@ -592,6 +671,21 @@ async def api_memory_provider_items(request: web.Request) -> web.Response:
     return _respond({**body, "provider": provider_id})
 
 
+async def _holds_redacted_text(provider: Any, scope: Any, item_id: str) -> bool:
+    """Whether the stored item changes under the memory read redaction.
+
+    An app reads items through :func:`_respond`, masked, so replacing such an item
+    with its edited copy would write the markers over the owner's real text.
+    """
+    from kiro_crew.dashboard.handlers._shared import _redact_memory_field
+
+    stored = await provider.get(scope, item_id)
+    if stored is None:
+        return False
+    wire = stored.to_wire()
+    return bool(_redact_memory_field(_scrub_meta_keys(wire)) != wire)
+
+
 async def api_memory_provider_item(request: web.Request) -> web.Response:
     """GET / PATCH / DELETE /api/memory/provider/items/{id}.
 
@@ -632,6 +726,13 @@ async def api_memory_provider_item(request: web.Request) -> web.Response:
         if migration.screen_refuses(new):
             return _respond(
                 {"outcome": "refused", "reason": "content_screen", "provider": provider_id}
+            )
+        if caller != "owner" and await _holds_redacted_text(provider, scope, item_id):
+            return _json_error(
+                "This memory holds text an app cannot see, so an app cannot replace it. "
+                "Edit it in Crew.",
+                "document_holds_secret",
+                409,
             )
         # One key per edit, bound to its item: a provider replays an applied key, so
         # a key shared by two edits would answer the second with the first's result.
@@ -724,7 +825,7 @@ async def api_memory_provider_conformance(request: web.Request) -> web.Response:
     """
     internal = request.get("internal_auth") is True
     if not internal:
-        await _caller(request, "conformance")
+        await _caller(request, "conformance", owner_only=True)
     from kiro_crew.dashboard.handlers._shared import read_bounded_json
     from kiro_crew.memory_provider import conformance
 

@@ -957,6 +957,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         memory_provider_bench_dir,
         memory_provider_consent_path,
         memory_provider_migrations_dir,
+        memory_provider_preview_path,
         normalize_workspace_path,
         oauth_endpoints_path,
         outbox_dir,

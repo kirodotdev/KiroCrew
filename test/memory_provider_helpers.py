@@ -19,13 +19,25 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from kiro_crew.config import loader
-from kiro_crew.memory_provider import app_client, resolver
+from kiro_crew.memory_provider import app_client, preview, resolver
 
 FIXTURE_APP = Path(__file__).parent / "fixtures" / "memory_provider_app"
 FIXTURE_ID = "app:memory-fixture/fixture"
 READONLY_ID = "app:memory-fixture/readonly"
 SECRET = "fixture-proxy-secret"
+
+
+@pytest.fixture(autouse=True)
+def memory_provider_preview_on(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Turn the memory provider preview on for a module that imports this fixture.
+
+    These tests cover the feature behind the switch; the switch itself has its own
+    tests in ``test_memory_provider_preview.py``.
+    """
+    _floor_monkeypatch.setenv(preview.PREVIEW_ENV, "1")
 
 
 def _server_module() -> Any:

@@ -287,3 +287,18 @@ async def test_a_registry_registration_waits_for_a_contended_consent_lock(
     assert await asyncio.wait_for(task, 30) == ""
     thread.join(30)
     assert consent.read_grants() == []
+
+
+@pytest.mark.parametrize("now_installed", [STAMP, "2026-11-12T10:00:00Z"])
+def test_a_moves_consent_names_the_install_it_checked(monkeypatch, app_home, now_installed) -> None:
+    from kiro_crew.dashboard.handlers import memory_provider as base
+    from kiro_crew.dashboard.handlers import memory_provider_migrations as moves
+
+    checked = SimpleNamespace(
+        **vars(_provider(STAMP)), capabilities=lambda: SimpleNamespace(egress="remote")
+    )
+    monkeypatch.setattr(base, "_provider_by_id", lambda _pid: checked)
+    monkeypatch.setattr(app_client, "provider_for_id", lambda _pid: _provider(now_installed))
+    same = now_installed == STAMP
+    assert moves._grant_target_egress(PID, STAMP_EPOCH + 60) is same
+    assert consent.has_egress_consent(_provider(now_installed)) is same

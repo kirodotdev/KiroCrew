@@ -18,7 +18,13 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-from memory_provider_helpers import FIXTURE_ID, READONLY_ID, fixture_provider, set_provider
+from memory_provider_helpers import (  # noqa: F401
+    FIXTURE_ID,
+    READONLY_ID,
+    fixture_provider,
+    memory_provider_preview_on,
+    set_provider,
+)
 
 from kiro_crew.memory_provider import chokepoints, conformance, recall, resolver
 from kiro_crew.memory_provider.contract import (
@@ -364,7 +370,7 @@ def test_the_cli_calls_the_gateway_and_refuses_while_replaced(monkeypatch, capsy
         cli_memory_provider._call("GET", "/api/lessons", None, None)
     with pytest.raises(SystemExit):
         cli_memory_provider.refuse("kirocrew memory forget")
-    assert "Switch back to Crew memory" in capsys.readouterr().err
+    assert "Switch back in Settings" in capsys.readouterr().err
 
 
 def test_learn_remove_sends_its_repo_scope_to_the_gateway(monkeypatch, capsys) -> None:

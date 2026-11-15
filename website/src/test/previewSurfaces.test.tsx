@@ -355,6 +355,8 @@ describe('Settings > Developer > Feature Previews', () => {
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
     // The Shared Crew card draws only for the owner; a 404 leaves it out of the census.
     vi.spyOn(api, 'sharedCrewPreview').mockResolvedValue(null)
+    // The memory provider card the same way.
+    vi.spyOn(api, 'memoryProviderPreview').mockResolvedValue(null)
     vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue({
       enabled: false, endpoint: '', configured_endpoint: 'https://api.typesafe.ai/v1/systemone', permits: false,
     })
@@ -414,7 +416,7 @@ describe('Settings > Developer > Feature Previews', () => {
     waitFor(() => { expect(screen.getByRole('switch', { name: 'Decisions' })).toBeTruthy() })
 
   /** Declared rows the stubbed state does not draw, because their gate is closed. */
-  const ROWS_GATED_OFF_IN_STUB = new Set(['Remote dispatch', 'Shared Crew', 'Wake bots to update out-of-date fields'])
+  const ROWS_GATED_OFF_IN_STUB = new Set(['Memory providers', 'Remote dispatch', 'Shared Crew', 'Wake bots to update out-of-date fields'])
 
   it('gives every drawn row the InfoTip its declaration asks for', async () => {
     // A `hint` the row was given but does not show leaves an unfinished feature
