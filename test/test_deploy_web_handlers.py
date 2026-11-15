@@ -32,7 +32,7 @@ from kiro_crew.deploy import engine, handlers
 # by the _force_posix_shell fixture in deploy_web_handlers_helpers.py instead.
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
-    reason="POSIX-only file-permission semantics; reduced Windows backend scope (#2041)",
+    reason="POSIX-only file-permission semantics; reduced Windows backend scope",
 )
 
 

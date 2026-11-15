@@ -412,7 +412,7 @@ def test_every_first_party_spawn_is_allowlisted():
         "chokepoint:\n  "
         + "\n  ".join(sorted(unexpected))
         + "\n\nThis flag permits an UNCONFINED spawn on a host with no sandbox "
-        "backend (issue #1563 carve-out). Confirm the full argv is derived "
+        "backend. Confirm the full argv is derived "
         "inside this package with zero agent/repo/user-config influence (or is "
         "the ACP kiro-cli from find_kiro_cli_candidates with a fixed argv), then "
         "add the file::function key to FIRST_PARTY_SPAWNS with a justification."
@@ -731,8 +731,7 @@ def test_every_spawn_is_routed_or_allowlisted(part: int):
         + "\n\nRoute agent-influenced spawns through "
         "kiro_crew.sandbox.sandboxed_spawn_argv (OS sandbox + scrubbed env), "
         "or, if the command/args/cwd are NOT agent-influenced, add the "
-        "file::function key to BENIGN_SPAWNS in this test with a justification. "
-        "See security-review finding 92e24570."
+        "file::function key to BENIGN_SPAWNS in this test with a justification."
     )
 
 
@@ -820,8 +819,7 @@ def test_every_routed_spawn_applies_resource_limits(part: int):
         + "\n  ".join(sorted(missing))
         + "\n\nPass preexec_fn=kiro_crew.sandbox.resource_limit_preexec() to the "
         "spawn (kernel RLIMIT ceiling — fork bomb / FD / mem / CPU), or add the "
-        "file::function key to PREEXEC_EXEMPT with a justification. "
-        "See security-review finding bdf0d7e5."
+        "file::function key to PREEXEC_EXEMPT with a justification."
     )
 
 
@@ -856,8 +854,7 @@ def test_every_routed_spawn_applies_cgroup_scope(part: int):
         + "\n  ".join(sorted(missing))
         + "\n\nWrap the final argv with kiro_crew.sandbox.cgroup_scope_argv() "
         "(pids.max + memory.max fork-bomb / memory-DoS ceiling), or route the "
-        "spawn through sandboxed_spawn_argv which applies it. "
-        "See security-review finding bdf0d7e5."
+        "spawn through sandboxed_spawn_argv which applies it."
     )
 
 
@@ -1081,8 +1078,8 @@ def test_gateway_spawns_all_own_session():
     )
     assert not missing, (
         "Spawn(s) in slack/gateway.py without start_new_session — a timeout "
-        "kill would reach only the direct child, abandoning its descendants "
-        "(issue #4210):\n  " + "\n  ".join(missing) + "\n\nAdd "
+        "kill would reach only the direct child, abandoning its descendants"
+        ":\n  " + "\n  ".join(missing) + "\n\nAdd "
         "start_new_session=platform_compat.IS_POSIX to the spawn."
     )
 
@@ -1169,8 +1166,9 @@ def test_gateway_proc_waits_all_kill_on_timeout_and_cancel():
         "rather than deleting the ratchet"
     )
     assert not offenders, (
-        "wait_for on a spawned proc without kill+reap discipline (issue "
-        "#4210):\n  " + "\n  ".join(offenders) + "\n\nWrap the wait in explicit "
+        "wait_for on a spawned proc without kill+reap discipline:\n  "
+        + "\n  ".join(offenders)
+        + "\n\nWrap the wait in explicit "
         "TimeoutError and CancelledError arms that call _kill_and_reap (or the "
         "startup-child kill/reap pair) on the proc before returning/re-raising."
     )

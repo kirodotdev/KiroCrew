@@ -1136,7 +1136,7 @@ class TestSendMessage:
 
         assert seen, (
             "the off-loop prefetch never ran: either the read is happening inline "
-            "on the loop again (the #7408 defect) or this seam moved"
+            "on the loop again or this seam moved"
         )
         assert threading.get_ident() not in seen, (
             "the transcript was read on the event-loop thread; the handler must "

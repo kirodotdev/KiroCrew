@@ -820,7 +820,7 @@ class TestEveryConfigWriterIsLocked:
             "update_config_locked(), which holds the <path>.lock sidecar across "
             "the whole read-modify-write. A direct write_config_atomically() "
             "here takes no advisory lock, so it can land between another "
-            "writer's read and write and silently revert it (#8032). For an "
+            "writer's read and write and silently revert it. For an "
             "async handler, go through dashboard/chat_utils.run_config_write or "
             "the module's own shielded offload.\n  " + "\n  ".join(sorted(set(offenders)))
         )

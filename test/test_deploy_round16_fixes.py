@@ -47,7 +47,7 @@ class TestF1ReaperOACExactMatch:
         # The old vulnerable pattern was: if item.get('Name', '').startswith(prefix)
         assert ".startswith(prefix)" not in content, (
             "reaper.sh must NOT use bare startswith for OAC matching — "
-            "cross-matches overlapping slugs (R13 fix parity)"
+            "cross-matches overlapping slugs"
         )
 
     def test_reaper_sh_oac_pattern_mirrors_lambda(self):

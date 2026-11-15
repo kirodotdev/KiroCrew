@@ -897,5 +897,5 @@ class TestDenialAuditOffload:
         assert not wrapped, (
             f"to_thread-wrapped _sel().log_api_access at lines {wrapped}; SEL is "
             "warmed at startup (sel.warm_sel_singleton), so a non-critical audit "
-            "is a direct enqueue (#8608)"
+            "is a direct enqueue"
         )
