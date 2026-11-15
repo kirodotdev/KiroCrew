@@ -697,7 +697,7 @@ class TestResumeTitleEchoIsNotAPin:
             assert slot._title_refresh_mark == 8
 
 
-# ── round-5 regressions: durable-mark gate, post-persist push guard ──────────
+# ── durable-mark gate, post-persist push guard ───────────────────────────────
 class TestRefreshDurableMarkGate:
     @pytest.mark.asyncio
     async def test_failed_mark_persist_aborts_before_generation(self, monkeypatch):

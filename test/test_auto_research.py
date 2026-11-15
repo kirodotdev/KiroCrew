@@ -304,7 +304,7 @@ class TestCycleFileMatching:
             assert [f["cycle"] for f in get_findings("a1b2c3d4")] == [0]
 
     def test_orders_by_cycle_number_not_lexically(self, tmp_path: Path):
-        # Regression: lexical sort puts cycle_10 before cycle_2; integer sort fixes it.
+        # Lexical sort puts cycle_10 before cycle_2; the sort must be by integer.
         with patch("kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path):
             d = self._findings_dir(tmp_path)
             for n in (2, 10, 1):

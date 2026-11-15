@@ -623,7 +623,7 @@ class TestSchedulerGate:
         assert calls == [("![a](/abs/x.png)", "ts-x", "s1")]
 
 
-# ── Hardening regressions (review findings) ─────────────────────────────────
+# ── Hardening ───────────────────────────────────────────────────────────────
 
 
 class TestAssetReadHardening:

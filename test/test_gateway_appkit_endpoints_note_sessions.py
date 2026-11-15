@@ -293,7 +293,7 @@ class TestCleanupPersistsHeldNotes:
         assert any(
             mark in (e.get("content") or "") for e in slot._pending_context
         ), "the note's context half was consumed and is now owed to nobody"
-        # Regression: the visible row still reaches the archived record.
+        # The visible row still reaches the archived record.
         persisted = state.conversation_log.read_messages_chained(_history_key_for("stale-2"))
         assert any(mark in (m.get("content") or "") for m in persisted)
 

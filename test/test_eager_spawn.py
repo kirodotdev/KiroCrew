@@ -496,7 +496,7 @@ class TestEagerSpawn:
         state.sessions.remove = AsyncMock()
 
         # A real turn wins registration while our handshake runs (is_new=False),
-        # AND a workspace switch lands — the pre-fix code removed the session.
+        # AND a workspace switch lands — the session must not be removed.
         async def _lose_race_and_switch(*a, **kw):
             slot.project = str(tmp_path / "b")
             return (MagicMock(), False, False)

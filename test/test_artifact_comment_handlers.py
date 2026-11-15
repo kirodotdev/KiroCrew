@@ -415,7 +415,7 @@ class TestEditComment:
 
     @pytest.mark.asyncio
     async def test_edit_gated_by_publish_governance(self, store, monkeypatch):
-        # Regression (PR #14 alice): a shared-comment edit is outbound egress and
+        # A shared-comment edit is outbound egress and
         # must pass the same capabilities.publish gate as artifact publish. A
         # policy that DENIES the destination keeps the edit LOCAL (remote_synced
         # False) even though the provider supports COMMENTS_EDIT.

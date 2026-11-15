@@ -161,7 +161,7 @@ async def test_park_finally_survives_none_parked_since():
     handle._parked_total = 0.0
 
     # aclose() triggers GeneratorExit inside the yield -> finally fires.
-    # Before the fix this raised TypeError; now it must be a no-op.
+    # Must be a no-op, never a TypeError.
     await agen.aclose()
 
     # No crash, park total unchanged (the abandoned park is silently discarded).

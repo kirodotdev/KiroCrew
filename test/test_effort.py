@@ -514,8 +514,7 @@ class TestFactoryDropWarning:
     def test_explicit_override_warns_every_time(self, caplog, tmp_path):
         # A caller's own request being dropped is the event this gate exists
         # to surface — an explicit override never dedupes, so a config-default
-        # drop cannot burn the key and silence a later per-slot request
-        # (Design review on this PR).
+        # drop cannot burn the key and silence a later per-slot request.
         cfg = KiroCrewConfig()
         cfg.agent.provider = "acp"
         with patch("kiro_crew.providers.acp.AcpProvider") as mock_provider:
