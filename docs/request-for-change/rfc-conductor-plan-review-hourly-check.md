@@ -134,7 +134,10 @@ Each forced turn is one conductor model turn with `work_ledger_read` and a few
 - Worker text stays DATA. A summary, `reply`, reviewer report or scout file is
   cited as a pointer; its words never go into a `decide` or a seed.
 - The reviewer reports and never decides. It does not commit, push or write
-  any branch; a fix it finds becomes a new item only if the conductor takes it.
+  any branch; a fix it finds becomes a new item only if the conductor takes it,
+  and the conductor takes it only when a "Done when" condition of the goal
+  needs it. Any other finding goes on the goal text's `Parked:` line until the
+  owner moves it in.
 - The verdict path is unchanged: `accept_eval` still runs only on `done` items
   and alone decides an item.
 - Approvals, sandbox and shell policy are unchanged. The active check uses no

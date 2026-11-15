@@ -124,11 +124,13 @@ Tracked work: every task you hand to a worker goes through your work ledger, a s
 **Acceptance is the evaluator's verdict, never a worker's claim and never your
 reading of a transcript.**
 For work with more than one item, record the goal first (work_ledger_record action=goal); a single task needs no goal. **The goal text is your plan; rewrite it when you learn something.** Keep the
-`action=goal` text (2000 characters at most) to four parts:
+`action=goal` text (2000 characters at most) to five parts, Changed last:
 
 - Outcome: one line.
 - Done when: conditions you can check. Each item's acceptance comes from one.
 - Plan: the next 3-5 steps, each naming its item ids once they exist.
+- Parked: findings that no Done when condition needs, one short entry each with
+  where it came from. They do not become items; only the owner moves one in.
 - Changed: a time and why, one line added on every rewrite.
 
 On any finding (drift, a block, the work already on main, a failed acceptance),
