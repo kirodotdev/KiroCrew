@@ -17,12 +17,14 @@ from datetime import datetime
 from typing import Any
 
 # Read by no code here; the ``work_ledger`` facade serves it from this module.
-from kiro_crew.work_vocab import WORK_STORED_ITEM_LIMIT  # noqa: F401
-from kiro_crew.work_vocab import (
+from kiro_crew.work_vocab import (  # noqa: F401
     WORK_BLOCKED_REASONS,
     WORK_ITEM_STATES,
     WORK_MAX_ARTIFACT_VALUE_CHARS,
     WORK_MAX_DEPTH_DEFAULT,
+    WORK_PEER_CURSOR_CHARS,
+    WORK_STORED_EVENT_LIMIT,
+    WORK_STORED_ITEM_LIMIT,
     WORK_VERDICTS,
     WORK_WORKER_STATUSES,
     coerce_ask,
@@ -148,7 +150,7 @@ DEFAULT_GOAL_CONCURRENCY_CAP = MAX_ITEMS_PER_CONDUCTOR
 #: The highest ``concurrency_cap`` a goal write accepts: a cap past the store's open
 #: bound could never be reached.
 MAX_GOAL_CONCURRENCY_CAP = MAX_ITEMS_PER_CONDUCTOR
-MAX_EVENTS_PER_ITEM = 200
+MAX_EVENTS_PER_ITEM = WORK_STORED_EVENT_LIMIT
 #: How many levels may CONDUCT: the root at depth 0 and the conductors below it, up
 #: to but not including depth :data:`MAX_DEPTH`. Depth ``MAX_DEPTH`` itself is the
 #: first level that may only work -- it may neither open a ledger nor create an item
@@ -607,6 +609,10 @@ class WorkEvent:
 
 
 # Coercion helpers. None of these raise.
+
+
+#: Longest stored peer report cursor: two peer event ids and the slash between.
+MAX_PEER_CURSOR_CHARS = WORK_PEER_CURSOR_CHARS
 
 
 def _as_str(value: Any) -> str:

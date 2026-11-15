@@ -18,6 +18,8 @@ from kiro_crew.work_vocab import (
     WORK_BLOCKED_REASONS,
     WORK_CLOSED_WINDOW,
     WORK_CONDUCTOR_FIELDS,
+    WORK_PEER_CURSOR_CHARS,
+    WORK_STORED_EVENT_LIMIT,
     WORK_STORED_ITEM_LIMIT,
     WORK_TOMBSTONE_LIMIT,
     WorkBoardForgotten,
@@ -567,6 +569,8 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
     elif actor == "worker":
         if action != "report" or data.get("mirror") is True:
             return
+        if not _work_peer_report(item, data):
+            return
         if data.get("board_copy") is True:
             item["_board_reported"] = True
         elif item.get("_board_reported"):
@@ -617,7 +621,49 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
             # cache holds as unset.
             for name in ("worker_session_key", "worker_instance_id"):
                 item[name] = item.get(name) or None
+        if action in ("bind", "retire"):
+            # Where remote ingest stands belongs to one binding.
+            for name in _WORK_PEER_KEYS:
+                item.pop(name, None)
     _work_apply_event(item, data, stamp_ms, action)
+
+
+#: Internal, never rendered: where remote ingest of the CURRENT binding stands,
+#: folded from the board-copy reports it filed. ``_peer_cursor`` is the newest
+#: filed report's peer event cursor (``<id before>/<id>``), ``_peer_dropped`` the
+#: peer reports those filings said were skipped, ``_peer_seen`` the peer event ids
+#: already filed, newest last, for the dedupe.
+_WORK_PEER_KEYS: Final[tuple[str, ...]] = ("_peer_cursor", "_peer_dropped", "_peer_seen")
+
+#: Most skipped peer reports one entry may claim.
+_WORK_PEER_DROPPED_LIMIT: Final[int] = 1000
+
+
+def _work_peer_report(item: dict[str, Any], data: Mapping[str, Any]) -> bool:
+    """Fold a remote report's peer fields; ``False`` when it repeats a peer event
+    already filed, so the entry is skipped whole. An entry without a peer cursor
+    (every local report) changes nothing here and is applied."""
+    cursor = data.get("peer_cursor")
+    if not isinstance(cursor, str) or not 0 < len(cursor) <= WORK_PEER_CURSOR_CHARS:
+        return True
+    peer_id = cursor.rpartition("/")[2]
+    if not peer_id:
+        return True
+    seen: list[str] = item.get("_peer_seen") or []
+    if data.get("peer_snapshot") is not True:
+        # The latest-fields snapshot shares its event's id and dedupes against the
+        # item's fields instead; every other peer event files at most once.
+        if peer_id in seen:
+            return False
+        # Replaced, never edited: ``_work_copy`` shares an item's lists.
+        item["_peer_seen"] = [*seen, peer_id][-WORK_STORED_EVENT_LIMIT:]
+    item["_peer_cursor"] = cursor
+    dropped = data.get("peer_dropped")
+    if isinstance(dropped, int) and not isinstance(dropped, bool) and dropped > 0:
+        item["_peer_dropped"] = item.get("_peer_dropped", 0) + min(
+            dropped, _WORK_PEER_DROPPED_LIMIT
+        )
+    return True
 
 
 def _work_apply_event(
@@ -741,7 +787,7 @@ def _work_render(state: dict[str, Any]) -> WorkBoardView:
         rendered = {
             key: value
             for key, value in item.items()
-            if key not in ("events", "_unrecorded", "_board_reported")
+            if key not in ("events", "_unrecorded", "_board_reported", *_WORK_PEER_KEYS)
         }
         rendered["schema"] = 1
         if (

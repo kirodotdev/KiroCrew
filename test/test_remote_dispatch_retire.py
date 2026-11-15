@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
+import test_remote_dispatch_hub_ingest as hub
 import work_ledger_projection_helpers as helpers
 from test_remote_dispatch_hub_ingest import (
     CREW,
@@ -40,7 +41,7 @@ from kiro_crew.dashboard.handlers import work_ledger as routes
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 _isolated = helpers._isolated
-recorded = helpers.recorded
+recorded = hub.recorded
 
 
 class _Clock:

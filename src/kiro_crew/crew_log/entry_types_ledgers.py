@@ -756,6 +756,31 @@ TYPES: tuple[EntryType, ...] = (
                 ),
             ),
             Field(
+                "peer_cursor",
+                JSON_STRING,
+                note=(
+                    "On a report the hub ingested from a remote peer: that peer event's "
+                    "cursor, '<id before>/<id>'. The work fold derives where ingest stands "
+                    "from it and files each peer event id at most once."
+                ),
+            ),
+            Field(
+                "peer_dropped",
+                JSON_INT,
+                note=(
+                    "On an ingested peer report: how many peer reports before it the hub "
+                    "skipped (one it could never file, or a log that rolled past the cursor)."
+                ),
+            ),
+            Field(
+                "peer_snapshot",
+                JSON_BOOL,
+                note=(
+                    "True on the ingested peer report that carries the worker's latest "
+                    "fields; it dedupes against the item's fields, not the peer event id."
+                ),
+            ),
+            Field(
                 "relay",
                 JSON_STRING,
                 note=(

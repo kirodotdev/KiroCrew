@@ -18,7 +18,8 @@ that item afterwards, and the hub only ever PULLS: the peer never reaches back.
 * :func:`forward_decide` -- after a recorded ``decide`` on a remote item, PATCH the
   peer copy. A failure is reported; the local write stands.
 * :func:`remote_row_fields` -- the read row's ``crew_state``, ``crew_down_since``,
-  ``pending_approval`` and ``remote_error`` for a remote item.
+  ``pending_approval``, ``remote_error`` and ``remote_reports_dropped`` for a
+  remote item.
 
 Every peer call goes through the wave 1 ``peer_call`` (path fence, byte cap,
 ``_redact_peer_payload``). Fail closed: an unreachable or incompatible crew keeps
@@ -35,6 +36,7 @@ import functools
 import hashlib
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -78,12 +80,10 @@ logger = logging.getLogger(__name__)
 #: so a ``question`` followed by a ``progress`` between two pulls still wakes.
 PULL_EVENT_LIMIT = 50
 
-#: Most earlier reports one pull files before the snapshot. The probe reads an
-#: eight-event tail (``probes.work_ledger._EVENT_TAIL``), so these plus the
-#: snapshot stay inside it and each one can still wake the conductor.
-#: shortcut: a worker that reports more than this between two pulls loses the
-#: oldest; raise it with the probe's tail if pulls ever get that far apart.
-MAX_EARLIER_REPORTS = 6
+#: Peer events asked for when the first tail does not hold the cursor: the
+#: peer's whole log (it keeps at most this many per item), so the hub catches up
+#: in one more call instead of skipping what fell out of the short tail.
+PULL_PAGE_LIMIT = work_ledger.MAX_EVENTS_PER_ITEM
 
 #: Most remote items one read pulls; the rest keep their last state until the next.
 MAX_ITEMS_PER_READ = 32
@@ -623,14 +623,18 @@ async def _ingest_item(
     if crew not in slot_lists:
         slot_lists[crew] = await _slot_list(state, crew)
     listed = slot_lists[crew]
+    path = f"api/chat/slots/{quote(slot, safe='')}/work-item"
+    limit = PULL_EVENT_LIMIT
     try:
         status, payload = await routes.peer_call(
-            mgr,
-            crew,
-            "GET",
-            f"api/chat/slots/{quote(slot, safe='')}/work-item",
-            params={"limit": str(PULL_EVENT_LIMIT)},
+            mgr, crew, "GET", path, params={"limit": str(limit)}
         )
+        if status == 200 and _needs_page(payload, await _folded_cursor(board, item.item_id), limit):
+            # The short tail rolled past where the hub stands: read the whole log.
+            limit = PULL_PAGE_LIMIT
+            status, payload = await routes.peer_call(
+                mgr, crew, "GET", path, params={"limit": str(limit)}
+            )
     except routes.CrewCallError as exc:
         if exc.status == 503:
             await _mark_down(board, item.item_id, "disconnected", exc.code)
@@ -673,7 +677,7 @@ async def _ingest_item(
         else:
             floor = _report_floor(record, item)
             record.error = await _ingest_report_locked(
-                state, board, unit, item.item_id, crew, slot, payload, floor, record
+                state, board, unit, item.item_id, crew, slot, payload, floor, record, limit
             )
             failed = record.error == "crew_log_unrecorded"
             record.unrecorded_key = _snapshot_key(payload) if failed else None
@@ -682,12 +686,6 @@ async def _ingest_item(
             peer_stamp = peer.get("last_report_at") if isinstance(peer, dict) else None
             if record.error is None and isinstance(peer_stamp, str) and _later(peer_stamp, floor):
                 record.report_floor, record.report_floor_known = peer_stamp, True
-            elif (
-                record.error == CODE_CURSOR_UNSTORED or record.error in _RETRY_LATER
-            ) and not record.report_floor_known:
-                # An earlier report may still be unfiled: pin this pull's floor, or the
-                # next one falls back to the snapshot's stamp and skips it.
-                record.report_floor, record.report_floor_known = floor, True
         record.ingested_at = record.attempted_at = _now()
         await asyncio.to_thread(_store, board, item.item_id, record)
     # A conductor that left Trust ends the grant its worker still holds (RFC §4).
@@ -832,7 +830,7 @@ def _clean_report(row: dict[str, Any]) -> dict[str, Any] | None:
 #: Longest peer event id a cursor holds. A cursor is ``<before>/<id>``, two ids in
 #: the record's 64-character text cap; a real id is 16 hex characters
 #: (``work_vocab.work_event_id``).
-_MAX_EVENT_ID_CHARS = 31
+_MAX_EVENT_ID_CHARS = (work_ledger.MAX_PEER_CURSOR_CHARS - 1) // 2
 
 
 def _cursor_at(reports: list[dict[str, Any]], index: int) -> str:
@@ -856,7 +854,7 @@ def _tail_reports(payload: dict[str, Any], stamp: str) -> list[dict[str, Any]]:
     stamp or an id no cursor can hold is dropped. A row stamped after *stamp* (the
     snapshot's) is kept only to be recognised, never filed: every earlier report
     precedes the snapshot, and the snapshot's own event may be stamped a second
-    after it (two clock reads). Only the newest :data:`PULL_EVENT_LIMIT` entries
+    after it (two clock reads). Only the newest :data:`PULL_PAGE_LIMIT` entries
     are read, whatever the peer sent.
     """
     events = payload.get("events")
@@ -864,7 +862,7 @@ def _tail_reports(payload: dict[str, Any], stamp: str) -> list[dict[str, Any]]:
     if not isinstance(events, list) or limit is None:
         return []
     out: list[dict[str, Any]] = []
-    for event in events[-PULL_EVENT_LIMIT:]:
+    for event in events[-PULL_PAGE_LIMIT:]:
         if not isinstance(event, dict) or event.get("kind") != "report":
             continue
         ts, text, status = event.get("ts"), event.get("text"), event.get("status")
@@ -887,36 +885,69 @@ def _tail_reports(payload: dict[str, Any], stamp: str) -> list[dict[str, Any]]:
     return out
 
 
+async def _folded_cursor(board: str, item_id: str) -> str | None:
+    """Where ingest stands for the paging choice; ``None`` (so the pull pages)
+    when the fold cannot be read. The filing re-reads it under the board lock."""
+    try:
+        return (await asyncio.to_thread(_folded_peer, board, item_id)).cursor
+    except Exception:
+        return None
+
+
+def _needs_page(payload: Any, cursor: str | None, limit: int) -> bool:
+    """Whether a tail of *limit* events may miss reports: the tail is full, so the
+    peer holds older events, and there is no *cursor* (a first pull) or neither of
+    its ids is in the tail."""
+    if limit >= PULL_PAGE_LIMIT or not isinstance(payload, dict):
+        return False
+    events = payload.get("events")
+    if not isinstance(events, list) or len(events) < limit:
+        return False
+    if not cursor:
+        return True
+    before, _mark, last_id = cursor.rpartition("/")
+    ids = {
+        event.get("id")
+        for event in events
+        if isinstance(event, dict) and isinstance(event.get("id"), str)
+    }
+    return not ({before, last_id} - {""}) & ids
+
+
 def _earlier_reports(
     payload: dict[str, Any],
     snapshot: dict[str, Any],
     floor: str | None,
     cursor: str | None,
-) -> tuple[list[dict[str, Any]], str | None]:
-    """``(earlier, newest)``: the peer reports to file before *snapshot*, oldest
-    first, each with its ``_cursor``, and the cursor past the newest report.
+    limit: int,
+) -> tuple[list[dict[str, Any]], str | None, bool]:
+    """``(earlier, newest, lost)``: the peer reports to file before *snapshot*,
+    oldest first, each with its ``_cursor``; the cursor past the newest report;
+    and whether *cursor* named a report the peer's whole log does not hold.
 
     The peer's events carry a report's status and summary only, so these are filed
     without reason, artifacts or pr; the snapshot after them restores the latest.
 
-    *cursor* (``RemoteState.report_event_id``, :func:`_cursor_at`) names the newest
-    report the last pull got past; everything after it is new. When the tail no
-    longer holds it but holds the report before it, that report coalesced into the
-    progress after it, so everything after the report before it is new. With
-    neither (no cursor, or the tail rolled past both), every report stamped after
-    *floor* is new. The newest report, when it says what the snapshot says, is the
-    snapshot's own event and is filed only as the snapshot.
+    *cursor* (folded from the crew log, :func:`_folded_peer`) names the newest
+    report filed; everything after it is new. When the tail does not hold it but
+    holds the report before it, that report coalesced into the progress after it,
+    so everything after the report before it is new. With neither (no cursor, or a
+    log that rolled past both), every report stamped after *floor* is new. The
+    newest report, when it says what the snapshot says, is the snapshot's own
+    event and is filed only as the snapshot. Nothing is capped: the tail is at
+    most :data:`PULL_PAGE_LIMIT` events, the peer's whole log.
     """
     stamp = snapshot.get("reported_at")
     reports = _tail_reports(payload, stamp) if isinstance(stamp, str) else []
     if not reports:
-        return [], None
+        return [], None, False
     for index in range(len(reports)):
         reports[index]["_cursor"] = _cursor_at(reports, index)
     ids = [row["_id"] for row in reports]
     before, mark, last_id = (cursor or "").rpartition("/")
     events = payload.get("events")
-    whole_log = isinstance(events, list) and len(events) < PULL_EVENT_LIMIT
+    whole_log = isinstance(events, list) and len(events) < limit
+    lost = False
     if last_id and last_id in ids:
         fresh = reports[ids.index(last_id) + 1 :]
     elif before and before in ids:
@@ -926,6 +957,8 @@ def _earlier_reports(
         # tail is the peer's whole log: nothing in it was filed.
         fresh = reports
     else:
+        # A cursor outside the peer's log: what rolled away is gone.
+        lost = bool(mark) and limit >= PULL_PAGE_LIMIT
         fresh = [row for row in reports if _later(row["reported_at"], floor)]
     last = fresh[-1] if fresh else None
     if (
@@ -935,7 +968,16 @@ def _earlier_reports(
     ):
         fresh = fresh[:-1]
     earlier = [row for row in fresh if not row["_after_snapshot"]]
-    return earlier[-MAX_EARLIER_REPORTS:], reports[-1]["_cursor"]
+    return earlier, reports[-1]["_cursor"], lost
+
+
+#: A filing the crew log did not record; the ledger write was undone.
+CODE_LOG_UNRECORDED = "crew_log_unrecorded"
+
+#: Filing failures that may clear on their own: the pull stops and the next one
+#: files the same report again. Any other failure can never file, so the report is
+#: passed over and counted (``peer_dropped`` on the next filing).
+_RETRY_LATER = frozenset({CODE_LOG_UNRECORDED, "ledger_write_failed"})
 
 
 async def _ingest_report_locked(
@@ -948,29 +990,38 @@ async def _ingest_report_locked(
     payload: dict[str, Any],
     floor: str | None,
     record: work_ledger.RemoteState,
+    limit: int = PULL_EVENT_LIMIT,
 ) -> str | None:
     """File the peer worker's reports since the last pull on *item_id*. HOLD THE BOARD LOCK.
 
-    *floor* is the current binding's newest filed peer stamp, and *record* its
-    remote record, whose ``report_event_id`` cursor this moves.
+    *floor* is the current binding's newest filed peer stamp, *record* its remote
+    record, and *limit* the number of peer events the payload was asked for.
 
-    ``None`` or an error code. The earlier reports after the cursor are filed
-    first, in order (:func:`_earlier_reports`), then the snapshot, unless no
-    earlier one was filed and the hub item already holds exactly those worker
-    fields and that stamp, so a repeat read files nothing. The cursor is stored
-    BEFORE each filing, in the same drained step, and a cursor that does not store
-    files no further earlier report (the snapshot still files): each earlier report
-    is filed at most once, even across a cut-off pull or a remote record that will
-    not write. An earlier report the crew log did not record, or whose ledger write
-    failed (:data:`_RETRY_LATER`), gets its cursor back
-    and stops the earlier reports, so a later pull refiles it. Any other earlier
-    report that fails to file is passed over, never retried, so it cannot hold back
-    the latest; the pull records its code. The snapshot needs no cursor to be retried: the hub item is
-    its dedupe.
+    ``None`` or an error code. The crew log is the record: where ingest stands,
+    the skipped count and the dedupe are all folded from the board-copy reports it
+    holds (:func:`_folded_peer`), never stored beside it, so a kill or a failed
+    write between the item and the crew log leaves the cursor before the report
+    and the next pull files it again. The earlier reports after the cursor
+    (:func:`_earlier_reports`) are filed first, in order. One that fails with a
+    code in :data:`_RETRY_LATER`, or raises, stops the pull; one that can never
+    file is passed over. Each passed-over report, and a cursor the peer's whole
+    log does not hold, is counted on the next filing that lands (``peer_dropped``),
+    so a pull that files nothing counts nothing and the next one counts it once.
+    The snapshot (the peer's latest fields, filed with the newest cursor) is filed
+    only once every earlier report is, so a cut-off pull files no snapshot and the
+    next pull carries on in order. With no earlier report it is skipped when the
+    folded item already holds exactly it.
     """
     if await _refuse_if_dirty(board, board, "work_ledger_read.ingest") is not None:
         return work_ledger.CODE_CACHE_DIRTY
-    current = await asyncio.to_thread(work_ledger.read_work_item, board, item_id)
+    try:
+        # Strict: an I/O fault must not read as "no item", which would end the pull
+        # as a success and move the binding's floor past reports it never filed.
+        current = await asyncio.to_thread(
+            functools.partial(work_ledger.read_work_item, board, item_id, strict=True)
+        )
+    except OSError:
+        return "ledger_write_failed"
     if (
         current is None
         or not _is_remote_open(current)
@@ -979,6 +1030,16 @@ async def _ingest_report_locked(
     ):
         # The item is not bound to the crew and slot this pull read.
         return None
+    try:
+        folded = await asyncio.to_thread(_folded_peer, board, item_id)
+    except Exception:
+        # Without the record nothing can say where ingest stands: file nothing.
+        logger.warning("work fold unreadable for remote ingest on %s", item_id, exc_info=True)
+        return CODE_FOLD_UNREADABLE
+    if not record.report_floor_known and folded.item is not None:
+        # A record with no floor of its own falls back to the item's stamp: the
+        # crew log's, never the cache's, which may hold a report the log refused.
+        floor = _report_floor(record, folded.item)
     row = _snapshot_report(current, payload, floor)
     if row is None:
         return None
@@ -989,65 +1050,101 @@ async def _ingest_report_locked(
     if not isinstance(stamp, str) or work_ledger.parse_stamp(stamp) is None:
         # ``apply_remote_report`` refuses the same stamp; refusing it here names why.
         return "crew_report_malformed"
-    earlier, newest = _earlier_reports(payload, cleaned, floor, record.report_event_id)
-
-    async def _move_then_file(report: dict[str, Any] | None, cursor: str | None) -> str | None:
-        before = record.report_event_id
-        if cursor is not None and cursor != before:
-            record.report_event_id = cursor
-            if not await asyncio.to_thread(_store, board, item_id, record):
-                record.report_event_id = before
-                if report is not cleaned:
-                    return CODE_CURSOR_UNSTORED
-                # The snapshot's dedupe is the hub item, not the cursor: it still files.
-        if report is None:
-            return None
-        try:
-            error = await _file_one(state, board, unit, item_id, slot, report)
-        except Exception:
-            # Not filed (a read or write that raised): give the cursor back, as below.
-            record.report_event_id = before
-            await asyncio.to_thread(_store, board, item_id, record)
-            raise
-        if error in _RETRY_LATER:
-            # The write may succeed later: give the cursor back so a later pull refiles
-            # it, the snapshot's own event included.
-            record.report_event_id = before
-            await asyncio.to_thread(_store, board, item_id, record)
-        return error
-
+    earlier, newest, lost = _earlier_reports(payload, cleaned, floor, folded.cursor, limit)
+    # shortcut: a report whose item write landed but whose crew-log append did not is
+    # filed again, so the item cache's event file may hold it twice and the probe,
+    # which reads that file, may wake on it twice: a repeat, never a loss. Reads
+    # fold from the crew log and a rebuild rewrites the cache. Dedupe the cache by
+    # peer event id if a double wake after a kill ever matters.
+    # Skipped reports ride on the next filing that lands, so they are counted once.
+    dropped = int(lost)
     refused: str | None = None
-    stopped = False
     filed_earlier = False
     for report in earlier:
-        # One report that cannot file (too large, a refused write) must not stall
-        # the ones after it: it is passed over, and its code is what the pull records.
-        error = await _drain_before_cancelling(_move_then_file(report, report["_cursor"]))
-        if error == CODE_CURSOR_UNSTORED or error in _RETRY_LATER:
-            # Not filed and not passed over: no more earlier reports this pull. The
-            # snapshot still files below.
-            refused, stopped = error, True
-            break
-        filed_earlier = filed_earlier or error is None
-        refused = refused or error
-    snapshot: dict[str, Any] | None = cleaned
-    if not filed_earlier and _already_filed(current, cleaned):
-        snapshot = None
-    # An earlier report that stopped the loop is still unfiled: keep the cursor
-    # before it, so the next pull replays it instead of skipping to the newest.
-    cursor = None if stopped else newest
-    error = await _drain_before_cancelling(_move_then_file(snapshot, cursor))
+        error = await _drain_before_cancelling(
+            _file_one(
+                state, board, unit, item_id, slot, report, cursor=report["_cursor"], dropped=dropped
+            )
+        )
+        if error in _RETRY_LATER:
+            return error
+        if error is None:
+            dropped, filed_earlier = 0, True
+        else:
+            # It can never file: passed over, so it cannot hold back the rest.
+            dropped += 1
+            refused = refused or error
+    if not filed_earlier and _already_filed(folded.item or current, cleaned):
+        return refused
+    error = await _drain_before_cancelling(
+        _file_one(
+            state, board, unit, item_id, slot, cleaned, cursor=newest, dropped=dropped, latest=True
+        )
+    )
     return error or refused
 
 
-#: A pull that could not store its cursor, and so filed nothing more.
-CODE_CURSOR_UNSTORED = "crew_cursor_unstored"
+def _peer_fields(cursor: str | None, dropped: int, latest: bool) -> dict[str, Any]:
+    """The crew-log entry's peer fields: only those that are set."""
+    out: dict[str, Any] = {}
+    if cursor:
+        out["peer_cursor"] = cursor
+    if dropped:
+        out["peer_dropped"] = dropped
+    if latest:
+        out["peer_snapshot"] = True
+    return out
 
-#: A filing the crew log did not record; the ledger write was undone.
-CODE_LOG_UNRECORDED = "crew_log_unrecorded"
 
-#: Filing failures that may clear on their own: the report keeps its place.
-_RETRY_LATER = (CODE_LOG_UNRECORDED, "ledger_write_failed")
+#: The work fold could not be read, so the pull filed nothing.
+CODE_FOLD_UNREADABLE = "work_fold_unreadable"
+
+
+@dataclass(frozen=True)
+class _FoldedPeer:
+    """What the crew log says of one item's remote ingest (:func:`_folded_peer`)."""
+
+    item: work_ledger.WorkItem | None
+    cursor: str | None
+    dropped: int
+
+
+def _read_work_state(board: str) -> dict[str, Any]:
+    """The board's work fold state, internal keys included. BLOCKING; raises when
+    the fold cannot be read. Never cold: a board with no warm cell and no savepoint
+    asks the background prime for one and raises, so the pull files nothing and the
+    next one reads the warm cell."""
+    from kiro_crew.crew_log import projection, slot_prime
+    from kiro_crew.crew_log.projection_slot_memo import SlotFoldNotReady
+    from kiro_crew.work_vocab import WORK_FOLD_NAME
+
+    try:
+        checkpoint, _revision = projection.read_slot_state(board, WORK_FOLD_NAME, cold=False)
+    except SlotFoldNotReady:
+        slot_prime.schedule(board, WORK_FOLD_NAME, for_reader=True)
+        raise
+    state: dict[str, Any] = checkpoint.state
+    return state
+
+
+def _folded_peer(board: str, item_id: str) -> _FoldedPeer:
+    """*item_id* as the board's work fold holds it, with where remote ingest of its
+    current binding stands: the peer cursor of the newest report filed and the peer
+    reports those filings said were skipped. BLOCKING; raises when the fold cannot
+    be read. An item the fold does not hold reads as no cursor and no item."""
+    raw = _read_work_state(board).get("items", {}).get(item_id)
+    if not isinstance(raw, dict):
+        return _FoldedPeer(None, None, 0)
+    cursor = raw.get("_peer_cursor")
+    dropped = raw.get("_peer_dropped")
+    item = work_ledger.WorkItem.from_dict(
+        {key: value for key, value in raw.items() if key != "events" and not key.startswith("_")}
+    )
+    return _FoldedPeer(
+        item,
+        cursor if isinstance(cursor, str) and cursor else None,
+        dropped if isinstance(dropped, int) and not isinstance(dropped, bool) else 0,
+    )
 
 
 async def _file_one(
@@ -1057,8 +1154,16 @@ async def _file_one(
     item_id: str,
     slot: str,
     cleaned: dict[str, Any],
+    *,
+    cursor: str | None = None,
+    dropped: int = 0,
+    latest: bool = False,
 ) -> str | None:
-    """One ingested report: probe, commit, record (board copy). HOLD THE BOARD LOCK."""
+    """One ingested report: probe, commit, record (board copy). HOLD THE BOARD LOCK.
+
+    *cursor* is the report's peer event cursor and *dropped* the peer reports
+    skipped before it; both ride in the crew-log entry, which the work fold reads
+    them back from. *latest* marks the latest-fields report (the snapshot)."""
     probe_item, probe_board = await asyncio.to_thread(
         work_ledger.read_work_item, board, item_id
     ), await asyncio.to_thread(work_ledger.read_conductor, board)
@@ -1083,6 +1188,7 @@ async def _file_one(
         event_id=_WIDEST_HEX_ID,
         event_ts=_WIDEST_STAMP,
         board_copy=True,
+        **_peer_fields(cursor, dropped, latest),
     )
     if invalid is not None or probe is None or not crew_log_emit.work_entry_fits(probe):
         return "work_entry_too_large"
@@ -1101,6 +1207,7 @@ async def _file_one(
                 pr=cleaned.get("pr"),
                 reason=cleaned.get("reason"),
                 reported_at=cleaned.get("reported_at"),
+                peer_cursor=cursor,
             )
         )
     except work_ledger.WorkLedgerError as exc:
@@ -1136,6 +1243,7 @@ async def _file_one(
                 event_ts=event.ts or None,
             ),
             "board_copy": True,
+            **_peer_fields(cursor, dropped, latest),
         },
     )
     if not landed:
@@ -1568,11 +1676,23 @@ REMOTE_ROW_FIELDS: tuple[str, ...] = (
     "crew_down_since",
     "pending_approval",
     "remote_error",
+    "remote_reports_dropped",
 )
 
 
 #: The fields a row adds for an item that holds retired bindings (wave 8).
 RETIRED_ROW_FIELDS: tuple[str, ...] = ("redispatch_due", "retired_crews")
+
+
+def _folded_dropped(board: str, item_id: str) -> int | None:
+    """The row's ``remote_reports_dropped``, folded from the crew log; ``None``
+    (not said) when the fold is not warm or cannot be read, so a row never pays
+    for a cold fold. BLOCKING."""
+    try:
+        return _folded_peer(board, item_id).dropped
+    except Exception:
+        logger.debug("work fold not read for the remote row of %s", item_id, exc_info=True)
+        return None
 
 
 def remote_row_fields(board: str, item: work_ledger.WorkItem) -> dict[str, Any]:
@@ -1599,6 +1719,7 @@ def remote_row_fields(board: str, item: work_ledger.WorkItem) -> dict[str, Any]:
         "crew_down_since": record.crew_down_since,
         "pending_approval": record.pending_approval,
         "remote_error": record.error,
+        "remote_reports_dropped": _folded_dropped(board, item.item_id),
     }
 
 

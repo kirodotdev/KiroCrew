@@ -39,7 +39,37 @@ from kiro_crew.dashboard.handlers import work_ledger as routes
 from kiro_crew.probes.work_ledger import WorkLedgerProbe
 
 _isolated = helpers._isolated
-recorded = helpers.recorded
+
+
+def fold_recorded(calls: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
+    """The work fold over the captured ``work/recorded`` entries, in order, through
+    the real fold step: what the crew log would hold had they been written."""
+    from kiro_crew.crew_log import projection_work
+    from kiro_crew.crew_log.entry_types import WORK_ENTRY_TYPE
+    from kiro_crew.crew_log.schema import Entry
+
+    state = projection_work._work_start()
+    for seq, (_unit, data) in enumerate(list(calls), start=1):
+        entry = Entry(type=WORK_ENTRY_TYPE, seq=seq, time=seq, src="gateway", data=dict(data))
+        projection_work._work_step(state, entry)
+    return state
+
+
+@pytest.fixture
+def recorded(monkeypatch) -> list[tuple[str, dict[str, Any]]]:
+    """``helpers.recorded``, with remote ingest reading its fold from the captured
+    entries instead of a crew log nothing was written to."""
+    calls: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(routes.crew_log_emit, "enabled", lambda: True)
+    monkeypatch.setattr(routes, "unit_for_session_key", lambda sessions, key: f"unit:{key}")
+    monkeypatch.setattr(
+        routes.crew_log_emit,
+        "on_work_recorded",
+        lambda unit, data: calls.append((unit, data)) or True,
+    )
+    monkeypatch.setattr(remote_ingest, "_read_work_state", lambda board: fold_recorded(calls))
+    return calls
+
 
 CREW = "inst-lab"
 PEER_SLOT = "chat-77-1793000000"
@@ -108,6 +138,9 @@ class StubCrew:
         body = json.loads(data) if data else None
         self.calls.append({"method": method, "path": path, "params": params, "body": body})
         status, reply = self._answer(method, path, body)
+        if isinstance(reply, dict) and isinstance(reply.get("events"), list) and params:
+            # As the peer's route does: the newest ``limit`` events.
+            reply = {**reply, "events": reply["events"][-int(params.get("limit", 50)) :]}
         yield SimpleNamespace(
             status=status,
             headers={"Content-Type": "application/json"},
@@ -583,7 +616,7 @@ def test_the_decide_budget_fits_inside_the_record_tools_timeout():
 
 def test_a_rebuild_keeps_the_crew_pair_and_the_ingested_report(peer, monkeypatch):
     from kiro_crew import crew_log as lg
-    from kiro_crew.crew_log import CrewLog, projection
+    from kiro_crew.crew_log import CrewLog, projection, slot_prime
 
     monkeypatch.setattr(routes.crew_log_emit, "enabled", lambda: True)
     monkeypatch.setattr(routes, "unit_for_session_key", lambda sessions, key: "u-conductor")
@@ -601,6 +634,11 @@ def test_a_rebuild_keeps_the_crew_pair_and_the_ingested_report(peer, monkeypatch
         item_id = await _remote_item(peer)
         peer.report("done", "shipped", "2026-10-29T10:00:00+00:00", pr=77)
         await _read(peer)
+        # Ingest reads the work fold warm-only: a cold cell asks the background
+        # prime and that pull files nothing. Wait for the prime, then pull again.
+        assert await asyncio.to_thread(slot_prime.drain, 30.0), "a background prime never finished"
+        await _read(peer)
+        assert work_ledger.read_work_item(CONDUCTOR, item_id).status == "done"
         work_ledger.item_path(CONDUCTOR, item_id).unlink()
         resp = await routes.api_work_ledger_rebuild(
             _req("POST", "/api/work-ledger/rebuild", peer, body={})

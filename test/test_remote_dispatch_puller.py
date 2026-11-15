@@ -20,6 +20,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+import test_remote_dispatch_hub_ingest as hub
 import work_ledger_projection_helpers as helpers
 from test_remote_dispatch_hub_ingest import CONDUCTOR, StubCrew, _remote_item, _state
 
@@ -29,7 +30,7 @@ from kiro_crew.probes.work_ledger import WorkLedgerProbe, person_wait_fingerprin
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 _isolated = helpers._isolated
-recorded = helpers.recorded
+recorded = hub.recorded
 
 
 @pytest.fixture(autouse=True)
@@ -281,10 +282,11 @@ def test_a_report_the_crew_log_refuses_is_retried_once_per_window(recorded, peer
     work_ledger.write_remote_state(CONDUCTOR, item_id, record)
     asyncio.run(remote_puller.run_once(_state(peer)))
     assert len(tries) == 2
-    # A new peer report is tried at once, after the unrecorded one it follows.
+    # A new peer report is tried at once: the unrecorded one it follows goes first,
+    # and the newer one waits behind it while the crew log still refuses.
     peer.report("done", "shipped again", "2026-10-29T10:05:00+00:00", pr=7)
     asyncio.run(remote_puller.run_once(_state(peer)))
-    assert len(tries) == 4
+    assert len(tries) == 3
     assert _status(item_id) is None
 
 
@@ -300,11 +302,11 @@ def test_a_changed_snapshot_in_the_same_second_is_not_held(recorded, peer, monke
     )
     peer.report("progress", "almost", "2026-10-29T10:00:00+00:00")
     asyncio.run(remote_puller.run_once(_state(peer)))
-    # Same second, new fields: a different snapshot, so it is tried at once, after
-    # the unrecorded progress it follows.
+    # Same second, new fields: a different snapshot, so the pull runs at once, and
+    # the unrecorded progress it follows goes first; the done waits behind it.
     peer.report("done", "shipped", "2026-10-29T10:00:00+00:00", pr=7)
     asyncio.run(remote_puller.run_once(_state(peer)))
-    assert tries == ["progress", "progress", "done"]
+    assert tries == ["progress", "progress"]
 
 
 def test_a_capped_run_rotates_so_no_board_is_left_out(monkeypatch):

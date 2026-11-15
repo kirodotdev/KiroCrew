@@ -91,6 +91,13 @@ WORK_EVENT_KINDS: tuple[str, ...] = (
 #: this; it guards a log something else wrote. Here because the fold and the store
 #: may not import each other.
 WORK_STORED_ITEM_LIMIT: int = 256
+#: Event lines the store keeps per item (``MAX_EVENTS_PER_ITEM``), the same on a peer
+#: crew: the window the fold's peer-report dedupe remembers. Here so the store and
+#: the fold read one value.
+WORK_STORED_EVENT_LIMIT: int = 200
+#: Longest peer report cursor (``MAX_PEER_CURSOR_CHARS``): two peer event ids and the
+#: slash between. Shared by the store's check and the fold's.
+WORK_PEER_CURSOR_CHARS: int = 64
 #: Closed items the ``work`` fold keeps whole, newest-closed last, for the surfaces
 #: that draw recent history. Older closed items leave the fold; their full history
 #: stays in the crew log.

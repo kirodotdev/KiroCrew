@@ -62,7 +62,8 @@ or one an open item of yours is bound to. After a hub restart only the open
 item counts, so close the worker's session before you `close` its item. A
 `decide` whose forward fails says it "did NOT reach the worker's crew"; record
 it again to retry. A remote row adds `worker_instance_id`, `crew_state`,
-`crew_down_since`, `pending_approval` and `remote_error`.
+`crew_down_since`, `pending_approval`, `remote_error` and
+`remote_reports_dropped` (peer reports the hub could not file).
 
 **Reports reach you by a pull.** The hub pulls the worker's latest report from
 each open remote item's crew and files it as an ordinary report, so
@@ -72,7 +73,8 @@ puller does this every 30 seconds with no model turn, so a remote `done`,
 one; a `work_ledger_read` pulls too. Each pull is best effort (a read takes at
 most 32 items in about 6 seconds). Each pull files every report since the last
 one, in order; an earlier one carries only its status and summary, and the
-latest carries all its fields. A row whose pull failed keeps its last state.
+latest carries all its fields, filed only once every earlier one is. A row
+whose pull failed keeps its last state.
 
 **Follow-ups use `reply`.** To ask a finished worker something, keep its item
 open, `session_send` the question in an owner turn, and tell it to answer with

@@ -36,6 +36,7 @@ from kiro_crew.work_ledger_records import (
     CODE_INVALID_VALUE,
     CODE_ITEM_CLOSED,
     CODE_UNKNOWN_ITEM,
+    MAX_PEER_CURSOR_CHARS,
     MAX_SUMMARY_CHARS,
     WORKER_STATUSES,
     WorkItem,
@@ -61,6 +62,7 @@ from kiro_crew.work_ledger_store import (
     _work_ledger_root,
     _write_record,
     conductor_dir,
+    event_id,
     item_lock,
     read_work_item,
 )
@@ -133,10 +135,6 @@ class RemoteState:
     #: (a record from before wave 8) falls back to the item's ``last_report_at``.
     report_floor: str | None = None
     report_floor_known: bool = False
-    #: The CURRENT binding's peer event id of the newest report the hub filed or
-    #: passed over: the cursor the next pull files after. ``None`` (a record from
-    #: before it, or a tail that never named it) falls back to ``report_floor``.
-    report_event_id: str | None = None
     #: Which binding this record describes, ``"<crew>/<slot>"`` (wave 8), or
     #: ``None`` for a fresh record or one from before wave 8. A record naming
     #: another pair than the item's is stale: nothing is ingested on it and no
@@ -158,7 +156,6 @@ class RemoteState:
             "roster_read": self.roster_read,
             "report_floor": self.report_floor,
             "report_floor_known": self.report_floor_known,
-            "report_event_id": self.report_event_id,
             "binding": self.binding,
         }
 
@@ -190,7 +187,6 @@ class RemoteState:
             roster_read=_flag("roster_read"),
             report_floor=_text("report_floor"),
             report_floor_known=_flag("report_floor_known"),
-            report_event_id=_text("report_event_id"),
             binding=_binding(raw.get("binding")),
         )
 
@@ -585,12 +581,15 @@ def apply_remote_report(
     pr: Any = None,
     reason: Any = None,
     reported_at: Any,
+    peer_cursor: str | None = None,
 ) -> dict[str, Any]:
     """Write one ingested peer report: the worker's fields, stamped *reported_at*.
 
     The same checks as a local report, and the item must be remote. *reported_at*
     is the peer's stamp, kept as ``last_report_at`` so the next ingest compares
-    against it.
+    against it. *peer_cursor* (the report's peer event cursor) only tells two peer
+    events apart in the hub event id; where ingest stands is folded from the crew
+    log (``projection_work._work_peer_report``), never stored on the item.
     """
     checked_status = _require_choice(status, WORKER_STATUSES, "status", CODE_INVALID_STATUS)
     checked_summary = _require_text(summary, MAX_SUMMARY_CHARS, "summary", required=False)
@@ -612,7 +611,9 @@ def apply_remote_report(
         )
     checked_id = _require_item_id(item_id)
     with item_lock(slot_key, checked_id, create=False):
-        item = read_work_item(slot_key, checked_id)
+        # Strict: a read that fails raises (the caller retries the report later)
+        # instead of reading as an unknown item, which would pass the report over.
+        item = read_work_item(slot_key, checked_id, strict=True)
         if item is None:
             raise WorkLedgerError(
                 f"unknown item {checked_id!r}", code=CODE_UNKNOWN_ITEM, field="item_id"
@@ -633,8 +634,11 @@ def apply_remote_report(
         if checked_pr is not None:
             item.pr = checked_pr
         item.last_report_at = stamp
-        # The peer report's own identity rides into the hub event id, so two peer
-        # reports filed in one second with the same text stay two events.
+        if peer_cursor is not None:
+            _require_peer_cursor(peer_cursor)
+        # The peer report's own identity is the hub event id: two peer reports filed
+        # in one second with the same text stay two events, and a refile of one
+        # (a kill before its crew-log append) is the same event.
         event = _commit_item_locked(
             slot_key,
             item,
@@ -642,5 +646,32 @@ def apply_remote_report(
             checked_summary,
             status=checked_status,
             id_salt="\0" + stamp,
+            fixed_id=_peer_event_id(item, stamp, checked_status, checked_summary, peer_cursor),
         )
     return {"item": item, "event": event}
+
+
+def _require_peer_cursor(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not 0 < len(value) <= MAX_PEER_CURSOR_CHARS
+        or "/" not in value
+    ):
+        raise WorkLedgerError(
+            "peer_cursor is not a peer event cursor",
+            code=CODE_INVALID_VALUE,
+            field="peer_cursor",
+        )
+    return value
+
+
+def _peer_event_id(
+    item: WorkItem, stamp: str, status: str, summary: str, peer_cursor: str | None
+) -> str | None:
+    """The hub event id of an ingested peer report: its binding, peer cursor, peer
+    stamp and fields, never the hub's filing time. ``None`` without a cursor."""
+    if peer_cursor is None:
+        return None
+    binding = f"{item.worker_instance_id}/{item.worker_session_key}"
+    salt = "\0".join(("", binding, peer_cursor, stamp))
+    return event_id(stamp, item.item_id, "report", summary + salt, status=status)
