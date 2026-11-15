@@ -572,7 +572,9 @@ class TestSelfModuleIndexIsLinear:
         also catches cost added outside the instrumented calls, where the counts
         cannot see it. It is read on thread CPU, not the wall clock: the scan runs
         on this thread, and a wall reading bills a loaded runner's scheduling to it
-        (0.507s against a scan that costs about 0.08s of CPU under coverage).
+        (0.507s against a scan that costs about 0.08s of CPU under coverage). The
+        budget holds the minimum of a fixed five readings: one collection or
+        frequency dip charged to the thread can inflate a reading, but not all five.
         """
         import time
 
@@ -588,9 +590,13 @@ class TestSelfModuleIndexIsLinear:
         # this test runs alone.
         security._is_self_restart(build(250))
         text = build(2000)
-        start = time.thread_time()
-        assert security._is_self_restart(text) is True
-        large = time.thread_time() - start
+
+        def reading() -> float:
+            start = time.thread_time()
+            assert security._is_self_restart(text) is True
+            return time.thread_time() - start
+
+        large = min(reading() for _ in range(5))
         # Base spent 1.94 s here; a quadratic scan cannot come near this ceiling.
         assert large < 0.5, f"2k tokens took {large:.3f}s"
 
