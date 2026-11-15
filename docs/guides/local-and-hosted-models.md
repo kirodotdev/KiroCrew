@@ -477,7 +477,7 @@ command that installs it.
 
 | Symptom | Check |
 |---|---|
-| "OpenCode is not signed in" or "Pi is not signed in" when a chat starts | The harness found no usable provider. Run the sign-in step for OpenRouter, or add the LM Studio or Ollama provider entry, then start a new chat. |
+| "OpenCode has no model provider it can use" or "Pi is not signed in" when a chat starts | The harness found no usable provider. Run the sign-in step for OpenRouter, or add the LM Studio or Ollama provider entry, then start a new chat. With no provider of its own, OpenCode would start on its own hosted models, so Kiro Crew refuses the chat before anything is sent. To use those hosted models on purpose, pick one in the model picker or set it as `model` in `opencode.json`. |
 | The model is missing from the Kiro Crew picker | Run `opencode models <provider>` or Pi's `/model` (goose: `/model` inside its TUI). If the harness does not list it, fix the harness config first. If it does, start a new chat so a session reports it. |
 | LM Studio requests fail | `curl http://localhost:1234/v1/models` must answer on the gateway host. Check that the server is started and the port in the config matches. |
 | Harness cannot reach Ollama | `curl http://HOST:11434/api/tags` must answer from the Kiro Crew host. For a remote host, confirm `OLLAMA_HOST=0.0.0.0:11434` on the Ollama side and that the firewall allows port `11434`. |

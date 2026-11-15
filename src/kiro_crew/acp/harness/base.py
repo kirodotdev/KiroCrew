@@ -152,6 +152,11 @@ class HarnessReadBack:
     """Servers switched off in Crew, recorded by the projection, which the read-back
     refuses when the host mounts one itself."""
 
+    config_model: str = ""
+    """The ``model`` the host's own resolved config names, or ``""`` when it names
+    none. The start-time model check reads it to tell a model the operator chose
+    from one the host fell back to."""
+
 
 class ProcessSession(Protocol):
     """What a :class:`ProcessAdapter` may read, write and ask of the session it launches.
