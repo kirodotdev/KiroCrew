@@ -221,8 +221,10 @@ class TestTheLedgerReRaisesInOrder:
         ledger = VocabularyDeleteCancellations()
         ledger.sweep = asyncio.CancelledError()
 
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(asyncio.CancelledError) as caught:
             ledger.reraise_in_order()
+        # The captured object itself, so the stopping point it carries survives.
+        assert caught.value is ledger.sweep
 
     def test_the_commit_cancellation_outranks_the_sweep(self):
         ledger = VocabularyDeleteCancellations()
