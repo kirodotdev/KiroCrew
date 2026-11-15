@@ -1239,8 +1239,18 @@ def _dict_or_default(value: object, default: dict) -> dict:
 
 def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
     section = _sections.SectionReader(TelemetryConfig, telemetry_data)
+    enabled = bool(section.get("enabled"))
+    # An install that turned the heartbeat off and never set ``enabled`` has
+    # already said no to telemetry, so recording follows it instead of the
+    # field default. A rule at load time: no config file is rewritten.
+    if "enabled" not in telemetry_data and telemetry_data.get("beacon_enabled") is False:
+        enabled = False
+    # A stored ``0`` disk cap is read as written, even where an older build's
+    # whole-document save put it there: 0 is the documented "no limit", so a
+    # stored 0 and an untouched old default are the same bytes and only the user
+    # can say which one it is. ``superseded_defaults`` reports both caps instead.
     return TelemetryConfig(
-        enabled=bool(section.get("enabled")),
+        enabled=enabled,
         local_dir=str(section.get("local_dir")),
         export_interval_seconds=section.read("export_interval_seconds", _safe_int),
         retention_days=section.read("retention_days", _safe_int),
@@ -1463,6 +1473,9 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         # an older flag would skip exactly those users.
         privacy_ack_version=section.read(
             "privacy_ack_version", _safe_int, 0, _sections.PRIVACY_ACK_VERSION_MAX
+        ),
+        kiro_telemetry_ack_version=section.read(
+            "kiro_telemetry_ack_version", _safe_int, 0, _sections.PRIVACY_ACK_VERSION_MAX
         ),
         crewmates_onboarded=section.read("crewmates_onboarded", _safe_bool),
         user_role=str(section.get("user_role")),

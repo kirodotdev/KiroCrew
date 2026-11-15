@@ -14,6 +14,16 @@ from kiro_crew.config.loader import KiroCrewConfig, _invalidate_config_cache
 from kiro_crew.dashboard.handlers import core as core_mod
 
 
+@pytest.fixture(autouse=True)
+def _recording_on(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Read recording as on, so the payload reports the stored notice version.
+
+    With recording off the version reads as current (an opted-out user is not
+    re-asked). The suite's env pin stays, so no real recorder starts here.
+    """
+    _floor_monkeypatch.setattr(core_mod._metrics_provider, "_consent_enabled", lambda cfg: True)
+
+
 def _make_cfg(
     theme_mode: str = "",
     theme_color: str = "",
@@ -326,6 +336,29 @@ async def test_theme_config_put_persists_privacy_ack_version(cfg_file: Path) -> 
     assert stored["privacy_ack_version"] == 2
     assert type(stored["privacy_ack_version"]) is int
     assert json.loads(resp.body)["privacy_ack_version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_theme_config_put_persists_the_kiro_telemetry_ack_version(cfg_file: Path) -> None:
+    """Written only when the chapter's text named the Kiro telemetry destination."""
+    _write(cfg_file, {"dashboard": {"privacy_acked": True}})
+    resp = await _put(
+        {"privacy_acked": True, "privacy_ack_version": 3, "kiro_telemetry_ack_version": 3}
+    )
+    assert resp.status == 200
+    stored = _read(cfg_file)["dashboard"]
+    assert stored["kiro_telemetry_ack_version"] == 3
+    assert type(stored["kiro_telemetry_ack_version"]) is int
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [True, -1, "3", 10**6])
+async def test_theme_config_put_refuses_a_bad_kiro_telemetry_ack_version(
+    cfg_file: Path, value: object
+) -> None:
+    _write(cfg_file, {"dashboard": {"privacy_acked": True}})
+    with pytest.raises(web.HTTPBadRequest):
+        await _put({"kiro_telemetry_ack_version": value})
 
 
 @pytest.mark.asyncio

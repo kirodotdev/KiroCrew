@@ -246,6 +246,13 @@ describe('PrivacyChapter', () => {
     expect(screen.getByRole('button', { name: 'Turn off' })).toBeEnabled()
   })
 
+  it('the Stays on your device line states the recording it read, not the default', async () => {
+    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
+    expect(
+      await screen.findByText('Usage and context records. Performance metrics are being recorded on this device now.'),
+    ).toBeInTheDocument()
+  })
+
   it('the off variant says nothing is sent and lists no collection', async () => {
     stored = { recording: false, beacon: false }
     renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
@@ -457,6 +464,66 @@ describe('PrivacyChapter', () => {
     renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
 
     expect(await screen.findByText(/also sent to the metrics destination set up for it. No heartbeat is sent./)).toBeInTheDocument()
+  })
+
+  it('says metrics stay local while export waits for an explicit opt-in', async () => {
+    // On by default only: the provider attaches no export reader until
+    // telemetry.enabled: true is written, so nothing is sent yet.
+    collectionStatus.mockImplementation(async () => ({
+      enabled: true, env_pinned: false, otlp_configured: true, export_permitted: false,
+    }))
+    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
+
+    expect(await screen.findByText(/Performance metrics stay on this machine. Once a day/)).toBeInTheDocument()
+    expect(screen.queryByText(/also sent to the metrics destination/)).not.toBeInTheDocument()
+  })
+
+  it('names Kiro telemetry when the build sends product usage metrics there', async () => {
+    collectionStatus.mockImplementation(async () => ({
+      enabled: true,
+      env_pinned: false,
+      otlp_configured: true,
+      export_permitted: true,
+      otlp_destinations: [{ name: 'kiro-telemetry', source: 'provider', locked: true }],
+    }))
+    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
+
+    expect(await screen.findByTestId('privacy-kiro-telemetry')).toHaveTextContent(/to Kiro telemetry, labelled with a hashed form of the random install ID/)
+    // Named once: the line about a destination set up for the machine is for the
+    // operator's own collectors, and there is none here. Never "stay on this machine".
+    expect(screen.queryByText(/also sent to the metrics destination set up for it/)).not.toBeInTheDocument()
+    expect(screen.getByText(/^Performance metrics are recorded on this machine. Once a day/)).toBeInTheDocument()
+    expect(screen.queryByText(/stay on this machine/)).not.toBeInTheDocument()
+  })
+
+  it('Keep on records the Kiro telemetry ack only when the text named it, and says Turn off stops it', async () => {
+    collectionStatus.mockImplementation(async () => ({
+      enabled: true,
+      env_pinned: false,
+      otlp_configured: true,
+      export_permitted: false,
+      otlp_destinations: [{ name: 'kiro-telemetry', source: 'provider', locked: true }],
+    }))
+    const onContinue = vi.fn().mockResolvedValue(undefined)
+    renderWithProviders(<PrivacyChapter open onContinue={onContinue} />)
+
+    await screen.findByTestId('privacy-kiro-telemetry')
+    expect(screen.getByTestId('privacy-turn-off-scope')).toHaveTextContent('the product usage metrics sent to Kiro telemetry')
+    fireEvent.click(await readyButton('Keep on'))
+    await waitFor(() => expect(onContinue).toHaveBeenCalledWith({ noticeVersion: true, kiroTelemetry: true }))
+  })
+
+  it('does not name Kiro telemetry for an operator collector of the same name', async () => {
+    collectionStatus.mockImplementation(async () => ({
+      enabled: true,
+      env_pinned: false,
+      otlp_configured: true,
+      otlp_destinations: [{ name: 'kiro-telemetry', source: 'otlp_endpoints', locked: false }],
+    }))
+    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
+
+    expect(await screen.findByText(/also sent to the metrics destination set up for it/)).toBeInTheDocument()
+    expect(screen.queryByTestId('privacy-kiro-telemetry')).not.toBeInTheDocument()
   })
 
   it('renders nothing while closed', () => {

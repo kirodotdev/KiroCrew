@@ -70,15 +70,15 @@ const EXCLUSION_DISCLOSURE = "Prompts, responses, files, credentials, hostnames,
 const CONTROL_COMMANDS = [
   'kirocrew telemetry status',
   'kirocrew telemetry disable',
-  'export KIROCREW_TELEMETRY_DISABLED=1',
-  "$env:KIROCREW_TELEMETRY_DISABLED = '1'",
-  'set KIROCREW_TELEMETRY_DISABLED=1',
+  'export DO_NOT_TRACK=1',
+  "$env:DO_NOT_TRACK = '1'",
+  'set DO_NOT_TRACK=1',
 ] as const
 
 const SHELL_COMMANDS = [
-  ['macOS / Linux', 'export KIROCREW_TELEMETRY_DISABLED=1'],
-  ['Windows PowerShell', "$env:KIROCREW_TELEMETRY_DISABLED = '1'"],
-  ['Windows Command Prompt', 'set KIROCREW_TELEMETRY_DISABLED=1'],
+  ['macOS / Linux', 'export DO_NOT_TRACK=1'],
+  ['Windows PowerShell', "$env:DO_NOT_TRACK = '1'"],
+  ['Windows Command Prompt', 'set DO_NOT_TRACK=1'],
 ] as const
 
 const TOGGLE_LABEL = 'Send anonymous usage heartbeat'

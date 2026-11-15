@@ -519,11 +519,20 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
     current, so the SPA never opens the first-run Privacy chapter there, nor the
     once-more showing of a changed notice: the admin, not the user, decides where
     usage data goes. Only the response says so; the stored values are unchanged.
+
+    The notice version is also reported as current while local recording is off
+    (the heartbeat turned off with ``telemetry.enabled`` unset, a written
+    ``false``, or ``DO_NOT_TRACK``): a user who opted out is not asked again.
     """
     from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
     from kiro_crew.edition import is_lts
 
     lts = is_lts()
+    try:
+        recording_on = _metrics_provider._consent_enabled(cfg.telemetry)
+    except Exception:  # noqa: BLE001 - unknown keeps today's behaviour
+        recording_on = True
+    notice_current = lts or not recording_on
 
     return {
         "mode": cfg.dashboard.theme_mode or "",
@@ -535,11 +544,30 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
         "privacy_acked": cfg.dashboard.privacy_acked or lts,
         "privacy_ack_version": (
             max(cfg.dashboard.privacy_ack_version, PRIVACY_NOTICE_VERSION)
-            if lts
-            else cfg.dashboard.privacy_ack_version
+            if notice_current
+            else _ack_version_for_the_chapter(cfg)
         ),
         "crewmates_onboarded": cfg.dashboard.crewmates_onboarded,
     }
+
+
+def _ack_version_for_the_chapter(cfg: Any) -> int:
+    """The acknowledged notice version, held back while Kiro telemetry is owed.
+
+    An acknowledgement whose text never named the build's Kiro telemetry
+    destination (a chapter shown under a non-default home, a redirected
+    ``kirocrew telemetry enable``) leaves that destination waiting, so the
+    chapter, which names it, shows once more. Unreadable: the stored value.
+    """
+    stored = cfg.dashboard.privacy_ack_version
+    try:
+        from kiro_crew.metrics import kiro_export
+
+        if kiro_export.destinations() and not kiro_export.notice_shown(cfg):
+            return min(stored, cfg.dashboard.kiro_telemetry_ack_version)
+    except Exception:  # noqa: BLE001 - the stored value, as before
+        logger.debug("kiro telemetry notice state unreadable", exc_info=True)
+    return stored
 
 
 async def api_theme_boot(request: web.Request) -> web.Response:
@@ -629,17 +657,19 @@ async def api_theme_config(request: web.Request) -> web.Response:
             updates[flag] = body[flag]
     # A real int only, for the same reason: ``True`` is an int in Python and
     # would store as 1.
-    if "privacy_ack_version" in body:
-        version = body["privacy_ack_version"]
+    for key in ("privacy_ack_version", "kiro_telemetry_ack_version"):
+        if key not in body:
+            continue
+        version = body[key]
         if (
             not isinstance(version, int)
             or isinstance(version, bool)
             or not 0 <= version <= PRIVACY_ACK_VERSION_MAX
         ):
             raise web.HTTPBadRequest(
-                text=f"privacy_ack_version must be an integer from 0 to {PRIVACY_ACK_VERSION_MAX}"
+                text=f"{key} must be an integer from 0 to {PRIVACY_ACK_VERSION_MAX}"
             )
-        updates["privacy_ack_version"] = version
+        updates[key] = version
 
     if updates:
 
