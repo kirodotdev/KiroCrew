@@ -3,7 +3,7 @@
  * answer: a browser whose first-run state read failed and that holds no flags
  * of its own must not replay first run from an empty localStorage.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 
@@ -40,6 +40,7 @@ vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => null }))
 
 import { renderWithProviders } from './helpers'
 import App from '../App'
+import { api } from '../api/client'
 
 const importChapterOpen = () => screen.queryByText(/bring your crew with you/i) !== null
 
@@ -49,7 +50,10 @@ beforeEach(() => {
   themeState.importOnboarded = false
   themeState.privacyAcked = false
   themeState.markOnboarded.mockClear()
+  // The owner's tab, so only the boot read decides (`useViewerIsNotOwner`).
+  vi.spyOn(api, 'viewerOwnerOk').mockResolvedValue(true)
 })
+afterEach(() => { vi.restoreAllMocks() })
 
 describe('first run and the first-run state read', () => {
   it('stays closed when the read failed and this browser has no flags', async () => {

@@ -13,7 +13,8 @@ interface FirstRunFlags {
   /** Server-only; `null` until theme boot answers (see `useTheme`). */
   privacyAckVersion?: number | null
   themeBootReady: boolean
-  /** The host's first-run state could not be read; nothing may open from this browser's flags. */
+  /** The host's first-run state could not be read, or this tab may not write it
+   *  (not the owner); nothing may open from this browser's flags. */
   hostStateUnread?: boolean
   markOnboarded: () => void
 }

@@ -104,6 +104,8 @@ vi.mock('../api/client', () => ({
       import_onboarded: true,
     }),
     updateThemeConfig: vi.fn().mockResolvedValue({}),
+    // The owner check behind first run (`useViewerIsNotOwner`): the owner.
+    viewerOwnerOk: vi.fn().mockResolvedValue(true),
     onboardingImportScan: vi.fn().mockResolvedValue({
       sources: [],
       skipped: [],
@@ -448,6 +450,52 @@ describe('App routing', () => {
       } as never)
       return api
     }
+
+    // A relay teammate's window loads the host's dashboard, whose first-run
+    // writes are owner-only: the chapters are the owner's to answer. The window
+    // is a fresh partition, so it has no local flags of its own either.
+    describe('in a tab that is not the owner', () => {
+      afterEach(async () => {
+        const { api } = await import('../api/client')
+        vi.mocked(api.viewerOwnerOk).mockReset().mockResolvedValue(true)
+      })
+
+      it.each([
+        ['a relay teammate', () => Promise.resolve(false)],
+        ['an owner check that failed', () => Promise.reject(new Error('502'))],
+        ['a gateway that does not say', () => Promise.resolve(null)],
+      ])('never shows the Privacy notice to %s on a host whose ack is due', async (_who, ownerOk) => {
+        const api = await existingUser(0)
+        localStorage.clear()
+        vi.mocked(api.viewerOwnerOk).mockImplementation(ownerOk as never)
+        vi.mocked(api.patchConfig).mockClear()
+        // Recording on: the owner's own tab shows the notice here (test above).
+        vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: true, env_pinned: false } as never)
+        renderWithProviders(<App />, { route: '/chat' })
+
+        await waitFor(() => expect(api.viewerOwnerOk).toHaveBeenCalled())
+        await waitFor(() => expect(api.themeBoot).toHaveBeenCalled())
+        await shellSettled()
+        await act(async () => {})
+        expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument()
+        expect(api.updateThemeConfig).not.toHaveBeenCalled()
+        expect(api.patchConfig).not.toHaveBeenCalled()
+      })
+
+      it('never opens first run for a relay teammate on a host that has not finished it', async () => {
+        const api = await freshFirstRun()
+        vi.mocked(api.viewerOwnerOk).mockResolvedValue(false)
+        renderWithProviders(<App />, { route: '/chat' })
+
+        await waitFor(() => expect(api.viewerOwnerOk).toHaveBeenCalled())
+        await shellSettled()
+        await act(async () => {})
+        expect(screen.queryByRole('dialog', { name: 'Import agent setup' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument()
+        expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
+        expect(api.updateThemeConfig).not.toHaveBeenCalled()
+      })
+    })
 
     it('shows the changed notice once to an existing user, and Keep on closes it', async () => {
       const api = await existingUser(0)

@@ -53,10 +53,13 @@ export function useSharedCrewPeople(enabled = true, { fetchOnMount = true }: { f
 /** Whether this tab is NOT the Crew owner, from `/api/auth/me`'s `owner_ok`, read
  *  whatever the Shared Crew preview is (a relay teammate is admitted with it off
  *  too). `notOwner` is `false` until the gateway says so, so the owner's view
- *  never waits on it; a failed read is returned as `error`, not discarded. */
+ *  never waits on it; a failed read is returned as `error`, not discarded.
+ *  `owner` is the fail-closed reading for a surface that writes owner-only
+ *  state: true only once the gateway said this tab clears the owner gate, and
+ *  `pending` until the read settles. */
 export function useViewerIsNotOwner() {
   const query = useQuery({ queryKey: [...sharedCrewKeys.viewer, 'owner-ok'], queryFn: () => api.viewerOwnerOk(), staleTime: 60_000, retry: false })
-  return { notOwner: query.data === false, error: query.error, retry: query.refetch }
+  return { notOwner: query.data === false, owner: query.data === true, pending: query.isPending, error: query.error, retry: query.refetch }
 }
 
 /** Whether this Crew shows who did what (bylines, decision attribution,
