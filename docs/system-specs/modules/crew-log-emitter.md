@@ -1251,7 +1251,7 @@ the finding: an unnamed site records `user`.
 | `chat_handlers.api_chat` | dashboard composer, or an app backend under its own token | `user`, or `app` when the request carries one |
 | `slack/handler` linked-thread router | a channel message | `user` |
 | `openai_compat.api_completions` | API request body | `user`, or `app` when the request carries one |
-| `chat_regenerate` (regenerate, edit-resend) | the user's own message, re-run; for Regenerate, the gateway prompt row its reply answers (a workflow follow-up, a heartbeat prompt) when there is one | `user` |
+| `chat_regenerate` (regenerate, edit-resend) | the user's own message, re-run; for Regenerate, the gateway prompt row its reply answers (a workflow follow-up, a heartbeat prompt, the sub-agent synthesis) when there is one | `user` |
 | `chat_rewind` | the user's own message, rewound | `user` |
 | queue drain (`_finish_queue_cycle`) | the consumed entry's enqueue-time `kind` | `cron`, `subagent`, else `user` |
 | queue drain, a synthetic recovery | the original turn's actor, stamped at requeue (`meta.turnActor`) | whatever that turn's was |

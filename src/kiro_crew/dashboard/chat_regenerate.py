@@ -39,7 +39,7 @@ from kiro_crew.dashboard.slot_ownership import (
     deny_app_slot_session_access,
     slot_not_found,
 )
-from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.dashboard.state import TURN_OPENING_INJECT_KINDS, DashboardState, _ChatSlot
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -135,19 +135,28 @@ def _destructive_history_busy(slot: "_ChatSlot") -> web.Response | None:
     return None
 
 
-def _is_gateway_prompt_row(row: dict) -> bool:
-    """The gateway's own prompt that opened a turn: a workflow follow-up or a
-    heartbeat prompt, drawn as an ``inject`` row (``GATEWAY_PROMPT_INJECT_KINDS``).
+#: The turn-opening kinds whose row is the gateway's own fixed text (a workflow
+#: follow-up, a heartbeat prompt, the sub-agent synthesis kick-off), so re-running
+#: it repeats the turn's first run. Regenerate refuses the other openers: their row
+#: does not keep the delivery context the turn first ran with.
+_RERUN_INJECT_KINDS = frozenset({*GATEWAY_PROMPT_INJECT_KINDS.values(), "synthesis"})
 
-    Regenerate treats it as the request its reply answers, as it did while these
-    prompts were ``user`` rows. Mirrors ``isGatewayPromptRow`` in ``turnActions.ts``.
+
+def _turn_opening_inject_kind(row: dict) -> str | None:
+    """The ``injectKind`` of an ``inject`` row that opened a turn of its own
+    (``TURN_OPENING_INJECT_KINDS``: a cron notification, an app message, an
+    automation notice, the sub-agent synthesis, a workflow follow-up, a heartbeat
+    prompt), else ``None``.
+
+    Regenerate treats such a row as the request its reply answers, as at a user
+    row. Mirrored in ``turnActions.ts`` by ``injectOpensTurn`` (``RecoveryCard.tsx``)
+    and ``RERUN_INJECT_KINDS``.
     """
     meta = row.get("meta")
-    return (
-        row.get("role") == "inject"
-        and isinstance(meta, dict)
-        and meta.get("injectKind") in GATEWAY_PROMPT_INJECT_KINDS.values()
-    )
+    if row.get("role") != "inject" or not isinstance(meta, dict):
+        return None
+    kind = meta.get("injectKind")
+    return kind if kind in TURN_OPENING_INJECT_KINDS else None
 
 
 async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
@@ -213,8 +222,8 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             # Never cross a real user turn: the replace step removes everything
             # after the target reply's user row, so a reply found PAST a newer
             # user row (e.g. a /compact row awaiting only its notice) would take
-            # that newer turn with it. A gateway prompt row opens a turn too.
-            if role == "user" or _is_gateway_prompt_row(msgs[i]):
+            # that newer turn with it. A turn-opening inject row opens a turn too.
+            if role == "user" or _turn_opening_inject_kind(msgs[i]):
                 break
             if role != "assistant":
                 continue
@@ -235,12 +244,25 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         for i in range(ai_idx - 1, -1, -1):
             if (
                 msgs[i].get("role") == "user" and not is_retracted_steer_row(msgs[i])
-            ) or _is_gateway_prompt_row(msgs[i]):
+            ) or _turn_opening_inject_kind(msgs[i]):
                 u_idx = i
                 break
         if u_idx < 0:
             return web.json_response(
                 {"error": "no preceding user message", "code": "no_user_message"}, status=400
+            )
+
+        # A reply to an automated message (a cron notification, an app message, an
+        # automation notice) would re-run without the delivery context its turn
+        # first ran with, so nothing re-runs and nothing is removed.
+        opener_kind = _turn_opening_inject_kind(msgs[u_idx])
+        if opener_kind and opener_kind not in _RERUN_INJECT_KINDS:
+            return web.json_response(
+                {
+                    "error": "a reply to an automated message cannot be regenerated",
+                    "code": "automated_turn_reply",
+                },
+                status=400,
             )
 
         # A reply the agent started answers no prompt, so re-running the prompt
@@ -308,9 +330,9 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         _regen_kwargs: dict = {}
         if _card_row:
             _regen_kwargs["_card_origin"] = True
-        # A gateway prompt is the gateway's text: it re-runs as the synthetic payload
-        # it first ran as, never as words the person typed.
-        _gateway_prompt = _is_gateway_prompt_row(msgs[u_idx])
+        # A gateway prompt or the synthesis kick-off is the gateway's text: it re-runs
+        # as the synthetic payload it first ran as, never as words the person typed.
+        _gateway_prompt = opener_kind is not None
         # A hold a restart restored into this idle slot is owed to this turn.
         # Regenerate writes no row of its own, so the notes land after the reply it
         # replaces, above the new one, and stay when the swap retires that reply:
