@@ -1645,6 +1645,8 @@ def _build_permission_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
         # A native sub-agent's request: the dashboard keeps the parent's deny
         # overrides away from it (``dashboard.deny_override.slot_may_override``).
         event.native_child_call = True
+        # And a Stop on that child's card settles it (``client_native_children``).
+        self._note_native_child_request(msg)
     if getattr(self, "backend", None) in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS:
         # The spec's `toolsSettings` shell and write allowlists: the gate's
         # `spec-shell-allowlist` and `spec-write-allowlist` rows refuse what they do

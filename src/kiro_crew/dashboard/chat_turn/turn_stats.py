@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.model_fallback import _backfill_canonical_model
     from kiro_crew.dashboard.chat_turn.native_cards import (
         NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+        _keep_background_open,
         _native_subagent_close_all,
     )
     from kiro_crew.dashboard.chat_turn.tool_rows import _MAX_TCID_SOURCES
@@ -774,13 +775,17 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # unfinished at the cut may count toward timeout attribution
     # (terminal entries linger in the tracker for reconnect
     # replay and would corrupt the series).
-    _children_unfinished = any(not _i.get("done") for _i in _native_tracker.values())
+    _children_unfinished = any(
+        not _i.get("done") and not _i.get("background") for _i in _native_tracker.values()
+    )
     # Safety net: complete any native subagent cards still marked
     # running at turn end (in case a terminal status was missed),
     # so cards don't stay stuck "running". Only a raw end_turn counts
     # as a normal landing; a cancel, refusal or synthesized completion
     # cut its children off, so their cards close as interrupted.
     _landed_normally = event.stop_reason == STOP_REASON_END_TURN and not event.synthetic_completion
+    # A background card the harness still runs outlives any end Crew did not cut short.
+    _keep_background_open(turn, event.stop_reason or "")
     _native_subagent_close_all(
         state,
         slot,

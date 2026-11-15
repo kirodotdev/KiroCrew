@@ -41,12 +41,14 @@ from kiro_crew.acp.client_permissions import _scrub_observed
 from kiro_crew.acp.client_start import CLIENT_NAME
 from kiro_crew.acp.client_timeouts import _CANCEL_GRACE_SECS
 from kiro_crew.acp.client_turn_control import _CLIENT_STEERING_REQUEST_METHODS, _ConcurrentSteerTurn
+from kiro_crew.acp.compaction_summary import CompactionSummaries
 from kiro_crew.acp.elicitation import ElicitationRequest
 from kiro_crew.acp.engine_fallback import EngineFallbackTracker
 from kiro_crew.acp.liveness import LivenessOracle
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.mcp_startable import PrunedServer
 from kiro_crew.acp.prompt_blocks import SentImageLedger, StagedImages
+from kiro_crew.acp.raw_sdk_tasks import RawSdkState
 from kiro_crew.acp.runtime_models import DEFAULT_MODEL
 from kiro_crew.acp.runtime_process_tree import ChildRecord
 from kiro_crew.acp.skill_reads import SkillReadTracker
@@ -322,6 +324,12 @@ class AcpClient:
         self._pi_steer_turn: int | None = None
         self._pi_steers_pending: dict[int, str] = {}
         self._pi_steer_lock = asyncio.Lock()
+        # The mode names the session advertised and its last mode report, with the
+        # ``mode`` option's value then, for the mode-change notice (``acp.harness_notices``).
+        self._harness_mode_names: dict[str, str] = {}
+        self._harness_mode: tuple[str, str | None] | None = None
+        # The session's background tasks and Workflow runs (``acp.raw_sdk_tasks``).
+        self._raw_sdk = RawSdkState()
         # The launch MCP config file this spawn wrote, removed once the session
         # exists (``acp.harness.copilot``, ``acp.harness.strands``).
         self._copilot_mcp_config_path = ""
@@ -541,6 +549,10 @@ class AcpClient:
         self._native_child_rows: dict[str, dict[str, Any]] = {}
         self._native_child_by_tool_use: dict[str, str] = {}
         self._native_child_turn: dict[str, None] = {}
+        # The tracked children whose last report granted ``capabilities.cancel``,
+        # and this turn's permission and elicitation request ids each child asked.
+        self._native_child_cancellable: set[str] = set()
+        self._native_child_requests: dict[str, str] = {}
         # One ``StreamRedactor`` per native child whose text is streaming, keyed by
         # its tracked id (so bounded by the same cap), flushed and dropped when the
         # roster reports the child done or failed (``client_turn``).
@@ -736,6 +748,8 @@ class AcpClient:
         # Native ``compaction_update`` lifecycle per id: duplicate terminals and
         # late starts are dropped against it. Lives as long as the client.
         self._native_compaction_states = NativeCompactionStates()
+        # What each native compaction in flight streamed (``acp.compaction_summary``).
+        self._compaction_summaries = CompactionSummaries()
         # When this session's harness last launched work that outlives the
         # prompt (a backgrounded command, a Workflow). Never reset per turn: a
         # turn ending says nothing about whether that work has finished, and
@@ -1379,6 +1393,9 @@ class AcpClient:
     _native_child_of = _client_native_children._native_child_of
     _native_child_events = _client_native_children._native_child_events
     native_child_resume_refusal = _client_native_children.native_child_resume_refusal
+    cancel_native_child = _client_native_children.cancel_native_child
+    _note_native_child_request = _client_native_children._note_native_child_request
+    native_child_requests = _client_native_children.native_child_requests
     report_native_children = _client_native_children.report_native_children
     # Their redaction before the turn yields them, and the flush of the text it
     # holds for a turn cut short: ``kiro_crew.acp.client_turn``.

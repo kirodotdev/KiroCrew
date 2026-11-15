@@ -1,9 +1,14 @@
-"""Whether another Claude Code settings source defines ``availableModels``.
+"""What the Claude Code settings sources other than Crew's own already decide.
 
-Claude Code's family-wildcard rule: an allowlist entry naming a specific model
-disables that family's alias (``haiku``), which then resolves to the newest model
-the list permits. Crew's own list is needed only to counter another source's list,
-so the seed writer asks this module before writing one.
+Whether one defines ``availableModels``: Claude Code's family-wildcard rule makes an
+allowlist entry naming a specific model disable that family's alias (``haiku``),
+which then resolves to the newest model the list permits. Crew's own list is needed
+only to counter another source's list, so the seed writer asks this module before
+writing one.
+
+Whether one decides thinking (turns it off, sets its budget or chooses its display):
+the claude launch asks before it sets a thinking display, which would otherwise
+override that choice (:func:`a_source_decides_thinking`).
 """
 
 from __future__ import annotations
@@ -167,6 +172,69 @@ def other_sources_define_available_models(
     if _defines_available_models(project, follow_links=False):
         return True
     return any(_defines_available_models(path) for path in _managed_settings_files(managed))
+
+
+#: The ``env`` names in a settings file that decide Claude Code's thinking: its budget
+#: and its display.
+_THINKING_ENV_NAMES = ("MAX_THINKING_TOKENS", "CLAUDE_CODE_THINKING_DISPLAY")
+
+
+def _decides_thinking(path: Path, *, follow_links: bool = True) -> bool:
+    """Whether the settings file at *path* decides thinking.
+
+    ``alwaysThinkingEnabled: false``, ``showThinkingSummaries`` set to either boolean
+    (the display Claude Code shows), or an ``env`` naming ``MAX_THINKING_TOKENS`` or
+    ``CLAUDE_CODE_THINKING_DISPLAY``. Any failure to read or parse the file counts
+    as deciding nothing.
+    """
+    data = _settings_object(path, follow_links=follow_links)
+    if data is None:
+        return False
+    if data.get("alwaysThinkingEnabled") is False:
+        return True
+    if isinstance(data.get("showThinkingSummaries"), bool):
+        return True
+    env = data.get("env")
+    return isinstance(env, dict) and any(name in env for name in _THINKING_ENV_NAMES)
+
+
+def a_source_decides_thinking(
+    work_dir: Path | None,
+    *,
+    config_dir: Path | None = None,
+    managed_dir: Path | None = None,
+) -> bool:
+    """Whether a Claude Code settings file decides thinking (:func:`_decides_thinking`).
+
+    The claude launch asks this before it sets a thinking display: claude-agent-acp
+    turns a display it is given with no ``MAX_THINKING_TOKENS`` in its own
+    environment into an explicit ``--thinking=adaptive``, which Claude Code 2.1.325
+    obeys over a settings file's ``alwaysThinkingEnabled: false`` and over its
+    ``env`` budget, and hands Claude Code the display as an explicit choice, which
+    it takes over the file's ``showThinkingSummaries``. A file whose ``env`` names
+    the display is the operator's choice too, though the adapter reads only its own
+    process environment. Checks the user file, the project's ``settings.json`` and
+    ``settings.local.json`` (none when *work_dir* is None), and the managed file
+    plus its drop-ins. Each file is read alone, so a file that decides thinking
+    counts even when a higher tier overrides it; the cost of that is only a display
+    left unset. Never raises: a missing, unreadable or malformed file decides
+    nothing.
+    """
+    user_dir = config_dir if config_dir is not None else claude_config_dir()
+    managed = (
+        managed_dir
+        if managed_dir is not None
+        else platform_compat.claude_code_managed_settings_dir()
+    )
+    if user_dir is not None and _decides_thinking(user_dir / "settings.json"):
+        return True
+    if work_dir is not None:
+        # A cloned repository controls these two, so a link there is refused.
+        project = Path(work_dir) / ".claude"
+        for name in ("settings.json", "settings.local.json"):
+            if _decides_thinking(project / name, follow_links=False):
+                return True
+    return any(_decides_thinking(path) for path in _managed_settings_files(managed))
 
 
 #: The marker a Claude model id ends with to ask for the 1M-token window.

@@ -1447,6 +1447,7 @@ in [agent-host-contract.md](agent-host-contract.md).
 - `cancel()` → sends `session/cancel` notification
 - `supports_effort()` / `change_effort(level)` / `clear_effort()` → reasoning-effort control (see below)
 - `ultracode_enabled()` / `set_ultracode(enabled)` → the claude harness's per-session ultracode switch; `None` on every other session (see [claude-code-provider](claude-code-provider.md#the-ultracode-switch))
+- `fast_mode_enabled()` / `set_fast_mode(enabled)` → the claude harness's per-session Fast mode switch, the same way; `None` on every other session (see [claude-code-provider](claude-code-provider.md#the-fast-mode-switch))
 - `is_alive()` → `AcpClient.is_responsive()` (600s stale threshold)
 - `is_process_alive()` → OS-level process check
 

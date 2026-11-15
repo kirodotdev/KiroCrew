@@ -451,6 +451,74 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "reader loses by choosing another harness. A wrong membership forwards a "
         "command the acquired provider cannot serve, which is a defect"
     ),
+    "ACP_BACKENDS_PLAN_CHECKLIST": (
+        "which wire frame carries the agent's checklist to the task progress bar -- "
+        "an ACP plan update for this set, a todo tool result for kiro-cli -- and so "
+        "that a member's bar is read-only and its turns get no todo_list sync block. "
+        "The bar is the same either way, so the membership selects a reader rather "
+        "than a feature someone choosing a harness gains. A wrong membership is a "
+        "defect: a member's checklist never reaches the bar, or a non-checklist plan "
+        "is drawn as one"
+    ),
+    "ACP_BACKENDS_HARNESS_NOTICES": (
+        "which wire frames carry a harness's own advisories and mode changes to the "
+        "chat's notice rows -- an ACP notice and current_mode_update for this set, "
+        "frames of its own for kiro-cli. Every harness's chat draws notice rows, so the "
+        "membership selects a reader rather than a feature someone choosing a harness "
+        "gains. A wrong membership is a defect: a member's advisory is lost, or a "
+        "tripwire's mode report is drawn as a routine change"
+    ),
+    "ACP_BACKENDS_RAW_SDK_TASKS": (
+        "which wire frames carry a harness's background work to the Subagents panel "
+        "and the chat's notice rows -- Claude Code's raw SDK task and retry messages "
+        "for this set, frames of their own for kiro-cli. The panel and the rows are "
+        "the same on every harness, so the membership selects a reader rather than a "
+        "feature someone choosing a harness gains. A wrong membership is a defect: a "
+        "member's Workflow agents get no cards, or a session asks a harness for "
+        "messages it does not send"
+    ),
+    "ACP_BACKENDS_READ_PATH_ARG": (
+        "which argument of a harness's read tool names the file a tool row previews "
+        "-- file_path for this set, operations[].image_paths for kiro-cli. The "
+        "thumbnail strip is the same on every harness, so the membership selects a "
+        "reader rather than a feature someone choosing a harness gains. A wrong "
+        "membership is a defect: a member's image read shows no thumbnail, or a "
+        "non-member's argument is read as the file it read"
+    ),
+    "ACP_BACKENDS_SUMMARIZED_THINKING": (
+        "whether the launch asks a harness for summarized thinking text, through a "
+        "variable of its process environment. The chat's thinking rows are the same "
+        "on every harness that sends thinking text, so the membership selects a "
+        "launch default rather than a feature someone choosing a harness gains. A "
+        "wrong membership is a defect: a member's chat shows no thinking, or a "
+        "non-member's launch carries a variable it never reads"
+    ),
+    "ACP_BACKENDS_NATIVE_CHILD_CANCEL": (
+        "which request a Stop on a harness-native child's Subagents card sends -- "
+        "session/cancel naming that child for this set, none elsewhere, where the "
+        "card alone is closed. The card and its Stop are the same on every harness, "
+        "so the membership selects a request path rather than a feature someone "
+        "choosing a harness gains. A wrong membership is a defect: a member's child "
+        "runs on after its card closes, or a non-member is sent a cancel naming a "
+        "session it does not know"
+    ),
+    "ACP_BACKENDS_TOOL_TITLE_REFINEMENT": (
+        "which frame names a call on a Crew-spawned subagent's Subagents card -- the "
+        "tool_call_update that refines the call's first title for this set, the "
+        "tool_call and its permission request alone elsewhere. The card's tool list "
+        "is the same on every harness, so the membership selects a reader rather than "
+        "a feature someone choosing a harness gains. A wrong membership is a defect: "
+        "a member's card keeps a generic title, or a non-member's better title is "
+        "replaced by a bare tool name"
+    ),
+    "ACP_BACKENDS_COMPACTION_SUMMARY": (
+        "which frames carry a harness's compaction summary to the chat's compaction card "
+        "-- a native compaction_update's summary and its compaction_summary_chunk "
+        "updates for this set, the compaction status notification for kiro-cli. The card "
+        "is the same on every harness, so the membership selects a reader rather than a "
+        "feature someone choosing a harness gains. A wrong membership is a defect: a "
+        "member's card shows no summary, or a non-member's text is folded as one"
+    ),
     "ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS": (
         "whether the dashboard forwards every leading-slash word to the harness raw, "
         "rather than only kiro-cli's command names. It selects a command-dispatch path "
@@ -647,6 +715,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
     ),
     "ACP_BACKENDS_ULTRACODE_CONFIG_OPTION": (
         "whether the session's advertised ultracode switch is read and written. The "
+        "switch shows only while the adapter advertises it, so a member needs no card "
+        "line, and a wrong membership is a defect, not a feature a card could mark: a "
+        "hidden switch, or a write to another harness's option of the same id"
+    ),
+    "ACP_BACKENDS_FAST_MODE_CONFIG_OPTION": (
+        "whether the session's advertised Fast mode switch is read and written. The "
         "switch shows only while the adapter advertises it, so a member needs no card "
         "line, and a wrong membership is a defect, not a feature a card could mark: a "
         "hidden switch, or a write to another harness's option of the same id"

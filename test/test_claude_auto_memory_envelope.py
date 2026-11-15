@@ -28,6 +28,7 @@ from acp_session_mcp_helpers import isolated_seed_provenance  # noqa: F401
 from acp_session_mcp_helpers import _write_spec
 
 from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.raw_sdk_tasks import RAW_SDK_MESSAGE_FILTER
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
 from kiro_crew.dashboard import chat_threads
@@ -35,6 +36,9 @@ from kiro_crew.dashboard.handlers import side as side_mod
 
 _OFF = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
 _RESTRICTED = ["incognito", "temporary"]
+
+#: What a claude session asks for beside its options (``acp.raw_sdk_tasks``).
+_RAW_SDK_FILTER = list(RAW_SDK_MESSAGE_FILTER)
 
 
 def _client(tmp_path, mode: str, **kw) -> AcpClient:
@@ -68,7 +72,9 @@ def test_a_settings_tier_cannot_turn_the_switch_back_on(tmp_path, mode):
 
 
 def test_a_persistent_session_keeps_its_empty_envelope(tmp_path):
-    assert _client(tmp_path, "persistent")._claude_session_meta() == {"claudeCode": {"options": {}}}
+    assert _client(tmp_path, "persistent")._claude_session_meta() == {
+        "claudeCode": {"options": {}, "emitRawSDKMessages": _RAW_SDK_FILTER}
+    }
 
 
 @pytest.mark.parametrize("mode", [*_RESTRICTED, "persistent"])

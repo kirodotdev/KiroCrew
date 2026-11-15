@@ -9543,6 +9543,12 @@
       "hint": "把大任务拆成若干步骤，交给辅助智能体执行。它改变工作的规划方式，而不是 Claude 思考的深度。速度更慢，并会消耗更多 Claude 用量。仅对此聊天生效，从下一条消息开始。",
       "label": "Ultracode"
     },
+    "fastModeToggle": {
+      "hint": "使用同一模型，Claude 回复得更快。它不会改变 Claude 思考的深度。会消耗更多 Claude 用量。仅对此聊天生效，从下一条消息开始。",
+      "label": "快速模式",
+      "unavailable": "Claude 无法在此聊天中使用快速模式：{{reason}}。",
+      "unavailable_no_reason": "Claude 目前无法在此聊天中使用快速模式。"
+    },
     "updateFoundModal": {
       "cancel_update": "取消更新",
       "cancel_update_failed": "无法取消更新，请重试。",
@@ -12964,6 +12970,7 @@
         "click_to_toggle_hint": "点击一行把它标为完成或未完成。在 agent 的下一轮之前不会有任何变化，在那之前可以再次点击撤销。完成的行 agent 不会重做，未完成的行它当作仍未完成。你自己标的行会带一个人形标记，直到 agent 确认。",
         "tick_failed_lead": "“{{task}}”没有更新，该行保持原状。可以放心再点：只有清单显示变了，行才算变了。",
         "read_only_hint": "只读：由运行该 session 的远程机器管理。",
+        "agent_kept_hint": "只读：这份清单由 agent 自己维护，只有 agent 能修改。",
         "fail_task_stale": "你点的时候清单变了，这一行现在是另一个任务。点之前再看一眼这一行。",
         "fail_task_gone": "这一行已经不在清单里了。agent 换掉了它的清单。",
         "fail_session_gone": "你的仪表板 session 已过期。刷新页面后再点击一次，不会丢失其它内容。",
@@ -13136,6 +13143,16 @@
         "member_rebind_kept_agent": "{{bot}} 现已设为使用 {{agent}}，但此聊天仍在运行它开始时使用的智能体 {{recorded}}。要使用 {{agent}}，请与 {{bot}} 开始一个新聊天。",
         "agent_no_tools": "{{agent}} 没有列出任何工具，所以在此聊天中无法运行命令、处理文件或使用 MCP 服务器。",
         "agent_no_tools_open": "选择它的工具",
+        "harness_mode_changed": "此会话已切换到 {{mode}} 模式。",
+        "harness_task_completed": "后台任务已完成：{{task}}{{detail}}",
+        "harness_task_failed": "后台任务失败：{{task}}{{detail}}",
+        "harness_task_stopped": "后台任务已停止：{{task}}{{detail}}",
+        "harness_api_retry": "Claude 正在重试一个失败的请求{{reason}}，第 {{attempt}} 次，共 {{max}} 次。",
+        "harness_api_retry_rate_limit": "速率限制",
+        "harness_api_retry_overloaded": "过载",
+        "harness_api_retry_server_error": "服务器错误",
+        "harness_api_retry_cloud_credential_error": "云凭证错误",
+        "harness_api_retry_status": "HTTP {{status}}",
         "crew_name_undispatchable": "无法使用此话题的团队名称。请重命名或重新创建该 Bot。",
         "code_channel_worktree_not_ready": "此代码频道的 worktree 尚未就绪，因此未运行该消息。请稍后重新发送。",
         "remote_crew_read_only": "此聊天在远程团队上运行，现在为只读。要继续，请打开该团队自己的会话。",

@@ -326,10 +326,11 @@ def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
     auto-approve — regardless of the ``auto_approve_subagent_tools`` hook,
     the slot's trust, or yolo. Only when a crew is active do those signals grant
     approval; with all three false the tool still falls through to the normal
-    interactive/trust gate rather than being silently approved here.
+    interactive/trust gate rather than being silently approved here. A background
+    card (a Claude Code Workflow agent, which runs no crew tool) is never a crew.
     """
     has_active_crew = bool(native_tracker) and any(
-        not info.get("done") for info in native_tracker.values()
+        not info.get("done") and not info.get("background") for info in native_tracker.values()
     )
     if not has_active_crew:
         return False

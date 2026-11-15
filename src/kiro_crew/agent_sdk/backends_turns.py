@@ -628,6 +628,150 @@ ACP_BACKENDS_KIRO_FAMILY = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # it may interpret as an ordinary user request.
 ACP_BACKENDS_NATIVE_TODOS = frozenset({ACP_BACKEND_CLAUDE})
 
+# Backends whose ACP ``plan`` session update IS the agent's own checklist, so
+# ``AcpClient`` reads it into the ``EVENT_TODO_UPDATE`` kiro-cli's ``todo_list``
+# tool result produces (``acp.plan_checklist``) and the dashboard's task progress
+# bar shows it, read-only: the harness keeps the list, so the dashboard sends it no
+# ``todo_list`` sync or recovery block (``SessionCapabilities.keeps_own_checklist``).
+# claude is the member: claude-agent-acp sends Claude Code's TodoWrite list and its
+# Task* task list as a legacy ``plan`` (``content``, ``status``, ``priority``
+# entries, the whole list each time, an empty list when it is gone) to a client
+# that declares no ``clientCapabilities.plan``, which Crew does not (claude-agent-acp
+# 0.107.0 ``plans.js`` ``checklistPlanUpdate``), and its launch turns Claude Code's
+# checklist tools on (``acp.harness.claude.CLAUDE_TODO_TOOLS_ENV``). The shapes are
+# pinned by ``test/fixtures/acp_frames/claude/plan-checklist.jsonl`` (TodoWrite) and
+# ``plan-checklist-tasks.jsonl`` (the Task* tools). kiro-cli never sends ``plan``
+# (its list is a tool result), and a harness whose ``plan`` is not a checklist, or
+# whose shape no capture shows, stays out.
+ACP_BACKENDS_PLAN_CHECKLIST = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends told that the client presents notices (``clientCapabilities.session
+# .notices``), whose ``notice`` and ``current_mode_update`` session updates
+# ``AcpClient`` reads as the dashboard's notice rows (``acp.harness_notices``): a
+# notice keeps the adapter's title and severity, and a mode change names the mode
+# by the name the session advertised for it. A ``notice`` read between prompts
+# starts an agent-started turn, as an ``agent_message_chunk`` does
+# (``client_transport._starts_agent_turn``), and a native child's reaches its card
+# as the child's text. claude is the member: claude-agent-acp 0.107.0 sends a client
+# with the capability its advisories (a hook's informational message, a model
+# fallback, an MCP server that did not start, Auto mode falling back) as ``notice``
+# updates and a client without it each advisory as a blockquote
+# ``agent_message_chunk`` (``session-notices.js`` ``noticeOrTranscriptUpdate``), and
+# it reports each mode the session moves to, EnterPlanMode's included, as a
+# ``current_mode_update`` (``session-mode.js`` ``publishCurrent``). Both are standard
+# ACP frames; their shapes are pinned by
+# ``test/fixtures/acp_frames/claude/harness-notices.jsonl``. kiro-cli and KAS stay
+# out: their advisories are frames of their own and their modes are agents, which the
+# agent switch already reports. So do goose and copilot, whose ``current_mode_update``
+# is a routing tripwire.
+ACP_BACKENDS_HARNESS_NOTICES = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends whose session asks the harness for its raw agent SDK messages about
+# background tasks and API retries, and whose ``AcpClient`` reads them
+# (``acp.raw_sdk_tasks``): each agent of a Claude Code Workflow run becomes a native
+# Subagents card, the end of a background shell or Monitor task a notice row, and the
+# first API retry of a turn a warning notice row. claude is the member: the
+# ``session/new`` and ``session/load`` envelope carries
+# ``_meta.claudeCode.emitRawSDKMessages``, a filter list beside ``options``, and
+# claude-agent-acp forwards each Claude Code system message it matches as the
+# extension notification ``_claude/sdkMessage`` ``{sessionId, message}`` (0.107.0
+# ``v1/acp-agent.js`` 7857 and 2899-2905, ``shouldEmitRawMessage`` 8109; 0.94.0
+# ``acp-agent.js`` 8868 and 3922). That opt-in and notification are X, so the
+# membership rests on the live capture
+# ``test/fixtures/acp_frames/claude/raw-sdk-tasks-live.jsonl``. No other harness
+# sends Claude Code's SDK messages; kiro-cli and KAS report their own sub-agents and
+# background work in frames of their own.
+ACP_BACKENDS_RAW_SDK_TASKS = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends whose read tool names the one file it reads in a ``file_path`` argument,
+# so ``AcpClient`` marks a ``read``-kind ``tool_call`` with that argument's name
+# (``acp.read_path_arg``, ``AcpEvent.read_path_arg``), the dashboard keeps the mark on
+# the call's tool row (``meta.read_path_arg``), and the row's thumbnail strip previews
+# the file when its name is an image's, as it previews kiro-cli's image-mode read.
+# claude is the member: claude-agent-acp 0.107.0 reports Claude Code's Read as kind
+# ``read`` with ``rawInput`` ``{file_path, offset?, limit?}``
+# (``tool-calls/reporters/read.js`` ``ReadReporter.toolUse``), the kind on the first
+# ``tool_call`` and the arguments on the ``tool_call_update`` after it; its other
+# ``read``-kind frame, a memory recall (``tool-calls/renderer.js`` ``memoryRecall``),
+# carries no ``file_path`` and previews nothing. Both are standard ACP fields; the
+# shapes are pinned by ``test/fixtures/acp_frames/claude/read-image.jsonl``. kiro-cli
+# and KAS stay out: their read names its images in ``operations[].image_paths``,
+# which the strip reads on any row. So does every harness whose read tool's input no
+# capture shows.
+ACP_BACKENDS_READ_PATH_ARG = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends whose launch asks the harness for a readable summary of the model's
+# thinking, so its ``agent_thought_chunk`` updates carry text the chat's thinking
+# rows show. claude is the member: Claude Code's recent models default the thinking
+# display to ``omitted``, which streams thinking blocks with empty text, and
+# claude-agent-acp sends no ``agent_thought_chunk`` for an empty one (0.107.0
+# ``sdk-to-acp.js`` 218-232). It reads ``CLAUDE_CODE_THINKING_DISPLAY`` from its own
+# environment at ``session/new`` (``session-env.js`` ``resolveThinkingConfig``,
+# ``v1/acp-agent.js`` 7354), so the claude launch sets it to ``summarized`` when the
+# spawn environment does not name it and no Claude Code settings file decides
+# thinking (``acp.harness.claude.CLAUDE_THINKING_DISPLAY_ENV``). claude-agent-acp
+# 0.94.0 reads only ``MAX_THINKING_TOKENS``, so the variable is inert there. Off the
+# wire: the membership decides one variable of the adapter's process environment. A
+# harness that streams its thinking text already, or reads no such variable, stays
+# out.
+ACP_BACKENDS_SUMMARIZED_THINKING = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends that stop one native child when the client sends ``session/cancel``
+# naming the child's session, so a Stop on that child's Subagents card is sent to the
+# harness (``AcpClient.cancel_native_child``) rather than only closing the card, and
+# the card closes on the end the harness reports. claude is the member:
+# claude-agent-acp announces each Agent-tool child with ``capabilities.cancel`` to a
+# client that declares ``clientCapabilities.subagents`` (0.107.0
+# ``native-subagents.js`` ``announceNativeSubagent`` 1443-1460, 0.94.0 945), withdraws
+# it with ``capabilities: null`` when it loses track of the child (0.107.0
+# 601), and answers a ``session/cancel`` on a child id by stopping that child's task
+# alone (``v1/acp-agent.js`` ``cancel`` / ``cancelChildSession`` 5185-5205,
+# ``NativeSubagentRuntime.cancelChild`` 706-717; 0.94.0 ``acp-agent.js`` 6142-6160,
+# ``native-subagents.js`` 431-442), whose end it reports as ``subagent_update``
+# ``idle`` with ``cancelled`` (0.107.0 ``rfdEndState`` 1698-1705). ``session/cancel``
+# is standard ACP and the grant is the subagents form's own field; the announce with
+# the grant is in the live capture
+# ``test/fixtures/claude_native_subagents/agent-task-0.94.0.jsonl``. A Claude Code
+# Workflow agent is no such child: it has no session, and the adapter offers no
+# per-agent stop. kiro-cli, KAS and codex stay out: no capture shows a per-child
+# cancel there.
+ACP_BACKENDS_NATIVE_CHILD_CANCEL = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends whose ``tool_call_update`` carries a call's real title after a first
+# ``tool_call`` that named it before its input had streamed, so a Crew-spawned
+# subagent's Subagents card takes the refined title for that call's row, as the
+# dashboard's own tool row does (``SessionCapabilities.refines_tool_call_titles``,
+# read by ``subagent_manager.card_tool_titles``). claude is the member:
+# claude-agent-acp reports each call first at the stream's start, with an empty
+# ``rawInput`` and the tool's generic title ("Terminal", "Edit", "Read File",
+# "Task"), and then as a ``tool_call_update`` with the call's ``title``, ``kind``
+# and ``rawInput`` once its input is known (0.107.0 ``sdk-to-acp.js`` 296-316,
+# ``tool-calls/renderer.js`` ``toolCall`` 134, ``refinement`` 160,
+# ``partialRefinement`` 178). Both are standard ACP frames; the shapes are pinned by
+# ``test/fixtures/acp_frames/claude/builtins-bash-edit-webfetch-live.jsonl`` and
+# ``read-image.jsonl``. kiro-cli stays out: its first ``tool_call`` already names
+# the call, and the ``tool_call_update`` that ends a failed call titles it with the
+# bare tool name (``write``, ``use_aws``, ``knowledge`` in the
+# ``acp_frames/kiro/`` captures), which would replace the better title on the card.
+# So does every harness no capture shows refining a generic first title.
+ACP_BACKENDS_TOOL_TITLE_REFINEMENT = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends whose native compaction reports the summary the harness kept, so
+# ``AcpClient`` carries it on the ``completed`` compaction event
+# (``acp.compaction_summary``) and the dashboard's compaction card folds it, as it
+# folds kiro-cli's ``_kiro.dev/compaction/status`` summary. claude is the member:
+# to a client that declares ``session.compaction``, claude-agent-acp streams the
+# API's compaction block as ``compaction_summary_chunk`` updates ``{compactionId,
+# content: {type: "text", text}}`` and sends Claude Code's PostCompact summary on the
+# first ``completed`` ``compaction_update`` as ``summary: [{type: "text", text}]``,
+# leaving it out when the chunks carried that same text (0.107.0
+# ``context-compaction.js`` ``heartbeat`` 231-243, ``recordSummary`` 264-280,
+# ``finish`` 281-313). Both are standard ACP frames; the shapes are pinned by
+# ``test/fixtures/acp_frames/claude/compaction-summary.jsonl``. codex stays out: its
+# native compaction runs on ``AcpRuntime`` and no capture shows it carrying a
+# summary. So does every harness that does not report compaction this way.
+ACP_BACKENDS_COMPACTION_SUMMARY = frozenset({ACP_BACKEND_CLAUDE})
+
 # Backends whose adapter runs ANY leading-slash ``session/prompt`` as one of its own
 # commands, so the dashboard forwards every leading-slash word raw (no context
 # prefix) rather than only the kiro-cli names in ``_SLASH_COMMANDS``. claude is the

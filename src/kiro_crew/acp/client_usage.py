@@ -14,7 +14,9 @@ Instance fields read: ``_model``, ``_native_compaction_states``, ``_resolved_mod
 ``last_prompt_stats``, ``memory_mode``.
 
 The stale compaction-status state is read and resolved through
-:mod:`kiro_crew.acp.stale_compaction`, which owns those fields.
+:mod:`kiro_crew.acp.stale_compaction`, which owns those fields, and a native
+compaction's summary through :mod:`kiro_crew.acp.compaction_summary`, which owns
+``_compaction_summaries``.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import compaction_summary
 from kiro_crew.acp._dispatch import (
     NATIVE_COMPACTION_CANCELLED,
     parse_codex_compaction_update,
@@ -258,6 +261,12 @@ def _codex_compaction_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
     that errors leaves the ``session/prompt`` request unanswered, which the
     prompt loop's own deadline owns; nothing here arms the post-failure budget
     on a guess.
+
+    On a backend in ``ACP_BACKENDS_COMPACTION_SUMMARY`` a native ``completed``
+    event's title is the summary the compaction reported, and a
+    ``compaction_summary_chunk`` is kept for it and returns ``None``
+    (:mod:`kiro_crew.acp.compaction_summary`). No member runs on ``AcpRuntime``, so
+    the handle's twin reads no summary.
     """
     if self.backend not in ACP_BACKENDS_INLINE_COMPACTION:
         return None
@@ -266,6 +275,8 @@ def _codex_compaction_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
     if not isinstance(update, dict):
         return None
     native = update.get("sessionUpdate") == "compaction_update"
+    if not native and compaction_summary.note_chunk(self, msg):
+        return None
     if native:
         status_type = parse_native_compaction_update(update, self._native_compaction_states)
     else:
@@ -291,6 +302,7 @@ def _codex_compaction_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
         # streak, and no synthesized failure at turn end -- the same silence
         # ``_settle_claude_compaction`` keeps when a Stop ends the turn.
         logger.info("Compaction status (native): cancelled, no verdict")
+        compaction_summary.forget(self, msg)
         return None
     logger.info("Compaction status (%s): %s", self.backend, status_type)
     if status_type == "completed":
@@ -303,7 +315,14 @@ def _codex_compaction_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
         # for. A native frame carries its reason in the update itself.
         self._compaction_failed_at = time.monotonic()
         self.last_compaction_transient = compaction_failure_is_transient(update)
-    title = compaction_failure_detail(update) if status_type == "failed" else ""
+    if status_type == "failed":
+        compaction_summary.forget(self, msg)
+        title = compaction_failure_detail(update)
+    elif status_type == "completed" and native:
+        # The card folds a native compaction's summary as it folds kiro-cli's.
+        title = compaction_summary.completed_summary(self, msg)
+    else:
+        title = ""
     return AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title=title)
 
 

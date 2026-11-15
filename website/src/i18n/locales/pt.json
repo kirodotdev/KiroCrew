@@ -10007,6 +10007,12 @@
       "hint": "Divide tarefas grandes em etapas executadas por agentes auxiliares. Muda como o trabalho é planejado, não o quanto o Claude pensa. É mais lento e consome mais da sua cota do Claude. Vale só para este chat, a partir da sua próxima mensagem.",
       "label": "Ultracode"
     },
+    "fastModeToggle": {
+      "hint": "O Claude responde mais rápido, com o mesmo modelo. Não muda o quanto o Claude pensa. Consome mais da sua cota do Claude. Vale só para este chat, a partir da sua próxima mensagem.",
+      "label": "Modo rápido",
+      "unavailable": "O Claude não pode usar o modo rápido neste chat: {{reason}}.",
+      "unavailable_no_reason": "O Claude não pode usar o modo rápido neste chat agora."
+    },
     "updateFoundModal": {
       "cancel_update": "Cancelar a atualização",
       "cancel_update_failed": "Não foi possível cancelar a atualização. Tente novamente.",
@@ -13586,6 +13592,7 @@
         "click_to_toggle_hint": "Clique em uma linha para marcá-la como feita ou não feita. Nada muda para o agente até o próximo turno dele, e até lá você pode clicar de novo para desfazer. Linhas feitas o agente não refaz; as não feitas ele trata como ainda abertas. Linhas que você marcou mostram um símbolo de pessoa até o agente confirmar.",
         "tick_failed_lead": "“{{task}}” não foi atualizada; a linha mantém o estado anterior. Clicar de novo é seguro: a linha só muda quando a lista mostrar.",
         "read_only_hint": "Somente leitura: gerenciada pela máquina remota que executa esta sessão.",
+        "agent_kept_hint": "Somente leitura: o agente mantém esta lista por conta própria, e só o agente a altera.",
         "fail_task_stale": "A lista mudou enquanto você clicava, então esta linha agora é outra tarefa. Olhe a linha de novo antes de clicar.",
         "fail_task_gone": "Essa linha não está mais na lista. O agente substituiu a lista dele.",
         "fail_session_gone": "Sua sessão do painel expirou. Recarregue a página e clique de novo — nada mais é perdido.",
@@ -13774,6 +13781,16 @@
         "member_rebind_kept_agent": "{{bot}} agora está configurado com {{agent}}, mas este chat continua executando {{recorded}}, o agente com que começou. Inicie um novo chat com {{bot}} para usar {{agent}}.",
         "agent_no_tools": "{{agent}} não lista nenhuma ferramenta, então neste chat não pode executar comandos, trabalhar com arquivos nem usar servidores MCP.",
         "agent_no_tools_open": "Escolher as ferramentas",
+        "harness_mode_changed": "Esta sessão mudou para o modo {{mode}}.",
+        "harness_task_completed": "Tarefa em segundo plano concluída: {{task}}{{detail}}",
+        "harness_task_failed": "Falha na tarefa em segundo plano: {{task}}{{detail}}",
+        "harness_task_stopped": "Tarefa em segundo plano interrompida: {{task}}{{detail}}",
+        "harness_api_retry": "O Claude está tentando de novo uma solicitação que falhou{{reason}}, tentativa {{attempt}} de {{max}}.",
+        "harness_api_retry_rate_limit": "limite de taxa",
+        "harness_api_retry_overloaded": "sobrecarregado",
+        "harness_api_retry_server_error": "erro do servidor",
+        "harness_api_retry_cloud_credential_error": "erro de credenciais da nuvem",
+        "harness_api_retry_status": "HTTP {{status}}",
         "crew_name_undispatchable": "Não é possível usar o nome da crew deste tópico. Renomeie ou recrie o Bot.",
         "code_channel_worktree_not_ready": "O worktree deste canal de código ainda não está pronto, então a mensagem não foi executada. Envie-a de novo em instantes.",
         "remote_crew_read_only": "Este chat rodou em uma crew remota e agora é somente leitura. Abra a sessão da própria crew para continuar.",

@@ -6022,6 +6022,7 @@
         "click_to_toggle_hint": "Click a row to mark it done or not done. Nothing changes for the agent until its next turn, and you can click again to undo until then. Done rows the agent will not redo; not-done rows it treats as still open. Rows you set show a person mark until the agent confirms them.",
         "tick_failed_lead": "\"{{task}}\" did not update; the row keeps its old state. Clicking again is safe: a row only changes when the list shows it.",
         "read_only_hint": "Read-only: managed by the remote machine running this session.",
+        "agent_kept_hint": "Read-only: the agent keeps this list itself, and only the agent changes it.",
         "fail_task_stale": "The list changed while you were clicking, so this row is a different task now. Look at the row again before you click.",
         "fail_task_gone": "That row is not in the list any more. The agent replaced its list.",
         "fail_session_gone": "Your dashboard session expired. Reload the page and click again — nothing else is lost.",

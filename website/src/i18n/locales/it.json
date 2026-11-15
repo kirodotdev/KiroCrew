@@ -10007,6 +10007,12 @@
       "hint": "Divide le attività grandi in passaggi svolti da agenti di supporto. Cambia il modo in cui il lavoro viene pianificato, non quanto ragiona Claude. È più lento e consuma più della tua quota Claude. Vale solo per questa chat, dal tuo prossimo messaggio.",
       "label": "Ultracode"
     },
+    "fastModeToggle": {
+      "hint": "Claude risponde più velocemente con lo stesso modello. Non cambia quanto ragiona Claude. Consuma più della tua quota Claude. Vale solo per questa chat, dal tuo prossimo messaggio.",
+      "label": "Modalità veloce",
+      "unavailable": "Claude non può usare la modalità veloce in questa chat: {{reason}}.",
+      "unavailable_no_reason": "Claude non può usare la modalità veloce in questa chat in questo momento."
+    },
     "updateFoundModal": {
       "cancel_update": "Annulla l'aggiornamento",
       "cancel_update_failed": "Impossibile annullare l'aggiornamento. Riprova.",
@@ -13586,6 +13592,7 @@
         "click_to_toggle_hint": "Clicca una riga per segnarla come fatta o non fatta. Nulla cambia per l'agente fino al suo prossimo turno, e fino ad allora puoi ricliccare per annullare. Le righe fatte l'agente non le rifà; quelle non fatte le tratta come ancora aperte. Le righe che hai impostato tu mostrano un simbolo di persona finché l'agente non le conferma.",
         "tick_failed_lead": "«{{task}}» non è stata aggiornata; la riga mantiene il suo stato. Cliccare di nuovo è sicuro: una riga cambia solo quando la lista lo mostra.",
         "read_only_hint": "Sola lettura: gestita dalla macchina remota che esegue questa sessione.",
+        "agent_kept_hint": "Sola lettura: l'agente tiene questa lista da sé, e solo l'agente la modifica.",
         "fail_task_stale": "La lista è cambiata mentre cliccavi, quindi questa riga ora è un'altra attività. Guarda di nuovo la riga prima di cliccare.",
         "fail_task_gone": "Quella riga non è più nella lista. L'agente ha sostituito la sua lista.",
         "fail_session_gone": "La tua sessione della dashboard è scaduta. Ricarica la pagina e riclicca: non si perde altro.",
@@ -13774,6 +13781,16 @@
         "member_rebind_kept_agent": "{{bot}} ora è impostato su {{agent}}, ma questa chat continua a eseguire {{recorded}}, l'agente con cui è iniziata. Avvia una nuova chat con {{bot}} per usare {{agent}}.",
         "agent_no_tools": "{{agent}} non elenca alcuno strumento, quindi in questa chat non può eseguire comandi, lavorare con i file né usare server MCP.",
         "agent_no_tools_open": "Scegli i suoi strumenti",
+        "harness_mode_changed": "Questa sessione è passata alla modalità {{mode}}.",
+        "harness_task_completed": "Attività in background completata: {{task}}{{detail}}",
+        "harness_task_failed": "Attività in background non riuscita: {{task}}{{detail}}",
+        "harness_task_stopped": "Attività in background interrotta: {{task}}{{detail}}",
+        "harness_api_retry": "Claude sta riprovando una richiesta non riuscita{{reason}}, tentativo {{attempt}} di {{max}}.",
+        "harness_api_retry_rate_limit": "limite di richieste",
+        "harness_api_retry_overloaded": "sovraccarico",
+        "harness_api_retry_server_error": "errore del server",
+        "harness_api_retry_cloud_credential_error": "errore delle credenziali cloud",
+        "harness_api_retry_status": "HTTP {{status}}",
         "crew_name_undispatchable": "Il nome della crew di questo thread non può essere usato. Rinomina o ricrea il Bot.",
         "code_channel_worktree_not_ready": "Il worktree di questo canale di codice non è ancora pronto, quindi il messaggio non è stato eseguito. Invialo di nuovo tra un momento.",
         "remote_crew_read_only": "Questa chat è stata eseguita su una crew remota ed è ora in sola lettura. Apri la sessione della crew per continuare.",

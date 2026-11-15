@@ -9775,6 +9775,12 @@
       "hint": "Teilt große Aufgaben in Schritte auf, die Hilfsagenten erledigen. Das ändert, wie die Arbeit geplant wird, nicht wie intensiv Claude nachdenkt. Langsamer und verbraucht mehr von deinem Claude-Kontingent. Gilt nur für diesen Chat, ab deiner nächsten Nachricht.",
       "label": "Ultracode"
     },
+    "fastModeToggle": {
+      "hint": "Claude antwortet schneller, mit demselben Modell. Das ändert nicht, wie intensiv Claude nachdenkt. Verbraucht mehr von deinem Claude-Kontingent. Gilt nur für diesen Chat, ab deiner nächsten Nachricht.",
+      "label": "Schnellmodus",
+      "unavailable": "Claude kann den Schnellmodus in diesem Chat nicht nutzen: {{reason}}.",
+      "unavailable_no_reason": "Claude kann den Schnellmodus in diesem Chat gerade nicht nutzen."
+    },
     "updateFoundModal": {
       "cancel_update": "Update abbrechen",
       "cancel_update_failed": "Das Update konnte nicht abgebrochen werden. Versuche es erneut.",
@@ -13275,6 +13281,7 @@
         "click_to_toggle_hint": "Klicke auf eine Zeile, um sie als erledigt oder nicht erledigt zu markieren. Für den Agenten ändert sich nichts bis zu seinem nächsten Durchlauf, und bis dahin kannst du durch erneutes Klicken rückgängig machen. Erledigte Zeilen macht der Agent nicht noch einmal; nicht erledigte behandelt er als weiter offen. Zeilen, die du gesetzt hast, tragen ein Personen-Symbol, bis der Agent sie bestätigt.",
         "tick_failed_lead": "„{{task}}“ wurde nicht aktualisiert; die Zeile behält ihren Zustand. Nochmal klicken ist sicher: eine Zeile ändert sich nur, wenn die Liste es zeigt.",
         "read_only_hint": "Nur lesen: verwaltet von der entfernten Maschine, auf der diese Sitzung läuft.",
+        "agent_kept_hint": "Nur lesen: Der Agent führt diese Liste selbst, und nur der Agent ändert sie.",
         "fail_task_stale": "Die Liste hat sich während des Klicks geändert; diese Zeile ist jetzt eine andere Aufgabe. Sieh die Zeile noch einmal an, bevor du klickst.",
         "fail_task_gone": "Diese Zeile ist nicht mehr in der Liste. Der Agent hat seine Liste ersetzt.",
         "fail_session_gone": "Deine Dashboard-Sitzung ist abgelaufen. Lade die Seite neu und klicke erneut – sonst geht nichts verloren.",
@@ -13455,6 +13462,16 @@
         "member_rebind_kept_agent": "{{bot}} ist jetzt auf {{agent}} eingestellt, aber dieser Chat läuft weiter auf {{recorded}}, dem Agenten, mit dem er begonnen hat. Starte einen neuen Chat mit {{bot}}, um {{agent}} zu verwenden.",
         "agent_no_tools": "{{agent}} führt keine Werkzeuge auf und kann in diesem Chat deshalb keine Befehle ausführen, nicht mit Dateien arbeiten und keine MCP-Server nutzen.",
         "agent_no_tools_open": "Werkzeuge auswählen",
+        "harness_mode_changed": "Diese Sitzung ist in den Modus {{mode}} gewechselt.",
+        "harness_task_completed": "Hintergrundaufgabe abgeschlossen: {{task}}{{detail}}",
+        "harness_task_failed": "Hintergrundaufgabe fehlgeschlagen: {{task}}{{detail}}",
+        "harness_task_stopped": "Hintergrundaufgabe gestoppt: {{task}}{{detail}}",
+        "harness_api_retry": "Claude wiederholt eine fehlgeschlagene Anfrage{{reason}}, Versuch {{attempt}} von {{max}}.",
+        "harness_api_retry_rate_limit": "Ratenlimit",
+        "harness_api_retry_overloaded": "überlastet",
+        "harness_api_retry_server_error": "Serverfehler",
+        "harness_api_retry_cloud_credential_error": "Fehler bei Cloud-Anmeldedaten",
+        "harness_api_retry_status": "HTTP {{status}}",
         "crew_name_undispatchable": "Der Crew-Name dieses Threads kann nicht verwendet werden. Benenne den Bot um oder erstelle ihn neu.",
         "code_channel_worktree_not_ready": "Der Worktree dieses Code-Kanals ist noch nicht bereit, deshalb wurde die Nachricht nicht ausgeführt. Sende sie gleich noch einmal.",
         "remote_crew_read_only": "Dieser Chat lief auf einer entfernten Crew und ist jetzt schreibgeschützt. Öffne die eigene Sitzung der Crew, um weiterzumachen.",

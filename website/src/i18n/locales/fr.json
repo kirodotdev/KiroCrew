@@ -10007,6 +10007,12 @@
       "hint": "Découpe les grosses tâches en étapes confiées à des agents auxiliaires. Cela change la façon dont le travail est planifié, pas l’intensité de la réflexion de Claude. Plus lent, et consomme davantage de ton quota Claude. S’applique à ce chat uniquement, dès ton prochain message.",
       "label": "Ultracode"
     },
+    "fastModeToggle": {
+      "hint": "Claude répond plus vite, avec le même modèle. Cela ne change pas l’intensité de la réflexion de Claude. Consomme davantage de ton quota Claude. S’applique à ce chat uniquement, dès ton prochain message.",
+      "label": "Mode rapide",
+      "unavailable": "Claude ne peut pas utiliser le mode rapide dans ce chat : {{reason}}.",
+      "unavailable_no_reason": "Claude ne peut pas utiliser le mode rapide dans ce chat pour le moment."
+    },
     "updateFoundModal": {
       "cancel_update": "Annuler la mise à jour",
       "cancel_update_failed": "Impossible d'annuler la mise à jour. Réessaie.",
@@ -13586,6 +13592,7 @@
         "click_to_toggle_hint": "Clique sur une ligne pour la marquer terminée ou non. Rien ne change pour l'agent avant son prochain tour, et d'ici là tu peux recliquer pour annuler. L'agent ne refait pas les lignes terminées et considère les autres comme ouvertes. Les lignes que tu as marquées portent un symbole de personne jusqu'à ce que l'agent les confirme.",
         "tick_failed_lead": "« {{task}} » n'a pas été mise à jour ; la ligne garde son état. Recliquer est sans risque : une ligne ne change que quand la liste l'affiche.",
         "read_only_hint": "Lecture seule : gérée par la machine distante qui exécute cette session.",
+        "agent_kept_hint": "Lecture seule : l'agent tient cette liste lui-même, et lui seul la modifie.",
         "fail_task_stale": "La liste a changé pendant le clic, cette ligne est donc une autre tâche maintenant. Relis la ligne avant de cliquer.",
         "fail_task_gone": "Cette ligne n'est plus dans la liste. L'agent a remplacé sa liste.",
         "fail_session_gone": "Ta session du tableau de bord a expiré. Recharge la page et reclique ; rien d'autre n'est perdu.",
@@ -13774,6 +13781,16 @@
         "member_rebind_kept_agent": "{{bot}} est désormais configuré sur {{agent}}, mais ce chat continue d'exécuter {{recorded}}, l'agent avec lequel il a commencé. Démarre un nouveau chat avec {{bot}} pour utiliser {{agent}}.",
         "agent_no_tools": "{{agent}} ne liste aucun outil : dans ce chat, il ne peut donc ni exécuter de commandes, ni travailler sur des fichiers, ni utiliser de serveurs MCP.",
         "agent_no_tools_open": "Choisir ses outils",
+        "harness_mode_changed": "Cette session est passée en mode {{mode}}.",
+        "harness_task_completed": "Tâche d’arrière-plan terminée : {{task}}{{detail}}",
+        "harness_task_failed": "Tâche d’arrière-plan en échec : {{task}}{{detail}}",
+        "harness_task_stopped": "Tâche d’arrière-plan arrêtée : {{task}}{{detail}}",
+        "harness_api_retry": "Claude relance une requête qui a échoué{{reason}}, tentative {{attempt}} sur {{max}}.",
+        "harness_api_retry_rate_limit": "limite de débit",
+        "harness_api_retry_overloaded": "surchargé",
+        "harness_api_retry_server_error": "erreur du serveur",
+        "harness_api_retry_cloud_credential_error": "erreur d'identifiants cloud",
+        "harness_api_retry_status": "HTTP {{status}}",
         "crew_name_undispatchable": "Le nom de crew de ce fil ne peut pas être utilisé. Renomme ou recrée le Bot.",
         "code_channel_worktree_not_ready": "Le worktree de ce canal de code n’est pas encore prêt, le message n’a donc pas été exécuté. Renvoie-le dans un instant.",
         "remote_crew_read_only": "Ce chat s’est exécuté sur une crew distante et il est maintenant en lecture seule. Ouvre la session de la crew pour continuer.",

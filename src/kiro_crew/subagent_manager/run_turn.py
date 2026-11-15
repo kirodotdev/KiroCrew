@@ -558,10 +558,14 @@ async def _run_inner_impl(
     # Mirrors kiro_crew.dashboard.chat_runner._pending_tools.
     _pending_tools: dict[str, str] = {}
     # tool_call_id -> the tool id the call's PostToolUse spec hooks match on.
+    from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_TOOL_CALL_UPDATE
     from kiro_crew.agent_sdk.spec_hooks import PostToolIdentity, post_tool_identity
     from kiro_crew.hooks import pre_tool_match_names
+    from kiro_crew.subagent_manager.card_tool_titles import CardToolTitles
 
     _pending_tool_ids: dict[str, PostToolIdentity] = {}
+    # The card rows a call's ``tool_call_update`` renames.
+    _card_titles = CardToolTitles(client)
     # The subagent's OWN spec hooks, when its OWN backend never receives them:
     # keyed on this run's agent and provider, never the parent's, so a
     # kiro-cli subagent (whose harness runs the field) gets none from Crew.
@@ -1246,6 +1250,7 @@ async def _run_inner_impl(
             info.last_tool = event.title or ""
             info.last_tool_call_id = event.tool_call_id or ""
             self._manager._note_tool_dispatch(info, event)
+            _card_titles.note_call(event)
             # Persist turn state for orphan recovery diagnostics. Off-loop
             # and drained on cancellation via _write_state_off_loop — the
             # highest-frequency of the three off-loop state
@@ -1339,6 +1344,7 @@ async def _run_inner_impl(
             if event.title:
                 info.last_tool_call_id = event.tool_call_id or ""
             self._manager._note_tool_dispatch(info, event)
+            _card_titles.note_call(event)
             await self._manager._fire_event(
                 "subagent_tool",
                 info,
@@ -1387,6 +1393,8 @@ async def _run_inner_impl(
                     parent_session_key=info.parent_session_key or None,
                     agent_role=info.agent or None,
                 )
+        elif event.kind == EVENT_TOOL_CALL_UPDATE:
+            await _card_titles.refine(self._manager, info, event)
         elif event.kind == EVENT_TOOL_RESULT:
             # A FINAL result means the tool is done: drop the attribution
             # snapshot so a later idle stretch is not judged against a

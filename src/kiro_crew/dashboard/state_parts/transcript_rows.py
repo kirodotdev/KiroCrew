@@ -12,7 +12,7 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.system_notices import is_system_notice
+from kiro_crew.dashboard.system_notices import is_harness_advisory_row, is_system_notice
 from kiro_crew.history_schema import transcript_sort_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -420,6 +420,9 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
     # A drained sub-agent completion (role ``subagent``) opens a turn of its own,
     # so a refused-model card older than it settles only its own turn.
     saw_later_opener = False
+    # A harness's advisory of the newest turn answers it as an assistant row does,
+    # whichever side of an error row the runner landed it on.
+    saw_advisory = False
     for m in reversed(messages):
         role = m.get("role")
         meta = m.get("meta") or {}
@@ -459,15 +462,18 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
                 saw_compaction_result = True
             continue
         if role == "inject" and m.get("content") and _is_turn_inject(meta):
-            return True
+            return saw_trailing_error if saw_advisory else True
         if role == "subagent":
             saw_later_opener = True
         # A monitor loop's cycle row always dispatches a turn; unanswered, it
         # is the same shape as an unanswered user row.
         if role == "nudge" and m.get("content"):
-            return True
+            return saw_trailing_error if saw_advisory else True
+        if is_harness_advisory_row(m) and m.get("content"):
+            saw_advisory = True
+            continue
         if role in ("user", "assistant") and m.get("content"):
-            if role != "user":
+            if role != "user" or saw_advisory:
                 return saw_trailing_error
             # A ``/compact`` answered by its compaction notice is a FINISHED
             # turn -- unless an error row trails the notice, which is the same
