@@ -310,6 +310,15 @@ between two writes makes a tie less likely, never impossible. Set the stamps (`o
 clock, an explicit `created_at`), assert strictly, and pin a time-sorted output's
 tie-break with an equal-stamp pair.
 
+The fifth class looks fixable by tuning and is not: **a performance assert in seconds
+reads the runner.** `thread_time` hides scheduling but not coverage's tracer, which
+multiplies the CPU of every traced line about fivefold on the instrumented Linux
+shards, so a 0.5 s budget the code meets bare in 0.07 s fails there on every rerun.
+Taking the minimum of N readings or pausing the tracer only moves the line. Count the
+work instead and bound its GROWTH between equally spaced input sizes:
+`_interpreter_work` and `_linear_work` in `test/denied_commands_security_helpers.py`
+are the model (testing-conventions § Determinism 5).
+
 Prove a test rather than trusting a green run: 20 repeats at `-n0`, 10 at `-n 4` beside
 its neighbours, and a shuffled order. A FIX to a flaky test also shows the forced
 condition (a coarse clock, a late executor, a delay at the named seam) red on the parent
