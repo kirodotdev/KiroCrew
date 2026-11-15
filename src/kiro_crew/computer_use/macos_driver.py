@@ -95,6 +95,8 @@ from kiro_crew.computer_use.types import (
 # The AX attribute set so typed keystrokes land in the addressed element rather
 # than wherever the target app last had focus.
 AX_FOCUSED = "AXFocused"
+# The application attribute that says whether an app is the frontmost one.
+AX_FRONTMOST = "AXFrontmost"
 
 logger = logging.getLogger(__name__)
 
@@ -573,7 +575,11 @@ class MacOSBackend(ComputerUseBackend):
                 if focus_err != macos_ffi.AX_ERR_SUCCESS:
                     return _focus_failed(app, rec, focus_err)
             macos_ffi.post_key(app.pid, keycode, flags)
-            return DriverResult(ok=True, text=f"sent {key}", app=app)
+            # macOS hands a Cmd shortcut to the frontmost app's menu bar and key
+            # window, so one posted to a background app may do nothing. The key
+            # is still sent, since some apps do act on it, and the reply says so.
+            note = _background_shortcut_note(app) if flags & keymap.FLAG_COMMAND else ""
+            return DriverResult(ok=True, text=f"sent {key}{note}", app=app)
 
         return _guarded("press_key", run)
 
@@ -1113,6 +1119,24 @@ def _at_scroll_end(position: float, direction: str) -> bool:
     if direction in (SCROLL_DOWN, SCROLL_RIGHT):
         return position == 1.0
     return position == 0.0
+
+
+def _background_shortcut_note(app: AppRef) -> str:
+    """Caveat for a Cmd shortcut posted to *app*, or ``""`` when it is frontmost.
+
+    An app that cannot be read as frontmost gets the caveat too: without it the
+    reply would claim a key landed when it may have been ignored.
+    """
+    with macos_ffi.ax_application(app.pid) as app_elem:
+        if macos_ffi.ax_bool_opt(app_elem, AX_FRONTMOST) is True:
+            return ""
+    return (
+        f", but '{app.name}' is not the frontmost app and macOS may ignore a Cmd "
+        "shortcut sent to a background app. Check the refreshed state before "
+        "relying on it; if nothing changed, use computer_click, computer_set_value "
+        "or computer_perform_action on an element instead, or ask the user to "
+        "bring the app to the front"
+    )
 
 
 def _missing_element(app: AppRef, rec: ElementRec) -> DriverResult:
