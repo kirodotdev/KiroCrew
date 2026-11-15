@@ -201,7 +201,7 @@ class TestStopReasonUnfinishedTurn:
         assert not any(b.startswith("success:") for b in sessions.booked), sessions.booked
 
     # At its threshold the breaker resets the session inside ``record_failure`` and
-    # answers True (``SessionAllocation.record_failure``). A same-key message can claim
+    # answers True (``SessionAllocationService.record_failure``). A same-key message can claim
     # a successor runtime while that reset is awaited, so the turn must not reset the
     # session a second time: that would end the successor mid-turn.
 

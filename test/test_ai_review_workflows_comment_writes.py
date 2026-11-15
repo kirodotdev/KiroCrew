@@ -23,7 +23,7 @@ from ai_review_workflows_helpers import (
 )
 
 #: Every review lane's notice step, with the slot-lookup shape it is allowed to
-#: carry. ``defines_lookup`` says the step declares ``find_existing``; ``creates``
+#: carry. ``defines`` says the step declares ``find_existing``; ``creates``
 #: says at least one branch in it CREATES a marker comment rather than only
 #: patching one that already exists. A create is the case that cannot be undone,
 #: so it is the case the gate exists for -- but the lookup is budgeted in both,
