@@ -951,11 +951,35 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         interval around approvals it does not pay — or walking into ones it does.
         """
         text = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
-        assert "Reads and creates do not prompt" in text
-        assert "`session_send` and `session_stop` are deliberately NOT auto-approved" in text
+        assert "**What prompts.** Granted by name" in text
+        # Own-child sends and closes are auto-approved (tool_approval._conductor_own_child_call).
+        assert (
+            "`session_send` and `session_close` into a session you created do not prompt"
+            " either (`agent.conductor_own_child_verbs`, on by default)"
+        ) in text
+        assert "aimed at any other session they prompt" in text
+        assert "`work_dispatch` prompts once per item" in text
+        assert (
+            "`session_stop` (it discards the target's in-flight work), `execute_bash`"
+            " and every other core tool prompt"
+        ) in text
         # The checks run as granted tools; only their shell fallback prompts.
         assert "`accept_eval` tool" in text
-        assert "each such call blocks on one approval" in text
+        assert "so every shell call prompts" in text
+
+    def test_skill_never_blocks_a_wake_on_a_question_card(self):
+        """A patrol wake has nobody at the keyboard, so a blocking card there stalls
+        the loop for up to 30 minutes; an unassertable item gets a report to check
+        instead of an invented ask.
+        """
+        text = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        assert (
+            "In a turn nobody typed (it opens with `[auto-nudge cycle`, `[work-ledger wake]`"
+            " or `[sent by session`, or a cron fired it), never call `ask_question`"
+        ) in text
+        assert "In a turn the user typed, ask with `ask_question`." in text
+        assert "make it a `file` item (a report the worker writes)" in text
+        assert "treat it as a needs-human item" not in text
 
     def test_skill_keeps_item_state_in_the_store_and_not_in_artifacts(self):
         """One record per item, in the one place the evaluator batch reads.
