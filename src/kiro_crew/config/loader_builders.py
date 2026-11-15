@@ -1391,6 +1391,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         crewmates_in_agent_picker=section.read("crewmates_in_agent_picker", _safe_bool),
         feature_previews=section.read("feature_previews", _feature_previews),
         dynamic_dashboard_cards=section.read("dynamic_dashboard_cards", _safe_bool),
+        audit_secret_reads=section.read("audit_secret_reads", _safe_bool),
         qr_session_until_restart=section.read("qr_session_until_restart", _safe_bool),
         qr_session_persist_across_restart=section.read(
             "qr_session_persist_across_restart", _safe_bool
