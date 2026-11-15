@@ -14,6 +14,7 @@ the wheel copies".
 from __future__ import annotations
 
 import pytest
+import test_agent_worlds_permission_parity as agent_worlds
 import test_code_review_sage_permission_parity as code_review_sage
 import test_design_tweak_permission_parity as design_tweak
 import test_dev_fleet_permission_parity as dev_fleet
@@ -22,7 +23,7 @@ from kiro_crew.apps import builtin_adoption_checks as checks
 from kiro_crew.apps import manager
 from kiro_crew.dashboard import token_auth_app_scope as scope
 
-APPS = [code_review_sage, design_tweak, dev_fleet]
+APPS = [agent_worlds, code_review_sage, design_tweak, dev_fleet]
 
 
 @pytest.fixture(params=APPS, ids=lambda app: app.NAME)

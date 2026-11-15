@@ -40,6 +40,8 @@ SHIPPED = (
     / "agent_worlds"
     / "app.json"
 )
+#: Agent Worlds has no API namespace of its own; every entry is a host path.
+OWN: list[str] = []
 HOST = [
     "=/api/chat",
     "/api/chat/slots",
@@ -89,23 +91,8 @@ def _repository_manifest(api: list[str]) -> AppManifest:
     return AppManifest.from_dict(data)
 
 
-def test_the_wheel_copy_declares_exactly_the_host_paths():
-    assert _shipped()["permissions"] == {"api": HOST}
-
-
-def test_every_host_path_the_page_calls_is_declared():
-    declared = _shipped()["permissions"]["api"]
-    for path in PAGE_CALLS:
-        assert any(scope._api_pattern_matches(p, path) for p in declared), path
-
-
-def test_a_registered_builtin_approves_what_the_wheel_ships(registered):
-    grants = manager._read_approved_grants(NAME)
-    assert grants is not None and grants["api"] == HOST
-
-
-def test_the_repository_copy_adopts_without_widening(registered):
-    assert checks.permission_refusal(NAME, _repository_manifest(HOST)) is None
+def test_the_wheel_copy_declares_api_paths_and_no_other_permission():
+    assert set(_shipped()["permissions"]) == {"api"}
 
 
 def test_one_more_host_path_is_still_a_widening(registered):
