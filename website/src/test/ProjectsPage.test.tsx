@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import { useEffect } from 'react'
 import { useNavigate, type NavigateFunction } from 'react-router-dom'
@@ -178,6 +178,29 @@ describe('ProjectsPage', () => {
     await waitFor(() => expect(taskRunnerStatusMock()).toHaveBeenCalled())
     // With no runs, the project list renders but is empty
     expect(screen.queryByTestId('agent-select')).toBeInTheDocument()
+  })
+
+  it('stops reading the runs while the tab is hidden, and reads once when it is shown again', async () => {
+    const setHidden = (hidden: boolean) => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (hidden ? 'hidden' : 'visible') })
+      document.dispatchEvent(new Event('visibilitychange'))
+    }
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers(); setHidden(false) })
+    renderWithProviders(<ProjectsPage />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const afterMount = taskRunnerStatusMock().mock.calls.length
+    expect(afterMount).toBeGreaterThan(0)
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(taskRunnerStatusMock()).toHaveBeenCalledTimes(afterMount + 1)
+
+    await act(async () => { setHidden(true); await vi.advanceTimersByTimeAsync(60_000) })
+    expect(taskRunnerStatusMock()).toHaveBeenCalledTimes(afterMount + 1)
+
+    await act(async () => { setHidden(false); await vi.advanceTimersByTimeAsync(0) })
+    expect(taskRunnerStatusMock()).toHaveBeenCalledTimes(afterMount + 2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(taskRunnerStatusMock()).toHaveBeenCalledTimes(afterMount + 3)
   })
 
   it('persists mode to sessionStorage', async () => {
