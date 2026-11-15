@@ -5,7 +5,9 @@ A KAS session start projects its own agent and then each sub-agent target its
 questions of the same files: which installed app declares an agent, and what each
 skill file in scope holds. Inside :func:`one_build` the first answer is kept and
 handed to every later asker of the same key, so a start with eight targets reads
-each file once instead of eight times.
+each file once instead of eight times. A KAS process spawn opens a block of its
+own around its handshake's spec read (``acp.runtime_spawn_launch``), which asks
+twice which installed app owns the agent.
 
 Nothing outlives the ``with`` block: the next session start reads everything again,
 so a file changed between two starts is always read fresh. Outside a block

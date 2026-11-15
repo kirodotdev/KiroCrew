@@ -2618,7 +2618,10 @@ an empty `mcpServers` map — opts out via
 the idle shortcut active from the start (the pre-ceiling behavior). A KAS
 process spawned for a tool-less agent has MCP switched off
 (`_kiro/mcp/toggle {enabled: false}`, `runtime_spawn_launch._send_mcp_off_if_toolless`,
-which sets `AcpRuntime._mcp_switched_off` for that spawn), so no server of any
+which sets `AcpRuntime._mcp_switched_off` for that spawn; the spec it judges is the
+one that spawn's handshake read, `AcpRuntime._spawn_spec`, cleared at the start of
+each spawn, and it reads the spec itself only when the handshake read none), so no
+server of any
 session on it can report: `_wait_managed_mcp` passes it a zero ceiling as well,
 and a tool-less agent such as `kirocrew-lite` no longer waits out the 6 s
 ceiling on every cold start. Every other agent keeps the ceiling.

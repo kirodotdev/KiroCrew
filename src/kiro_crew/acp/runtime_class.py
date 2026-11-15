@@ -369,6 +369,9 @@ class AcpRuntime:
         # The agent.env snapshot this spawn's handshake judged telemetry on, handed
         # to launch so the child gets the same values; None lets launch read it.
         self._spawn_agent_env: dict[str, str] | None = None
+        # The spec this spawn's handshake judged, handed to the MCP switch-off so
+        # both judge one read; None lets the switch-off read it.
+        self._spawn_spec: dict[str, Any] | None = None
         # Resolved on FIRST USE, never here: ``ACP_BACKENDS_KNOWN`` admits
         # backends the shared-process runtime has no harness for, and provider
         # safety constructs a runtime for every one of them to prove the reader
