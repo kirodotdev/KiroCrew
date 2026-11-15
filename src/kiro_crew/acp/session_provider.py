@@ -100,6 +100,16 @@ def _prompts_since(turn: tuple[Any, Any]) -> int:
     return 0
 
 
+def _handle_str(name: str) -> property:
+    """A read-only property forwarding the handle's str field *name*, see ``AcpSessionHandle``."""
+
+    def read(self: AcpSessionProvider) -> str:
+        value = getattr(self._handle, name, "")
+        return value if isinstance(value, str) else ""
+
+    return property(read, doc=f"See ``AcpSessionHandle.{name}``.")
+
+
 class AcpSessionProvider(LLMProvider):
     """LLMProvider adapter over an AcpSessionHandle on a shared runtime.
 
@@ -566,29 +576,12 @@ class AcpSessionProvider(LLMProvider):
         value = getattr(self._handle, "_last_kas_mode_id", "")
         return value if isinstance(value, str) else ""
 
-    @property
-    def kas_agent_prompt_notice(self) -> str:
-        """See ``AcpSessionHandle.kas_agent_prompt_notice``."""
-        value = getattr(self._handle, "kas_agent_prompt_notice", "")
-        return value if isinstance(value, str) else ""
-
-    @property
-    def kas_bundle_engine_version(self) -> str:
-        """See ``AcpSessionHandle.kas_bundle_engine_version``."""
-        value = getattr(self._handle, "kas_bundle_engine_version", "")
-        return value if isinstance(value, str) else ""
-
-    @property
-    def kas_telemetry_notice(self) -> str:
-        """See ``AcpSessionHandle.kas_telemetry_notice``."""
-        value = getattr(self._handle, "kas_telemetry_notice", "")
-        return value if isinstance(value, str) else ""
-
-    @property
-    def kas_withheld_credentials_notice(self) -> str:
-        """See ``AcpSessionHandle.kas_withheld_credentials_notice``."""
-        value = getattr(self._handle, "kas_withheld_credentials_notice", "")
-        return value if isinstance(value, str) else ""
+    # Each reads the handle's field of the same name, ``""`` when it is not a str.
+    kas_agent_prompt_notice = _handle_str("kas_agent_prompt_notice")
+    kas_bundle_engine_version = _handle_str("kas_bundle_engine_version")
+    kas_untested_version_notice = _handle_str("kas_untested_version_notice")
+    kas_telemetry_notice = _handle_str("kas_telemetry_notice")
+    kas_withheld_credentials_notice = _handle_str("kas_withheld_credentials_notice")
 
     @property
     def zero_tool_ban_notice(self) -> str:
