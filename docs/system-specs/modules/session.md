@@ -427,6 +427,14 @@ crew and opened here through its window. A slot already on disk with
 continue or checklist write, and a change of agent, model, effort or workspace, answer
 `409 relay_archive_read_only` (`dashboard/relay_archive.py`).
 
+A create body carrying `app_launch: <app>` is an app's page opening a person's chat
+under that app's `permissions.chatLaunch`: right after the title check it is held to the
+declaration (`dashboard/app_chat_launch.py`), and a key that took an app-owned or
+non-chat slot, or a letter-case alias of a live slot, during the create's awaits is
+refused again with no await before the mint.
+Otherwise it is the same create. The rule:
+[app-kit-platform §44](app-kit-platform.md#44-app-chat-launch-the-persons-chat-an-apps-page-opens-seam-level-10).
+
 Cross-boundary calls that were observable on `SessionManager` route back through
 the facade, and patchable module dependencies are resolved through injected
 call-time functions. Persistence remains owned by the existing `SessionMap`

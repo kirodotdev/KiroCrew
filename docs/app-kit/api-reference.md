@@ -130,6 +130,35 @@ carried comes back to the user in the "send cancelled" notice. An older host may
 session before its list has it and stay on the previous chat; an app that must also
 run there can keep a short wait of its own before opening a just-created session.
 
+`useChatLauncher().createChat(options)` creates, or reopens, a chat for the person
+and resolves to its slot key, without your page declaring `/api/chat/slots` (App Kit
+seam level 10; test that `createChat` exists rather than reading the level). It opens
+only the chat your manifest's `permissions.chatLaunch` declares
+([manifest-reference](manifest-reference.md)), and the gateway refuses anything else
+with a `403` whose body carries `app_chat_launch_refused`:
+
+- `slotKey`: your `keyPrefix` followed by 1 to 128 of `[A-Za-z0-9._-]`. The same key
+  reopens the same chat. A key holding a slot another app owns, or a chat another app's
+  page opened, is refused. A prefix is one installed app's: while another installed
+  app, enabled or not, declares a prefix that overlaps yours (one starts with the
+  other), every `createChat` of both apps is refused, so neither reaches the other's
+  chats. Start yours with your app's name to keep it your own.
+- `agent`: one of your declared `agents`.
+- `title`: the sidebar title. Sent again on a reopen, it renames the chat, so send it
+  only when you create one.
+- `folderId`: the id of a folder named your declared `folder`, to file the chat in.
+- `memoryMode`: one of your declared `memoryModes`; `'persistent'` when omitted.
+
+The chat is the person's: it records no owning app and runs under their own approval
+rules, exactly like one they opened. `createChat` does not navigate; pass the key to
+`openChat({ slotKey })`:
+
+```ts
+const { createChat, openChat } = useChatLauncher()
+const slotKey = await createChat({ slotKey: 'notes-followup-42', agent: 'notes-reviewer', title: 'Follow-up #42' })
+openChat({ slotKey })
+```
+
 Level-1 additions to the SDK, each also re-exported by the vendor stub an app's bundle
 resolves through:
 
@@ -2021,8 +2050,12 @@ directory entries in `credentialMasks` (`"state/"`), the dashboard's
 `backend.webOrigin` with the dashboard's `appWebOrigin(name)`, level 9 adds
 `permissions.bots`, which an app's backend uses with its app token
 ([Bots](#bots-permissionsbots-from-your-backend)), and level 10 refuses an
-installed app's `credentialMasks` to the agent's file tools too; each level
-includes every level below it. Several seams share level 7, and three share level 8, so an app that needs one
+installed app's `credentialMasks` to the agent's file tools too and adds the manifest's
+`permissions.chatLaunch` (see
+[manifest-reference.md](manifest-reference.md#permissions)) with
+[`useChatLauncher().createChat`](#app-sdk-hooks-dashboard-ui); each level
+includes every level below it. Several seams share level 7, three share level 8, and
+level 10 is shared by the seams of the batch it opens, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.

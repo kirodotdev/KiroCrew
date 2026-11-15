@@ -17,12 +17,15 @@ import logging
 import re
 import sys
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from kiro_crew.apps.app_hosts import frame_origin_refusal
 from kiro_crew.apps.desktop_capabilities import declared_capabilities
 from kiro_crew.apps.manifest_names import KEBAB_RE
 from kiro_crew.apps.user_session_reach import declared_verbs
+
+if TYPE_CHECKING:
+    from kiro_crew.apps.chat_launch import ChatLaunch
 
 logger = logging.getLogger(__name__)
 
@@ -668,6 +671,11 @@ class Permissions:
     #: session lists (``apps/hidden_sessions.py``). Shown on the app's detail page.
     #: Hides a list row only: approvals and questions still reach the owner.
     hiddenSessions: bool = False  # noqa: N815
+    #: The one shape of the person's chat its page may create or reopen through
+    #: ``POST /api/chat/slots`` without declaring that path: a key prefix, the
+    #: agents, an optional folder and the memory modes (``apps/chat_launch.py``).
+    #: Shown at the trust prompt. ``None`` when absent or malformed.
+    chatLaunch: ChatLaunch | None = None  # noqa: N815
     #: May hold a bounded, audited auto-approve grant on the app's OWN worker
     #: slots through ``ctx.auto_approve`` (``apps/worker_auto_approve.py``).
     #: Shown at the trust prompt and held back on a widening update like a new
@@ -730,6 +738,8 @@ class Permissions:
             d["chatSlots"] = True
         if self.hiddenSessions:
             d["hiddenSessions"] = True
+        if self.chatLaunch is not None:
+            d["chatLaunch"] = self.chatLaunch.to_dict()
         if self.workerAutoApprove:
             d["workerAutoApprove"] = True
         if self.reachableByUserSessions:
@@ -757,6 +767,12 @@ class Permissions:
         # `admission.require_signature`): there, an unexpected value must keep the
         # restriction ON. Same defect class, mirrored fix — the safe default
         # follows what the field grants or withholds, not the field's type.
+        #
+        # The chat launch parser is imported here, not at the top: every MCP server
+        # imports this module before it lists its tools but parses no manifest there,
+        # and `test_mcp_listing_import_budget.py` caps the modules that listing loads.
+        from kiro_crew.apps.chat_launch import parse_chat_launch
+
         return cls(
             api=_granted_list(data.get("api")),
             events=_granted_list(data.get("events")),
@@ -773,6 +789,7 @@ class Permissions:
             agentTurns=data.get("agentTurns") is True,  # noqa: N815
             chatSlots=data.get("chatSlots") is True,  # noqa: N815
             hiddenSessions=data.get("hiddenSessions") is True,  # noqa: N815
+            chatLaunch=parse_chat_launch(data.get("chatLaunch")),  # noqa: N815
             workerAutoApprove=data.get("workerAutoApprove") is True,  # noqa: N815
             reachableByUserSessions=declared_verbs(data.get("reachableByUserSessions")),
             desktopCapabilities=declared_capabilities(data.get("desktopCapabilities")),

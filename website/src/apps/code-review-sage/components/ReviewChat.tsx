@@ -146,15 +146,16 @@ export default function ReviewChat(
       // Two calls, deliberately. The app arms the resume and hands back what the
       // slot needs; the slot itself is created through the dashboard's own
       // endpoint so agent binding, workspace resolution and title redaction have
-      // one implementation rather than a copy in this app.
+      // one implementation rather than a copy in this app. It is an app launch:
+      // the gateway holds it to the manifest's `permissions.chatLaunch`.
       const prep = await sageApi.followupStart(runId, changeId)
       // Title and folder are sent only when the session is being CREATED. That
       // endpoint addresses an existing slot by name and then re-pins whatever it
       // is given, so sending them again on a continue would revert a session the
       // user has since renamed or moved into a folder of their own.
-      const slot = await api.createChatSlot(
-        prep.slot_key, prep.agent, undefined, undefined, 'persistent',
-        alreadyOpen ? undefined : prep.title, undefined,
+      const slot = await api.createAppChatSlot(
+        'code-review-sage', prep.slot_key, prep.agent, 'persistent',
+        alreadyOpen ? undefined : prep.title,
         alreadyOpen ? undefined : (prep.folder_id || undefined),
       )
       return slot.key || prep.slot_key

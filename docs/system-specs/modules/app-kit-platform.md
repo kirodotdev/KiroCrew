@@ -413,6 +413,9 @@ stays claimable, so a socket drop that outlasts that window resumes it on reconn
 newer launch supersedes the wait silently, as it does a pending activation. Pinned
 by `src/test/ChatPageNewSessionPrefill.test.tsx` ("into a session the list does not
 show yet").
+An app that creates that session for the person, rather than through its own declared
+`/api/chat/slots`, uses `useChatLauncher().createChat` inside its manifest's
+`permissions.chatLaunch` (§44) and then opens the key it answers.
 The controller retains a claimed message through slow
 activation; a rejected switch reports failure and the unsent message together
 in the existing copyable session-open notice, without sending to another slot.
@@ -7340,7 +7343,9 @@ an app's windows and `permissions.desktopCapabilities` (§35), the exact `permis
 transport), `ctx.chat_slots` (§41), the SDK's project picker (§18i) and `ctx.webhook_source` (§42); level 8 adds directory entries in `credentialMasks`
 (§37), the SDK's `useHostSessions` (§18j) and the desktop block's `platformAccelerators`
 (§35); level 9 adds `permissions.bots` (§32c); level 10 adds the agent tool gate's fence
-on an installed app's `credentialMasks` (§37). Several seams share level 7, and three share level 8, so an app that needs one
+on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
+`useChatLauncher().createChat` (§44). Several seams share level 7, three share level 8,
+and the open batch that level 10 starts shares level 10, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
@@ -9600,6 +9605,129 @@ again.
 `APP_SDK_LEVEL` is 8 on both sides (`apps/app_sdk_level.py`,
 `website/src/app-sdk/sdkLevel.ts`, pinned by `test_app_sdk_level_mirror.py`).
 `test/fixtures/memory_provider_app/` is a complete stdlib provider used by the tests.
+
+## 44. App chat launch: the person's chat an app's page opens (seam level 10)
+
+A built-in page that hands the person a conversation creates a named chat slot for
+them with the dashboard's own client: Code Review Sage's review panel opens a follow-up
+with the reviewer (its agent, a title, the `Sage Review` folder, persistent memory)
+through `POST /api/chat/slots`. An adopted copy calls the host through its scoped
+client, and declaring `/api/chat/slots` in `permissions.api` would hand its page every
+slot route under that entry, which adoption's E9 refuses as a widening. Owner ruling of
+2026-11-13 on #26967 (comment 6841699202: grant each app what its built-in already
+uses, declared in the manifest and shown at install) asks for an app chat slot seam
+instead. This is it, for the person's chats; the chats an app owns and drives are
+`ctx.chat_slots` (§41).
+
+**Declaration.** `permissions.chatLaunch`, parsed by `apps/chat_launch.parse_chat_launch`
+into `Permissions.chatLaunch` (`manifest_sections.py`):
+`{"keyPrefix", "agents", "folder"?, "memoryModes"?}`. `keyPrefix` is lowercase kebab
+words ending in `-`, at most 64 characters; `agents` is 1 to 16 registered agent names;
+`folder` an optional printable name of at most 80 characters; `memoryModes` a non-empty
+subset of `persistent`, `incognito`, `temporary`, `["persistent"]` when omitted. An
+unknown key or any malformed part makes the whole value declare nothing (`None`), the
+direction a grant fails in. A prefix that starts like, or is the start of, a key the
+core mints for itself (`chat-` for a person's tab, `cron-`, `workflow-`, `task-review-`,
+`member-`; `chat_launch.CORE_KEY_PREFIXES`, pinned equal to the core constants) is
+malformed, so no declaration names a core slot. `to_dict` and `signing_payload` carry it
+only when declared, so an older signature still verifies.
+
+**The create.** `useChatLauncher().createChat({slotKey, agent, title?, folderId?,
+memoryMode?})` (`app-sdk/scopedApi.ts`, `createChatLauncher`) posts the ordinary create
+through the host, not the scoped client, with `app_launch: <app>` and `embed_app: <app>`
+(the scoped client's own rule for a page's create, so the conversation it begins records
+the app for uninstall), the host's `X-Session-Key` binding, and nothing else; it
+resolves to the slot key and does not navigate (`openChat({slotKey})` opens it). A
+built-in page sends the same create through the dashboard client's `createAppChatSlot`.
+`api_chat_slot_create` hands a body carrying `app_launch` to
+`dashboard/app_chat_launch.app_launch_refusal` right after the title type check,
+before anything else is read, which admits it only when:
+
+- the request is a person's: an app token (`request["app"]`) never launches;
+- `app_launch` is a valid app name, the app is installed and enabled, and its installed
+  record's manifest declares `chatLaunch` (`chat_launch.declared_chat_launch`, read off
+  the loop on every create, so a manifest that drops the key or a disabled app refuses
+  the next one), and `embed_app`, when sent, names the same app;
+- no other installed app, enabled or not, declares a `keyPrefix` that overlaps the
+  app's own, one being the start of the other (`chat_launch.overlapping_declarers`,
+  every non-sidecar tree's `app.json` under `apps/`, read in the same off-loop hop; a
+  data home it cannot list refuses). While two installed apps overlap, neither
+  launches. So the key, not a record on the chat, says whose a chat is: a chat under
+  one app's prefix is never another app's to reopen, retitle or refile, including one
+  the built-in page opened, whose record names no app (below), and one opened before
+  this seam. Uninstalling an app frees its prefix;
+- the body holds only `name`, `agent`, `memory_mode`, `title`, `folder_id`, `app_launch`
+  and `embed_app`, so no project, mode, model, artifact, work item, agent namespace or
+  app-agent owner rides along;
+- `name` is unchanged by `_normalize_slot_key`, is the declared prefix followed by 1 to
+  128 of `[A-Za-z0-9._-]` within 193 characters (the length the slot registry keeps
+  unfolded), and is not a key `slot_ownership.app_reserved_key_reason` reserves;
+- `agent` is a declared agent and the memory mode (`persistent` when absent) a declared
+  one; a `folder_id` names a folder whose name is the declared `folder`;
+- no live slot under the key is app-owned (`_app`) or of another mode; no other live
+  slot has the key or its transcript key up to letter case
+  (`slot_ownership.live_case_alias_reason`, the check an app's own create takes), since
+  on a case-insensitive filesystem the two would write one transcript; and the saved
+  transcript, when there is one, is readable, records no owning `app` and no other app's
+  `embed_app`.
+
+A key that, during the create's later awaits, came to hold an app-owned or non-chat slot
+or to alias a live slot by letter case is refused again by `live_slot_refusal`, run with
+no await before the mint. Every refusal
+is one `403 app_chat_launch_refused` with the same sentence, which creates nothing; the
+reason goes to the SEL (`_audit_app_denial`, operation `chat_launch`) under the app's
+name. What passes is the ordinary create, unchanged: the slot records no owning app,
+runs under the person's approval rules, and a reopen of a person's chat under the prefix
+(a follow-up the built-in opened before this seam) works as before. The body key
+`app_launch` does not keep an otherwise plain create from deferring its broadcast.
+
+**Not a staged grant.** An app page's code runs in the dashboard's own document, so the
+declaration adds no reach its code lacks; as with `chatSlots` (§41) it names the seam
+so "which apps open chats for me, with which agents" is answerable from the manifest. It
+is shown whole, the agents, the folder, the key prefix and every memory mode, on the
+trust prompt (`TrustAppModal`, from `trustGrants`, through
+`components/appstore/chatLaunch.ts`: `chatLaunchLine` and `chatLaunchScopeLine`, which
+reads `memoryModes` as the gateway does and shows a value with an unknown mode as
+nothing), in the catalog's pre-install disclosure
+(`official_catalog._disclosed_permissions_manifest`, normalized), in the CLI install
+summary (`format_permissions_summary`) and on the detail page (`ChatLaunchBox`). E9
+(§33) refuses an adopted manifest whose declaration is not `within` the wheel copy's:
+the same prefix and folder, and no agent or memory mode the wheel copy lacks.
+
+**Seam level.** 10 (`APP_SDK_LEVEL`, both sides), the level of the open seam batch, which
+it shares with §37's tool gate fence on an installed app's masks (driver decision of
+2026-11-13 on #26967, comment 6844003956: one level for a batch, feature-detected; level
+9, §32c's `permissions.bots`, shipped in v0.13.0-rc.2, so it is closed), so an app tests
+for `createChat` on the launcher, never the level alone; `scripts/adoption_pin.py` counts
+a declared `chatLaunch` as a level-10 use.
+An older host has no `createChat` and ignores the key.
+
+**The built-in.** Code Review Sage's wheel copy declares `{"keyPrefix": "sage-followup-",
+"agents": ["code-review-sage-reviewer", "kirocrew"], "folder": "Sage Review",
+"memoryModes": ["persistent"]}`, and its review panel creates the follow-up through
+`createAppChatSlot` with the same key, agent, title, folder and memory mode it sent
+before, so the create is the one it was. `createAppChatSlot` sends no `embed_app`:
+that field makes the create write the chat's first record line at once and makes an
+uninstall drop the chat's resume pointer, which the follow-up has never done. The
+prefix rule above is what keeps another app off those chats. Its own test pins the declaration to the
+follow-up's key derivation, both review agents, the folder name and the memory mode.
+
+Writers: `apps/chat_launch.py`, `apps/manifest_sections.py`,
+`apps/builtin_adoption_checks.py`, `apps/permissions.py`, `apps/official_catalog.py`,
+`apps/app_sdk_level.py`, `dashboard/app_chat_launch.py`,
+`dashboard/chat_api/slot_create.py`, `scripts/adoption_pin.py`,
+`apps/builtins/code_review_sage/app.json`, `website/src/app-sdk/scopedApi.ts`,
+`website/src/app-sdk/index.ts`, `website/src/app-sdk/sdkLevel.ts`,
+`website/src/api/client/chat.ts`,
+`website/src/apps/code-review-sage/components/ReviewChat.tsx`,
+`website/src/components/appstore/chatLaunch.ts`,
+`website/src/components/appstore/trustGrants.ts`,
+`website/src/components/appstore/TrustAppModal.tsx`,
+`website/src/pages/AppDetailGrantBoxes.tsx`. Tests: `test/test_app_chat_launch.py`,
+`test/test_code_review_sage_permission_parity.py`, `test/test_builtin_adoption_pins.py`,
+`apps/builtins/code_review_sage/tests/test_manifest_chat_launch.py`,
+`website/src/test/appChatLaunch.test.tsx`,
+`website/src/apps/code-review-sage/CodeReviewSageReviewChat.test.tsx`.
 
 ## Windows stale-backend cleanup capacity
 
