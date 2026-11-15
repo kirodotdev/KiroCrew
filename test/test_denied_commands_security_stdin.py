@@ -526,10 +526,11 @@ class TestPythonStdinDetectorStepsOverOutputRedirects:
         # alone.
         security._python_reads_stdin([">a" * 200, "<<<", "prog"])
         tokens = [">a" * 1600, "<<<", "prog"]
-        start = time.perf_counter()
+        # Thread CPU: the scan runs on this thread, and a wall reading would bill a
+        # loaded runner's scheduling to it.
+        start = time.thread_time()
         assert security._python_reads_stdin(tokens) is True
-        large = time.perf_counter() - start
-        # flake-ok: pre-existing 0.2 s backstop over a warmed path; the linearity is pinned by the traced scan starts below; moved verbatim, tracked for a de-flake pass
+        large = time.thread_time() - start
         assert large < 0.2, f"1600 glued redirects took {large:.4f}s"
 
         real_scan = security._output_redirect_scan
