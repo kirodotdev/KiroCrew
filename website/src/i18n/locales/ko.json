@@ -8304,7 +8304,10 @@
         "repeated_failures_body": "이번 주 에이전트의 일부 도구 호출이 계속해서 실패했습니다. 이 알림을 열어 확인하고 그중 하나를 교훈으로 만드세요.",
         "mcp_share_paused_title": "공유 중인 MCP 서버가 일시 중지되었습니다",
         "mcp_share_paused_body": "일시 중지됨: {{names}}. 공유 서버를 검토해 업데이트를 승인하면 다시 공유합니다.",
-        "mcp_share_paused_link": "공유 서버 검토"
+        "mcp_share_paused_link": "공유 서버 검토",
+        "moved_to_history_title": "세션이 기록으로 이동됨",
+        "moved_to_history_startup_body_other": "열린 세션을 최대 {{limit}}개로 유지하기 위해 시작할 때 오래된 열린 탭 {{count}}개를 기록에 남겨 두었습니다. 기록을 열어 재개하세요.",
+        "moved_to_history_idle_body_other": "{{limit}}개 세션 한도를 넘지 않도록 {{days}}일 넘게 사용하지 않은 세션 {{count}}개를 기록에 보관했습니다. 기록을 열어 재개하세요."
       },
       "notificationBanner": {
         "dismiss_notification": "알림 닫기",

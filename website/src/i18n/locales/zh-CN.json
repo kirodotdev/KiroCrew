@@ -8304,7 +8304,10 @@
         "repeated_failures_body": "本周智能体的一些工具调用一再失败。打开这条通知查看它们，并把其中一个转成经验。",
         "mcp_share_paused_title": "有共享的 MCP 服务器已暂停",
         "mcp_share_paused_body": "已暂停：{{names}}。查看共享服务器并批准更新后，会重新共享。",
-        "mcp_share_paused_link": "查看共享服务器"
+        "mcp_share_paused_link": "查看共享服务器",
+        "moved_to_history_title": "会话已移至历史记录",
+        "moved_to_history_startup_body_other": "为使打开的会话不超过 {{limit}} 个，启动时有 {{count}} 个较早打开的标签页留在了历史记录中。打开历史记录即可恢复。",
+        "moved_to_history_idle_body_other": "为保持在 {{limit}} 个会话的上限以内，已将 {{count}} 个闲置超过 {{days}} 天的会话归档到历史记录。打开历史记录即可恢复。"
       },
       "notificationBanner": {
         "dismiss_notification": "关闭通知",

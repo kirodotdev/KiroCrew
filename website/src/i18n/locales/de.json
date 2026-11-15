@@ -8513,7 +8513,12 @@
         "repeated_failures_body": "Einige Tool-Aufrufe des Agenten sind diese Woche immer wieder fehlgeschlagen. Öffne diesen Hinweis, um sie zu sehen und einen davon in eine Lektion zu verwandeln.",
         "mcp_share_paused_title": "Ein geteilter MCP-Server ist pausiert",
         "mcp_share_paused_body": "Pausiert: {{names}}. Prüfe die geteilten Server und gib das Update frei, um wieder zu teilen.",
-        "mcp_share_paused_link": "Geteilte Server prüfen"
+        "mcp_share_paused_link": "Geteilte Server prüfen",
+        "moved_to_history_title": "Sitzungen in den Verlauf verschoben",
+        "moved_to_history_startup_body_one": "{{count}} älterer geöffneter Tab wurde beim Start im Verlauf belassen, damit höchstens {{limit}} Sitzungen geöffnet sind. Öffne den Verlauf, um ihn fortzusetzen.",
+        "moved_to_history_startup_body_other": "{{count}} ältere geöffnete Tabs wurden beim Start im Verlauf belassen, damit höchstens {{limit}} Sitzungen geöffnet sind. Öffne den Verlauf, um einen davon fortzusetzen.",
+        "moved_to_history_idle_body_one": "{{count}} Sitzung, die über {{days}} Tag(e) inaktiv war, wurde im Verlauf archiviert, um unter dem Limit von {{limit}} Sitzungen zu bleiben. Öffne den Verlauf, um sie fortzusetzen.",
+        "moved_to_history_idle_body_other": "{{count}} Sitzungen, die über {{days}} Tag(e) inaktiv waren, wurden im Verlauf archiviert, um unter dem Limit von {{limit}} Sitzungen zu bleiben. Öffne den Verlauf, um eine davon fortzusetzen."
       },
       "notificationBanner": {
         "dismiss_notification": "Benachrichtigung schließen",

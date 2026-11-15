@@ -122,6 +122,8 @@ const SYSTEM_NOTE_TITLE_KEY = {
   folder_agent_label: 'components.notifications.systemNote.folder_agent_label_title',
   repeated_failures: 'components.notifications.systemNote.repeated_failures_title',
   mcp_share_paused: 'components.notifications.systemNote.mcp_share_paused_title',
+  moved_to_history_startup: 'components.notifications.systemNote.moved_to_history_title',
+  moved_to_history_idle: 'components.notifications.systemNote.moved_to_history_title',
 } as const
 type SystemNoteId = keyof typeof SYSTEM_NOTE_TITLE_KEY
 const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
@@ -139,6 +141,8 @@ const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
   folder_agent_label: 'components.notifications.systemNote.folder_agent_label_body',
   repeated_failures: 'components.notifications.systemNote.repeated_failures_body',
   mcp_share_paused: 'components.notifications.systemNote.mcp_share_paused_body',
+  moved_to_history_startup: 'components.notifications.systemNote.moved_to_history_startup_body',
+  moved_to_history_idle: 'components.notifications.systemNote.moved_to_history_idle_body',
 }
 
 /** The note's title and body, in the dashboard's language when the gateway

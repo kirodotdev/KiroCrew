@@ -8722,7 +8722,14 @@
         "repeated_failures_body": "Alcune chiamate a strumenti dell’agente sono fallite più volte questa settimana. Apri questo avviso per vederle e trasformarne una in lezione.",
         "mcp_share_paused_title": "Un server MCP condiviso è in pausa",
         "mcp_share_paused_body": "In pausa: {{names}}. Rivedi i server condivisi e approva l’aggiornamento per condividerlo di nuovo.",
-        "mcp_share_paused_link": "Rivedi i server condivisi"
+        "mcp_share_paused_link": "Rivedi i server condivisi",
+        "moved_to_history_title": "Sessioni spostate nella Cronologia",
+        "moved_to_history_startup_body_one": "All’avvio, {{count}} scheda aperta meno recente è rimasta nella Cronologia per mantenere al massimo {{limit}} sessioni aperte. Apri la Cronologia per riprenderla.",
+        "moved_to_history_startup_body_many": "All’avvio, {{count}} schede aperte meno recenti sono rimaste nella Cronologia per mantenere al massimo {{limit}} sessioni aperte. Apri la Cronologia per riprenderne una.",
+        "moved_to_history_startup_body_other": "All’avvio, {{count}} schede aperte meno recenti sono rimaste nella Cronologia per mantenere al massimo {{limit}} sessioni aperte. Apri la Cronologia per riprenderne una.",
+        "moved_to_history_idle_body_one": "{{count}} sessione inattiva da oltre {{days}} giorno/i è stata archiviata nella Cronologia per restare sotto il limite di {{limit}} sessioni. Apri la Cronologia per riprenderla.",
+        "moved_to_history_idle_body_many": "{{count}} sessioni inattive da oltre {{days}} giorno/i sono state archiviate nella Cronologia per restare sotto il limite di {{limit}} sessioni. Apri la Cronologia per riprenderne una.",
+        "moved_to_history_idle_body_other": "{{count}} sessioni inattive da oltre {{days}} giorno/i sono state archiviate nella Cronologia per restare sotto il limite di {{limit}} sessioni. Apri la Cronologia per riprenderne una."
       },
       "notificationBanner": {
         "dismiss_notification": "Ignora notifica",
