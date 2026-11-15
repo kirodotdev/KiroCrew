@@ -285,3 +285,112 @@ class TestOneStartReadsEachFileOnce:
         # The name scan reads each spec once for the whole start; each target's own
         # projection then loads its own spec, once, as before.
         assert [spec_reads.count(t) for t in targets] == [2] * len(targets), spec_reads
+
+
+class TestOneSpawnReadsEachInstalledAppOnce:
+    """A KAS process spawned for a custom agent asks which installed app owns the
+    agent when it reads the spec, and again for the servers Crew added to it; the
+    MCP switch-off then judges the spec the handshake read. One spawn reads each
+    installed app once, and what it sends does not move."""
+
+    APPS = ("app-a", "app-b")
+
+    @pytest.fixture
+    def spawn(self, tmp_path, monkeypatch, home):
+        from kiro_crew.acp import kas_secret_storage
+        from kiro_crew.acp import runtime as runtime_mod
+        from kiro_crew.acp import runtime_spawn_launch
+        from kiro_crew.acp.runtime import AcpRuntime
+        from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
+        from kiro_crew.apps import manager_lookup
+
+        agents = tmp_path / "kiro" / "agents"
+        agents.mkdir(parents=True)
+        monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro"))
+        monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: agents)
+        monkeypatch.setattr(runtime_mod, "ensure_agent_materialized", lambda agent: None)
+        monkeypatch.setattr(kas_secret_storage, "persistence_enabled", lambda: False)
+        monkeypatch.setattr(
+            agent_mod, "managed_mcp_spec_entry", lambda name, **_: {"command": name}
+        )
+        monkeypatch.setattr(
+            runtime_spawn_launch, "_known_server_tool_names", lambda server: ["memory_recall"]
+        )
+        for app in self.APPS:
+            (home / "apps" / app).mkdir(parents=True)
+            (home / "apps" / app / "installed.json").write_text("{}", encoding="utf-8")
+        spec = {"name": "mine", "prompt": "p", "tools": ["fs_read", "@own/one"]}
+        (agents / "mine.json").write_text(json.dumps(spec), encoding="utf-8")
+        app_reads: list[str] = []
+        real_app = manager_lookup._declared_agents
+
+        def app_spy(entry):
+            app_reads.append(entry.name)
+            return real_app(entry)
+
+        monkeypatch.setattr(manager_lookup, "_declared_agents", app_spy)
+        work = tmp_path / "work"
+        work.mkdir()
+        sent: list[tuple[str, dict]] = []
+
+        async def send_notification(method: str, params: dict) -> None:
+            sent.append((method, params))
+
+        rt = AcpRuntime(acp_backend=ACP_BACKEND_KAS, work_dir=str(work))
+        rt._agent = "mine"
+        rt._tool_search = ToolSearchSettings(True, 5, 50_000)
+        rt.send_notification = send_notification  # type: ignore[method-assign]
+
+        async def start() -> dict:
+            """The two spec judgements of one spawn, in ``_spawn_admitted``'s order."""
+            caps = await runtime_spawn_launch._handshake_client_capabilities(rt)
+            await runtime_spawn_launch._switch_off_mcp_for_toolless_spawn(rt)
+            assert sent == [] and rt._mcp_switched_off is False
+            return caps["_meta"]["kiro"]["settings"]["toolSearch"]
+
+        return start, app_reads
+
+    @pytest.mark.asyncio
+    async def test_each_app_is_read_once_and_the_handshake_does_not_move(self, spawn, monkeypatch):
+        from kiro_crew import build_reuse
+
+        start, app_reads = spawn
+        real_reuse = build_reuse.reuse
+        monkeypatch.setattr(build_reuse, "reuse", lambda key, compute, **_: compute())
+        before = await start()
+        assert before["enabled"] is False
+        # Crew's added servers stay behind the loader; the author's own grant is direct.
+        assert before["neverDefer"] == ["kirocrew-core::mcp_server_wait", "own::one"]
+        assert app_reads == [*self.APPS, *self.APPS], "without reuse each ask reads"
+        app_reads.clear()
+
+        monkeypatch.setattr(build_reuse, "reuse", real_reuse)
+        after = await start()
+
+        assert after == before
+        assert app_reads == list(self.APPS)
+
+    @pytest.mark.asyncio
+    async def test_the_next_spawn_reads_the_apps_and_the_spec_again(self, spawn, tmp_path):
+        """Nothing is kept past one spawn: an app or a spec changed between two
+        spawns of one runtime is read fresh by the second."""
+        start, app_reads = spawn
+        first = await start()
+        spec = {"name": "mine", "prompt": "p", "tools": ["fs_read", "@other/two"]}
+        (tmp_path / "kiro" / "agents" / "mine.json").write_text(json.dumps(spec), encoding="utf-8")
+        second = await start()
+        assert app_reads == [*self.APPS, *self.APPS]
+        assert first["neverDefer"] == ["kirocrew-core::mcp_server_wait", "own::one"]
+        assert second["neverDefer"] == ["kirocrew-core::mcp_server_wait", "other::two"]
+
+    def test_each_spawn_starts_with_no_judged_spec(self):
+        """The spec the switch-off reuses is this spawn's handshake's: the spawn
+        clears it before the handshake, so one whose handshake reads none (no Tool
+        Search settings) never judges an earlier spawn's."""
+        import inspect
+
+        from kiro_crew.acp import runtime_spawn_launch
+
+        src = inspect.getsource(runtime_spawn_launch._spawn_admitted)
+        cleared = src.find("self._spawn_spec = None")
+        assert 0 <= cleared < src.index("await self._handshake_client_capabilities()")
