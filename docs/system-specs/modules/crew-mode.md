@@ -2795,7 +2795,17 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   `set_key_results` descriptions, the goal-setup nudge and its own context say
   that a few goals and milestones are easier to track, and to suggest merging
   as the list grows), and the whole record stays inside its 64 KiB byte bound;
-- the tab has **two pages**. The first only shows state, in four sections,
+- **Credits used**, a card right after **Goals**: the credits the sessions
+  bound to the Bot's work items reported, read by the GET route only
+  (`handlers.member_goals.work_spend` over the `workstreams` fold of the Bot's
+  thread slot) and kept by the tab across a write, whose answer carries none.
+  Each worker session counts once however many tasks it served. No metered
+  charge reads **Not reported**, never zero; a fold that dropped boards, tasks,
+  units or spenders reads **At least**; a slot fold that is not warm reads
+  **Still counting** and asks one background prime; an unreadable fold hides
+  the card. The Bot's own chat turns are not in the number;
+- the tab has **two pages**. The first only shows state, in four sections
+  (five with **Credits used**),
   each card opening with its header as the FIRST row, a hairline under it
   (`SectionHeader`: the icon on a tinted tile at the Profile tab's `Tile`
   size, 36px, then the title in sentence case; a count or an action rides at

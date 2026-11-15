@@ -37,7 +37,8 @@ export default function CrewHeartbeatRow({ slug, member, onBusyChange }: { slug:
   const busyRef = useRef(false)
   const save = useMutation({
     mutationFn: (changes: Partial<GoalSchedules>) => api.memberGoals.setSchedules(slug, member, changes),
-    onSuccess: (data: MemberGoals) => { qc.setQueryData(memberGoalsKey(slug, member), data) },
+    // A write answers without the spend line (only the GET reads it): keep the one shown.
+    onSuccess: (data: MemberGoals) => { qc.setQueryData<MemberGoals>(memberGoalsKey(slug, member), prev => ({ ...data, spend: data.spend ?? prev?.spend })) },
     onError: () => { void qc.invalidateQueries({ queryKey: memberGoalsKey(slug, member) }) },
     onSettled: () => { busyRef.current = false },
   })

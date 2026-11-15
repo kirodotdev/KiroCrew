@@ -265,6 +265,13 @@ export interface GoalReport {
   at: number
 }
 
+/** What the Bot's work used, summed once per worker session from the metered
+ *  charges. `partial` means the total is a lower bound. */
+export type GoalSpend =
+  | { status: 'reported'; credits: number; partial: boolean }
+  | { status: 'not_reported'; partial: boolean }
+  | { status: 'pending' }
+
 /** GET /api/members/{slug}/goals: the crewmate's goal record. */
 export interface MemberGoals {
   slug: string
@@ -280,6 +287,9 @@ export interface MemberGoals {
   removed_goal: { id: string; text: string; at: number } | null
   /** The goal a write added or changed (write answers only). */
   goal_id?: string
+  /** The credits the Bot's work used (GET only; a write answer omits it). `null`
+   *  when the gateway could not read it, `pending` while it is read the first time. */
+  spend?: GoalSpend | null
   limits: {
     goal_text_max_chars: number
     key_result_text_max_chars: number
