@@ -1443,7 +1443,7 @@ class TestGateSideLogRedactorSpelling:
         for rel in ("platform/update_provider.py", "task_planner.py", "name_grant.py"):
             assert (
                 rel not in _BASELINE_LOG_SITE_CENSUS
-            ), f"{rel} was converged by #7151 and must not carry a baseline log site"
+            ), f"{rel} is converged and must not carry a baseline log site"
 
 
 class TestPostureClaimsMatchEnforcement:

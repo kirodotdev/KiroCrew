@@ -289,7 +289,7 @@ class TestDashboardSaveHoldsLock:
         assert foreign_contents.count("windowed") == 1, (
             "distinct same-content foreign event collapsed — the (role, content) "
             "dedup must be count-bounded/timestamp-first so two real events are "
-            "not folded into one (GPT 5.6 HIGH data-loss finding)"
+            "not folded into one (that is data loss)"
         )
         # No-duplication: the append_if_absent fresh-ts copy is folded once into
         # the window (its own budget absorbs it) and NOT re-appended as foreign.

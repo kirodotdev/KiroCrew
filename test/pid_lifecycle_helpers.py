@@ -21,7 +21,7 @@ import pytest
 # POSIX kill path of the orphan sweep (which no-ops on Windows). None of these
 # have a Windows equivalent, so they are skipped on Windows.
 _POSIX_ONLY = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX process-management semantics only; see issue #2041"
+    sys.platform == "win32", reason="POSIX process-management semantics only"
 )
 
 

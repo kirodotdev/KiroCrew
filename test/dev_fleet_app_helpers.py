@@ -31,7 +31,7 @@ from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
 # reduced-scope backend CI that runs on Windows.
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
-    reason="POSIX-only Dev Fleet make-live/cancel/sync semantics (issue #2041)",
+    reason="POSIX-only Dev Fleet make-live/cancel/sync semantics",
 )
 
 

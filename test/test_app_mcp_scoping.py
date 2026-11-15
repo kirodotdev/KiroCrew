@@ -1312,7 +1312,7 @@ class TestTemplateGrantsAreCeilingFilteredAtBuild:
             )
             assert covered, (
                 f"{fn.__name__} writes an agent spec without inheriting or applying "
-                "the governance ceiling over allowedTools (see #7401)"
+                "the governance ceiling over allowedTools"
             )
 
 

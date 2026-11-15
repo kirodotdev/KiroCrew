@@ -110,7 +110,7 @@ class TestRationaleIsNotGuardrailEvasion:
                 if match:
                     offenders.append(f"{path.name}: {match.group(0)!r}")
         assert not offenders, (
-            "guardrail-as-goal framing found (issue #3475): "
+            "guardrail-as-goal framing found: "
             + "; ".join(offenders)
             + " -- state the security property (a Function URL needs "
             'Principal:"*"; API Gateway keeps the Lambda policy scoped) and let '

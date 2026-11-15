@@ -85,7 +85,7 @@ class TestDeliveryIdLifecycle:
             "no later reader, so keeping it holds the message text for the slot's life"
         )
         assert slot._steer_send_ids == {}, (
-            "same for the send id (#6751): this delivery stamped it onto its own "
+            "same for the send id: this delivery stamped it onto its own "
             "row, so nothing downstream reads the map entry again"
         )
 

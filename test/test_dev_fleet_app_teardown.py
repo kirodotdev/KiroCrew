@@ -739,8 +739,7 @@ async def test_force_remove_clean_merged_proceeds():
     removal_cmds = [c for c in run_cmd_calls if "worktree" in c and "remove" in c]
     assert len(removal_cmds) == 1, f"Expected exactly one removal cmd, got {removal_cmds}"
     assert "--force" not in removal_cmds[0], (
-        f"Round-6 regression: merged+clean removal must not pass --force to git; "
-        f"got: {removal_cmds[0]}"
+        f"merged+clean removal must not pass --force to git; " f"got: {removal_cmds[0]}"
     )
 
 

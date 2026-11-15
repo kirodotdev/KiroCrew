@@ -22,7 +22,7 @@ from kiro_crew.sandbox import reset_backend
 # Windows CI lane runs them, but they pass in the full POSIX suite.
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
-    reason="_build_launcher_script uses POSIX-only os.getuid (#2041)",
+    reason="_build_launcher_script uses POSIX-only os.getuid",
 )
 
 #: The verdicts the launcher's seccomp program returns.

@@ -720,7 +720,9 @@ class TestAnUndrivenResultIsFailedNotDone:
         # ...and none of that reaches the record.
         verdicts = {job_sdk._undriven_result(g) for g in (created, suspended, closed)}
         assert len(verdicts) == 1, f"state leaked into the verdict: {verdicts}"
-        assert job_sdk._undriven_result(closed) != "", "closed was allowed until round 9"
+        assert (
+            job_sdk._undriven_result(closed) != ""
+        ), "a closed generator must still read as undriven"
 
     def test_a_failed_running_transition_does_not_run_the_body(
         self, sdk: JobSDK, monkeypatch: pytest.MonkeyPatch

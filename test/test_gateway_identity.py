@@ -334,7 +334,7 @@ class TestTheOpenGoesThroughTheSharedNoReparsePrimitive:
         )
         assert "os.open" not in names, (
             "opened the path directly: on Windows that follows a reparse point at the "
-            "final name, which is the no-op catalogued in issue 9731"
+            "final name, so the no-follow check does nothing there"
         )
         # The flag spelling itself, not just the call: a caller could pass it onward.
         assert "O_NOFOLLOW" not in src, "names O_NOFOLLOW directly instead of delegating"

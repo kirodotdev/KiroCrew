@@ -211,7 +211,7 @@ class TestNoConfigDirInAsync:
         assert "config_dir" not in called and "config_dir" not in imported, (
             "update_layout.py must resolve the data home with data_home(); "
             "config_dir() re-runs start-of-process maintenance on every call and "
-            "these helpers are reached from async request handlers (#1057)"
+            "these helpers are reached from async request handlers"
         )
         assert "data_home" in called, "the channel helpers must resolve a path at all"
 
@@ -235,6 +235,6 @@ class TestNoConfigDirInAsync:
                                 f"{fname}:{sub.lineno} in async {node.name}()"
                             )
         assert not offenders, (
-            "config_dir() called inside async function (issue #1057). "
+            "config_dir() called inside async function. "
             "Use data_home() instead:\n  " + "\n  ".join(offenders)
         )

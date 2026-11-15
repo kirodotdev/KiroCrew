@@ -1065,7 +1065,7 @@ class TestAcpRuntimeLoadSession:
         for name, body in builders.items():
             assert "pooled_session_servers" in body or "_pooled_mcp_servers" in body, (
                 f"{name} issues session/new or session/load but never consults "
-                "the pooled broker stubs — it would un-pool its sessions (#3528)"
+                "the pooled broker stubs — it would un-pool its sessions"
             )
 
 
