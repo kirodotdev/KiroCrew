@@ -1140,19 +1140,7 @@ async def _tripwire_pi_gate(self: AcpClient, msg: JsonRpcMessage) -> None:
             "can no longer trust it to ask before running tools; the harness was "
             f"stopped. {remedy}"
         )
-    if self._is_deepseek:
-        remedy = (
-            "Start a new chat, and if it recurs check the harness version: its "
-            "launcher must keep applying the --patch overlay that composes the "
-            "gate plugin, and its tools core must keep resolving an `ask` through "
-            "its approval service."
-        )
-    else:
-        remedy = (
-            "Start a new chat, and if it recurs check the pi-acp and pi versions: "
-            "the adapter must run the command named by PI_ACP_PI_COMMAND and forward "
-            "extension dialogs, and pi must honour an extension's block."
-        )
+    remedy = self._gate_tripwire_remedy
     raise AcpToolGateUnroutable(
         f"{acp_tool_gate.label_for(self.backend)} ran tool call {tool_call_id} {what}, "
         "so the gate extension is no longer in force for this session; the harness was "

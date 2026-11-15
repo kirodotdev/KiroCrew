@@ -57,7 +57,6 @@ from kiro_crew.acp.native_child_stamp import parent_tool_use
 from kiro_crew.acp.read_path_arg import read_path_arg
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
-    ACP_BACKEND_DEEPSEEK,
     CC_PERMISSION_MODE_AUTO,
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
@@ -627,7 +626,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
                 # in a turn leave the name unknown, so neither is read as the
                 # read tool the other one is.
                 if (
-                    self.backend == ACP_BACKEND_DEEPSEEK
+                    self._tool_call_ids_repeat_in_turn
                     and _harness_names.get(tool_call_id, _harness_name) != _harness_name
                 ):
                     _harness_name = ""

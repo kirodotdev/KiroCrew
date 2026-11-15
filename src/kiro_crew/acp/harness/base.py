@@ -182,9 +182,7 @@ class ProcessSession(Protocol):
     _pi_mcp_handoff: tuple[str, bytes]
     _pi_mcp_server_names: tuple[str, ...]
     _pi_steer_channel: Any
-    _deepseek_gate_nonce: str
     _unasked_shell_tripwire: bool
-    _deepseek_read_only_issue: str
     _copilot_mcp_config_path: str
     _launch_mcp_servers: list[Any] | None
     _mcp_relaunch_pending: bool
@@ -218,9 +216,6 @@ class ProcessSession(Protocol):
 
     def _mimocode_session_mcp_servers(self) -> list[dict[str, Any]]:
         """The MiMo Code session's ``mcpServers`` entries."""
-
-    def _deepseek_session_mcp_servers(self) -> list[dict[str, Any]]:
-        """The DeepSeek Harness session's ``mcpServers`` entries."""
 
     def _copilot_session_mcp_servers(self) -> list[dict[str, Any]]:
         """The Copilot CLI session's ``mcpServers`` entries."""

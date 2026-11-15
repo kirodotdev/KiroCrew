@@ -147,6 +147,7 @@ from kiro_crew.acp.client_claude_session import _project_settings_restrictions  
 from kiro_crew.acp.client_claude_session import (  # noqa: F401
     _claude_adapter_honours_setting_sources,
 )
+from kiro_crew.acp.client_deepseek import DeepseekAcpClient  # noqa: F401
 from kiro_crew.acp.client_goose import GooseAcpClient  # noqa: F401
 from kiro_crew.acp.client_goose_session import GOOSE_VERIFIED_VERSION_PREFIX  # noqa: F401
 from kiro_crew.acp.client_goose_session import _goose_versions_noted  # noqa: F401
@@ -931,6 +932,7 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_permissions",
     "kiro_crew.acp.client_goose_session",
     "kiro_crew.acp.client_opencode_session",
+    "kiro_crew.acp.client_deepseek_session",
     "kiro_crew.acp.client_elicitation",
     "kiro_crew.acp.client_copilot",
     "kiro_crew.acp.client_claude_session",
@@ -952,6 +954,7 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_claude",
     "kiro_crew.acp.client_goose",
     "kiro_crew.acp.client_opencode",
+    "kiro_crew.acp.client_deepseek",
 )
 _MIRROR = _facade_mirror.install(
     sys.modules[__name__],

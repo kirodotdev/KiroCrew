@@ -68,8 +68,8 @@ def agents_dir(tmp_path, monkeypatch):
 
 
 def _client(tmp_path: Path, session_key: str, backend: str = ACP_BACKEND_DEEPSEEK):
-    """A minimally constructed ``AcpClient``: only what the resolver reads."""
-    client = object.__new__(AcpClient)
+    """A minimally constructed client of *backend*'s class: only what the resolver reads."""
+    client = object.__new__(AcpClient._client_class_by_backend.get(backend, AcpClient))
     client._acp_backend = backend
     client._mcp_gateway_overlay = None  # shared gateway off: no broker stubs
     client._agent = "kirocrew"
