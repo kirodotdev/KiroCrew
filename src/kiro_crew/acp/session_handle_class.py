@@ -18,6 +18,7 @@ from kiro_crew.acp import batch_guard, kas_wire
 from kiro_crew.acp import session_handle_compaction as _sh_compaction
 from kiro_crew.acp import session_handle_dispatch as _sh_dispatch
 from kiro_crew.acp import session_handle_elicitation as _sh_elicitation
+from kiro_crew.acp import session_handle_harness_surfaces as _sh_surfaces
 from kiro_crew.acp import session_handle_kas as _sh_kas
 from kiro_crew.acp import session_handle_lifecycle as _sh_lifecycle
 from kiro_crew.acp import session_handle_mcp as _sh_mcp
@@ -30,6 +31,7 @@ from kiro_crew.acp import session_handle_turn as _sh_turn
 from kiro_crew.acp import session_handle_updates as _sh_updates
 from kiro_crew.acp import session_handle_watchdog as _sh_watchdog
 from kiro_crew.acp._dispatch import MAX_ACTIVE_TOOL_CALLS, NativeCompactionStates
+from kiro_crew.acp.compaction_summary import CompactionSummaries
 from kiro_crew.acp.elicitation import ElicitationRequest
 from kiro_crew.acp.engine_fallback import EngineFallbackTracker
 from kiro_crew.acp.liveness import (
@@ -69,6 +71,7 @@ _MEMBER_OWNERS = frozenset(
         "kiro_crew.acp.session_handle_compaction",
         "kiro_crew.acp.session_handle_dispatch",
         "kiro_crew.acp.session_handle_elicitation",
+        "kiro_crew.acp.session_handle_harness_surfaces",
         "kiro_crew.acp.session_handle_kas",
         "kiro_crew.acp.session_handle_lifecycle",
         "kiro_crew.acp.session_handle_mcp",
@@ -269,7 +272,10 @@ class AcpSessionHandle:
     _tool_kind_cache_for_wire = _sh_updates._tool_kind_cache_for_wire
     _identity_unreadable_cache_for_wire = _sh_updates._identity_unreadable_cache_for_wire
     _tool_call_cache_overflow_for_wire = _sh_updates._tool_call_cache_overflow_for_wire
-    _handle_update = _sh_updates._handle_update
+    _handle_update_frame = _sh_updates._handle_update_frame
+    # The claude-agent-acp surfaces of this session's own frames:
+    # ``kiro_crew.acp.session_handle_harness_surfaces``.
+    _handle_update = _sh_surfaces._handle_update
     _structured_status_event = _sh_updates._structured_status_event
     _note_status_rejected = _sh_updates._note_status_rejected
     # One turn end to end: ``kiro_crew.acp.session_handle_turn``.
@@ -505,6 +511,8 @@ class AcpSessionHandle:
         # Native ``compaction_update`` lifecycle per id: duplicate terminals and
         # late starts are dropped against it. Lives as long as the handle.
         self._native_compaction_states = NativeCompactionStates()
+        # What each native compaction in flight streamed (``acp.compaction_summary``).
+        self._compaction_summaries = CompactionSummaries()
         self._cancelled = False
         # Unresponsive-cancel tracking (mirrors AcpClient._cancel_ts /
         # _cancel_grace_secs). Set by cancel(); the dispatch loop uses them to
@@ -1144,6 +1152,21 @@ class AcpSessionHandle:
     def config_options(self) -> list[dict[str, Any]]:
         """ACP-reported configOptions (effort, model, mode selectors)."""
         return self._config_options
+
+    @property
+    def backend(self) -> str:
+        """The runtime's backend id, under the name the shared surface readers take."""
+        return str(getattr(self._runtime, "acp_backend", "") or "")
+
+    @property
+    def _acp_config_options(self) -> list[dict[str, Any]]:
+        """``config_options`` under the per-chat client's name, for the mode notice."""
+        return self._config_options
+
+    # The mode names the session advertised and its last mode report, for the
+    # mode-change notice (``acp.harness_notices``). Each is replaced, never mutated.
+    _harness_mode_names: dict[str, str] = {}
+    _harness_mode: tuple[str, str | None] | None = None
 
     @property
     def available_models(self) -> list[dict[str, str]]:

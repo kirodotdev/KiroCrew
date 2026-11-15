@@ -55,6 +55,10 @@ SHARED_BINDINGS_CHECKS = (
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
+    "_acp_config_options": ("property", False, "7eb96c2fda05", "session_handle_class"),
+    "_harness_mode": ("data", False, "", ""),
+    "_harness_mode_names": ("data", False, "", ""),
+    "backend": ("property", False, "bb418bb7ece8", "session_handle_class"),
     "__init__": ("function", False, "a01004fc4c51", "session_handle_class"),
     "_accept_oauth_request": ("function", False, "668a15b0478d", "session_handle_mcp"),
     "_active_tool_calls": ("property", False, "d150141e37db", "session_handle_class"),
@@ -143,7 +147,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "5f796c64544c",
         "session_handle_native_children",
     ),
-    "_handle_update": ("function", False, "74878d3f1402", "session_handle_updates"),
+    "_handle_update": ("function", False, "74878d3f1402", "session_handle_harness_surfaces"),
+    "_handle_update_frame": ("function", False, "74878d3f1402", "session_handle_updates"),
     "_held_calls": ("function", False, "335484fda27a", "session_handle_tool_silence"),
     "_held_state": ("function", False, "4a8fa3c2de12", "session_handle_tool_silence"),
     "_identity_unreadable_cache_for_wire": (
@@ -404,6 +409,7 @@ _DECLARED = frozenset({"_compaction_terminal_seen", "_kas_compact_turn"})
 
 #: The owner modules, lowest layer first.
 _OWNERS = (
+    "kiro_crew.acp.session_handle_harness_surfaces",
     "kiro_crew.acp.session_handle_runtime_contract",
     "kiro_crew.acp.session_handle_watchdog",
     "kiro_crew.acp.session_handle_tool_silence",
