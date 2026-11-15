@@ -206,8 +206,9 @@ METRIC_REFUSAL_OUTCOMES = frozenset(
 METRIC_OUTCOME_OTHER = "other"
 
 #: Every value ``outcome`` can carry on ``kirocrew.webhook.requests``: the
-#: recorded-run outcomes, the refusal outcomes, and the remainder. Pinned by a
-#: test, so widening either half without restating it in the metrics doc fails.
+#: recorded-run outcomes, the refusal outcomes, and the remainder. A test pins the
+#: union and the refusal half; the recorded-run half is ``VALID_OUTCOMES``, and no test
+#: checks it against the metrics doc.
 METRIC_OUTCOMES = frozenset(
     VALID_OUTCOMES | METRIC_REFUSAL_OUTCOMES | {METRIC_OUTCOME_OTHER}
 )

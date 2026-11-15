@@ -1449,9 +1449,10 @@ def _js_json(value: Any) -> str:
 def _as_text(value: Any) -> str:
     """A value as the page would show it, matching the bootstrap's own ``text()``.
 
-    Spelled twice because the two run in different languages on the same contract; a
-    test pins them to the same three rules so a page filled here and a page filled by
-    the script cannot disagree about one value. A number is spelled the way JS spells
+    Spelled twice because the two run in different languages on the same contract, so
+    a page filled here and a page filled by the script must agree about one value. No
+    test runs the script's ``text()`` beside this one; a change to either side must
+    update the other by hand. A number is spelled the way JS spells
     the number the bootstrap parsed, so ``3.0`` reads ``3`` on both pages.
     """
     if value is None:
