@@ -148,6 +148,10 @@ export interface DecisionModelRecord {
   applied: boolean
   /** The model the turn RAN on, when that was observed. `''` otherwise. */
   modelUsed: string
+  /** The effort level the tier routed this turn to, only when one landed. */
+  effortChosen?: string
+  /** The owner's effort level the routed one replaced. */
+  baselineEffort?: string
   /** Why the decision failed, or `null` when it did not. */
   error: string | null
 }
@@ -461,6 +465,8 @@ export function readModelRecord(raw: unknown): DecisionModelRecord | null {
   const rawP = root.p
   const p = typeof rawP === 'number' && Number.isFinite(rawP) && rawP >= 0 && rawP <= 1 ? rawP : null
   const error = typeof root.error === 'string' && root.error.trim() ? root.error : null
+  const effortChosen = typeof root.effort_chosen === 'string' ? root.effort_chosen.trim() : ''
+  const baselineEffort = typeof root.baseline_effort === 'string' ? root.baseline_effort.trim() : ''
   return {
     turnId,
     point: DECISIONS_MODEL_POINT,
@@ -481,6 +487,9 @@ export function readModelRecord(raw: unknown): DecisionModelRecord | null {
     // it existed -- neither is a switch that did not take.
     applied: root.applied !== false,
     modelUsed: typeof root.model_used === 'string' ? root.model_used.trim() : '',
+    // Absent, not `''`: a row with no routed effort carries neither field.
+    ...(effortChosen && { effortChosen }),
+    ...(baselineEffort && { baselineEffort }),
     error,
   }
 }

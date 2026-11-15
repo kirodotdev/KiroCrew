@@ -73,6 +73,7 @@ class _ChatSlot:
         "app_agent_owner",
         "model",
         "jev_route",
+        "jev_range",
         "_model_withheld",
         "_model_withheld_for",
         "served_model",
@@ -443,6 +444,7 @@ class _ChatSlot:
     _welcomed_agent: str
     _welcome_preview: tuple[str, str, str, str]
     jev_route: bool
+    jev_range: dict[str, Any]
     _model_withheld: bool
     _model_withheld_for: str
     _session_requested_model: str | None
