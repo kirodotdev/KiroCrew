@@ -76,10 +76,11 @@ describe('SecurityPanel - message body fields', () => {
     })
   })
 
-  it('says a body field is limited by size and a credential or data-out link is only logged', async () => {
+  it('names the credentials refused over 20 KB and says other matches are only logged', async () => {
     await renderFields({ defaults: DEFAULTS, owner: [], refused: [] })
     const desc = screen.getByText(/up to 256 KB/)
-    expect(desc.textContent).toMatch(/logged as a warning, not blocked/)
+    expect(desc.textContent).toMatch(/when the field is over 20 KB these credentials are refused, in plain text or in a link: a GitHub, npm or DigitalOcean token, a labelled AWS secret key, or a private key/)
+    expect(desc.textContent).toMatch(/only logged as a warning/)
     expect(desc.textContent).not.toMatch(/checked for sensitive paths, credentials/)
   })
 
@@ -114,6 +115,7 @@ describe('SecurityPanel - message body fields', () => {
     const hint = within(refused).getByTestId('body-fields-allow-hint')
     expect(hint.textContent).toMatch(/up to 256 KB/)
     expect(hint.textContent).toMatch(/sensitive paths/)
+    expect(hint.textContent).toMatch(/a known credential in a field over 20 KB is still refused/)
     expect(hint.textContent).toMatch(/not sent again/)
     expect(hint.textContent).toMatch(/Stop allowing/)
     expect(hint.closest('[data-layout-id]')).toBe(within(refused).getByTestId('body-fields-allow').closest('[data-layout-id]'))

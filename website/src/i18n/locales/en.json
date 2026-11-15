@@ -11415,9 +11415,9 @@
         "add_your_own_deny_patterns_python_compatible_reg": "Add your own deny patterns (Python-compatible regex). These are enforced at {{productName}}'s PreToolUse gate alongside the built-in rules.",
         "bodyFields": {
           "allow": "Allow this field from now on",
-          "allow_hint": "Lets this field be up to 256 KB. Checks for sensitive paths still run. The refused message is not sent again. “Stop allowing” undoes this.",
+          "allow_hint": "Lets this field be up to 256 KB. Checks for sensitive paths still run, and a known credential in a field over 20 KB is still refused. The refused message is not sent again. “Stop allowing” undoes this.",
           "defaults_title": "Built in",
-          "desc": "Before a tool runs, every argument is checked, and one argument over 20 KB is refused. A field listed here is the body of a message or document: it can be up to 256 KB, a sensitive path in it is refused, and a credential or a link that carries data out is logged as a warning, not blocked. It is never read as a shell command. A row applies only to the exact server and tool it names.",
+          "desc": "Before a tool runs, every argument is checked, and one argument over 20 KB is refused. A field listed here is the body of a message or document: it can be up to 256 KB, a sensitive path in it is refused, and when the field is over 20 KB these credentials are refused, in plain text or in a link: a GitHub, npm or DigitalOcean token, a labelled AWS secret key, or a private key. Anything else the checks find, and anything in a smaller field, is only logged as a warning. It is never read as a shell command. A row applies only to the exact server and tool it names.",
           "field_name": "Field: {{field}}",
           "load_failed": "Could not load the message body fields.",
           "owner_empty": "You have not allowed any fields.",

@@ -8,9 +8,12 @@ names the fields that are a message or document BODY. The gate judges them with
 the same scan as a Kiro Crew document body (``MCP_DOCUMENT_BODY_FIELDS``):
 ``_first_tool_input_denial(..., command_rules=False)``, the size ceiling and the
 path tier only, with the 256 KiB source-body ceiling
-(``MAX_SCANNABLE_SOURCE_BODY_CHARS``) in place of 20 KiB. A credential or a link
-that carries data out is logged as a warning (:func:`warn_body_field_matches`),
-never refused. A body field never reaches the shell matcher or the deny-rule list.
+(``MAX_SCANNABLE_SOURCE_BODY_CHARS``) in place of 20 KiB. A hard credential (a
+provider token, an AWS secret, a private key; :func:`body_field_match_refusal`),
+in the text or in a link, refuses a body over 20 KiB, which the size ceiling
+refused before it was a row. Every other match,
+and any match in a shorter body, is logged as a warning. A body field never
+reaches the shell matcher or the deny-rule list.
 Every other argument of the call keeps the full scan. Design: https://github.com/kirodotdev/KiroCrew/issues/8053.
 
 A row is ``(server, tool, field)``. It counts only when the gate's cached, trusted
@@ -41,16 +44,23 @@ import logging
 import string
 import threading
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, unquote_plus
 
 from kiro_crew.mcp_gateway.tool_surface import admits_name
 from kiro_crew.platform.tool_paths import strip_server_qualifier
-from kiro_crew.security.exfil import scan_exfiltration_urls
-from kiro_crew.security.redaction import redact_credentials
+from kiro_crew.security import pem_scan
+from kiro_crew.security.exfil import _URL_SCAN_RE, scan_exfiltration_urls
+from kiro_crew.security.exfil_url_rules import _MAX_URL_DECODE_PASSES
+from kiro_crew.security.redaction import (
+    redact_credentials,
+    redact_credentials_with_records,
+)
+from kiro_crew.security.redaction_entropy import _looks_like_secret_key
 
 logger = logging.getLogger(__name__)
 
@@ -329,31 +339,273 @@ def body_field_keys(tool_name: str | None, mcp_server_name: str | None) -> froze
     return frozenset(r.field for r in rows if r.server == mcp_server_name and r.tool in names)
 
 
-def warn_body_field_matches(bodies: Mapping[str, str], server: str, tool: str) -> None:
-    """Log one warning per listed body field that a credential or exfiltration check matches.
+#: Rule ids of the credential check (:class:`CredentialMatch` ``rule``, the names
+#: ``redaction_structured.compat`` gives the rule table's rows) whose detector shape tells a
+#: token from ordinary mail text: an alphanumeric-only body of a fixed minimum
+#: length (GitHub, npm, DigitalOcean), a labelled AWS secret, and a whole private
+#: key block (see :func:`_record_is_hard`). The generic kinds are left out (a JWT,
+#: a generic ``credential_pattern``, an encoded
+#: blob, a ``?token=`` value, URL userinfo, an AWS key id), and so is every
+#: provider rule whose body also takes ``-`` or ``.`` so that a hyphenated word or
+#: an AWS ARN matches it, or that names a key which is not a live secret:
+#: ``telegram_bot_token``, ``pypi_token``, ``sendgrid_key``, ``stripe_key``,
+#: ``slack_token``, ``discord_bot_token``, ``gitlab_token``, ``openai_key``,
+#: ``anthropic_key``, ``google_oauth_secret`` and the labelled
+#: ``aws_session_token`` (``SessionToken: expired`` matches it).
+_HARD_CREDENTIAL_RULES = frozenset(
+    {
+        "aws_secret_access_key",
+        "private_key",
+        "github_token",
+        "npm_token",
+        "digitalocean_token",
+    }
+)
+
+
+def _has_credential(text: str) -> bool:
+    """Whether the credential check finds a credential in *text*.
+
+    The check is the rule table, which masks only a value that grants access, so
+    an inline image, a document link, an SRI digest or an ARN is not a hit.
+    """
+    return redact_credentials(text)[0] != text
+
+
+def _link_decodings(text: str) -> Iterator[str]:
+    """Each percent-decoded form of every link in *text*, up to the exfiltration
+    check's decode budget, so a token written as ``ghp%5F...`` is read as written.
+    Each pass also yields the form-decoded form (``+`` read as a space, as
+    ``urlencode`` writes it) when it differs; the percent-only form stays, so a
+    literal ``+`` in a token still matches."""
+    for m in _URL_SCAN_RE.finditer(text):
+        url = m.group(0)
+        for _ in range(_MAX_URL_DECODE_PASSES):
+            plus = unquote_plus(url)
+            decoded = unquote(url)
+            if plus != decoded:
+                yield plus
+            if decoded == url:
+                break
+            url = decoded
+            yield url
+
+
+#: The characters of a PEM body line (base64).
+_PEM_BODY_CHARS = frozenset(string.ascii_letters + string.digits + "+/=")
+#: The shortest line counted as key material. A PEM body line is 64 characters
+#: (the last may be shorter); a single word after a header in prose is not one.
+#: shortcut: a key cut to one short last line passes, revisit if one is reported.
+_PEM_MIN_LINE = 20
+#: How much of a key body is joined before it is judged; a key's first lines decide.
+_PEM_BODY_JUDGED = 4096
+
+
+def _credential_matches(text: str) -> Iterator[tuple[str, str, bool]]:
+    """``(rule, value, starts_word)`` of every credential-check match in *text*, in
+    text order. *starts_word* is whether the match is not right after a letter, a
+    digit, ``_`` or ``-`` (:func:`_starts_a_word`). Each match is found from the end
+    of the one before, so the walk is linear in *text*."""
+    records = redact_credentials_with_records(text)[2]
+    cursor = 0
+    for rec in records:
+        at = text.find(rec.value, cursor) if rec.value else -1
+        if at != -1:
+            cursor = at + len(rec.value)
+        yield rec.rule, rec.value, at <= 0 or _starts_a_word(text[max(at - 2, 0) : at])
+
+
+def _is_whole_key_block(rule: str, value: str) -> bool:
+    """Whether a credential-check match holds key material: some header in it is
+    followed, on its own line and the next ones past any ``Proc-Type:`` and
+    ``DEK-Info:`` lines, by PEM base64 lines that together are at least
+    :data:`_PEM_MIN_LINE` long and :func:`_looks_random`. The lines are joined
+    before they are judged, so a key wrapped at any width counts. JSON-escaped
+    line breaks (``\\n``) count as line breaks.
+
+    The detector also matches a header line on its own (a truncated key), and from a
+    header to an END marker named later in prose, which a tutorial is. The rule
+    table records a key block's body without its armour lines, so a
+    ``private_key`` match (*rule*) is judged as the body it is.
+    """
+    text = value.replace("\\r\\n", "\n").replace("\\n", "\n")
+    if rule == "private_key" and _holds_key_material(text):
+        return True
+    return any(_holds_key_material(text[h.end() :]) for h in pem_scan._HEADER_RE.finditer(text))
+
+
+def _holds_key_material(text: str) -> bool:
+    """Whether the lines of *text*, up to an END marker or the next header, are PEM
+    base64 that together is at least :data:`_PEM_MIN_LINE` long and
+    :func:`_looks_random` (see :func:`_is_whole_key_block`)."""
+    body = ""
+    for n, raw in enumerate(text.splitlines()):
+        if n and raw.strip().startswith("-----"):
+            break  # an END marker or the next header ends the body
+        line = raw.split("-----", 1)[0].strip()
+        if not line or line.startswith(("Proc-Type:", "DEK-Info:")):
+            continue
+        if not set(line) <= _PEM_BODY_CHARS:
+            break
+        body += line
+        if "-----" in raw or len(body) >= _PEM_BODY_JUDGED:
+            break
+    return len(body) >= _PEM_MIN_LINE and _looks_random(body)
+
+
+#: The fewest different characters a random token body or key line holds.
+_MIN_DISTINCT_CHARS = 8
+
+
+def _looks_random(text: str) -> bool:
+    """Whether *text* has a letter, a digit and at least :data:`_MIN_DISTINCT_CHARS`
+    different characters: a filler run (``xxxx``, ``0000``, ``AAAA``) does not.
+    shortcut: a placeholder with digits and many letters (``abc...xyz0123456789``,
+    ``YourBase64Key...``) still counts; revisit if one is reported refused."""
+    return (
+        any(c.isdigit() for c in text)
+        and any(c.isalpha() for c in text)
+        and len(set(text)) >= _MIN_DISTINCT_CHARS
+    )
+
+
+def _labelled_value(value: str) -> str:
+    """The value of a labelled AWS match without what the label rule also took: a
+    closing quote, markup (``</pre>``), a further query parameter (``&ref=``) and
+    trailing punctuation. ``+``, ``/`` and ``=`` belong to a secret and stay."""
+    value = unquote(value).strip("\"'")
+    for stop in ("<", "&"):
+        value = value.partition(stop)[0]
+    return value.rstrip(".,;:!?)]}\"'")
+
+
+def _is_hard_token(rule: str, value: str, starts_word: bool) -> bool:
+    """Whether a match of one of the token kinds of :data:`_HARD_CREDENTIAL_RULES`
+    is hard. The AWS label rule takes any value after the label (up to
+    markup such as ``</pre>``), so a labelled secret counts only when it has the
+    bare secret key's shape and is not the AWS docs' ``EXAMPLEKEY``. A token counts
+    only when the part after its last ``_`` looks random (:func:`_looks_random`), so
+    a placeholder such as ``ghp_xxxx...`` in a how-to is sent, as on main, and only
+    when it *starts_word* (:func:`_starts_a_word`)."""
+    if rule == "aws_secret_access_key":
+        secret = _labelled_value(value)
+        return _looks_like_secret_key(secret) and "EXAMPLE" not in secret
+    if rule in _TOKEN_RULES:
+        return starts_word and _looks_random(value.rsplit("_", 1)[-1])
+    return False
+
+
+#: The hard kinds that are a prefixed token (no label, no key block).
+_TOKEN_RULES = _HARD_CREDENTIAL_RULES - {"aws_secret_access_key", "private_key"}
+#: The characters of a base64url run besides letters and digits.
+_RUN_CHARS = "_-"
+
+
+def _starts_a_word(before: str) -> bool:
+    """Whether a match right after *before* (the one or two characters ahead of
+    it) starts a word: the last one is not a letter, a digit, ``_`` or ``-``, or
+    the two are a JSON or C escape for a line break or tab (``\\n``, ``\\t``,
+    ``\\r``), so a token at the start of a line in a pasted log still counts.
+    Random base64url data (a click-tracking ``upn=`` value) can hold ``npm_`` and
+    24 letters and digits by chance; a real token starts at a line, a space,
+    ``=``, ``:`` or a quote."""
+    if before[-2:] in ("\\n", "\\t", "\\r"):
+        return True
+    # ASCII only: prose with no spaces between words (Chinese, Japanese) puts a
+    # token right after a letter, and a base64url run never holds a non-ASCII one.
+    last = before[-1:]
+    return not ((last.isascii() and last.isalnum()) or last in _RUN_CHARS)
+
+
+#: The characters a wrapping match is split at before its words are judged again.
+_WORD_BREAKS = str.maketrans(":=@/", "    ")
+
+
+def _record_is_hard(rule: str, value: str, starts_word: bool) -> bool:
+    """Whether one credential-check match is a :data:`_HARD_CREDENTIAL_RULES` kind.
+
+    Any match that holds a whole key block is hard, whatever rule id the
+    credential check gave it (a key block far after a header named in prose is
+    labelled ``credential_pattern``). Any match that is not hard itself, a key
+    block or a labelled AWS value that
+    failed its shape check included, can enclose a hard token in a wider span
+    (``https://user:TOKEN@``, ``Bearer TOKEN``, ``SessionToken: TOKEN``), so each
+    word of it, split at ``:``, ``=``, ``@``, ``/`` and whitespace, is judged again
+    by the whole credential check, as written and percent-decoded. A token match
+    is judged where it stands (*starts_word*) and its words are not judged again, so a
+    token shape inside random data is not cut loose from what it sits in.
+    """
+    if _is_whole_key_block(rule, value) or _is_hard_token(rule, value, starts_word):
+        return True
+    if rule in _TOKEN_RULES:
+        return False
+    for word in value.translate(_WORD_BREAKS).split():
+        word = word.strip("\"'-")
+        for _ in range(_MAX_URL_DECODE_PASSES + 1):
+            if any(_is_hard_token(r, v, w) for r, v, w in _credential_matches(word)):
+                return True
+            decoded = unquote(word)
+            if decoded == word:
+                break
+            word = decoded
+    return False
+
+
+def _holds_hard_credential(text: str) -> bool:
+    """Whether the credential check finds a :data:`_HARD_CREDENTIAL_RULES` kind in
+    *text* or in a percent-decoded form of one of its links."""
+    return any(
+        _record_is_hard(rule, value, starts_word)
+        for form in (text, *_link_decodings(text))
+        for rule, value, starts_word in _credential_matches(form)
+    )
+
+
+def body_field_match_refusal(
+    bodies: Mapping[str, str], server: str, tool: str, command_limit: int
+) -> str | None:
+    """The refusal for a listed body field over *command_limit* that holds a hard
+    credential, else ``None``.
 
     The gate judges the *bodies* (field name to text) with the one document-body
     scan (``_first_tool_input_denial(..., command_rules=False)``: size ceiling and
-    path tier) and calls this only for a call that scan let through. A credential
-    or a link that carries data out is logged, never refused. The warning names
-    the server, tool, field and check, never the body or the match.
+    path tier) and calls this only for a call that scan let through. *command_limit*
+    is the 20 KiB command-scan ceiling: without a row, a field over it is refused for
+    its size, so for such a field a credential of a :data:`_HARD_CREDENTIAL_RULES`
+    kind refuses the call, in the text or in a link. Every other hit there is logged
+    and allowed, as on main: the generic credential kinds and every exfiltration
+    rule fire on ordinary mail (a safe link, a presigned image, a signature block)
+    with no secret in it. A field within the limit got the full command scan
+    without a row, which has no credential or link check, so any match there is
+    logged and allowed. The warning and the refusal name the server, tool, field
+    and check, never the body or the match.
     """
+    bare = _bare_tool(tool, server)
     for field, s in bodies.items():
-        # The credential test is the rule table, which masks only a value that grants
-        # access, so an inline image, a document link, an SRI digest or an ARN is not a hit.
-        has_credential = redact_credentials(s)[0] != s
-        for check, hit in (
-            ("credential", has_credential),
-            ("exfiltration-URL", bool(scan_exfiltration_urls(s))),
-        ):
+        has_credential = _has_credential(s)
+        has_link = bool(scan_exfiltration_urls(s))
+        if (has_credential or has_link) and len(s) > command_limit and _holds_hard_credential(s):
+            logger.warning(
+                "message body field %r of @%s/%s matched the credential check; refused",
+                field,
+                server,
+                bare,
+            )
+            return (
+                f"Blocked: the {field!r} field of @{server}/{bare} matched the credential "
+                f"check and is over the {command_limit} char command-scan limit; "
+                "refused rather than sent"
+            )
+        for check, hit in (("credential", has_credential), ("exfiltration-URL", has_link)):
             if hit:
                 logger.warning(
                     "message body field %r of @%s/%s matched the %s check; allowed",
                     field,
                     server,
-                    _bare_tool(tool, server),
+                    bare,
                     check,
                 )
+    return None
 
 
 def oversize_field(params: Mapping[str, Any], limit: int) -> str | None:
