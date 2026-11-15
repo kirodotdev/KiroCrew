@@ -73,6 +73,7 @@ over and what changes.
 | [Streaming Speech-to-Text](configuration.md) | Live transcription partials in the dashboard input, with local Whisper, the macOS on-device recognizer, or optional AWS Transcribe |
 | [Warm Pool](configuration.md) | Keep kiro-cli processes pre-spawned so a new session starts instantly |
 | [Secrets Vault](secrets-vault.md) | Credentials encrypted on disk and refused to the agent, with a `secret://` reference left in `.env` |
+| [Scripted Test Model](scripted-test-model.md) | Test agent specs, hooks, cron scripts and apps against a stand-in model whose replies come from a file: no tokens, the same result every run |
 
 ## Settings reference
 

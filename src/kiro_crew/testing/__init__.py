@@ -27,6 +27,9 @@ Public entry points:
   pinned vendor request/response shapes with no credentials or network.
 - :mod:`kiro_crew.testing.links` — ``make_dir_link``, which stages a directory
   link as a junction on Windows (no privilege needed) and a symlink elsewhere.
+- :mod:`kiro_crew.testing.scripted_replies` — the reply-script format the fake
+  ACP backend reads from ``KIROCREW_FAKE_ACP_SCRIPT``, so a test decides what
+  the model says (``docs/scripted-test-model.md``).
 
 Import submodules directly (``from kiro_crew.testing.fixtures import ...``,
 ``from kiro_crew.testing.harness import ...``); no top-level re-exports,
