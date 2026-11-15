@@ -290,9 +290,16 @@ subagents where that exists:
 
 | Resource | Short when | Source |
 |---|---|---|
-| Memory | `check_memory_available(estimate)` fails, or `posture` is critical | `subagent_parts/host_memory.py`, `resource_status.probe()` |
+| Memory | `check_memory_available((open_workers + 1) × estimate)` fails, or `posture` is critical | `subagent_parts/host_memory.py`, `resource_status.probe()` |
 | CPU | `load_per_cpu` ≥ a new threshold (proposed 1.0), or the agents running already fill `adaptive_exec_cap()` | `resource_status.probe()`, `AdaptiveController` |
-| Disk | free bytes under `agent_scratch.scratch_root()` < one estimate | new: `shutil.disk_usage` |
+| Disk | free bytes under `agent_scratch.scratch_root()` < `(open_workers + 1) × estimate` | new: `shutil.disk_usage` |
+
+Each open `hub:` worker on the peer (`open_workers`, below) reserves one
+estimate of memory and disk, so a worker admitted but not yet using either still
+counts. The gate runs twice: once before the slot is minted, and again at the
+bind, where the measure and the binding write take one lock, so a create bound
+meanwhile is counted and two hubs cannot both fill the last room. A count that
+cannot be read reserves nothing.
 
 `posture` is the memory posture; nothing on main turns CPU into a posture, which
 is why CPU needs its own threshold. A short resource is refused with a typed
