@@ -69,10 +69,17 @@ interface Props {
   sendOnEnter?: SendMode
 }
 
+// The `package/<q>:<rel>` root qualifier minted by the backend's
+// `package_root_qualifier`; `split_package_key` accepts only this exact shape.
+const PACKAGE_QUALIFIER = /^[0-9a-f]{16}:(?=.)/
+
 // Last path segment of a skill key — this is what `$token` matches against.
+// The `$` token grammar stops at `:`, so a qualified copy is invoked by its
+// bare name and the agent's mapping picks the copy.
 function leafOf(key: string): string {
   const i = key.lastIndexOf('/')
-  return i === -1 ? key : key.slice(i + 1)
+  const leaf = i === -1 ? key : key.slice(i + 1)
+  return leaf.replace(PACKAGE_QUALIFIER, '')
 }
 
 // Whether `leaf[i]` starts a word: the first char, a char after a separator
