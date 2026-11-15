@@ -1144,6 +1144,7 @@ async def probe_server(
                     proc.kill()
                     await asyncio.wait_for(proc.wait(), timeout=_PROBE_TEARDOWN_WAIT_SECS)
                 except Exception:
+                    # The kill is best effort; the process-tree reap below still runs.
                     pass
         if proc is not None and platform_compat.IS_POSIX:
             # Reap the probe's ENTIRE process group. The child was spawned with

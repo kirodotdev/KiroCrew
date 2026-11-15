@@ -994,6 +994,7 @@ class TranscriptReadProjection:
                 try:
                     metadata, readable = self._log._read_metadata_status(key)
                 except Exception:
+                    # A read that raises skips the key, as one reporting unreadable does below.
                     continue
                 if not readable:
                     continue

@@ -313,6 +313,7 @@ class McpToolClient:
                 try:
                     stderr_file.close()
                 except Exception:
+                    # A failed close must not stop the unlink below.
                     pass
                 Path(stderr_file.name).unlink(missing_ok=True)
             if self._sandbox_cleanup:
