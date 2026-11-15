@@ -105,6 +105,23 @@ def test_one_run_files_a_remote_done_and_the_probe_wakes(recorded, peer):
     assert any(key.startswith("report:") for key in _wakes())
 
 
+def test_a_question_then_progress_between_two_runs_still_wakes_for_the_question(recorded, peer):
+    async def go() -> str:
+        item_id = await _remote_item(peer)
+        peer.report("progress", "started", "2026-10-29T10:00:00+00:00")
+        await remote_puller.run_once(_state(peer))
+        peer.report("question", "which branch?", "2026-10-29T10:01:00+00:00")
+        peer.report("progress", "carrying on", "2026-10-29T10:02:00+00:00")
+        await remote_puller.run_once(_state(peer))
+        await remote_puller.run_once(_state(peer))
+        return item_id
+
+    item_id = asyncio.run(go())
+    assert work_ledger.read_work_item(CONDUCTOR, item_id).status == "progress"
+    (question,) = [e for e in work_ledger.read_events(CONDUCTOR, item_id) if e.status == "question"]
+    assert f"report:{question.id}" in _wakes()
+
+
 def test_a_second_run_files_nothing_new(recorded, peer):
     async def go() -> None:
         await _remote_item(peer)
@@ -264,10 +281,10 @@ def test_a_report_the_crew_log_refuses_is_retried_once_per_window(recorded, peer
     work_ledger.write_remote_state(CONDUCTOR, item_id, record)
     asyncio.run(remote_puller.run_once(_state(peer)))
     assert len(tries) == 2
-    # A new peer report is tried at once.
+    # A new peer report is tried at once, after the unrecorded one it follows.
     peer.report("done", "shipped again", "2026-10-29T10:05:00+00:00", pr=7)
     asyncio.run(remote_puller.run_once(_state(peer)))
-    assert len(tries) == 3
+    assert len(tries) == 4
     assert _status(item_id) is None
 
 
@@ -283,10 +300,11 @@ def test_a_changed_snapshot_in_the_same_second_is_not_held(recorded, peer, monke
     )
     peer.report("progress", "almost", "2026-10-29T10:00:00+00:00")
     asyncio.run(remote_puller.run_once(_state(peer)))
-    # Same second, new fields: a different snapshot, so it is tried at once.
+    # Same second, new fields: a different snapshot, so it is tried at once, after
+    # the unrecorded progress it follows.
     peer.report("done", "shipped", "2026-10-29T10:00:00+00:00", pr=7)
     asyncio.run(remote_puller.run_once(_state(peer)))
-    assert tries == ["progress", "done"]
+    assert tries == ["progress", "progress", "done"]
 
 
 def test_a_capped_run_rotates_so_no_board_is_left_out(monkeypatch):

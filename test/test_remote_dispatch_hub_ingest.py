@@ -931,7 +931,7 @@ def test_a_peer_event_id_too_long_to_keep_is_never_offered(recorded, peer):
             event["id"] = event["id"] * 8
         for _ in range(3):
             await _read(peer)
-        # Only the snapshot (the newest state) is filed, once.
+        # An id no cursor can hold drops its event: only the snapshot is filed, once.
         assert [d["status"] for _u, d in recorded if d.get("actor") == "worker"] == ["question"]
         assert _row(await _read(peer), item_id)["status"] == "question"
 
@@ -1193,18 +1193,19 @@ def test_a_pull_files_nothing_once_the_item_names_another_crew(recorded, peer, m
     asyncio.run(go())
 
 
-def test_only_the_latest_peer_report_is_filed_between_two_reads(recorded, peer):
-    """Worker fields are latest-value: statuses the worker passed through between
-    two hub reads are not kept (a Known limit), and the latest lands with all its
-    fields."""
+def test_every_peer_report_between_two_reads_is_filed_in_order(recorded, peer):
+    """The tail's earlier reports land first, with their status and summary only
+    (the peer event carries no more); the latest lands last with all its fields."""
 
     async def go() -> None:
         item_id = await _remote_item(peer)
         peer.report("blocked", "need a login", "2026-10-29T10:00:00+00:00", reason="needs_human")
         peer.report("done", "shipped", "2026-10-29T10:05:00+00:00", artifacts={"pr": "9"}, pr=9)
         row = _row(await _read(peer), item_id)
-        assert [e["status"] for e in row["events"] if e["kind"] == "report"] == ["done"]
+        statuses = [e["status"] for e in row["events"] if e["kind"] == "report"]
+        assert statuses == ["blocked", "done"]
         assert row["status"] == "done" and row["artifacts"] == {"pr": "9"} and row["pr"] == 9
+        assert row["last_report_at"] == "2026-10-29T10:05:00+00:00"
 
     asyncio.run(go())
 

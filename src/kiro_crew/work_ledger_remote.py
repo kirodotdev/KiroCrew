@@ -133,6 +133,10 @@ class RemoteState:
     #: (a record from before wave 8) falls back to the item's ``last_report_at``.
     report_floor: str | None = None
     report_floor_known: bool = False
+    #: The CURRENT binding's peer event id of the newest report the hub filed or
+    #: passed over: the cursor the next pull files after. ``None`` (a record from
+    #: before it, or a tail that never named it) falls back to ``report_floor``.
+    report_event_id: str | None = None
     #: Which binding this record describes, ``"<crew>/<slot>"`` (wave 8), or
     #: ``None`` for a fresh record or one from before wave 8. A record naming
     #: another pair than the item's is stale: nothing is ingested on it and no
@@ -154,6 +158,7 @@ class RemoteState:
             "roster_read": self.roster_read,
             "report_floor": self.report_floor,
             "report_floor_known": self.report_floor_known,
+            "report_event_id": self.report_event_id,
             "binding": self.binding,
         }
 
@@ -185,6 +190,7 @@ class RemoteState:
             roster_read=_flag("roster_read"),
             report_floor=_text("report_floor"),
             report_floor_known=_flag("report_floor_known"),
+            report_event_id=_text("report_event_id"),
             binding=_binding(raw.get("binding")),
         )
 

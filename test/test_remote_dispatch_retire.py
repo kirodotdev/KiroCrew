@@ -159,6 +159,22 @@ def test_a_crew_down_past_the_timeout_is_retired_and_the_row_says_redispatch_due
     asyncio.run(go())
 
 
+def test_a_retired_workers_tail_is_never_filed(recorded, peer):
+    async def go() -> None:
+        item_id = await _remote_item(peer)
+        await _down_for(peer, item_id, 31)
+        peer.state = "connected"
+        peer.report("question", "late question", "2026-10-29T12:00:00+00:00")
+        peer.report("progress", "late progress", "2026-10-29T12:01:00+00:00")
+        await _read(peer)
+        await _read(peer)
+        item = work_ledger.read_work_item(CONDUCTOR, item_id)
+        assert item.status is None and item.worker_session_key is None
+        assert not [d for _u, d in recorded if d.get("actor") == "worker"]
+
+    asyncio.run(go())
+
+
 def test_a_late_done_from_the_retired_worker_is_never_applied(recorded, peer):
     async def go() -> None:
         item_id = await _remote_item(peer)

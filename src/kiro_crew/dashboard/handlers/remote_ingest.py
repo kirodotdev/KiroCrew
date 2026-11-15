@@ -13,8 +13,8 @@ that item afterwards, and the hub only ever PULLS: the peer never reaches back.
 * :func:`ingest_board` -- on ``work_ledger_read``: for each open remote item, read
   the peer slot list (``running``, ``pending_approval``, ``closed`` = missing from a
   successful read) and the item's peer copy (``GET api/chat/slots/{s}/work-item``),
-  then file every peer report newer than the item's ``last_report_at`` as a normal
-  recorded report, stamped with the PEER's time, so a repeat read adds nothing.
+  then file every peer report newer than the binding's last filed one, in order, as
+  normal recorded reports stamped with the PEER's time, so a repeat read adds nothing.
 * :func:`forward_decide` -- after a recorded ``decide`` on a remote item, PATCH the
   peer copy. A failure is reported; the local write stands.
 * :func:`remote_row_fields` -- the read row's ``crew_state``, ``crew_down_since``,
@@ -73,9 +73,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Peer events asked for per pull. Only the peer item (the worker's latest
-#: fields) is filed, so one event is the least the route accepts.
-PULL_EVENT_LIMIT = 1
+#: Peer events asked for per pull: the peer route's own default tail. The reports
+#: in it the hub has not filed yet are filed in order before the latest snapshot,
+#: so a ``question`` followed by a ``progress`` between two pulls still wakes.
+PULL_EVENT_LIMIT = 50
+
+#: Most earlier reports one pull files before the snapshot. The probe reads an
+#: eight-event tail (``probes.work_ledger._EVENT_TAIL``), so these plus the
+#: snapshot stay inside it and each one can still wake the conductor.
+#: shortcut: a worker that reports more than this between two pulls loses the
+#: oldest; raise it with the probe's tail if pulls ever get that far apart.
+MAX_EARLIER_REPORTS = 6
 
 #: Most remote items one read pulls; the rest keep their last state until the next.
 MAX_ITEMS_PER_READ = 32
@@ -665,7 +673,7 @@ async def _ingest_item(
         else:
             floor = _report_floor(record, item)
             record.error = await _ingest_report_locked(
-                state, board, unit, item.item_id, crew, slot, payload, floor
+                state, board, unit, item.item_id, crew, slot, payload, floor, record
             )
             failed = record.error == "crew_log_unrecorded"
             record.unrecorded_key = _snapshot_key(payload) if failed else None
@@ -674,6 +682,12 @@ async def _ingest_item(
             peer_stamp = peer.get("last_report_at") if isinstance(peer, dict) else None
             if record.error is None and isinstance(peer_stamp, str) and _later(peer_stamp, floor):
                 record.report_floor, record.report_floor_known = peer_stamp, True
+            elif (
+                record.error == CODE_CURSOR_UNSTORED or record.error in _RETRY_LATER
+            ) and not record.report_floor_known:
+                # An earlier report may still be unfiled: pin this pull's floor, or the
+                # next one falls back to the snapshot's stamp and skips it.
+                record.report_floor, record.report_floor_known = floor, True
         record.ingested_at = record.attempted_at = _now()
         await asyncio.to_thread(_store, board, item.item_id, record)
     # A conductor that left Trust ends the grant its worker still holds (RFC §4).
@@ -774,11 +788,10 @@ def _snapshot_report(
 ) -> dict[str, Any] | None:
     """The peer worker's LATEST report as report fields plus its stamp, or ``None``.
 
-    Worker fields are latest-value (RFC §2): the hub files the peer item's current
-    ``status``, ``summary``, ``artifacts``, ``pr`` and ``reason``, stamped with the
-    peer's ``last_report_at``, and never the event history. A snapshot older than
-    the hub's own ``last_report_at`` is not news. Statuses the worker passed through
-    between two hub reads are not kept.
+    The peer item holds the worker's current ``status``, ``summary``, ``artifacts``,
+    ``pr`` and ``reason``, stamped with the peer's ``last_report_at``; it is filed
+    last, after the earlier reports :func:`_earlier_reports` finds in the event
+    tail. A snapshot older than the binding's floor is not news.
     """
     peer = payload.get("work_item")
     if not isinstance(peer, dict) or peer.get("status") is None:
@@ -816,6 +829,115 @@ def _clean_report(row: dict[str, Any]) -> dict[str, Any] | None:
     return cleaned
 
 
+#: Longest peer event id a cursor holds. A cursor is ``<before>/<id>``, two ids in
+#: the record's 64-character text cap; a real id is 16 hex characters
+#: (``work_vocab.work_event_id``).
+_MAX_EVENT_ID_CHARS = 31
+
+
+def _cursor_at(reports: list[dict[str, Any]], index: int) -> str:
+    """The cursor for "filed up to ``reports[index]``": its id, after the id of the
+    report before it when there is one.
+
+    The peer coalesces two progress reports in a row (``_coalesce_progress``), so
+    the newest filed report can vanish from the next tail, replaced in place by the
+    progress after it. The report before it stays, and says where to resume; an
+    empty one says no report came before it in the tail.
+    """
+    before = reports[index - 1]["_id"] if index > 0 else ""
+    return f"{before}/{reports[index]['_id']}"
+
+
+def _tail_reports(payload: dict[str, Any], stamp: str) -> list[dict[str, Any]]:
+    """The peer tail's report events, oldest first, each cleaned as a report row.
+
+    Only what passes the report route's own schema and redaction is kept, with its
+    event id under ``_id``; an event of another kind, a wrong type, an unparsable
+    stamp or an id no cursor can hold is dropped. A row stamped after *stamp* (the
+    snapshot's) is kept only to be recognised, never filed: every earlier report
+    precedes the snapshot, and the snapshot's own event may be stamped a second
+    after it (two clock reads). Only the newest :data:`PULL_EVENT_LIMIT` entries
+    are read, whatever the peer sent.
+    """
+    events = payload.get("events")
+    limit = _stamp(stamp)
+    if not isinstance(events, list) or limit is None:
+        return []
+    out: list[dict[str, Any]] = []
+    for event in events[-PULL_EVENT_LIMIT:]:
+        if not isinstance(event, dict) or event.get("kind") != "report":
+            continue
+        ts, text, status = event.get("ts"), event.get("text"), event.get("status")
+        event_id = event.get("id")
+        if not all(isinstance(value, str) for value in (ts, text, status)):
+            continue
+        if not isinstance(event_id, str) or not 0 < len(event_id) <= _MAX_EVENT_ID_CHARS:
+            continue
+        if "/" in event_id:
+            continue
+        moment = _stamp(ts)
+        if moment is None:
+            continue
+        cleaned = _clean_report({"status": status, "summary": text, "reported_at": ts})
+        if cleaned is None:
+            continue
+        cleaned["_id"] = event_id
+        cleaned["_after_snapshot"] = moment > limit
+        out.append(cleaned)
+    return out
+
+
+def _earlier_reports(
+    payload: dict[str, Any],
+    snapshot: dict[str, Any],
+    floor: str | None,
+    cursor: str | None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """``(earlier, newest)``: the peer reports to file before *snapshot*, oldest
+    first, each with its ``_cursor``, and the cursor past the newest report.
+
+    The peer's events carry a report's status and summary only, so these are filed
+    without reason, artifacts or pr; the snapshot after them restores the latest.
+
+    *cursor* (``RemoteState.report_event_id``, :func:`_cursor_at`) names the newest
+    report the last pull got past; everything after it is new. When the tail no
+    longer holds it but holds the report before it, that report coalesced into the
+    progress after it, so everything after the report before it is new. With
+    neither (no cursor, or the tail rolled past both), every report stamped after
+    *floor* is new. The newest report, when it says what the snapshot says, is the
+    snapshot's own event and is filed only as the snapshot.
+    """
+    stamp = snapshot.get("reported_at")
+    reports = _tail_reports(payload, stamp) if isinstance(stamp, str) else []
+    if not reports:
+        return [], None
+    for index in range(len(reports)):
+        reports[index]["_cursor"] = _cursor_at(reports, index)
+    ids = [row["_id"] for row in reports]
+    before, mark, last_id = (cursor or "").rpartition("/")
+    events = payload.get("events")
+    whole_log = isinstance(events, list) and len(events) < PULL_EVENT_LIMIT
+    if last_id and last_id in ids:
+        fresh = reports[ids.index(last_id) + 1 :]
+    elif before and before in ids:
+        fresh = reports[ids.index(before) + 1 :]
+    elif mark and not before and whole_log:
+        # The filed report was the first in its tail and coalesced away, and this
+        # tail is the peer's whole log: nothing in it was filed.
+        fresh = reports
+    else:
+        fresh = [row for row in reports if _later(row["reported_at"], floor)]
+    last = fresh[-1] if fresh else None
+    if (
+        last is not None
+        and last["status"] == snapshot.get("status")
+        and (last.get("summary") or "") == (snapshot.get("summary") or "")
+    ):
+        fresh = fresh[:-1]
+    earlier = [row for row in fresh if not row["_after_snapshot"]]
+    return earlier[-MAX_EARLIER_REPORTS:], reports[-1]["_cursor"]
+
+
 async def _ingest_report_locked(
     state: "DashboardState",
     board: str,
@@ -825,15 +947,26 @@ async def _ingest_report_locked(
     slot: str,
     payload: dict[str, Any],
     floor: str | None,
+    record: work_ledger.RemoteState,
 ) -> str | None:
-    """File the peer worker's latest report on *item_id*. HOLD THE BOARD LOCK.
+    """File the peer worker's reports since the last pull on *item_id*. HOLD THE BOARD LOCK.
 
-    *floor* is the current binding's newest filed peer stamp (``RemoteState``).
+    *floor* is the current binding's newest filed peer stamp, and *record* its
+    remote record, whose ``report_event_id`` cursor this moves.
 
-    ``None`` or an error code. The report is filed unless the hub item already
-    holds exactly those worker fields and that stamp, so a repeat read files
-    nothing and a changed snapshot is filed once. Nothing else is remembered
-    between reads: the item is the record.
+    ``None`` or an error code. The earlier reports after the cursor are filed
+    first, in order (:func:`_earlier_reports`), then the snapshot, unless no
+    earlier one was filed and the hub item already holds exactly those worker
+    fields and that stamp, so a repeat read files nothing. The cursor is stored
+    BEFORE each filing, in the same drained step, and a cursor that does not store
+    files no further earlier report (the snapshot still files): each earlier report
+    is filed at most once, even across a cut-off pull or a remote record that will
+    not write. An earlier report the crew log did not record, or whose ledger write
+    failed (:data:`_RETRY_LATER`), gets its cursor back
+    and stops the earlier reports, so a later pull refiles it. Any other earlier
+    report that fails to file is passed over, never retried, so it cannot hold back
+    the latest; the pull records its code. The snapshot needs no cursor to be retried: the hub item is
+    its dedupe.
     """
     if await _refuse_if_dirty(board, board, "work_ledger_read.ingest") is not None:
         return work_ledger.CODE_CACHE_DIRTY
@@ -856,9 +989,65 @@ async def _ingest_report_locked(
     if not isinstance(stamp, str) or work_ledger.parse_stamp(stamp) is None:
         # ``apply_remote_report`` refuses the same stamp; refusing it here names why.
         return "crew_report_malformed"
-    if _already_filed(current, cleaned):
-        return None
-    return await _drain_before_cancelling(_file_one(state, board, unit, item_id, slot, cleaned))
+    earlier, newest = _earlier_reports(payload, cleaned, floor, record.report_event_id)
+
+    async def _move_then_file(report: dict[str, Any] | None, cursor: str | None) -> str | None:
+        before = record.report_event_id
+        if cursor is not None and cursor != before:
+            record.report_event_id = cursor
+            if not await asyncio.to_thread(_store, board, item_id, record):
+                record.report_event_id = before
+                if report is not cleaned:
+                    return CODE_CURSOR_UNSTORED
+                # The snapshot's dedupe is the hub item, not the cursor: it still files.
+        if report is None:
+            return None
+        try:
+            error = await _file_one(state, board, unit, item_id, slot, report)
+        except Exception:
+            # Not filed (a read or write that raised): give the cursor back, as below.
+            record.report_event_id = before
+            await asyncio.to_thread(_store, board, item_id, record)
+            raise
+        if error in _RETRY_LATER:
+            # The write may succeed later: give the cursor back so a later pull refiles
+            # it, the snapshot's own event included.
+            record.report_event_id = before
+            await asyncio.to_thread(_store, board, item_id, record)
+        return error
+
+    refused: str | None = None
+    stopped = False
+    filed_earlier = False
+    for report in earlier:
+        # One report that cannot file (too large, a refused write) must not stall
+        # the ones after it: it is passed over, and its code is what the pull records.
+        error = await _drain_before_cancelling(_move_then_file(report, report["_cursor"]))
+        if error == CODE_CURSOR_UNSTORED or error in _RETRY_LATER:
+            # Not filed and not passed over: no more earlier reports this pull. The
+            # snapshot still files below.
+            refused, stopped = error, True
+            break
+        filed_earlier = filed_earlier or error is None
+        refused = refused or error
+    snapshot: dict[str, Any] | None = cleaned
+    if not filed_earlier and _already_filed(current, cleaned):
+        snapshot = None
+    # An earlier report that stopped the loop is still unfiled: keep the cursor
+    # before it, so the next pull replays it instead of skipping to the newest.
+    cursor = None if stopped else newest
+    error = await _drain_before_cancelling(_move_then_file(snapshot, cursor))
+    return error or refused
+
+
+#: A pull that could not store its cursor, and so filed nothing more.
+CODE_CURSOR_UNSTORED = "crew_cursor_unstored"
+
+#: A filing the crew log did not record; the ledger write was undone.
+CODE_LOG_UNRECORDED = "crew_log_unrecorded"
+
+#: Filing failures that may clear on their own: the report keeps its place.
+_RETRY_LATER = (CODE_LOG_UNRECORDED, "ledger_write_failed")
 
 
 async def _file_one(

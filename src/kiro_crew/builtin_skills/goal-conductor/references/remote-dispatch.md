@@ -70,9 +70,9 @@ each open remote item's crew and files it as an ordinary report, so
 puller does this every 30 seconds with no model turn, so a remote `done`,
 `blocked`, `question` or `reply` wakes your work-ledger patrol like a local
 one; a `work_ledger_read` pulls too. Each pull is best effort (a read takes at
-most 32 items in about 6 seconds). Only the latest report is filed: a status
-the worker passed through between two pulls never reaches you, and a row whose
-pull failed keeps its last state.
+most 32 items in about 6 seconds). Each pull files every report since the last
+one, in order; an earlier one carries only its status and summary, and the
+latest carries all its fields. A row whose pull failed keeps its last state.
 
 **Follow-ups use `reply`.** To ask a finished worker something, keep its item
 open, `session_send` the question in an owner turn, and tell it to answer with
