@@ -80,6 +80,17 @@ def coerce_fallback_model(raw: object) -> str:
 _CREW_MODE_AGENT_DEFAULT = "kirocrew-team-lead"
 
 
+def _chat_runtime_sharing_harness_defaults() -> dict:
+    """``{harness: default}`` for ``agent.chat_runtime_sharing_harnesses``.
+
+    Imported here rather than at module level so this owner binds no new imported
+    name the sections facade would have to bind too.
+    """
+    from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES
+
+    return dict(CHAT_RUNTIME_SHARING_HARNESSES)
+
+
 @dataclass
 class AgentConfig:
     approval_mode: str = field(
@@ -830,6 +841,21 @@ class AgentConfig:
             "larger value pools more sessions onto one process and loses more of them "
             "at once. Has no effect while the preview is off, which keeps one process "
             "per session. Clamped to 1..64.",
+        ),
+    )
+    chat_runtime_sharing_harnesses: dict = field(
+        default_factory=_chat_runtime_sharing_harness_defaults,
+        metadata=_meta(
+            "Chat Runtime Sharing: harnesses",
+            "Which harnesses may share one agent process between dashboard chats "
+            "while the chat_runtime_sharing feature preview is on, by harness name, "
+            "each true or false. A harness switched off keeps one process per chat. "
+            "A harness that is absent takes its default (KAS: on, codex: off). Has no effect "
+            "while the preview is off. Applies to chats started after the change.",
+            properties={
+                name: {"type": "boolean", "default": default}
+                for name, default in _chat_runtime_sharing_harness_defaults().items()
+            },
         ),
     )
     agent_started_turns: bool = field(

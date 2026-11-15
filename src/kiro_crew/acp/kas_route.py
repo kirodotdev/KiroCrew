@@ -253,10 +253,20 @@ def sharing_preview_selects_bundle(
     if (environ.get("KIROCREW_KIRO_BIN") or "").strip() or _preview_bundle_cooling_down():
         return False
     try:
-        from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_enabled
+        from kiro_crew.acp.chat_runtime_sharing import (
+            chat_runtime_sharing_enabled,
+            chat_runtime_sharing_harness_enabled,
+        )
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
         from kiro_crew.config.loader import KiroCrewConfig
 
-        if not chat_runtime_sharing_enabled(KiroCrewConfig.load()):
+        # KAS's own switch under the preview off: no KAS chat can share, so the
+        # spawn keeps its default route rather than moving to the bundle.
+        cfg = KiroCrewConfig.load()
+        if not (
+            chat_runtime_sharing_enabled(cfg)
+            and chat_runtime_sharing_harness_enabled(cfg, ACP_BACKEND_KAS)
+        ):
             return False
     except Exception:  # noqa: BLE001 - an unreadable config keeps the default route
         logger.debug("could not read the chat_runtime_sharing preview", exc_info=True)

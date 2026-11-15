@@ -105,6 +105,7 @@ from kiro_crew.config.sections_agent import (  # noqa: F401
     _CREW_MODE_AGENT_DEFAULT,
     _YOLO_DURATION_DEFAULT,
     AgentConfig,
+    _chat_runtime_sharing_harness_defaults,
     _read_skip_permissions,
     coerce_fallback_model,
     yolo_duration_to_secs,

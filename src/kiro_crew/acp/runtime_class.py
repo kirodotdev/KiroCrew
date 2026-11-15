@@ -730,6 +730,10 @@ class AcpRuntime:
         # set by a KAS start from the engine it ran; True for every other host,
         # where chat sharing's own membership set decides.
         self.chat_joinable = True
+        # Whether this process stops taking chats once any chat leaves it
+        # (``RuntimeOwnership.release``): set by a shared codex placement, whose
+        # departed sessions leave their MCP fleet running; False everywhere else.
+        self.chat_closes_on_departure = False
         # The server path from kiro-cli's ``failed to canonicalize KAS server path``
         # line, latched by ``_drain_stderr`` before the first session is ready
         # (whatever ``recording_allowed`` says) and cleared by a revive.

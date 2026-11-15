@@ -2802,6 +2802,7 @@ jobs:
           pytest -v -n0 --no-cov --timeout=1200 -m real_adapter \
             --junitxml="$RUNNER_TEMP/real-adapter-results.xml" \
             test/test_codex_session_mcp.py \
+            test/test_codex_chat_runtime_sharing_real.py \
             test/test_codex_session_mcp_approval.py \
             test/test_codex_inner_sandbox_approval.py \
             test/test_opencode_session_mcp.py \
@@ -2844,7 +2845,7 @@ jobs:
       - name: Require every contract test to have executed
         if: always()
         env:
-          MEASURED_CONTRACT_FLOOR: "57"
+          MEASURED_CONTRACT_FLOOR: "58"
           XFAIL_MODULE: "test.test_real_adapter_harness_probe"
         run: |
           python3 - <<'PY'

@@ -30,8 +30,11 @@ from kiro_crew.acp.session_handle import (
 def preview(monkeypatch):
     import kiro_crew.acp.chat_runtime_sharing as crs
 
-    state = {"on": True, "vault": True}
+    state = {"on": True, "vault": True, "kas": True}
     monkeypatch.setattr(crs, "chat_runtime_sharing_enabled", lambda cfg: state["on"])
+    monkeypatch.setattr(
+        crs, "chat_runtime_sharing_harness_enabled", lambda cfg, backend: state["kas"]
+    )
     monkeypatch.setattr(
         kas_route, "automatic_switch_allowed", lambda pin="": pin != kas_route.STORED_BACKEND_KIRO
     )
@@ -69,6 +72,16 @@ def test_the_preview_on_selects_the_bundle(preview):
 def test_the_preview_off_leaves_the_relay_rules(preview):
     preview["on"] = False
     assert not kas_route.sharing_preview_selects_bundle(environ={})
+
+
+def test_the_kas_switch_off_leaves_the_relay_rules(preview):
+    """KAS's own switch off: no KAS chat can share, so the spawn keeps its route."""
+    preview["kas"] = False
+    assert not kas_route.sharing_preview_selects_bundle(environ={})
+    assert kas_route.resolve_kas_route(environ={}).reason != kas_route.REASON_SHARING_PREVIEW
+    assert not kas_harness._chat_sharing_preview_on()
+    preview["kas"] = True
+    assert kas_harness._chat_sharing_preview_on()
 
 
 def test_a_kiro_cli_pin_stays_on_kiro_cli(preview):

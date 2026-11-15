@@ -428,6 +428,13 @@ class RuntimeOwnership:
             return None
         entry.leases.pop(lease, None)
         if entry.leases:
+            # A runtime whose departed sessions leave processes behind (codex: its
+            # per-session MCP fleet outlives ``session/close``) takes no new lease
+            # once any holder leaves, so it drains and dies with its last holder
+            # instead of collecting one leftover fleet per departure. Bounded by the
+            # cap: at most cap-1 departed fleets ever wait on one process.
+            if getattr(entry.runtime, "chat_closes_on_departure", False) is True:
+                entry.closed = True
             logger.info(
                 "runtime_ownership outcome=released pid=%s remaining_leases=%d",
                 _pid_of(entry.runtime),
