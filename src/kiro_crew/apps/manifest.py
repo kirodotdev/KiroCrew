@@ -372,7 +372,8 @@ def app_endpoint_allowed(
     # at install, so those apps could not contribute a row at all.
     #
     # It is a per-caller flag rather than a blanket widening because this is the ONE
-    # shared endpoint check (see ``test_app_endpoint_allowed_is_the_one_shared_check``)
+    # shared endpoint check (its edges are pinned by
+    # ``test_app_endpoint_allowed_is_the_one_shared_check``)
     # and its other caller, the publish-provider registry in ``routes_listing.py``, states
     # ``/api/apps/<app>/`` as its contract in its own refusal message. Widening the
     # helper for everyone would have broadened that surface silently.

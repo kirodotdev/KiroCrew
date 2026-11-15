@@ -38,7 +38,8 @@ project agent after launch has no target the daemon can resolve.
 
 Precedence caveat: same-name override is verified against the shipped binary
 (``test_mcp_gateway_session_inject.py`` pins it, including a live check when
-kiro-cli is on PATH) but is NOT documented by kiro-cli. The documented
+kiro-cli is on PATH and ``KIROCREW_E2E_REAL_KIRO_CLI=1`` is set) but is NOT
+documented by kiro-cli. The documented
 hierarchy covers only the three *file* tiers (agent config > workspace
 ``mcp.json`` > global ``mcp.json``). If a future release made injection purely
 additive, an agent's own copy would launch alongside the stub, which is worse

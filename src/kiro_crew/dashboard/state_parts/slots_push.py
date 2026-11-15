@@ -513,7 +513,9 @@ def _do_slots_broadcast(self: DashboardState) -> None:
     # different tokens for one broadcast, which would make one of the two
     # audiences invalidate while the other did not.
     # test_public_repo_status_rides_general_frame_owner_gets_full asserts the two
-    # frames' governanceGeneration values are equal, so a torn read reddens it.
+    # frames' governanceGeneration values are equal. It never moves the generation
+    # between the reads, so it cannot catch a torn read; the single read is what
+    # prevents one.
     # Filesystem-free by contract: governance_answer_generation is two locked
     # integer reads. The profiles directory re-stat lives in poll_profiles_fresh,
     # which only the async watcher calls, and only off the event loop.

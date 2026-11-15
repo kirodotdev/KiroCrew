@@ -114,8 +114,9 @@ class ChannelDescriptor:
     #: The other half of "what happens when ``<channel>.*`` changes" is that
     #: channel's ``transport.reconfigure(section)`` (its allow-list and live
     #: fields), registered from its ``transport_dispatch.py`` via
-    #: ``live.watch_section``; the two are disjoint by construction and
-    #: ``test_channel_boot_keys_contract.py`` pins that.
+    #: ``live.watch_section``; the two are disjoint by construction, and
+    #: ``test_channel_boot_keys_contract.py`` pins ``boot_keys`` against the schema's
+    #: ``restart=True`` marks.
     boot_keys: frozenset[str] = frozenset()
 
 

@@ -134,8 +134,9 @@ preference:
   do it -- seven of them are equal to ``frozenset({""})`` today, so equality
   proves nothing about which name was meant.
 * a value bound at import time does not follow a test that injects a synthetic
-  harness by patching the DEFINING module (``test_member_memory_auth`` does
-  exactly that). The patch would land on an attribute nothing reads, and the card
+  harness by patching the DEFINING module
+  (``test_backend_cards.py::test_a_new_backend_renders_a_complete_card_with_no_card_edit``
+  does exactly that). The patch would land on an attribute nothing reads, and the card
   would answer from production membership while the test believed otherwise.
 
 The MCP half, which is a projection over another source

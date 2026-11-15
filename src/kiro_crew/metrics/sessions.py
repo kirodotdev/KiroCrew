@@ -888,8 +888,7 @@ async def _unlink_generations(generations: Sequence[tuple[str, float]]) -> None:
       hook runs queued items before its sentinel.
     * A worker finishing after the loop closed cannot raise "Event loop is closed"
       -- ``_chain_future._call_set_state`` returns early when ``dest_loop.is_closed()``
-      rather than calling ``call_soon_threadsafe``
-      (``test_the_crumb_write_is_never_a_loop_bound_future``). The normal path
+      rather than calling ``call_soon_threadsafe``. The normal path
       awaits to completion; only a cancellation abandons the future.
 
     The start path must not do this: its write is ORDERED under the caller's

@@ -72,8 +72,9 @@ from typing import Any, Dict, List, Optional, Tuple
 # The ledger's real bounds, mirrored from kiro_crew/session_ledger_layout.py
 # (_MAX_TEXT, _MAX_ARTIFACTS) and kiro_crew/session_ledger.py (the key clamp in
 # record()). Do NOT tune these here:
-# test_conductor_ledger_entry.py asserts they equal the ledger's own constants,
-# so a ledger-side change fails that test instead of silently drifting.
+# test_conductor_ledger_entry.py asserts the text and artifact bounds equal the
+# ledger's own constants (the key bound against the literal 128), so a ledger-side
+# change to those two fails that test instead of silently drifting.
 # The ledger CLAMPS rather than rejects (a long value is truncated, a full map
 # ages out its oldest entries), which is exactly why validation must happen on
 # this side, before the write.

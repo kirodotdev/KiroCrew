@@ -235,8 +235,9 @@ from kiro_crew.acp.transport_errors import (
 
 # The block-wide noqa covers _RESPONSE_WRITE_MIN_PROGRESS_BYTES, which is bound
 # for re-export rather than used here: the refactor-facade tests pin runtime and
-# client to one shared copy of this floor (test_acp_refactor_transport_framing /
-# test_acp_refactor_facade), while _stall_window_phrase owns the floor's only read.
+# client to one shared copy of this floor
+# (test_acp_refactor_facade::test_the_transports_share_one_copy_of_each_moved_helper),
+# while _stall_window_phrase owns the floor's only read.
 from kiro_crew.acp.transport_framing import (  # noqa: F401
     _RESPONSE_WRITE_BOUND_SECS,
     _RESPONSE_WRITE_MIN_PROGRESS_BYTES,
