@@ -479,6 +479,9 @@ def _harness_session_options(provider: AcpProvider) -> dict[str, Any]:
         "permission_mode": getattr(client, "_permission_mode", None),
         "side_read_only": bool(getattr(client, "_side_read_only", False)),
         "include_memory": bool(getattr(client, "_include_memory", True)),
+        # This chat's own model, which the session's settings seed names: on a
+        # process another session of its tree founded, the runtime's is that one's.
+        "model": getattr(client, "_model", None) or "",
     }
 
 

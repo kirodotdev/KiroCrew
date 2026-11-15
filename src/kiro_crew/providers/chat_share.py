@@ -46,7 +46,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew.acp.chat_runtime_sharing import (
-    TOOL_SURFACE_FIELDS,
     ChatRuntimeKey,
     agent_pins_tool_surface,
     agent_spawns_native_subagents,
@@ -56,6 +55,7 @@ from kiro_crew.acp.chat_runtime_sharing import (
     chat_runtime_sharing_harness_enabled,
     chat_sharing_ineligible_reason,
     kas_chat_sharing_ready,
+    keys_tool_surface,
     member_scope_of,
     per_session_fields,
     share_tree_root_of,
@@ -591,7 +591,7 @@ class ChatSharePlacement:
                 agent_spawns_native_subagents, self._work_dir, self._agent, backend
             ):
                 return True
-            if not per_session_fields(backend) & TOOL_SURFACE_FIELDS:
+            if not keys_tool_surface(backend):
                 return False
             return await asyncio.to_thread(
                 agent_pins_tool_surface,
@@ -884,7 +884,7 @@ async def resolve_chat_share(
     def _read_placement_inputs() -> tuple[str, str, bool, dict[str, str], bool, bool, str | None]:
         configured_env = agent_env_overlay()
         telemetry = _kas_telemetry_for(backend, work_dir, configured_env, extra_env)
-        pinned = bool(per_session & TOOL_SURFACE_FIELDS) and agent_pins_tool_surface(
+        pinned = keys_tool_surface(backend) and agent_pins_tool_surface(
             work_dir, agent, provider._tool_search_settings()
         )
         return (

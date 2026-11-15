@@ -106,7 +106,12 @@ member) session a tree root that is the same member on the same memory store.
 tree's root (`share_tree_root_of`, the top of the creator chain the slot list nests
 on, read once at the start) and the session's member and store, so sessions share
 only inside one tree and two Bots never share. On KAS it leaves out the agent, its
-spec generation, the model and the effort, which KAS takes per session. `chat_runtime_cap`
+spec generation, the model and the effort, which KAS takes per session. On claude it
+leaves out the same fields (`CLAUDE_PER_SESSION_FIELDS`): the spawn reads none of them,
+and each session writes its own settings seed and envelope from its own agent and
+model, after the spec freshness gate for its own agent (`ClaudeHarness.prepare_session`).
+Only a harness whose founder's spec decides the process's tool surface keys the spec
+for it (`keys_tool_surface`, KAS). `chat_runtime_cap`
 reads `agent.chat_runtime_sharing_max_sessions`, forced back to `CHAT_RUNTIME_CAP`
 whenever the preview is off. With the preview off the paragraph above is the
 shipped behaviour exactly.
