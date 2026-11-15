@@ -153,6 +153,7 @@ from kiro_crew.acp.client_goose_session import GOOSE_VERIFIED_VERSION_PREFIX  # 
 from kiro_crew.acp.client_goose_session import _goose_versions_noted  # noqa: F401
 from kiro_crew.acp.client_lifecycle import _SUPPRESSED_STDERR_MARKERS  # noqa: F401
 from kiro_crew.acp.client_lifecycle import _T  # noqa: F401
+from kiro_crew.acp.client_mimocode import MimocodeAcpClient  # noqa: F401
 from kiro_crew.acp.client_model_selection import _JSONRPC_INVALID_PARAMS  # noqa: F401
 from kiro_crew.acp.client_model_selection import _is_config_value_rejection  # noqa: F401
 from kiro_crew.acp.client_model_selection import _push_model_via_effort_split  # noqa: F401
@@ -933,6 +934,7 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_goose_session",
     "kiro_crew.acp.client_opencode_session",
     "kiro_crew.acp.client_deepseek_session",
+    "kiro_crew.acp.client_mimocode_session",
     "kiro_crew.acp.client_elicitation",
     "kiro_crew.acp.client_copilot",
     "kiro_crew.acp.client_claude_session",
@@ -955,6 +957,7 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_goose",
     "kiro_crew.acp.client_opencode",
     "kiro_crew.acp.client_deepseek",
+    "kiro_crew.acp.client_mimocode",
 )
 _MIRROR = _facade_mirror.install(
     sys.modules[__name__],
