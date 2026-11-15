@@ -10543,6 +10543,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.worker_grill",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: worker_grill",
+      "help": "Turn on the 'worker_grill' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.qr_session_until_restart",
       "kind": "core",
       "type": "boolean",

@@ -67,6 +67,7 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "session_environments",
     "session_harness",
     "webhooks",
+    "worker_grill",
 )
 
 

@@ -12,7 +12,7 @@ import { Badge, Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MATE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MATE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -139,6 +139,7 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_BRIDGE_APPROVALS: return i18nT('pages.developer.featurePreviewsTab.bridge_approvals')
     case PREVIEW_CHAT_RUNTIME_SHARING: return i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing')
     case PREVIEW_SECRETS_VAULT: return i18nT('pages.developer.featurePreviewsTab.secrets_vault')
+    case PREVIEW_WORKER_GRILL: return i18nT('pages.developer.featurePreviewsTab.worker_grill')
     case PREVIEW_SESSION_ENVIRONMENTS: return i18nT('sessionEnvironments.title')
     case PREVIEW_SESSION_HARNESS: return i18nT('pages.developer.featurePreviewsTab.session_harness')
     default: return i18nT('pages.settings.developerPanel.feature_previews')
@@ -198,6 +199,7 @@ export function FeaturePreviewsSection() {
   const bridgeApprovals = usePreviewFlag(PREVIEW_BRIDGE_APPROVALS)
   const chatRuntimeSharing = usePreviewFlag(PREVIEW_CHAT_RUNTIME_SHARING)
   const secretsVault = usePreviewFlag(PREVIEW_SECRETS_VAULT)
+  const workerGrill = usePreviewFlag(PREVIEW_WORKER_GRILL)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   const sessionHarness = usePreviewFlag(PREVIEW_SESSION_HARNESS)
   const explore = usePreviewFlag(PREVIEW_EXPLORE)
@@ -389,6 +391,18 @@ export function FeaturePreviewsSection() {
             hint={i18nT('pages.developer.featurePreviewsTab.mate_sessions_desc')}
             checked={mateSessions}
             onChange={v => setPreviewFlag(PREVIEW_MATE_SESSIONS, v)}
+          />
+        )}
+        {/* Worker grill (`worker_grill`): a gateway switch read per conductor turn
+            (`worker_grill_preview.py`). NO ingress button: the offer appears in a
+            conductor's reply, with no page to open. */}
+        {!previewsOff && (
+          <SettingsToggle
+            label={i18nT('pages.developer.featurePreviewsTab.worker_grill')}
+            description={i18nT('pages.developer.featurePreviewsTab.worker_grill_desc_summary')}
+            hint={i18nT('pages.developer.featurePreviewsTab.worker_grill_desc')}
+            checked={workerGrill}
+            onChange={v => setPreviewFlag(PREVIEW_WORKER_GRILL, v)}
           />
         )}
         {/* Reply threads on Bot chat messages (`dashboard.crewmate_threads`): a
