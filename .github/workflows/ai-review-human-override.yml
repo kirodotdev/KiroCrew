@@ -33,8 +33,18 @@ permissions:
   issues: read
   pull-requests: write
 
+# One group per COMMENT, not per pull request. GitHub keeps at most one
+# pending run per group and cancels the older pending one when a newer run
+# joins, even with cancel-in-progress false. Keyed on the PR, three override
+# comments posted within seconds left the middle one cancelled and its
+# decision never recorded. Every comment on a PR fires this workflow, so a
+# plain comment could evict an override the same way. Runs for different
+# comments may overlap safely: each one posts its own record BEFORE it
+# re-runs a lane, and a lane still running when a later run reaches it is
+# cancelled and re-run, so the last re-run reads every record. An edit of the
+# same comment still shares that comment's group.
 concurrency:
-  group: ai-review-human-override-${{ github.event.issue.number }}
+  group: ai-review-human-override-${{ github.event.issue.number }}-${{ github.event.comment.id }}
   cancel-in-progress: false
 
 jobs:
