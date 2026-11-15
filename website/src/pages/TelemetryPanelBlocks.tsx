@@ -1,13 +1,15 @@
 /** The Telemetry panel's shared building blocks: the sortable data table
  *  (`DataTable`, its column model `Col` and header cell), the summary strip
- *  (`Sums`) and the bucket histogram the Spend and Startup tabs draw with. */
+ *  (`Sums`), the bucket histogram the Spend and Startup tabs draw with, and the
+ *  Spend tab's recommendations list. */
 import React, { useState } from 'react'
-import { Activity, ChevronDown, ChevronRight, ChevronUp } from 'lucide-react'
+import { Activity, ChevronDown, ChevronRight, ChevronUp, Lightbulb } from 'lucide-react'
 import InfoTip from '../components/InfoTip'
 import { Btn, EmptyState } from '../components/ui'
 import { useSortableTable } from '../hooks/useSortableTable'
-import { compareText, fmtNumber } from '../i18n/format'
+import { compareText, fmtCompact, fmtNumber, fmtPercent } from '../i18n/format'
 import { i18nT } from '../i18n/t'
+import type { SpendAdvice } from './telemetryPanelModel'
 
 // ── Sortable table ─────────────────────────────────────────────
 //
@@ -356,6 +358,51 @@ export function Histogram({
           <span className={`${valueClass} shrink-0 text-right font-mono tabular-nums`}>{formatValue(r.count)}</span>
         </div>
       ))}
+    </div>
+  )
+}
+
+// ── Spend recommendations ──────────────────────────────────────
+//
+// Each line is a sentence the gateway measured, worded here in the reader's
+// language, with the share of the window's spend it applies to.
+
+function adviceText(a: SpendAdvice): string | null {
+  const share = fmtPercent(a.share_pct / 100)
+  if (a.id === 'high_context') {
+    return i18nT('pages.telemetryPanel.advice_high_context', { share, tokens: fmtCompact(a.tokens) })
+  }
+  if (a.id === 'costly_model') {
+    return i18nT('pages.telemetryPanel.advice_costly_model', {
+      share,
+      model: a.model,
+      cheaper: a.cheaper_model,
+      ratio: fmtNumber(a.ratio, { maximumFractionDigits: 1 }),
+    })
+  }
+  return null
+}
+
+export function SpendAdvicePanel({ advice }: { advice?: SpendAdvice[] }) {
+  const lines = (advice ?? []).flatMap(a => {
+    const text = adviceText(a)
+    return text ? [{ id: a.id, text }] : []
+  })
+  if (!lines.length) return null
+  return (
+    <div className="mt-4 border-t border-border pt-3">
+      <div className="flex items-center gap-1 text-[10px] text-muted uppercase tracking-wide mb-1.5">
+        {i18nT('pages.telemetryPanel.advice_title')}
+        <InfoTip text={i18nT('pages.telemetryPanel.advice_tip')} />
+      </div>
+      <ul className="m-0 p-0 list-none space-y-1.5">
+        {lines.map(l => (
+          <li key={l.id} className="flex items-start gap-2 text-[12.5px] text-text">
+            <Lightbulb className="lucide-inline mt-0.5 shrink-0 text-[var(--accent)]" aria-hidden="true" />
+            <span>{l.text}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
