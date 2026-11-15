@@ -1068,6 +1068,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stat_key,
         _str_list,
         _str_map,
+        parse_index_text,
     )
     from kiro_crew.ui_index_match import (  # noqa: F401
         _ALL_WORDS,
