@@ -64,8 +64,8 @@ _ADF_BLOCK_CONTAINER_TYPES = frozenset(
 )
 
 # Block-level cards carry their URL in an attribute and have no content, so the
-# inline container fallthrough rendered them as the empty string -- the URL was
-# lost outright, which is the same unrecoverable loss this change exists to fix.
+# inline container fallthrough would render them as the empty string and lose
+# the URL. They are rendered as a link to that attribute instead.
 _ADF_BLOCK_CARD_TYPES = frozenset({"blockCard", "embedCard"})
 
 # List types, which follow their sibling block without a blank line so the

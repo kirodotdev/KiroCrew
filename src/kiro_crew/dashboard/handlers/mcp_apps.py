@@ -108,6 +108,7 @@ async def _gateway_app_call(frame: dict) -> dict:
         try:
             await writer.wait_closed()
         except Exception:
+            # The reply is already read; a close error changes nothing.
             pass
 
 

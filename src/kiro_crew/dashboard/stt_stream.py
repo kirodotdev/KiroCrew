@@ -1300,6 +1300,7 @@ async def _drive_helper_session(
                     try:
                         await ws.close()
                     except Exception:
+                        # A close on a broken transport can raise; the session is over either way.
                         pass
                 return
             if kind not in ("partial", "final"):

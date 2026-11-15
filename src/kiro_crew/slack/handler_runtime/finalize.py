@@ -196,6 +196,7 @@ async def _post_review_draft(
             try:
                 await slack.stop_stream(channel, answer.stream_ts)
             except Exception:
+                # The placeholder is deleted next either way.
                 pass
         try:
             await slack.delete_message(channel, answer.stream_ts)

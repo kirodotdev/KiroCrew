@@ -1098,6 +1098,7 @@ class CrewLogPublisher:
             try:
                 session_key = effective_session_key(slot)
             except Exception:
+                # One slot that cannot resolve its key must not stop the scan.
                 continue
             live.setdefault(board_key(session_key), set()).update({name, session_key})
         cells: set[str] = set()

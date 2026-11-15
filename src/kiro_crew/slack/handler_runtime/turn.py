@@ -582,6 +582,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 try:
                     await slack.delete_message(channel, _ts)
                 except Exception:
+                    # A message that cannot be deleted stays; the replay posts its own.
                     pass
         _working_ts = None
         turn._working_ts = None

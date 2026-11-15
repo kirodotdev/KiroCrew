@@ -216,11 +216,13 @@ async def _handle_stop_cancel(payload: dict, channel: str, msg_ts: str) -> None:
                     },
                 )
         except Exception:
+            # Deleting the confirmation is cosmetic.
             pass
     elif _orch and _orch.slack:
         try:
             await _orch.slack.delete_message(channel, msg_ts)
         except Exception:
+            # Deleting the confirmation is cosmetic.
             pass
 
 
@@ -544,11 +546,13 @@ async def _handle_session_end(
                 )
                 return
         except Exception:
+            # Falls back to updating the message below.
             pass
     if _orch.slack and channel and msg_ts:
         try:
             await _orch.slack.update_message(channel, msg_ts, text=label)
         except Exception:
+            # The label update is cosmetic.
             pass
 
 
@@ -589,6 +593,7 @@ async def _handle_inline_stop(
         try:
             await _orch.slack.update_message(channel, msg_ts, text="⏹ _Stopping…_")
         except Exception:
+            # The "Stopping" text is cosmetic; the stop runs either way.
             pass
 
     async def _on_soft() -> None:
@@ -596,6 +601,7 @@ async def _handle_inline_stop(
             try:
                 await _orch.slack.update_message(channel, msg_ts, text="⏹ Execution stopped.")
             except Exception:
+                # The status text is cosmetic.
                 pass
 
     async def _on_hard() -> None:
@@ -605,6 +611,7 @@ async def _handle_inline_stop(
                     channel, msg_ts, text="⛔ Execution stopped — session reset."
                 )
             except Exception:
+                # The status text is cosmetic.
                 pass
 
     # A repeat press within the window by the same presser, while the compaction
@@ -648,6 +655,7 @@ async def _handle_inline_stop(
         try:
             await _orch.slack.update_message(channel, msg_ts, text="⏹ Nothing running.")
         except Exception:
+            # The status text is cosmetic.
             pass
     sel().log_tool_invocation(
         session_key=session_key,
@@ -697,4 +705,5 @@ async def _handle_session_new(
                     json={"replace_original": False, "text": label},
                 )
         except Exception:
+            # The button ack is cosmetic; the new thread is already posted.
             pass

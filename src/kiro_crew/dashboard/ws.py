@@ -1370,6 +1370,7 @@ async def _serve_ws(
                                 parsed = json.loads(entry)
                                 await ws.send_json({"type": "log", "data": parsed})
                             except Exception:
+                                # One log entry that fails to send must not stop the replay.
                                 pass
                     elif msg_type == "unsubscribe_logs":
                         state.unsubscribe_logs(ws)
@@ -1449,6 +1450,7 @@ async def _serve_ws(
                                         }
                                     )
                             except Exception:
+                                # One card that fails to build is left out; the others still replay.
                                 pass
 
                         # Snapshot of managed subagents + done events for completed ones
@@ -1462,6 +1464,8 @@ async def _serve_ws(
                                         }
                                     )
                                 except Exception:
+                                    # One card that fails to build is left out; the others still
+                                    # replay.
                                     pass
                             # Done events for completed subagents so
                             # reconnecting clients can transition stale cards.
@@ -1498,6 +1502,8 @@ async def _serve_ws(
                                         }
                                     )
                                 except Exception:
+                                    # One card that fails to build is left out; the others still
+                                    # replay.
                                     pass
                         _seen = {
                             str(_f["data"]["id"])

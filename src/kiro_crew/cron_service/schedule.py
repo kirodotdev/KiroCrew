@@ -256,6 +256,7 @@ def _humanize_cron(expr: str, tz_name: str = "") -> str:
                 result = f"At {local_time}, {desc.removeprefix('At ')}"
             return result
         except Exception:
+            # Falls back to the UTC description below.
             pass
 
     return desc
@@ -985,6 +986,7 @@ def _already_ran_by_wall_clock(job: CronJob, slot: datetime) -> bool:
         try:
             then = ZoneInfo(zone)
         except Exception:
+            # A zone name this host cannot load is skipped.
             continue
         occurrence = _cron_occurrence_ts(expr, last, then)
         # Only an occurrence the scheduler could have dispatched in this zone: the

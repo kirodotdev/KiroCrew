@@ -1007,6 +1007,8 @@ async def _run_inner_impl(
                                 try:
                                     setattr(exc, FALLBACK_STORY_ATTR, _story)
                                 except Exception:
+                                    # An exception type that refuses attributes cannot carry the
+                                    # story.
                                     pass
                             raise
                     _fb_delay = transient_retry_delay(1)
@@ -1261,6 +1263,7 @@ async def _run_inner_impl(
                     info, "diagnostics", turns=turns, last_tool=event.title or ""
                 )
             except Exception:
+                # Diagnostics only: a failed write must not stop the tool event.
                 pass
             await self._manager._fire_event(
                 "subagent_tool",

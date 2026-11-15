@@ -763,12 +763,14 @@ def _build_slot_links(
         if isinstance(candidate, ChannelLink):
             mirror = candidate
     except Exception:
+        # No readable mirror link: the slot is shown without one.
         pass
     try:
         raw_ts, raw_channel = self.sessions.get_slack_link(session_key)
         persisted_ts = raw_ts if isinstance(raw_ts, str) else None
         persisted_channel = raw_channel if isinstance(raw_channel, str) else None
     except Exception:
+        # No readable Slack link: the in-memory values below are used.
         pass
 
     # Prefer persisted values, but retain explicit in-memory Slack links in

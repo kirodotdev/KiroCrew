@@ -588,6 +588,7 @@ async def _dispatch_queued(
         try:
             await client.remove_reaction(channel, msg_ts, "hourglass_flowing_sand")
         except Exception:
+            # The ⏳ reaction is cosmetic; the message is dispatched either way.
             pass
     # Route the queued follow-up through the SAME gate as the initial message so
     # behavior is consistent mid-conversation: a thread that took the transport

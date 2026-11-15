@@ -802,6 +802,7 @@ def get_or_create_slot(
                 if _ts and not slot.linked_session_key and not _self_ref:
                     self._slack_to_slot[_ts] = name
     except Exception:
+        # Slack-link hydration is optional; the slot is still created and registered.
         pass
     _registry_for(self).put_slot(self, name, slot)
     # Publish the updated key set to SessionManager and the surface
