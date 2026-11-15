@@ -101,6 +101,32 @@ class TestTheFirstPass:
         if os.name == "posix":
             assert os.stat(state / "pat").st_mode & 0o077 == 0
 
+    def test_a_pat_an_interrupted_pass_copied_is_emptied_by_the_next(self, dirs):
+        """A pass stopped after copying the PAT and before its seal leaves the same bytes
+        at both names; the next pass does not copy it again but still empties the legacy
+        one, so the token does not stay at a second name."""
+        state, legacy = dirs
+        state.mkdir(parents=True)
+        (legacy / "pat").write_text("ghp_real")
+        (state / "pat").write_text("ghp_real")
+
+        assert mns.migrate_legacy_state(state, legacy) == []
+
+        assert (state / "pat").read_text() == "ghp_real"
+        assert (legacy / "pat").read_bytes() == b""
+        assert (state / mns.MIGRATION_MARKER).is_file()
+
+    def test_a_different_destination_pat_keeps_the_legacy_one(self, dirs):
+        state, legacy = dirs
+        state.mkdir(parents=True)
+        (legacy / "pat").write_text("ghp_old")
+        (state / "pat").write_text("ghp_newer")
+
+        mns.migrate_legacy_state(state, legacy)
+
+        assert (state / "pat").read_text() == "ghp_newer"
+        assert (legacy / "pat").read_text() == "ghp_old"
+
     @_POSIX_ONLY
     def test_the_legacy_pat_is_emptied_in_place_not_unlinked(self, dirs):
         """A live namespace's bind mask sits on the inode; unlinking the name would

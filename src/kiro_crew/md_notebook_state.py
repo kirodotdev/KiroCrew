@@ -227,7 +227,9 @@ def migrate_legacy_state(state_dir: Path, legacy_dir: Path) -> list[str]:
     after that is the legacy PAT emptied in place (:func:`_empty_in_place`): a leftover copy
     would keep a token the user may revoke at a second name. The registry and settings hold
     no secret and stay at their masked, fenced legacy names, so a rollback to a build that
-    reads the bare names loses only the PAT. If the sync fails, nothing is emptied.
+    reads the bare names loses only the PAT. If the sync fails, nothing is emptied. A
+    destination PAT already holding the legacy bytes (a pass stopped before its seal
+    copied it) is not copied again, and the legacy PAT is emptied as after a copy.
 
     A legacy directory reached through a link is sealed with nothing moved: an agent can
     swap a link in that chain for a real directory of its own, so nothing behind it may be
@@ -267,6 +269,7 @@ def migrate_legacy_state(state_dir: Path, legacy_dir: Path) -> list[str]:
             )
             return moved
         failed: list[str] = []
+        copied_pat = False
         for name in STATE_FILE_NAMES:
             src = legacy_dir / name
             dst = state_dir / name
@@ -276,6 +279,12 @@ def migrate_legacy_state(state_dir: Path, legacy_dir: Path) -> list[str]:
                     continue
                 if not _is_stub(name, dst):
                     # A real destination wins; the legacy copy stays masked and fenced.
+                    # The same PAT, copied by a pass stopped before its seal, is emptied
+                    # below as a fresh copy is, so no token outlives the move at a
+                    # second name.
+                    if name == "pat":
+                        with contextlib.suppress(OSError):
+                            copied_pat = _read_regular_no_follow(dst) == data
                     continue
                 atomic_write(
                     dst, data, restrict_to_owner=True, restrict_on_error="warn", fsync=True
@@ -288,8 +297,10 @@ def migrate_legacy_state(state_dir: Path, legacy_dir: Path) -> list[str]:
                 failed.append(name)
                 continue
             moved.append(str(dst))
-        if moved:
-            logger.info("moved %d legacy Notes state file(s) into %s", len(moved), state_dir)
+        copied_pat = copied_pat or str(state_dir / "pat") in moved
+        if moved or copied_pat:
+            if moved:
+                logger.info("moved %d legacy Notes state file(s) into %s", len(moved), state_dir)
             try:
                 fsync_dir(state_dir)
             except OSError:
@@ -297,7 +308,7 @@ def migrate_legacy_state(state_dir: Path, legacy_dir: Path) -> list[str]:
                     "could not sync %s; keeping the legacy Notes PAT", state_dir, exc_info=True
                 )
             else:
-                if str(state_dir / "pat") in moved:
+                if copied_pat:
                     try:
                         _empty_in_place(legacy_dir / "pat")
                     except OSError:

@@ -125,9 +125,11 @@ one at once. The pass reads each source once (regular file, no link followed) an
 those bytes with `atomic_write` only over an absent or stub destination. It syncs this
 directory, and only then empties the legacy `pat` in place (truncated through an
 `O_NOFOLLOW` descriptor, never unlinked, so a live namespace's mask stays on its inode); if
-the sync fails nothing is emptied. A legacy directory reached through a link is sealed with
-nothing moved, because an agent could swap that link for a directory of its own; Notes
-could not write state on that layout before either.
+the sync fails nothing is emptied. A destination `pat` already holding the legacy bytes (a
+pass stopped after copying it and before its seal) is not copied again, and the legacy `pat`
+is emptied as after a copy, so the token does not stay at a second name. A legacy directory
+reached through a link is sealed with nothing moved, because an agent could swap that link
+for a directory of its own; Notes could not write state on that layout before either.
 The pass ends by writing `.migrated`, which closes promotion for good. A copy that fails
 stops the pass unsealed, so the next spawn copies it again (so does a source it cannot
 read for a reason other than being absent), and a PAT with a second hard
