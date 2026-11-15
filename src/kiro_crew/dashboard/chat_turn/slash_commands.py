@@ -851,10 +851,9 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     # that got past its own gate is on a harness that runs it natively.
     # The other harnesses in ACP_BACKENDS_LOCAL_CLEAR have no /clear of their own
     # either, or (claude) run one Crew cannot observe, so /clear alone is answered
-    # here for them too; their other commands keep the prompt path, where those
-    # harnesses serve the ones they know. A harness with a row in
-    # ACP_BACKEND_PROMPT_HANDLER_COMMANDS (codex) keeps the prompt path only for the
-    # commands in its row; its other commands get the notice, as on KAS.
+    # here for them too. A harness with a row in ACP_BACKEND_PROMPT_HANDLER_COMMANDS
+    # (codex, opencode, mimocode, pi, deepseek, goose, copilot) keeps the prompt path
+    # only for the commands in its row; its other commands get the notice, as on KAS.
     # A kiro-cli command that is not a Crew harness command (/knowledge, /effort,
     # /plan, /rewind) is answered here on KAS alone; anywhere else it stays text.
     # The user's own quick prompt of that name is a macro and keeps the text path.

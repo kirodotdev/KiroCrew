@@ -139,7 +139,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 | R-USE-4 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ❓ | kiro/KAS restart fixes (#35428, #33149); inline compaction harnesses never restart (`INLINE_COMPACTION` `backends_turns.py`); deepseek recycle not checked |
 | R-PRM-1 | ✅ | ✅ | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | `ACP_BACKENDS_SENT_IMAGE_RECORD` `backends_turns.py`; others inline every turn by design, replay cost unmeasured |
 | R-ROW-1 | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | kiro-cli v3 rows (#25650, #26589); other harnesses' tool-row shapes per version unmeasured |
-| R-CMD-1 | ✅ | ✅ | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | `KIRO_SLASH_COMMANDS` `backends_turns.py`, `HARNESS_OWNED_SLASH_COMMANDS`, `LOCAL_HARNESS_COMMANDS`, codex row `ACP_BACKEND_PROMPT_HANDLER_COMMANDS`; others keep the prompt path unchecked |
+| R-CMD-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `KIRO_SLASH_COMMANDS` `backends_turns.py`, `HARNESS_OWNED_SLASH_COMMANDS`, `LOCAL_HARNESS_COMMANDS`, a `ACP_BACKEND_PROMPT_HANDLER_COMMANDS` row per non-kiro harness, read off each prompt handler (goose and copilot from source, not live) |
 | R-ERR-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | #28513, #30038 shared |
 | R-ERR-2 | ✅ | ✅ | ✅ | ❓ | ❓ | ✅ | ❓ | ❓ | ❓ | kiro/KAS #28549; claude #30087; goose #28414 |
 | R-ERR-3 | ➖ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | KAS pattern |

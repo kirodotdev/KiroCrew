@@ -186,7 +186,7 @@ The list started from the harness parity invariants and the capability card. It 
 
 | ID | Rule | Why | Edge cases | Verify |
 |---|---|---|---|---|
-| R-CMD-1 | The `/` menu lists only commands the session's harness runs, and Crew's harness commands are answered locally or refused, never sent to the model as text. | #25098, #32009, #34696, #30112 | `ACP_BACKEND_PROMPT_HANDLER_COMMANDS` row per harness | `GET /api/slash-commands` tests; **no per-harness table** beyond codex |
+| R-CMD-1 | The `/` menu lists only commands the session's harness runs, and Crew's harness commands are answered locally or refused, never sent to the model as text. | #25098, #32009, #34696, #30112 | `ACP_BACKEND_PROMPT_HANDLER_COMMANDS` row per harness | `GET /api/slash-commands` tests; per-harness rows pinned by `test/test_slash_command_no_channel.py` (`TestPromptHandlerRows`) |
 
 ### Error surfacing
 

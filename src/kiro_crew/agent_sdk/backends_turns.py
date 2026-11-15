@@ -718,12 +718,10 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
 #
 # kiro is not a member: it runs its commands over ``_kiro.dev/commands/execute``.
 # claude is not a member: its harness owns its own command set. codex, opencode,
-# pi, deepseek, goose and copilot are not members: each serves the commands it
-# knows from its own prompt handler. Codex's commands are checked, so the dashboard
-# answers its other commands too (``ACP_BACKEND_PROMPT_HANDLER_COMMANDS``). The
-# others' commands keep the prompt path (``ACP_BACKENDS_LOCAL_CLEAR`` covers the
-# ``/clear`` most of them lack). A harness added later stays out until its command
-# handling is checked.
+# mimocode, pi, deepseek, goose and copilot are not members: each runs some commands
+# from its own prompt handler, so each has an ``ACP_BACKEND_PROMPT_HANDLER_COMMANDS``
+# row and the dashboard answers its other commands. A harness added later stays out
+# until its command handling is checked.
 ACP_BACKENDS_LOCAL_HARNESS_COMMANDS = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_STRANDS})
 
 # Harness id -> the harness commands (``_SLASH_COMMANDS`` names) that the
@@ -740,15 +738,39 @@ ACP_BACKENDS_LOCAL_HARNESS_COMMANDS = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_ST
 #   and ``/mcp`` are in that list, so a ``/help``, ``/context`` or ``/tools`` sent
 #   as prompt text reached the model as a bare word. The row does not forward
 #   Codex's other built-ins: they are not Crew harness commands, so they stay text.
+# - opencode: opencode 1.19.1's ACP prompt step runs a name from its own command
+#   catalog (``init``, ``review``, ``customize-opencode``) and ``compact``; any other
+#   slash name ends the turn with no text. Of Crew's harness commands only
+#   ``/compact`` is in that list.
+# - mimocode: the same prompt step as opencode (read off 0.1.15), so the same row.
+# - pi: pi-acp 0.0.34's prompt handler runs compact, session, name, steering,
+#   follow-up, changelog, export and autocompact, and sends anything else to the
+#   model. Of Crew's harness commands ``/compact`` and ``/changelog`` are in it.
+# - deepseek: the ``dsh-acp`` bridge parses no slash; every prompt is a user message.
+#   ``/compact`` goes through its own gate first, which answers it here.
+# - goose: 1.50.1's ``execute_command`` runs prompts, prompt, compact, clear, skills,
+#   doctor, goal, grind and status. Of Crew's harness commands ``/clear`` and
+#   ``/compact`` are in it (``/goal`` and ``/prompts`` are answered by the dashboard
+#   first).
+# - copilot: Crew lets a prompt start only with a command in
+#   ``ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST`` and refuses the rest before the wire. Of
+#   Crew's harness commands ``/compact``, ``/context`` and ``/usage`` are in it.
 #
 # kiro-cli has no row, because it runs every command over its own command channel.
 # claude has no row, because it owns its command set
-# (``ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS``). opencode, pi, deepseek, goose and
-# copilot have no row: each keeps the prompt path until its own command handling is
-# checked. A member of ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS`` has no row, because it
-# runs no command.
+# (``ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS``). A member of
+# ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS`` has no row, because it runs no command.
+# A harness added later gets a row once its prompt handler is read.
 ACP_BACKEND_PROMPT_HANDLER_COMMANDS: Mapping[str, frozenset[str]] = MappingProxyType(
-    {ACP_BACKEND_CODEX: frozenset({"/compact", "/mcp"})}
+    {
+        ACP_BACKEND_CODEX: frozenset({"/compact", "/mcp"}),
+        ACP_BACKEND_OPENCODE: frozenset({"/compact"}),
+        ACP_BACKEND_MIMOCODE: frozenset({"/compact"}),
+        ACP_BACKEND_PI: frozenset({"/changelog", "/compact"}),
+        ACP_BACKEND_DEEPSEEK: frozenset({"/compact"}),
+        ACP_BACKEND_GOOSE: frozenset({"/clear", "/compact"}),
+        ACP_BACKEND_COPILOT: frozenset({"/compact", "/context", "/usage"}),
+    }
 )
 
 # Backends whose model-side REFUSAL arrives with a structured reason, not just a
