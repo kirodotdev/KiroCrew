@@ -522,7 +522,10 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
 
     The notice version is also reported as current while local recording is off
     (the heartbeat turned off with ``telemetry.enabled`` unset, a written
-    ``false``, or ``DO_NOT_TRACK``): a user who opted out is not asked again.
+    ``false``, or ``DO_NOT_TRACK``): a user who opted out is not asked again. The
+    one exception is a written ``false`` older builds put in every new config
+    (``kiro_export.off_offer_due``): that user sees the current notice once, in
+    its off form, which asks whether to turn recording on.
     """
     from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
     from kiro_crew.edition import is_lts
@@ -532,7 +535,7 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
         recording_on = _metrics_provider._consent_enabled(cfg.telemetry)
     except Exception:  # noqa: BLE001 - unknown keeps today's behaviour
         recording_on = True
-    notice_current = lts or not recording_on
+    notice_current = lts or (not recording_on and not _off_offer_due(cfg))
 
     return {
         "mode": cfg.dashboard.theme_mode or "",
@@ -551,11 +554,20 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
     }
 
 
+def _off_offer_due(cfg: Any) -> bool:
+    try:
+        from kiro_crew.metrics import kiro_export
+
+        return kiro_export.off_offer_due(cfg)
+    except Exception:  # noqa: BLE001 - not due, as before
+        return False
+
+
 def _ack_version_for_the_chapter(cfg: Any) -> int:
     """The acknowledged notice version, held back while Kiro telemetry is owed.
 
     An acknowledgement whose text never named the build's Kiro telemetry
-    destination (a chapter shown under a non-default home, a redirected
+    destination (a chapter whose text did not name it, a redirected
     ``kirocrew telemetry enable``) leaves that destination waiting, so the
     chapter, which names it, shows once more. Unreadable: the stored value.
     """
@@ -577,8 +589,9 @@ async def api_theme_boot(request: web.Request) -> web.Response:
     workspace theme and UI language before the token flow completes. Contains
     no secrets — only workspace-level display preferences and onboarding flags.
     """
-    cfg = KiroCrewConfig.load()
-    return web.json_response(_theme_payload(cfg))
+    # Off the loop: the payload reads config files and the policy profiles.
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    return web.json_response(await asyncio.to_thread(_theme_payload, cfg))
 
 
 async def api_theme_config(request: web.Request) -> web.Response:
@@ -601,8 +614,8 @@ async def api_theme_config(request: web.Request) -> web.Response:
     refused (500 ``config_unreadable``) with its bytes untouched.
     """
     if request.method == "GET":
-        cfg = KiroCrewConfig.load()
-        return web.json_response(_theme_payload(cfg))
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        return web.json_response(await asyncio.to_thread(_theme_payload, cfg))
 
     # PUT
     denied = await require_owner_dashboard_request(request, "config.theme.write")
@@ -703,7 +716,7 @@ async def api_theme_config(request: web.Request) -> web.Response:
             )
 
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    return web.json_response(_theme_payload(cfg))
+    return web.json_response(await asyncio.to_thread(_theme_payload, cfg))
 
 
 async def pwa_file(request: web.Request) -> web.StreamResponse:

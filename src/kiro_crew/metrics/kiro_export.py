@@ -26,9 +26,9 @@ non-bool, ``kirocrew telemetry disable``, ``KIROCREW_TELEMETRY=0``,
 ``capabilities.telemetry`` ``otlp_hosts`` list can refuse its host.
 
 It is not returned at all in an LTS build (the admin's policy decides where
-metrics go, with or without a collector of its own), on a CI runner, or under a
-non-default ``KIROCREW_HOME`` (a dev home, a pod, a worktree preview): the same
-hosts the daily heartbeat does not count.
+metrics go, with or without a collector of its own) or on a CI runner. A
+non-default ``KIROCREW_HOME`` (a dev home, a pod, a worktree preview) gets it
+like any other home; the daily heartbeat keeps its own default-home rule.
 
 Turning recording ON never needs a config-file edit because of it: the notice
 already discloses it, so the dashboard and ``kirocrew telemetry enable`` refuse
@@ -115,8 +115,6 @@ def destinations() -> "tuple[OtlpDestination, ...]":
 
     if _suppressed_for_tests or edition.is_lts() or beacon.is_ci():
         return ()
-    if not beacon.is_default_home():
-        return ()
     from kiro_crew.metrics.product_metrics import PRODUCT_METRICS
     from kiro_crew.platform.interfaces import OtlpDestination
 
@@ -145,8 +143,8 @@ def notice_shown(full_cfg: Any = None) -> bool:
 
     ``dashboard.kiro_telemetry_ack_version``, which the dashboard chapter and
     ``kirocrew telemetry enable`` write only when their text named this
-    destination (``privacy_ack_version`` alone does not count: a chapter shown
-    under a non-default home never named it), or the version whose Kiro telemetry
+    destination (``privacy_ack_version`` alone does not count: a chapter whose
+    text did not name it writes that too), or the version whose Kiro telemetry
     line a start with no dashboard printed on a terminal
     (``notice.KIRO_NOTICE_STAMP_FILE``). Fails closed.
     """
@@ -211,6 +209,49 @@ def egress_needs_written_opt_in(cfg: Any) -> bool:
     rows = provider.otlp_egress_listing(cfg)
     # Egress with no row to inspect cannot be shown to be this one: refuse.
     return not rows or any(not is_builtin(row.destination) for row in rows)
+
+
+def off_offer_due(full_cfg: Any = None) -> bool:
+    """Whether recording is off only by a written ``telemetry.enabled: false``.
+
+    Builds before recording was on by default wrote that ``false`` into every new
+    config, so most such installs never chose it. Those people are shown the
+    notice that names this destination once, in an off form that asks whether to
+    turn recording on; until they do, only the heartbeat and app install receipts go. Not due for
+    any other reason recording is off (``DO_NOT_TRACK``, ``KIROCREW_TELEMETRY``
+    or another env pin, a policy, the heartbeat turned off, a ``config.local.json``
+    entry), on a non-default home, where this destination is not listed (LTS, CI),
+    when turning recording on would also export to a collector of the person's
+    own, or once the current notice is acknowledged. Fails closed.
+    """
+    try:
+        from kiro_crew import beacon
+        from kiro_crew.config.loader import (
+            KiroCrewConfig,
+            _stored_agent_value,
+            overlay_pins,
+        )
+        from kiro_crew.metrics.consent_pins import env_pin
+
+        cfg = full_cfg if full_cfg is not None else KiroCrewConfig.load()
+        # Its own home check, not only destinations(): dev homes export, but are not asked.
+        if not destinations() or not beacon.is_default_home() or env_pin() is not None:
+            return False
+        # env_pin() lets the heartbeat env opt-out step aside once enabled is written; still not asked.
+        if beacon.is_env_opted_out():
+            return False
+        if cfg.dashboard.privacy_ack_version >= beacon.PRIVACY_NOTICE_VERSION:
+            return False
+        if cfg.telemetry.beacon_enabled is not True or beacon.is_governance_pinned_off():
+            return False
+        if _stored_agent_value("enabled", section="telemetry") is not False:
+            return False
+        if overlay_pins("telemetry", "enabled"):
+            return False
+        return not egress_needs_written_opt_in(cfg.telemetry)
+    except Exception as exc:  # noqa: BLE001 - unreadable means "not due"
+        logger.debug("kiro_export: off notice state unreadable (%s)", type(exc).__name__)
+        return False
 
 
 def listed(rows: Any) -> bool:

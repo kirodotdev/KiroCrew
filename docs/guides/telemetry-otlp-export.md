@@ -209,11 +209,15 @@ do that.
 |---|---|
 | Recording on (by default or by choice), notice version 3 shown | Yes |
 | Recording on, notice version 3 not shown yet | No |
+| Off only by a written `"enabled": false` (see below) | No, unless Turn on is chosen |
 | A dashboard gateway nobody opens (its stderr line goes to a log and does not count) | No, until someone clicks Keep on |
 | An upgrade that had turned the heartbeat off, `"enabled": false` or a non-bool value, `kirocrew telemetry disable`, `KIROCREW_TELEMETRY=0`, or `DO_NOT_TRACK=1` | No: recording is off |
 | A policy's `otlp_hosts` list that does not permit `telemetry.us-east-1.kiro.dev` | No |
 | LTS build (the policy names the collector, or none) | No: not part of that build's list |
-| CI runner (`CI`, `GITHUB_ACTIONS`, ...) or a non-default `KIROCREW_HOME` | No: not listed, same rule as the daily heartbeat |
+| CI runner (`CI`, `GITHUB_ACTIONS`, ...) | No: not listed, same rule as the daily heartbeat |
+| A non-default `KIROCREW_HOME` (a dev home, a pod, a worktree preview) | Yes, by the same rules as any other home; the daily heartbeat still skips it |
+
+Builds before recording was on by default wrote `telemetry.enabled: false` into every new config, so a public-build install that is off only because of that written `false` (the heartbeat on, no env pin, no policy, not CI, the default data home) is shown the version 3 notice once, in an off form that names Kiro telemetry and offers Turn on performance metrics or Keep off. Until Turn on is chosen, only the daily heartbeat and official app install receipts are sent and no performance metrics are recorded; Keep off is not asked again. A start with no dashboard prints one line pointing at `kirocrew telemetry enable`, once, on a terminal.
 
 Each data point carries `ClientType=kiro-crew`. The batch's resource keeps
 only service name and version, Python runtime, `kirocrew.harness` and

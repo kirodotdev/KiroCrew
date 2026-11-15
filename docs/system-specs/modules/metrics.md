@@ -257,11 +257,20 @@ start with no dashboard printed the Kiro line to a terminal. `privacy_ack_versio
 alone does not count, nor does a notice of version 2 or lower, which said metrics
 stay on this machine. Whether the notice was shown is part of
 `_endpoints_key`, so a Keep on in a running gateway attaches the reader at the next
-consent recheck. It is not returned in an LTS build, on a CI runner, or under a
-non-default `KIROCREW_HOME`. Because the notice names it, the enable refusals (the
+consent recheck. It is not returned in an LTS build or on a CI runner; a
+non-default `KIROCREW_HOME` gets it like any other home. Because the notice names it, the enable refusals (the
 dashboard's `telemetry.enabled` PATCH and `kirocrew telemetry enable`) ask
 `kiro_export.egress_needs_written_opt_in`, which ignores it, and the collection
-status reports that as `enable_refused`. The test suite turns it off in `test/conftest.py`. Readers are appended AFTER
+status reports that as `enable_refused`. `kiro_export.off_offer_due` names the
+one off case that is asked again: a written `telemetry.enabled: false` (what
+builds before the recording default wrote into every new config), the heartbeat
+on, no env pin, no policy, no `config.local.json` entry, no collector of the
+user's own, and notice version 3 not yet acknowledged. The theme boot payload then
+reports the stored notice version, the collection status reports `off_offer`, and
+the chapter's off form offers Turn on performance metrics (writes `telemetry.enabled: true` and the
+Kiro acknowledgement) or Keep off (writes `telemetry.enabled: false`, already the
+stored value, then `privacy_ack_version`). A start with
+no dashboard prints `notice.OFFER_TEXT` once on a terminal. The test suite turns it off in `test/conftest.py`. Readers are appended AFTER
 the local JSONL sink, so an edition can add destinations but can never remove or
 replace the sink the dashboard reads, and it supplies no cadence — the export
 interval stays `telemetry.export_interval_seconds`. Nor does it supply a
