@@ -999,22 +999,52 @@ async def test_a_burst_of_large_frames_is_bounded_by_bytes_not_count(monkeypatch
 async def test_record_frame_never_waits_on_the_byte_budget_lock(monkeypatch, tmp_path):
     """The budget lock is shared with the drain thread. If its holder is
     preempted, a reader loop must not block behind it: the frame is dropped,
-    recording stands down, and ``record_frame`` returns promptly."""
+    recording stands down, and ``record_frame`` returns promptly.
+
+    "Promptly" is asserted as what the call asks of the lock: every acquire it
+    makes is non-blocking. A blocking one is refused on the spot, so a regression
+    fails here instead of waiting out a timeout, whatever the host's speed."""
     _clean(monkeypatch)
     async with _live_writer():
         monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
         assert _frame_record.start_recorder()
         writer = _frame_record._writer
         assert writer is not None
+        real_lock = writer.lock
+        this_thread = threading.get_ident()
+        asked: list[tuple[bool, float]] = []
+
+        class _HeldLock:
+            """The real lock for the drain thread; for this thread, a record of each ask."""
+
+            def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+                if threading.get_ident() != this_thread:
+                    return real_lock.acquire(blocking, timeout)
+                asked.append((blocking, timeout))
+                assert not blocking, "record_frame asked the budget lock to wait"
+                return real_lock.acquire(False)
+
+            def release(self) -> None:
+                real_lock.release()
+
+            def locked(self) -> bool:
+                return real_lock.locked()
+
+            def __enter__(self) -> bool:
+                return self.acquire()
+
+            def __exit__(self, *exc: object) -> None:
+                self.release()
+
         # Hold the lock for the whole call, as a preempted holder would.
-        assert writer.lock.acquire(blocking=False)
+        assert real_lock.acquire(blocking=False)
+        monkeypatch.setattr(writer, "lock", _HeldLock())
         try:
-            started = time.monotonic()
             await _frame_record.record_frame("kas", {"jsonrpc": "2.0", "method": "x"}, 32)
-            elapsed = time.monotonic() - started
         finally:
-            writer.lock.release()
-        assert elapsed < 0.5, f"record_frame waited {elapsed:.3f}s on the budget lock"
+            monkeypatch.setattr(writer, "lock", real_lock)
+            real_lock.release()
+        assert asked == [(False, -1)], "the frame must try the busy lock once, without waiting"
         assert _frame_record.recording_destination() == "", "a busy lock must stand down, not wait"
         assert not writer.items, "the frame must be dropped, not queued behind the lock"
 

@@ -42,7 +42,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -290,28 +289,42 @@ async def test_silence_from_a_queue_aware_daemon_times_out_before_the_budget(
     short_sock_dir,
 ) -> None:
     """The timer is silence, not budget: a daemon that promised keepalives and
-    sends none for one window is not serving, however much budget remains."""
+    sends none for one window is not serving, however much budget remains.
+
+    The budget clock is frozen, so the budget can never run out: the only way to a
+    timeout is the silence window. The daemon never answers and never hangs up, so
+    the outcome cannot be a close either. A stub that timed the read by the budget
+    instead waits until ``finished`` fails it by name."""
 
     async def script(writer: Any) -> None:
-        await asyncio.sleep(0.5)
+        await asyncio.Event().wait()
 
-    server, sock = await _serve(_scripted_daemon(script), short_sock_dir)
+    handler = _scripted_daemon(script)
+    server = writer = None
     try:
+        server, sock = await _serve(handler, short_sock_dir)
         reader, writer = await _open(sock)
-        t0 = time.monotonic()
         outcome, frame = await finished(
             stub._ensure_backend_admitted(
-                reader, writer, queue_aware=True, total_budget_secs=60.0, silence_secs=0.1
+                reader,
+                writer,
+                queue_aware=True,
+                total_budget_secs=60.0,
+                silence_secs=0.1,
+                now=lambda: 0.0,
             ),
             "admitted",
         )
-        elapsed = time.monotonic() - t0
-        writer.close()
     finally:
-        server.close()
-        await server.wait_closed()
+        if writer is not None:
+            writer.close()
+        for task in handler.tasks:
+            task.cancel()
+        await asyncio.gather(*handler.tasks, return_exceptions=True)
+        if server is not None:
+            server.close()
+            await server.wait_closed()
     assert (outcome, frame) == (stub._ADMIT_TIMEOUT, None)
-    assert elapsed < 0.4, f"gave up after {elapsed:.2f}s -- the silence window, not the budget"
 
 
 @pytest.mark.asyncio
