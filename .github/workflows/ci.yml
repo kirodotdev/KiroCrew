@@ -629,7 +629,11 @@ jobs:
     # (fast-gate.yml has a push trigger) and this job consumes it.
     if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]'
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
-    timeout-minutes: 15
+    # Covers TOTAL_BUDGET (2100s, await-fast-gate.sh) plus CANCEL_WAIT, so
+    # the step reports its own verdict instead of being killed mid-poll. At
+    # 40 it is no longer than changes plus backend-lint (15 + 25), so the
+    # longest needs chain merge-queue-readiness.yml is sized to is unchanged.
+    timeout-minutes: 40
     permissions:
       # actions:read is what lets this read another workflow's runs. Job-level
       # permissions REPLACE the top-level grant, so contents:read is restated.
@@ -706,7 +710,9 @@ jobs:
     # it.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !(vars.MERGE_QUEUE_ENABLED == 'true' && github.actor == 'github-merge-queue[bot]')
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
-    timeout-minutes: 15
+    # Covers the probe's TOTAL_BUDGET (2100s, await-fast-gate.sh) plus
+    # LAND_BUDGET, so a gate evicted late in that wait is still cancelled.
+    timeout-minutes: 40
     permissions:
       # actions:write is what lets this cancel its own run (it also covers the
       # probe's reads). Job-level permissions REPLACE the top-level grant, so
