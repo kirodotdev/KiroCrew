@@ -390,6 +390,13 @@ class TestNotice:
 class TestOffOffer:
     """Off only by a written false older builds put in every new config."""
 
+    @pytest.fixture(autouse=True)
+    def _default_home(self, _floor_monkeypatch):
+        # The offer is asked only on the default data home, and the private test home
+        # is not one, so these tests fake it. The shared ``home`` fixture does not:
+        # ``destinations()`` lists the destination on any home.
+        _floor_monkeypatch.setattr(beacon, "is_default_home", lambda: True)
+
     def _old_default(self, home, **telemetry):
         _write_config(home, {"enabled": False, **telemetry}, ack=2, kiro_ack=0)
 
