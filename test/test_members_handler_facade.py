@@ -167,7 +167,7 @@ def test_the_owners_are_every_members_sibling_in_layer_order() -> None:
     listed before it -- the order the facade loads them and a read resolves in."""
     owners = list(_index().owners)
     assert sorted(owners) == sorted(_owner_paths())
-    assert len(owners) == 7
+    assert owners
     late: dict[str, list[str]] = {}
     for position, owner in enumerate(owners):
         tree = ast.parse(_owner_paths()[owner].read_text(encoding="utf-8"))

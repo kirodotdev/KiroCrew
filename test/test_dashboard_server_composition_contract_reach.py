@@ -19,7 +19,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import functools
-import hashlib
 import importlib
 import inspect
 import re
@@ -1121,19 +1120,28 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
     ]
 
 
-#: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
-#: registration order, and their count. The table is shared by both entrypoints, so a
-#: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 352
-_MCP_TABLE_DIGEST = "0ae9f68843a5652d7a2ef3a87511400a0d5763ba5cc02839f26a6f9aaa93f07a"
+#: The MCP route table's ``"<method> <path> <handler>"`` rows in registration order,
+#: one per line. The table is shared by both entrypoints, so a route added to it on
+#: purpose edits its own row there; a stored count or digest of the whole table would
+#: make every such change rewrite one shared line (see testing-conventions.md
+#: § Merge-safe ratchets and counts).
+_MCP_TABLE_FILE = Path(__file__).resolve().parent / "fixtures" / "dashboard_mcp_route_table.txt"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:
     app = web.Application()
     server._register_mcp_routes(app)
     rows = [" ".join(row) for row in _routes(app)]
-    digest = hashlib.sha256("\n".join(rows).encode()).hexdigest()
-    assert (len(rows), digest) == (_MCP_TABLE_ROWS, _MCP_TABLE_DIGEST), "\n".join(rows)
+    recorded = [
+        line
+        for line in _MCP_TABLE_FILE.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert recorded, f"{_MCP_TABLE_FILE} holds no rows"
+    assert rows == recorded, (
+        f"the MCP route table changed; if on purpose, write these rows to {_MCP_TABLE_FILE}:\n"
+        + "\n".join(rows)
+    )
 
 
 def test_a_literal_mcp_route_precedes_the_pattern_that_would_swallow_it() -> None:

@@ -164,7 +164,7 @@ def test_the_owners_are_the_parts_package_in_layer_order() -> None:
         for p in PARTS_DIR.glob("*.py")
         if p.name != "__init__.py"
     }
-    assert len(on_disk) == 7
+    assert on_disk, "the glob found no owner module"
     assert sorted(owners) == sorted(on_disk)
     late: dict[str, list[str]] = {}
     for position, owner in enumerate(owners):

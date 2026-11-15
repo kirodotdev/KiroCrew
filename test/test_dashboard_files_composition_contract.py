@@ -379,6 +379,95 @@ def _package_reexports() -> list[str]:
     ]
 
 
+#: The handlers the gateway's routes serve from this family, one per line, so two
+#: route changes edit two lines.
+_SERVED_HANDLERS = (
+    "api_browse_create_dir",
+    "api_browse_dirs",
+    "api_browse_files",
+    "api_channel_upload_file",
+    "api_dashboard_config",
+    "api_directory_upload",
+    "api_file_diff",
+    "api_file_download",
+    "api_file_grep",
+    "api_file_kinds",
+    "api_file_office_preview",
+    "api_file_raw",
+    "api_file_read",
+    "api_file_search",
+    "api_file_sheet",
+    "api_file_stream",
+    "api_file_watch",
+    "api_file_write",
+    "api_outbox_download",
+    "api_outbox_list",
+    "api_outbox_notify",
+    "api_path_complete",
+    "api_project_git",
+    "api_project_git_branch_diff",
+    "api_project_git_log",
+    "api_project_git_repos",
+    "api_project_git_status",
+    "api_project_tree",
+    "api_reveal_path",
+    "api_screenshot",
+    "api_slack_upload_file",
+    "api_upload",
+    "api_upload_file",
+    "api_workspaces",
+    "api_workspaces_create",
+    "api_workspaces_delete",
+    "api_workspaces_update",
+)
+
+
+#: The names ``dashboard/handlers/__init__.py`` re-exports from the facade, one per
+#: line, so two changes to the package edit two lines (see testing-conventions.md
+#: § Merge-safe ratchets and counts).
+_PACKAGE_REEXPORTS = (
+    "_validate_dashboard_path",
+    "_write_file_restricted",
+    "api_browse_create_dir",
+    "api_browse_dirs",
+    "api_browse_files",
+    "api_channel_upload_file",
+    "api_dashboard_config",
+    "api_directory_upload",
+    "api_file_diff",
+    "api_file_download",
+    "api_file_grep",
+    "api_file_kinds",
+    "api_file_office_preview",
+    "api_file_raw",
+    "api_file_read",
+    "api_file_search",
+    "api_file_sheet",
+    "api_file_stream",
+    "api_file_watch",
+    "api_file_write",
+    "api_outbox_download",
+    "api_outbox_list",
+    "api_outbox_notify",
+    "api_path_complete",
+    "api_project_git",
+    "api_project_git_branch_diff",
+    "api_project_git_log",
+    "api_project_git_repos",
+    "api_project_git_status",
+    "api_project_tree",
+    "api_reveal_path",
+    "api_screenshot",
+    "api_slack_upload_file",
+    "api_upload",
+    "api_upload_file",
+    "api_workspaces",
+    "api_workspaces_create",
+    "api_workspaces_delete",
+    "api_workspaces_update",
+)
+
+
 def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
     """Every route the gateway registers for a file handler and every name the
     handlers package re-exports is the facade's object. A route over this
@@ -394,7 +483,8 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
         if getattr(files, getattr(route.handler, "__name__", ""), None) is not None
         and route.handler.__module__ == _FACADE
     ]
-    assert len({id(h) for h in served}) == 37
+    assert len({id(h) for h in served}) == len({h.__name__ for h in served})
+    assert sorted({h.__name__ for h in served}) == list(_SERVED_HANDLERS)
     inner = [getattr(h, "__wrapped__", h) for h in served]
     assert [h.__name__ for h in inner if getattr(files, h.__name__) is not h] == []
     assert sorted({h.__name__ for h in served if hasattr(h, "__wrapped__")}) == [
@@ -410,7 +500,7 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
         "api_project_git_status",
     ]
     reexports = _package_reexports()
-    assert len(reexports) == 39
+    assert sorted(reexports) == list(_PACKAGE_REEXPORTS)
     assert [n for n in reexports if getattr(handlers_pkg, n) is not getattr(files, n)] == []
 
 
@@ -515,7 +605,7 @@ def test_every_moved_name_is_one_object_in_its_owner() -> None:
     ]
     assert strays == []
     names = [name for group in _BASE_OWNERS.values() for name in group]
-    assert len(names) == len(set(names)) == 129
+    assert names and len(names) == len(set(names))
 
 
 def test_the_moved_names_keep_their_base_shapes() -> None:
@@ -524,7 +614,6 @@ def test_the_moved_names_keep_their_base_shapes() -> None:
         for names in _BASE_OWNERS.values()
         for name in names
     )
-    assert len(lines) == 129
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     assert digest == _BASE_SHAPE_DIGEST, "\n".join(lines)
 
@@ -577,7 +666,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
     }
     assert defined == set(_FACADE_DEFS)
     moved = {name for names in _BASE_OWNERS.values() for name in names}
-    assert len(defined | moved) == len(defined) + len(moved) == 137
+    assert len(defined | moved) == len(defined) + len(moved)
 
 
 def test_the_owners_log_as_the_facade() -> None:
@@ -1467,10 +1556,8 @@ def test_the_bare_hop_guard_reads_the_file_family(
 
 def test_the_error_code_rows_match_each_owner(tmp_path: Path) -> None:
     """The baseline's per-file rows for the facade and its owners are each one's
-    measured count and sum to the one-module file's 82 less the codes added since
-    (the upload 413's ``file_too_large``) and the notify content refusal removed
-    with the content scan, and the scan counts a response planted
-    in an owner against that owner."""
+    measured count, and the scan counts a response planted in an owner against that
+    owner."""
     import json
 
     import test_error_code_contract as guard
@@ -1483,7 +1570,6 @@ def test_the_error_code_rows_match_each_owner(tmp_path: Path) -> None:
     }
     live = guard.tally(guard.scan())
     assert rows == {path: live[path] for path in rows}
-    assert sum(counts.get("missing_code", 0) for counts in rows.values()) == 80
     assert {path for path in live if path.startswith("dashboard/file_api/")} <= set(rows)
     root = _mirror(tmp_path) / "src/kiro_crew"
     owner = root / "dashboard/file_api/search.py"
