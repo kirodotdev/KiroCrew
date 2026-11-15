@@ -281,6 +281,10 @@ export interface CrewEditorController {
    *  the embedded sub-sections that would otherwise discard the modal's unsaved
    *  panes with a raw navigate. */
   guardedNavigate: (to: string) => void
+  /** The editor's leave guard for an action that navigates on its own (an
+   *  error notice's agent hand-off): it asks first when the modal holds
+   *  unsaved edits, then runs `proceed`. */
+  leaveGate: (proceed: () => void) => void
   /** Every crew's name — the capabilities pane's `members` list. */
   memberNames: string[]
 
@@ -796,6 +800,9 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     return () => clearTimeout(t)
   }, [discardAsk, schedSaving])
   const collapseProceed = useRef<(() => void) | null>(null)
+  // What runs after a confirmed close-discard: an action that leaves the editor
+  // (an error notice's hand-off) and waited on the discard confirm.
+  const closeProceed = useRef<(() => void) | null>(null)
   // Reset the pane whenever the editor points at a new crew (or closes).
   const paneSeededFor = useRef<string | null>(null)
   useEffect(() => {
@@ -911,13 +918,23 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     const target = discardAsk
     setDiscardAsk(null)
     settleDiscardAnswer(true)
-    if (target === 'close') closeSheet()
-    else if (target === 'collapse') { collapseProceed.current?.(); collapseProceed.current = null }
+    if (target === 'close') {
+      closeSheet()
+      // A hand-off that asked to leave over unsaved edits runs once they are
+      // discarded (`leaveGate`).
+      const after = closeProceed.current
+      closeProceed.current = null
+      after?.()
+    } else if (target === 'collapse') { collapseProceed.current?.(); collapseProceed.current = null }
     else if (target) setPane(target)
   }, [discardAsk, closeSheet, settleDiscardAnswer])
 
   useEffect(() => {
-    if (discardAsk === null) settleDiscardAnswer(false)
+    if (discardAsk === null) {
+      settleDiscardAnswer(false)
+      // Kept editing: the hand-off waiting on the discard is dropped.
+      closeProceed.current = null
+    }
   }, [discardAsk, settleDiscardAnswer])
 
   const discardTakesSheet =
@@ -999,6 +1016,18 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
   const guardedNavigate = useCallback((to: string) => {
     leave(() => navigate(to), to)
   }, [navigate, leave])
+  // The leave guard for an action that navigates on its own. With unsaved panes
+  // it asks through the editor's own discard confirm and runs `proceed` once
+  // the user discards; the host page's guard only refuses and raises that
+  // confirm, so routing this through `leave` alone would drop the action. A
+  // write still in flight refuses, as Close does. With nothing unsaved it goes
+  // through the host's guard, which still holds a page-level draft.
+  const leaveGate = useCallback((proceed: () => void) => {
+    if (dirtyPanes.size === 0) { leave(proceed); return }
+    if (capabilityBusy || committing || templateSwitchInflight.current || instantSaveInflight.current) return
+    closeProceed.current = proceed
+    requestClose()
+  }, [leave, dirtyPanes, capabilityBusy, committing, requestClose])
 
   // ── Avatar builder apply ──
   const applyAvatar = useCallback((next: CrewAvatarOverride | null) => {
@@ -1103,6 +1132,7 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     isDefaultCrew,
     navigateManageMemory,
     guardedNavigate,
+    leaveGate,
     memberNames,
     error,
     sheetHint,

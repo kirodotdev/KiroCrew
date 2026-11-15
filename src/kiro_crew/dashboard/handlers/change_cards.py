@@ -45,6 +45,11 @@ from kiro_crew import change_card_catalog as catalog
 from kiro_crew.dashboard import change_cards as cards
 from kiro_crew.dashboard import chat_cards
 from kiro_crew.dashboard.change_cards import CardError, CardStore, card_store_for
+from kiro_crew.dashboard.handlers._bounded_read import (
+    TIMED_OUT,
+    bounded_read,
+    timed_out_for_model,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -438,7 +443,20 @@ async def api_cards_agent_capabilities(request: web.Request) -> web.Response:
             {"error": "member is required", "code": "invalid_member"}, status=400
         )
     try:
-        view = await asyncio.to_thread(cards.member_capabilities_view, request.app, member)
+        view = await bounded_read(
+            lambda name: cards.member_capabilities_view(request.app, name),
+            member,
+            what="Capabilities",
+        )
+    except TimeoutError:
+        return web.json_response(
+            {
+                "error": timed_out_for_model(member),
+                "code": "capabilities_unavailable",
+                "reason": TIMED_OUT,
+            },
+            status=503,
+        )
     except catalog.CardCatalogError as exc:
         return _refusal(exc)
     return web.json_response(view)

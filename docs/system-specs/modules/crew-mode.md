@@ -907,12 +907,27 @@ their refusal codes below are unchanged.
 The section shows a spinner until its two reads, `GET .../capabilities` and
 `GET .../worker-kit`, settle, and both read files that can block in the kernel
 as long as a hung mount does. Each GET gives up on its read after 20 s
-(`_GET_TIMEOUT_SECS`) and answers `503 capabilities_unavailable`, leaving the
-blocked read to its thread because a GET mutates nothing. The dashboard bounds
+(`GET_TIMEOUT_SECS`, `dashboard/handlers/_bounded_read.py`) and answers
+`503 capabilities_unavailable` with `reason: "timed_out"`, leaving the blocked
+read to its thread because a GET mutates nothing. The gateway log records both
+ends with the Bot's name: a warning when the GET gives up, and one with the real
+duration when the read finishes past the limit; any other unreadable-read 503
+logs the error's type only, never its text. The dashboard bounds
 both reads at 30 s (`ABILITIES_READ_TIMEOUT_MS`, `api/crewCapabilities.ts`, on
 the transport's `getWithSignal`), so a gateway that never answers ends the wait
-too. Either failure reads as the pane's load error (`crewEditorNext.load_error`),
-never as the code or as `deadline exceeded`.
+too. Either failure shows the pane's load error (`crewEditorNext.load_error`)
+as a block notice, never as the code or as `deadline exceeded`. A read past
+either deadline says it ran out of time and names the likely causes, many added
+abilities or a slow or unreachable drive (`load_error_timed_out`); any other
+`capabilities_unavailable` points at the gateway log (`load_error_details`). The
+notice carries **Try again**, which reads the capabilities again, and **Ask the
+agent**, which runs through the editor's leave guard (`leaveGate`): over unsaved
+panes it raises the editor's discard confirm and hands off only once the user
+discards, and with nothing unsaved it goes through the host's `useGuardedLeave`.
+The guide tool `get_member_capabilities` reads the same
+view through `GET /api/cards/agent/capabilities` under the same 20 s deadline and
+waits 30 s for it, so a timed-out read reaches the model as an explanation it can
+relay (`timed_out_for_model`), not as a transport timeout.
 Where a paragraph below says "the pane", it records the copy that pane showed,
 kept as the contract the refusal codes were designed against; it is not a
 rendered surface.

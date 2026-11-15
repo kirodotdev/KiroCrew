@@ -66,8 +66,8 @@ export interface CapabilityPreview extends CapabilityView {
 }
 /** Deadline for the two reads the Bot editor's Abilities pane waits on, which
  *  shows its spinner until they settle. Longer than the gateway's own 20s bound
- *  on each read (`_GET_TIMEOUT_SECS` in `dashboard/handlers/agent_capabilities.py`
- *  and `member_worker_kit.py`), so its coded 503 normally answers first; this
+ *  on each read (`GET_TIMEOUT_SECS` in `dashboard/handlers/_bounded_read.py`),
+ *  so its coded 503 normally answers first; this
  *  ends the wait when no answer comes back at all. */
 export const ABILITIES_READ_TIMEOUT_MS = 30_000
 const { getWithSignal, post, put, j } = apiTransport

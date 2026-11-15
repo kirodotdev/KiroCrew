@@ -97,6 +97,7 @@ export type ErrorNoticeNoHandoff =
     askAgentLabel?: never
     onHandoff?: never
     onStage?: never
+    gate?: never
   }
 
 export type ErrorNoticeImpact = 'blocking' | 'partial' | 'minor'
@@ -198,6 +199,7 @@ export default function ErrorNotice({
   footer,
   onHandoff,
   onStage,
+  gate,
   className = '',
   messageClassName = '',
   messageTooltip,
@@ -335,6 +337,14 @@ export default function ErrorNotice({
    * Ignored when `askAgent` is off.
    */
   onStage?: (prompt: string) => void
+  /**
+   * Runs the hand-off through the host's own leave guard (`useGuardedLeave`'s
+   * `leave`, forwarded to `AskAgentButton`): for a notice next to an unsaved
+   * draft whose host HAS that guard. The guard asks before the navigation, so
+   * the hand-off cannot discard the draft silently; a veto stages nothing.
+   * Ignored when `askAgent` is off.
+   */
+  gate?: (proceed: () => void) => void
   className?: string
   /**
    * Classes for the `message` span only — e.g. `font-mono` when the message is
@@ -416,6 +426,7 @@ export default function ErrorNotice({
       message={message}
       onHandoff={onHandoff}
       onStage={onStage}
+      gate={gate}
       label={askAgentLabel}
       tone="inherit"
     />
