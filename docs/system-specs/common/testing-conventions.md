@@ -5394,8 +5394,13 @@ sees every step taken in Python, however the loop is spelled; it does not see wo
 one C call (a slice, `in` on a list, `str.join`, a regex search). For a regex, where all
 the work is inside one call, assert what the engine is HANDED before the hostile input
 runs: that a refused pattern compiled nothing, that the one exponential construct never
-reaches a compiled pattern, that a bounded matcher passes at most its window. A
-regression then fails at that assertion instead of never returning (class 6).
+reaches a compiled pattern, that a bounded matcher passes at most its window, that no
+character can start two alternatives of one repeated body (read off `re._parser`'s
+parse of the pattern, as `test_the_quoting_regex_is_not_redos_prone` does). A
+regression then fails at that assertion instead of never returning (class 6). A
+complexity guard that runs both a Python walk and a regex search asserts the two
+apart: what the engine is handed, then `_linear_work` on the call's instructions
+(`TestIsDeniedReDoSResistance._assert_scan_is_linear`).
 
 For a regex — no instrumentation surface at all — use `test/conftest.py`'s
 `assert_rejected_without_backtracking(reject, build_pump)`, and note what the mutation
