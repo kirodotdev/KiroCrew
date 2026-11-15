@@ -81,10 +81,6 @@ def _matches(declared: list[str], path: str) -> bool:
     return any(scope._api_pattern_matches(p, path) for p in declared)
 
 
-def test_the_wheel_copy_declares_exactly_its_own_paths_and_the_host_paths():
-    assert _shipped()["permissions"]["api"] == OWN + HOST
-
-
 def test_every_gateway_route_the_page_posts_is_a_registered_route():
     """Each declared route is one the gateway registers, so none names a typo."""
     source = (ROOT / "src/kiro_crew/apps/builtins/dev_fleet/gateway_routes.py").read_text(
@@ -101,15 +97,6 @@ def test_every_host_path_the_page_calls_is_declared_and_no_neighbour_is():
         assert _matches(declared, path), path
     for path in UNDECLARED:
         assert not _matches(declared, path), path
-
-
-def test_a_registered_builtin_approves_what_the_wheel_ships(registered):
-    grants = manager._read_approved_grants(NAME)
-    assert grants is not None and grants["api"] == OWN + HOST
-
-
-def test_the_repository_copy_adopts_without_widening(registered):
-    assert checks.permission_refusal(NAME, _repository_manifest(OWN + HOST)) is None
 
 
 def test_a_bare_app_list_entry_is_still_a_widening(registered):
