@@ -5770,6 +5770,76 @@ Writers: `website/src/app-sdk/ProjectPicker.tsx`, `website/src/app-sdk/index.ts`
 `website/public/vendor/kirocrew-app-sdk.mjs`, `website/src/app-sdk/sdkLevel.ts`,
 `apps/app_sdk_level.py`.
 
+## 18j. The person's sessions reach an app through the SDK, behind the declared chat paths
+
+`useHostSessions` on `@kirocrew/app-sdk` (`website/src/app-sdk/hostSessions.ts`) hands an
+app page the dashboard's live session list and the acts a person takes on a session from
+it: reply or steer (`send`), decide its pending tool approval (`decide`) and start a new
+session without leaving the page (`create`). It is App Kit seam level 8, shared with §37's
+directory entries; a host can report 8 before this seam merged, so an app feature-detects
+the export through a namespace import, never the level alone.
+
+It is host code. `sessions` projects `selectSlotsWithLiveLastTs` newest first by
+`recencyEpoch`, with the title `sessionDisplayTitle` gives, the agent label
+`agentOrDefaultLabel` gives against the dashboard's own shared `['default-agent']` entry
+(read with the dashboard's query client, which its socket keeps current, not the app's),
+the live state, the message count and the newest message. `send` is chat-core's `sendTurn`
+over the dashboard wire, `decide` is `api.decideApproval` and `create` is
+`api.createChatSlot()`, so a session the app shows reads and behaves as the sidebar's row
+does. The scoped transport alone could not: its `POST /api/chat/slots` names the app
+(`embed_app`), which makes a session the app owns rather than the person's, and the live
+list would be a full re-read on every `mc:app:slots`.
+
+Which members an app may use is decided by the identity the host published, the way §18i
+decides the picker:
+
+- **external**: a member is admitted once `apiPathAllowed` admits every path it sends,
+  each on its own (`HOST_SESSIONS_PATHS`): `sessions` needs `/api/chat/slots` and
+  `/api/config/default-agent`, `send` needs `/api/chat`, `create` needs `/api/chat/slots`
+  and `/api/dashboard/config` (the default memory mode `createChatSlot` reads), and
+  `decide` checks the one route it sends, `/api/chat/slots/<key>/approve` for a session's
+  own request or `/api/approvals/<id>/<action>` for a background one. A member not
+  admitted sends nothing: `sessions` is `null`, the default-agent read stays disabled, and
+  `send`, `create` and `decide` reject with `AppApiPermissionError`. `can` answers the same
+  checks so a page can hide a control that would refuse.
+- **builtin**: every member, as host code.
+- **none**: the external answer with nothing declared, the refusal.
+
+This grants nothing the scoped transport would not, since a scoped request carries the
+dashboard user's own authority too (the frontend scoping is the trust model's guardrail,
+not a boundary) and the matcher is the same. A pending approval is a frozen object the
+hook hands out; its decide target (`ApprovalTarget`, with the native `mid` or the
+coordinator `instance`) is kept in a `WeakMap` keyed by that object and never published,
+so an app decides only a request the dashboard showed it, and an object it built itself
+decides nothing (`gone`, no request sent). `decide` resolves to the dashboard approval
+card's own outcome and words: `decided`, `settled` (another person decided first, 409
+`already_resolved`, `settledElsewhereLine`), `gone` (`isTerminalApprovalRefusal`) or
+`failed` with the card's sentence and the journaled error report. `send` resolves to the
+chat-core receipt status (`dispatched`, `queued`, `refused` with the server's reason,
+`unknown`, `response-late`, `transport-error`) and never rejects for a delivery outcome.
+Opening a session in the chat stays `useChatLauncher().openChat({ slotKey })`; reading a
+session's messages, the cron list and the subagent list stay scoped reads
+(`GET /api/chat/slots/<key>`, `GET /api/crons`, `GET /api/spawn`).
+
+Agent Worlds' wheel copy declares what its page calls today (owner ruling of 2026-11-13 on
+#26967, comment 6841699202: an app gets what its built-in already uses, declared in the
+wheel copy first so adoption is no widening): `=/api/chat`, `/api/chat/slots`,
+`/api/approvals`, `=/api/crons`, `=/api/spawn`, `=/api/config/default-agent` and
+`=/api/dashboard/config`. The two families are bare because their key is a path segment;
+every other entry is exact. The app repository declares the same list. Pinned by
+`test/test_agent_worlds_permission_parity.py`, which registers the real wheel copy and asks
+`permission_refusal` of that list (None), of the list plus one path and of a bare
+`/api/chat` (`permission_widening`). The built-in page itself is unchanged.
+`AppSdkHostSessions.test.tsx` pins the three answers, each member's own admission, that
+every request the members send is admitted by the documented list, the create without
+`embed_app`, both decide routes, the decide outcomes and the forged approval.
+
+Writers: `website/src/app-sdk/hostSessions.ts`, `website/src/app-sdk/index.ts`,
+`website/src/app-sdk/scopedApi.ts` (`permissionDenied`, the one refusal both share),
+`website/src/api/client/approvals.ts` (`decideApprovalPath`, the route both the decide and
+its check read), `website/public/vendor/kirocrew-app-sdk.mjs`,
+`apps/builtins/agent_worlds/app.json`.
+
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
 Spec Builder's backend carries more orchestration than a typical app: agent turns
@@ -7030,7 +7100,7 @@ manifest's `agentReadOnlyDirs` (§39), the backend SDK package (§40), the deskt
 window host's spanning overlay, background window, panel gutter and the messages between
 an app's windows and `permissions.desktopCapabilities` (§35), the exact `permissions.api` entry (§ Scoped frontend HTTP
 transport), `ctx.chat_slots` (§41), the SDK's project picker (§18i) and `ctx.webhook_source` (§42); level 8 adds directory entries in `credentialMasks`
-(§37). Several seams share level 7, so an app that needs one
+(§37) and the SDK's `useHostSessions` (§18j). Several seams share level 7, and two share level 8, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
@@ -7722,7 +7792,7 @@ scopes add, none for a disabled app (`chat_api/slot_detail.py:api_chat_slots` th
 `ws_event_scope.filter_slots_for_app`, pinned by `test/test_chat_slots_app_token_view.py`).
 The person and an internal-secret caller keep the full list. Pinned by `test/test_design_tweak_permission_parity.py`,
 which registers the real wheel copy and asks `permission_refusal` of the repository's
-list (None) and of that list plus one more path (`permission_widening`).
+list (None) and of that list plus one more path (`permission_widening`). Agent Worlds declares the host paths its page calls the same way (§18j).
 
 **The trust prompt names the host paths.** `TrustAppModal` lists the manifest's
 `permissions.api` entries outside the app's own namespace in a box of their own, as

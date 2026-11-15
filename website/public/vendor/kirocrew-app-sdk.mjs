@@ -19,6 +19,8 @@ export const {
   useIssues, IssueList, IssueCard,
   // The dashboard's project picker behind the app's declared listing paths (level 7).
   ProjectPicker,
+  // The dashboard's live session list and session acts behind the app's declared chat paths (level 8).
+  useHostSessions,
   defaultMessageRenderers, mergeRenderers, resolveRenderer, ToolCallPill, GROUPED_ROLES,
   // WS event scope prediction, so a subscription that will never be delivered warns at
   // development time instead of silently receiving nothing.

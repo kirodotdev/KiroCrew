@@ -835,6 +835,59 @@ it.
 | `anchorRect` | `DOMRect \| null` | no | An anchor rectangle, when there is no element |
 | `startPath` | `string` | no | Where **Browse** opens; empty opens at the gateway user's home |
 
+## Host Sessions
+
+`useHostSessions()` gives your page the person's own sessions as the dashboard's session
+list holds them, live, and the acts a person takes on one from there: reply or steer it,
+approve or reject the tool it waits on, and start a new session without leaving your page.
+Each session reads as its sidebar row does (title, agent, running, message count, newest
+message, a pending approval). It needs `APP_SDK_LEVEL >= 8`, and since a host can report 8
+before it has this hook, read it off a namespace import:
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+// Absent on an older host: mount the view that calls it only when it is there.
+const hasHostSessions = typeof (sdk as Record<string, unknown>).useHostSessions === 'function'
+
+// Inside that view:
+const { sessions, can, send, decide, create } = sdk.useHostSessions()
+
+await send(session.key, 'Check the failing test first', { steer: session.running })
+const result = await decide(session.pendingApproval!, 'approve')
+if (result.outcome !== 'decided') showNotice(result.message)
+```
+
+| Member | Sends | Declare |
+|---|---|---|
+| `sessions` | the list, and the default agent an agent-less session is labelled with | `/api/chat/slots`, `=/api/config/default-agent` |
+| `send(key, message, { steer })` | `POST /api/chat` | `=/api/chat` |
+| `decide(approval, action)` | `POST /api/chat/slots/<key>/approve` for a session's own request, `POST /api/approvals/<id>/<action>` for a background one | `/api/chat/slots`, `/api/approvals` |
+| `create()` | `POST /api/chat/slots`, and the default memory mode a new session starts with | `/api/chat/slots`, `=/api/dashboard/config` |
+
+Each member checks its own paths. One you have not declared sends nothing: `sessions` is
+`null`, and `send`, `decide` and `create` reject with an `AppApiPermissionError`. `can`
+says which members you may use, so you can hide a control that would refuse. Declaring
+them is a real grant: your page can then write in the person's sessions in their name,
+and the install prompt says so.
+
+- `send` resolves to `{ status, reason? }`: `dispatched` or `queued` when it was accepted,
+  `refused` with the server's reason, `unknown` when it was accepted but its answer could
+  not be read (it may be running, so do not resend), `response-late` when no answer came in
+  time (check the session before sending again) and `transport-error` when it never left.
+- `decide` takes the `pendingApproval` object from `sessions` and resolves to
+  `{ outcome: 'decided' }`, or `settled` (someone else decided it first), `gone` (it is no
+  longer pending) or `failed`, each with the sentence the dashboard's approval card shows.
+  An approval object you built yourself decides nothing.
+- `create` resolves to `{ key }`; the new session is the person's, as **New session** in
+  the sidebar makes it, and appears in `sessions` when the list updates.
+
+Open a session in the chat with `useChatLauncher().openChat({ slotKey })`. Read a
+session's messages, the cron list or the subagent list through `useAppApi()`
+(`GET /api/chat/slots/<key>?limit=N`, `GET /api/crons`, `GET /api/spawn`), declaring each.
+A built-in page gets every member as the dashboard has it; outside an app every member
+refuses.
+
 ## Chat Marker Protocol
 
 An agent encodes UI affordances inline in the prose it streams. A surface that renders a transcript
@@ -1871,8 +1924,9 @@ and level 7 adds the manifest's `agentReadOnlyDirs` (see
 `permissions.desktopCapabilities`, the dashboard's
 [project picker](#project-picker) (`ProjectPicker`) and
 [`ctx.webhook_source`](#webhook-source-ctxwebhook_source), and level 8 adds
-directory entries in `credentialMasks` (`"state/"`); each level
-includes every level below it. Several seams share level 7, so an app that needs one
+directory entries in `credentialMasks` (`"state/"`) and the dashboard's
+[host sessions](#host-sessions) (`useHostSessions`); each level
+includes every level below it. Several seams share level 7, and two share level 8, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
