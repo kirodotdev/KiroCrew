@@ -543,7 +543,6 @@ function baseInputs(over: Record<string, unknown> = {}) {
     catalogs: { en: EN, 'zh-CN': ZH },
     locales: ['en', 'zh-CN'],
     productName: 'Kiro Crew',
-    inputDigest: 'sha256:test',
     routes: ROUTES,
     conditions: UI_CONDITIONS,
     revealStates: UI_REVEAL_STATES,

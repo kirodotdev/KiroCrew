@@ -240,16 +240,16 @@ function build(autoCandidates: Record<string, unknown>[]) {
     catalogs: { en: EN, 'zh-CN': ZH },
     locales: ['en', 'zh-CN'],
     productName: 'Kiro Crew',
-    inputDigest: 'sha256:test',
     routes: ROUTES,
     conditions: UI_CONDITIONS,
     revealStates: UI_REVEAL_STATES,
     resolveGuide: () => ({ ok: false, reason: 'none' }),
     autoCandidates,
   }) as {
-    index: { locations: Loc[]; labels: Record<string, Record<string, string>>; coverage: { tiers: Record<string, number>; counts: Record<string, number> } }
+    index: { locations: Loc[]; labels: Record<string, Record<string, string>>; coverage: Record<string, unknown> }
     errors: string[]
     auto: { covered: number; entries: number; skipped: Record<string, number> }
+    stats: { tiers: Record<string, number>; counts: Record<string, number> }
   }
 }
 
@@ -257,7 +257,7 @@ describe('auto locations', () => {
   const cand = (key: string, over: Record<string, unknown> = {}) => ({ page: 'page.chat', tab: null, key, kind: 'button', rel: 'A.tsx', ...over })
 
   it('includes a single-page candidate as tier auto, with its page path and labels in every locale', () => {
-    const { index, errors, auto } = build([cand('k.auto')])
+    const { index, errors, auto, stats } = build([cand('k.auto')])
     expect(errors).toEqual([])
     const loc = index.locations.find((l) => l.id === 'auto:page.chat:k.auto')!
     expect(loc).toMatchObject({ tier: 'auto', conditions_unknown: true, kind: 'button', label_key: 'k.auto' })
@@ -265,8 +265,8 @@ describe('auto locations', () => {
     expect(loc.placements).toEqual([{ surface_id: 'chat', route: '/chat', parent_ids: ['page.chat'], entry_kind: 'content', requires: [] }])
     expect(index.labels.en['k.auto']).toBe('Reindex sources')
     expect(index.labels['zh-CN']['k.auto']).toBe('重新索引来源')
-    expect(index.coverage.tiers).toEqual({ generated: 4, curated: 1, auto: 1 })
-    expect(index.coverage.counts.button).toBeUndefined()
+    expect(stats.tiers).toEqual({ generated: 4, curated: 1, auto: 1 })
+    expect(stats.counts.button).toBeUndefined()
     expect(auto).toMatchObject({ covered: 1, entries: 1 })
     expect(index.locations.find((l) => l.id === 'chat.toggle')!.tier).toBe('curated')
     expect(index.locations.find((l) => l.id === 'page.chat')!.tier).toBe('generated')
@@ -305,8 +305,8 @@ describe('auto locations', () => {
   })
 
   it('leaves the auto tier out of the coverage block when no candidates were asked for', () => {
-    const { index } = build(undefined as unknown as Record<string, unknown>[])
-    expect(index.coverage.tiers).toEqual({ generated: 4, curated: 1 })
+    const { index, stats } = build(undefined as unknown as Record<string, unknown>[])
+    expect(stats.tiers).toEqual({ generated: 4, curated: 1 })
     expect(index.coverage).not.toHaveProperty('auto_controls')
     expect((index.coverage as unknown as { scope: string }).scope).not.toMatch(/auto-indexed/)
   })
@@ -335,8 +335,12 @@ describe('the committed index', () => {
   it('carries no auto tier: it is generated at build time, so a new button never stales the committed file', () => {
     expect(real.locales).toHaveLength(12)
     expect((real.locations as Loc[]).filter((l) => l.tier === 'auto')).toEqual([])
-    expect(real.coverage.tiers).not.toHaveProperty('auto')
     expect(real.coverage).not.toHaveProperty('auto_controls')
+  })
+
+  it('carries no line that changes on every UI edit, so PRs on different pages merge cleanly', () => {
+    expect(real).not.toHaveProperty('input_digest')
+    expect(Object.keys(real.coverage)).toEqual(['scope'])
   })
 })
 
