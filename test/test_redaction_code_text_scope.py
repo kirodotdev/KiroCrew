@@ -362,6 +362,7 @@ class TestOnlyTheNamedSeamOpensTheScope:
         assert files == {
             "dashboard/handlers/member_dashboard.py",  # the page scrub, script and style text
             "platform/context.py",  # the shim
+            "security/mcp_body_fields.py",  # the body-field warning only: nothing redacted or refused
             "security/redaction_switch.py",  # the scope's docstring names the shim
         }, files
 

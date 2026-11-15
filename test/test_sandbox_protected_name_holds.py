@@ -506,7 +506,13 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   inode stays the same on a republish. The parent is the app's data
     #:   directory, which agents read and write, so an enclosing mask would hide the
     #:   app's data and leaf-only is the only hold, as for ``host-exec-grants``.
-    EXPECTED: dict[str, int] = {"standard": 348, "cc": 355, "strict": 356}
+    #:
+    #: One more root-level leaf, three entries per tier (one per data-home path):
+    #: ``mcp_body_fields.json`` -- the MCP message-body fields the owner allowed,
+    #: sealed read-only so an agent cannot allow its own fields past the
+    #: tool_input size ceiling. A file at the data-home root beside writable
+    #: siblings, so leaf-only is the only hold, as for ``credential_redaction.json``.
+    EXPECTED: dict[str, int] = {"standard": 351, "cc": 358, "strict": 359}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

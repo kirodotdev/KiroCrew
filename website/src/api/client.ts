@@ -124,6 +124,8 @@ export type {
   ConfigPendingData,
   ConfigPendingLeaf,
   CredentialRedactionState,
+  McpBodyFieldRow,
+  McpBodyFieldsData,
   DeniedCommandsData,
   GovernanceScopeDetail,
   GovernanceScope,
