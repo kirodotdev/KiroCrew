@@ -1128,24 +1128,6 @@ def _mimocode_session_mcp_servers(self: AcpClient) -> list:
     return self._session_mcp_servers()
 
 
-def _deepseek_session_mcp_servers(self: AcpClient) -> list:
-    """MCP server array passed to a deepseek ``session/new`` / ``session/load``.
-
-    The deepseek twin of :meth:`_goose_session_mcp_servers`: ``dsh --profile acp``
-    reads no ``~/.kiro/agents/<name>.json``, and with deepseek in ``MIRRORS``
-    :meth:`_pooled_mcp_servers` answers ``[]`` for it, so this array is the only
-    route for Crew's own tools, the spec's servers and a member session's own
-    mounts (session control and the panel). An element whose command cannot start
-    fails ``session/new`` whole on this harness
-    (``test/fixtures/acp_frames/deepseek/mcp-stdio-rollback-live.jsonl``).
-
-    In-memory only. The spawn path warms ``_session_mcp_cache`` off the loop, so
-    this accessor adds no scheduling or failure point to a call site shared with
-    kiro-cli (harness-parity H13).
-    """
-    return self._session_mcp_servers()
-
-
 def _copilot_session_mcp_servers(self: AcpClient) -> list:
     """MCP server array passed to a Copilot CLI ``session/new`` / ``session/load``.
 

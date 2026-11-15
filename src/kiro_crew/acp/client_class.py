@@ -55,7 +55,6 @@ from kiro_crew.acp.skill_reads import SkillReadTracker
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp.types import (
     ACP_BACKEND_COPILOT,
-    ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_MIMOCODE,
@@ -369,11 +368,6 @@ class AcpClient:
         # Every server name that handoff carried (the member mounts AND the pooled
         # stubs), which is what a pi MCP tool title is spelled after.
         self._pi_mcp_server_names: tuple[str, ...] = ()
-        self._deepseek_gate_nonce = ""
-        # Why this DeepSeek Harness session's READ_ONLY turns may not approve its
-        # read tools by name, or ``""`` once its launch proved stock dsh composes
-        # them (``tool_gate.deepseek_read_only_owner_issue``). Refused until then.
-        self._deepseek_read_only_issue = "the harness composition was not read back"
         # Set by the MiMo Code launch once its routing is read back: a shell call
         # that completes without Crew having been asked about it stops the harness,
         # because that harness's own loopback listener can switch it to auto-allow
@@ -868,7 +862,6 @@ class AcpClient:
     _guard_unresolved_mcp_refs = _client_mcp_array._guard_unresolved_mcp_refs
     _session_mcp_servers = _client_mcp_array._session_mcp_servers
     _mimocode_session_mcp_servers = _client_mcp_array._mimocode_session_mcp_servers
-    _deepseek_session_mcp_servers = _client_mcp_array._deepseek_session_mcp_servers
     _copilot_session_mcp_servers = _client_mcp_array._copilot_session_mcp_servers
     _pi_session_mcp_servers = _client_mcp_array._pi_session_mcp_servers
     _republish_pi_mcp_handoff = _client_mcp_array._republish_pi_mcp_handoff
@@ -940,10 +933,6 @@ class AcpClient:
         return self.backend == ACP_BACKEND_PI
 
     @property
-    def _is_deepseek(self) -> bool:
-        return self.backend == ACP_BACKEND_DEEPSEEK
-
-    @property
     def _is_copilot(self) -> bool:
         return self.backend == ACP_BACKEND_COPILOT
 
@@ -1010,6 +999,20 @@ class AcpClient:
     #: (``_tripwire_session_mode``). Read before either call, so every other session
     #: makes neither.
     _reads_back_session_mode: bool = False
+
+    #: What the completed-unasked tripwire tells the person to check when a gate
+    #: extension's session ran a tool call Crew was never asked about
+    #: (``_tripwire_pi_gate``): pi's adapter and pi itself here.
+    _gate_tripwire_remedy: str = (
+        "Start a new chat, and if it recurs check the pi-acp and pi versions: "
+        "the adapter must run the command named by PI_ACP_PI_COMMAND and forward "
+        "extension dialogs, and pi must honour an extension's block."
+    )
+
+    #: True on a backend that forwards the provider's tool-call id verbatim, so two
+    #: calls of one turn can share an id; the harness tool name that id names is then
+    #: read as unknown rather than as either call's.
+    _tool_call_ids_repeat_in_turn: bool = False
 
     def _verify_session_mode(self, resp: dict) -> None:
         """Refuse a session whose answer *resp* reports a mode Crew does not allow.

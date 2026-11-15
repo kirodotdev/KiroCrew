@@ -35,7 +35,13 @@ from typing import Any
 import pytest
 
 from kiro_crew.acp import client as acp_client
-from kiro_crew.acp.client import AcpClient, ClaudeAcpClient, GooseAcpClient, OpencodeAcpClient
+from kiro_crew.acp.client import (
+    AcpClient,
+    ClaudeAcpClient,
+    DeepseekAcpClient,
+    GooseAcpClient,
+    OpencodeAcpClient,
+)
 from kiro_crew.acp.transport_errors import AcpError
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_client_bindings")
@@ -86,7 +92,6 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_consult_liveness_model_wait": ("function", True, "0329a680bb66", "client_turn"),
     "_copilot_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
     "_decline_elicitation": ("function", True, "87459833bc5c", "client_elicitation"),
-    "_deepseek_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
     "_defer_mimocode_shell_permission": ("function", True, "7c70a056d5ef", "client_turn"),
     "_defer_shell_permission": ("function", True, "7c70a056d5ef", "client_class"),
     "_defers_shell_permission": ("data", False, "", ""),
@@ -118,6 +123,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_forget_sent_images": ("function", False, "b60c5fea256e", "client_turn"),
     "_fork_session": ("function", True, "bca802976336", "client_class"),
     "_guard_unresolved_mcp_refs": ("function", False, "779b51571c73", "client_mcp_array"),
+    "_gate_tripwire_remedy": ("data", False, "", ""),
     "_handle_compaction_status": ("function", False, "50405edf7b6a", "client_usage"),
     "_handle_config_option_update": ("function", False, "87459833bc5c", "client_model_selection"),
     "_handle_elicitation_request": ("function", True, "e64128661dfa", "client_elicitation"),
@@ -140,7 +146,6 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_install_idle_reader": ("function", False, "b60c5fea256e", "client_transport"),
     "_invalidate_session_mcp_projection": ("function", False, "b60c5fea256e", "client_mcp_array"),
     "_is_copilot": ("property", False, "a6632a57e602", "client_class"),
-    "_is_deepseek": ("property", False, "a6632a57e602", "client_class"),
     "_is_kiro": ("property", False, "a6632a57e602", "client_class"),
     "_is_mimocode": ("property", False, "a6632a57e602", "client_class"),
     "_is_pi": ("property", False, "a6632a57e602", "client_class"),
@@ -279,6 +284,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_store_session_config": ("function", False, "4d0ed6879afd", "client_model_selection"),
     "_sync_effort_levels": ("function", False, "b60c5fea256e", "client_model_selection"),
     "_to_thread_guarding_sandbox": ("function", True, "8dbe076fd22d", "client_lifecycle"),
+    "_tool_call_ids_repeat_in_turn": ("data", False, "", ""),
     "_track_metadata": ("function", False, "c20f6a9efea3", "client_usage"),
     "_track_prompt_usage": ("function", False, "c8d5c402278d", "client_usage"),
     "_track_tool_call": ("function", False, "87459833bc5c", "client_tool_events"),
@@ -523,6 +529,26 @@ _OPENCODE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
     ),
 }
 
+#: ``DeepseekAcpClient``'s own members: what only a DeepSeek Harness session carries,
+#: bound from the deepseek owner, and the ``AcpClient`` hooks it fills.
+_DEEPSEEK_MEMBERS: dict[str, tuple[str, object, str, str]] = {
+    "__init__": ("function", False, "79ccca4df994", "client_deepseek"),
+    "_deepseek_session_mcp_servers": (
+        "function",
+        False,
+        "f5423acdeebc",
+        "client_deepseek_session",
+    ),
+    "_gate_tripwire_remedy": ("data", False, "", ""),
+    "_harness_session_mcp_servers": (
+        "function",
+        False,
+        "f5423acdeebc",
+        "client_deepseek_session",
+    ),
+    "_tool_call_ids_repeat_in_turn": ("data", False, "", ""),
+}
+
 #: Class-level annotations the split adds: fields first set by a member an owner defines,
 #: declared in the class so type checkers know them. An annotation creates no attribute.
 _DECLARED = frozenset(
@@ -546,6 +572,7 @@ _INVENTORIES: dict[type, dict[str, tuple[str, object, str, str]]] = {
     ClaudeAcpClient: _CLAUDE_MEMBERS,
     GooseAcpClient: _GOOSE_MEMBERS,
     OpencodeAcpClient: _OPENCODE_MEMBERS,
+    DeepseekAcpClient: _DEEPSEEK_MEMBERS,
 }
 
 #: Every member name some client class binds.
@@ -554,6 +581,7 @@ _ALL_MEMBERS = (
     | frozenset(_CLAUDE_MEMBERS)
     | frozenset(_GOOSE_MEMBERS)
     | frozenset(_OPENCODE_MEMBERS)
+    | frozenset(_DEEPSEEK_MEMBERS)
 )
 
 
@@ -1088,6 +1116,7 @@ def test_the_backend_picks_the_client_class() -> None:
     """``AcpClient(acp_backend=...)`` builds the class that serves the backend, and a
     backend whose settings file Crew seeds is refused by a class that seeds none."""
     assert type(AcpClient(acp_backend="claude")) is ClaudeAcpClient
+    assert type(AcpClient(acp_backend="deepseek")) is DeepseekAcpClient
     assert type(AcpClient(acp_backend="")) is AcpClient
     assert type(AcpClient(acp_backend="opencode")) is OpencodeAcpClient
     assert type(AcpClient(acp_backend="mimocode")) is AcpClient

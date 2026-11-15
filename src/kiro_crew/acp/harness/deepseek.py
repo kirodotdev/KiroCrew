@@ -30,7 +30,7 @@ import time
 import uuid
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Protocol, cast
 from urllib.request import url2pathname
 
 from kiro_crew import acp_tool_gate, agent_scratch, agent_sdk, platform_compat
@@ -459,8 +459,19 @@ def _read_deepseek_gate_marker(marker_path: str) -> object:
         return None
 
 
+class DeepseekProcessSession(ProcessSession, Protocol):
+    """The DeepSeek Harness session :class:`DeepseekLaunch` launches: a
+    :class:`ProcessSession` that also carries the gate nonce its launch issued and the
+    READ_ONLY proof its read-back recorded, which the permission path reads.
+    ``DeepseekAcpClient`` is the production implementation.
+    """
+
+    _deepseek_gate_nonce: str
+    _deepseek_read_only_issue: str
+
+
 def _record_deepseek_read_only_proof(
-    session: ProcessSession, marker: dict[str, Any], extension_path: str
+    session: DeepseekProcessSession, marker: dict[str, Any], extension_path: str
 ) -> None:
     """Record on *session* whether its READ_ONLY turns may approve dsh's read tools.
 
@@ -497,7 +508,7 @@ def _same_spelling_entry(row: object) -> object:
 
 
 def _verify_deepseek_gate(
-    session: ProcessSession,
+    session: DeepseekProcessSession,
     backend: str,
     argv: list[str],
     extension_path: str,
@@ -657,8 +668,8 @@ class DeepseekLaunch(ProcessAdapter):
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
         """Resolve the binary, mask it, compose and seal the gate, and prove it loads."""
-        session = ctx.session
-        assert session is not None, "the DeepSeek Harness is launched for one session"
+        assert ctx.session is not None, "the DeepSeek Harness is launched for one session"
+        session = cast(DeepseekProcessSession, ctx.session)
         _deepseek_bin, argv, spawn_label, stderr_label = (
             await launch_mod.resolve_self_served_launch(self.backend)
         )
@@ -844,10 +855,6 @@ class DeepseekLaunch(ProcessAdapter):
             extra_hidden_dirs=hidden,
             extra_expose_files=expose,
         )
-
-    def session_mcp_servers(self, session: ProcessSession) -> list[dict[str, Any]]:
-        """The DeepSeek Harness session's own ``mcpServers`` entries, warmed by the spawn."""
-        return session._deepseek_session_mcp_servers()
 
     def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
         """Pin the permission mode and hand the session's child the probe's nonce.
