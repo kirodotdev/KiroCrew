@@ -120,7 +120,7 @@ the key cannot OBSERVE never compares equal to the same absence elsewhere: an
 empty era read becomes a token unique to that start, so it founds its own process.
 Such a provider carries `shared_runtime=True`, which selects a third teardown arm
 (`_shutdown_shared`): it releases, evicts its own session while keeping the resume
-record (kiro-cli's terminate with the transcript kept; KAS's `session/close` via
+record (KAS's `session/close` via
 `keep_record_on_teardown`), and kills only the runtime the release hands back.
 
 **A founding `spawn()` holds nothing.** The table's bookkeeping — entries, the
@@ -168,35 +168,42 @@ in use" question (`session_lifecycle_parts.teardown._pid_is_still_held`, asked o
 for a shared chat session) reads both tables, and why the RSS watchdog scales its
 ceiling by the leases on a pid (`session_cleanup_spare.rss_limit_for`).
 
-### Chat turns are serialized on a shared kiro-cli process
+### Shared chats never wait for each other
 
-kiro-cli emits some session-control frames without a `sessionId`: a compaction, a
-`/clear` and an agent switch are `session/update` frames for the ONE session whose
-turn triggered them, but the frame does not say which. The reader loop delivers
-such a frame to every session queue, marked `fanout_no_owner`. On a chat-shared
-kiro-cli runtime, chat turns are therefore serialized per process:
-`AcpRuntime.chat_turn_gate` is a lock a shared chat session holds for the whole
-turn (`AcpSessionProvider.stream` / `stream_command`), so the frame's producer is
-unambiguous and an idle co-tenant discards it at its next pre-turn drain. A
-`/compact` holds the gate through its deferred receipt (`hold_chat_turn_gate`,
-entered by `chat_runner._run_chat` and `CompactionCoordinator`). The consumer
-also gates cross-session state on ownership: a fanned `/clear` this turn did not
-type is ignored, and a fanned agent switch is not recorded (its vetoes stay
-unconditional). This costs concurrency on kiro-cli and the spec states it: a long
-turn in one chat makes the other chats on that process wait.
+A chat must not wait for another chat's turn, so chat sharing is offered only
+where the engine itself runs the chats on one process in parallel, and Crew adds
+no turn lock of its own.
 
-The gate is a no-op on **KAS**. Its engine names the session on every
-`session/update` and keeps its own turn order (`@kiro/agent` 0.66.91, shipped in
-kiro-cli 3.1.0; `KAS_CHAT_SHARING_MIN_KIRO_CLI`): one turn per session (a second
-prompt to a busy session is steered into its running turn), and a Crew
-custom-agent turn waits in the engine's model queue while another session's turn
-runs. So shared KAS chats also take turns one after another, and the cost stated
-above applies to them too; what the engine removes is only the need for Crew's own
-lock. An older engine, or Crew's own pinned bundle, is not eligible to share.
+**kiro-cli is not a chat-sharing backend.** kiro-cli emits some session-control
+frames without a `sessionId`: a compaction, a `/clear` and an agent switch are
+`session/update` frames for the ONE session whose turn triggered them, but the
+frame does not say which. The reader loop delivers such a frame to every session
+queue, marked `fanout_no_owner`. Chats sharing a kiro-cli process would have to
+take turns for each frame's producer to be unambiguous, so a kiro-cli chat keeps
+its own process with the preview on (`backend_not_chat_shareable`).
 
-A **sub-agent** turn is kept OUT of the gate: it runs on its principal's process
-while the principal's turn is open, so contending for the same lock would deadlock
-the principal->sub-agent await.
+**KAS** names the session on every `session/update` and keeps its own turn order:
+one turn per session (a second prompt to a busy session is steered into its
+running turn, since `@kiro/agent` 0.66.91). From 0.66.104 (kiro-agent#3741) turns
+of different sessions also run in parallel: only a spec-generation turn waits for
+the engine's single model slot. Older engines (0.66.91 in kiro-cli 3.1.0, 0.66.102
+in kiro-cli 3.2.1) make every Crew custom-agent turn wait in that slot, so shared
+chats there would answer one at a time. `kas_chat_sharing_ready` therefore admits a
+KAS start only when the engine its route will run is at or above
+`KAS_CHAT_SHARING_MIN_ENGINE` (0.66.104): on the bundle route the installed pinned
+bundle's install record, on the relay the `@kiro/agent` manifest in kiro-cli's
+own `kas/<version>-<sha256>` extract for the kiro-cli version Crew spawns. The
+kiro-cli version alone does not count, and an engine version that cannot be read
+(no extract yet, no installed bundle) keeps one process per chat
+(`kas_engine_not_shareable`).
+
+The preview also moves KAS onto Crew's own pinned engine by itself
+(`kas_route.REASON_SHARING_PREVIEW`), so it works from the Feature previews row
+alone, without `agent.kas_bundle`. A stored Kiro CLI pick and the operator's
+`KIROCREW_KIRO_BIN` keep their route. The first chat installs the engine and keeps
+its own process; later chats share it. An engine that cannot be installed or
+started is logged and the spawn continues on the default route, unshared. With the
+preview off routing is unchanged.
 
 ### Tenancies
 

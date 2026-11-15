@@ -195,8 +195,9 @@ export interface KasBundleStatus {
   error: string
   /**
    * The route the last KAS spawn in this gateway took, or null before the first.
-   * `automatic` is true when Crew's own engine was chosen because kiro-cli's relay
-   * cannot run here (`reason`: 'no_kiro_cli' | 'kiro_cli_signed_out'). Optional:
+   * `automatic` is true when Crew's own engine was chosen without `agent.kas_bundle`:
+   * kiro-cli's relay cannot run here (`reason`: 'no_kiro_cli' | 'kiro_cli_signed_out'),
+   * or the ACP runtime sharing preview picked it ('chat_runtime_sharing'). Optional:
    * an older gateway sends no such key.
    */
   route?: {

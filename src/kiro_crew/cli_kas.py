@@ -418,6 +418,12 @@ def _report_installed(installed: kas_bundle.InstalledKasBundle, *, already: bool
             "  kirocrew config set agent.kas_bundle true\n"
             "  kirocrew restart"
         )
+    elif kas_bundle.route_chosen_by_sharing_preview(route):
+        print(
+            "\nKiro Crew will use this engine: the ACP runtime sharing preview "
+            "picks it while agent.kas_bundle is off. `kirocrew restart` picks "
+            "the new engine up."
+        )
     elif route.automatic:
         print(
             "\nKiro Crew will use this engine: the bundle route is on "
