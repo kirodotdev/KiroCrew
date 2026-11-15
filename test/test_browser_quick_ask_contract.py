@@ -56,7 +56,7 @@ async def _ask_for(kind: str) -> tuple[lh.LiveHub, Any, Any, FakePage]:
 async def test_the_gateway_publishes_the_fixture_ask_exactly(kind: str) -> None:
     wire = FIXTURE["asks"][kind]["wire"]
     hub, _rec, ask, _page = await _ask_for(kind)
-    # The two values a real ask mints for itself, pinned to the fixture's.
+    # The id and expiry a real ask mints, and its phase, pinned to the fixture's.
     ask.id, ask.expires_at, ask.phase = wire["id"], wire["expires_at"], wire["phase"]
     assert lh.live_event(hub.get(KEY))["ask"] == wire  # type: ignore[arg-type]
 

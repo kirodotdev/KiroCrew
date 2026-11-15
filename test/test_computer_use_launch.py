@@ -1629,7 +1629,7 @@ class TestResolvedIdentityReachesThePolicy:
         assert spawned == [], "the denied target was spawned anyway"
 
     def test_NO_supplier_degrades_to_the_display_name_only(self):
-        # The default is the pre-fix behaviour, which is exactly why a driver that forgets
+        # The default is the display-name-only behaviour, which is exactly why a driver that forgets
         # to pass ``identity=`` must be caught by the test above rather than by this one.
         _result, _spawned, seen = self._run(None)
         assert [(w.display, w.key) for w in seen] == [("Foo", "")]

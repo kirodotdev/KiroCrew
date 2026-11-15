@@ -339,7 +339,7 @@ class TestPolicySignatureOptIn:
             _load_and_enforce()
 
     def test_signed_bundle_outranks_an_unsigned_home_file(self, monkeypatch, tmp_path):
-        # GPT finding: enforcing at LOAD time raised on whichever tier a given pass
+        # Enforcing at LOAD time raised on whichever tier a given pass
         # happened to reach. The core's loader-less pass falls through to the HOME
         # file, so an enterprise host with an unsigned home file and a correctly
         # signed companion BUNDLE aborted — even though the bundle outranks home and
@@ -407,7 +407,7 @@ class TestPolicySignatureOptIn:
         # pass (core without a bundled_loader, edition with one) and cannot tell
         # whether it is the last word. Raising inside it either aborts a bundle-only
         # enterprise host before its edition is consulted, or — keyed on the loader
-        # being present — misses a standalone host entirely (the GPT finding). So
+        # being present — misses a standalone host entirely. So
         # absence always yields None here; the refusal lives in the boot gate.
         monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
         monkeypatch.setattr(
@@ -442,7 +442,7 @@ class TestPolicySignatureAbsenceGate:
             assert_policy_signature_satisfied(None)
 
     def test_standalone_no_loader_is_covered_too(self, monkeypatch, tmp_path):
-        # GPT finding on the previous shape: gating the refusal on "a bundled_loader
+        # Gating the refusal on "a bundled_loader
         # was consulted" meant a STANDALONE host (no edition, so no loader ever) with
         # a genuine opt-in and no policy ran with no ceiling. The gate runs on the
         # composed context, so it does not depend on a loader existing at all.

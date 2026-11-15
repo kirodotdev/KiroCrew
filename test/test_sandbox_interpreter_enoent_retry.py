@@ -1256,9 +1256,9 @@ class TestACancelDuringTheShellProbeIsNotLost:
             ):
                 result = cron.run_command_sandboxed("rm -rf ./data", job_id="job-probe")
 
-        # The cancel had somewhere to land: pre-fix this was False -- discarded.
+        # The cancel had somewhere to land; False would mean it was discarded.
         assert accepted == [True]
-        # And the command never ran. This is the assertion that fails pre-fix.
+        # And the command never ran. This is the assertion that catches a lost cancel.
         assert popen.call_count == 0
         assert result["status"] == "cancelled"
 

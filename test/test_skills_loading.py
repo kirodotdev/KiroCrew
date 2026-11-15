@@ -584,7 +584,7 @@ class TestRelocatedSkillCleanup:
         assert not (provider / "SKILL.md.pre-relocation").exists()
 
     def test_repeated_migration_never_overwrites_prior_quarantine(self, tmp_path: Path) -> None:
-        # HIGH regression (GPT 5.6): a rollback/reinstall can recreate
+        # A rollback/reinstall can recreate
         # SKILL.md AFTER a prior migration quarantined a user-edited copy.
         # The second migration must NOT os.replace over the first quarantine
         # — both preserved copies must survive under distinct names.

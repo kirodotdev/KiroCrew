@@ -301,7 +301,7 @@ class TestFindListeningPidsErrors:
         assert completed is False
 
     def test_windows_finds_ipv6_listener_via_netstat(self, monkeypatch):
-        # Regression:. Windows netstat -ano prints IPv6 LISTEN rows
+        # Windows netstat -ano prints IPv6 LISTEN rows
         # with proto column "TCP" (NOT "TCP6") and address form [::1]:<port>.
         # Before this fix `-p tcp` on the netstat argv dropped these entirely,
         # so `kirocrew stop` / `kirocrew restart` silently no-op'd when the

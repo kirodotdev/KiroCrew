@@ -1138,7 +1138,7 @@ class TestPrefilledGitHubIssueUrl:
         """RFC 4343 leaves DNS case insignificant; with no waiver it changes nothing."""
         self._assert_redacted(_issue_link(host="GitHub.com"))
 
-    # ── the other signals are independent of this change and must still fire ──
+    # ── the other signals are independent and must still fire ──
 
     def test_a_credential_in_a_documented_parameter_is_redacted(self) -> None:
         """The unconditional credential floor is unchanged by removing the waiver."""
