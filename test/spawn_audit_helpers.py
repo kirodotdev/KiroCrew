@@ -1091,6 +1091,7 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # cannot route on its own behalf; _SPAWN_NAMES keeps each caller visible
         # here under its own row. It cannot import the sandbox, which imports it.
         "platform_compat_kill.py::run_killing_tree_on_timeout",
+        "platform_compat_kill.py::stdlib_run_killing_tree_on_timeout",
         "platform_compat_trust.py::reveal_in_file_manager",
         "platform_compat_identity.py::process_command_line",
         # Same class as process_command_line: a read-only process-attribute query
