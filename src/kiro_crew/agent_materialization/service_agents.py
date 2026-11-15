@@ -323,14 +323,14 @@ def _install_mate_worker_agent() -> None:
     from kiro_crew.mate_worker import (
         MATE_WORKER_AGENT,
         MATE_WORKER_EXCLUDED_TOOLS,
-        MATE_WORKER_PROMPT,
+        mate_worker_prompt,
     )
 
     config = agent_mod.build_agent_config()
     config["name"] = MATE_WORKER_AGENT
     config["description"] = "The agent a Bot's worker sessions run on."
     # The worker's own principles ride after the shared base prompt.
-    principles = MATE_WORKER_PROMPT
+    principles = mate_worker_prompt()
     base_prompt = config.get("prompt") if isinstance(config.get("prompt"), str) else ""
     config["prompt"] = f"{base_prompt.rstrip()}\n\n{principles}" if base_prompt else principles
     _register_edition_refs(config)

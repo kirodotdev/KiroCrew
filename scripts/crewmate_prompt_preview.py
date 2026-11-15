@@ -130,7 +130,7 @@ def assemble(fx: dict[str, Any], member: str) -> dict[str, str]:
     out = {
         "conductor": cm.build_member_section(member),
         "operating_mode": cm.operating_mode_block(member, ledger=ledger),
-        "worker": mate_worker.MATE_WORKER_PROMPT,
+        "worker": mate_worker.mate_worker_prompt(),
         "heartbeat": goal_reminder.heartbeat_prompt(
             rec,
             has_session_tools=fx.get("has_session_tools", True),

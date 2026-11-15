@@ -148,7 +148,7 @@ at agent rank, so neither a lesson nor a session line can outrank it:
 | kind | seam | text |
 |---|---|---|
 | Bot conductor | `context_assembly/agent_spec.py`, appended to the agent system prompt, also under a user `prompt.md` | core + conductor tail |
-| Bot worker | `mate_worker.py` `MATE_WORKER_PROMPT` | core + worker tail |
+| Bot worker | `mate_worker.py` `mate_worker_prompt()` | core + worker tail |
 | Conductor-mode lead and conductors | `SP` `_ASK_ONLY_WHEN_NEEDED_RULE` | core + conductor tail |
 | Conductor-mode worker | `agent_materialization/worker_agent.py` `worker_prompt()` | core + worker tail |
 

@@ -387,9 +387,11 @@ def test_the_ledger_tracking_sentence_tracks_every_dispatched_task() -> None:
 
 
 def test_the_worker_reads_its_brief_and_reports_on_its_item() -> None:
-    text = crewmate_prompts.text("worker.principles")
-    assert "Call work_brief first" in text
-    assert "report on it with work_report" in text
+    from kiro_crew.mate_worker import mate_worker_prompt
+
+    assert "{brief_first}" in crewmate_prompts.text("worker.principles")
+    assert "**Start by calling `work_brief`" in mate_worker_prompt()
+    assert "Report at each real milestone with `work_report`" in mate_worker_prompt()
 
 
 def test_the_tracking_sentence_without_the_ledger_names_no_ledger_tool() -> None:
