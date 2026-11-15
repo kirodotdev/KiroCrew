@@ -860,6 +860,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import mate_capability_catalog as _mate_catalog  # noqa: F401
+    from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES  # noqa: F401
     from kiro_crew.config.sections import (  # noqa: F401
         DEFAULT_MODEL,
         FEATURE_PREVIEW_FLAGS,

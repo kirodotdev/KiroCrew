@@ -30,7 +30,8 @@ function mockConfig(harnesses?: Record<string, unknown>) {
   } as never)
 }
 
-const kasSwitch = () => screen.getByRole('switch', { name: /KAS chats/i })
+const kasSwitch = () => screen.getByRole('switch', { name: /Chats using Kiro Agent/i })
+const codexSwitch = () => screen.getByRole('switch', { name: /Chats using OpenAI Codex/i })
 
 beforeEach(() => {
   localStorage.clear()
@@ -88,5 +89,17 @@ describe('ACP runtime sharing per-harness switches', () => {
     await waitFor(() => expect(screen.getByTestId('chat-sharing-harness-load-error')).toBeTruthy())
     expect(screen.getByTestId('chat-sharing-harness-load-error').textContent).toMatch(/Couldn't load these switches/)
     expect(kasSwitch().getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('show codex off when nothing is stored, and write its own key', async () => {
+    mockConfig()
+    const patch = vi.spyOn(api, 'patchConfig').mockResolvedValue({} as never)
+    act(() => { setPreviewFlag(PREVIEW_CHAT_RUNTIME_SHARING, true) })
+    renderSection()
+    await waitFor(() => expect(codexSwitch().getAttribute('aria-checked')).toBe('false'))
+    // Enabled once the config read answers.
+    await waitFor(() => expect(codexSwitch().hasAttribute('disabled')).toBe(false))
+    await act(async () => { codexSwitch().click() })
+    await waitFor(() => expect(patch).toHaveBeenCalledWith('agent.chat_runtime_sharing_harnesses.codex', true))
   })
 })

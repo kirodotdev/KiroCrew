@@ -35,6 +35,12 @@ export const CHAT_SHARING_HARNESSES: ReadonlyArray<{
     label: () => i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing_harness_kas'),
     description: () => i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing_harness_kas_desc'),
   },
+  {
+    name: 'codex',
+    defaultOn: false,
+    label: () => i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing_harness_codex'),
+    description: () => i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing_harness_codex_desc'),
+  },
 ]
 
 export const CHAT_SHARING_HARNESSES_CONFIG_KEY = 'agent.chat_runtime_sharing_harnesses'

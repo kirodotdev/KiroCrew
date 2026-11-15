@@ -841,8 +841,13 @@ recover.
   reader ratchet still counts; each needs classifying as a session-level question,
   a runtime handle, or a reading whose owner is the module that holds the pid.
 - **Chat sharing is a preview.** The `chat_runtime_sharing` feature preview is off
-  by default, so a default install still serves one chat per runtime. codex is not
-  a chat-sharing member: its chat teardown's record preservation has no lane cover.
+  by default, so a default install still serves one chat per runtime. The members
+  are KAS (its switch on by default) and codex (off by default); kiro-cli is not,
+  because some of its session-control frames name no session. A shared codex
+  process takes no new chat once any chat leaves it and dies with its last chat
+  (`chat_closes_on_departure`, read by `RuntimeOwnership.release`): codex's
+  `session/close` leaves the departed session's MCP fleet running, so this bounds
+  the leftover fleets to cap-1 per process instead of one per chat turnover.
 - **Membership is narrower than the slice it is compared against.** The app
   backend table claims each spawned backend's root process, plus that root's direct
   children where the gateway's wrap inserted a forking sandbox launcher (so the

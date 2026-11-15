@@ -850,7 +850,7 @@ class AgentConfig:
             "Which harnesses may share one agent process between dashboard chats "
             "while the chat_runtime_sharing feature preview is on, by harness name, "
             "each true or false. A harness switched off keeps one process per chat. "
-            "A harness that is absent takes its default (KAS: on). Has no effect "
+            "A harness that is absent takes its default (KAS: on, codex: off). Has no effect "
             "while the preview is off. Applies to chats started after the change.",
             properties={
                 name: {"type": "boolean", "default": default}

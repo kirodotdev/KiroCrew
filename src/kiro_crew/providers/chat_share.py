@@ -14,7 +14,9 @@ provider exists, and handed to ``AcpSessionProvider`` as ``runtime_lease``.
 
 Four inputs a running process cannot shed are read before the acquisition and
 RE-READ after it: the agent spec generation, the account era, the governed
-sandbox tier and the SSH_AUTH_SOCK-forwarding consent. The acquisition is not
+sandbox tier and the SSH_AUTH_SOCK-forwarding consent. On codex the account era is
+the codex credential file (:func:`codex_spawn_identity`), because codex-acp signs
+in on its own and never reads Kiro's sign-in. The acquisition is not
 instantaneous (a same-key arrival waits out a founding spawn), so a revocation, a
 sign-in to another account, a raised floor or a revoked consent landing in that
 window would otherwise place this session on a process started under the older
@@ -31,11 +33,14 @@ the gateway's life.
 from __future__ import annotations
 
 import asyncio
+import base64
 import dataclasses
+import json
 import logging
 import os
+import secrets
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -55,7 +60,8 @@ from kiro_crew.acp.chat_runtime_sharing import (
     share_tree_root_of,
 )
 from kiro_crew.acp.runtime import AcpRuntimeError
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KAS
+from kiro_crew.agent_sdk.codex_transcripts import codex_home
 from kiro_crew.metrics.chat_runtime_share import record_placed, record_refused
 from kiro_crew.runtime_ownership import CHAT_RUNTIME_CAP, RUNTIME_OWNERSHIP, Acquisition
 
@@ -64,6 +70,91 @@ if TYPE_CHECKING:
     from kiro_crew.providers.acp import AcpProvider
 
 logger = logging.getLogger(__name__)
+
+#: :func:`codex_spawn_identity`'s random token per account seen by this process.
+#: shortcut: never pruned; one entry per distinct codex sign-in this gateway
+#: process has seen, which stays a handful. Prune if sign-ins ever churn.
+_CODEX_ERA_TOKENS: dict[str, str] = {}
+
+
+def _codex_jwt_claim_user(jwt: object) -> str:
+    """The ChatGPT user id inside an ``id_token`` JWT's payload, or ``""``.
+
+    Only read to tell two people in one workspace apart; the signature is not
+    checked because codex-acp, not this read, authenticates with the token.
+    """
+    if not isinstance(jwt, str) or jwt.count(".") != 2:
+        return ""
+    payload = jwt.split(".")[1]
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (ValueError, TypeError):
+        return ""
+    auth = claims.get("https://api.openai.com/auth") if isinstance(claims, dict) else None
+    if not isinstance(auth, dict):
+        return ""
+    user = auth.get("chatgpt_user_id") or auth.get("user_id")
+    return user if isinstance(user, str) else ""
+
+
+def codex_spawn_identity(env_overrides: Mapping[str, str] | None = None) -> str:
+    """The account era of a codex start: which codex account a new process loads.
+
+    codex-acp authenticates itself, from ``auth.json`` under the codex home the
+    spawn resolves (:func:`codex_transcripts.codex_home` over the start's
+    ``extra_env``, *env_overrides*), and never from Kiro's
+    sign-in, so the Kiro era says nothing about a codex process and is empty for a
+    codex-only operator. The era names the ACCOUNT in that file, not the file's
+    bytes: codex rewrites ``tokens`` and ``last_refresh`` there on every token
+    refresh (codex-rs ``login/src/auth/manager.rs:persist_tokens``), so a digest of
+    the whole file moved on each refresh and a later chat could never join. A
+    ChatGPT sign-in is ``tokens.account_id`` plus the ``id_token``'s user id, which
+    a refresh keeps; an API key or personal access token is told apart by that key,
+    which only a new sign-in changes. Another account then founds a new process
+    instead of joining one holding the old login.
+
+    No file is ``""`` too: the adapter then reads an API key from the environment,
+    and a running gateway does change that (``config/live.py`` applies an edited
+    ``.env`` key), so a home-only answer would let a new chat join a process still
+    holding the old key. A file that cannot be read or parsed, or names no account
+    this can tell apart, is ``""`` as well, which the placement turns into a key
+    nothing can match: fail closed. So is a home that does not resolve (relative,
+    or no home directory).
+    """
+    home = codex_home(env_overrides)
+    if home is None:
+        return ""
+    try:
+        data = json.loads((home / "auth.json").read_bytes())
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    tokens = data.get("tokens")
+    if isinstance(tokens, dict):
+        account = tokens.get("account_id")
+        if not isinstance(account, str) or not account:
+            return ""
+        user = _codex_jwt_claim_user(tokens.get("id_token"))
+        stable = f"chatgpt\0{account}\0{user}"
+    else:
+        key = data.get("OPENAI_API_KEY") or data.get("personal_access_token")
+        if not isinstance(key, str) or not key:
+            return ""
+        stable = f"key\0{key}"
+    # The home is part of it: it holds the config the process loads and the store
+    # its threads go to, and a live ``.env`` reload can move ``CODEX_HOME`` to
+    # another directory holding the same login.
+    stable = f"{home}\0{stable}"
+    # A random token per distinct account, drawn the first time this process sees
+    # it: the era only has to be equal within this process (the ownership table is
+    # in memory), and a random token carries nothing of the key, so no digest of
+    # an API key exists to be guessed against.
+    token = _CODEX_ERA_TOKENS.get(stable)
+    if token is None:
+        token = _CODEX_ERA_TOKENS.setdefault(stable, secrets.token_hex(16))
+    return "codex:" + token
+
 
 #: How many placements a start makes while a keyed input keeps moving between the
 #: read and the acquisition. Small on purpose: an input still moving after this
@@ -129,6 +220,7 @@ class ChatSharePlacement:
         tree_root: str = "",
         member_scope: tuple[str, str] = ("", ""),
         tool_surface_pinned: bool = False,
+        codex_era: str | None = None,
     ) -> None:
         self._provider = provider
         # The sharing scope, read once at this start: sessions share only inside
@@ -142,6 +234,9 @@ class ChatSharePlacement:
         self._keys_spec = tool_surface_pinned or "spec_generation" not in per_session_fields(
             provider._client.backend
         )
+        # codex reads its own credential, never Kiro's, so its era is the codex
+        # one (:func:`codex_spawn_identity`), read and re-read in place of Kiro's.
+        self._codex_era = codex_era is not None
         # ``agent.env`` as this start read it: a child takes it at spawn and never
         # re-reads it, so a saved change must found a new process rather than join
         # one that carries the old values. A founding spawn launches with this same
@@ -169,7 +264,11 @@ class ChatSharePlacement:
         # compare equal and join across accounts. It becomes a token unique to
         # this start, which no other key can equal, so the session founds its
         # own process. The confirm compares raw against raw.
-        self._raw_era = str(getattr(provider, "pre_spawn_identity", "") or "")
+        self._raw_era = (
+            codex_era
+            if codex_era is not None
+            else str(getattr(provider, "pre_spawn_identity", "") or "")
+        )
         self._era = self._raw_era or f"unverified-{uuid.uuid4().hex}"
         self._identity_reader = getattr(provider, "spawn_identity_reader", None)
         # False once placement gave up and made the key unique: nothing can join
@@ -237,7 +336,9 @@ class ChatSharePlacement:
             if self._keys_spec
             else ""
         )
-        if self._identity_reader is not None:
+        if self._codex_era:
+            era = await asyncio.to_thread(codex_spawn_identity, self._extra_env)
+        elif self._identity_reader is not None:
             era = await pre_spawn_identity(self._identity_reader)
         else:
             era = self._raw_era
@@ -409,6 +510,12 @@ class ChatSharePlacement:
         self.joined = placed.joined
         self.leases_on_runtime = placed.leases_on_runtime
         runtime = cast("AcpRuntime", placed.runtime)
+        if self._provider._client.backend == ACP_BACKEND_CODEX:
+            # codex starts an MCP fleet per session that ``session/close`` leaves
+            # running (``acp/harness/codex.py``), so a shared codex process stops
+            # taking chats once one leaves and dies with its last chat: at most
+            # cap-1 departed fleets, never one per chat turnover.
+            runtime.chat_closes_on_departure = True
         # One line per placement at WARNING, beside the refusal line: an operator
         # counting processes needs both. The key is not logged (paths, env).
         logger.warning(
@@ -596,7 +703,7 @@ async def resolve_chat_share(
 
     per_session = per_session_fields(backend)
 
-    def _read_placement_inputs() -> tuple[str, str, bool, dict[str, str], bool, bool]:
+    def _read_placement_inputs() -> tuple[str, str, bool, dict[str, str], bool, bool, str | None]:
         configured_env = agent_env_overlay()
         telemetry = _kas_telemetry_for(backend, work_dir, configured_env, extra_env)
         pinned = bool(per_session & TOOL_SURFACE_FIELDS) and agent_pins_tool_surface(
@@ -613,11 +720,18 @@ async def resolve_chat_share(
             configured_env,
             telemetry,
             pinned,
+            codex_spawn_identity(extra_env) if backend == ACP_BACKEND_CODEX else None,
         )
 
-    generation, tier, forward, configured_env, telemetry, pinned = await asyncio.to_thread(
-        _read_placement_inputs
-    )
+    (
+        generation,
+        tier,
+        forward,
+        configured_env,
+        telemetry,
+        pinned,
+        codex_era,
+    ) = await asyncio.to_thread(_read_placement_inputs)
     return ChatSharePlacement(
         provider,
         work_dir=work_dir,
@@ -638,7 +752,8 @@ async def resolve_chat_share(
         tree_root=tree_root,
         member_scope=member_scope,
         tool_surface_pinned=pinned,
+        codex_era=codex_era,
     )
 
 
-__all__ = ["ChatSharePlacement", "resolve_chat_share"]
+__all__ = ["ChatSharePlacement", "codex_spawn_identity", "resolve_chat_share"]

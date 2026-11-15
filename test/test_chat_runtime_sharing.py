@@ -24,6 +24,7 @@ from kiro_crew.acp.chat_runtime_sharing import (
     eligible_for_chat_sharing,
 )
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -193,7 +194,7 @@ class TestChatSharingEligibility:
                 session_key="dashboard:chat-12-1790000000",
                 memory_mode="persistent",
                 sharing_enabled=True,
-                backend=ACP_BACKEND_CODEX,
+                backend=ACP_BACKEND_CLAUDE,
                 member_context=False,
                 kas_engine_ready=True,
                 harness_enabled=True,
@@ -238,15 +239,12 @@ class TestChatSharingEligibility:
         chat slot the right to share one -- the two teardowns differ, and it is
         the chat teardown the chat set asserts is safe.
 
-        codex is in the subagent ``ACP_BACKENDS_SESSION_SHARING`` but NOT in
-        ``ACP_BACKENDS_CHAT_RUNTIME_SHARING``: its chat teardown's
-        resume-preservation is unmeasured, so a shared chat session on it could
-        lose its resume record on an ordinary close. It must therefore keep a
-        dedicated process, and the eligibility gate must refuse it even with every
-        other condition satisfied.
+        kiro-cli is in the subagent ``ACP_BACKENDS_SESSION_SHARING`` but NOT in
+        ``ACP_BACKENDS_CHAT_RUNTIME_SHARING``, so the eligibility gate must refuse
+        it even with every other condition satisfied.
         """
-        assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_SHARING
-        assert ACP_BACKEND_CODEX not in ACP_BACKENDS_CHAT_RUNTIME_SHARING
+        assert ACP_BACKEND_KIRO in ACP_BACKENDS_SESSION_SHARING
+        assert ACP_BACKEND_KIRO not in ACP_BACKENDS_CHAT_RUNTIME_SHARING
         # Neither set is derived from the other: KAS shares chats (its chat
         # teardown evicts with ``session/close``) and not subagents.
         assert ACP_BACKENDS_CHAT_RUNTIME_SHARING != ACP_BACKENDS_SESSION_SHARING
@@ -254,8 +252,39 @@ class TestChatSharingEligibility:
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
             sharing_enabled=True,
+            backend=ACP_BACKEND_KIRO,
+            member_context=False,
+        )
+
+    def test_a_codex_chat_shares_with_no_engine_gate(self):
+        """codex is a member on its own measurement, not through subagent sharing.
+
+        Its chat teardown is ``session/close``, which keeps the rollout ``session/load``
+        replays, and its turns run in parallel: both are measured on the real adapter
+        in ``test_codex_chat_runtime_sharing_real.py``. The KAS engine gate is KAS's
+        own and is not asked of a codex start.
+        """
+        assert ACP_BACKEND_CODEX in ACP_BACKENDS_CHAT_RUNTIME_SHARING
+        args = dict(
+            session_key="dashboard:chat-12-1790000000",
+            memory_mode="persistent",
+            sharing_enabled=True,
             backend=ACP_BACKEND_CODEX,
             member_context=False,
+            harness_enabled=True,
+        )
+        assert chat_sharing_ineligible_reason(**args) == ""
+        assert eligible_for_chat_sharing(**args)
+        # Its own switch off (the default) refuses it.
+        assert chat_sharing_ineligible_reason(**{**args, "harness_enabled": False}) == (
+            "harness_switched_off"
+        )
+        # Every other rule still applies to it.
+        assert chat_sharing_ineligible_reason(**{**args, "memory_mode": "incognito"}) == (
+            "memory_mode_not_shareable"
+        )
+        assert chat_sharing_ineligible_reason(**{**args, "session_key": "cron:nightly"}) == (
+            "origin_not_dashboard"
         )
 
     @pytest.mark.parametrize(
@@ -293,6 +322,8 @@ class TestPerHarnessSwitches:
 
         assert set(CHAT_RUNTIME_SHARING_HARNESSES) == set(ACP_BACKENDS_CHAT_RUNTIME_SHARING)
         assert CHAT_RUNTIME_SHARING_HARNESSES[ACP_BACKEND_KAS] is True
+        # codex is new to chat sharing, so its switch starts off.
+        assert CHAT_RUNTIME_SHARING_HARNESSES[ACP_BACKEND_CODEX] is False
 
     @pytest.mark.parametrize(
         "stored,expected",
@@ -312,18 +343,29 @@ class TestPerHarnessSwitches:
     def test_a_stored_true_cannot_switch_on_a_harness_outside_the_table(self):
         from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_harness_enabled
 
-        cfg = self._cfg({ACP_BACKEND_CODEX: True, ACP_BACKEND_KIRO: True})
-        assert chat_runtime_sharing_harness_enabled(cfg, ACP_BACKEND_CODEX) is False
+        cfg = self._cfg({ACP_BACKEND_CLAUDE: True, ACP_BACKEND_KIRO: True})
+        assert chat_runtime_sharing_harness_enabled(cfg, ACP_BACKEND_CLAUDE) is False
         assert chat_runtime_sharing_harness_enabled(cfg, ACP_BACKEND_KIRO) is False
+
+    def test_codex_is_off_until_its_switch_is_stored_true(self):
+        from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_harness_enabled
+
+        assert chat_runtime_sharing_harness_enabled(self._cfg({}), ACP_BACKEND_CODEX) is False
+        assert chat_runtime_sharing_harness_enabled(self._cfg(None), ACP_BACKEND_CODEX) is False
+        on = self._cfg({ACP_BACKEND_CODEX: True})
+        assert chat_runtime_sharing_harness_enabled(on, ACP_BACKEND_CODEX) is True
 
     def test_the_loader_fills_defaults_and_drops_unknown_names(self):
         from kiro_crew.config.loader_builders import _chat_runtime_sharing_harnesses
         from kiro_crew.config.sections import AgentConfig
 
-        assert AgentConfig().chat_runtime_sharing_harnesses == {"kas": True}
-        assert _chat_runtime_sharing_harnesses({"kas": False, "codex": True}) == {"kas": False}
-        assert _chat_runtime_sharing_harnesses({"kas": 0}) == {"kas": True}
-        assert _chat_runtime_sharing_harnesses("x") == {"kas": True}
+        assert AgentConfig().chat_runtime_sharing_harnesses == {"kas": True, "codex": False}
+        assert _chat_runtime_sharing_harnesses({"kas": False, "codex": True, "kiro": True}) == {
+            "kas": False,
+            "codex": True,
+        }
+        assert _chat_runtime_sharing_harnesses({"kas": 0}) == {"kas": True, "codex": False}
+        assert _chat_runtime_sharing_harnesses("x") == {"kas": True, "codex": False}
 
     def test_only_table_harnesses_are_writable_from_the_dashboard(self):
         from kiro_crew.dashboard.handlers.core_config_schema import _EDITABLE_CONFIG
@@ -405,7 +447,7 @@ class TestTheRefusalNamesItsBranch:
         "overrides,reason",
         [
             ({"sharing_enabled": False}, "sharing_disabled"),
-            ({"backend": ACP_BACKEND_CODEX}, "backend_not_chat_shareable"),
+            ({"backend": ACP_BACKEND_KIRO}, "backend_not_chat_shareable"),
             ({"harness_enabled": False}, "harness_switched_off"),
             ({"memory_mode": "incognito"}, "memory_mode_not_shareable"),
             ({"session_key": "cron:nightly-digest"}, "origin_not_dashboard"),
@@ -1717,6 +1759,39 @@ class TestTwoSessionsShareOneProcess:
         assert len(spawn.calls) == 3, "one process per session, as before the cap existed"
         for acq, rt in zip(acquisitions, runtimes):
             assert asyncio.run(reg.release(acq.lease)) is rt
+
+
+# ── What codex adds to the child's env at spawn ──
+
+
+class TestTheCodexSpawnEnvIsCoveredByTheKey:
+    """codex adds env at spawn that ``extra_env`` does not carry; none of it varies
+    between two chats that share a key.
+
+    ``DISABLE_MCP_CONFIG_FILTERING`` and ``CODEX_ACP_EXTERNAL_SANDBOX`` are constants.
+    ``CODEX_CONFIG`` (every configured MCP server disabled) is set only for the
+    background agent, and ``agent`` is a key field, so a background spawn and a chat
+    spawn can never be one process. ``CODEX_HOME`` reaches the child from the
+    gateway's environment or ``agent.env``, which the key already holds.
+    """
+
+    def test_a_foreground_spawn_adds_the_same_constants_every_time(self):
+        from kiro_crew.acp.harness.codex import CodexHarness
+
+        first: dict[str, str] = {"CODEX_PATH": ""}
+        second: dict[str, str] = {"CODEX_PATH": ""}
+        CodexHarness().apply_spawn_env(first)
+        CodexHarness().apply_spawn_env(second)
+        assert first == second
+        assert first["DISABLE_MCP_CONFIG_FILTERING"] == "true"
+        assert "CODEX_CONFIG" not in first
+
+    def test_the_background_override_cannot_reach_a_chat_key(self):
+        from kiro_crew.session_parts.policy import BACKGROUND_AGENT
+
+        chat = a_key(acp_backend="codex", agent="kirocrew")
+        background = a_key(acp_backend="codex", agent=BACKGROUND_AGENT)
+        assert chat != background
 
 
 # ── The teardown of a session that shares its process ──
