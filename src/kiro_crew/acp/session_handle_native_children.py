@@ -12,7 +12,7 @@ Instance fields written: ``_announced_subagent_roster``, ``_kas_subagent_roster`
 ``_legacy_subagent_tool_ids``, ``_native_child_overflow``, ``_native_child_redactors``,
 ``_native_child_sids``, ``_prompt_or_tool_seen``.
 
-Instance fields read: ``_session_id``.
+Instance fields read: ``_native_child_rows``, ``_session_id``.
 """
 
 from __future__ import annotations
@@ -313,17 +313,6 @@ def _roster_event(self: AcpSessionHandle) -> list[AcpEvent]:
     ]
 
 
-def _native_child_roster(self: AcpSessionHandle) -> list[AcpEvent]:
-    """The roster of this session's announced children, or none while it has none.
-
-    What ``raw_sdk_tasks.pending_events`` lists ahead of a Workflow run's agents, so
-    that roster names every child and none of them reads as gone. Unlike
-    :func:`_roster_event` it marks nothing: a Workflow beat is no frame of the wave.
-    """
-    rows = [dict(row) for row in self._announced_subagent_roster.values()]
-    return [AcpEvent(kind=EVENT_SUBAGENT_LIST, subagents=rows)] if rows else []
-
-
 def _handle_announced_subagent(
     self: AcpSessionHandle, update: dict, frame_sid: str
 ) -> list[AcpEvent]:
@@ -369,11 +358,12 @@ def _child_text_activity(self: AcpSessionHandle, child_sid: str, text: str) -> l
     An announced child's text goes through that child's own ``StreamRedactor``:
     a chunk redacted alone would let a credential split across two chunks reach
     the card, so the redactor holds back a tail that could still be the start of
-    one, and an empty list means it held the whole chunk. Only children in this
-    turn's announced roster get a redactor, so the store is bounded by
+    one, and an empty list means it held the whole chunk. Only a child in this
+    turn's announced roster, or a claude child with a row
+    (``session_handle_claude_children``), gets a redactor, so the store is bounded by
     ``NATIVE_CHILD_ROSTER_CAP``. Any other child's chunk passes as it came.
     """
-    if child_sid in self._announced_subagent_roster:
+    if child_sid in self._announced_subagent_roster or child_sid in self._native_child_rows:
         redactor = self._native_child_redactors.get(child_sid)
         if redactor is None:
             redactor = self._native_child_redactors[child_sid] = StreamRedactor()

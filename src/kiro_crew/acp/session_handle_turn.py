@@ -455,8 +455,12 @@ async def _run_turn(
     self._tool_output_seen.clear()
     self._status_rejected.clear()
     self._input_wait_emitted = False
-    self._native_child_sids.clear()
-    self._native_child_overflow = 0
+    if not self._claude_children_declared():
+        # Claude children are bounded for the session's life, as on the per-chat
+        # client: their ids gate rows that outlive the turn, and what the bound
+        # refused is said and cleared by ``_reset_claude_child_turn``.
+        self._native_child_sids.clear()
+        self._native_child_overflow = 0
     # Park state is per-turn: carrying it across would charge the previous
     # turn's consumer time to this one, and a permission left unanswered when
     # the last turn died would mask this turn's stalls forever.

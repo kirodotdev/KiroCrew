@@ -172,6 +172,8 @@ async def _dispatch_events(
 
     _buffered: list[JsonRpcMessage] = []
     _last_yield = time.monotonic()
+    # This turn's claude children are listed as they are seen.
+    self._reset_claude_child_turn()
     # Whether this is the dashboard turn that draws the session's background work.
     # The readers take the per-chat client; they read the fields this handle names alike.
     _raw_reader: Any = self
@@ -925,6 +927,9 @@ async def _dispatch_events(
                     if msg.id is not None:
                         await self._runtime.send_error(msg.id, -32600, "invalid request id")
                     continue
+                # A Stop on the card of the claude child that asks settles it
+                # (``session_handle_claude_children``).
+                self._note_native_child_request(msg)
                 # The request is its call's frame (a child's: its sub-agent's).
                 # The human wait that follows is a consumer park, which every
                 # clock subtracts, so the call's timer is paused while it lasts.
@@ -1007,6 +1012,8 @@ async def _dispatch_events(
                 _elicit_event = await self._handle_elicitation_request(msg)
                 if _elicit_event is None:
                     continue
+                # A Stop on the card of the claude child that asks settles it.
+                self._note_native_child_request(msg)
                 self._sync_silence_hold()
                 # Same park marking as a permission: the consumer waits on a
                 # human here too, and an observer must not read that as a stall.

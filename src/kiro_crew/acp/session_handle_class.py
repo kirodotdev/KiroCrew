@@ -15,6 +15,7 @@ from typing import Any
 
 from kiro_crew._facade_bindings import own_methods
 from kiro_crew.acp import batch_guard, kas_wire
+from kiro_crew.acp import session_handle_claude_children as _sh_claude_children
 from kiro_crew.acp import session_handle_compaction as _sh_compaction
 from kiro_crew.acp import session_handle_dispatch as _sh_dispatch
 from kiro_crew.acp import session_handle_elicitation as _sh_elicitation
@@ -72,6 +73,7 @@ _MEMBER_OWNERS = frozenset(
         "kiro_crew.acp.session_handle_compaction",
         "kiro_crew.acp.session_handle_dispatch",
         "kiro_crew.acp.session_handle_elicitation",
+        "kiro_crew.acp.session_handle_claude_children",
         "kiro_crew.acp.session_handle_harness_surfaces",
         "kiro_crew.acp.session_handle_kas",
         "kiro_crew.acp.session_handle_lifecycle",
@@ -180,7 +182,15 @@ class AcpSessionHandle:
     _handle_legacy_codex_subagent = _sh_children._handle_legacy_codex_subagent
     _announced_row = _sh_children._announced_row
     _roster_event = _sh_children._roster_event
-    _native_child_roster = _sh_children._native_child_roster
+    # Claude Code's Agent-tool children: ``kiro_crew.acp.session_handle_claude_children``.
+    _claude_children_declared = _sh_claude_children._claude_children_declared
+    _native_child_roster = _sh_claude_children._native_child_roster
+    _native_child_of = _sh_claude_children._native_child_of
+    _reset_claude_child_turn = _sh_claude_children._reset_claude_child_turn
+    _claude_child_events = _sh_claude_children._claude_child_events
+    _note_native_child_request = _sh_claude_children._note_native_child_request
+    native_child_requests = _sh_claude_children.native_child_requests
+    cancel_native_child = _sh_claude_children.cancel_native_child
     _child_text_activity = _sh_children._child_text_activity
     _flush_announced_child_text = _sh_children._flush_announced_child_text
     flush_native_child_text = _sh_children.flush_native_child_text
@@ -488,6 +498,15 @@ class AcpSessionHandle:
         # NATIVE_CHILD_ROSTER_CAP; ids past the cap are counted, not stored.
         self._native_child_sids: set[str] = set()
         self._native_child_overflow = 0
+        # Claude Code's Agent-tool children (``session_handle_claude_children``), in
+        # the client's shapes: each child's row, the Agent call that delegated to
+        # it, this turn's children in the order seen, the ones granted a cancel, and
+        # the requests each asked this turn (request id -> child).
+        self._native_child_rows: dict[str, dict[str, Any]] = {}
+        self._native_child_by_tool_use: dict[str, str] = {}
+        self._native_child_turn: dict[str, None] = {}
+        self._native_child_cancellable: set[str] = set()
+        self._native_child_requests: dict[str, str] = {}
         # Last monotonic ts a WORKING-verdict deferral was logged (rate limit).
         self._working_logged_ts = _WORKING_NEVER_LOGGED
         # Terminal compaction status captured by compact() while draining its
@@ -1160,7 +1179,7 @@ class AcpSessionHandle:
     @property
     def backend(self) -> str:
         """The runtime's backend id, under the name the shared surface readers take."""
-        return str(getattr(self._runtime, "acp_backend", "") or "")
+        return str(getattr(getattr(self, "_runtime", None), "acp_backend", "") or "")
 
     @property
     def _acp_config_options(self) -> list[dict[str, Any]]:
