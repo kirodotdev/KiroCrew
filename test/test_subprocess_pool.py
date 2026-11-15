@@ -710,18 +710,40 @@ class TestCallerBudget:
             (lost,) = executor._children
             (victim,) = self._spawned(executor).values()
             real_readers = executor._bounded_readers
+            reader_waits: list[float | None] = []
+            readers: list[object] = []
+
+            class _RecordedReader:
+                # The caller's only handle on the reader: every wait on it is recorded.
+                def __init__(self, future) -> None:
+                    self._future = future
+
+                def result(self, timeout: float | None = None):
+                    reader_waits.append(timeout)
+                    assert timeout is not None, "the caller waited on the reader unbounded"
+                    return self._future.result(timeout=timeout)
+
+            def _submit(fn, *a, **k):
+                future = real_readers.submit(release.wait)
+                readers.append(future)
+                return _RecordedReader(future)
+
             monkeypatch.setattr(
                 executor,
                 "_bounded_readers",
-                types.SimpleNamespace(
-                    submit=lambda fn, *a, **k: real_readers.submit(release.wait),
-                    shutdown=real_readers.shutdown,
-                ),
+                types.SimpleNamespace(submit=_submit, shutdown=real_readers.shutdown),
             )
-            started = time.monotonic()
             with pytest.raises(SubprocessPoolTimeout):
                 executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=0.3)
-            assert time.monotonic() - started < 1.5, "the caller must not wait on the reader"
+            # The caller waited on the reader once, inside its own budget, and returned
+            # with the reader still blocked: it never waits for the reader to finish.
+            assert len(reader_waits) == 1, f"waited on the reader {reader_waits!r}"
+            # The wait is the budget's absolute deadline minus a clock read; on a coarse
+            # clock that subtraction can round a hair above 0.3, so allow float error.
+            assert (
+                reader_waits[0] is not None and 0.0 <= reader_waits[0] <= 0.3 + 1e-6
+            ), reader_waits
+            assert len(readers) == 1 and not readers[0].done(), "the reader is still blocked"
             (fresh,) = executor._children
             assert fresh is not lost, "the slot object was replaced"
             assert victim in executor._unreaped._procs or victim.poll() is not None
@@ -918,15 +940,37 @@ class TestCallerBudget:
         # With the reaper spawning, that failure has to reach a caller waiting on the
         # ready queue -- and reach it NOW, not when its whole budget has drained.
         def _unspawnable(self: executor_mod._Child) -> subprocess.Popen[bytes]:
+            events.append("spawn failed")
             raise FileNotFoundError("python")
 
+        real_note = executor_mod.SubprocessPoolExecutor._note_spawn_errors
+
+        def _recorded_note(self: executor_mod.SubprocessPoolExecutor) -> None:
+            real_note(self)
+            events.append("marker queued" if self._failed_queued else "no marker")
+
+        events: list[str] = []
         monkeypatch.setattr(executor_mod._Child, "_spawn", _unspawnable)
+        monkeypatch.setattr(
+            executor_mod.SubprocessPoolExecutor, "_note_spawn_errors", _recorded_note
+        )
         executor = SubprocessPoolExecutor(workers=2, ceiling_secs=600.0)
         try:
-            started = time.monotonic()
+            # A TimeoutError here would mean the caller waited out its budget; the
+            # OSError means the reaper's verdict reached it first.
             with pytest.raises(FileNotFoundError):
                 executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=5.0)
-            assert time.monotonic() - started < 2.5, "the failure must not cost the budget"
+            # And the verdict is published on the very reaper tick whose spawns failed,
+            # not after further ticks: the first note after a failed spawn queues it.
+            # The caller can see the verdict before the recorder appends the note's
+            # outcome, so wait for that append (a lost-run bound, not a time budget).
+            wait_until(
+                lambda: any(e != "spawn failed" for e in events),
+                timeout=FALLBACK_TIMEOUT_SECS,
+                describe=lambda: f"the reaper never recorded a note: {events}",
+            )
+            first_note = next(i for i, e in enumerate(events) if e != "spawn failed")
+            assert first_note > 0 and events[first_note] == "marker queued", events
             with pytest.raises(FileNotFoundError):  # the marker stays for the next caller
                 executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=5.0)
         finally:

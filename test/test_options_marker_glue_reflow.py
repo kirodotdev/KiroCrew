@@ -293,15 +293,21 @@ def test_fence_state_at_each_candidate_matches_the_single_position_walker() -> N
 
 def test_many_glued_markers_stay_linear() -> None:
     # Re-walking the prefix per candidate is quadratic: 8k glued lines took ~14 s
-    # on the event loop, past the 25 s loop-stall watchdog at ~11k. Linear is
-    # milliseconds; the bound below is loose for slow CI hosts.
-    import time
+    # on the event loop, past the 25 s loop-stall watchdog at ~11k. The fence walk
+    # is Python, so the instructions this thread executes count its work: each
+    # further 2 000 glued lines must cost what the first 2 000 did.
+    from denied_commands_security_helpers import _interpreter_work, _linear_work
 
-    text = "[OPTIONS: A | B]x\n" * 8000
-    started = time.perf_counter()
-    fixed = reflow_glued_option_marker(text)
-    assert time.perf_counter() - started < 3.0
-    assert fixed == "[OPTIONS: A | B]\nx\n" * 8000
+    sizes = (2000, 4000, 6000)
+    fixed: list[str] = []
+    work = [
+        _interpreter_work(
+            lambda n=n: fixed.append(reflow_glued_option_marker("[OPTIONS: A | B]x\n" * n))
+        )
+        for n in sizes
+    ]
+    assert fixed == ["[OPTIONS: A | B]\nx\n" * n for n in sizes]
+    assert _linear_work(work), f"{work} instructions at {sizes} glued lines"
 
 
 def test_repeated_stray_tic_is_left_alone() -> None:

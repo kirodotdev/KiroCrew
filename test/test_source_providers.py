@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 import pathlib
 import re
-import time
 
 import pytest
 from source_providers_helpers import _clear_shared_fetch_state  # noqa: F401
@@ -175,12 +174,17 @@ class TestAdfToMarkdown:
         8MiB fetch cap, must fold in linear time. A pattern whose whitespace runs
         and newline anchor compete for the same characters backtracks
         quadratically — 200k spaces cost seconds per heading and per table cell.
-        The budget is ~100x the linear cost, so this fails only on a return to
-        quadratic scanning."""
-        payload = " " * 200_000 + "x"
-        start = time.monotonic()
-        assert source._md_one_line(payload) == "x"
-        assert time.monotonic() - start < 2.0
+
+        The fold runs in C (split, strip, join), so there is no interpreter work
+        to count: the ramped thread-CPU guard holds each pump to the original
+        2.0 s budget (the helper default) and each 10x pump to at most 25x the
+        cost of the one before, which a quadratic scan breaks."""
+        from conftest import assert_rejected_without_backtracking
+
+        def fold(text: str) -> None:
+            assert source._md_one_line(text) == "x"
+
+        assert_rejected_without_backtracking(fold, lambda n: " " * n + "x")
 
     def test_empty_marked_text_emits_nothing(self):
         """A marked empty text node must not leave its bare delimiters behind."""

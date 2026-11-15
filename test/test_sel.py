@@ -804,6 +804,11 @@ log.flush()
         instead; the wait could not have helped anyway, because the inline
         append fails closed at that gate while the sibling holds the lock.
 
+        "Immediately" is asserted as what the audit asks of the backlog: on
+        this thread every wait on the pending-event condition is recorded and
+        refused, so a regression fails here instead of sitting out the flush
+        timeout, whatever the host's speed.
+
         Uses the SESSION-scoped SEL default directory, not a per-test tmp dir:
         this test needs the ASYNC writer, and a daemon writer bound to a
         per-test directory outlives its test and re-creates the deleted path on
@@ -823,14 +828,43 @@ log.flush()
             # chain lock, leaving _pending nonzero either way.
             log.log(_make_event(event_id="drain-queued"))
             await asyncio.sleep(0.3)
+            assert log._pending > 0, "precondition: the backlog is not empty"
 
-            started = time.monotonic()
-            with pytest.raises(OSError):
-                log.log(_make_event(event_id="drain-critical"), critical=True)
-            elapsed = time.monotonic() - started
-            assert elapsed < 2.0, (
-                f"loop-side critical audit waited {elapsed:.2f}s on the writer's "
-                "backlog (flush timeout is 5s); it must fail closed immediately"
+            real_cond = log._pending_cond
+            this_thread = threading.get_ident()
+            waits: list[str] = []
+
+            class _RecordedCondition:
+                """The real condition; on this thread, each wait is recorded and refused."""
+
+                def __enter__(self):
+                    return real_cond.__enter__()
+
+                def __exit__(self, *exc):
+                    return real_cond.__exit__(*exc)
+
+                def notify_all(self) -> None:
+                    real_cond.notify_all()
+
+                def wait(self, timeout=None):
+                    if threading.get_ident() == this_thread:
+                        waits.append(f"wait(timeout={timeout})")
+                        return False
+                    return real_cond.wait(timeout)
+
+                def wait_for(self, predicate, timeout=None):
+                    if threading.get_ident() == this_thread:
+                        waits.append(f"wait_for(timeout={timeout})")
+                        return predicate()
+                    return real_cond.wait_for(predicate, timeout)
+
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(log, "_pending_cond", _RecordedCondition())
+                with pytest.raises(OSError):
+                    log.log(_make_event(event_id="drain-critical"), critical=True)
+            assert waits == [], (
+                f"loop-side critical audit waited on the writer's backlog ({waits}); "
+                "it must fail closed without waiting"
             )
         finally:
             platform_compat.release_lock(holder)
@@ -1176,10 +1210,10 @@ log.flush()
             released.set()
             platform_compat.release_lock(holder)
 
-        # Watchdog: with the lock order reversed this test would DEADLOCK (the
-        # loop-side audit blocks on _lock, so the release below is never
-        # reached). Releasing from a timer converts that into a clean, fast
-        # assertion failure on the elapsed time rather than a CI timeout.
+        # Watchdog: a loop-side audit that blocked on anything other than
+        # _lock (which the guard below refuses) would never reach the release
+        # below; the timer releases the holder so the test fails by name
+        # instead of hanging until the CI timeout.
         watchdog = threading.Timer(5.0, _release_holder)
         watchdog.daemon = True
         watchdog.start()
@@ -1203,10 +1237,42 @@ log.flush()
             assert not writer_done.is_set(), "writer should still be waiting"
 
             # The loop-side audit must fail fast, not block behind the writer.
-            started = time.monotonic()
-            with pytest.raises(OSError):
-                log.log(_make_event(event_id="order-loop"), critical=True)
-            assert time.monotonic() - started < 2.0, "loop-side audit blocked"
+            # On this thread, an acquire of _lock that would wait is refused
+            # and recorded, so a reversed lock order fails here by name.
+            real_lock = log._lock
+            this_thread = threading.get_ident()
+            lock_waits: list[str] = []
+
+            class _GuardedLock:
+                """The real lock; on this thread, an acquire that would wait is refused."""
+
+                def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+                    if threading.get_ident() != this_thread:
+                        return real_lock.acquire(blocking, timeout)
+                    if real_lock.acquire(False):
+                        return True
+                    if not blocking:
+                        return False
+                    lock_waits.append("loop-side audit waited on _lock")
+                    raise AssertionError("loop-side audit blocked on _lock behind the writer")
+
+                def release(self) -> None:
+                    real_lock.release()
+
+                def locked(self) -> bool:
+                    return real_lock.locked()
+
+                def __enter__(self) -> bool:
+                    return self.acquire()
+
+                def __exit__(self, *exc: object) -> None:
+                    self.release()
+
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(log, "_lock", _GuardedLock())
+                with pytest.raises(OSError):
+                    log.log(_make_event(event_id="order-loop"), critical=True)
+            assert lock_waits == [], "loop-side audit blocked"
         finally:
             watchdog.cancel()
             _release_holder()

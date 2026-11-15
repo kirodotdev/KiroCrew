@@ -5456,6 +5456,24 @@ clock cannot tell a wait from a slow host. Assert that the wait was never taken:
 Planted, the sleep, join, timed acquire or extra walk each fails these at once; the
 0.5 s bounds they replaced passed six of eight such plants.
 
+The 1.5-3 s bounds carry three more claims, each asserted as a value:
+
+- "waits at most its budget": record the timeout the code hands the wait and assert
+  that value, not the time it took
+  (`test_off_loop_miss_gives_up_rather_than_waiting_unbounded` asserts the acquire is
+  asked for `(True, 0.1)`);
+- "refused without hanging": spy the system call and refuse the blocking form
+  (`test_a_fifo_is_refused_without_hanging` refuses an `os.open` without
+  `O_NONBLOCK` and asserts the FIFO is never read);
+- "teardown does not run out its grace window": record the signals sent
+  (`test_terminate_pgid_graceful_exit_returns_fast`: SIGTERM, liveness probes, no
+  SIGKILL).
+
+A spy that refuses or replaces a blocking primitive is installed for the thread under
+test only (the test's thread or the event loop's), so a pool thread the product starts
+still gets the real primitive. A spy that only records arguments and passes the call
+through may see every thread.
+
 For a regex — no instrumentation surface at all — use `test/conftest.py`'s
 `assert_rejected_without_backtracking(reject, build_pump)`, and note what the mutation
 showed: a shared character between two adjacent quantified classes in the marker grammars
