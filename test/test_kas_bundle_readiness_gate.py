@@ -22,9 +22,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
+from chat_regenerate_cov80_helpers import state_fixture  # noqa: F401
+from chat_test_helpers import pin_harness_choice
 
+from kiro_crew.acp_backends import ACP_BACKEND_KIRO
 from kiro_crew.auth.provider import NotAuthenticated
 from kiro_crew.auth.refresh import RefreshBlocked, RefreshRejected
+from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard import chat_regenerate, chat_rewind, kiro_readiness, openai_compat
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers import agents
@@ -594,12 +598,29 @@ def test_an_unreadable_slot_keeps_the_kiro_cli_gate():
     assert kiro_readiness.turn_gate_target(SimpleNamespace(), "any") == (False, None)
 
 
+_COMPLETION = [{"role": "user", "content": "hi"}]
+
+
+def _completion_request(state, body: dict, app: str = "") -> MagicMock:
+    request = MagicMock()
+    request.json = AsyncMock(return_value=body)
+    request.app = {"state": state, "kiro_prerequisite_service": _signed_out_service()}
+    request.get = lambda k, default="": app if k == "app" else default
+    request.remote = "127.0.0.1"
+    request.path = "/v1/chat/completions"
+    return request
+
+
+def _on_kiro_cli(state) -> None:
+    pin_harness_choice(acp_backend=ACP_BACKEND_KIRO)
+    state.sessions._cfg = KiroCrewConfig.load()
+
+
 @pytest.mark.asyncio
-async def test_chat_completions_gates_on_the_target_slots_session():
-    slot = _member_slot()
-    request = _request(_signed_out_service(), {"member-ann": slot})
-    request.get = lambda key, default=None: default  # the dashboard owner, not an app
-    request.json = AsyncMock(return_value={"id": "member-ann", "model": "kiro", "messages": []})
+async def test_chat_completions_gates_on_the_target_slots_session(state):
+    _on_kiro_cli(state)
+    slot = state.get_or_create_slot("s1")
+    request = _completion_request(state, {"id": "s1", "model": "kiro", "messages": _COMPLETION})
     gate = AsyncMock(return_value=web.json_response({}, status=503))
     with patch.object(openai_compat, "reject_if_kiro_unverified", gate):
         resp = await openai_compat.api_completions(request)
@@ -609,35 +630,40 @@ async def test_chat_completions_gates_on_the_target_slots_session():
     assert gate.await_args.kwargs.get("session_key") == effective_session_key(slot)
 
 
-@pytest.mark.parametrize("key", ["member-ann", "research"])
 @pytest.mark.parametrize("present", [True, False], ids=["exists", "absent"])
 @pytest.mark.asyncio
-async def test_chat_completions_gates_an_app_without_looking_up_its_target(key, present):
-    # An app is not yet authorized for the slot it names, so the gate must not
-    # read that slot: its answer would tell the app whether the slot exists.
-    slots = {key: SimpleNamespace(key=key, linked_session_key="")} if present else {}
-    request = _request(_signed_out_service(), slots)
-    request.get = lambda k, default=None: "some-app" if k == "app" else default
-    request.json = AsyncMock(return_value={"id": key, "model": "kiro", "messages": []})
+async def test_chat_completions_refuses_an_app_before_the_gate_reads_its_target(state, present):
+    # An app not authorized for the slot it names is refused before the gate,
+    # so the gate's answer cannot tell the app whether the slot exists.
+    _on_kiro_cli(state)
+    if present:
+        state.get_or_create_slot("s1")._app = "other-app"
+    request = _completion_request(
+        state, {"id": "s1", "model": "kiro", "messages": _COMPLETION}, app="some-app"
+    )
     gate = AsyncMock(return_value=web.json_response({}, status=503))
     with (
-        patch.object(openai_compat, "turn_gate_target", return_value=(False, None)) as target,
+        patch.object(openai_compat, "turn_gate_target") as target,
         patch.object(openai_compat, "reject_if_kiro_unverified", gate),
     ):
         resp = await openai_compat.api_completions(request)
-    assert resp.status == 503
-    target.assert_called_once_with(request.app["state"], None)
-    assert gate.await_args.kwargs.get("session_key") is None
+    assert resp.status == 403
+    target.assert_not_called()
+    gate.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_chat_completions_for_a_new_slot_gates_on_the_default():
-    request = _request(_signed_out_service())
-    request.json = AsyncMock(return_value={"model": "kiro", "messages": []})
+async def test_chat_completions_for_a_new_slot_gates_on_its_own_session(state):
+    _on_kiro_cli(state)
+    request = _completion_request(state, {"model": "kiro", "messages": _COMPLETION})
     gate = AsyncMock(return_value=web.json_response({}, status=503))
     with patch.object(openai_compat, "reject_if_kiro_unverified", gate):
-        await openai_compat.api_completions(request)
-    assert gate.await_args.kwargs.get("session_key") is None
+        resp = await openai_compat.api_completions(request)
+    assert resp.status == 503
+    session_key = gate.await_args.kwargs.get("session_key")
+    assert isinstance(session_key, str) and "oai-" in session_key
+    # The refused request leaves no ephemeral slot behind.
+    assert not [k for k in state._slots if k.startswith("oai-")]
 
 
 @pytest.mark.asyncio
