@@ -1645,8 +1645,10 @@ adapted runtime harness neither bypasses the bound nor changes the Kiro path.
   the server as the unrestricted one of the two. `session_key` and `channel_id`
   ride the elements because a codex stdio server starts from `env_clear()` plus an
   allowlist and can learn its session no other way. `permission_surface_owned` is
-  False: this runtime authors no native permission file, so a mirror in claude's
-  class fails closed here rather than delivering tools Crew's gate cannot see. The
+  the harness's answer for this session: False wherever the runtime authors no
+  native permission file, so a mirror in claude's class fails closed there rather
+  than delivering tools Crew's gate cannot see; `ClaudeHarness` answers True only
+  for a session whose own settings seed governs its permission surface. The
   harness still narrows transports afterwards (`session_mcp_servers`), which is
   the last word on what this session's handshake advertised.
 

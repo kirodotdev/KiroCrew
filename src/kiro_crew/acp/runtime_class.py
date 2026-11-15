@@ -148,6 +148,7 @@ class AcpRuntime:
     _start_mount_check = _rt_setup._start_mount_check
     # ``session/new`` end to end: ``kiro_crew.acp.runtime_session_create``.
     create_session = _rt_create.create_session
+    _create_session_with_harness_state = _rt_create._create_session_with_harness_state
     _collect_late_start = _rt_create._collect_late_start
     _teardown_late_session = _rt_create._teardown_late_session
     start_collectors = _rt_create.start_collectors
@@ -155,6 +156,7 @@ class AcpRuntime:
     probe_advertised_models = _rt_create.probe_advertised_models
     # ``session/load`` end to end: ``kiro_crew.acp.runtime_session_load``.
     load_session = _rt_load.load_session
+    _load_session_with_harness_state = _rt_load._load_session_with_harness_state
     _wait_managed_mcp = _rt_load._wait_managed_mcp
     _park_in_start_agent = _rt_load._park_in_start_agent
     # The sessions held and how each leaves: ``kiro_crew.acp.runtime_session_registry``.
@@ -628,6 +630,10 @@ class AcpRuntime:
         # binary THIS process is executing, which can differ from the one on
         # disk after an in-place upgrade. Empty until the handshake completes.
         self._agent_version = ""
+        # Per-session state a harness with ``per_session_state`` prepared before each
+        # session's request (``HarnessAdapter.prepare_session``), by session id, ended
+        # with the session (``HarnessAdapter.end_session``). Empty on every other host.
+        self._session_harness_states: dict[str, Any] = {}
         # Entitlement probe state (probe_advertised_models): single-flight lock
         # plus a short-TTL cache of the last non-empty answer.
         self._entitlement_probe_lock = asyncio.Lock()

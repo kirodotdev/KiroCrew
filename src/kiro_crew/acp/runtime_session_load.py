@@ -8,16 +8,16 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_load_replay_frames``, ``_parked_copies``, ``_session_cwds``,
-``_session_inits_in_flight``, ``_session_queues``.
+``_session_harness_states``, ``_session_inits_in_flight``, ``_session_queues``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
-``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_fold_mcp_frame``,
-``_initialized``, ``_kas_telemetry_sent``,
-``_mcp_gateway_overlay``, ``_mcp_switched_off``, ``_open_mcp_report``, ``_park_in_start_agent``, ``_pid``,
+``_agent_version``, ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``,
+``_fold_mcp_frame``, ``_initialized``, ``_kas_telemetry_sent``, ``_mcp_gateway_overlay``,
+``_mcp_switched_off``, ``_model``, ``_open_mcp_report``, ``_park_in_start_agent``, ``_pid``,
 ``_pool_lookup``, ``_record_tree_in_background``, ``_refuse_over_ceiling_start``,
 ``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
-``_wire_mode_id``, ``_work_dir``,
-``_write_remote_token``, ``can_release``, ``release_session``.
+``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``, ``can_release``,
+``release_session``.
 """
 
 from __future__ import annotations
@@ -91,6 +91,7 @@ async def load_session(
     require_replay: bool = False,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     focus_resume: bool = False,
+    harness_state: Any = None,
 ) -> AcpSessionHandle:
     """Resume a prior session via session/load — mirrors AcpClient.
 
@@ -135,6 +136,21 @@ async def load_session(
     agent's own and the first prompt does not wait behind them. Every other
     resume sends the one load it always sent.
     """
+    if self._harness.per_session_state and harness_state is None:
+        # A host whose sessions each carry their own setup; see create_session.
+        return await self._load_session_with_harness_state(
+            session_file,
+            resume_sid,
+            cwd=cwd,
+            agent=agent,
+            crew_agent=crew_agent,
+            member_session_key=member_session_key,
+            session_key=session_key,
+            channel_id=channel_id,
+            require_replay=require_replay,
+            start_priority=start_priority,
+            focus_resume=focus_resume,
+        )
     if not self._initialized:
         raise AcpRuntimeError("Runtime not initialized — call spawn() first")
     if not self._can_load_session:
@@ -183,6 +199,9 @@ async def load_session(
             work_dir=session_work_dir,
             session_key=session_key,
             channel_id=channel_id,
+            permission_surface_owned=(
+                harness_state is not None and self._harness.permission_surface_owned(harness_state)
+            ),
         )
     # The Connection bridge snapshots the array below wrote, for shutdown.
     crew_bridged: list[str] = []
@@ -409,6 +428,13 @@ async def load_session(
         # parked copy must be gone before the load below.
         if person_waits(start_priority, focus_resume=focus_resume) and self.can_release():
             parking = parking_load(load_params)
+    if harness_state is not None:
+        # This session's own envelope, on every host that prepared per-session
+        # state, built after the final array it travels with: a resume carries
+        # the same settings exclusion its session/new did.
+        meta = self._harness.session_meta(harness_state, wire_servers, zero_tools=zero_tools)
+        if meta is not None:
+            load_params["_meta"] = {**(load_params.get("_meta") or {}), **meta}
     budget = await self._session_start_budget()
     if parking is not None:
         await self._park_in_start_agent(resume_sid, parking, budget)
@@ -469,6 +495,22 @@ async def load_session(
     for msg in buffered_init:
         queue.put_nowait(msg)
         self._fold_mcp_frame(resume_sid, msg)
+    if harness_state is not None:
+        self._session_harness_states[resume_sid] = harness_state
+        try:
+            # A restored session carries the mode it was left in, so it is checked
+            # again before its first prompt. A refusal ends only this session.
+            await self._harness.after_session_start(
+                harness_state,
+                resume_sid,
+                resp,
+                send_request=lambda method, req: self._send_and_await(method, req, timeout=budget),
+                close_session=lambda: self.terminate_session(resume_sid),
+                agent_version=self._agent_version,
+            )
+        except BaseException:
+            await asyncio.shield(self.terminate_session(resume_sid))
+            raise
 
     # Mirrors create_session: a resumed session gets the same
     # canonical-crew watchdog snapshot, resolved off-loop.
@@ -863,4 +905,31 @@ async def _wait_managed_mcp(
             self.unregister_session(handle.session_id)
         else:
             await self.terminate_session(handle.session_id)
+        raise
+
+
+async def _load_session_with_harness_state(
+    self: AcpRuntime, session_file: str, resume_sid: str, **kwargs: Any
+) -> AcpSessionHandle:
+    """:meth:`load_session` on a host that prepares each session itself.
+
+    The twin of ``_create_session_with_harness_state``: the state is prepared in
+    the session's own working directory first, and released here when the load
+    fails before the session is recorded.
+    """
+    agent = kwargs["agent"] or self._agent
+    work_dir = await self._session_work_dir(kwargs["cwd"])
+    state = await self._harness.prepare_session(
+        work_dir=work_dir,
+        agent=agent,
+        model=self._model or "",
+        session_key=kwargs["session_key"],
+        channel_id=kwargs["channel_id"],
+        memory_mode="persistent",
+    )
+    try:
+        return await self.load_session(session_file, resume_sid, **kwargs, harness_state=state)
+    except BaseException:
+        if state not in self._session_harness_states.values():
+            await self._harness.end_session(state)
         raise

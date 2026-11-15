@@ -12,12 +12,14 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_session_start_timeout``, ``_start_collect_timeout``.
 
-Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``, ``_bound_workspace_fd``,
-``_child_env_names``, ``_expect_mcp_reports``, ``_governance_scope``, ``_kiro_native_spec_lookup``,
-``_launch_agent``, ``_launch_copy_spec``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``,
-``_member_context``, ``_native_launch_resources``, ``_native_launch_sources``, ``_native_launch_view_alias``,
-``_native_skill_projection``, ``_session_queues``, ``_ssh_auth_sock_forwarded``, ``_start_launch_name``,
-``_tool_search_wire``, ``_wire_mode_id``, ``_work_dir``.
+Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
+``_bound_workspace_fd``, ``_child_env_names``, ``_expect_mcp_reports``,
+``_governance_scope``, ``_kiro_native_spec_lookup``, ``_launch_agent``,
+``_launch_copy_spec``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``,
+``_member_context``, ``_native_launch_resources``, ``_native_launch_sources``,
+``_native_launch_view_alias``, ``_native_skill_projection``, ``_session_queues``,
+``_ssh_auth_sock_forwarded``, ``_start_launch_name``, ``_tool_search_wire``,
+``_wire_mode_id``, ``_work_dir``.
 """
 
 from __future__ import annotations
@@ -649,6 +651,7 @@ async def _mirrored_session_mcp(
     work_dir: str | Path,
     session_key: str,
     channel_id: str,
+    permission_surface_owned: bool = False,
 ) -> _MirroredSessionMcp | None:
     """This session's ``mcpServers``, built by the host's agent-config MIRROR.
 
@@ -686,10 +689,12 @@ async def _mirrored_session_mcp(
     an allowlist and inherits nothing, so Crew's own control plane comes up with no
     session to act on unless the element carries the identity.
 
-    ``permission_surface_owned`` is False because this runtime authors no native
-    permission file. That is the fail-CLOSED direction: a mirror in claude's class
-    -- one whose tools could be pre-approved in a file Crew does not own, where
-    Crew's gate never fires -- withholds its array here rather than delivering it.
+    ``permission_surface_owned`` is False unless the host's own per-session state
+    says Crew governs this session's native permission file
+    (``HarnessAdapter.permission_surface_owned``: the claude harness seeds it per
+    session). False is the fail-CLOSED direction: a mirror in claude's class -- one
+    whose tools could be pre-approved in a file Crew does not own, where Crew's gate
+    never fires -- withholds its array here rather than delivering it.
 
     Blocking work (an agent-spec parse, an overlay read) runs off the loop, the
     same as the pooled resolution it replaces.
@@ -751,7 +756,7 @@ async def _mirrored_session_mcp(
             active_agent,
             stub_server_names=stubbed,
             stub_elements=stubs,
-            permission_surface_owned=False,
+            permission_surface_owned=permission_surface_owned,
             work_dir=work_dir,
             session_key=session_key,
             channel_id=channel_id,

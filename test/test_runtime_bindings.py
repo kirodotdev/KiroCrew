@@ -58,6 +58,18 @@ SHARED_BINDINGS_CHECKS = (
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
+    "_create_session_with_harness_state": (
+        "function",
+        True,
+        "e3d37eb50120",
+        "runtime_session_create",
+    ),
+    "_load_session_with_harness_state": (
+        "function",
+        True,
+        "56b8e5999417",
+        "runtime_session_load",
+    ),
     "_DESCENDANT_RESCAN_DELAY": ("data", False, "", "runtime_class"),
     "_EXIT_DRAIN_GRACE": ("data", False, "", "runtime_class"),
     "_EXIT_DRAIN_MAX": ("data", False, "", "runtime_class"),
@@ -130,7 +142,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "ead9c31b8aca",
         "runtime_session_setup",
     ),
-    "_mirrored_session_mcp": ("function", True, "2db14e85d828", "runtime_session_setup"),
+    "_mirrored_session_mcp": ("function", True, "1a8f8533ecff", "runtime_session_setup"),
     "_mirrored_spec_check_needed": ("function", False, "3cd7cb3cf81a", "runtime_session_setup"),
     "_mode_available": ("staticmethod", False, "08e0d5cbf178", "runtime_mode_activation"),
     "_mount_member_panel": ("function", True, "bcc6c7135aaa", "runtime_session_setup"),
@@ -216,7 +228,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "agent_version": ("property", False, "bb418bb7ece8", "runtime_class"),
     "begin_mcp_reattempt": ("function", False, "dc7c165669b1", "runtime_host_requests"),
     "begin_mcp_sign_in": ("function", False, "dc7c165669b1", "runtime_host_requests"),
-    "create_session": ("function", True, "76e4a6b519f6", "runtime_session_create"),
+    "create_session": ("function", True, "55fcebd687f6", "runtime_session_create"),
     "death_summary": ("function", False, "f21e39ec5ffb", "runtime_liveness"),
     "entitlement_probe_result_at": ("property", False, "59162e39f6f1", "runtime_class"),
     "evict_session": ("function", True, "c284282f8a1d", "runtime_session_registry"),
@@ -228,7 +240,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "is_cloud_sandbox": ("property", False, "a6632a57e602", "runtime_class"),
     "keep_record_on_teardown": ("function", False, "4f730038263e", "runtime_session_registry"),
     "kill": ("function", True, "4f9ced5c4b86", "runtime_tree_kill"),
-    "load_session": ("function", True, "4f88ef29453b", "runtime_session_load"),
+    "load_session": ("function", True, "2f38edd6fbd1", "runtime_session_load"),
     "mark_turn_active": ("function", False, "a3b3a732c817", "runtime_session_registry"),
     "mcp_sign_in_holds": ("function", False, "dc7c165669b1", "runtime_host_requests"),
     "pid": ("property", False, "8dc15be1dfda", "runtime_class"),
