@@ -495,20 +495,33 @@ def build_member_section(
             mate_tools_identity = _MATE_TOOLS_IDENTITY_MANUAL
         else:
             mate_tools_identity = _MATE_TOOLS_IDENTITY
-        # The ledger tools are named only where this chat's spec mounts and grants
-        # them (``member_mate_tools.binding_has_ledger_tools``) AND the operating-mode
+        # The ledger tools are named only where this chat's spec mounts them
+        # (``member_mate_tools.binding_ledger_off_reason``) AND the operating-mode
         # block is taught: its sentence is about tasks handed to workers, which a turn
         # without the ``session_*`` tools cannot hand (``_member_dispatch_held``, the
         # same verdict ``session_start`` gives that block).
-        from kiro_crew.member_mate_tools import binding_has_ledger_tools
+        from kiro_crew.member_mate_tools import (
+            LEDGER_OFF_CONFIG,
+            LEDGER_OFF_UNREADABLE,
+            binding_ledger_off_reason,
+        )
 
+        off = binding_ledger_off_reason(crew)
         tracking = (
             "conductor.tracking_ledger"
-            if binding_has_ledger_tools(crew)
-            and ctx._member_dispatch_held(dispatch_mounted, cfg, crew_key)
+            if not off and ctx._member_dispatch_held(dispatch_mounted, cfg, crew_key)
             else "conductor.tracking"
         )
-        identity.append(mate_tools_identity + _prompt(tracking))
+        off_key = {
+            LEDGER_OFF_UNREADABLE: "conductor.tracking_off_unreadable",
+            LEDGER_OFF_CONFIG: "conductor.tracking_off_config",
+        }.get(off)
+        identity.append(
+            mate_tools_identity
+            + _prompt(tracking)
+            # Fail closed but never silently (owner decision in docs/decisions, cases N3 and N4).
+            + (_prompt(off_key) if off_key else "")
+        )
 
     parts = ["\n".join(identity)]
     if not desk_withheld:

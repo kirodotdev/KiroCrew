@@ -257,6 +257,21 @@ def test_a_default_template_crewmate_gets_a_file_that_adds_nothing(layout, persi
     assert not mate_worker.has_additions(additions)
 
 
+def test_a_crewmate_with_no_agent_moves_as_a_default_template_crewmate(layout, persisted):
+    """An empty ``kiro_agent`` chats on the default template, so it moves the same way
+    (owner decision in docs/decisions, case N5); the repoint compares against the stored ``""``."""
+    user, mates = layout
+    _write(user, "kirocrew", _template("kirocrew"))
+    cfg = _cfg(rty=KiroCrewAgentConfig(member_id="rty", kiro_agent=""))
+    persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.migrated == ["rty"]
+    assert _file(mates, "rty") == {"name": "rty", "mcpServers": {}, "tools": [], "allowedTools": []}
+    assert cfg.agents["rty"].kiro_agent == "rty"
+
+
 def test_a_crewmate_whose_worker_would_lose_a_grant_moves_and_is_told_once(
     layout, persisted, caplog
 ):
@@ -839,6 +854,22 @@ def test_a_pre_upgrade_thread_runs_on_the_conductor_and_keeps_its_memory(
     assert report.threads_repointed == {"zxc": [key]}
     entry = _ledger(mates)["threads"]["zxc"]
     assert entry == {"from": "builder", "repointed": [key], "done": True, "member_id": "zxc"}
+
+
+def test_a_crewmate_with_no_agent_moves_its_default_template_threads(layout, persisted, threads):
+    """An empty ``kiro_agent`` ran its threads on the default template, so those move too."""
+    user, mates = layout
+    _write(user, "kirocrew", _template("kirocrew"))
+    cfg = _cfg(zxc=KiroCrewAgentConfig(member_id="zxc", kiro_agent=""))
+    persisted(cfg)
+    key = "dashboard:member-zxc.memory-member-zxc-0123"
+    _thread(threads, key, "zxc", "kirocrew")
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert _now(threads, key).template_id == mate_worker.MATE_CONDUCTOR_AGENT
+    assert report.threads_repointed == {"zxc": [key]}
+    assert _ledger(mates)["threads"]["zxc"]["from"] == "kirocrew"
 
 
 def test_the_old_thread_s_next_turn_binds_the_conductor_on_the_same_store(

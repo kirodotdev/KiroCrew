@@ -316,15 +316,16 @@ def test_with_the_ledger_the_conductor_maps_goal_conductor(tmp_path, monkeypatch
     assert spec_has_ledger_tools(spec)
 
 
-def test_a_ceiling_that_withholds_the_record_verb_reads_as_no_ledger(tmp_path, monkeypatch):
+def test_a_ceiling_that_withholds_the_record_verb_still_teaches_the_ledger(tmp_path, monkeypatch):
+    """Owner decision in docs/decisions, case N1: the verb stays mounted and asks for approval,
+    so the Bot is taught the ledger and goal-conductor is mapped."""
     from kiro_crew.member_mate_tools import spec_has_ledger_tools
 
     spec = _install_with_work(tmp_path, monkeypatch, withhold_record=True)
     assert "kirocrew-work" in spec["mcpServers"] and "@kirocrew-work" in spec["tools"]
     assert _RECORD not in spec["allowedTools"]
-    assert not spec_has_ledger_tools(spec)
-    # No ledger text, so no mapping: the spec keeps the skills it inherits.
-    assert _goal_conductor_uri() not in (spec.get("resources") or [])
+    assert spec_has_ledger_tools(spec)
+    assert _goal_conductor_uri() in spec["resources"]
 
 
 def test_a_server_entry_without_its_tools_selected_maps_no_skill(tmp_path, monkeypatch):
@@ -350,7 +351,7 @@ def test_a_crewmate_on_the_conductor_reads_the_installed_conductor_spec(tmp_path
     _install_with_work(tmp_path, monkeypatch)
     assert member_mate_tools.binding_has_ledger_tools(binding) is True
     _install_with_work(tmp_path, monkeypatch, withhold_record=True)
-    assert member_mate_tools.binding_has_ledger_tools(binding) is False
+    assert member_mate_tools.binding_has_ledger_tools(binding) is True
 
 
 # -- this release: the mapping ADDS the user's skills; the flag flips to scoped ---- #

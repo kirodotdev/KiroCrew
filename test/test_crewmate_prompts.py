@@ -399,7 +399,7 @@ def test_the_tracking_sentence_without_the_ledger_names_no_ledger_tool() -> None
     assert "work_ledger_record" in mounted and "work_ledger_read" in mounted
 
 
-def _render(monkeypatch: pytest.MonkeyPatch, *, ledger: bool) -> str:
+def _render(monkeypatch: pytest.MonkeyPatch, *, ledger: bool, off: str = "config") -> str:
     """``build_member_section`` plus ``operating_mode_block``, as the session start
     joins them, with the ledger answer forced either way."""
     from types import SimpleNamespace
@@ -414,7 +414,8 @@ def _render(monkeypatch: pytest.MonkeyPatch, *, ledger: bool) -> str:
     cfg = ctx.KiroCrewConfig()
     cfg.agents["Atlas"] = binding
     monkeypatch.setattr(ctx.KiroCrewConfig, "load", staticmethod(lambda *a, **k: cfg))
-    monkeypatch.setattr(member_mate_tools, "binding_has_ledger_tools", lambda _b: ledger)
+    reason = "" if ledger else off
+    monkeypatch.setattr(member_mate_tools, "binding_ledger_off_reason", lambda _b: reason)
     section = member.build_member_section("Atlas", include_briefing=False)
     return section + member.operating_mode_block("Atlas", ledger=ledger)
 
@@ -472,6 +473,43 @@ def test_a_render_without_the_ledger_is_the_text_every_crewmate_had(
     )
 
 
+@pytest.mark.parametrize("off", ["config", "unreadable"])
+def test_a_render_without_the_ledger_says_why_tracking_is_off(
+    off: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Owner decision in docs/decisions, cases N3 and N4: no ledger text, never silently."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    text = _render(monkeypatch, ledger=False, off=off)
+    assert crewmate_prompts.text(f"conductor.tracking_off_{off}") in text
+    other = "unreadable" if off == "config" else "config"
+    assert crewmate_prompts.text(f"conductor.tracking_off_{other}") not in text
+    assert crewmate_prompts.text("conductor.tracking_ledger") not in text
+
+
+def test_a_render_with_the_ledger_names_no_off_reason(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    text = _render(monkeypatch, ledger=True)
+    assert "Tracking is off" not in text
+
+
+def test_the_off_reason_follows_the_chat_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew import member_mate_tools
+
+    monkeypatch.setattr(member_mate_tools, "_chat_spec", lambda _b: _conductor_spec())
+    assert member_mate_tools.binding_ledger_off_reason(object()) == ""
+    monkeypatch.setattr(
+        member_mate_tools,
+        "_chat_spec",
+        lambda _b: _conductor_spec(excludedTools=["@kirocrew-work"]),
+    )
+    assert member_mate_tools.binding_ledger_off_reason(object()) == "config"
+    monkeypatch.setattr(member_mate_tools, "_chat_spec", lambda _b: None)
+    assert member_mate_tools.binding_ledger_off_reason(object()) == "unreadable"
+    assert member_mate_tools.binding_ledger_off_reason(None) == "unreadable"
+
+
 @pytest.mark.parametrize("mounted, backend_can_dispatch", [(False, True), (None, False)])
 def test_a_turn_without_the_dispatch_tools_is_not_told_to_track_its_hand_offs(
     monkeypatch: pytest.MonkeyPatch,
@@ -494,7 +532,7 @@ def test_a_turn_without_the_dispatch_tools_is_not_told_to_track_its_hand_offs(
         description="", triggers="", kiro_agent="", workspace="", member_id=""
     )
     monkeypatch.setattr(ctx.KiroCrewConfig, "load", staticmethod(lambda *a, **k: cfg))
-    monkeypatch.setattr(member_mate_tools, "binding_has_ledger_tools", lambda _b: True)
+    monkeypatch.setattr(member_mate_tools, "binding_ledger_off_reason", lambda _b: "")
     monkeypatch.setattr(ctx, "_member_backend_can_dispatch", lambda *_a: backend_can_dispatch)
     text = member.build_member_section("Atlas", include_briefing=False, dispatch_mounted=mounted)
     assert crewmate_prompts.text("conductor.tracking") in text
@@ -523,6 +561,10 @@ def test_a_spec_that_mounts_and_grants_the_ledger_has_it() -> None:
     from kiro_crew.member_mate_tools import spec_has_ledger_tools
 
     assert spec_has_ledger_tools(_conductor_spec())
+    # Owner decision in docs/decisions, case N1: a ceiling that withholds the verb leaves it
+    # mounted and asking for approval, so the ledger is still taught.
+    assert spec_has_ledger_tools(_conductor_spec(allowedTools=["@kirocrew-work/work_ledger_read"]))
+    assert spec_has_ledger_tools(_conductor_spec(allowedTools=[]))
     assert spec_has_ledger_tools(_conductor_spec(tools="*"))
     assert spec_has_ledger_tools(_conductor_spec(allowedTools=["@kirocrew-work"]))
     assert spec_has_ledger_tools(_conductor_spec(tools=["@kirocrew-work/work_ledger_record"]))
@@ -542,13 +584,18 @@ def test_a_spec_that_mounts_and_grants_the_ledger_has_it() -> None:
             {"excludedTools": ["@kirocrew-work/work_ledger_record"]},
             id="record-excluded",
         ),
-        # What ``auto_approve._apply_allowed_tools_ceiling`` leaves when the ceiling
-        # withholds the verb: mounted, but not granted.
         pytest.param(
-            {"allowedTools": ["@kirocrew-work/work_ledger_read"]},
-            id="ceiling-withholds-record",
+            {
+                "mcpServers": {
+                    "kirocrew-work": {
+                        "command": "k",
+                        "args": ["mcp-work"],
+                        "disabledTools": ["work_ledger_record"],
+                    }
+                }
+            },
+            id="record-switched-off-on-the-entry",
         ),
-        pytest.param({"allowedTools": []}, id="nothing-granted"),
     ],
 )
 def test_a_spec_without_the_mounted_granted_ledger_has_none(over: dict) -> None:
