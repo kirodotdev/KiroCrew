@@ -5420,6 +5420,31 @@ complexity guard that runs both a Python walk and a regex search asserts the two
 apart: what the engine is handed, then `_linear_work` on the call's instructions
 (`TestIsDeniedReDoSResistance._assert_scan_is_linear`).
 
+**"Returns at once" is a claim about waits, so assert the wait.** Most short bounds
+(`elapsed < 0.5`) guard no complexity at all: they say a call never blocks, polls or
+sleeps. A count of instructions cannot see that (a `sleep` is one instruction), and a
+clock cannot tell a wait from a slow host. Assert that the wait was never taken:
+
+- spy the blocking primitive and refuse it on the spot: a lock whose `acquire` fails
+  when asked to block (`test_record_frame_never_waits_on_the_byte_budget_lock`), a
+  `time.sleep` / `concurrent.futures.wait` that raises
+  (`test_a_drain_with_nothing_outstanding_still_returns_at_once`), a condition whose
+  `wait` raises for any thread but the one allowed to wait
+  (`test_a_nested_hold_by_the_same_task_does_not_wait_behind_a_waiting_window`);
+- record what a handle is asked and allow only the non-blocking calls
+  (`is_alive` and `terminate`, never `join`, in
+  `test_request_stop_does_not_wait_for_the_child`);
+- for a coroutine, settle it in bounded loop turns (`await asyncio.sleep(0)`), with no
+  timer to run out (`test_cancelled_mid_steer_does_not_hang_on_a_stalled_reject`);
+- freeze the clock a deadline is read from, so the one timer left is the one under test
+  (`test_silence_from_a_queue_aware_daemon_times_out_before_the_budget`);
+- for "refused before any per-character work", forbid the per-character steps and
+  require the same instruction count at three input sizes
+  (`test_command_length_ceiling_refuses_before_allocating_scan_state`).
+
+Planted, the sleep, join, timed acquire or extra walk each fails these at once; the
+0.5 s bounds they replaced passed six of eight such plants.
+
 For a regex — no instrumentation surface at all — use `test/conftest.py`'s
 `assert_rejected_without_backtracking(reject, build_pump)`, and note what the mutation
 showed: a shared character between two adjacent quantified classes in the marker grammars

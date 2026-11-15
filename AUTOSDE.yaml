@@ -421,7 +421,10 @@ custom-rules:
          shards, so a budget the code meets bare fails there on every rerun.
          For a complexity guard, count the work and bound its growth between
          input sizes (`_interpreter_work` / `_linear_work` in
-         `test/denied_commands_security_helpers.py`). Also FLAG a change that
+         `test/denied_commands_security_helpers.py`). For a "returns at once"
+         bound, which says a call never waits, assert the wait was never taken:
+         spy the lock, sleep or join and refuse a blocking call
+         (testing-conventions § Determinism 5). Also FLAG a change that
          keeps an existing budget alive by reshaping its reading (the minimum
          of N readings, the tracer paused around it, a larger constant): each
          still asserts seconds. Do not flag: a LOWER bound that proves a
