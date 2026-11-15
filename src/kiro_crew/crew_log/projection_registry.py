@@ -661,7 +661,8 @@ _FOLDS: Final[dict[str, _Fold]] = {
     # read by a loop that wakes on a timer and each wakes the worker for one entry type
     # in a log that is otherwise message bodies, so the read it serves is a memo lookup
     # rather than a walk of every unit the slot ran under. What their four warm cells
-    # cost resident is :data:`SLOT_FOLD_CACHE_BYTES`' problem, not this table's.
+    # cost resident is bounded by the slot fold cache budget
+    # (``projection_budget.DEFAULT_SLOT_FOLD_CACHE_BYTES``), not by this table.
     "ledger": _Fold(
         "ledger",
         _ledger_start,

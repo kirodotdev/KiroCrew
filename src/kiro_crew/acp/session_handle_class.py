@@ -930,7 +930,7 @@ class AcpSessionHandle:
         # latest prompt; what :meth:`discard_unanswered_prompt` rewinds to.
         self._kas_prompt_row: tuple[int, str] | None = None
         # KAS sub-agent roster keyed by agentSubtaskId. Each entry is shaped for
-        # EVENT_SUBAGENT_LIST consumption by _native_subagent_sync in chat_runner.
+        # EVENT_SUBAGENT_LIST consumption by _native_subagent_sync in chat_turn.native_cards.
         self._kas_subagent_roster: dict[str, dict[str, Any]] = {}
         # Native children announced by lifecycle session/updates (codex-acp),
         # keyed by the child's session id, same row shape as the KAS roster.

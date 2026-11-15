@@ -57,7 +57,7 @@ MAX_LISTED_SCAN: Final[int] = 400
 
 #: Unit directories one listing is willing to RETAIN while choosing which to open.
 #: Separate from ``MAX_LISTED_SCAN`` and deliberately larger: the walk skips a
-#: directory that is outside an ``active_within`` window or carries no readable
+#: directory that is outside an ``active_within_ms`` window or carries no readable
 #: unit id WITHOUT counting it as scanned, so the candidate set has to be able to
 #: absorb some skips before the scan cap is reached. It is a bound on MEMORY, not
 #: on what a caller may see -- the newest this many are kept by mtime in a

@@ -278,7 +278,8 @@ def _workstreams_new_item(item_id: str) -> dict[str, Any]:
         # ISO, not the millisecond pair ``last_report_at`` keeps beside it, because
         # nothing here COMPARES them: the opener is written once and the closer is
         # written from the item's own state, so neither needs the numeric guard a
-        # monotonic watermark does. ``_workstreams_item_span`` is the only writer.
+        # monotonic watermark does. ``_workstreams_span_opened`` and
+        # ``_workstreams_span_closed`` are the only writers.
         "created_at": "",
         "closed_at": "",
         # The conductor's latest ruling on this item, clamped -- see

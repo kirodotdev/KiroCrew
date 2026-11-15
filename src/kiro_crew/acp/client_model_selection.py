@@ -916,7 +916,7 @@ async def _apply_startup_model(self: AcpClient) -> None:
         # model the backend fully serves: resolve to the advertised
         # spelling and send THAT, so the session runs the model the pin
         # names instead of silently dropping to the default. Same fold the
-        # display verdict uses (chat_runner._pinned_model_verdict), so the
+        # display verdict uses (chat_turn.model_fallback._pinned_model_verdict), so the
         # chip and the wire cannot disagree about what "usable" means. A
         # pin absent under either spelling still takes the withhold below.
         _resolved = runtime_models.resolve_pin_spelling(self._model, self._advertised_model_ids())
