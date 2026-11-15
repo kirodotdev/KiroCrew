@@ -103,6 +103,8 @@ class TestAChosenModelIsLeftAlone:
             current="opencode/big-pickle",
         )
         await client._apply_startup_model()
+        # The session keeps the model ``session/new`` put it on.
+        assert client._resolved_model_id == "opencode/big-pickle"
 
     @pytest.mark.asyncio
     async def test_the_harness_config_names_the_model(self, tmp_path):
@@ -113,6 +115,7 @@ class TestAChosenModelIsLeftAlone:
             config_model="opencode/big-pickle",
         )
         await client._apply_startup_model()
+        assert client._resolved_model_id == "opencode/big-pickle"
 
     @pytest.mark.asyncio
     async def test_a_crew_pin_on_a_hosted_model_is_sent(self, tmp_path):
@@ -132,6 +135,7 @@ class TestAChosenModelIsLeftAlone:
     async def test_no_advertised_list_is_no_evidence(self, tmp_path):
         client = _client(tmp_path, advertised=(), current="opencode/big-pickle")
         await client._apply_startup_model()
+        assert client._resolved_model_id == "opencode/big-pickle"
 
 
 def test_the_refusal_is_not_retried() -> None:
