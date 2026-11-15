@@ -189,7 +189,10 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // ⌘, on macOS (the OS-standard Preferences chord, and the one
   // electron/app-menu.js advertises); Option/Alt+, stays a Mac alias because a
   // Mac browser can claim ⌘, as its own Preferences accelerator before the page
-  // sees it, which would leave no keyboard route to Settings.
+  // sees it, which would leave no keyboard route to Settings. With shortcuts off
+  // that alias obeys the toggle like every other shortcut; the on/off switch
+  // stays reachable by keyboard through the shortcuts reference (its
+  // Option/Alt+K alias), which holds it.
   //
   // Windows/Linux is DELIBERATELY Alt+, not the Ctrl+, conventional default (see
   // PR #783). Ctrl+, is how a Chinese IME types a comma, so a Ctrl+, binding is a
