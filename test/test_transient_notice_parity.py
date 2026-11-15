@@ -343,7 +343,7 @@ def _tokenized_literal_sites() -> list[tuple[str, int, str, str]]:
             else:
                 continue
             sites.append(
-                (str(path.relative_to(_REPO)), node.lineno, getattr(gn, names.pop()), text)
+                (path.relative_to(_REPO).as_posix(), node.lineno, getattr(gn, names.pop()), text)
             )
     return sites
 
