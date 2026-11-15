@@ -616,9 +616,16 @@ describe('wire parity with the gateway constants', () => {
     [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_(?!META_KEY|ARGS_KEY)[A-Z_]+\s*=\s*"([^"]+)"/gm)].map((m) => m[1]),
   )
   const metaKeys = sources.flatMap((py) => [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_META_KEY\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))
+  // Every column-0 assignment of a token name, whatever its right-hand side: the
+  // strict scan above must read each one, or a token written in another shape
+  // (an annotation, single quotes) drops out of the per-token check below. Compared
+  // with this scan rather than a stored total, which every PR adding a token edits.
+  const assigned = sources.flatMap((py) => [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_(?!META_KEY|ARGS_KEY)[A-Z_]+\b\s*[:=]/gm)])
 
   it('finds every backend token and the one meta field name the frontend reads', () => {
-    expect(backend).toHaveLength(91)
+    expect(backend.length).toBeGreaterThan(0)
+    expect(backend).toHaveLength(assigned.length)
+    expect(new Set(backend).size).toBe(backend.length)
     expect(new Set(metaKeys)).toEqual(new Set(['notice']))
   })
 

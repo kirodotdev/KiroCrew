@@ -5,7 +5,7 @@ another one, change its model, reload its agent process, color it, leave it a no
 one under itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 41 of its tools, written for the agent that is about to use them.
+for every one of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py` and its `mcp_dashboard_*`
 owner modules. Two halves:
