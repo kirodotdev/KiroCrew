@@ -199,7 +199,7 @@ class TestChannelRouting:
             await ch.post(orch.id, "msg", from_role="Orch", mention=spec.id)
         while not spec.inbox.empty():
             spec.inbox.get_nowait()
-        # Confirm blocked
+        # Over budget, a further mention is not delivered.
         await ch.post(orch.id, "blocked", from_role="Orch", mention=spec.id)
         assert spec.inbox.empty()
         # Human message resets the budget

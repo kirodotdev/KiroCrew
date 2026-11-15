@@ -963,7 +963,6 @@ def test_migrated_builtin_cleans_hyphenated_name(tmp_path, monkeypatch):
     monkeypatch.setattr(mgr, "apps_dir", lambda: tmp_path)
     app_path = tmp_path / "deploy-web"
     app_path.mkdir()
-    # Write minimal installed.json (origin=builtin)
     import json as _json
     (app_path / "installed.json").write_text(_json.dumps({
         "name": "deploy-web",
