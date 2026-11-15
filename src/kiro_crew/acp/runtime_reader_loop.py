@@ -8,15 +8,16 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_answer_tasks``, ``_last_activity``, ``_load_replay_frames``,
-``_pending_requests``, ``_routed_requests``, ``_session_activity_at``.
+``_pending_requests``, ``_routed_requests``, ``_session_activity_at``,
+``_unrouted_child_frames``.
 
 Instance fields read: ``_acp_backend``, ``_announced_children``, ``_announced_overflow``,
-``_kas_host_auth``, ``_launch_cwd_roots``,
+``_fold_mcp_frame``, ``_kas_host_auth``, ``_launch_cwd_roots``,
 ``_map_launch_cwd_paths``, ``_max_answer_tasks``,
 ``_mcp_secret_server``, ``_native_skill_projection``, ``_process``,
-``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``,
+``_session_harness_states``, ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``,
 ``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
-``_turn_active_sessions``, ``recording_allowed``.
+``_turn_active_sessions``, ``mcp_connect_progress``, ``recording_allowed``.
 """
 
 from __future__ import annotations
@@ -230,6 +231,7 @@ async def _route_owned_child_frame(
     # activity, which keeps the owner off the idle sweep.
     self._session_activity_at[owner] = time.monotonic()
     if msg.id is not None and msg.is_method(METHOD_REQUEST_PERMISSION) and not _owner_turn_active:
+        self._unrouted_child_frames += 1
         await self._spawn_answer_task(
             msg,
             session_id,
@@ -295,6 +297,15 @@ async def _reader_loop(self: AcpRuntime) -> None:
         _announces_children = "subagents" in self._harness.client_capabilities
     except ValueError:
         _announces_children = False
+    # The host's reader of its own session frames, resolved once with the
+    # declaration above; a backend with no runtime harness reads none.
+    try:
+        _take_session_frame = self._harness.take_session_frame
+    except ValueError:
+        _take_session_frame = None
+    # The live map, never a copy: sessions register after the reader starts.
+    # Read with getattr: a runtime built without __init__ has none.
+    _harness_states: dict[str, Any] = getattr(self, "_session_harness_states", {})
 
     try:
         while True:
@@ -566,6 +577,17 @@ async def _reader_loop(self: AcpRuntime) -> None:
 
             # Route notifications by sessionId
             session_id = (msg.params or {}).get("sessionId")
+            # Read before routing, so a snapshot for a session that is not
+            # registered yet (or any more) still says the shared queue moved.
+            # Read with getattr: a runtime built without __init__ has none.
+            _progress = getattr(self, "mcp_connect_progress", None)
+            if _progress is not None:
+                _progress.observe(msg)
+            if session_id:
+                # The session's MCP report follows the frame HERE, once, whoever
+                # reads it off the session's queue later and whether or not a
+                # turn is running.
+                self._fold_mcp_frame(session_id, msg)
             if not session_id and _subagent_list_update and msg.method == _subagent_list_update:
                 # Snapshot backend-internal subagent session ids before the
                 # broadcast below delivers the frame to the UI consumers.
@@ -576,6 +598,13 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 # session. Route to it if registered; otherwise DROP it.
                 # Broadcasting a known-but-unregistered session's frame to
                 # every other session would be cross-talk.
+                if (
+                    _take_session_frame is not None
+                    and _take_session_frame(_harness_states.get(session_id), msg) is True
+                ):
+                    # Read into that session's own harness state, as the host
+                    # reads it (``HarnessAdapter.take_session_frame``).
+                    continue
                 _child_frame = (
                     msg.is_method(METHOD_REQUEST_PERMISSION) or msg.method in _session_update
                 )
@@ -667,6 +696,9 @@ async def _reader_loop(self: AcpRuntime) -> None:
                     # cost this child its approval card, and that is the one
                     # thing an operator can act on (the two counts in the
                     # snapshot warning above are the same signal).
+                    # Answered here, so it reaches no session: counted like a
+                    # dropped child update (``unrouted_child_frames``).
+                    self._unrouted_child_frames += 1
                     await self._spawn_answer_task(
                         msg,
                         session_id,

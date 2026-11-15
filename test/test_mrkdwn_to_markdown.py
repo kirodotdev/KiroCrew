@@ -271,10 +271,12 @@ async def test_a_slack_bound_send_rescans_the_converted_copy_for_secrets(monkeyp
     # A secret split by a sentinel character and emphasis sigils survives the
     # route's pre-conversion display scan; conversion reassembles it, so the
     # BELL's copy must be re-scanned in its own settled form before storage.
+    from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN as token
+
     state = await _fallback_send(
         monkeypatch,
         send_to_slack=True,
-        text="key AKIA\x00*IOSFODNN7EXAMPLE* end",
+        text=f"key {token[:5]}\x00*{token[5:]}* end",
     )
     (_kind, _title, body), _kw = state.notify.call_args
-    assert "IOSFODNN7EXAMPLE" not in body
+    assert token[5:] not in body

@@ -360,6 +360,13 @@ def _merge_locked(cleaned: Mapping[str, str | None]) -> dict[str, str]:
     for key, value in cleaned.items():
         if value is None:
             merged.pop(key, None)
+        elif not _is_clean(value):
+            # The read path drops a value the shared redactors would alter, so
+            # storing it here only made the reply claim a value GET never serves
+            # and the next merge silently drops. Kept out (the PUT is still 200,
+            # as before) and said in the log.
+            logger.warning("ui-prefs: value for %r not kept: it holds secret-shaped text", key)
+            merged.pop(key, None)
         else:
             merged[key] = value
 

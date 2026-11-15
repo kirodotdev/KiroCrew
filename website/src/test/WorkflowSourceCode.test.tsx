@@ -36,7 +36,7 @@ vi.mock('../pierre', () => ({
   ),
 }))
 
-import WorkflowSourceCode from '../apps/workflows/WorkflowSourceCode'
+import WorkflowSourceCode from '../components/workflows/WorkflowSourceCode'
 
 const SOURCE = 'async def workflow(ctx):\n    return 1\n'
 

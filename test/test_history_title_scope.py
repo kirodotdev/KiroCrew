@@ -88,6 +88,14 @@ class TestTitleOnlySearch:
         assert _keys(log.search_sessions('title:"wave plan"')) == ["phrase"]
         assert _keys(log.search_sessions("title:wave")) == ["phrase", "apart"]
 
+    def test_a_leading_hyphen_in_the_term_is_title_text(self, tmp_path: Path) -> None:
+        """Operators apply to the text after the term, never to the term itself."""
+        _session(tmp_path, "builder", "member-vinod-builder notes", "x", 2000)
+        _session(tmp_path, "other", "unrelated", "x", 1000)
+        assert _keys(ConversationLog(base_dir=tmp_path).search_sessions("title:-vinod")) == [
+            "builder"
+        ]
+
     def test_the_term_uses_the_content_gate_spelling_rules(self, tmp_path: Path) -> None:
         """A forge reference in the term is digit-bounded, as in a plain search."""
         _session(tmp_path, "ref", "Review #4411", "x", 2000)
@@ -162,6 +170,42 @@ class TestTitleScopedContentSearch:
         _session(tmp_path, "apart", "plan the wave", "rollout steps", 2000)
         rows = ConversationLog(base_dir=tmp_path).search_sessions('title:"wave plan" rollout')
         assert _keys(rows) == ["phrase"]
+
+
+class TestTitleScopedExclusions:
+    """Exclusions after the term only remove sessions from the title matches."""
+
+    def test_keeps_the_title_matches_without_the_excluded_term(self, tmp_path: Path) -> None:
+        _session(tmp_path, "plan", "Deploy plan", "rollout steps", 1000)
+        _session(tmp_path, "other", "Unrelated", "rollout steps", 2000)
+        rows = ConversationLog(base_dir=tmp_path).search_sessions("title:deploy -vinod")
+        assert _keys(rows) == ["plan"]
+        assert "snippet" not in rows[0]
+
+    def test_drops_a_title_match_whose_content_holds_the_term(self, tmp_path: Path) -> None:
+        _session(tmp_path, "plan", "Deploy plan", "rollout steps", 1000)
+        _session(tmp_path, "vinod", "Deploy notes", "Vinod reviewed this", 2000)
+        rows = ConversationLog(base_dir=tmp_path).search_sessions("title:deploy -vinod")
+        assert _keys(rows) == ["plan"]
+
+    def test_drops_a_title_match_whose_title_holds_the_term(self, tmp_path: Path) -> None:
+        _session(tmp_path, "older", "Deploy plan", "x", 1000)
+        _session(tmp_path, "titled", "Deploy Vinod", "x", 2000)
+        _session(tmp_path, "newer", "Deploy rollback", "x", 3000)
+        rows = ConversationLog(base_dir=tmp_path).search_sessions("title:deploy -vinod")
+        assert _keys(rows) == ["newer", "older"]
+
+    def test_keys_restrict_the_rows(self, tmp_path: Path) -> None:
+        _session(tmp_path, "mine", "Deploy one", "x", 1000)
+        _session(tmp_path, "theirs", "Deploy two", "x", 2000)
+        rows = ConversationLog(base_dir=tmp_path).search_sessions(
+            "title:deploy -vinod", keys={"mine"}
+        )
+        assert _keys(rows) == ["mine"]
+
+    def test_exclusions_without_a_title_scope_match_nothing(self, tmp_path: Path) -> None:
+        _session(tmp_path, "plan", "Deploy plan", "rollout steps", 1000)
+        assert ConversationLog(base_dir=tmp_path).search_sessions("-vinod") == []
 
 
 @pytest.mark.skipif(not fts5_available(), reason="SQLite built without FTS5")

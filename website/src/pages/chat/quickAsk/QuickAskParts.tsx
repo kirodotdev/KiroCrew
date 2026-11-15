@@ -156,6 +156,7 @@ export function QuickAskZoom({ zoom, children }: { zoom: CSSProperties | null; c
 export function answerErrorText(code: string): string {
   if (code === 'no_field') return i18nT('pages.chat.quickAsk.error_no_field')
   if (code === 'too_long') return i18nT('pages.chat.quickAsk.error_too_long')
+  if (code === 'vault_unusable') return i18nT('pages.chat.quickAsk.error_vault_unusable')
   if (code === 'policy_denied') return i18nT('pages.settings.browserPanel.policy_off')
   return code === 'origin_changed' || code === 'stale'
     ? i18nT('pages.chat.quickAsk.error_page_changed')

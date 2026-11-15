@@ -51,6 +51,7 @@ from kiro_crew.atomic_write import (  # noqa: F401 - read by the pinned_writes o
     read_bytes_with_retry,
     replace_with_retry_checked,
 )
+from kiro_crew.bounded_read import bounded_read  # noqa: F401 - read by the two read owners
 from kiro_crew.config import paths as _config_paths
 
 # ``_coerce_bool`` reads a hand-edited bool without the ``bool("false")`` trap;
@@ -79,9 +80,11 @@ from kiro_crew.hook_runtime import tool_identity as _owner_tool_identity
 from kiro_crew.hook_runtime import windows_paths as _owner_windows_paths
 from kiro_crew.hook_runtime.denied_commands import (  # noqa: F401
     _governance_pinned_command_ids,
+    _publish_denied_state,
     effective_denied_regexes_from_config,
     hooks_config_from_config_dict,
     load_denied_commands_state,
+    record_denied_state_save,
     resolve_denied_notes,
     resolve_effective_denied_regexes,
     splice_denied_commands,
@@ -123,6 +126,7 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _tier_spec_builtin_grant,
     _tier_spec_denies,
     _tier_spec_shell_allowlist,
+    _tier_spec_unjudged_denies,
     _tier_spec_write_allowlist,
     _tier_targets,
     _tier_unverifiable_shell,
@@ -190,6 +194,7 @@ from kiro_crew.hook_runtime.script_hooks import (  # noqa: F401
     ScriptHookResult,
     ScriptHookStore,
     _hook_subprocess_env,
+    _script_hook_enabled_from,
     run_script_hook,
 )
 from kiro_crew.hook_runtime.script_validation import (  # noqa: F401
@@ -301,6 +306,7 @@ from kiro_crew.security import (  # noqa: F401 - the path owners read these
     sensitive_path_refusal,
     sensitive_write_path_refusal,
 )
+from kiro_crew.security.paths_resolver import bounded_judgment
 from kiro_crew.security.readonly_bash import (  # noqa: F401 - the owners read them
     command_invokes_git,
     is_read_only_bash,
@@ -603,6 +609,10 @@ SpecBuiltinAllow = Callable[[GateFacts, tuple[str, ...]], bool]
 
 _BUNDLED_AUTO_APPROVE_TOOLS: list[str] = []
 
+_DENIED_STATE_LAST_GOOD: dict[str, str] = {}
+_DENIED_STATE_LOCK = threading.Lock()
+_DENIED_STATE_GEN: dict[str, int] = {}
+
 
 # ── Spawn auto-approve identity: ``event_is_spawn_run`` in hook_runtime/tool_identity.py ──
 
@@ -655,12 +665,18 @@ class HookManager:
         before = self._config
         after = hooks_config_from_config_dict(getattr(change, "new").hooks)
         self.reload(after)
+
+        def _grants(cfg: HooksConfig) -> set[tuple[str, str]]:
+            return {("tools", p) for p in cfg.auto_approve_tools} | {
+                ("identities", p) for p in cfg.auto_approve_tool_identities
+            }
+
         # A hooks reload can WIDEN what runs without a prompt, and config.json is
         # writable by an auto-approved agent shell, so an approval-set change is
         # SEL-audited the way the channel transports audit an allow-list reload:
         # by COUNT and flag, never by tool name (governance still caps the set).
-        added = len(set(after.auto_approve_tools) - set(before.auto_approve_tools))
-        removed = len(set(before.auto_approve_tools) - set(after.auto_approve_tools))
+        added = len(_grants(after) - _grants(before))
+        removed = len(_grants(before) - _grants(after))
         flags = {
             "sources": (before.auto_approve_sources != after.auto_approve_sources),
             "subagent_spawn": (
@@ -696,7 +712,7 @@ class HookManager:
                 outcome="auto_approve_changed",
                 source="hooks",
                 resources=(
-                    f"added={added} removed={removed} size={len(after.auto_approve_tools)}"
+                    f"added={added} removed={removed} size={len(_grants(after))}"
                     + (f" flags={','.join(flipped)}" if flipped else "")
                     + confirm_note
                 ),
@@ -838,12 +854,15 @@ class HookManager:
             deny_waivers=frozenset(deny_waivers),
             pre_tool_hooks_fire=pre_tool_hooks_fire,
         )
-        for tier in GATE_TIERS:
-            verdict = tier.judge(facts, tier)
-            if verdict is not None:
-                if not verdict.tier:
-                    verdict.tier = tier.name
-                return verdict
+        # One shared resolver budget for every path this call names; it binds only
+        # off the event loop, where the loop's own allowance does not apply.
+        with bounded_judgment():
+            for tier in GATE_TIERS:
+                verdict = tier.judge(facts, tier)
+                if verdict is not None:
+                    if not verdict.tier:
+                        verdict.tier = tier.name
+                    return verdict
         return ToolHookResult.allow(facts.ask_note)
 
     @_fail_closed_on_gate_crash
@@ -872,6 +891,7 @@ class HookManager:
         spec_write_allowlist: tuple[str, ...] | None = None,
         spec_write_cwd: str = "",
         spec_denied_grant: Any = None,
+        spec_unjudged_denies: tuple[dict[str, Any] | str, ...] = (),
         spec_shell_readonly: bool = False,
         spec_granted_paths: tuple[str, ...] = (),
         spec_granted_read_paths: tuple[str, ...] = (),
@@ -925,6 +945,7 @@ class HookManager:
                 ),
                 spec_write_cwd=spec_write_cwd,
                 spec_denied_grant=as_spec_denied_grant(spec_denied_grant),
+                spec_unjudged_denies=tuple(spec_unjudged_denies),
                 spec_shell_readonly=spec_shell_readonly is True,
                 spec_granted_paths=tuple(spec_granted_paths),
                 spec_granted_read_paths=tuple(spec_granted_read_paths),
@@ -1500,8 +1521,8 @@ class FileTooLargeError(Exception):
 _INTERNAL_READ_ALLOWLIST: dict[str, str] = {
     # ``kiro_crew.dashboard.handlers.kiro_usage_api`` reads the kiro-cli SSO
     # access token to authenticate a single ``GetUsageLimits`` call to the
-    # hardcoded CodeWhisperer RTS endpoint
-    # (``codewhisperer.us-east-1.amazonaws.com``) that powers the dashboard
+    # hardcoded Kiro control-plane endpoint
+    # (``management.us-east-1.kiro.dev``) that powers the dashboard
     # credit-usage pill -- the same API the Kiro IDE credit meter uses. The
     # token bytes go only to that AWS endpoint over TLS; only the parsed numeric
     # usage dict returns to the process, and it is run through
@@ -1849,7 +1870,7 @@ class ScriptHook:
             command=data.get("command", ""),
             skills=[str(s) for s in skills if isinstance(s, str)],
             timeout=timeout,
-            enabled=data.get("enabled", True),
+            enabled=_script_hook_enabled_from(data),
             last_run=data.get("last_run", 0.0),
             last_status=data.get("last_status", ""),
             last_error=last_error,
@@ -1955,6 +1976,7 @@ GATE_TIERS: tuple[GateTier, ...] = (
     GateTier("spec-shell-allowlist", "deny_policy", _tier_spec_shell_allowlist),
     GateTier("spec-write-allowlist", "deny_policy", _tier_spec_write_allowlist),
     GateTier("spec-denies", "deny_policy", _tier_spec_denies),
+    GateTier("spec-unjudged-denies", "deny_policy", _tier_spec_unjudged_denies),
     GateTier("app-own-server", "grant", _tier_app_own_server),
     GateTier("operator-grants", "grant", _tier_operator_grants),
     GateTier("spec-builtin-grant", "grant", _tier_spec_builtin_grant),

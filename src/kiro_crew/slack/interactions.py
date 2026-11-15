@@ -68,6 +68,7 @@ from kiro_crew.slack.allowlist import (
     persist_tracking_channel,
 )
 from kiro_crew.slack.channel_policy import channel_refusal
+from kiro_crew.slack.events_queue import _configured_approval_mode
 from kiro_crew.slack.format import (
     LINK_DASHBOARD_ACTION,
     OPTIONS_ACTION_PREFIX,
@@ -243,6 +244,54 @@ async def dispatch(payload: dict) -> None:
 
     if await dispatch_card_click(_orch, payload, action_id):
         return
+
+    # ── Slack Code channel: the hand-off notice's Turn-on button ──
+    # Owner-only, SEL-audited; writes slack.code_channel_dispatch through the
+    # Settings card's audited save. Falls through when code channels are off.
+    from kiro_crew.slack.code_channels.handoff import HANDOFF_ACTION_ID, handle_handoff_click
+
+    if action_id == HANDOFF_ACTION_ID:
+        if not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+        ):
+            logger.info("slack code channel hand-off dropped: denied by channels governance policy")
+            return
+        if await handle_handoff_click(_orch, payload):
+            return
+
+    # ── Slack Code channel: the restart notice's Resume button ──
+    # Prefix-dispatched like the session-resume buttons below; owner-only and
+    # SEL-audited, it continues the channel's own interrupted work.
+    from kiro_crew.slack.code_channels.resume import (
+        RESUME_ACTION_PREFIX,
+        STOP_ACTION_PREFIX,
+        handle_resume_click,
+        handle_stop_click,
+    )
+
+    if action_id.startswith(RESUME_ACTION_PREFIX):
+        if not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+        ):
+            logger.info("slack code channel resume dropped: denied by channels governance policy")
+            return
+        if await handle_resume_click(_orch, payload):
+            return
+
+    # ── Slack Code channel: the automatic-resume notice's Stop button ──
+    # Owner-only and SEL-audited; stops what the restart resumed, as the
+    # dashboard's Stop control does.
+    if action_id.startswith(STOP_ACTION_PREFIX):
+        if not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+        ):
+            logger.info("slack code channel stop dropped: denied by channels governance policy")
+            return
+        if await handle_stop_click(_orch, payload):
+            return
 
     # ── OPTIONS choice buttons / "Choose several..." menu ──
     # A choice button RESOLVES an [OPTIONS:] choice: it edits the card to show
@@ -758,6 +807,7 @@ async def _handle_resume_choice(
                             json={"replace_original": True, "text": label},
                         )
                 except Exception:
+                    # Updating the button message is cosmetic.
                     pass
             return
 
@@ -969,6 +1019,7 @@ async def _handle_resume_choice(
                         json={"replace_original": True, "text": label},
                     )
             except Exception:
+                # Updating the button message is cosmetic.
                 pass
 
 
@@ -1059,6 +1110,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.interactions_modals import _handle_config_submission  # noqa: F401
     from kiro_crew.slack.interactions_modals import _handle_voice_config_submission  # noqa: F401
     from kiro_crew.slack.interactions_settings import _refresh_channels_modal  # noqa: F401
+    from kiro_crew.slack.interactions_settings import _save_then_apply  # noqa: F401
     from kiro_crew.slack.interactions_options import _ACTION_PAYLOAD_CAP  # noqa: F401
     from kiro_crew.slack.interactions_options import _ACTION_PREFIX  # noqa: F401
     from kiro_crew.slack.interactions_options import _ALREADY_ANSWERED  # noqa: F401

@@ -18,14 +18,18 @@ export class VoicePcmPlayer {
   private nextStart = 0
   private pending = 0
 
-  constructor(private onPlaying: (playing: boolean) => void, private onError: (code: string) => void) {}
+  constructor(
+    private onPlaying: (playing: boolean) => void,
+    private onError: (code: string) => void,
+    private isPaused: () => boolean,
+  ) {}
 
   /** Call synchronously inside the user's click/key handler; Safari does not
    * transfer that permission across a synthesis request or a WebSocket frame. */
   unlock(): void {
     try {
       const context = this.context ??= new AudioContext()
-      if (context.state === 'suspended') void context.resume().catch(() => {})
+      if (context.state === 'suspended' && !this.isPaused()) void context.resume().catch(() => {})
     } catch { /* enqueue reports a failure only when speech was requested */ }
   }
 
@@ -36,7 +40,11 @@ export class VoicePcmPlayer {
     this.chain = this.chain.then(async () => {
       if (generation !== this.generation) return
       const context = this.context ??= new AudioContext()
-      if (context.state === 'suspended') {
+      if (this.isPaused()) {
+        // Audio that arrives while paused is scheduled on a frozen clock and
+        // plays from the start when the listener resumes.
+        if (context.state === 'running') await context.suspend()
+      } else if (context.state === 'suspended') {
         // Some browsers leave resume pending until a gesture. Bound that wait
         // so an autoplay restriction becomes an actionable error, not a stuck queue.
         await new Promise<void>((resolve, reject) => {
@@ -70,6 +78,15 @@ export class VoicePcmPlayer {
       this.pending--
       this.settle()
     })
+  }
+
+  /** Freeze the audio clock; scheduled chunks keep their place. */
+  pause(): void {
+    void this.context?.suspend().catch(() => {})
+  }
+
+  resume(): void {
+    void this.context?.resume().catch(() => {})
   }
 
   private settle(): void {

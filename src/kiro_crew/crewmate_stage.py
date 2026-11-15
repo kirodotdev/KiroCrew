@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.paths import data_home
 from kiro_crew.owner_only_files import mkdirs_owner_only
 
@@ -94,7 +95,7 @@ def _read_regular(path: Path, cap: int) -> bytes:
     with os.fdopen(fd, "rb") as fh:
         if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
             raise StageError("staged_copy_unreadable", "the checked file is not a plain file")
-        data = fh.read(cap + 1)
+        data = bounded_read(fh, cap + 1)
     if len(data) > cap:
         raise StageError("staged_copy_unreadable", "the checked file is too large")
     return data

@@ -120,7 +120,7 @@ def test_an_opt_out_shows_one_session_notice_row(monkeypatch):
     monkeypatch.setattr(chat_runner, "append_and_surface", lambda *a, **k: rows.append(a))
     chat_runner._notice_steer_upgrade(
         object(),
-        object(),
+        SimpleNamespace(_telemetry_notice_shown=""),
         SimpleNamespace(telemetry_unconfirmed_notice=read(SimpleNamespace(_client=session))),
     )
     assert [r[2] for r in rows] == ["notice"] and "cannot check" in rows[0][3]
@@ -129,6 +129,81 @@ def test_an_opt_out_shows_one_session_notice_row(monkeypatch):
         object(), object(), SimpleNamespace(telemetry_unconfirmed_notice="")
     )
     assert rows == []
+
+
+def _telemetry_rows(monkeypatch) -> list[str]:
+    from kiro_crew.dashboard import chat_runner
+
+    rows: list[str] = []
+    monkeypatch.setattr(chat_runner, "append_and_surface", lambda *a, **k: rows.append(a[3]))
+    return rows
+
+
+def _session_start(slot, notice: str, state: object = None) -> None:
+    """One session start of *slot*'s chat on a KAS session that carries *notice*."""
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard import chat_runner
+
+    chat_runner._notice_steer_upgrade(
+        state, slot, SimpleNamespace(telemetry_unconfirmed_notice=notice)
+    )
+
+
+def test_a_chat_shows_the_telemetry_notice_once(monkeypatch):
+    """Each KAS session a chat creates or reloads carries the notice; the chat shows it once.
+
+    It shows the other notice when the answer changes, and each chat is told on its own.
+    """
+    from types import SimpleNamespace
+
+    rows = _telemetry_rows(monkeypatch)
+    chat = SimpleNamespace(_telemetry_notice_shown="")
+    for _ in range(3):  # the first session, then two sessions that replace it
+        _session_start(chat, kcs.TELEMETRY_UNCONFIRMED_NOTICE)
+    assert rows == [kcs.TELEMETRY_UNCONFIRMED_NOTICE]
+    for _ in range(2):  # the chat moves to an engine that did not take the opt-out
+        _session_start(chat, kcs.TELEMETRY_NOT_APPLIED_NOTICE)
+    assert rows == [kcs.TELEMETRY_UNCONFIRMED_NOTICE, kcs.TELEMETRY_NOT_APPLIED_NOTICE]
+    _session_start(chat, kcs.TELEMETRY_UNCONFIRMED_NOTICE)
+    assert rows[2:] == [kcs.TELEMETRY_UNCONFIRMED_NOTICE]
+    _session_start(SimpleNamespace(_telemetry_notice_shown=""), kcs.TELEMETRY_UNCONFIRMED_NOTICE)
+    assert rows[3:] == [kcs.TELEMETRY_UNCONFIRMED_NOTICE]
+
+
+def test_a_restart_does_not_repeat_the_telemetry_notice(tmp_path, monkeypatch):
+    """A chat saved after the notice and restored from disk stays told."""
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard.chat_persistence import (
+        _rehydrate_slot_from_history,
+        _save_slot_to_history,
+    )
+
+    def notices(slot) -> list[str]:
+        return [row["content"] for row in slot.messages if row["role"] == "notice"]
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    chat = state.get_or_create_slot("s1")
+    chat.append("user", "hello")
+    _session_start(chat, kcs.TELEMETRY_UNCONFIRMED_NOTICE, state)
+    chat.drain()
+    _save_slot_to_history(state, chat, closed=False)
+    del state._slots["s1"]
+
+    restored = _rehydrate_slot_from_history(state, "s1")
+    assert restored is not None and restored is not chat
+    _session_start(restored, kcs.TELEMETRY_UNCONFIRMED_NOTICE, state)
+    assert notices(restored) == [kcs.TELEMETRY_UNCONFIRMED_NOTICE]
+
+    # A line that carries anything but a mark tells the chat again.
+    del state._slots["s1"]
+    state.conversation_log.update_metadata("dashboard:s1", {"telemetry_notice_shown": "no mark"})
+    forged = _rehydrate_slot_from_history(state, "s1")
+    assert forged is not None
+    _session_start(forged, kcs.TELEMETRY_UNCONFIRMED_NOTICE, state)
+    assert notices(forged) == [kcs.TELEMETRY_UNCONFIRMED_NOTICE] * 2
 
 
 @pytest.mark.asyncio

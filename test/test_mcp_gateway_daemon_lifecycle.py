@@ -48,9 +48,8 @@ _POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="/proc and unix
 @pytest.fixture
 def real_git_fingerprint() -> Iterator[None]:
     """Opt out of :func:`_no_git_fingerprint` for a test whose subject IS the git
-    branch: a scratch repository it built itself, or a child daemon whose real
-    fingerprint the test process must match. The cache is still cleared on both
-    sides so the real value is computed fresh and does not leak to a sibling."""
+    branch: a scratch repository it built itself. The cache is still cleared on
+    both sides so the real value is computed fresh and does not leak to a sibling."""
     cf.code_fingerprint.cache_clear()
     yield
     cf.code_fingerprint.cache_clear()
@@ -69,10 +68,11 @@ def _no_git_fingerprint(
     ``cache_clear``). The tests in this module only need SOME stable fingerprint
     (they compare it with itself, or check which thread computed it), so the
     trusted-git resolver is pinned to "absent", which is the product's own
-    no-spawn arm: the mtime rule answers instead. The cache is cleared on both
-    sides so a pinned value neither reuses a real one nor leaks to a test that
-    must match a child daemon's real fingerprint -- those request
-    :func:`real_git_fingerprint`, which this fixture honours.
+    no-spawn arm: the mtime rule answers instead. A test that spawns a real
+    daemon pins the same resolver inside the child, so both sides compute by
+    the same rule. The cache is cleared on both sides so a pinned value neither
+    reuses a real one nor leaks to a test that builds its own git repository --
+    those request :func:`real_git_fingerprint`, which this fixture honours.
     """
     if "real_git_fingerprint" in request.fixturenames:
         yield
@@ -369,7 +369,6 @@ async def test_a_real_daemon_exits_when_its_owner_dies(
     short_sock_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    real_git_fingerprint: None,
 ) -> None:
     """End to end: a throwaway owner process dies, the daemon follows it out.
 
@@ -396,8 +395,15 @@ async def test_a_real_daemon_exits_when_its_owner_dies(
         sys.executable,
         "-c",
         # Same entry the manager uses, with the probe interval shortened so
-        # the test does not wait the production 15 s.
+        # the test does not wait the production 15 s. The git resolver is
+        # pinned to "absent" exactly as _no_git_fingerprint pins it in this
+        # process: the git rule runs several git subprocesses under 5-10 s
+        # timeouts and silently answers with the mtime rule when any of them
+        # times out, so on a loaded runner the child alone could take the
+        # other rule and the two values could never compare equal.
         "import sys, asyncio\n"
+        "from kiro_crew import code_fingerprint as cf\n"
+        "cf.trusted_git_bin = lambda: None\n"
         "from kiro_crew.mcp_gateway import gatewayd as g\n"
         "g._OWNER_LIVENESS_INTERVAL_SECS = 0.2\n"
         "sys.exit(asyncio.run(g._amain(sys.argv[1:])))",

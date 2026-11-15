@@ -24,6 +24,7 @@ from kiro_crew import permission_floor
 from kiro_crew.acp import kas_agents
 from kiro_crew.acp._dispatch import attach_kas_custom_agents
 from kiro_crew.acp.kas_permissions import (
+    _MAX_ALLOWED_COMMANDS,
     CREW_ANSWERED_COMMANDS_KEY,
     CREW_SHELL_ALLOWLIST_KEY,
     allowed_tools_grant_shell,
@@ -249,9 +250,10 @@ def test_an_allowlist_the_gate_enforces_is_never_said_to_have_no_effect() -> Non
 
 
 def test_an_over_bound_deny_by_default_list_is_never_said_to_have_no_effect() -> None:
-    """A list cut by the bound is named with no ``ask``; the gate still
-    refuses what it leaves out, so it gets the gate sentence."""
-    settings = {"shell": {"denyByDefault": True, "allowedCommands": [f"c{i}" for i in range(65)]}}
+    """A list cut by the bound has its cut entries named; the gate still refuses
+    what they alone match, so the notice never says the list has no effect."""
+    entries = [f"c{i}" for i in range(_MAX_ALLOWED_COMMANDS + 1)]
+    settings = {"shell": {"denyByDefault": True, "allowedCommands": entries}}
     notice = _spec_keys_notice(
         "probe",
         kas_agents.spec_keys_without_carrier(
@@ -259,7 +261,7 @@ def test_an_over_bound_deny_by_default_list_is_never_said_to_have_no_effect() ->
         ),
     )
     assert "toolsSettings.shell.allowedCommands" in notice
-    assert "no effect" not in notice and "refuses what they do not cover" in notice
+    assert "no effect" not in notice and "refused when denyByDefault is set" in notice
 
 
 def test_a_lifted_deny_by_default_keeps_the_no_effect_wording() -> None:

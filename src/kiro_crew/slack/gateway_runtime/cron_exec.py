@@ -679,6 +679,7 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
             # Result-less like the deny paths: a Skip that carried the
             # previous run's output read as though it had produced it.
             job.clear_carried_result()
+            job.idle_run = True
             try:
                 sel().log_tool_invocation(
                     session_key=f"cron:{job.id}",
@@ -690,7 +691,10 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
                 logger.debug("SEL logging failed in cron script skip path", exc_info=True)
             return None
         elif status == "done":
-            msg = result.get("message", "")
+            msg = result.get("message")
+            # Any JSON type may arrive: redact() takes text, and an empty value sends nothing.
+            if msg and not isinstance(msg, str):
+                msg = str(msg)
             script_msg = redact(msg) if msg else ""
             job.set_run_result(script_msg)
             job.last_error = ""
@@ -714,7 +718,10 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
                 logger.debug("SEL logging failed in cron script done path", exc_info=True)
             return script_msg or "done"
         elif status == "report":
-            msg = result.get("message", "")
+            msg = result.get("message")
+            # Any JSON type may arrive: redact() takes text, and an empty value sends nothing.
+            if msg and not isinstance(msg, str):
+                msg = str(msg)
             script_msg = redact(msg) if msg else ""
             job.set_run_result(script_msg)
             job.last_error = ""

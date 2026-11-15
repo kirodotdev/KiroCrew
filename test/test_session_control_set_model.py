@@ -251,7 +251,18 @@ def test_a_caller_fenced_after_queuing_is_rechecked(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "model", ["auto", "Auto", " auto ", "Auto (Jev)", "auto (jev)", "AUTO:JEV", "auto:jev"]
+    "model",
+    [
+        "auto",
+        "Auto",
+        " auto ",
+        "Auto (decision model)",
+        "AUTO (DECISION MODEL)",
+        "Auto (Jev)",
+        "auto (jev)",
+        "AUTO:JEV",
+        "auto:jev",
+    ],
 )
 def test_auto_is_owner_only(tmp_path, model):
     """With the Jev preview on, a slot on ``auto`` routes each turn through Jev;

@@ -13,7 +13,6 @@ import urllib.parse
 from typing import TYPE_CHECKING, BinaryIO, Literal
 
 from aiohttp import web
-from aiohttp.client_exceptions import ClientConnectionResetError
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
@@ -182,7 +181,7 @@ async def api_file_watch(request: web.Request) -> web.StreamResponse:
                     await resp.write(f"data: {payload}\n\n".encode("utf-8"))
 
             await asyncio.sleep(poll_interval)
-    except (ConnectionResetError, asyncio.CancelledError, ClientConnectionResetError):
+    except (ConnectionResetError, asyncio.CancelledError):
         pass
 
     return resp
@@ -441,7 +440,7 @@ async def _stream_unscanned_download(
         remaining -= len(chunk)
         try:
             await resp.write(chunk)
-        except (ConnectionResetError, ConnectionError, ClientConnectionResetError):
+        except (ConnectionResetError, ConnectionError):
             return resp  # client hung up
     with contextlib.suppress(Exception):
         await resp.write_eof()

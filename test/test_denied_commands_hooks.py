@@ -279,20 +279,20 @@ class TestHooksConfigDeniedCommands:
 class TestEffectiveDenied:
     def test_builtin_denied_by_default(self):
         mgr = HookManager(HooksConfig())
-        result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
+        result = mgr.on_tool_call("rm -rf /srv/foo", command="rm -rf /srv/foo", is_shell=True)
         assert result.action == TOOL_DENY
 
     def test_disabled_builtin_falls_through(self):
         cfg = HooksConfig(denied_commands_disabled_ids=["local-destructive-rm-rf-root"])
         mgr = HookManager(cfg)
-        result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
+        result = mgr.on_tool_call("rm -rf /srv/foo", command="rm -rf /srv/foo", is_shell=True)
         # Not denied — the built-in rule was individually opted out.
         assert result.action != TOOL_DENY
 
     def test_disable_all_falls_through(self):
         cfg = HooksConfig(denied_commands_disable_all=True)
         mgr = HookManager(cfg)
-        result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
+        result = mgr.on_tool_call("rm -rf /srv/foo", command="rm -rf /srv/foo", is_shell=True)
         assert result.action != TOOL_DENY
 
     def test_user_added_pattern_denies(self):
@@ -525,7 +525,7 @@ class TestGovernancePins:
         mgr = HookManager(cfg)
         # Governance pinned the rule — user opt-out (and disable-all) cannot
         # weaken it (tightest-wins).
-        result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
+        result = mgr.on_tool_call("rm -rf /srv/foo", command="rm -rf /srv/foo", is_shell=True)
         assert result.action == TOOL_DENY
 
     def test_governance_pinned_ids_helper_failsoft(self):
@@ -1142,10 +1142,10 @@ class TestSearchTargetSynthesizedTier:
     )
     def test_an_operator_authored_regex_denies(self, pattern):
         # Every participating pattern denies on a match, with no second judgement applied.
-        # The last case is the one an earlier revision got wrong: it classified the merged
-        # effective set by pattern TEXT, so an operator rule whose text coincided with a
-        # shipped one was read as shipped and dropped -- a silent fail-open on an explicit
-        # deny. Pattern text is not provenance.
+        # The last case is the trap: classifying the merged effective set by pattern TEXT
+        # reads an operator rule whose text coincides with a shipped one as shipped and
+        # drops it -- a silent fail-open on an explicit deny. Pattern text is not
+        # provenance.
         from kiro_crew.security import is_denied_synthesized_target
 
         assert (

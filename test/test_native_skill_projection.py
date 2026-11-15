@@ -64,6 +64,18 @@ def test_native_view_bounds_metadata_and_preserves_original_scope(native_tree):
     assert projection.prepare_native_skill_projection(project).agent("custom") == alias
 
 
+def test_a_file_uri_spelled_absolute_prompt_is_kept_as_written(native_tree, tmp_path):
+    """``file:///C:/...``, what ``Path.as_uri()`` writes on Windows, is not re-anchored."""
+    _home, agents, project = native_tree
+    prompt = "file:///" + (tmp_path / "own.md").as_posix().lstrip("/")
+    (agents / "custom.json").write_text(
+        json.dumps({"name": "custom", "prompt": prompt}), encoding="utf-8"
+    )
+    prepared = projection.prepare_native_skill_projection(project)
+    view = json.loads((agents / f"{prepared.agent('custom')}.json").read_text(encoding="utf-8"))
+    assert view["prompt"] == prompt
+
+
 def test_native_view_preserves_explicit_noninheritance_and_other_settings(native_tree):
     _home, agents, project = native_tree
     (agents / "custom.json").write_text(
@@ -176,7 +188,7 @@ def test_registry_mode_on_an_ungovernable_sign_in_projects_as_without_registry_m
     assert settings["chat.disableInheritingDefaultResources"] is True
 
 
-def test_launch_record_resources_match_the_alias_file_kiro_cli_loads(native_tree):
+def test_launch_record_resources_match_the_alias_file_kiro_cli_loads(native_tree, monkeypatch):
     """The runtime records the launch steering from the in-memory view while
     kiro-cli loads the alias file, so a file holding fewer resources than the
     view would make the folder skip a guide kiro-cli never loaded.
@@ -184,6 +196,9 @@ def test_launch_record_resources_match_the_alias_file_kiro_cli_loads(native_tree
     from kiro_crew import member_essential_context
 
     _home, agents, project = native_tree
+    # ``~/.kiro/crew`` is managed state the guide reader refuses; a ``tmp_path`` under
+    # it (an agent session's scratch) would be refused, so the account home is a sibling.
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: project.parent / "account"))
     guides = {
         ".kiro/steering/conventions.md": "# Conventions\n",
         ".kiro/steering/nested/review.md": "# Review\n",

@@ -50,3 +50,25 @@ test("a listener that throws does not stop the reservation", () => {
   r.reserve("a", ["Cmd+Alt+P"]);
   assert.strictEqual(r.isReserved("CommandOrControl+Alt+P"), true);
 });
+
+test("an app's own reservation is handed over to that app only; any other owner never", () => {
+  const r = createShortcutReservations({ platform: "darwin" });
+  r.reserve("pets", ["CommandOrControl+Shift+M"], { app: true });
+  r.reserve("shell:summon", ["CommandOrControl+Shift+H"]);
+  r.reserve("named-like-an-app", ["CommandOrControl+Shift+J"]);
+  assert.strictEqual(r.isReserved("Cmd+Shift+M", "pets"), false);
+  assert.strictEqual(r.isReserved("Cmd+Shift+M", "other"), true);
+  assert.strictEqual(r.isReserved("Cmd+Shift+M"), true);
+  assert.strictEqual(r.isReserved("CommandOrControl+Shift+H", "shell:summon"), true);
+  assert.strictEqual(r.isReserved("CommandOrControl+Shift+J", "named-like-an-app"), true);
+  // Re-reserving without the mark withdraws the hand-over.
+  r.reserve("pets", ["CommandOrControl+Shift+M"]);
+  assert.strictEqual(r.isReserved("Cmd+Shift+M", "pets"), true);
+});
+
+test("a chord two owners reserve is handed over only if every holder is that app", () => {
+  const r = createShortcutReservations({ platform: "darwin" });
+  r.reserve("pets", ["CommandOrControl+Shift+M"], { app: true });
+  r.reserve("shell:summon", ["CommandOrControl+Shift+M"]);
+  assert.strictEqual(r.isReserved("CommandOrControl+Shift+M", "pets"), true);
+});

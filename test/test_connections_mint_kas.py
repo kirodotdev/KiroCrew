@@ -87,6 +87,8 @@ class _Engine:
 
     instances: list["_Engine"] = []
     starts_connected = False
+    #: The engine kept tokens a refresh could not use: the server reports failed.
+    starts_failed = False
     #: The consent URL the engine opens as ``_kiro/openExternalUrl``.
     oauth_url = _AUTHORIZE
 
@@ -107,7 +109,10 @@ class _Engine:
     async def create_session(self, **kwargs: Any) -> _Handle:
         self.session_kwargs = kwargs
         self.handle = _Handle(self)
-        self.handle.place("ready" if _Engine.starts_connected else "awaiting_auth")
+        if _Engine.starts_failed:
+            self.handle.place("failed")
+        else:
+            self.handle.place("ready" if _Engine.starts_connected else "awaiting_auth")
         return self.handle
 
     def is_alive(self) -> bool:
@@ -133,7 +138,13 @@ class _Engine:
         self.signing_in = False
 
     def give_up(self) -> None:
-        """The engine's connect attempt timed out with no consent."""
+        """The engine's connect attempt timed out with no consent: it reports ``failed``."""
+        assert self.handle is not None
+        self.handle.place("failed")
+        self.signing_in = False
+
+    def answer_reset(self) -> None:
+        """The engine answers the reset at its 60 s ceiling while the connect still runs."""
         self.signing_in = False
 
     async def kill(self, **_kw: Any) -> None:
@@ -206,6 +217,7 @@ def _kas_chats(_floor_monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     mp.setattr(mcp_grant_kas, "persistence_enabled", lambda: True)
     _Engine.instances.clear()
     _Engine.starts_connected = False
+    _Engine.starts_failed = False
     _KiroCli.instances.clear()
     mp.setattr(session, "_load_bg_runtime_types", lambda: (_Engine, RuntimeError))
     mp.setattr(mint, "_acp_client_factory", lambda: _KiroCli)
@@ -307,6 +319,30 @@ async def test_a_sign_in_the_engine_ends_without_consent_expires_the_row():
 
 
 @pytest.mark.asyncio
+async def test_a_reset_answered_before_consent_keeps_the_sign_in_open():
+    # The engine answers the reset 60 s in while its callback listener runs on to
+    # the server's timeout; the consent URL keeps the server ``awaiting_auth``.
+    await _sign_in()
+    await _until_state("waiting")
+    [engine] = _Engine.instances
+    engine.answer_reset()
+    polled = engine.sign_in_checks
+    await async_wait_until(
+        lambda: engine.sign_in_checks >= polled + 5 or _row().get("state") != "waiting",
+        describe=_row,
+    )
+
+    assert _row()["state"] == "waiting", _row()
+    assert engine.kills == 0 and engine.handle is not None and not engine.handle.destroyed
+
+    await _consent()
+    granted = await _until_state("granted", "expired", "failed")
+
+    assert granted["state"] == "granted"
+    assert _saved_tokens() == _TOKENS
+
+
+@pytest.mark.asyncio
 async def test_a_consent_url_carrying_a_credential_is_never_published(monkeypatch, caplog):
     # The gate a kiro-cli URL passes: one fresh engine, then the rejection is final.
     monkeypatch.setattr(_Engine, "oauth_url", _TAINTED)
@@ -356,6 +392,34 @@ async def test_stale_vault_tokens_do_not_grant_a_sign_in_before_consent():
     assert granted["state"] == "granted"
     assert _saved_tokens() == _TOKENS
     assert engine.kills == 1
+
+
+@pytest.mark.asyncio
+async def test_connect_replaces_saved_tokens_the_engine_failed_to_refresh():
+    # The vendor refused the refresh with an error the engine keeps the tokens on,
+    # so the server reports failed. Connect must sign in again, not fail the row.
+    _Engine.starts_failed = True
+    await kss.McpGrantStore(data_home()).store(mcp_grant_kas.kas_tokens_entry_name(_URL), "{}")
+
+    await _sign_in()
+    row = await _until_state("waiting", "failed", "granted")
+
+    assert row["state"] == "waiting" and row["oauth_url"] == _AUTHORIZE, row
+    await _consent()
+    granted = await _until_state("granted", "expired", "failed")
+    assert granted["state"] == "granted"
+    assert _saved_tokens() == _TOKENS
+
+
+@pytest.mark.asyncio
+async def test_a_failed_server_with_no_saved_tokens_fails_the_row():
+    _Engine.starts_failed = True
+
+    await _sign_in()
+    row = await _until_state("failed", "waiting", "granted")
+
+    assert row["state"] == "failed" and row.get("reason") == "mint_server_failed", row
+    assert not _Engine.instances[0].signing_in
 
 
 @pytest.mark.asyncio

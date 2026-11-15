@@ -30,6 +30,7 @@ from kiro_crew.autonudge_service.gate import (
     _WAKE_FOLLOWUP_TICKS,
     _delivery_basis,
     _DeliveryBasis,
+    _failure_streak,
     _note_ledger_wake,
     _record_delivered_reading,
     _record_delivered_revision,
@@ -499,6 +500,8 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
                 exc_info=True,
             )
             return
+    # Before the await: the turn carrying a wake can fail before delivery returns.
+    sent_streak = _failure_streak(loop)
     callback_raised = False
     try:
         delivered = await self._on_fire(loop)
@@ -530,7 +533,9 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
         tick_outcome = None
     if tick_outcome is not None:
         monitor_loop_metrics.record_tick(loop, tick_outcome)
-    await self._settle_fire_cycle(loop, delivered, delivery_basis, claim_from, claim_ts, claimed_ts)
+    await self._settle_fire_cycle(
+        loop, delivered, delivery_basis, claim_from, claim_ts, claimed_ts, sent_streak
+    )
     if not delivered:
         return
     monitor = loop.monitor
@@ -550,6 +555,7 @@ async def _settle_fire_cycle(
     claim_from: int,
     claim_ts: float,
     claimed_ts: float,
+    sent_streak: int,
 ) -> None:
     """Charge and persist one fire whose delivery has returned; re-arm a refused one.
 
@@ -560,6 +566,8 @@ async def _settle_fire_cycle(
     ``delivery_basis`` is the pull-request reading the fire body took before the
     dispatch (:func:`gate._delivery_basis`), recorded here on a delivered turn so a
     repeat of the same short reading can be held instead of delivered again.
+    ``sent_streak`` is the failure streak read before the dispatch, the baseline
+    of a delivered work-ledger wake's retry (:func:`gate._note_ledger_wake`).
     """
     claimed_wake = loop.id in self._pending_monitor_wake
     # Taken, not merely tested: the claim carries the wake's own text, and the
@@ -677,7 +685,7 @@ async def _settle_fire_cycle(
         if loop.monitor.kind != probes.WORK_LEDGER:
             loop.monitor.followup_ticks = _WAKE_FOLLOWUP_TICKS
         else:
-            _note_ledger_wake(self, loop)
+            _note_ledger_wake(self, loop, sent_streak)
     if delivered and claimed_floor and loop.monitor is not None:
         # The floor's turn happened. No follow-up allowance goes with it: the floor
         # exists to break a silence, not to protect work the agent had already

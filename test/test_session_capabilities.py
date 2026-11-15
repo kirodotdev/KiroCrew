@@ -460,15 +460,18 @@ async def test_dashboard_enrolled_member_controls_through_real_manager(
             ]
             assert refusals and all(r.levelname == "WARNING" for r in refusals)
             assert not [r for r in caplog.records if "Dashboard chat error" in r.getMessage()]
-            # The row names the setting that decides, and the saved spec.
+            # A chat that is not a Bot's DM runs on Settings -> Agent Harness, so
+            # the row names that, and the saved spec, never the member setting.
             row = next(m for m in slot.messages if m.get("role") == "error")
-            assert "agent.member_acp_backend" in row["content"]
+            assert "in Settings → Agent Harness pick a harness that can (" in row["content"]
+            assert "agent.member_acp_backend" not in row["content"]
             assert "saved capabilities" in row["content"]
-            # The remedy names every backend that can load the spec, not a fixed
-            # pair; kiro-cli is left out, since a member set to kiro runs on KAS.
-            for backend in ACP_BACKENDS_MEMBER_CAPABILITIES - {ACP_BACKEND_KIRO}:
-                assert backend in row["content"]
-            assert " kiro" not in row["content"]
+            # The remedy names every selectable backend that can load the spec.
+            from kiro_crew.acp_backends import backend_to_stored, selectable_backends
+            from kiro_crew.crewmate_harness import harness_label
+
+            for backend in ACP_BACKENDS_MEMBER_CAPABILITIES & selectable_backends():
+                assert harness_label(backend_to_stored(backend)) in row["content"]
     finally:
         await _close_capability_dashboards(world)
 

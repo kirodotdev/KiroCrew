@@ -121,6 +121,9 @@ async def _restore_dashboard_sessions(state: DashboardState, cfg: KiroCrewConfig
             state._channel_slot_reconciler = _chan_reconciler  # prevent GC
             reconciler_started = True
     finally:
+        # Every pass that can rebuild an owed tab has run (or the restore raised).
+        state.restoring_open_slot_keys = frozenset()
+        state.owed_slot_keys_known.set()
         if not reconciler_started:
             state.replace_channel_slot_holds((), hold_channels=False)
             state.finish_slot_list_rebuild()

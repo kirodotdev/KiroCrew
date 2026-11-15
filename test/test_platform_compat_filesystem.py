@@ -702,7 +702,7 @@ class TestOpenLockFile:
         # CONTRACT (the work-ledger fix's test shape, applied fleet-wide): grep the source
         # tree for a truncating open whose descriptor is handed to a
         # file_lock-family acquire within the next two lines. Every site was
-        # converted to open_lock_file in this change; a new offender fails
+        # converted to open_lock_file; a new offender fails
         # here with its file and line.
         import kiro_crew
 

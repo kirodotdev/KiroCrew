@@ -586,7 +586,7 @@ export default function DeployMyCrewDialog({
                   view.liveness === 'gone'
                     ? 'pages.membersPage.deploy_state_gone'
                     : 'pages.membersPage.deploy_state_unknown',
-                  { age: deployAge(view.job.created_at), region: view.job.region || UNKNOWN },
+                  { age: deployAge(view.job.created_at, undefined, 'short'), region: view.job.region || UNKNOWN },
                 )}
               </p>
               {/* Where the answer this panel cannot give does live. The whole

@@ -79,12 +79,13 @@ from kiro_crew.agent_switch_command import (
 )
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
-from kiro_crew.history import mint_row_mid, transcript_stem
+from kiro_crew.history import _redact_at_write_boundary, mint_row_mid, transcript_stem
 from kiro_crew.messaging.approval import PendingApprovals, SessionApprovalDecider
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
     COMPACT_ACCOUNT_CHANGED_TEXT,
+    arm_cancelled_turn,
     compact_unsupported_backend,
     compact_unsupported_reply,
     context_recycle_warning,
@@ -177,12 +178,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# How many queued messages collapse into one drained turn. A burst answered as
-# one turn keeps the conversation coherent; past this the surplus is deferred in
-# order rather than dropped, so the combined prompt stays bounded. Same value as
-# the Telegram and Discord drains for the same reason — a single human will not
-# realistically burst past it mid-turn — rather than a third number for one
-# concept.
+# How many queued messages collapse into one drained turn, so a burst gets one
+# coherent answer. The surplus waits in order (never dropped), keeping the
+# combined prompt bounded. Same value as the Telegram and Discord drains: one
+# person will not burst past it mid-turn.
 _MAX_COLLAPSE = 50
 
 # Bound on an in-place compaction so a backend that streams text without ever
@@ -404,6 +403,26 @@ class WebexDispatcher:
         # as if it were a mid-turn instruction.
         route = _route_of(inbound)
         session_key = self._session_key(route)
+        # A reply answering a bridged approval note is decided here and starts no
+        # turn; a re-entered drain was checked already, a stop is never an answer,
+        # and a message carrying a file is content for a turn, not an answer. It
+        # runs before the native intercept, which matches by sender and text
+        # alone: an "approve" in the bridged note's thread answers that note, never
+        # a native prompt open in the same DM.
+        from kiro_crew.webex.bridge_reply import consume_bridged_reply
+
+        if (
+            permitted
+            and interpret_commands
+            and cmd != "stop"
+            and not inbound.file_urls
+            and await consume_bridged_reply(
+                getattr(self, "dashboard_state", None),
+                inbound,
+                lambda note: self._reply(inbound, note),
+            )
+        ):
+            return
         if _APPROVALS.has_pending(self._approval_key(route)):
             answered = await self._maybe_answer_approval(inbound, session_key, permitted=permitted)
             if answered:
@@ -1094,8 +1113,9 @@ class WebexDispatcher:
             # a session with no live provider, not for a provider missing it.
             if provider is not None:
                 try:
-                    await provider.cancel(wait_ack_timeout=0)
+                    outcome = await provider.cancel(wait_ack_timeout=0)
                     cancelled_turn = True
+                    arm_cancelled_turn(self.sessions, session_key, outcome)
                 except Exception:
                     logger.warning("Webex /stop: cancel failed for %s", session_key, exc_info=True)
         async with self._queue.lock:
@@ -1275,7 +1295,10 @@ class WebexDispatcher:
                 session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
             )
         if is_new:
-            title = (user_text or "").strip().replace("\n", " ")[:40] or "Webex"
+            title = (
+                _redact_at_write_boundary("user", user_text or "").strip().replace("\n", " ")[:40]
+            )
+            title = title or "Webex"
             self.conv_log.set_title(session_key, title)
 
     async def _maybe_notice(self, inbound: "WebexInbound", session_key: str, provider: Any) -> None:

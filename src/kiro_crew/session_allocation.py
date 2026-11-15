@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew import keepalive_route as _keepalive_route
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.aws_project_profiles import configured_project_profiles, resolve_project_profile
 from kiro_crew.messaging.queue_drain import entry_channel, wake_other_drains
@@ -239,6 +240,12 @@ class SessionRegistryState:
     speculative_starts: dict[str, tuple[asyncio.Event, StartPriority, bool, object]] = field(
         default_factory=dict
     )
+    #: Per key, the reservation token and the agent of a cold start that has fixed
+    #: its agent and not yet registered its session. Written only by that start
+    #: (``_get_or_create_impl``), under the key the caller gave it, and removed when
+    #: the session is registered and at every exit of the start, so no row outlives
+    #: the start that wrote it. Read by ``starting_agent``.
+    starting_agents: dict[str, tuple[object, str]] = field(default_factory=dict)
     #: Tokens of BACKGROUND resume prefetches a person's claim found short of
     #: their spawn door and started itself: each stands down at that door
     #: (``SpeculativeResumeRefused``). Removed with the announcement.
@@ -254,6 +261,20 @@ class SessionRegistryState:
     #: left a process alive behind a record that said ``reaped``. Cleared by
     #: ``end_ending``, once the caller has written its record.
     refused_spawns: dict[str, int] = field(default_factory=dict)
+
+
+class _CallbackToken:
+    """One counted callback claim, remembering the task that reserved it.
+
+    The owner is what lets a confirmed restart tell a claim held by a running
+    turn (``close_all`` cuts it, which releases the claim) from one that is
+    still admitting a message (the part a restart must wait for).
+    """
+
+    __slots__ = ("owner",)
+
+    def __init__(self, owner: asyncio.Task[Any] | None) -> None:
+        self.owner = owner
 
 
 class InboundCallbackReservation:
@@ -515,10 +536,16 @@ class SessionAllocationService:
         return self._deps.canonical_key(key)
 
     def advance_ownership_generation(self, key: str) -> int:
-        """Advance and return *key*'s monotonic ownership generation."""
+        """Advance and return *key*'s monotonic ownership generation.
+
+        Every publication and removal of *key* passes here, so this is also where
+        the registry ``/api/session-keepalive`` reads marks a provider it just
+        published (``kiro_crew.keepalive_route``).
+        """
         bucket = self._generation_key(key)
         generation = self._ownership_generations.get(bucket, 0) + 1
         self._ownership_generations[bucket] = generation
+        _keepalive_route.mark_published(self._owner, self._sessions.get(key))
         return generation
 
     def session_generation(self, key: str) -> int:
@@ -803,6 +830,7 @@ class SessionAllocationService:
     _is_member_key = staticmethod(_sa_get_or_create._is_member_key)
     _crew_pins_effort = _sa_get_or_create._crew_pins_effort
     _dispatch_hard_kill = _sa_get_or_create._dispatch_hard_kill
+    _record_scratch_tree = _sa_get_or_create._record_scratch_tree
     _remove_reservation_now = _sa_get_or_create._remove_reservation_now
     _remove_reservation_cancellation_drained = (
         _sa_get_or_create._remove_reservation_cancellation_drained
@@ -1063,7 +1091,11 @@ class SessionAllocationService:
         """Claim one pre-turn callback atomically against update/shutdown admission."""
         if self._closing:
             return None
-        token = object()
+        try:
+            owner = asyncio.current_task()
+        except RuntimeError:
+            owner = None
+        token = _CallbackToken(owner)
         self._inbound_callback_reservations.add(token)
         return InboundCallbackReservation(self._inbound_callback_reservations, token)
 
@@ -1462,6 +1494,26 @@ class SessionAllocationService:
         session = self._sessions.get(self._owner._fold_key(key))
         return session.agent if session else ""
 
+    def starting_agent(self, key: str) -> str:
+        """The agent a cold start in flight will register *key*'s session as, or ``""``.
+
+        The value ``get_agent`` answers once that start has registered, readable in
+        the window before it: the session's own MCP servers start, and ask for their
+        tool list, while the start is still waiting for them. Only a row whose start
+        still holds its reservation answers.
+        """
+        folded = self._owner._fold_key(key)
+        entry = self.state.starting_agents.get(folded)
+        if entry is None or entry[0] not in self._allocation_reservations.get(folded, ()):
+            return ""
+        return entry[1]
+
+    def forget_starting_agent(self, key: str, token: object) -> None:
+        """Remove *key*'s ``starting_agents`` row if the start holding *token* wrote it."""
+        entry = self.state.starting_agents.get(key)
+        if entry is not None and entry[0] is token:
+            del self.state.starting_agents[key]
+
     def get_agent_selection(self, key: str) -> tuple[str, str]:
         """Copy the live allocation's selection without reinterpreting its name."""
         session = self._sessions.get(self._owner._fold_key(key))
@@ -1541,6 +1593,7 @@ class SessionAllocationService:
             if picked is not None:
                 model = self._deps.spec_model(picked)
         except Exception:
+            # Any failure here leaves the "auto" default, cached like any other miss.
             pass
         cache[cache_key] = (model, directory_mtime, now)
         return model

@@ -10,8 +10,9 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_dead``, ``_death_expected``, ``_death_label``,
 ``_death_reason``, ``_death_summary``, ``_death_tail``, ``_pending_init_notifications``,
-``_kas_extract_server_path``, ``_pending_requests``, ``_routed_requests``, ``_saw_auth_failure``,
-``_saw_delegate_launch_failure``, ``_saw_kas_engine_refusal``, ``_saw_sandbox_init_failure``,
+``_delegate_launch_failure_message``, ``_kas_extract_server_path``, ``_pending_requests``,
+``_routed_requests``, ``_saw_auth_failure``, ``_saw_delegate_launch_failure``,
+``_saw_kas_engine_refusal``, ``_saw_sandbox_init_failure``,
 ``_stall_turn_sessions``, ``_stderr_lines``,
 ``_stdin_stall_death``.
 
@@ -35,8 +36,8 @@ from kiro_crew.acp import kas_engine_refusal, kas_extract_repair, runtime_proces
 from kiro_crew.acp.kas_engine_refusal import is_kas_engine_refusal_output
 from kiro_crew.acp.session_handle import AcpRuntimeDead
 from kiro_crew.acp.transport_errors import (
+    delegate_launch_failure_message,
     is_auth_failure_output,
-    is_delegate_launch_failure_output,
     is_sandbox_init_failure_output,
     registration_throttle_line,
 )
@@ -423,6 +424,18 @@ def saw_kas_engine_refusal(self: AcpRuntime) -> bool:
     the ring buffer.
     """
     return self._saw_kas_engine_refusal
+
+
+def delegate_launch_failure_text(self: AcpRuntime) -> str | None:
+    """The curated message the latch recorded with :meth:`saw_delegate_launch_failure`.
+
+    ``None`` when nothing latched. Which message it is (install repair, or the
+    too-old ``--auth-method`` update remedy) was decided by the shared
+    :func:`delegate_launch_failure_message` at the moment the line was drained.
+    """
+    if not self._saw_delegate_launch_failure:
+        return None
+    return getattr(self, "_delegate_launch_failure_message", None)
 
 
 def redacted_stderr_tail(self: AcpRuntime) -> str:
@@ -971,12 +984,11 @@ async def _drain_stderr(self: AcpRuntime) -> None:
                 # before startup completes, and a ``failed to launch kiro-cli-chat``
                 # line after a healthy start would belong to some later unrelated
                 # death, not to the agent process's own startup.
-                if (
-                    not self._first_session_ready
-                    and not self._saw_delegate_launch_failure
-                    and is_delegate_launch_failure_output(text)
-                ):
-                    self._saw_delegate_launch_failure = True
+                if not self._first_session_ready and not self._saw_delegate_launch_failure:
+                    message = delegate_launch_failure_message(text)
+                    if message is not None:
+                        self._delegate_launch_failure_message = message
+                        self._saw_delegate_launch_failure = True
                 # kiro-cli's broken-extract line, latched on a KAS runtime only, in the
                 # same window and whatever ``recording_allowed`` says, so a temporary
                 # or incognito session that keeps no stderr ring still reaches the

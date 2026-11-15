@@ -2,46 +2,52 @@
 
 Bounded no-follow reads of the seed path, the inode-pinned move-aside and no-clobber
 restore, whose-file checks, and the settle, discard and release steps that end a
-session's claim. The three seed static methods that read the ``AcpClient`` global
+session's claim. The three seed static methods that read the ``ClaudeAcpClient`` global
 (``_settings_path_holds``, ``_claim_pathname_if_ours``, ``_restore_aside_without_clobber``)
 stay on the class.
 
-Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
+Each function here whose first parameter is ``self`` is a ``ClaudeAcpClient`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_claude_settings_authored``,
 ``_claude_settings_claim_unrevoked``, ``_claude_settings_shared``,
-``_claude_settings_written``, ``_permission_surface_share_validated``.
+``_claude_settings_written``, ``_claude_worker_builtin_tools``,
+``_permission_surface_share_validated``.
 
-Instance fields read: ``_seed_owner``, ``_work_dir``.
+Instance fields read: ``_agent``, ``_seed_owner``, ``_session_key``,
+``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``, ``_work_dir``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import stat
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.acp import seed_provenance
+from kiro_crew.acp.session_mcp_crewmate import worker_array_outruns_seed
+from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+from kiro_crew.bounded_read import bounded_read_fd
 
 if TYPE_CHECKING:
-    from kiro_crew.acp.client import AcpClient
+    from kiro_crew.acp.client import ClaudeAcpClient
 
 #: The client's own logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.client")
 
 
-def _claude_local_settings_path(self: AcpClient) -> Path:
+def _claude_local_settings_path(self: ClaudeAcpClient) -> Path:
     return self._work_dir / ".claude" / "settings.local.json"
 
 
-def _claude_settings_is_still_ours(self: AcpClient) -> bool:
+def _claude_settings_is_still_ours(self: ClaudeAcpClient) -> bool:
     """Whether settings.local.json still holds the bytes CREW wrote.
 
     The second half of the ownership test (the first is having created it --
@@ -92,7 +98,7 @@ def _settings_path_bytes(path: Path, expectation: tuple[int, str] | None) -> byt
         # ONE byte past the recorded length, so a file that grew between the
         # fstat and the read is rejected on length rather than matching on a
         # prefix hash. Bounded either way: a few hundred bytes, never the file.
-        chunk = os.read(fd, size + 1)
+        chunk = bounded_read_fd(fd, size + 1)
         if len(chunk) == size and hashlib.sha256(chunk).hexdigest() == sha:
             return chunk
         return None
@@ -102,7 +108,7 @@ def _settings_path_bytes(path: Path, expectation: tuple[int, str] | None) -> byt
         os.close(fd)
 
 
-def _expected_settings_fingerprint(self: AcpClient) -> tuple[int, str] | None:
+def _expected_settings_fingerprint(self: ClaudeAcpClient) -> tuple[int, str] | None:
     """``(size, sha256)`` of the seed Crew believes is at the settings path.
 
     Session memory first -- authoritative for a file this client just wrote,
@@ -130,7 +136,7 @@ def _expected_settings_fingerprint(self: AcpClient) -> tuple[int, str] | None:
     )
 
 
-def _withdraw_shared_reader_lease(self: AcpClient, path: Path, owner: str) -> bool:
+def _withdraw_shared_reader_lease(self: ClaudeAcpClient, path: Path, owner: str) -> bool:
     """Withdraw the durable reader lease before clearing its lease flag."""
     if not seed_provenance.unshare(path, owner):
         return False
@@ -212,7 +218,7 @@ def _copy_aside_back_without_clobber(
     return back
 
 
-async def _discard_claude_settings_seed(self: AcpClient) -> None:
+async def _discard_claude_settings_seed(self: ClaudeAcpClient) -> None:
     """Remove the ``settings.local.json`` THIS session seeded, off the loop.
 
     So a permission mode never outlives its session and an inherited
@@ -293,7 +299,7 @@ async def _discard_claude_settings_seed(self: AcpClient) -> None:
         self._claude_settings_written = None
 
 
-def _hand_back_unrevoked_claim(self: AcpClient, path: Path, owner: str) -> None:
+def _hand_back_unrevoked_claim(self: ClaudeAcpClient, path: Path, owner: str) -> None:
     """Retry the durable hand-back of an owner holder on a file that is not Crew's.
 
     The disk half of ``_claude_settings_claim_unrevoked``: the same two steps
@@ -319,7 +325,7 @@ def _hand_back_unrevoked_claim(self: AcpClient, path: Path, owner: str) -> None:
 
 
 def _settle_claude_settings_seed(
-    self: AcpClient,
+    self: ClaudeAcpClient,
     path: Path,
     owner: str,
     payload: str | None,
@@ -359,7 +365,7 @@ def _settle_claude_settings_seed(
         self._settle_claude_settings_seed_locked(path, owner, payload, expectation)
 
 
-def release_settings_seed_claim(self: AcpClient) -> None:
+def release_settings_seed_claim(self: ClaudeAcpClient) -> None:
     """Hand back this client's live ``settings.local.json`` registrations, synchronously.
 
     The seed hand-back for a client torn down WITHOUT :meth:`shutdown`. The
@@ -426,7 +432,7 @@ def release_settings_seed_claim(self: AcpClient) -> None:
     self._permission_surface_share_validated = False
 
 
-def _foreign_settings_owner(self: AcpClient, local_settings: Path) -> str:
+def _foreign_settings_owner(self: ClaudeAcpClient, local_settings: Path) -> str:
     """Who a ``settings.local.json`` Crew does not govern belongs to, as a log phrase.
 
     The bytes Crew's durable record names are a Crew seed another open
@@ -439,7 +445,7 @@ def _foreign_settings_owner(self: AcpClient, local_settings: Path) -> str:
     return "belongs to the project"
 
 
-def _foreign_settings_is_crew_seed(self: AcpClient, local_settings: Path) -> bool:
+def _foreign_settings_is_crew_seed(self: ClaudeAcpClient, local_settings: Path) -> bool:
     """Whether *local_settings* holds the bytes Crew's durable record names."""
     recorded = seed_provenance.recorded_durable(local_settings)
     return self._settings_path_bytes(local_settings, recorded) is not None
@@ -451,7 +457,7 @@ SETTINGS_WITHHELD_BY_SESSION = "session"
 SETTINGS_WITHHELD_BY_PROJECT = "project"
 
 
-def settings_withheld_cause(self: AcpClient) -> str:
+def settings_withheld_cause(self: ClaudeAcpClient) -> str:
     """Why Crew's MCP tools are withheld from this session, or ``""`` when they are not.
 
     Reads the live governed state, the same predicate the claude mirror and the
@@ -475,7 +481,7 @@ def settings_withheld_cause(self: AcpClient) -> str:
 
 
 def _settle_claude_settings_seed_locked(
-    self: AcpClient,
+    self: ClaudeAcpClient,
     path: Path,
     owner: str,
     payload: str | None,
@@ -610,3 +616,85 @@ def _settle_claude_settings_seed_locked(
                         )
     except Exception:  # pragma: no cover - defensive; teardown must not raise
         logger.debug("could not settle Crew's settings seed at %s", path, exc_info=True)
+
+
+def _worker_settings_lag(self: ClaudeAcpClient, spec: dict[str, Any] | None) -> bool:
+    """Whether this session, a claude worker session, ships settings missing a rule *spec* asks for.
+
+    Judged on what Claude Code will read: the inline settings when the project's
+    file is excluded, else ``settings.local.json`` on disk, read only as the bytes
+    Crew's durable seed record names (no link followed, bounded); a file that is
+    not that seed counts as no rules. No spec, or any other session, is never held.
+    """
+    from kiro_crew.mate_worker import MATE_WORKER_AGENT
+
+    is_worker = self._agent == MATE_WORKER_AGENT and bool(self._session_key)
+    if not (self.backend == ACP_BACKEND_CLAUDE and is_worker) or not isinstance(spec, dict):
+        return False
+    in_force: Any = self._session_mcp_inline_settings
+    if not self._session_mcp_excludes_local:
+        path = self._claude_local_settings_path()
+        raw = self._settings_path_bytes(path, seed_provenance.recorded_durable(path))
+        try:
+            in_force = json.loads(raw.decode("utf-8")) if raw is not None else None
+        except ValueError:
+            in_force = None
+    return worker_array_outruns_seed(in_force, spec)
+
+
+def _reset_settings_seed_state(self: ClaudeAcpClient) -> None:
+    """Drop this session's in-memory settings-seed state at ``_reset_state``.
+
+    The settings.local.json THIS session seeded is removed by
+    _discard_claude_settings_seed, which every caller awaits in the `try` of the
+    `finally` that reaches ``_reset_state`` -- it is async because the ownership
+    hash, the durable revoke and the unlink are all blocking, and this method is
+    synchronous and runs on the event loop. That pairing also means this may run
+    because the discard's await was CANCELLED: the flags below are already cleared
+    by then, and the shielded transaction still finishes the disk half. getattr:
+    _reset_state runs on clients built without __init__ in tests, and such a client
+    has no work_dir to derive the seed's path from.
+    """
+    owner = getattr(self, "_seed_owner", "")
+    if getattr(self, "_claude_settings_authored", False):
+        self._claude_settings_authored = False
+        self._claude_settings_written = None
+    self._claude_settings_claim_unrevoked = False
+    if getattr(self, "_work_dir", None) is not None:
+        path = self._claude_local_settings_path()
+        # The seed itself and its durable holder are removed by
+        # ``_discard_claude_settings_seed``, which every production caller
+        # awaits off the loop before reaching here. This synchronous fallback
+        # hands back only the in-memory slot, taking no lock and doing no I/O,
+        # so an interrupted discard cannot leave the event loop blocked.
+        #
+        # Unconditional, not gated on the instance flags: ``release_local`` is
+        # a no-op unless ``_LIVE[key] == owner``, so it never touches a sibling
+        # client object's lease held under a different token. It covers both
+        # refused durable withdrawals -- the authored discard whose ``forget``
+        # and ``release`` were refused with the seed restored, and the
+        # un-revoked hand-back whose retry was refused -- and the authored one
+        # is the case a flag-gated drop leaks: the refused ``release`` puts the
+        # in-memory slot back while the discard's ``finally`` has already
+        # cleared authorship, so nothing flag-gated runs and every later
+        # session on this work_dir in this process is wedged
+        # (``held_by_another`` and ``claim`` consult that slot first). The
+        # persisted holder is the half this cannot reach: it carries this
+        # process's live identity, so it stands until this process exits.
+        seed_provenance.release_local(path, owner)
+        # A sharer never wrote the file and never held the live claim; its
+        # whole teardown is withdrawing the shared-reader registration, so
+        # the owner's teardown (or a later adoption) stops holding the file
+        # for a reader that is gone.
+        if getattr(self, "_claude_settings_shared", False):
+            seed_provenance.unshare_local(path, owner)
+    # The trailing plain assignments are unconditional so a client built
+    # without __init__ in tests resets clean too.
+    self._claude_settings_shared = False
+    self._permission_surface_share_validated = False
+    self._claude_worker_builtin_tools = None
+
+
+async def _discard_settings_seed(self: ClaudeAcpClient) -> None:
+    """Remove the settings file this session seeded (:meth:`_discard_claude_settings_seed`)."""
+    await self._discard_claude_settings_seed()

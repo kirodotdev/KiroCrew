@@ -1,10 +1,11 @@
 /**
  * Oncall Watchtower — full-featured example app.
  *
- * Demonstrates: useAppApi, useAppEvents, useNavBadge, PageHeader,
+ * Demonstrates: useAppApi, useAppEvents, useNavBadge, IssueList, PageHeader,
  * StatCard, Card, Badge, and real-time event handling.
  */
 import { useAppApi, useAppEvents, useNavBadge } from '@kirocrew/app-sdk'
+import * as sdk from '@kirocrew/app-sdk'
 import { Card, CardTitle, PageHeader, StatCard, Badge, EmptyState } from '@kirocrew/app-sdk/ui'
 import { useState, useEffect } from 'react'
 
@@ -85,6 +86,19 @@ export default function OncallWatchtower() {
             </table>
           )}
         </Card>
+        {/* Needs `/api/source/issues` in permissions.api; a host below level 6
+            has no IssueList, so the namespace import is feature-detected. */}
+        {sdk.APP_SDK_LEVEL >= 6 && sdk.IssueList && (
+          <Card>
+            <CardTitle>My oncall issues</CardTitle>
+            <sdk.IssueList
+              query={{ provider: 'github', scope: 'acme/oncall', assignee: 'me', labels: ['oncall'] }}
+              view="condensed"
+              showFilters
+              emptyText="Nothing assigned to you"
+            />
+          </Card>
+        )}
       </div>
     </>
   )

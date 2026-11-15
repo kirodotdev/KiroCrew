@@ -136,6 +136,8 @@ class _BackgroundOwner(Protocol):
 
     def _advance_session_generation(self, key: str) -> int: ...
 
+    def session_generation(self, key: str) -> int: ...
+
     def absorb_orphaned_release(self, key: str) -> bool: ...
 
     def _dispatch_hard_kill(self, provider: LLMProvider) -> None: ...
@@ -438,6 +440,8 @@ class BackgroundSessionRuntime:
         # the sweep's (permit -> owner._lock).
         await self._owner._start_sem.acquire(start_priority)
         try:
+            # A reset of the key after this read makes the start below stale.
+            generation = self._owner.session_generation(background_key)
             try:
                 provider = self._owner._provider_factory(background_key, agent=background_agent)
                 provider.start_priority = start_priority
@@ -478,7 +482,11 @@ class BackgroundSessionRuntime:
                     # _closing is rechecked because the start above spans the window
                     # in which close_all takes its session snapshot: registering now
                     # would leak this provider past graceful shutdown.
-                    if not self._owner._closing and background_key not in self._owner._sessions:
+                    if (
+                        not self._owner._closing
+                        and background_key not in self._owner._sessions
+                        and self._owner.session_generation(background_key) == generation
+                    ):
                         sess = self._deps.session_factory(
                             provider=provider,
                             first_turn=self._deps.first_turn_nothing_armed,
@@ -505,7 +513,8 @@ class BackgroundSessionRuntime:
                     self._owner._starting_pids.discard(starting_pid)
         finally:
             self._owner._start_sem.release(start_priority)
-        # Racing registration lost, or shutdown began while we were starting:
+        # Racing registration lost, a reset of the key overtook this start, or
+        # shutdown began while we were starting:
         # tear the fresh provider down instead of registering it.
         await provider.shutdown()
 

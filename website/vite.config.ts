@@ -22,7 +22,10 @@ import {
   TAILWIND_RUNTIME_SRC,
 } from './src/lib/vendorPaths'
 import { precompressPlugin } from './scripts/precompress.mjs'
+import { compileHintsPlugin } from './scripts/compile-hints.mjs'
+import { stripHtmlCommentsPlugin } from './scripts/strip-html-comments.mjs'
 import { atomicPublishPlugin } from './scripts/publish-dist.mjs'
+import { firstLoadGroups } from './scripts/lib/firstLoadGroup.mjs'
 import { uiAutoStampPlugin } from './scripts/lib/ui-auto-stamp.mjs'
 import { CONTEXT_SINGLETON_DEDUPE } from './vite.shared'
 import { REACT_COMPILER_OPTIONS, reactCompilerIdFilter } from './react-compiler.config.mjs'
@@ -783,7 +786,7 @@ export default defineConfig({
     // the Babel pass costs per listed file instead of per module. After the
     // stamp (it reads source offsets), before react() (it needs JSX intact).
     ...reactCompilerPlugins(),
-    react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), buildIdPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), bundleReportPlugin(), appWindowUrls(), precompressPlugin(), atomicPublishPlugin()],
+    react(), tokenProxyPlugin(), appImportMapPlugin(), stripHtmlCommentsPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), buildIdPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), compileHintsPlugin(), bundleReportPlugin(), appWindowUrls(), precompressPlugin(), atomicPublishPlugin()],
   // Worker bundles do not inherit `plugins`; the hljs worker needs the edition
   // languages module (see editionLanguagesPlugin).
   worker: { plugins: () => [editionLanguagesPlugin()] },
@@ -977,6 +980,11 @@ export default defineConfig({
         ws: true,
         changeOrigin: true, // Backend validates Host header for CSRF; without this, dev proxy sends localhost:3000
       },
+      // The Crew API's Owner routes (the Bots roster reads /v1/crew/owner/bots).
+      '/v1/crew/': {
+        target: `http://localhost:${backendPort}`,
+        changeOrigin: true,
+      },
       // Proxy app UI bundle file requests to the backend (serves from ~/.kiro/crew/apps/)
       // Only matches /apps/{name}/ui/* — not /apps (React Router page)
       '^/apps/[^/]+/ui/': {
@@ -1167,12 +1175,34 @@ export default defineConfig({
             },
             {
               // Graph/network visualization stack (vis-network, vis-data, sigma,
-              // graphology, cytoscape) — large and only used by graph views. Lowest
-              // priority so graph-physics above claims its two packages first.
+              // graphology, cytoscape) — large and only used by graph views. Below
+              // graph-physics so that group claims its two packages first.
               name: 'vendor-graph',
               priority: 20,
               test: /[\\/]node_modules[\\/](vis-network|vis-data|vis-util|sigma|graphology|graphology-[^\\/]+|cytoscape)[\\/]/,
             },
+            // The first load in a handful of chunks instead of ~345. Left to
+            // automatic chunking, every set of lazy pages that shares a module got
+            // its own chunk, so `index.html` modulepreloaded 345 files, 278 of them
+            // under 10 KB. The gateway speaks HTTP/1.1, six connections per origin,
+            // so each file costs a round trip: measured with 40 ms of round trip and
+            // a cold cache, the first paint came at ~3.5 s, and ~1.0 s with these
+            // groups. These groups take every module the SPA entry reaches
+            // through static imports (nothing behind `import()`), below every named
+            // group above, which keep their modules. How the modules are cut, and
+            // why the cut cannot form a chunk cycle: scripts/lib/firstLoadGroup.mjs.
+            //
+            // `layers` is the number of chunks the dashboard's own code is cut into.
+            // One chunk loads as fast, but with DevTools open the first exception
+            // thrown during module evaluation makes V8 re-parse the whole chunk
+            // that is evaluating (120-180 ms measured for one 4.5 MB chunk); four
+            // keeps each chunk near 1 MB, so that cost stays where it was.
+            ...firstLoadGroups({
+              mainEntryId: fileURLToPath(new URL('./index.html', import.meta.url)),
+              otherEntryIds: Object.values(appWindowEntries()),
+              layers: 4,
+              priority: 1,
+            }),
           ],
         },
       },

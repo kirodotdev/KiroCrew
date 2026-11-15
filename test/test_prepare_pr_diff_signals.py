@@ -406,6 +406,31 @@ def test_end_to_end_a_file_argument_is_refused(repo: Path) -> None:
     assert "Body check" not in out
 
 
+def test_a_remote_ref_as_the_base_names_the_branch_to_pass(repo: Path) -> None:
+    """A fork contributor tries ``upstream/main``. The base is read from origin, so
+    ``git fetch origin upstream/main`` cannot help; the error names ``main`` instead.
+    A slashed branch that is not a remote ref keeps the fetch hint."""
+    _git(repo, "update-ref", "refs/remotes/upstream/main", "HEAD")
+
+    def stderr(base: str) -> str:
+        proc = subprocess.run(
+            [sys.executable, "-B", str(SCRIPT), base],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=_git_env(),
+        )
+        assert proc.returncode == 2
+        return proc.stderr
+
+    out = stderr("upstream/main")
+    assert "pass the branch name instead: main" in out
+    assert "sync your fork's main with upstream" in out
+    assert "git fetch origin upstream/main" not in out
+    assert "run: git fetch origin release/1" in stderr("release/1")
+
+
 # ------------------------------------------------------------- the wiring
 
 

@@ -475,12 +475,9 @@ def test_only_a_tick_that_woke_someone_is_loud() -> None:
 
 @pytest.mark.asyncio
 async def test_a_quiet_run_writes_no_history_row(tmp_path) -> None:
-    from unittest.mock import AsyncMock
-
     from kiro_crew.cron import CronService
 
     svc = CronService(base_dir=tmp_path)
-    svc._history.append = AsyncMock()
     quiet = {"on": True}
 
     async def tick(job):
@@ -490,21 +487,20 @@ async def test_a_quiet_run_writes_no_history_row(tmp_path) -> None:
     svc._on_job = tick
     job = svc.add_job("stale wake", "go", every_secs=900)
     await svc._run_job_isolated(job, svc._claim_run(job.id, "scheduled"))
-    assert svc._history.append.await_count == 0
+    assert (await svc._history.get_job_history(job.id))[1] == 0
     # The flag is this run's alone: the next run that wakes someone keeps its row.
     quiet["on"] = False
     await svc._run_job_isolated(job, svc._claim_run(job.id, "scheduled"))
-    assert svc._history.append.await_count == 1
+    rows, total = await svc._history.get_job_history(job.id)
+    assert total == 1
+    assert rows[0]["status"] == "success"
 
 
 @pytest.mark.asyncio
 async def test_a_quiet_run_that_failed_keeps_its_row(tmp_path) -> None:
-    from unittest.mock import AsyncMock
-
     from kiro_crew.cron import CronService
 
     svc = CronService(base_dir=tmp_path)
-    svc._history.append = AsyncMock()
 
     async def tick(job):
         job.quiet_run = True
@@ -515,4 +511,6 @@ async def test_a_quiet_run_that_failed_keeps_its_row(tmp_path) -> None:
     svc._on_job = tick
     job = svc.add_job("stale wake", "go", every_secs=900)
     await svc._run_job_isolated(job, svc._claim_run(job.id, "scheduled"))
-    assert svc._history.append.await_count == 1
+    rows, total = await svc._history.get_job_history(job.id)
+    assert total == 1
+    assert rows[0]["status"] == "failure"

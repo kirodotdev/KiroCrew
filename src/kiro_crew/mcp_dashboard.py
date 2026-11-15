@@ -105,7 +105,11 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "natural alphabetical, created = newest first); the header line names "
                 "the active mode. In custom mode the sequence you read here is the "
                 "one the person sees, which is what makes it safe to pick a "
-                "``before``/``after`` anchor for chat_folder_move. In name or created "
+                "``before``/``after`` anchor for chat_folder_move. One exception this "
+                "listing cannot see: the person may turn on a browser-only sidebar view "
+                "that draws folders holding unread chats above that order; an anchor "
+                "still sets the stored position, and the view moves only while a "
+                "folder has unread chats. In name or created "
                 "mode the listing says so and warns that an anchor sets the stored "
                 "position without changing the displayed order. Returns per "
                 "folder: id, human path, project directory, default "
@@ -769,6 +773,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _first_message_line,
     _pending_approval_phrase,
     _RefusalCodes,
+    _render_session_queue,
     _render_session_summary,
     _resolve_folder_for_new_session,
     _run_session_adopt,
@@ -781,6 +786,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _run_session_generate_title,
     _run_session_handoff,
     _run_session_history_list,
+    _run_session_queue,
     _run_session_read_message,
     _run_session_release,
     _run_session_reload,
@@ -790,10 +796,12 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _run_session_send,
     _run_session_set_color,
     _run_session_set_model,
+    _run_session_set_note,
     _run_session_status,
     _run_session_stop,
     _run_session_summary,
     _run_work_dispatch,
+    _status_activity_suffix,
     _summary_time,
     _worker_capabilities_line,
 )

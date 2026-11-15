@@ -55,6 +55,11 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   // default from overwriting another origin's backup.
   'mc-ui',
   'mc-app-nav-order',
+  // The rail rows the user unpinned (lib/appNavHidden.ts) or pinned
+  // (lib/navPinned.ts). Written only by their clicks, through
+  // savePrefExplicitly (issue #34741).
+  'mc-app-nav-hidden',
+  'mc-nav-pinned',
   'mc-apps-expanded',
   'mc-bottom-terminal',
   'mc-files-rail-open',

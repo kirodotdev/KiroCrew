@@ -348,6 +348,17 @@ describe('ProjectDetailPage approve and reject', () => {
     await waitFor(() => expect(onRefresh).toHaveBeenCalled(), { timeout: 5_000 })
   })
 
+  it('shows a gate the decide found gone as status, not an error (#18203)', async () => {
+    vi.mocked(api.approvals).mockResolvedValue(gates(1))
+    // Duck-typed 404 (api/apiError.ts): the mocked client is not ApiError.
+    vi.mocked(api.decideApproval).mockRejectedValue(Object.assign(new Error('no pending approval'), { status: 404 }))
+    renderWithProviders(<ProjectDetailPage run={runningRun()} />)
+    await waitFor(() => expect(dag()).toHaveAttribute('data-approvals', '1'), { timeout: 5_000 })
+    fireEvent.click(screen.getByRole('button', { name: 'dag-ok-1' }))
+    expect(await screen.findByTestId('project-detail-gate-gone', undefined, { timeout: 5_000 })).toHaveAttribute('role', 'status')
+    expect(screen.queryByTestId('project-detail-action-error')).toBeNull()
+  })
+
   it('opens the rejected task in the panel so the user can see why', async () => {
     vi.mocked(api.approvals).mockResolvedValue(gates(1))
     renderWithProviders(<ProjectDetailPage run={runningRun()} />)
@@ -438,10 +449,9 @@ describe('ProjectDetailPage approve and reject', () => {
     await waitFor(() => expect(dag()).toHaveAttribute('data-approvals', '1,2'), { timeout: 5_000 })
     fireEvent.click(screen.getByRole('button', { name: 'pick-2' }))
     fireEvent.click(await screen.findByRole('button', { name: 'panel-approve' }, { timeout: 5_000 }))
-    // The refused decide is a failed request, so it renders through the page's
-    // ErrorNotice (errors-use-error-notice), naming the refused task.
-    const notice = await screen.findByTestId('project-detail-action-error', undefined, { timeout: 5_000 })
-    expect(notice).toHaveAttribute('role', 'alert')
+    // A gone gate is status, not an error (#18203), naming the refused task.
+    const notice = await screen.findByTestId('project-detail-gate-gone', undefined, { timeout: 5_000 })
+    expect(notice).toHaveAttribute('role', 'status')
     expect(notice).toHaveTextContent(i18nT('pages.projectDetailPage.task_approval_no_longer_pending', { index: 2, title: 'Build' }))
     expect(notice).not.toHaveTextContent('Setup')
   })

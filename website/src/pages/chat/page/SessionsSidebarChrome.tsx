@@ -1,6 +1,8 @@
 import type { MotionValue } from 'motion-dom'
 import type { Dispatch, SetStateAction, MutableRefObject, RefObject } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
+import { useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { KiroCrewAgent } from '../../../components/AgentSelector'
 import type { MobileNavRailRenderer } from '../../../components/MobileNavRailContext'
 import type { HoverIntent } from '../../../hooks/useHoverIntent'
@@ -22,6 +24,7 @@ import SlotTagPopover from '../../../components/SlotTagPopover'
 import { i18nT } from '../../../i18n/t'
 import { uiLocation } from '../../../uiLocations/uiLocation'
 import { GuideRevealScope } from '../../../guide/GuideRevealScope'
+import { OffScreenOverlayScope } from '../../../components/overlayRoot'
 
 interface SessionsSidebarChromeProps {
   embedMode?: 'chat' | 'sessions'
@@ -108,6 +111,22 @@ interface SessionsSidebarChromeProps {
   promoting: boolean
 }
 
+/** Puts the kept sidebar's host element inside the open drawer, and takes it
+ *  out again when the drawer leaves. */
+export function AdoptPaneHost({ host }: { host: HTMLElement | null }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const slot = ref.current
+    if (!slot || !host) return
+    slot.appendChild(host)
+    // Release the host only if this slot still holds it: when the drawer
+    // swaps its slot (a phone/desktop switch while open), the new slot adopts
+    // the host before the old one unmounts.
+    return () => { if (host.parentNode === slot) host.remove() }
+  }, [host])
+  return <div ref={ref} style={{ display: 'contents' }} />
+}
+
 /**
  * The sessions chrome around the chat pane: the phone drawer and its scrim, the desktop sidebar toggle and its recents flyout, the sidebar or drawer itself (or the embedded sessions list), the phone top bar, and the tag popover.
  */
@@ -119,6 +138,56 @@ export default function SessionsSidebarChrome({
   winW, closeSidebar, containerH, drawerDragging, drawerMounted, drawerPanelRef, drawerScrim, drawerScrimRef, drawerX, expandFrom, expandSidebar, flyout, flyoutEligible, flyoutSurfaceRef,
   flyoutTriggerRef, openSidebar, revealSourceLink, sidebarOnScreen, sidebarOpen, flyoutSwitch, flyoutNew, mobileNewSessionItem, topbarSessionsToggle, onPromote, promoting,
 }: SessionsSidebarChromeProps) {
+  const sessionsPane = (
+    <ChatSidebar
+      slots={filteredSlots}
+      activeSlot={activeSlot}
+      unreadSlots={surfaceUnreadSlots}
+      history={history}
+      historyHasMore={historyHasMore}
+      defaultAgent={defaultAgent}
+      installedAgents={installedAgents}
+      rowAgents={sidebarAgents}
+      rowChoices={sidebarChoices}
+      mode={mode}
+      onWidthChange={setSidebarWidth}
+      onDragChange={setSidebarDragging}
+      fillsHost={isMobile}
+      collapsible={!isMobile}
+      staticRows={isMobile}
+      onSelectSlot={selectFromSidebar}
+      onOpenSlotInNewTab={ownsSessionTabs ? openSlotInNewTab : undefined}
+      onOpenSource={revealSourceLink}
+      // Only offer the pane as a drop target when a composer exists to show
+      // the chip — see canStageSessionRef for why this is a named predicate.
+      chatDropTarget={canStageSessionRef ? chatPaneEl : null}
+      onDropSessionRef={stageSessionRef}
+      canStageSessionRef={canStageSessionRef}
+    />
+  )
+  // Once opened, the session list stays mounted while the sidebar (desktop)
+  // or the drawer (phone) is closed. It renders into `paneHost`, which the
+  // drawer adopts while open and lets go of when closed, so reopening puts
+  // the same list back on screen instead of mounting it again. Closed, it
+  // takes the same updates it takes open.
+  const keepPaneMounted = !embedMode
+  const [paneHost] = useState(() => {
+    if (typeof document === 'undefined') return null
+    const el = document.createElement('div')
+    el.style.display = 'contents'
+    return el
+  })
+  // The phone drawer resets its direct child's card border, radius and
+  // margin; the list sits one level down, inside `paneHost`, so the host
+  // carries the same resets.
+  useLayoutEffect(() => {
+    if (paneHost) paneHost.className = isMobile ? '[&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''
+  }, [paneHost, isMobile])
+  const drawerOpen = isMobile ? drawerMounted : sidebarOpen
+  const [paneOpened, setPaneOpened] = useState(drawerOpen)
+  if (drawerOpen && !paneOpened) setPaneOpened(true)
+  const keptPane = keepPaneMounted && paneHost != null
+  const paneSlot = keptPane ? <AdoptPaneHost host={paneHost} /> : sessionsPane
   return (
     <>
       <AnimatePresence>
@@ -230,7 +299,7 @@ export default function SessionsSidebarChrome({
       // The sessions sidebar's collapse owner (desktop) and the phone's
       // sessions drawer owner: a guide's reveal step completes the moment
       // this says open. Outside the drawer, so "closed" is said while the
-      // drawer's contents are unmounted.
+      // drawer is closed.
       <GuideRevealScope id={isMobile ? 'chat.sessions-drawer' : 'chat.sessions-sidebar'} open={sidebarOpen}>
       <OverlayDrawer open={isMobile ? drawerMounted : sidebarOpen} width={isMobile ? Math.max(0, winW - DRAWER_UNCOVERED_PX) : effectiveSidebarWidth} dragging={sidebarDragging} slideX={isMobile ? drawerX : undefined} slideRef={drawerPanelRef}
         // Covers the chat pane only while open: on a phone `sidebarOpen` is
@@ -268,33 +337,6 @@ export default function SessionsSidebarChrome({
             rows that leave it `replace` the duplicate history entry
             `pushDrawerEntry` minted, so Back lands on the chat. */}
         {(() => {
-        const sessionsPane = (
-        <ChatSidebar
-          slots={filteredSlots}
-          activeSlot={activeSlot}
-          unreadSlots={surfaceUnreadSlots}
-          history={history}
-          historyHasMore={historyHasMore}
-          defaultAgent={defaultAgent}
-          installedAgents={installedAgents}
-          rowAgents={sidebarAgents}
-          rowChoices={sidebarChoices}
-          mode={mode}
-          onWidthChange={setSidebarWidth}
-          onDragChange={setSidebarDragging}
-          fillsHost={isMobile}
-          collapsible={!isMobile}
-          staticRows={isMobile}
-          onSelectSlot={selectFromSidebar}
-          onOpenSlotInNewTab={ownsSessionTabs ? openSlotInNewTab : undefined}
-          onOpenSource={revealSourceLink}
-          // Only offer the pane as a drop target when a composer exists to show
-          // the chip — see canStageSessionRef for why this is a named predicate.
-          chatDropTarget={canStageSessionRef ? chatPaneEl : null}
-          onDropSessionRef={stageSessionRef}
-          canStageSessionRef={canStageSessionRef}
-        />
-        )
         return isMobile && mobileNavRail ? (
           <div className="flex h-full min-h-0 w-full" data-testid="mobile-split-drawer">
             {mobileNavRail({ onActivate: closeSidebar })}
@@ -304,11 +346,19 @@ export default function SessionsSidebarChrome({
             {/* The drawer's `[&>*]` resets (no card border/radius/margin on the
                 sidebar root) reach only its direct child, which is now this
                 wrapper -- so the wrapper carries the same resets one level down. */}
-            <div className="flex-1 min-w-0 h-full min-h-0 flex flex-col overflow-hidden bg-bg-elevated [&_.sidebar-inner]:!bg-bg-elevated [&_.sidebar-inner]:!w-full [&_.sidebar-inner]:!min-w-0 [&_.sidebar-inner]:!shrink [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0">{sessionsPane}</div>
+            <div className="flex-1 min-w-0 h-full min-h-0 flex flex-col overflow-hidden bg-bg-elevated [&_.sidebar-inner]:!bg-bg-elevated [&_.sidebar-inner]:!w-full [&_.sidebar-inner]:!min-w-0 [&_.sidebar-inner]:!shrink [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0">{paneSlot}</div>
           </div>
-        ) : sessionsPane
+        ) : paneSlot
         })()}
       </OverlayDrawer>
+      {/* Keyed on the form so a phone/desktop switch mounts the list afresh,
+          as it did before the list was kept: its row windowing is chosen once
+          per mount from `staticRows`. Closed, its menus and selects close as
+          they would on a click outside (`OffScreenOverlayScope`). */}
+      {keptPane && paneOpened && paneHost && createPortal(
+        <OffScreenOverlayScope offScreen={!sidebarOpen}>{sessionsPane}</OffScreenOverlayScope>,
+        paneHost, isMobile ? 'phone' : 'desktop',
+      )}
       </GuideRevealScope>
       )}
       <MobileTopBar

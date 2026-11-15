@@ -68,3 +68,20 @@ describe('formatCadence interval unit words (#32066)', () => {
     expect(formatCadence(sixHours)).toBe('Every 6\u00A0hr')
   })
 })
+
+describe('formatCadence weekday list (#34103)', () => {
+  afterEach(async () => {
+    await i18next.changeLanguage('en')
+  })
+
+  const monWed = { name: 'x', message: 'y', schedMode: 'weekly', weekDays: [1, 3], weekTime: '06:00' } as const
+
+  it('separates the days the way Japanese does', async () => {
+    await i18next.changeLanguage('ja')
+    expect(formatCadence(monWed)).toMatch(/^毎週 · 月、水 /)
+  })
+
+  it('keeps the English comma', () => {
+    expect(formatCadence(monWed)).toMatch(/^Weekly · Mon, Wed /)
+  })
+})

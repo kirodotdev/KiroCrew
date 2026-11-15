@@ -30,9 +30,9 @@ const VIEWPORT = { width: 900, height: 520 }
  * states tellable apart -- a policy name, or an id with a marker, never both.
  */
 const EXPECTED = {
-  pinned: ['gpt-5.6-terra', 'Auto (Jev)'],
-  'jev-auto': ['Auto (Jev)', 'gpt-5.6-sol'],
-  'plain-auto': ['gpt-5.6-sol \u00B7 default', 'Auto (Jev)'],
+  pinned: ['gpt-5.6-terra', 'Auto (decision model)'],
+  'jev-auto': ['Auto (decision model)', 'gpt-5.6-sol'],
+  'plain-auto': ['gpt-5.6-sol \u00B7 default', 'Auto (decision model)'],
 }
 
 // mise's node injects LD_LIBRARY_PATH at its own bundled libstdc++, older than

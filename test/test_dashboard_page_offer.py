@@ -8,6 +8,7 @@ with nothing on its tab gets no card (``test_dashboard_default_by_slug``).
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -214,6 +215,54 @@ def test_an_unreadable_record_still_counts_as_asked(home: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{not json", encoding="utf-8")
     assert page_offer.was_asked(SLUG) is True
+
+
+_PAGE_OFFER_LOGGER = "kiro_crew.dashboard.page_offer"
+
+
+def _page_offer_warnings(caplog: Any) -> list[logging.LogRecord]:
+    return [
+        r for r in caplog.records if r.name == _PAGE_OFFER_LOGGER and r.levelno == logging.WARNING
+    ]
+
+
+@pytest.mark.parametrize(
+    ("unreadable", "error_class"),
+    [
+        # A healthy record caught mid-replace on Windows reads as a sharing violation.
+        pytest.param("permission", "PermissionError", id="a_locked_record"),
+        pytest.param("corrupt", "JSONDecodeError", id="a_corrupt_record"),
+    ],
+)
+def test_an_unreadable_record_logs_the_error_that_folded_it(
+    home: Path, monkeypatch: Any, caplog: Any, unreadable: str, error_class: str
+) -> None:
+    path = page_offer.record_path(SLUG)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if unreadable == "corrupt":
+        path.write_text("{not json", encoding="utf-8")
+    else:
+        path.write_text(json.dumps({"asked": True}), encoding="utf-8")
+        real_read_text = Path.read_text
+
+        def locked(self: Path, *args: Any, **kwargs: Any) -> str:
+            if self == path:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", locked)
+    with caplog.at_level(logging.WARNING, logger=_PAGE_OFFER_LOGGER):
+        assert page_offer.read_record(SLUG) == {}
+    (record,) = _page_offer_warnings(caplog)
+    assert error_class in record.getMessage()
+    assert record.exc_info is None
+    assert page_offer.was_asked(SLUG) is True
+
+
+def test_a_missing_record_logs_nothing(home: Path, caplog: Any) -> None:
+    with caplog.at_level(logging.DEBUG, logger=_PAGE_OFFER_LOGGER):
+        assert page_offer.read_record(SLUG) is None
+    assert [r for r in caplog.records if r.name == _PAGE_OFFER_LOGGER] == []
 
 
 def test_the_yes_wake_writes_saves_and_applies_with_one_message() -> None:

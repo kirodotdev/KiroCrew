@@ -175,6 +175,22 @@ describe('transcript slide anchor', () => {
     act(() => { vi.advanceTimersByTime(1000) })
   })
 
+  it("at the bottom, a downward wheel (a trackpad's momentum tail) keeps the pin; an upward one ends it", () => {
+    let height = 5000
+    const { sc } = mount(4400)
+    Object.defineProperty(sc, 'scrollHeight', { configurable: true, get: () => height })
+    const end = beginPanelSlide()
+    act(() => { sc.dispatchEvent(new WheelEvent('wheel', { deltaY: 3, bubbles: true })) })
+    height = 5100
+    act(() => { fireAll() })
+    expect(sc.scrollTop).toBe(4500)
+    act(() => { sc.dispatchEvent(new WheelEvent('wheel', { deltaY: -3, bubbles: true })) })
+    height = 5200
+    act(() => { fireAll() })
+    expect(sc.scrollTop).toBe(4500)
+    act(() => { end(); vi.advanceTimersByTime(1000) })
+  })
+
   it('a slide dropped by a session switch holds nothing past it: the next session keeps its own position', () => {
     let height = 5000
     const { sc } = mount(4400)

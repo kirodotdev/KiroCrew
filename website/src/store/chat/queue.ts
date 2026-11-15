@@ -107,7 +107,7 @@ export function hydrateQueuedBubbles(
     // though the send happened on another tab or before a reload. The paste
     // blocks ride the same way, so the card draws the `[ Paste #N ]` token
     // the sent bubble draws, not the expanded wire text.
-    appendCorrelatedQueue(base, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(kind ? { kind } : {}), ...(appLabel ? { appLabel } : {}), ...(restored ? { restored } : {}), ...(quote ? { quote } : {}), ...attachments, ...queueEntryPastes(content) } })
+    appendCorrelatedQueue(base, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(kind ? { kind } : {}), ...(appLabel ? { appLabel } : {}), ...(restored ? { restored } : {}), ...(quote ? { quote } : {}), ...attachments, ...queueEntryPastes(content, attachments.sendId) } })
   }
   for (const row of live) appendCorrelatedQueue(base, row)
   return base
@@ -244,13 +244,15 @@ export const queueReducers = {
    *  nothing from them. An empty object clears the lists (the frame carries
    *  no `meta` once every marker is gone). Omitted by the optimistic local
    *  edit, which cannot know how the server pruned them. */
-  editQueuedMessage(state: ChatState, action: PayloadAction<{ slot: string; queue_id: string; content: string; attachments?: QueueEntryAttachments; pastes?: PasteBlock[] }>) {
-    const { slot, queue_id, content, attachments, pastes } = action.payload
+  editQueuedMessage(state: ChatState, action: PayloadAction<{ slot: string; queue_id: string; content: string; attachments?: QueueEntryAttachments; pastes?: PasteBlock[]; editRev?: number }>) {
+    const { slot, queue_id, content, attachments, pastes, editRev } = action.payload
     if (isUnsafeKey(slot)) return
     const msgs = slot === state.activeSlot ? state.messages : state.slotMessages[slot]
     if (!msgs) return
     const idx = msgs.findIndex(m => m.role === 'queued' && (m.meta?.queueId as string) === queue_id)
     if (idx < 0) return
+    const applied = msgs[idx].meta?.editRev
+    if (typeof editRev === 'number' && typeof applied === 'number' && editRev < applied) return
     if (msgs[idx].content !== content && msgs[idx].meta?.banner !== undefined) {
       // The server drops the label when an edit changes the text; so does the row.
       const { banner: _b, ...rest } = msgs[idx].meta ?? {}
@@ -282,6 +284,7 @@ export const queueReducers = {
       const { quote: _q, ...rest } = msgs[idx].meta ?? {}
       msgs[idx].meta = rest
     }
+    if (typeof editRev === 'number') msgs[idx].meta = { ...msgs[idx].meta, editRev }
   },
   /** Reorder queued messages to match the given queue-id sequence (from the
    *  backend queue_reorder WS event or an optimistic local update). Queued
@@ -319,7 +322,7 @@ export const queueReducers = {
       // classifies by them (not editable, not restored into the composer).
       // `durable: false` too: the card's "won't survive a restart" label.
       const tags = (meta ?? {}) as Record<string, unknown>
-      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...(tags.durable === false ? { durable: false } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryKnowledgeEnvelope(meta), ...queueEntryPastes(content) } })
+      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...(tags.durable === false ? { durable: false } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryKnowledgeEnvelope(meta), ...queueEntryPastes(content, queueEntrySendId(meta).sendId) } })
     },
     prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; meta?: unknown }) {
       return { payload: { ...payload, queueId: payload.queue_id || crypto.randomUUID() } }

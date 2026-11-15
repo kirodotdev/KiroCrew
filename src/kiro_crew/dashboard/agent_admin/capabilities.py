@@ -311,11 +311,13 @@ async def _mutate_agent_package(request: web.Request, *, install: bool) -> web.R
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     # A body that is valid JSON but not an object (or carries a non-string
     # ``package``) must be a 400, not an unhandled AttributeError -> 500.
     if not isinstance(body, dict):
-        return web.json_response({"error": "body must be an object"}, status=400)
+        return web.json_response(
+            {"error": "body must be an object", "code": "body_not_object"}, status=400
+        )
     package = body.get("package")
     if not isinstance(package, str):
         return web.json_response({"error": "package required"}, status=400)

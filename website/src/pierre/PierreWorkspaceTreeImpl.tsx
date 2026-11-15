@@ -1608,7 +1608,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
           key={testId}
           variant="inline"
           className="whitespace-normal"
-          message={sentence(entries.map(entry => entry.folder).join(', '))}
+          message={sentence(fmtList(entries.map(entry => entry.folder), { style: 'narrow' }))}
           report={reportForError(entries[0].error)}
           askAgent
           onDismiss={() => setRefusedFolders(prev => prev.filter(entry => !entries.includes(entry)))}

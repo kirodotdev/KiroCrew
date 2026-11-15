@@ -42,6 +42,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _audit,
     _clean_origin_session_key,
     _err,
+    _is_agent_call,
     _json_response,
     _non_owner_refusal,
     _notify_artifact_update,
@@ -182,12 +183,11 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
                 )
 
             # Same auth-based actor inference as api_artifact_update — if the
-            # caller is MCP (X-Internal-Secret header), the lifecycle event
-            # gets tagged 'iterated' (agent), not 'edited' (user). Without
-            # this, MCP-driven re-saves would silently misattribute on the
-            # activity timeline.
-            is_mcp = request.headers.get("X-Internal-Secret") is not None
-            actor = "agent" if is_mcp else "user"
+            # caller is the agent (``_is_agent_call``: internal secret or agent
+            # socket), the lifecycle event gets tagged 'iterated' (agent), not
+            # 'edited' (user). Without this, agent re-saves would silently
+            # misattribute on the activity timeline.
+            actor = "agent" if _is_agent_call(request) else "user"
 
             submitted_content = (
                 promoted_content if promoted_content is not None else body.get("content")
@@ -518,12 +518,13 @@ async def api_artifact_update(request: web.Request) -> web.Response:
         return _err(str(exc))
     try:
         # Determine actor authoritatively from how the request was authed,
-        # NOT from the body. MCP-originated calls carry X-Internal-Secret
-        # (validated by upstream middleware before we see them); browser
-        # dashboard calls don't. Tagging by auth method is both more
+        # NOT from the body. Agent calls carry X-Internal-Secret or come over
+        # the agent socket (``_is_agent_call``; both verified by upstream
+        # middleware before we see them); browser dashboard calls carry
+        # neither. Tagging by auth method is both more
         # accurate (the agent's MCP layer doesn't have to remember to set
         # actor='agent') and more secure (a body field could be spoofed).
-        is_mcp = request.headers.get("X-Internal-Secret") is not None
+        is_mcp = _is_agent_call(request)
         actor = "agent" if is_mcp else "user"
         # Session correlation: MCP calls carry X-Session-Key with a real
         # chat-slot key; the dashboard's browser client sets it to the

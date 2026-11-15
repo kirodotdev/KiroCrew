@@ -1,0 +1,529 @@
+[
+  {
+    "agent_capabilities": {
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "list": {}
+      }
+    },
+    "agent_version": "1.0.107",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot.",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Default agent mode for conversational interactions",
+            "name": "Agent",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#agent"
+          },
+          {
+            "description": "Plan mode for creating and executing multi-step plans",
+            "name": "Plan",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#plan"
+          },
+          {
+            "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)",
+            "name": "Autopilot",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "claude-sonnet-5.5",
+        "description": "The AI model Copilot uses to generate responses.",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": "",
+            "name": "Claude Sonnet 5.5",
+            "value": "claude-sonnet-5.5"
+          },
+          {
+            "description": "",
+            "name": "Claude Sonnet 5",
+            "value": "claude-sonnet-5"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "medium",
+        "description": "How much reasoning the model performs before responding. Higher effort can improve quality at the cost of speed.",
+        "id": "reasoning_effort",
+        "name": "Reasoning Effort",
+        "options": [
+          {
+            "description": "Minimal reasoning before responding.",
+            "name": "low",
+            "value": "low"
+          },
+          {
+            "description": "Balanced reasoning and speed.",
+            "name": "medium",
+            "value": "medium"
+          },
+          {
+            "description": "More thorough reasoning; slower responses.",
+            "name": "high",
+            "value": "high"
+          },
+          {
+            "description": "Extensive reasoning for the hardest problems.",
+            "name": "xhigh",
+            "value": "xhigh"
+          },
+          {
+            "description": "Maximum reasoning; slowest but most thorough.",
+            "name": "max",
+            "value": "max"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "permissions",
+        "currentValue": "off",
+        "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs.",
+        "id": "allow_all",
+        "name": "Allow All",
+        "options": [
+          {
+            "description": "Automatically approve all tool, path, and URL requests",
+            "name": "On",
+            "value": "on"
+          },
+          {
+            "description": "Require approval for tool, path, and URL requests",
+            "name": "Off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "https://agentclientprotocol.com/protocol/session-modes#agent",
+      "ids": [
+        "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "https://agentclientprotocol.com/protocol/session-modes#plan",
+        "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+      ]
+    },
+    "session_id": "copilot-session-1"
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot.",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Default agent mode for conversational interactions",
+            "name": "Agent",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#agent"
+          },
+          {
+            "description": "Plan mode for creating and executing multi-step plans",
+            "name": "Plan",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#plan"
+          },
+          {
+            "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)",
+            "name": "Autopilot",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "claude-sonnet-5.5",
+        "description": "The AI model Copilot uses to generate responses.",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": "",
+            "name": "Claude Sonnet 5.5",
+            "value": "claude-sonnet-5.5"
+          },
+          {
+            "description": "",
+            "name": "Claude Sonnet 5",
+            "value": "claude-sonnet-5"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "medium",
+        "description": "How much reasoning the model performs before responding. Higher effort can improve quality at the cost of speed.",
+        "id": "reasoning_effort",
+        "name": "Reasoning Effort",
+        "options": [
+          {
+            "description": "Minimal reasoning before responding.",
+            "name": "low",
+            "value": "low"
+          },
+          {
+            "description": "Balanced reasoning and speed.",
+            "name": "medium",
+            "value": "medium"
+          },
+          {
+            "description": "More thorough reasoning; slower responses.",
+            "name": "high",
+            "value": "high"
+          },
+          {
+            "description": "Extensive reasoning for the hardest problems.",
+            "name": "xhigh",
+            "value": "xhigh"
+          },
+          {
+            "description": "Maximum reasoning; slowest but most thorough.",
+            "name": "max",
+            "value": "max"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "permissions",
+        "currentValue": "off",
+        "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs.",
+        "id": "allow_all",
+        "name": "Allow All",
+        "options": [
+          {
+            "description": "Automatically approve all tool, path, and URL requests",
+            "name": "On",
+            "value": "on"
+          },
+          {
+            "description": "Require approval for tool, path, and URL requests",
+            "name": "Off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "error": {
+      "code": -32603,
+      "message": "Request session.model.setReasoningEffort failed with message: This model does not support reasoning_effort configuration."
+    },
+    "frame": "response",
+    "id": 4
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot.",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Default agent mode for conversational interactions",
+            "name": "Agent",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#agent"
+          },
+          {
+            "description": "Plan mode for creating and executing multi-step plans",
+            "name": "Plan",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#plan"
+          },
+          {
+            "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)",
+            "name": "Autopilot",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "claude-sonnet-5",
+        "description": "The AI model Copilot uses to generate responses.",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": "",
+            "name": "Claude Sonnet 5.5",
+            "value": "claude-sonnet-5.5"
+          },
+          {
+            "description": "",
+            "name": "Claude Sonnet 5",
+            "value": "claude-sonnet-5"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "medium",
+        "description": "How much reasoning the model performs before responding. Higher effort can improve quality at the cost of speed.",
+        "id": "reasoning_effort",
+        "name": "Reasoning Effort",
+        "options": [
+          {
+            "description": "Minimal reasoning before responding.",
+            "name": "low",
+            "value": "low"
+          },
+          {
+            "description": "Balanced reasoning and speed.",
+            "name": "medium",
+            "value": "medium"
+          },
+          {
+            "description": "More thorough reasoning; slower responses.",
+            "name": "high",
+            "value": "high"
+          },
+          {
+            "description": "Extensive reasoning for the hardest problems.",
+            "name": "xhigh",
+            "value": "xhigh"
+          },
+          {
+            "description": "Maximum reasoning; slowest but most thorough.",
+            "name": "max",
+            "value": "max"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "permissions",
+        "currentValue": "off",
+        "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs.",
+        "id": "allow_all",
+        "name": "Allow All",
+        "options": [
+          {
+            "description": "Automatically approve all tool, path, and URL requests",
+            "name": "On",
+            "value": "on"
+          },
+          {
+            "description": "Require approval for tool, path, and URL requests",
+            "name": "Off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 5
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot.",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Default agent mode for conversational interactions",
+            "name": "Agent",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#agent"
+          },
+          {
+            "description": "Plan mode for creating and executing multi-step plans",
+            "name": "Plan",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#plan"
+          },
+          {
+            "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)",
+            "name": "Autopilot",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "claude-sonnet-5",
+        "description": "The AI model Copilot uses to generate responses.",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": "",
+            "name": "Claude Sonnet 5.5",
+            "value": "claude-sonnet-5.5"
+          },
+          {
+            "description": "",
+            "name": "Claude Sonnet 5",
+            "value": "claude-sonnet-5"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "high",
+        "description": "How much reasoning the model performs before responding. Higher effort can improve quality at the cost of speed.",
+        "id": "reasoning_effort",
+        "name": "Reasoning Effort",
+        "options": [
+          {
+            "description": "Minimal reasoning before responding.",
+            "name": "low",
+            "value": "low"
+          },
+          {
+            "description": "Balanced reasoning and speed.",
+            "name": "medium",
+            "value": "medium"
+          },
+          {
+            "description": "More thorough reasoning; slower responses.",
+            "name": "high",
+            "value": "high"
+          },
+          {
+            "description": "Extensive reasoning for the hardest problems.",
+            "name": "xhigh",
+            "value": "xhigh"
+          },
+          {
+            "description": "Maximum reasoning; slowest but most thorough.",
+            "name": "max",
+            "value": "max"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "permissions",
+        "currentValue": "off",
+        "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs.",
+        "id": "allow_all",
+        "name": "Allow All",
+        "options": [
+          {
+            "description": "Automatically approve all tool, path, and URL requests",
+            "name": "On",
+            "value": "on"
+          },
+          {
+            "description": "Require approval for tool, path, and URL requests",
+            "name": "Off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 6
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      19349,
+      200000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": "OK"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "OK",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 7,
+    "prompt_tokens": [
+      19980,
+      4,
+      0,
+      19978
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "frame": "response",
+    "id": 8
+  }
+]

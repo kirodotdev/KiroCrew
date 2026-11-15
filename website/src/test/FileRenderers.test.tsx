@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { columnLetter, detectFileType, HtmlViewer, JsonlViewer, OfficeViewer, SheetViewer } from '../components/FileRenderers'
+import { columnLetter, CsvViewer, detectFileType, HtmlViewer, JsonlViewer, JsonViewer, OfficeViewer, SheetViewer } from '../components/FileRenderers'
 import { consumeChatHandoff, installSoftNavigate, __resetNavSeamForTests } from '../utils/errorReport'
 
 // `useCanOpenFile` reads both of these, and it is the gate deciding whether the
@@ -49,6 +49,7 @@ import { api } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
 import { ApiError } from '../api/apiError'
 import { i18nT } from '../i18n/t'
+import { i18next } from '../i18n/all'
 
 describe('detectFileType', () => {
   it('returns jsonl for .jsonl files', () => {
@@ -89,6 +90,29 @@ describe('detectFileType', () => {
     // reclassified as 'office' or the download-only card would replace the
     // working inline preview.
     expect(detectFileType('paper.pdf')).toBe('pdf')
+  })
+})
+
+describe('viewer count notices', () => {
+  it('groups the CSV row total in the truncation notice', () => {
+    const csv = ['name', ...Array.from({ length: 1234 }, (_, i) => `r${i}`)].join('\n')
+    render(<CsvViewer content={csv} filePath="/ws/data.csv" />)
+    expect(screen.getByText('Showing 500 of 1,234 rows')).toBeInTheDocument()
+  })
+
+  it('groups the JSONL line count and the remaining count', () => {
+    const lines = Array.from({ length: 1500 }, (_, i) => JSON.stringify({ i }))
+    render(<JsonlViewer content={lines.join('\n')} />)
+    expect(screen.getByText('1,500 lines')).toBeInTheDocument()
+    expect(screen.getByText(/\(1,400 remaining\)/)).toBeInTheDocument()
+  })
+
+  it('groups the raw content length of unparseable JSON in the active language', async () => {
+    // Restored even when the test times out, which skips a `finally`.
+    onTestFinished(async () => { await i18next.changeLanguage('en') })
+    await i18next.changeLanguage('de')
+    render(<JsonViewer content={'{' + 'x'.repeat(12344)} />)
+    expect(screen.getByText('Rohinhalt wird angezeigt (12.345 Zeichen, davon die ersten 2.000)')).toBeInTheDocument()
   })
 })
 
@@ -751,6 +775,18 @@ describe('SheetViewer', () => {
     fireEvent.click(tab)
     expect(await screen.findByText('WACC')).toBeInTheDocument()
     expect(screen.getByText(/Showing first 1 rows/)).toBeInTheDocument()
+  })
+
+  it('groups the row and sheet counts in the truncation notice', async () => {
+    const big = {
+      sheets: [{ name: 'Log', rows: Array.from({ length: 1000 }, (_, i) => [i]), truncated_rows: true, truncated_cols: false }],
+      total_sheets: 1200,
+      truncated_sheets: true,
+    }
+    stubFetch(async () => ({ ok: true, json: async () => big }))
+    render(<SheetViewer filePath="/ws/outbox/log.xlsx" />)
+    expect(await screen.findByText(/Showing first 1,000 rows/)).toBeInTheDocument()
+    expect(screen.getByText(/Showing 1 of 1,200 sheets/)).toBeInTheDocument()
   })
 
   it('explains formula cells in the footer when the sheet contains any', async () => {

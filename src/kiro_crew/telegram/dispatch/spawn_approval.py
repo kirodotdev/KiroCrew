@@ -26,6 +26,7 @@ from kiro_crew.telegram.renderer import _display_safe
 from kiro_crew.telegram.transport import forum_gate_outcome
 
 if TYPE_CHECKING:
+    from kiro_crew.subagent import HostSpawnDecision
     from kiro_crew.telegram.transport_dispatch import TelegramDispatcher
 
 #: The dispatcher's one logger, named for the facade module operators filter on.
@@ -34,14 +35,15 @@ logger = logging.getLogger("kiro_crew.telegram.transport_dispatch")
 
 async def deliver_spawn_approval(
     self: TelegramDispatcher, request_id: str, description: str, parent_session_key: str
-) -> bool | None:
+) -> bool | HostSpawnDecision | None:
     """Post a spawn-approval prompt to the ORIGINATING Telegram conversation.
 
     Registered into the channel-neutral
     :mod:`~kiro_crew.messaging.spawn_approval_delivery` seam so the single
     host spawn gate can reach the same Approve/Deny/Trust keyboard the
     main-agent tool ladder already uses here. Returns the user's decision
-    (``True``/``False``), or ``None`` to tell the gate "not surfaced here,
+    (``True``/``False``), the host decline ``unpressed_wait_answer`` gives for a
+    wait that elapsed unpressed, or ``None`` to tell the gate "not surfaced here,
     fall through to Slack/dashboard" — for a key this dispatcher cannot turn
     back into a chat (``unified`` dm_scope drops the peer, a non-``telegram``
     key, an unparseable one), when the client is not up, when the
@@ -70,9 +72,9 @@ async def deliver_spawn_approval(
     across a rotation, and it stays a DENY: a rotation is the conversation
     moving on, not a withdrawal of the right to answer. An elapsed wait is a
     fall-through in one case only, when AUTHORIZATION ended during it -- the
-    prompt was surfaced, so otherwise ``False`` is a real decision and the gate
-    refuses the spawn on it. Two authorities can end authorization mid-wait and
-    both are re-read when the wait elapses: this conversation's own
+    prompt was surfaced, so otherwise the elapsed wait is the host's decline and
+    the gate refuses the spawn on it. Two authorities can end authorization
+    mid-wait and both are re-read when the wait elapses: this conversation's own
     authorization, which ``on_callback`` checks first for every press with no
     exemption (``_spawn_prompt_destination_permitted``, the same pair consulted
     before posting), and the operator's ``channels`` ceiling, whose reading

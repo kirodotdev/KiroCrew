@@ -381,8 +381,11 @@ class TestNudge(unittest.TestCase):
     def test_never_block_is_compressed(self):
         # It rides on EVERY turn, so its size is a running cost. The ceiling is a
         # bloat alarm rather than a budget: the labels it names are configurable, so
-        # a few of these words belong to whatever this repository called them.
-        self.assertLess(len(cr.never_block().split()), 125)
+        # a few of these words belong to whatever this repository called them. Every
+        # merge rule is measured, because each forge and setting renders a different one.
+        for kwargs in ({}, {"arm_auto_merge": True}, {"forge": provider.GITLAB}):
+            with self.subTest(**kwargs):
+                self.assertLess(len(cr.never_block(**kwargs).split()), 140)
 
     def test_writable_labels_falls_back_rather_than_naming_an_empty_label(self):
         """A blank or missing setting must not render as an empty backtick pair.

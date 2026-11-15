@@ -16,8 +16,8 @@ as one placeholder.
 These drive the real ``_run_chat`` through ``turn_harness.run_turn`` and read what
 the turn sent on the WebSocket, what it persisted, and what it queued for the
 slot's stream readers (the /api/chat SSE stream and the OpenAI-compatible
-replies). The key is the documented AWS example key, split so no literal sits in
-the repo.
+replies). The key is a synthetic AWS secret access key, split so no literal sits
+in the repo.
 """
 
 from __future__ import annotations
@@ -48,10 +48,14 @@ from kiro_crew.dashboard import chat_runner, openai_compat
 from kiro_crew.dashboard.chat_turn import turn_reply_seams
 from kiro_crew.dashboard.chat_utils import _build_stream_chunk
 from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-#: The AWS documentation's example access key id, split so no literal sits here.
-_HEAD, _TAIL = "AKIA", "IOSFODNN7EXAMPLE"
+#: A synthetic 40-character AWS secret access key, split so no literal sits here.
+#: An AWS key ID would not do: it is an identifier the redactor keeps visible.
+_HEAD, _TAIL = SAMPLE_AWS_SECRET[:4], SAMPLE_AWS_SECRET[4:]
 _KEY = _HEAD + _TAIL
+#: The start of an AWS key ID, a run that could still become a credential.
+_KEY_ID_HEAD = "AKIA"
 _TAG = REDACTED_CREDENTIAL_TAG
 #: A made-up URL credential parameter: the name, then a value no other pass reads
 #: as a secret, so only the name in front of it makes it one.
@@ -60,12 +64,20 @@ _PARAM, _VALUE = "?token=", "fakeParamValue123"
 #: credential pattern (its own coverage test keeps one per branch), a bare secret
 #: key, a base64-encoded credential, a URL parameter and an exfiltration URL. No
 #: leading space, so each is glued to the word written before it.
-_SHAPES = (
-    *(sample.lstrip() for sample in BRANCH_SAMPLES),
-    AWS_SECRET,
-    base64.b64encode(f"aws_secret_access_key={AWS_SECRET}".encode()).decode(),
-    _PARAM + _VALUE,
-    "https://collect.example.com/x?d=" + "A" * 250,
+#: Every sample ``redact`` removes. With the structured detectors on, a few pass-1
+#: samples stay visible by design (an AWS key ID, a session token shorter than the
+#: detectors' gate, a token with no valid checksum or JOSE header), so they are left
+#: out: nothing of them is withheld, so there is nothing to leak across a cut.
+_SHAPES = tuple(
+    value
+    for value in (
+        *(sample.lstrip() for sample in BRANCH_SAMPLES),
+        AWS_SECRET,
+        base64.b64encode(f"aws_secret_access_key={AWS_SECRET}".encode()).decode(),
+        _PARAM + _VALUE,
+        "https://collect.example.com/x?d=" + "A" * 250,
+    )
+    if redact(value) != value
 )
 
 _KINDS = ("permission_request", "tool_call")
@@ -375,8 +387,8 @@ class TestCredentialSplitAcrossABoundary:
 
 _PLAIN_ENDS = ("settled.", "playing.", "they've.", "Done.", "is.", "x.", "Okay.")
 _NOT_PLAIN_ENDS = (
-    _HEAD,
-    _HEAD + ".",
+    _KEY_ID_HEAD,
+    _KEY_ID_HEAD + ".",
     "SG.",
     "eyJ.",
     "IOSF.",
@@ -509,6 +521,18 @@ class TestHarmlessTextAcrossABoundary:
         assert _layout(record) == ["Let me check the config", "|", "uration file now."]
         # The bubble after the boundary streams only its own text.
         assert _chunks_after_boundary(record) == "uration file now."
+        assert mirrored == ["\n\n".join(_saved(record))]
+
+    @pytest.mark.asyncio
+    async def test_a_word_split_by_a_boundary_stays_put_through_the_next_one(
+        self, kind: str, mirrored: list[str]
+    ) -> None:
+        """A second boundary whose release is empty leaves the first one's held run
+        where the first cut put it, rather than moving it to the next row."""
+        record = await _turn(kind, "Let me check the config", "uration", "Done now.")
+
+        assert _saved(record) == ["Let me check the config", "uration", "Done now."]
+        assert _shown(record) == _saved(record)
         assert mirrored == ["\n\n".join(_saved(record))]
 
     @pytest.mark.asyncio

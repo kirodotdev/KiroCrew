@@ -2,8 +2,8 @@ import { useContext, useEffect, useRef, useState, type KeyboardEvent, type React
 import { createPortal } from 'react-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { fmtList } from '../../i18n/format'
-import { Check, Cpu, Gauge, Loader2, Puzzle, SendHorizontal, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
+import { fmtList, joinSentences } from '../../i18n/format'
+import { Check, Cpu, Gauge, Layers, Loader2, Puzzle, SendHorizontal, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
 import { api, type MemberRosterRow } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
@@ -23,12 +23,16 @@ import { Row, RowGroup, RowStatic, type TONE } from './profileRow'
 
 /** The approval modes a crewmate's record may pin, in label order; YOLO is process-global. */
 const MODES = ['normal', 'trust_reads', 'trust'] as const
-type Setting = 'approval_mode' | 'acp_backend' | 'model' | 'reasoning_effort' | 'worker_model' | 'worker_reasoning_effort'
+type Setting = 'approval_mode' | 'acp_backend' | 'model' | 'reasoning_effort' | 'worker_model' | 'worker_reasoning_effort' | 'max_workers'
 /** The record's "workers run the crewmate's own" spelling for both worker fields. */
 const SAME_AS_CREWMATE = ''
 /** A REAL worker-model pin, unlike the crewmate's own `model` where it means
  *  inherit: dispatched sessions run on the backend's default. */
 const WORKER_AUTO = 'auto'
+/** The worker limit the record spells as "no limit" (`max_workers: 0`). The
+ *  picker offers it first, then a few steps up to the server's ceiling of 32. */
+const NO_WORKER_LIMIT = '0'
+const MAX_WORKERS_OPTIONS = [NO_WORKER_LIMIT, '1', '2', '3', '4', '6', '8', '12', '16', '24', '32']
 
 /** The record's "inherit the install's harness" spelling for `acp_backend`. */
 const INHERIT_HARNESS = ''
@@ -148,6 +152,7 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
     reasoning_effort: String(member.reasoning_effort || ''),
     worker_model: String(member.worker_model || SAME_AS_CREWMATE),
     worker_reasoning_effort: String(member.worker_reasoning_effort || SAME_AS_CREWMATE),
+    max_workers: String(member.max_workers ?? NO_WORKER_LIMIT),
   }
   const value = (k: Setting) => draft[k] ?? stored[k]
   const mode = value('approval_mode')
@@ -275,7 +280,8 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
       }
       const body = key === 'approval_mode'
         ? { approval_mode: wire, expected_approval_mode: String(member.approval_mode ?? '') }
-        : { [key]: wire, ...resetModels }
+        // The worker limit is a number on the record; every other field is a string.
+        : { [key]: key === 'max_workers' ? Number(wire) : wire, ...resetModels }
       try {
         await api.updateKirocrewAgent(member.name, body)
       } catch (e) {
@@ -305,7 +311,7 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
         return
       }
       queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
-        rows?.map((r) => (r.name === member.name ? { ...r, [key]: wire } : r)))
+        rows?.map((r) => (r.name === member.name ? { ...r, [key]: key === 'max_workers' ? Number(wire) : wire } : r)))
       // The server applied the permission to the live thread in the same step
       // (PUT /api/agents/{name}). Model and effort still follow from here; if
       // that write fails the error says so, and the next thread uses the record.
@@ -370,22 +376,23 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
       if (!names.some((n) => n !== 'auto')) return undefined
       served = new Set(names.map(modelKey))
     }
-    return [
+    return joinSentences([
       modelPinned ? (served.has(modelKey(pinnedModel))
         ? t('pages.membersPage.profile_harness_keeps_model', { model: pinnedModel })
         : t('pages.membersPage.profile_harness_model_resets')) : '',
       workerPinned ? (served.has(modelKey(pinnedWorker))
         ? t('pages.membersPage.profile_harness_keeps_worker', { model: pinnedWorker })
         : t('pages.membersPage.profile_harness_worker_resets', { name })) : '',
-    ].filter(Boolean).join(' ')
+    ])
   }
-  const joinDesc = (...parts: (string | undefined)[]) => parts.filter(Boolean).join(' ') || undefined
+  const joinDesc = (...parts: (string | undefined)[]) => joinSentences(parts) || undefined
   // The known limits of a harness, under its label, before it is picked.
   const harnessLimit = (h: string) => {
     if (harnessUnavailable(h)) return t('pages.membersPage.profile_harness_cannot_start')
     if (workerHarnesses && !workerHarnesses.includes(h)) return t('pages.membersPage.profile_harness_no_workers', { name })
     return undefined
   }
+  const workerCapLabel = (n: string) => (n === NO_WORKER_LIMIT ? t('pages.membersPage.profile_worker_cap_none') : n)
   const workerModelLabel = (m: string) => (
     m === SAME_AS_CREWMATE ? t('pages.membersPage.profile_worker_same_as', { name }) : m === WORKER_AUTO ? t('pages.membersPage.profile_worker_auto') : m
   )
@@ -471,7 +478,7 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
       icon: <Users size={16} />, tone: 'info',
       value: workerModel, valueLabel: workerModelLabel(workerModel),
       options: workerModelOptions.map((m) => ({ value: m, label: workerModelLabel(m) })),
-      caption: [
+      caption: joinSentences([
         workerModel === SAME_AS_CREWMATE
           ? t('pages.membersPage.profile_worker_same_hint', { name, model: ownModelNoun })
           : workerModel === WORKER_AUTO
@@ -480,7 +487,7 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
         // Says what is true when the effort row folds: the setting does not apply
         // to that model. Never "no reasoning", which reads as a downgrade.
         workerEffortRowShown ? '' : t('pages.membersPage.profile_worker_no_effort_hint'),
-      ].filter(Boolean).join(' '),
+      ]),
     },
     ...(workerEffortRowShown ? [{
       // '' means "the crewmate's own level" only while the workers run the
@@ -502,6 +509,16 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
           ? (ownEffort ? t('pages.membersPage.profile_worker_effort_same_hint', { name, effort: effortLabel(ownEffort) }) : undefined)
           : t('pages.membersPage.profile_worker_effort_default_hint', { name, effort: ownEffort ? ` (${effortLabel(ownEffort)})` : '' }),
     }] : []),
+    {
+      // The owner's limit on how many workers the Bot keeps open at once.
+      // Only this card writes it: no Bot tool does, so the Bot cannot raise it.
+      key: 'max_workers',
+      label: t('pages.membersPage.profile_worker_cap'),
+      icon: <Layers size={16} />, tone: 'info',
+      value: value('max_workers'), valueLabel: workerCapLabel(value('max_workers')),
+      options: withCurrent(MAX_WORKERS_OPTIONS, value('max_workers')).map((n) => ({ value: n, label: workerCapLabel(n) })),
+      caption: t('pages.membersPage.profile_worker_cap_hint', { name }),
+    },
   ]
   // The page last shown keeps painting through the card's exit slide. When its
   // row folded (the pick made on it cleared a stale level, so the row left

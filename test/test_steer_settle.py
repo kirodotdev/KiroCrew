@@ -10,6 +10,7 @@ from __future__ import annotations
 from itertools import permutations
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp._dispatch import redact_text
 from kiro_crew.acp.types import escape_user_message_markup, wrap_user_message
@@ -17,6 +18,10 @@ from kiro_crew.dashboard.steer_settle import (
     possibly_consumed_steers,
     settle_consumed_steers,
 )
+
+# Two different tokens with valid checksums; redact_text masks both the same way.
+_TOKEN_A = github_classic(seed=31)
+_TOKEN_B = github_classic(seed=32)
 
 
 def _echo(*messages: str) -> str:
@@ -52,8 +57,8 @@ def test_a_redaction_collision_settles_nothing_rather_than_guessing():
     suppresses the requeue, so that question would be delivered nowhere. Both stay
     pending instead: the requeue re-asks visibly, which is recoverable.
     """
-    a = "deploy with AKIAIOSFODNN7EXAMPLE now"
-    b = "deploy with AKIAI44QH8DHBEXAMPLE now"
+    a = f"deploy with {_TOKEN_A} now"
+    b = f"deploy with {_TOKEN_B} now"
     # Precondition: the two really do collide once redacted, or this test proves
     # nothing about the case it names.
     assert redact_text(a) == redact_text(b), "fixture no longer collides"
@@ -65,8 +70,8 @@ def test_a_redaction_collision_settles_nothing_rather_than_guessing():
 def test_a_redaction_collision_settles_when_every_member_was_echoed():
     """Ambiguity is about attribution, not about redaction. When the echo accounts
     for the whole group there is nothing left to attribute, so both settle."""
-    a = "deploy with AKIAIOSFODNN7EXAMPLE now"
-    b = "deploy with AKIAI44QH8DHBEXAMPLE now"
+    a = f"deploy with {_TOKEN_A} now"
+    b = f"deploy with {_TOKEN_B} now"
     key = redact_text(a)
     assert redact_text(b) == key
 
@@ -117,8 +122,8 @@ def test_a_redacted_echo_still_settles_its_steer():
     credential-bearing steer comes back with the secret replaced. Comparing that
     against the RAW pending text never matched, and the unmatched steer was
     requeued — running an already-injected question a second time."""
-    # An AWS access key ID is a pattern redact_text actually rewrites.
-    question = "deploy using AKIAIOSFODNN7EXAMPLE now"
+    # A GitHub token is a pattern redact_text actually rewrites.
+    question = f"deploy using {_TOKEN_A} now"
 
     # The echo carries what ACP produced: the redacted form.
     from kiro_crew.acp._dispatch import redact_text
@@ -173,7 +178,7 @@ def test_a_bare_echo_settles_a_redacted_steer():
     comparing that against the RAW pending text would never match and the entry
     would be requeued — re-running an already-injected question, on exactly the
     questions where that is least acceptable."""
-    question = "deploy using AKIAIOSFODNN7EXAMPLE now"
+    question = f"deploy using {_TOKEN_A} now"
     echoed = redact_text(question)
     assert echoed != question, "fixture is pointless unless redaction changes it"
     assert settle_consumed_steers([question], echoed) == []

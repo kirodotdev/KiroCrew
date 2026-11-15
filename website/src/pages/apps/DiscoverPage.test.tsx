@@ -26,7 +26,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, screen, fireEvent, waitFor } from '@testing-library/react'
-import { renderWithProviders } from '../../test/helpers'
+import { createConnectedTestStore, renderWithProviders } from '../../test/helpers'
 
 const { refreshAppStore, refreshRegistries } = vi.hoisted(() => ({
   refreshAppStore: vi.fn(),
@@ -51,7 +51,9 @@ vi.mock('../../i18n/t', async importOriginal => {
 
 // An empty, settled data shape: no featured blocks, no shelf rows, no pending
 // updates — the page renders its empty states and the header controls, which is
-// all the refresh wiring needs.
+// all the refresh wiring needs. `shelf` lets one test fill the browse list.
+const shelf = vi.hoisted(() => ({ browseApps: [] as unknown[], categories: [] as unknown[] }))
+
 vi.mock('./useAppsData', async importOriginal => {
   const orig = await importOriginal<typeof import('./useAppsData')>()
   return {
@@ -62,9 +64,9 @@ vi.mock('./useAppsData', async importOriginal => {
       appsError: null,
       registryError: null,
       loading: false,
-      browseApps: [],
+      browseApps: shelf.browseApps,
       featuredSections: [],
-      categories: [],
+      categories: shelf.categories,
       sources: [],
       installedApps: [],
       updatables: [],
@@ -135,6 +137,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   sessionStorage.clear()
   pageSetError = null
+  shelf.browseApps = []
+  shelf.categories = []
   refreshAppStore.mockResolvedValue({ ok: true })
   refreshRegistries.mockResolvedValue(registriesResult())
 })
@@ -144,7 +148,7 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
     refreshRegistries.mockResolvedValue(
       registriesResult({ ok: false, failed: ['broken-registry'] }),
     )
-    renderWithProviders(<DiscoverPage />)
+    renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
     await clickRefresh()
     expect(await screen.findByText(FAILED_BANNER)).toBeInTheDocument()
   })
@@ -158,7 +162,7 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
         { name: 'down-registry', ok: false },
       ],
     }))
-    renderWithProviders(<DiscoverPage />)
+    renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
     await clickRefresh()
     expect(await screen.findByText(
       'components.registryManager.refresh_sign_in_refused '
@@ -169,7 +173,7 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
 
   it('surfaces a rejected refresh POST via its error message, and still refetches', async () => {
     refreshRegistries.mockRejectedValue(new Error('registry backend unreachable'))
-    const { queryClient } = renderWithProviders(<DiscoverPage />)
+    const { queryClient } = renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     await clickRefresh()
     expect(
@@ -183,7 +187,7 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
 
   it('keeps both sources firing: a rejected store refresh still reports, and the registries call still ran', async () => {
     refreshAppStore.mockRejectedValue(new Error('store refresh failed'))
-    renderWithProviders(<DiscoverPage />)
+    renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
     await clickRefresh()
     expect(await screen.findByText('store refresh failed')).toBeInTheDocument()
     expect(refreshRegistries).toHaveBeenCalledTimes(1)
@@ -193,7 +197,7 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
     refreshRegistries.mockResolvedValue(
       registriesResult({ ok: false, failed: ['broken-registry'] }),
     )
-    const { queryClient } = renderWithProviders(<DiscoverPage />)
+    const { queryClient } = renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     await clickRefresh()
     expect(await screen.findByText(FAILED_BANNER)).toBeInTheDocument()
@@ -207,7 +211,7 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
     refreshRegistries.mockResolvedValueOnce(
       registriesResult({ ok: false, failed: ['broken-registry'] }),
     )
-    renderWithProviders(<DiscoverPage />)
+    renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
     await clickRefresh()
     expect(await screen.findByText(FAILED_BANNER)).toBeInTheDocument()
 
@@ -222,7 +226,7 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
   it('says so when the refreshed listing is the offline fallback', async () => {
     // Offline the store POST still resolves ok and the listing still answers
     // 200, so only the listing's own flag can explain why the store shrank.
-    const { queryClient } = renderWithProviders(<DiscoverPage />)
+    const { queryClient } = renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
     queryClient.setQueryData(['registry'], { apps: [], catalogUnavailable: true })
     await clickRefresh()
     expect(await screen.findByText('pages.appsPage.store_catalog_unreachable')).toBeInTheDocument()
@@ -235,7 +239,7 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
   })
 
   it('leaves a banner another writer set alone on a successful refresh', async () => {
-    renderWithProviders(<DiscoverPage />)
+    renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
     await screen.findByRole('button', { name: REFRESH_LABEL })
 
     // Stand in for the update hook reporting a failed Update All — the same
@@ -246,5 +250,20 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
 
     await clickRefresh()
     expect(screen.getByText(foreign)).toBeInTheDocument()
+  })
+})
+
+describe('DiscoverPage category names', () => {
+  it('names a category by its catalog label in the rail and the heading, and still filters by its id', async () => {
+    // The category id ('Developer Tools') is English by design; only its
+    // catalog label may be shown. `i18nT` echoes the key, so the key on screen
+    // proves the label went through the catalog.
+    shelf.browseApps = [{ name: 'demo', displayName: 'Demo', description: '', version: '1.0.0', author: 'acme', tags: ['developer-tools'] }]
+    shelf.categories = [{ category: 'Developer Tools', count: 1 }]
+    renderWithProviders(<DiscoverPage />)
+    fireEvent.click(await screen.findByRole('radio', { name: 'components.appstore.categories.developer_tools 1' }))
+    expect(screen.getByRole('heading', { level: 3, name: 'components.appstore.categories.developer_tools' })).toBeInTheDocument()
+    expect(screen.getByText('Demo')).toBeInTheDocument()
+    expect(screen.queryByText('Developer Tools')).toBeNull()
   })
 })

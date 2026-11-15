@@ -20,6 +20,19 @@ describe('ChatInput arrow-key prompt history setting', () => {
     expect(onChange).toHaveBeenLastCalledWith('second')
   })
 
+  it('leaves ↑ alone in a read-only (disabled) composer', () => {
+    const onChange = vi.fn()
+    const onEditLastRequest = vi.fn()
+    renderWithProviders(<ChatInput {...defaultProps} value="" disabled onChange={onChange} onEditLastRequest={onEditLastRequest} sentMessages={sent} />)
+    const ta = screen.getByLabelText('Message input')
+    fireEvent.keyDown(ta, { key: 'ArrowUp' })
+    fireEvent.keyDown(ta, { key: 'ArrowUp', ctrlKey: true, metaKey: true })
+    fireEvent.keyDown(ta, { key: 'ArrowUp', ctrlKey: true })
+    fireEvent.keyDown(ta, { key: 'ArrowUp', metaKey: true })
+    expect(onChange).not.toHaveBeenCalled()
+    expect(onEditLastRequest).not.toHaveBeenCalled()
+  })
+
   it('leaves ↑ to the caret when the setting is off', () => {
     saveChatConfig({ ...loadChatConfig(), arrowKeyPromptHistory: false })
     const onChange = vi.fn()

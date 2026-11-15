@@ -23,7 +23,7 @@ import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
 import chatReducer, { appendMessage } from '../store/chatSlice'
-import dashboardReducer from '../store/dashboardSlice'
+import dashboardReducer, { sseDisconnected } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
 /** The per-chip single-click debounce in FollowUpBar; one click = one onSelect. */
@@ -371,5 +371,75 @@ describe('ChatPage plan-shaped follow-ups', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send now: Go All' }))
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
     expect(JSON.stringify((api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0])).toContain('"Go All"')
+  })
+})
+
+describe('ChatPage command-shaped follow-ups under quick send', () => {
+  it('picks a command chip into a non-empty draft instead of sending it, then a second click takes it out', async () => {
+    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: true })
+    await renderPage('Done.\n\n[OPTIONS: /clear | Merge it now]', '', 'Merge it now')
+    fireEvent.change(composer(), { target: { value: 'note' } })
+    vi.useFakeTimers()
+    await act(async () => { clickOption('/clear') })
+    expect(composer().value).toBe('note, /clear')
+    expect(chip('/clear').className).toContain('glass-accent')
+    await act(async () => { clickOption('/clear') })
+    expect(composer().value).toBe('note')
+    expect(chip('/clear').className).not.toContain('glass-accent')
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+})
+
+/** A discussion card's Start / No thanks, as GrillCard dispatches it. */
+function cardSend(text: string, slot: string) {
+  const detail: { text: string; slot: string; result: string | null } = { text, slot, result: null }
+  act(() => { window.dispatchEvent(new CustomEvent('mc:compose-send', { detail })) })
+  return detail.result
+}
+
+describe('ChatPage discussion-card sends (the follow-up chips\' Quick Send gate)', () => {
+  it('puts the text in the chat box when Quick Send is off', async () => {
+    await renderPage()
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('staged')
+    await waitFor(() => expect(composer().value).toBe('不用讨论了'))
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('sends it to the card\'s chat when Quick Send is on', async () => {
+    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: true })
+    await renderPage()
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('sent')
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    const [wireText, slot] = (api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(wireText).toBe('不用讨论了')
+    expect(slot).toBe('chat-1')
+  })
+
+  it('stages instead of sending while a chip selection is open, as a chip click would', async () => {
+    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: true })
+    await renderPage()
+    vi.useFakeTimers()
+    await act(async () => { clickOption('Deploy', { shiftKey: true }) })
+    vi.useRealTimers()
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('staged')
+    await waitFor(() => expect(composer().value).toBe('Deploy\n\n不用讨论了'))
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('stages instead of sending while the gateway is offline', async () => {
+    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: true })
+    const store = await renderPage()
+    act(() => { store.dispatch(sseDisconnected(null)) })
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('staged')
+    await waitFor(() => expect(composer().value).toBe('不用讨论了'))
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('leaves a card from another chat alone', async () => {
+    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: true })
+    await renderPage()
+    expect(cardSend('不用讨论了', 'chat-2')).toBeNull()
+    expect(api.sendChat).not.toHaveBeenCalled()
+    expect(composer().value).toBe('')
   })
 })

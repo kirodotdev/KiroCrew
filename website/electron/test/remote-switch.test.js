@@ -118,6 +118,7 @@ function harness({
       events.push(`connect:${url}`);
       if (failures.connect) throw failures.connect;
     },
+    applySavedTunnelChoice: () => events.push("applySavedTunnelChoice"),
   });
   return { owner, store, window, state, events, prompts, dialogs, starts, logs };
 }
@@ -199,6 +200,8 @@ test("a saved form stops the local gateway, then records the crew and connects t
     "stop:crew=",
     "waitForPortFree",
     "switching:false",
+    // The stated tunnel choice stands before the launch probes the port.
+    "applySavedTunnelChoice",
     "startGateway:local=false",
     "connect:http://localhost:5476",
   ]);

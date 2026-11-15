@@ -392,7 +392,7 @@ def test_shipped_preregistered_providers_refuse_dcr_in_their_l0_baseline():
 
 def test_shipped_preregistered_providers_carry_the_operator_instruction():
     for provider in get_preregistered_providers():
-        assert "Settings → OAuth Apps" in provider["prerequisite_copy"], provider["slug"]
+        assert "Settings → Connections" in provider["prerequisite_copy"], provider["slug"]
 
 
 def test_every_shipped_registration_guide_exists_on_disk():
@@ -424,3 +424,11 @@ def test_google_setup_script_covers_every_google_card(script):
         assert redirect_uri(provider) in text, (script, provider["slug"])
         for scope in provider["recommended_scopes"]:
             assert scope in text, (script, provider["slug"], scope)
+
+
+@pytest.mark.parametrize("script", ["google-oauth-setup.sh", "google-oauth-setup.ps1"])
+def test_google_setup_script_names_where_to_paste_the_client(script):
+    """Its last step names the one Google entry on Settings → Connections, not the old tab."""
+    text = (REPO_ROOT / "scripts" / script).read_text(encoding="utf-8")
+    assert "Settings -> Connections -> Google" in text, script
+    assert "OAuth Apps" not in text, script

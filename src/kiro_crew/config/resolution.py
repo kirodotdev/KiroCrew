@@ -150,7 +150,7 @@ _SECTION_KEYS_RENAMED: dict = {
     # older spellings would leave two of them in the file at once, so a user who
     # turns the canonical grant OFF could still have an old `yolo: true` sitting
     # beside it — a contradiction in the one key that controls standing,
-    # unattended auto-approval. See sections._read_dangerously_skip_permissions.
+    # unattended auto-approval. See sections_agent._read_skip_permissions.
     "agent": frozenset({"dangerouslySkipPermissions", "yolo"}),
     # RENAMED: knowledge.auto_add_documents was auto_ingest_doc_links;
     # sections._read_auto_add_documents still reads the old spelling.
@@ -469,7 +469,7 @@ def _deep_merge(base: dict, overlay: dict) -> dict:
 
 #: Renamed keys a reader still accepts, per section: each canonical key and its
 #: older spellings, in the order the reader tries them
-#: (``sections_agent._read_dangerously_skip_permissions``,
+#: (``sections_agent._read_skip_permissions``,
 #: ``memory_sections._read_auto_add_documents``).
 _RENAMED_KEY_SPELLINGS: dict[str, dict[str, tuple[str, ...]]] = {
     "agent": {"dangerously_skip_permissions": ("dangerouslySkipPermissions", "yolo")},
@@ -664,6 +664,16 @@ def tailnet_effective_allowed_logins(
 #: The operator's fix is to correct the file and restart the gateway, which is
 #: the same ceremony every other boot-time config decision already requires.
 _OBSERVED_DEGRADED_SECTIONS: set[str] = set()
+
+
+def observed_degraded_sections() -> frozenset[str]:
+    """Every degradation this process has observed, read-only (see above).
+
+    For a gate whose config snapshot can come from a path that does not carry
+    ``degraded_sections`` along (a live reload that copies fields onto a cached
+    config): the sticky record is the one answer every path agrees on.
+    """
+    return frozenset(_OBSERVED_DEGRADED_SECTIONS)
 
 
 def reset_degraded_observations() -> None:

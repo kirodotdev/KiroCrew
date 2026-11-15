@@ -6,6 +6,7 @@ it relaunches the session.
 from __future__ import annotations
 
 import contextlib
+import json
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -141,7 +142,7 @@ def _model_rejected_reason(
 
 
 def _is_jev_route_pick(raw: object) -> bool:
-    """Whether a request body's ``model`` is the "Auto (Jev)" sentinel.
+    """Whether a request body's ``model`` is the "Auto (decision model)" sentinel.
 
     Exact identity on a stripped string. A near-miss spelling is NOT this entry
     and falls through to the ordinary model path, where the guard refuses it --
@@ -204,6 +205,13 @@ async def _reapply_effort_after_live_switch(
         # Through the class: the shared body the provider's own set_model runs.
         return await AcpProvider.reapply_live_effort(provider, slot.reasoning_effort)
     except Exception as exc:
+        if getattr(exc, "command_refused", False) is True:
+            # kiro-cli refused the level for this model and nothing changed; a
+            # reset would cold-start on the same level and lose the live session.
+            logger.warning(
+                "Effort re-apply after live model switch refused for slot %s: %s", name, exc
+            )
+            return True
         logger.warning(
             "Effort re-apply after live model switch failed for slot %s: %s: %s"
             " — falling back to reset",
@@ -362,6 +370,37 @@ def _broadcast_context_reset(state: "DashboardState", slot_key: str, provider: A
         logger.exception("Failed to broadcast context_usage reset for slot %s", slot_key)
 
 
+def _read_model_field(body: dict) -> tuple[str, str, web.Response | None]:
+    """The body's ``model`` as text, a warning to return, or the 400 refusing it.
+
+    ``null`` is read as the default (``""``), with a warning. Any other non-string
+    is refused: saved to the slot, it breaks every later read of ``slot.model``.
+    """
+    raw = body.get("model", "")
+    if raw is None:
+        return "", "model was null; read as the default model", None
+    if not isinstance(raw, str):
+        return (
+            "",
+            "",
+            web.json_response(
+                {"error": "model must be a string", "code": "invalid_model"}, status=400
+            ),
+        )
+    return raw, "", None
+
+
+def _with_warning(resp: web.Response, warning: str) -> web.Response:
+    """*resp* with *warning* added to its JSON body, when it is a success."""
+    if not warning or not 200 <= resp.status < 300 or resp.body is None:
+        return resp
+    payload = json.loads(resp.body)  # type: ignore[arg-type]
+    prior = payload.get("warning")
+    payload["warning"] = f"{prior} {warning}" if prior else warning
+    resp.text = json.dumps(payload)
+    return resp
+
+
 async def api_chat_slot_model(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/model — set model for a chat slot.
 
@@ -384,9 +423,13 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    return await switch_slot_model(
-        state, slot, name, body.get("model", ""), SlotAgentSwitchCaller.for_request(request)
+    raw_model, warning, refusal = _read_model_field(body)
+    if refusal is not None:
+        return refusal
+    resp = await switch_slot_model(
+        state, slot, name, raw_model, SlotAgentSwitchCaller.for_request(request)
     )
+    return _with_warning(resp, warning)
 
 
 async def switch_slot_model(
@@ -401,9 +444,9 @@ async def switch_slot_model(
     *caller* says who asked (see :class:`SlotAgentSwitchCaller`): the route passes
     its request, the chat runner's command passes ``for_turn``, so the busy rules,
     the deferral and the owner gate are the same for both. A turn caller is never
-    the owner, so it cannot arm "Auto (Jev)".
+    the owner, so it cannot arm "Auto (decision model)".
     """
-    # The "Auto (Jev)" entry is resolved HERE and nowhere else: every reader below
+    # The "Auto (decision model)" entry is resolved HERE and nowhere else: every reader below
     # -- the guard, the live switch, the reset, the session allocation, the
     # composer chip -- takes the id it produces, which is the plain ``auto`` the
     # session actually runs on until a tier is answered. The choice itself
@@ -550,7 +593,7 @@ async def switch_slot_model(
                 pass
             slot._model_pick_gen += 1
             # The one place the flag is recorded on this path, and the reason it is
-            # not written before the branch: an unpinned slot picking "Auto (Jev)"
+            # not written before the branch: an unpinned slot picking "Auto (decision model)"
             # resolves to the ``auto`` it already holds and lands HERE, so a write
             # placed only in the transaction below would never run for the
             # commonest case. This shortcut is a success, so committing is correct.
@@ -953,7 +996,10 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    model_name = _normalize_model(body.get("model", ""))
+    raw_model, warning, refusal = _read_model_field(body)
+    if refusal is not None:
+        return refusal
+    model_name = _normalize_model(raw_model)
     # One pick lands on every slot, so it must pass on every slot's harness.
     reason = _model_rejected_reason(
         model_name, session_keys=[effective_session_key(s) for s in list(state._slots.values())]
@@ -1151,7 +1197,7 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
             # Explicit pick (bulk): same generation bump as the single-slot pick.
             slot._model_pick_gen += 1
             # And the same clearing of the routing choice. This surface takes no
-            # "Auto (Jev)" target -- it switches many sessions to one model, which
+            # "Auto (decision model)" target -- it switches many sessions to one model, which
             # is the opposite of a per-turn tier -- but it is an explicit pick, so
             # leaving the flag set would route the next turn away from the model
             # the owner just chose for this slot.
@@ -1185,5 +1231,6 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
             "skipped_running": skipped_running,
             "unchanged": unchanged,
             "failed": failed,
+            **({"warning": warning} if warning else {}),
         }
     )

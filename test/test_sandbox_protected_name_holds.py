@@ -50,14 +50,14 @@ def _no_host_ssh_probe(monkeypatch):
 
 TIERS = ("standard", "cc", "strict")
 
-#: Protected names held by an ENCLOSING stand-in mask today. Measured, not aspired
-#: to: it is EMPTY, because nothing in the launcher holds a protected
-#: name for the namespace lifetime. Every mask is placed once, at spawn.
+#: Protected names held by an ENCLOSING stand-in mask today. The scratch
+#: index stays behind the whole scratch-root mask for the namespace lifetime,
+#: including after the gateway atomically republishes the index.
 #:
 #: A fix that gives a name a durable hold adds it here, and the equality
 #: assertion below then locks it: the name can never fall back to leaf-name
 #: holding without this constant being edited in the same diff.
-HELD_BY_ENCLOSING_MASK: frozenset[str] = frozenset()
+HELD_BY_ENCLOSING_MASK: frozenset[str] = frozenset({"scratch/.trees.json"})
 
 
 def _launcher_sets(tier: str) -> tuple[list[str], list[str]]:
@@ -480,7 +480,56 @@ class TestLeafOnlyPopulationIsRecorded:
     #: and no-follow like ``kas-mcp-launch`` so an agent cannot choose what a later
     #: bridge connects as. Each snapshot is written by a rename INSIDE it, so its own
     #: inode stays the same; at the data-home root, so leaf-only is the only hold.
-    EXPECTED: dict[str, int] = {"standard": 327, "cc": 334, "strict": 335}
+    #: One more root-level file, ``update_next_start.json`` -- the update armed for the
+    #: next start, which the boot-time apply installs on. Sealed read-only so an agent
+    #: cannot arm one. It sits at the data-home root beside writable siblings and is
+    #: published by a rename, so leaf-only is the only hold, as for ``computer_use.json``.
+    #: One more root-level directory, three entries per tier: ``update-staging`` -- the
+    #: self-update engine's wheel download directory, masked whole so no sandboxed
+    #: writer can replace a wheel between its digest check and pip's install. It moved
+    #: out of the sandbox read-write ``trust/``; at the data-home root beside writable
+    #: siblings, so leaf-only is the only hold, as for ``web-push``.
+    #: One more root-level file, ``project_hooks_consent.json`` -- the owner's
+    #: per-folder choice to run a checkout's own agent-spec hooks on KAS, sealed
+    #: read-only so an agent cannot turn a folder's hooks on for itself; a file at
+    #: the data-home root, so leaf-only is the only hold, as for
+    #: ``ssh_auth_sock_consent.json``.
+    #:
+    #: Four app-declared directories, a dozen entries per tier (the data and the
+    #: lifecycle's move-aside spelling, at each data-home spelling):
+    #:
+    #: * ``apps/meetings/data/notes`` and ``apps/spec-builder/data/trust`` -- the
+    #:   directories the two built-ins declare in ``agentReadOnlyDirs``
+    #:   (``apps.agent_readonly_dirs``), sealed read-only so an agent can neither
+    #:   rewrite the owner's notes nor forge or erase a recorded decision. Each app
+    #:   writes by a create or rename INSIDE its directory, so the directory's own
+    #:   inode stays the same on a republish. The parent is the app's data
+    #:   directory, which agents read and write, so an enclosing mask would hide the
+    #:   app's data and leaf-only is the only hold, as for ``host-exec-grants``.
+    #:
+    #: Two more root-level leaves, three entries per tier each (one per data-home path):
+    #:
+    #: * ``chat_steering_off.json`` -- the steering files each chat switched off,
+    #:   sealed read-only so an agent cannot switch off a rule for its own chat. A
+    #:   file at the data-home root beside writable siblings, rewritten in place,
+    #:   so leaf-only is the only hold, as for ``shared_crew_preview.json``.
+    #: * ``mcp_body_fields.json`` -- the MCP message-body fields the owner
+    #:   allowed, sealed read-only so an agent cannot allow its own fields past
+    #:   the tool_input size ceiling. A file at the data-home root beside
+    #:   writable siblings, so leaf-only is the only hold, as for
+    #:   ``credential_redaction.json``.
+    #:
+    #: ``import-staging`` adds three entries per tier. The gateway extracts and
+    #: removes temporary trees INSIDE this masked directory, never replacing the
+    #: directory itself. Its parent is the data-home root beside writable siblings,
+    #: so no enclosing stand-in can hold it: leaf-only by design, like update-staging.
+    #:
+    #: Six more per tier, one app-declared directory: Notes' ``state/`` under its data
+    #: directory (``credentialMasks``), at both data-home spellings and their move-aside
+    #: spellings, plus the relocated home. Its parent ``data/`` holds the app's logs, so
+    #: it cannot take a stand-in; nothing republishes ``state`` itself (its writers rename
+    #: files INSIDE it), and its parents are pinned against rename.
+    EXPECTED: dict[str, int] = {"standard": 363, "cc": 370, "strict": 371}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

@@ -92,7 +92,6 @@ class TestRankingParity:
     """The numpy path is held to the Python loop: same rows in, same ranking out."""
 
     def test_numpy_and_fallback_rank_identically(self, store, monkeypatch):
-        pytest.importorskip("numpy")
         rng = random.Random(8890)
         ids = _mixed_corpus(store, rng)
         query_vec = _vec(rng)
@@ -117,7 +116,6 @@ class TestRankingParity:
     def test_numpy_that_fails_to_import_falls_back_to_python(self, store, monkeypatch):
         """numpy found on disk but unloadable (broken wheel, missing BLAS):
         the leg answers from the Python scorer instead of failing the search."""
-        pytest.importorskip("numpy")
         rng = random.Random(8891)
         _mixed_corpus(store, rng)
         retriever = _retriever(store, _vec(rng))
@@ -136,7 +134,8 @@ class TestRankingParity:
     def test_numpy_path_takes_the_matrix_route(self, store, monkeypatch):
         """The fast path really is taken: every packed row is viewed by ONE
         ``frombuffer`` over the joined blobs, not unpacked row by row."""
-        np = pytest.importorskip("numpy")
+        import numpy as np
+
         rng = random.Random(1)
         _mixed_corpus(store, rng)
         retriever = _retriever(store, _vec(rng))
@@ -156,7 +155,6 @@ class TestRankingParity:
     def test_scores_match_to_float64_rounding(self, store):
         """Beyond rank order: the raw cosines agree to double rounding, so a
         downstream threshold cannot see which path produced them."""
-        pytest.importorskip("numpy")
         rng = random.Random(2)
         _mixed_corpus(store, rng)
         query_vec = _vec(rng)
@@ -171,7 +169,6 @@ class TestRankingParity:
             assert a == pytest.approx(b, rel=1e-12, abs=1e-12)
 
     def test_zero_query_vector_ranks_nothing_on_both_paths(self, store, monkeypatch):
-        pytest.importorskip("numpy")
         rng = random.Random(3)
         _mixed_corpus(store, rng)
         retriever = _retriever(store, [0.0] * _DIM)
@@ -303,7 +300,8 @@ class TestBatching:
     """The numpy scorer works in bounded batches and the batch seam is invisible."""
 
     def test_batched_scoring_matches_python_path_and_keeps_order(self, store, monkeypatch):
-        np = pytest.importorskip("numpy")
+        import numpy as np
+
         rng = random.Random(5)
         _mixed_corpus(store, rng)
         for i in range(9):
@@ -335,7 +333,6 @@ class TestBatching:
         """A legacy JSON corpus does not accumulate every decoded list before any
         scoring happens: decoding and scoring interleave at the batch boundary, so
         working memory is bounded by the batch and not by the library."""
-        pytest.importorskip("numpy")
         rng = random.Random(6)
         for i in range(10):
             store.add_item(f"json {i}", "c", "doc", embedding=json.dumps(_vec(rng)).encode())

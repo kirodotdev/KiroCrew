@@ -1,0 +1,11 @@
+extends:
+  - recommended
+apis:
+  public:
+    root: crew-public.yaml
+  owner:
+    root: crew-owner.yaml
+  components:
+    root: components.yaml
+    rules:
+      no-unused-components: off

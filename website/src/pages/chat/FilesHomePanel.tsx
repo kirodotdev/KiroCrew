@@ -5,6 +5,7 @@ import { FileText, ExternalLink, TerminalSquare, MoreHorizontal, AppWindow, File
 import { useBranding } from '../../hooks/useBranding'
 import { revealOrOpen, useCanReveal, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
 import ErrorNotice from '../../components/ErrorNotice'
+import TruncatedText from '../../components/TruncatedText'
 import { Btn } from '../../components/ui'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
@@ -214,7 +215,7 @@ export default function FilesHomePanel({ projectDir, slot, title, onFileOpen, on
     <div className="flex flex-col h-full min-h-0">
       <div className="flex items-center gap-2 h-[38px] px-3 shrink-0 border-b border-border">
         <span className="text-[12px] font-semibold text-text-strong">{title ?? t('pages.chat.filesHome.title')}</span>
-        {projectDir && <span className="text-[11.5px] text-muted truncate" title={projectDir}>{basename(projectDir)}</span>}
+        {projectDir && <TruncatedText full={projectDir} className="text-[11.5px] text-muted">{basename(projectDir)}</TruncatedText>}
         <span className="flex-1" />
         {projectDir && (
           <>

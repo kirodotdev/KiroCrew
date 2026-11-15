@@ -456,7 +456,14 @@ def _dispatch_turn(
     except Exception:  # pragma: no cover - resolver always present in prod
         bounded_chat_turn = None  # type: ignore[assignment]
 
+    # circular import (see module header): dashboard.server imports this module.
+    from kiro_crew.dashboard.slot_buffers import flush_restored_hold
+
     if append_user:
+        # A hold a restart restored into this idle slot is owed to this turn,
+        # above its user row. A replay whose row is already written keeps the
+        # hold for its cycle end: a flush now would land under that row.
+        flush_restored_hold(slot, logger=logger)
         if message_meta:
             slot.append("user", message, meta=message_meta)
         else:

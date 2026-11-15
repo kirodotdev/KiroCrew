@@ -38,6 +38,7 @@ from pdf_test_helpers import flate_bomb_pdf, text_pdf
 
 from kiro_crew.dashboard.handlers import api_file_grep
 from kiro_crew.dashboard.handlers import files as f
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 #: Skips the ripgrep half of a parity pair on a host without the binary.
 #:
@@ -639,7 +640,8 @@ class TestDocumentPass:
 
     @pytest.mark.asyncio
     async def test_a_workbook_reports_its_sheet_and_row(self, tmp_path):
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         root = tmp_path / "sheets"
         root.mkdir()
         book = openpyxl.Workbook()
@@ -658,7 +660,6 @@ class TestDocumentPass:
     ):
         """openpyxl opens the container itself, so without the inventory vet a
         crafted workbook reaches the XML parser on its extension alone."""
-        pytest.importorskip("openpyxl")
         path = tmp_path / "bomb.xlsx"
         with zipfile.ZipFile(path, "w") as zf:
             zf.writestr("xl/workbook.xml", "<workbook/>")
@@ -797,11 +798,11 @@ class TestPreviewRedaction:
         root = tmp_path / "secrets"
         root.mkdir()
         (root / "settings.py").write_text(
-            'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"  # deploy key\n', encoding="utf-8"
+            'AWS_KEY = "' + SAMPLE_SLACK_BOT_TOKEN + '"  # deploy key\n', encoding="utf-8"
         )
         payload = await _grep(root, "deploy key")
         preview = payload["results"][0]["preview"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in preview
+        assert SAMPLE_SLACK_BOT_TOKEN not in preview
         assert "deploy key" in preview  # the match itself still reads
 
     @pytest.mark.asyncio
@@ -813,19 +814,19 @@ class TestPreviewRedaction:
         root.mkdir()
         _write_docx(
             root / "runbook.docx",
-            ["the WIDGET rotation", "token AKIAIOSFODNN7EXAMPLE is the WIDGET key"],
+            ["the WIDGET rotation", f"token {SAMPLE_SLACK_BOT_TOKEN} is the WIDGET key"],
         )
         payload = await _grep(root, "WIDGET key")
         preview = payload["results"][0]["preview"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in preview
+        assert SAMPLE_SLACK_BOT_TOKEN not in preview
 
     def test_a_credential_in_the_PATH_is_redacted(self):
         """A path segment can itself be credential-shaped -- a directory or filename
         holding a token -- and this row is an egress boundary for a file the user never
         asked for by name. The listings in this module already redact the paths they
         return; a search result is no different."""
-        hit = f._grep_hit("/repo/AKIAIOSFODNN7EXAMPLE/notes.txt", 3, "nothing secret here")
-        assert "AKIA" not in hit["file"]
+        hit = f._grep_hit(f"/repo/{SAMPLE_SLACK_BOT_TOKEN}/notes.txt", 3, "nothing secret here")
+        assert "xoxb" not in hit["file"]
         # The clean segments survive, so the row still says where it is.
         assert "notes.txt" in hit["file"]
 
@@ -841,7 +842,7 @@ class TestPreviewRedaction:
         flagged one per round -- preview, then label, then path -- because each fix
         covered the field that was named. This asserts over the row's strings, so a
         field added later without redaction fails here rather than in a review."""
-        planted = "AKIAIOSFODNN7EXAMPLE"
+        planted = SAMPLE_SLACK_BOT_TOKEN
         hit = f._grep_hit(
             f"/repo/{planted}/notes.txt",
             0,
@@ -855,8 +856,8 @@ class TestPreviewRedaction:
         """A label is document CONTENT, not a shape this endpoint chose -- a workbook's
         is its sheet title, which an author picks. It reaches the response and the audit
         resource string, so leaving it raw published whatever the title said."""
-        hit = f._grep_hit("/r/budget.xlsx", 0, "totals", label="AKIAIOSFODNN7EXAMPLE row 12")
-        assert "AKIA" not in hit["label"]
+        hit = f._grep_hit("/r/budget.xlsx", 0, "totals", label=f"{SAMPLE_SLACK_BOT_TOKEN} row 12")
+        assert "xoxb" not in hit["label"]
 
     def test_a_long_sheet_title_is_cut_like_a_preview(self):
         """Author-controlled text of any length, bounded like every other string this
@@ -908,9 +909,9 @@ class TestPreviewRedaction:
         """A secret straddling the preview cap would be CUT IN HALF first, and
         half a token matches no pattern -- so the cut has to come second."""
         monkeypatch.setattr(f, "_GREP_PREVIEW_CHARS", 40)
-        line = "x" * 30 + "AKIAIOSFODNN7EXAMPLE" + " tail"
+        line = "x" * 30 + SAMPLE_SLACK_BOT_TOKEN + " tail"
         hit = f._grep_hit("/r/a.py", 1, line)
-        assert "AKIA" not in hit["preview"]
+        assert "xoxb" not in hit["preview"]
         assert len(hit["preview"]) <= 40
 
 
@@ -1157,9 +1158,9 @@ class TestTheQueryNeverReachesTheCommandLine:
         _rg_spawn(monkeypatch, lines=(), made=made)
         # A future deadline: `_grep_rg` returns before spawning anything when the
         # budget is already spent, and then this would assert on an empty list.
-        f._grep_rg("/r", "AKIAIOSFODNN7EXAMPLE", f.time.monotonic() + 5)
+        f._grep_rg("/r", SAMPLE_SLACK_BOT_TOKEN, f.time.monotonic() + 5)
         assert made, "no child was spawned"
-        assert made[0].stdin.written == "AKIAIOSFODNN7EXAMPLE\n"
+        assert made[0].stdin.written == SAMPLE_SLACK_BOT_TOKEN + "\n"
         # Closed too, or rg would wait for EOF that never comes.
         assert made[0].stdin.closed is True
 
@@ -1289,7 +1290,8 @@ class TestAParseIsBoundedByTheDeadline:
     """
 
     def test_a_workbook_of_empty_rows_stops_at_the_deadline(self, tmp_path, monkeypatch):
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         path = tmp_path / "blank.xlsx"
         book = openpyxl.Workbook()
         sheet = book.active
@@ -1309,7 +1311,8 @@ class TestAParseIsBoundedByTheDeadline:
         assert segments == ()
 
     def test_a_workbook_within_the_deadline_reports_complete(self, tmp_path):
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         path = tmp_path / "ok.xlsx"
         book = openpyxl.Workbook()
         book.active.title = "Ledger"
@@ -1402,7 +1405,8 @@ class TestPartialParsesAreHonest:
     def test_a_mid_read_failure_is_not_whole(self, tmp_path, monkeypatch):
         """Rows already read are real and are kept; the reader did not see the
         rest, so the answer is short."""
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         path = tmp_path / "breaks.xlsx"
         book = openpyxl.Workbook()
         book.active.title = "Ledger"
@@ -1444,7 +1448,8 @@ class TestPartialParsesAreHonest:
 
     def test_the_character_cap_is_not_whole(self, tmp_path, monkeypatch):
         """A match past the cap is invisible, so the answer must say it is partial."""
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         monkeypatch.setattr(f, "_GREP_DOC_MAX_CHARS", 20)
         path = tmp_path / "long.xlsx"
         book = openpyxl.Workbook()
@@ -1463,7 +1468,8 @@ class TestPartialParsesAreHonest:
         it, so a wide row is N references until a join makes it N copies -- and the
         zip expansion gate counts the string once. The row must be assembled inside
         the remaining budget, so no string longer than the cap is ever built."""
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         monkeypatch.setattr(f, "_GREP_DOC_MAX_CHARS", 100)
         path = tmp_path / "wide.xlsx"
         book = openpyxl.Workbook()
@@ -1503,9 +1509,9 @@ class TestAuditRedaction:
         """Previews are redacted for the pasted-secret case; a user grepping for a
         token VALUE types the token, which is the same class of text."""
         monkeypatch.setattr(f, "_grep_rg_executable", lambda: None)
-        await _grep(tree, "AKIAIOSFODNN7EXAMPLE")
+        await _grep(tree, SAMPLE_SLACK_BOT_TOKEN)
         for call in mock_sel.log_api_access.call_args_list:
-            assert "AKIAIOSFODNN7EXAMPLE" not in str(call.kwargs.get("resources", ""))
+            assert SAMPLE_SLACK_BOT_TOKEN not in str(call.kwargs.get("resources", ""))
 
 
 class TestWorkbookExpansion:
@@ -1515,7 +1521,6 @@ class TestWorkbookExpansion:
         """The shared inventory vet bounds member COUNT and central-directory
         size, not expansion, so a single hugely-compressed member passed it and
         reached openpyxl's XML parser."""
-        pytest.importorskip("openpyxl")
         path = tmp_path / "bomb.xlsx"
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("xl/workbook.xml", "<workbook/>")
@@ -1538,7 +1543,8 @@ class TestWorkbookExpansion:
         assert opened == []
 
     def test_a_workbook_within_the_cap_is_still_read(self, tmp_path):
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         path = tmp_path / "small.xlsx"
         book = openpyxl.Workbook()
         book.active.title = "Ledger"
@@ -1550,6 +1556,39 @@ class TestWorkbookExpansion:
         )
         assert whole is True
         assert any("WIDGET" in text for _label, text in segments)
+
+    def test_rows_past_a_lying_dimension_record_are_still_searched(self, tmp_path):
+        """A writer can leave a stale dimension ref (A1:A1) on a populated sheet, and
+        the read-only reader trusts it, so rows past it were never searched."""
+        import io
+        import re
+
+        import openpyxl
+
+        book = openpyxl.Workbook()
+        book.active.title = "Ledger"
+        book.active["A1"] = "header"
+        book.active["C5"] = "the WIDGET invoice"
+        raw = io.BytesIO()
+        book.save(raw)
+        path = tmp_path / "stale.xlsx"
+        forged = False
+        with zipfile.ZipFile(io.BytesIO(raw.getvalue())) as src, zipfile.ZipFile(path, "w") as out:
+            for item in src.infolist():
+                payload = src.read(item.filename)
+                if item.filename == "xl/worksheets/sheet1.xml":
+                    payload, n = re.subn(
+                        rb'<dimension ref="[^"]*"/>', b'<dimension ref="A1:A1"/>', payload
+                    )
+                    forged = n == 1
+                out.writestr(item, payload)
+        assert forged, "fixture did not carry a dimension record to forge"
+
+        segments, whole = f._grep_xlsx_segments(
+            path.read_bytes(), str(path), f.time.monotonic() + 30
+        )
+        assert whole is True
+        assert ("Ledger · row 5", "the WIDGET invoice") in segments
 
 
 class TestHelpers:

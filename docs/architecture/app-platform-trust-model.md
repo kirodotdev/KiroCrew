@@ -14,8 +14,9 @@ When an app's executable surfaces are **admitted** and enabled, its in-process b
   the script body comes from the app's `app.json`)
 
 The `AppContext` capability permissions (`permissions.cron`,
-`permissions.events`, `permissions.spawn`, `permissions.storage`, and
-`permissions.jobs`) gate only which SDK objects `context.py` populates.
+`permissions.events`, `permissions.spawn`, `permissions.storage`,
+`permissions.jobs`, `permissions.proposeCrewmate`, `permissions.agentTurns` and
+`permissions.workerAutoApprove`) gate only which SDK objects `context.py` populates.
 A non-empty `permissions.mcpTools` scopes the app's OWN agents: when they are
 materialized, every host-managed (`kirocrew-*`) tool the app did not declare is
 added to the agent spec's `managedToolPolicy.exclude`, which the managed servers
@@ -255,7 +256,7 @@ records the caller's app identity and its manifest `permissions.events` declarat
 Both dispatch paths — `broadcast_ws()` and the `_broadcast()` `_type` translation —
 funnel through it, as does the subagent-subscriber fan-out.
 
-Events fall into three tiers. Tier 0 (`dashboard`, `refresh`, `update_progress`) carries
+Events fall into three tiers. Tier 0 (`dashboard`, `refresh`, `update_progress`, `models_changed`) carries
 no sensitive payload and is always delivered. Tier 1 is slot-scoped: delivery depends on
 the slot's `SlotOrigin` and the app's `slots:*` declarations (`slots:own` is the default,
 then `slots:user`, `slots:app:<name>`, `slots:all`); `subagent:*` is an independent

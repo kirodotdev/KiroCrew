@@ -25,6 +25,7 @@ import time
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import agent as agent_mod
 from kiro_crew.acp import client as client_mod
@@ -394,7 +395,7 @@ class TestTheWarning:
         ring fans out to the dashboard, so a credential-shaped ref would appear
         there verbatim. Redaction is not optional on a sink like that.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=24)
         spec = {"tools": [f"@{secret}"], "mcpServers": {}}
         with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
             found = warn_unresolved_server_refs(
@@ -422,7 +423,7 @@ class TestTheWarning:
         second line was never the exposure there. Redaction is the half ``%r``
         cannot do: it would print a secret-shaped name in full, just quoted.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=24)
         spec = {"tools": ["@ghost"], "mcpServers": {}}
         with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
             warn_unresolved_server_refs(
@@ -473,11 +474,11 @@ class TestTheWarning:
     def test_the_rebuild_runs_after_the_redactors_not_instead_of_them(self, caplog):
         """Order is the load-bearing part: the alphabet alone would leak a key.
 
-        ``AKIAIOSFODNN7EXAMPLE`` is pure alphanumerics, so a rebuild would pass it
-        through verbatim. Redaction is what removes the secret; the rebuild removes
+        A GitHub token is letters, digits and ``_``, all inside the alphabet, so a
+        rebuild would pass it through verbatim. Redaction is what removes the secret; the rebuild removes
         the punctuation and the dataflow.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=24)
         assert mcp_ref_guard._log_safe(secret) == secret  # the alphabet alone: no help
         spec = {"tools": [f"@{secret}"], "mcpServers": {}}
         with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
@@ -644,7 +645,7 @@ class TestTheCompositionPath:
         guard's silent path rather than its finding.
         """
         client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=backend)
-        client._write_claude_local_settings()
+        client._write_settings_seed()
         client._mcp_ref_spec = client._read_mcp_ref_spec()
         return client
 
@@ -656,7 +657,7 @@ class TestTheCompositionPath:
         steps on that path.
         """
         wire = [
-            *(client._claude_session_mcp_servers() if client._is_claude else []),
+            *client._harness_session_mcp_servers(),
         ]
         client._begin_session_report(wire)
         client._guard_unresolved_mcp_refs(wire)
@@ -943,10 +944,11 @@ class TestTheRuntimeCallSitesAreWired:
     def test_every_runtime_roster_handoff_is_paired_with_the_guard(self):
         """Both runtime call sites (session/new, session/load), held by structure.
 
-        ``begin_session(`` marks where the wire array is final. The guard must be the
-        next statement, and must take the SAME roster, so a new establishment path
-        that hands over a roster and forgets the guard -- or guards a different list
-        than it reported -- is the omission this pins.
+        ``_open_mcp_report(`` marks where the wire array is final: it begins the
+        session's report with that roster, together with the session's queue. The
+        guard that follows in the same function must take the SAME roster, so a new
+        establishment path that hands over a roster and forgets the guard -- or
+        guards a different list than it reported -- is the omission this pins.
         """
         from kiro_crew.acp import runtime as runtime_mod
 
@@ -955,14 +957,21 @@ class TestTheRuntimeCallSitesAreWired:
             inspect.getsource(sys.modules[name])
             for name in (runtime_mod.__name__, *runtime_mod._RUNTIME_OWNERS)
         ).splitlines()
-        handoffs = [i for i, ln in enumerate(lines) if ".begin_session(" in ln]
+        # One reset, inside the helper both paths call: a second one elsewhere
+        # would wipe what frames already reported.
+        assert sum(".begin_session(" in ln for ln in lines) == 1
+        handoffs = [i for i, ln in enumerate(lines) if "self._open_mcp_report(" in ln]
         assert len(handoffs) == 2, "a runtime session-establishment path was added or removed"
         for i in handoffs:
-            roster = lines[i].split(".begin_session(", 1)[1].rstrip(")")
+            roster = lines[i].split("_open_mcp_report(", 1)[1].rstrip(")").split(",")[1]
+            # The guard of the same function: the first one before the next ``def``.
             j = i + 1
-            while j < len(lines) and (not lines[j].strip() or lines[j].lstrip().startswith("#")):
+            while j < len(lines) and not (
+                "self._guard_unresolved_mcp_refs(" in lines[j]
+                or lines[j].startswith(("def ", "async def "))
+            ):
                 j += 1
-            guard = lines[j]
+            guard = lines[j] if j < len(lines) else ""
             assert (
                 "self._guard_unresolved_mcp_refs(" in guard
             ), f"line {i} hands over a final roster and never reaches the guard: {guard!r}"

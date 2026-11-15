@@ -32,6 +32,7 @@ from meetings_helpers import (  # noqa: F401 — fixtures are used by name
     reset_module_state_fixture,
     root_fixture,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
@@ -40,6 +41,10 @@ BASE = k.API_BASE
 
 NOTE_TAKER = {"id": "note-taker", "widget_type": "markdown"}
 SKETCH = {"id": "sketch-artist", "widget_type": "html"}
+
+
+# A GitHub token with a valid checksum, which the redactor masks.
+_TOKEN = github_classic(seed=44)
 
 
 def _set_mtime(path: Path, when: float) -> None:
@@ -373,11 +378,9 @@ class TestRedaction:
         """Adding the overlay must not have dropped the pass that was already there."""
         async with client_for(app) as client:
             await client.post(f"{BASE}/meetings/standup/init", json={})
-            store.write_agent_output(
-                "standup", NOTE_TAKER, "# Notes\n\nkey AKIAIOSFODNN7EXAMPLE here", root
-            )
+            store.write_agent_output("standup", NOTE_TAKER, f"# Notes\n\nkey {_TOKEN} here", root)
             body = await (await client.get(f"{BASE}/meetings/standup/outputs")).json()
-        assert "AKIAIOSFODNN7EXAMPLE" not in body["outputs"]["note-taker"]
+        assert _TOKEN not in body["outputs"]["note-taker"]
 
     @pytest.mark.asyncio
     async def test_the_users_own_edit_is_returned_verbatim(self, app, root: Path):

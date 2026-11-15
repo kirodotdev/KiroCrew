@@ -7,6 +7,7 @@ interact with gateway services only through this interface.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -18,15 +19,18 @@ from kiro_crew.apps.agent_turn_sdk import AgentTurnSDK
 from kiro_crew.apps.app_sdk_level import APP_SDK_LEVEL
 from kiro_crew.apps.app_storage import AppStorage
 from kiro_crew.apps.audit_sdk import AuditSDK
+from kiro_crew.apps.chat_slot_sdk import ChatSlotSDK
 from kiro_crew.apps.crewmate_sdk import CrewmateSDK
 from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.embed_sdk import EmbedSDK
 from kiro_crew.apps.event_bus import EventBus
+from kiro_crew.apps.gateway_origin import loopback_gateway_origin
 from kiro_crew.apps.job_sdk import JobSDK
 from kiro_crew.apps.lifecycle_sdk import AppLifecycleSDK
 from kiro_crew.apps.scrub_sdk import ScrubSDK
 from kiro_crew.apps.spawn_sdk import SpawnSDK
 from kiro_crew.apps.untrusted_text_sdk import UntrustedTextSDK
+from kiro_crew.apps.webhook_source_sdk import WebhookSourceSDK
 from kiro_crew.apps.worker_auto_approve import WorkerAutoApprove
 
 
@@ -134,12 +138,51 @@ class AppContext:
     # A capability like ``spawn``: None unless the manifest declares
     # ``permissions.agentTurns`` and the gateway's Application was wired in.
     turns: AgentTurnSDK | None = None
+    # This app's own dashboard chat slots: open, restore, turns and queue, stop,
+    # archive, transcript and AutoNudge loops, under its key prefix
+    # (``chat_slot_sdk``). None unless the manifest declares
+    # ``permissions.chatSlots``.
+    chat_slots: ChatSlotSDK | None = None
+    # The ``webhooks`` governance answer for the app's own inbound route, under the
+    # app's name (``webhook_source_sdk``). None unless the manifest declares
+    # ``permissions.webhookSource``; an app without it refuses its webhook.
+    webhook_source: WebhookSourceSDK | None = None
     # The gateway's untrusted-text screen, neutralizer and fences. Unconditional,
     # like `scrub`, and built from `name` so its audit rows name this app.
     untrusted: UntrustedTextSDK = field(init=False)
 
     def __post_init__(self) -> None:
         self.untrusted = UntrustedTextSDK(self.name)
+
+    async def app_token(self) -> str:
+        """An app token for this app's own calls to the gateway REST API, or ``""``.
+
+        The token is the one ``POST /api/apps/<name>/token`` issues, so the token
+        middleware confines it to the manifest's ``permissions.api``. Code that runs
+        in the gateway process gets no app secret: the gateway keeps the secret where
+        no sandbox reads it, and a hook has nothing to hand on to a child. ``""``
+        when the owner has not enabled the app. Pass this method as the Python
+        client's ``on_auth_expired`` to renew the token after a 401 or 403.
+
+        Not gated by a permission: an app token reaches only what the app's
+        declared API already allows. The import is lazy so this module keeps its
+        aiohttp-free import.
+        """
+        from kiro_crew.dashboard.token_auth import issue_in_process_app_token
+
+        return await asyncio.to_thread(issue_in_process_app_token, self.name)
+
+    def gateway_origin(self) -> str:
+        """The gateway's origin for this app's own calls to it, or ``""``.
+
+        The origin a spawned backend gets in ``KIROCREW_GATEWAY_ORIGIN``, read when
+        called: ``http://127.0.0.1:<port>`` (``[::1]`` for an IPv6-loopback bind)
+        from the port the gateway holds. ``""`` when the gateway has no such
+        evidence or is bound to one specific interface, which a call on this host
+        cannot reach with an Origin-less request; a hook then has no base URL and
+        must not guess one.
+        """
+        return loopback_gateway_origin()
 
     async def require_owner(self, request: Any, operation: str) -> Any | None:
         """``None`` when *request* comes from the dashboard owner; else the refusal.
@@ -291,12 +334,18 @@ def build_app_context(
     if perms.get("agentTurns") is True and turn_host is not None:
         turns = AgentTurnSDK.for_http_app(app_name, turn_host)
 
+    chat_slots = (
+        ChatSlotSDK(app_name, http_app=http_app) if perms.get("chatSlots") is True else None
+    )
+
     auto_approve = None
     if perms.get("workerAutoApprove") is True:
         try:
             auto_approve = WorkerAutoApprove(app_name)
         except ValueError:
             ctx_logger.warning("app %r: its name cannot carry an auto-approve grant", app_name)
+
+    webhook_source = WebhookSourceSDK(app_name) if perms.get("webhookSource") is True else None
 
     return AppContext(
         name=app_name,
@@ -316,4 +365,6 @@ def build_app_context(
         lifecycle=AppLifecycleSDK(app_name),
         http_app=http_app,
         turns=turns,
+        chat_slots=chat_slots,
+        webhook_source=webhook_source,
     )

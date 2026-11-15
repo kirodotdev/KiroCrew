@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
-import { publishNoticeKey } from '../components/PublishHub'
+import { publishNoticeKey } from './publishHelpers'
 import type { ArtifactPublication, PublishProviderDescriptor } from '../types'
 
 /**

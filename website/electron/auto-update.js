@@ -50,7 +50,8 @@ const {
 } = require("./bundle-location");
 const { createUpdateReporter } = require("./runtime/update/state-reporter");
 const { createManagedLane } = require("./runtime/update/managed-lane");
-const { createFeedLane } = require("./runtime/update/feed-lane");
+const { runStartupApply: applyArmedUpdateAtStart } = require("./runtime/update/startup-apply");
+const { createFeedLane, gatewayStillRunningNotificationBody } = require("./runtime/update/feed-lane");
 
 // The Linux package formats this app ships. A format is BOTH the feed
 // sub-directory a package install reads its channel file from AND the download
@@ -149,6 +150,10 @@ const CHECK_COMMAND_MAX_CHARS = 512;
 // A path, so an over-cap value is refused rather than cut: a truncated path
 // names a different file.
 const RELAUNCH_PATH_MAX_CHARS = 1024;
+// The one `updatePrompts` value the reader honours: the edition's own update
+// widget is the prompt for this install, so the dashboard opens neither of the
+// core's update dialogs. Any other value is ignored and the core's dialogs stay.
+const UPDATE_PROMPTS_EDITION = "edition";
 
 /**
  * Is this install's update lifecycle owned by an external package manager?
@@ -188,6 +193,11 @@ const RELAUNCH_PATH_MAX_CHARS = 1024;
  * app opened from the Dock runs its version's own payload path, so a bare
  * `app.relaunch()` brings back the version that was just replaced (#22774). A
  * packager that keeps a stable launch link names the binary behind it here.
+ * The optional `updatePrompts: "edition"` says the edition's own top-bar update
+ * widget is the update surface: every lifecycle push and getInfo() then carry
+ * `updatePrompts: "edition"` (state-reporter.js), and the dashboard opens
+ * neither its "update available" popup nor its "update ready" dialog. The key
+ * is returned only when set, so every other marker keeps the four-field shape.
  * Every degenerate marker — empty, unparsable,
  * over-cap, a directory, a symlink, a dangling symlink — still means MANAGED:
  * an operator who dropped SOMETHING at that name gets the safe behavior
@@ -212,7 +222,7 @@ const RELAUNCH_PATH_MAX_CHARS = 1024;
  * @param {string} [o.bakedMarkerPath]  where the in-code marker lives; defaults
  *   to `EXTERNALLY-MANAGED` beside this module (inside app.asar when packaged)
  * @param {() => string} [o.homeDir]  the account's home, for a `~/` relaunchPath
- * @returns {{managedBy:string, updateCommand:string, checkCommand:string, relaunchPath:string}|null} null when not managed
+ * @returns {{managedBy:string, updateCommand:string, checkCommand:string, relaunchPath:string, updatePrompts?:"edition"}|null} null when not managed
  */
 function readExternallyManaged({
   env = process.env,
@@ -307,6 +317,7 @@ function readExternallyManaged({
   let updateCommand = "";
   let checkCommand = "";
   let relaunchPath = "";
+  let updatePrompts = "";
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {
@@ -322,11 +333,20 @@ function readExternallyManaged({
       if (typeof parsed.relaunchPath === "string") {
         relaunchPath = resolveRelaunchPath(parsed.relaunchPath, { homeDir });
       }
+      if (typeof parsed.updatePrompts === "string" && parsed.updatePrompts.trim() === UPDATE_PROMPTS_EDITION) {
+        updatePrompts = UPDATE_PROMPTS_EDITION;
+      }
     }
   } catch {
     // Presence alone is the signal; a bare marker means managed, no metadata.
   }
-  return { managedBy, updateCommand, checkCommand, relaunchPath };
+  return {
+    managedBy,
+    updateCommand,
+    checkCommand,
+    relaunchPath,
+    ...(updatePrompts ? { updatePrompts } : {}),
+  };
 }
 
 /**
@@ -1099,6 +1119,14 @@ function initAutoUpdate(deps) {
     // caller (ipc-registrar.js) to a variable the renderer updates via
     // update:notify-policy-governed once the gateway status is known.
     isPolicyGoverned = () => false,
+    // The managed lane's armed-update record (runtime/update/update-arm.js), the
+    // client for the gateway's own record (gateway-arm.js) and a start-time
+    // apply failure to show once. All optional: absent, the lane arms in memory
+    // and tells no gateway.
+    updateArm = undefined,
+    gatewayArm = null,
+    startupApplyError = null,
+    isOwnGateway = null,
   } = deps;
 
   // Linux install shape. Resolved once, and BEFORE getInfo() is defined: the
@@ -1182,6 +1210,11 @@ function initAutoUpdate(deps) {
       Notification,
       osPlatform,
       log,
+      ...(updateArm ? { updateArm } : {}),
+      gatewayArm,
+      startupApplyError,
+      isNewerVersion,
+      ...(isOwnGateway ? { isOwnGateway } : {}),
     });
   }
   // Updating requires an installed, signed bundle (macOS code signature
@@ -1306,6 +1339,28 @@ function initAutoUpdate(deps) {
   });
 }
 
+/**
+ * Finish an armed update at app start, in Electron main, before the gateway
+ * spawns and before any window opens (D-c). Only an install whose
+ * EXTERNALLY-MANAGED marker names an updateCommand can have one.
+ */
+function runStartupApply({ app, store, resourcesPath = process.resourcesPath, log, managed = undefined, probeGateway = null, Notification = null }) {
+  return applyArmedUpdateAtStart({
+    app,
+    store,
+    managed: managed !== undefined ? managed : readExternallyManaged({ resourcesPath }),
+    managedPath,
+    log,
+    probeGateway,
+    notifyGatewayRunning: Notification
+      ? (stopCommand) => new Notification({
+        title: "Update not installed",
+        body: gatewayStillRunningNotificationBody(stopCommand),
+      }).show()
+      : null,
+  });
+}
+
 module.exports = {
   initAutoUpdate,
   channelForFlavor,
@@ -1320,6 +1375,7 @@ module.exports = {
   resolveLinuxInstall,
   resolveMacDistArch,
   readExternallyManaged,
+  runStartupApply,
   canRewriteMarker,
   DEFAULT_FEED_BASE,
   DOWNLOAD_BASE,

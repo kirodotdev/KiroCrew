@@ -557,7 +557,7 @@ class TestTelegramMidTurn:
         # profile load: otherwise whichever checks arrive while the first load is
         # in progress are denied before they ever reach the receipt queue.
         monkeypatch.setattr(
-            "kiro_crew.telegram.transport_dispatch.channel_inbound_permitted",
+            "kiro_crew.messaging.dispatch.channel_inbound_permitted",
             AsyncMock(return_value=True),
         )
 

@@ -551,7 +551,12 @@ Inside a step (`task_executor.execute_task(..., taskq=handle)`):
   releases the lane slot, waits `_recovery_delay(delay)` (a module seam), then
   `reclaim`s the row under a NEW generation -- the interrupted turn's late
   writes are fenced as `stale_result` -- and re-runs the turn with a prompt that
-  names the stall. `execute_task` is a coroutine on the gateway loop, so every
+  names the stall. A turn that ends because a call's own silence timer ran
+  out never reaches this arm while its continuation budget lasts: the step's
+  stream runs through `continue_timed_out_calls`, which tells the same session
+  the call timed out and goes on with the model's answer inside the same turn,
+  at most `STOP_RECOVERY_MAX_RETRIES` times, the completion's usage summed over
+  both prompts. `execute_task` is a coroutine on the gateway loop, so every
   handle write it makes goes through an `*_async` seam (`recovering_async`,
   `running_async`) and every answer read through `recorded_answer_async` /
   `consume_answer_async`: the DB half runs on the store's writer thread, the
@@ -830,7 +835,7 @@ workspace is never removed.
 | POST | `/api/taskrunner/{task_id}/retry` | Retry from step N (`{from_step}` in body) |
 | POST | `/api/taskrunner/{task_id}/pause` | Pause a running project |
 | POST | `/api/taskrunner/{task_id}/execute` | Execute or resume a planned project |
-| POST | `/api/taskrunner/{task_id}/to-chat` | Open task results in a chat slot for manual review: `task-review-<token>`, linked to the `taskrunner:<task_id>:chat:<token>` session minted for it and owned by the app the task ran for, which passes the per-slot checkpoint on it ([App Kit platform §13](app-kit-platform.md)); export and rewind still refuse an app any slot with a linked session, this one included. The first POST for a completion appends the run summary (`Plan: <task_id>` for a planned run, `# Task Review` otherwise) and starts an agent turn on it. A completion is one run attempt in one state, keyed on the task id, the run's start time, its status and the branch (plan or review). A status the run settles out of during cleanup (`cancelling`, `pausing`) counts as the one it settles on, and the finish time is left out because the runner stamps it again after announcing the completion. An in-memory map on the dashboard state records the slot each one opened. While that slot is open, a repeat POST returns it with no second summary and no new turn; a concurrent POST waits for the first one's slot. Executing, resuming or retrying a run stamps a new start time and opens a new slot, as does the run reaching its outcome after a POST while it was going, and a POST after the slot was closed or the gateway restarted |
+| POST | `/api/taskrunner/{task_id}/to-chat` | Open task results in a chat slot for manual review: `task-review-<token>`, linked to the `taskrunner:<task_id>:chat:<token>` session minted for it and owned by the app the task ran for, which passes the per-slot checkpoint on it ([App Kit platform §13](app-kit-platform.md)); export and rewind still refuse an app any slot with a linked session, this one included. Reopened from History by the dashboard user, its transcript comes back as a tab named by its transcript stem and bound to that session (`metadata_codec.slot_args`), so new turns keep landing in it; an incognito or temporary transcript's mode is admitted for that session key (`_read_memory_mode`), so the tab keeps that mode's limits. An app's resume stays unbound. The first POST for a completion appends the run summary (`Plan: <task_id>` for a planned run, `# Task Review` otherwise) and starts an agent turn on it. A completion is one run attempt in one state, keyed on the task id, the run's start time, its status and the branch (plan or review). A status the run settles out of during cleanup (`cancelling`, `pausing`) counts as the one it settles on, and the finish time is left out because the runner stamps it again after announcing the completion. An in-memory map on the dashboard state records the slot each one opened. While that slot is open, a repeat POST returns it with no second summary and no new turn; a concurrent POST waits for the first one's slot. Executing, resuming or retrying a run stamps a new start time and opens a new slot, as does the run reaching its outcome after a POST while it was going, and a POST after the slot was closed or the gateway restarted |
 | GET | `/api/taskrunner/{task_id}/plan-context` | Return plan text for chat pre-fill |
 | GET | `/api/taskrunner/{task_id}/plan.yaml` | Export the plan as YAML |
 | POST | `/api/taskrunner/refine` | Start background user-input → task-spec refinement; progress arrives via `refine` WS events or GET polling |
@@ -848,10 +853,19 @@ screens it through `_validate_spec_path` (`hooks.validate_file_path`, off the ev
 loop): a traversal, a missing file or a UNC/laundered link answers
 `400 invalid_spec_path`, and a sensitive credential path answers `403 access_denied`.
 
-Starting is refused while the `projects` app (the Task Runner page) is
-switched off in Library: `POST /api/taskrunner` answers 409 `app_disabled`
-("Task Runner is disabled. Enable it in Library to start tasks.") before any
-inline spec is written. `POST /api/taskrunner/plan`, `/from-chat`, `/refine`,
+Starting is refused while Task Runner is turned off (`taskrunner.enabled`,
+Settings > Display > View): `POST /api/taskrunner` answers 409 `app_disabled`
+("Task Runner is turned off. Turn it on in Settings > Display > View to start
+tasks.") before any inline spec is written. The code is still `app_disabled`, the
+answer these starts gave while Task Runner was the built-in app `projects`, whose
+record's off state the boot cleanup carried into the setting
+(app-kit-platform.md § Folding a built-in into core). Until that record is
+retired, and while neither `config.json` nor `config.local.json` holds
+`taskrunner.enabled` itself (a written key is the choice, as the carry treats it),
+the check reads it as well (the `builtin`-origin record only, never an app a user
+installed under the same name), so an off record (the owner's protected
+disable included) refuses the start on a gateway started without the dashboard,
+which never runs the cleanup, and after a cleanup whose write failed. `POST /api/taskrunner/plan`, `/from-chat`, `/refine`,
 `/{task_id}/execute` and `/{task_id}/retry` answer the same before a plan is
 made, a refine session started or a run admitted (`_task_runner_disabled`).
 The `task_run` MCP tool relays the start refusal, and
@@ -859,9 +873,11 @@ the chat command `task run <spec>` replies with that sentence. A saved
 `task-plan` workflow is refused the same way before it is planned:
 `POST /api/workflows/definitions/{ref}/run` answers 409 `app_disabled`,
 `/workflow <name>` replies with that sentence and the `workflow_run` MCP tool
-relays it. Saved Python workflows do not read the switch. Only an
-explicit `enabled: false` install record counts as disabled
-(`apps.manager.app_disabled`); a host with no record runs tasks.
+relays it. Saved Python workflows do not read the switch. Only a literal
+`false` turns it off, and every start reads it through
+`taskrunner_switch.task_runner_off`, so no restart is needed. The same check keeps
+the `apps` governance allowlist deciding Task Runner under its old app name: a
+policy that leaves `projects` out refuses every start with the policy's reason.
 
 ### Status Response
 

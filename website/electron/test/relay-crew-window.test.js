@@ -19,6 +19,7 @@ function fakeSession() {
     partitions: [],
     headerRule: null,
     completedRule: null,
+    errorRule: null,
     permissionRequest: null,
     permissionCheck: null,
     cleared: 0,
@@ -30,7 +31,13 @@ function fakeSession() {
       onCompleted(filter, listener) {
         ses.completedRule = filter === null ? null : { filter, listener };
       },
+      onErrorOccurred(filter, listener) {
+        ses.errorRule = filter === null ? null : { filter, listener };
+      },
     },
+    userAgent: "Mozilla/5.0 Electron/44",
+    getUserAgent() { return ses.userAgent; },
+    setUserAgent(ua) { ses.userAgent = ua; },
     setPermissionRequestHandler(fn) { ses.permissionRequest = fn; },
     setPermissionCheckHandler(fn) { ses.permissionCheck = fn; },
     clearStorageData() { ses.cleared += 1; return Promise.resolve(); },
@@ -52,8 +59,12 @@ function fakeDeps() {
       this.webContents.loaded = [];
       this.webContents.reloads = 0;
       this.webContents.loadURL = (url) => { this.webContents.loaded.push(url); return Promise.resolve(); };
+      this.webContents.files = [];
+      this.webContents.loadFile = (file, opts) => { this.webContents.files.push({ file, opts }); return Promise.resolve(); };
+      this.webContents.closed = false;
+      this.webContents.ipc = new EventEmitter();
       this.webContents.reload = () => { this.webContents.reloads += 1; };
-      this.webContents.close = () => {};
+      this.webContents.close = () => { this.webContents.closed = true; };
       this.webContents.setWindowOpenHandler = (fn) => { this.webContents.openHandler = fn; };
       this.setBounds = (b) => { this.bounds = b; };
       views.push(this);
@@ -67,7 +78,11 @@ function fakeDeps() {
       this.focused = 0;
       this.minimized = false;
       this.calls = [];
-      this.contentView = { addChildView: (v) => { this.child = v; } };
+      this.children = [];
+      this.contentView = {
+        addChildView: (v) => { this.child = v; this.children.push(v); },
+        removeChildView: (v) => { this.children = this.children.filter((c) => c !== v); },
+      };
       windows.push(this);
     }
     isDestroyed() { return this.destroyed; }
@@ -324,4 +339,156 @@ test("logs: never carry the token", () => {
   handle.close();
   assert.ok(f.logs.length >= 4);
   for (const line of f.logs) assert.ok(!line.includes(TOKEN), line);
+});
+
+// --- Reachability and the window's own notice ---
+
+const { UNREACHABLE_AFTER_MS } = require("../relay-crew-reachability");
+
+function openWithClock() {
+  const f = fakeDeps();
+  let t = 5_000_000;
+  f.deps.now = () => t;
+  const advance = (ms) => { t += ms; };
+  const handle = openRelayCrewWindow(
+    { endpointId: ENDPOINT, crewUrl: CREW_URL, title: "Team Crew", getToken: () => TOKEN },
+    f.deps,
+  );
+  const unreachable = [];
+  handle.onUnreachable(() => unreachable.push(t));
+  const urlFor = (path, resourceType) =>
+    `${resourceType === "webSocket" ? ORIGIN.replace(/^https:/, "wss:") : ORIGIN}${path}`;
+  const completed = (path, statusCode, resourceType = "xhr") =>
+    f.ses.completedRule.listener({ url: urlFor(path, resourceType), resourceType, statusCode });
+  const failed = (path, error = "net::ERR_CONNECTION_CLOSED", resourceType = "xhr") =>
+    f.ses.errorRule.listener({ url: urlFor(path, resourceType), resourceType, error });
+  return { f, handle, unreachable, advance, completed, failed, crewView: f.views[0] };
+}
+
+// The page's pace while disconnected: a status probe every 3 s and a socket
+// attempt every 10 s once its backoff has reached the ceiling.
+function outage(w, ms, { statusAnswer = 502 } = {}) {
+  for (let elapsed = 0; elapsed < ms; elapsed += 3000) {
+    w.advance(3000);
+    w.completed("/api/status", statusAnswer);
+    if (elapsed % 9000 === 0) w.failed("/api/ws", "net::ERR_CONNECTION_FAILED", "webSocket");
+  }
+}
+
+test("window: the Crew's own session carries a relay-window marker in its user agent", () => {
+  const f = fakeDeps();
+  createRelayCrewView({ endpointId: ENDPOINT, crewUrl: CREW_URL, getToken: () => TOKEN }, f.deps);
+  assert.strictEqual(f.ses.userAgent, "Mozilla/5.0 Electron/44 kiroCrewRelayWindow");
+  createRelayCrewView({ endpointId: ENDPOINT, crewUrl: CREW_URL, getToken: () => TOKEN }, f.deps);
+  assert.strictEqual(f.ses.userAgent, "Mozilla/5.0 Electron/44 kiroCrewRelayWindow", "added once");
+});
+
+test("window: a host that stays gone is reported unreachable once the cap runs out, and only once", () => {
+  const w = openWithClock();
+  const wss = `wss://${ENDPOINT}.relay.example.test/*`;
+  assert.deepStrictEqual(w.f.ses.completedRule.filter.urls, [`${ORIGIN}/*`, wss], "the socket's wss: upgrade is watched too");
+  assert.deepStrictEqual(w.f.ses.errorRule.filter.urls, [`${ORIGIN}/*`, wss]);
+  outage(w, UNREACHABLE_AFTER_MS - 6000);
+  assert.deepStrictEqual(w.unreachable, [], "still inside the cap");
+  outage(w, 30_000);
+  assert.strictEqual(w.unreachable.length, 1);
+  outage(w, 60_000);
+  assert.strictEqual(w.unreachable.length, 1, "once per cycle");
+  w.handle.close();
+});
+
+test("window: a blip that recovers inside the cap stays quiet", () => {
+  const w = openWithClock();
+  outage(w, 60_000);
+  w.completed("/api/status", 200);
+  outage(w, 60_000);
+  w.completed("/api/ws", 101, "webSocket");
+  outage(w, 60_000);
+  assert.deepStrictEqual(w.unreachable, []);
+  assert.deepStrictEqual(w.crewView.webContents.loaded, [`${ORIGIN}/`], "the page is never touched");
+  w.handle.close();
+});
+
+test("window: a refused upgrade or no-token 401 counts, other paths and aborted requests do not", () => {
+  const w = openWithClock();
+  for (let i = 0; i < 100; i += 1) {
+    w.advance(3000);
+    w.completed("/api/slots", 502);
+    w.failed("/api/status", "net::ERR_ABORTED");
+  }
+  assert.deepStrictEqual(w.unreachable, [], "only the two retry loops count, and a cancel is not a failure");
+  outage(w, UNREACHABLE_AFTER_MS + 6000, { statusAnswer: 401 });
+  assert.strictEqual(w.unreachable.length, 1, "a page left with no token is also bounded");
+  w.handle.close();
+});
+
+test("window: a main-frame load the relay answers 5xx or that fails is reported at once", () => {
+  for (const hit of [
+    (w) => w.completed("/", 502, "mainFrame"),
+    (w) => w.failed("/", "net::ERR_CONNECTION_RESET", "mainFrame"),
+  ]) {
+    const w = openWithClock();
+    hit(w);
+    assert.strictEqual(w.unreachable.length, 1);
+    w.handle.close();
+  }
+  const w = openWithClock();
+  w.completed("/", 401, "mainFrame");
+  w.failed("/", "net::ERR_ABORTED", "mainFrame");
+  assert.deepStrictEqual(w.unreachable, [], "a 401 is renewal's, an abort is a cancel");
+  w.handle.close();
+});
+
+test("window: a notice unloads the Crew's page and shows a local, locked-down view", () => {
+  const w = openWithClock();
+  const text = { title: "Example Crew is currently unavailable", body: "", check: "Check again", close: "Close window" };
+  w.handle.showNotice(text);
+  assert.deepStrictEqual(w.crewView.webContents.loaded, [`${ORIGIN}/`, "about:blank"], "the page's socket and probe stop with it");
+  const notice = w.f.views[1];
+  assert.ok(notice, "a second view");
+  const prefs = notice.options.webPreferences;
+  assert.strictEqual(prefs.sandbox, true);
+  assert.strictEqual(prefs.contextIsolation, true);
+  assert.strictEqual(prefs.nodeIntegration, false);
+  assert.match(prefs.preload, /relay-crew-notice-preload\.js$/);
+  assert.notStrictEqual(prefs.partition, `relay-crew-${ENDPOINT}`, "never the Crew's own session");
+  assert.deepStrictEqual(notice.webContents.files.map((x) => x.opts.query), [text]);
+  assert.match(notice.webContents.files[0].file, /relay-crew-notice\.html$/);
+  assert.deepStrictEqual(notice.bounds, { x: 0, y: 0, width: 1000, height: 700 });
+  assert.ok(w.f.windows[0].children.includes(notice));
+
+  let prevented = false;
+  notice.webContents.emit("will-navigate", { preventDefault: () => { prevented = true; } }, "https://example.test/");
+  assert.strictEqual(prevented, true);
+  assert.deepStrictEqual(notice.webContents.openHandler({ url: "https://example.test/" }), { action: "deny" });
+
+  const actions = [];
+  w.handle.onNoticeAction((a) => actions.push(a));
+  notice.webContents.ipc.emit("relay-crew-notice:act", {}, "check");
+  notice.webContents.ipc.emit("relay-crew-notice:act", {}, "close");
+  notice.webContents.ipc.emit("relay-crew-notice:act", {}, "anything-else");
+  assert.deepStrictEqual(actions, ["check", "close"]);
+
+  // Showing again replaces the text in the same view.
+  w.handle.showNotice({ ...text, title: "again" });
+  assert.strictEqual(w.f.views.length, 2);
+  assert.strictEqual(notice.webContents.files.length, 2);
+  w.handle.close();
+  assert.strictEqual(notice.webContents.closed, true, "closing the window closes the notice too");
+});
+
+test("window: reload after a notice removes it and loads the Crew again, with a fresh cap", () => {
+  const w = openWithClock();
+  outage(w, UNREACHABLE_AFTER_MS + 6000);
+  assert.strictEqual(w.unreachable.length, 1);
+  w.handle.showNotice({ title: "t", body: "", check: "Check again", close: "Close window" });
+  const notice = w.f.views[1];
+  w.handle.reload();
+  assert.strictEqual(w.f.windows[0].children.includes(notice), false);
+  assert.strictEqual(notice.webContents.closed, true);
+  assert.deepStrictEqual(w.crewView.webContents.loaded, [`${ORIGIN}/`, "about:blank", `${ORIGIN}/`]);
+  assert.strictEqual(w.crewView.webContents.reloads, 0, "a load of the origin, not a reload of the blank page");
+  outage(w, UNREACHABLE_AFTER_MS + 6000);
+  assert.strictEqual(w.unreachable.length, 2, "the next outage trips again");
+  w.handle.close();
 });

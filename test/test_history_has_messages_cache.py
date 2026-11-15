@@ -189,6 +189,7 @@ def test_has_messages_lru_cliff_is_the_documented_limit(tmp_path):
         assert read.call_count == 8
         _listed(log)
         assert read.call_count == 16
+    assert len(log._has_messages_cache) == 4
 
 
 def test_memory_gates_read_has_messages_uncached(tmp_path):

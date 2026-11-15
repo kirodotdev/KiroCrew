@@ -26,7 +26,7 @@ beforeEach(() => {
     configurable: true,
     get() { return (this as HTMLElement).parentElement },
   })
-  ;(window as unknown as { updateAPI?: object }).updateAPI = { install: vi.fn().mockResolvedValue(undefined) }
+  ;(window as unknown as { updateAPI?: object }).updateAPI = { armsOnQuit: true, install: vi.fn().mockResolvedValue(undefined) }
   trigger = document.createElement('button')
   trigger.textContent = 'zzq trigger'
   document.body.appendChild(trigger)
@@ -73,7 +73,7 @@ describe('UpdateModal focus', () => {
 
   it('moves focus onto the installing screen, not back behind it, once the install starts', async () => {
     const { push } = await openDialog()
-    fireEvent.click(byName('components.updateModal.restart_update'))
+    fireEvent.click(byName('components.updateModal.install_on_quit'))
     await push({ state: 'installing', version: '9.9.9' })
     const takeover = await screen.findByRole('alert')
     expect(document.activeElement).toBe(takeover)
@@ -82,7 +82,7 @@ describe('UpdateModal focus', () => {
   it('pulls a Tab from behind the dialog back inside, and wraps Tab and Shift+Tab', async () => {
     await openDialog()
     const first = byName('components.updateModal.dismiss')
-    const last = byName('components.updateModal.restart_update')
+    const last = byName('components.updateModal.install_on_quit')
     trigger.focus()
     fireEvent.keyDown(trigger, { key: 'Tab' })
     expect(document.activeElement).toBe(first)

@@ -761,6 +761,7 @@ async def _bounded_turn(
                 try:
                     await task
                 except BaseException:
+                    # The inner task's own outcome is dropped: this cancellation is re-raised below.
                     pass
             raise
         if deadline_fired:

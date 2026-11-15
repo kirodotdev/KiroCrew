@@ -52,7 +52,7 @@ UNSTATED_OPT_IN = False
 
 #: Bounds on the names one read returns. The answer is kept for a session's life
 #: (``AcpClient._mcp_json_names``, the runtime's guard hand-off) and read on the
-#: event loop by the cron wait and the ref guard, and both files can be written by
+#: event loop by the unattended-run MCP wait and the ref guard, and both files can be written by
 #: the checkout or the agent, so neither the count nor a name's length is left to
 #: them. A longer name is left out whole, not cut, because a cut name would name a
 #: different server. A server the spec's ``tools`` refs by name is kept past both
@@ -121,9 +121,10 @@ def mcp_json_server_names(
     entries: dict[str, list[Mapping[Any, Any]]] = {}
     for servers in _settings_servers(work_dir):
         for name, entry in servers.items():
-            if isinstance(name, str) and name and name not in defined:
-                if isinstance(entry, Mapping):
-                    entries.setdefault(name, []).append(entry)
+            if not isinstance(name, str) or not name or name in defined:
+                continue
+            if isinstance(entry, Mapping):
+                entries.setdefault(name, []).append(entry)
     _grant_all, refs = parse_tools_refs(spec.get("tools"))
     referenced = set(refs)
     names: list[str] = []

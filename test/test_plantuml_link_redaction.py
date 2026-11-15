@@ -8,14 +8,17 @@ import zlib
 
 import pytest
 from named_cases_helpers import named_cases
+from redaction_structured_cases import github_classic
 
 from kiro_crew.security import StreamRedactor, redact, redact_credentials
 from kiro_crew.security import redaction as _redaction
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-# The canonical AWS documentation example secret key, never a live credential.
-KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-# The same example without its `/`, so it fits a diagram segment whole.
-SEGMENT_KEY = "wJalrXUtnFEMIzK7MDENGqbPxRfiCYEXAMPLEKEY"
+# A synthetic AWS-shaped secret key. The documentation example key is an Identifier
+# with the structured detectors on, so it is not used as the secret here.
+KEY = SAMPLE_AWS_SECRET
+# The same shape without its `/`, so it fits a diagram segment whole.
+SEGMENT_KEY = "Qh4Tm2Vx9KpRczZ8Nw3Hd" + "qJf1Lb5Gs0Ye9Ua2WkE"
 TAG = "[REDACTED: credential]"
 
 _ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_"
@@ -144,7 +147,8 @@ def test_key_beside_a_diagram_link_is_redacted_and_the_link_kept() -> None:
     [
         f"@startuml\nAlice -> Bob: {KEY}\n@enduml",
         f"@startuml\nnote over Bob: aws_secret_access_key={SEGMENT_KEY}\n@enduml",
-        "@startuml\nAlice -> Bob: AKIA" + "IOSFODNN7EXAMPLE" + "\n@enduml",
+        # A checksummed GitHub token: an AWS key ID is an Identifier and stays visible.
+        f"@startuml\nAlice -> Bob: {github_classic(seed=13)}\n@enduml",
         # Shapes only the decode-and-scan and the URL-parameter passes see.
         "@startuml\nnote: "
         + base64.b64encode(f"aws_secret_access_key={SEGMENT_KEY}".encode()).decode()

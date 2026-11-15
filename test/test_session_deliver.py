@@ -356,7 +356,11 @@ class TestCallersRouteThroughDeliver:
         assert "start_turn" in fire.kwargs and "start_turn" not in steer.kwargs
         origin = steer.args[3]
         assert origin.kind == sd.ORIGIN_AUTOMATION
-        assert origin.nudge == {"cycle": loop.cycle_count + 1, "loop_id": loop.id}
+        assert origin.nudge == {
+            "cycle": loop.cycle_count + 1,
+            "loop_id": loop.id,
+            sd.WAKE_GENERATION: loop.config_generation,
+        }
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("running", [False, True])

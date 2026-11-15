@@ -267,9 +267,13 @@ def test_sender_line_is_absent_for_a_solo_owner() -> None:
     assert attr.sender_line(_sender_slot(first, second), second) == ""
 
 
-def test_sender_line_names_a_second_person_and_then_the_owner() -> None:
+def test_sender_line_names_a_second_person_and_then_the_owner(monkeypatch) -> None:
+    import kiro_crew.shared_crew.access_set as access_set
     from kiro_crew.shared_crew.identity import local_operator_principal
 
+    # The owner's login is a process-wide value another test can leave set; this
+    # case is the owner with no known login.
+    monkeypatch.setattr(access_set, "owner_login", lambda: "")
     ana = tailnet_principal(
         "ana@example.com", "ana-laptop", Provenance.TAILSCALE_LISTENER, display_name="Ana"
     )

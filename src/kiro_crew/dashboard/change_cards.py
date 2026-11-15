@@ -1108,6 +1108,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.schema import (  # noqa: F401
         requires_restart,
     )
+    from kiro_crew.update_deferral import (  # noqa: F401
+        with_skip_list,
+    )
 
 # This module is the facade of the change cards: every name is reached through it as
 # ``kiro_crew.dashboard.change_cards.<name>``. A read is served by the owner that binds the name,

@@ -511,7 +511,7 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                     continue
                 # Re-establish worker trust on a new slot (restart-durable; bounded above).
                 if slot is not None and not slot._trust:
-                    agent_mode.grant_worker_trust(slot_key, slot)
+                    agent_mode.grant_worker_trust(state, slot_key, slot)
                     lifecycle._audit("campaign_trust_reestablished", cid)
                 # Re-arm the autonudge loop if a prior app-disable deactivated it
                 # (see _suspend_research_loops_while_disabled at the enabled guard).

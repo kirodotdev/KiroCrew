@@ -91,6 +91,10 @@ SYSTEM_CHANNELS: dict[str, str] = {
     # group_key and attributed to the publishing session so that session's
     # own mute applies (the note is suppressed when the user has muted it).
     "system.turn": _DEFAULT_PRIORITY,
+    # The opt-in weekly note that agent tool failures keep coming back
+    # (dashboard/repeated_failures_notice.py). Its own channel so muting it
+    # leaves system.agent alone. Default priority: it blocks nothing.
+    "system.memory": _DEFAULT_PRIORITY,
 }
 
 # The channel the gateway's monitor-loop stop/finish notices use. Their legacy

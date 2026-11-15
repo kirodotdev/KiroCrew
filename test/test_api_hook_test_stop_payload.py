@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp.test_utils import make_mocked_request
 from body_stream_helpers import BodyStreamPayload
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.handlers.hooks import api_hook_test
 from kiro_crew.hooks import (
@@ -221,7 +222,7 @@ async def test_hook_test_redacts_context_in_sel_metadata(tmp_path):
             "command": "cat",
         }
     )
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = github_classic(seed=111)
     context = f"deploy with {secret}"
     fake_result = type(
         "R",

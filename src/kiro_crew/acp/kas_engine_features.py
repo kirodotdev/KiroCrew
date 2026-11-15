@@ -5,11 +5,20 @@ takes a field older engines dropped. Each flag here turns on exactly one change
 to what Crew projects; with the flag absent the projection is byte-identical to
 what it was before the flag existed, so an older engine sees no difference.
 
-- :data:`MCP_SERVER_OAUTH`: a remote MCP server's ``oauth`` block survives
-  ``customAgents``. Crew then sends ``clientId``, ``redirectUri`` and
-  ``clientMetadataUrl``, and ``oauthScopes`` beside them, instead of withholding
-  the whole block. ``clientSecret`` is never sent over ACP: the engine does not
-  accept it and keeps the raw ``customAgents`` payload in its session file.
+- :data:`MCP_SERVER_OAUTH`: read, but it gates nothing. KAS 0.66.104 keeps a
+  remote server's ``oauth`` block and announces no flag, and older engines
+  drop the block without failing the server or the
+  agent (measured on 0.66.33 and 0.66.91). So Crew always sends it, narrowed by
+  :func:`carry_oauth`: ``clientId``, ``redirectUri`` and ``oauthScopes``.
+  ``clientMetadataUrl`` is not sent, so the engine keys every url entry's grant
+  ``<url>|``, the one key :mod:`kiro_crew.mcp_grant_kas` reads.
+  ``clientSecret`` is never sent over ACP: no engine accepts it,
+  and older ones keep the raw ``customAgents`` payload in their session file. A
+  block that carries one names a confidential client the engine cannot use, so
+  that block is withheld whole, and so is one that keeps nothing Crew can send
+  (only a ``clientMetadataUrl``). :func:`~kiro_crew.mcp_oauth_projection.wire_oauth`
+  is what Crew sends, read by this projection and the session notice alike.
+  :func:`engine_discards_oauth` says when Crew knows the engine is the older kind.
 - :data:`MCP_REGISTRY_POINTERS`: a ``{"type": "registry"}`` pointer survives both
   ``customAgents`` and the session ``mcpServers`` array (as ``_meta.kiro.type``).
   Crew then sends a user entry that carries the registry marker as a pointer
@@ -27,17 +36,35 @@ from collections.abc import Mapping
 from typing import Any
 
 from kiro_crew.mcp_cleanup import MCP_REGISTRY_TYPE
+from kiro_crew.mcp_oauth_projection import (
+    OAUTH_SCOPES_KEY,
+    names_client_secret,
+    wire_oauth,
+    wire_scopes,
+)
 
-#: ``agentCapabilities._meta.kiro`` flag: ``customAgents`` keeps ``oauth``.
+#: ``agentCapabilities._meta.kiro`` flag: ``customAgents`` keeps ``oauth``. No
+#: engine announces it; parsed so one that does is still read, never a gate.
 MCP_SERVER_OAUTH = "mcpServerOAuth"
 #: ``agentCapabilities._meta.kiro`` flag: registry pointers survive the wire.
 MCP_REGISTRY_POINTERS = "mcpRegistryPointers"
 _KNOWN = (MCP_SERVER_OAUTH, MCP_REGISTRY_POINTERS)
 
-#: The ``oauth`` keys the engine accepts over ACP. ``clientSecret`` is not one.
-OAUTH_WIRE_KEYS = ("clientId", "redirectUri", "clientMetadataUrl")
-_SCOPES_KEY = "oauthScopes"
-_SECRET_KEY = "clientSecret"
+#: First engine release that keeps a ``customAgents`` server's ``oauth`` block.
+OAUTH_MIN_ENGINE_VERSION: tuple[int, int, int] = (0, 66, 104)
+
+
+def engine_discards_oauth(version: str | None) -> bool:
+    """Whether an engine at *version* is KNOWN to drop a server's ``oauth`` block.
+
+    Only a readable version below :data:`OAUTH_MIN_ENGINE_VERSION` counts. An
+    unknown one (the relay route, where ``initialize`` carries no ``agentInfo``)
+    is False: the engine may keep the block, so Crew does not claim it is lost.
+    """
+    from kiro_crew.mcp_hot_reload import parse_kiro_cli_version  # noqa: PLC0415
+
+    parsed = parse_kiro_cli_version(version) if version else None
+    return parsed is not None and parsed < OAUTH_MIN_ENGINE_VERSION
 
 
 def advertised(agent_capabilities: Any) -> frozenset[str]:
@@ -62,35 +89,38 @@ def advertised_by(handle: object) -> frozenset[str]:
     return advertised(caps)
 
 
-def _scopes(value: Any) -> list[str] | None:
-    if isinstance(value, list) and all(isinstance(s, str) for s in value):
-        return list(value)
-    return None
-
-
 def carry_oauth(
     projected: dict[str, Any], *, agent_id: str, name: str, logger: logging.Logger
 ) -> None:
     """Narrow *projected*'s ``oauth`` block to what the engine accepts over ACP.
 
-    Keeps :data:`OAUTH_WIRE_KEYS` with string values, and moves a nested
+    Sends what :func:`~kiro_crew.mcp_oauth_projection.wire_oauth` keeps, and moves a nested
     ``oauth.oauthScopes`` to the entry's own ``oauthScopes``, where it wins over a
     top-level list exactly as kiro-cli reads it. Everything else in the block is
-    dropped. A ``clientSecret`` costs one log line naming the field, never its value.
+    dropped.
+
+    A block with a ``clientSecret`` names a confidential client. The engine
+    exchanges the code with PKCE and no secret, so that client cannot finish a
+    sign-in there, and its ``clientId`` would stop the engine's own registration
+    for a server that offers it. Such a block is withheld whole, with one log line
+    naming the field, never its value.
     """
     oauth = projected.pop("oauth", None)
     if not isinstance(oauth, Mapping):
         return
-    if oauth.get(_SECRET_KEY):
+    if names_client_secret(oauth):
         logger.info(
-            "agent %r: MCP server %r: clientSecret is not sent to this backend", agent_id, name
+            "agent %r: MCP server %r: its oauth block names a clientSecret, which this "
+            "backend cannot use, so the block is not sent",
+            agent_id,
+            name,
         )
-    kept = {k: oauth[k] for k in OAUTH_WIRE_KEYS if isinstance(oauth.get(k), str) and oauth[k]}
-    nested = _scopes(oauth.get(_SCOPES_KEY))
+        return
+    kept, nested = wire_oauth(oauth)
     if nested is not None:
-        projected[_SCOPES_KEY] = nested
-    elif _SCOPES_KEY in projected and _scopes(projected[_SCOPES_KEY]) is None:
-        projected.pop(_SCOPES_KEY)
+        projected[OAUTH_SCOPES_KEY] = nested
+    elif OAUTH_SCOPES_KEY in projected and wire_scopes(projected[OAUTH_SCOPES_KEY]) is None:
+        projected.pop(OAUTH_SCOPES_KEY)
     if kept:
         projected["oauth"] = kept
 

@@ -11,6 +11,7 @@ archive shape the rotation writer actually produces.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from kiro_crew.config.loader import KiroCrewConfig
@@ -19,10 +20,12 @@ from kiro_crew.history import ConversationLog
 from kiro_crew.testing.fixtures import seeded_home
 
 KEY = "dashboard_long-history"
-ROTATED_ROWS = 60
+ROTATED_ROWS = 120
 LIVE_ROWS = 9
 LONG_REPLY_LINES = 60
 LONG_REPLY_SECTIONS = 4
+# The page size the chat opens a slot with, owned by the frontend.
+PAGING_TS = Path(__file__).resolve().parents[1] / "website" / "src" / "store" / "chat" / "paging.ts"
 
 
 def _segments(sessions: Path) -> list[Path]:
@@ -126,3 +129,26 @@ def test_sessions_long_history_ends_on_a_long_multi_section_reply() -> None:
     lines = reply["content"].splitlines()
     assert len(lines) >= LONG_REPLY_LINES
     assert sum(line.startswith("## ") for line in lines) >= LONG_REPLY_SECTIONS
+
+
+def _first_page_rows() -> int:
+    """``OLDER_PAGE_LIMIT``: the rows the chat asks for when it opens a slot."""
+    source = PAGING_TS.read_text(encoding="utf-8")
+    match = re.search(r"^export const OLDER_PAGE_LIMIT = (\d+)$", source, re.MULTILINE)
+    assert match, f"OLDER_PAGE_LIMIT not found in {PAGING_TS}"
+    return int(match.group(1))
+
+
+def test_the_dashboards_first_page_does_not_hold_the_whole_corpus() -> None:
+    """Opening the session in the chat shows the "load earlier" bar.
+
+    The chat does not take the no-limit read the first test pins: it asks for a
+    bounded page, which the slot-detail route cuts from the paginated corpus
+    (archived head plus live tail). That page answers has_more=true, which is
+    what mounts EarlierMessagesBar, only when the corpus is longer than the page.
+    """
+    with seeded_home("sessions-long-history") as home:
+        full = ConversationLog(base_dir=home / "sessions").read_messages_chained_full(KEY)
+
+    assert len(_collapse_wire_rows(full)) == ROTATED_ROWS + LIVE_ROWS
+    assert len(_collapse_wire_rows(full)) > _first_page_rows()

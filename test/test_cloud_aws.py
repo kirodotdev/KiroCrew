@@ -230,6 +230,21 @@ class TestRunAws:
         assert proc.killed is False
 
 
+@pytest.mark.parametrize(
+    ("answer", "want"),
+    [((0, "eu-west-1\n", ""), "eu-west-1"), ((1, "", ""), ""), (aws.CloudActionDenied("x"), "")],
+)
+def test_configured_region_is_the_profiles_own_setting_or_empty(monkeypatch, answer, want):
+    def run_aws(args, profile="", region=""):
+        assert (args, profile, region) == (["configure", "get", "region"], "dev", "")
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(aws, "run_aws", run_aws)
+    assert aws.configured_region("dev") == want
+
+
 class TestAccessDeniedParsing:
     def test_is_access_denied_true(self):
         assert aws.is_access_denied("An error occurred (AccessDenied) when calling ...")

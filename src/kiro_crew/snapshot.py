@@ -210,6 +210,7 @@ from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _remove_locked_document,
     _restore_everything_from_rollback,
     _restore_locked_document,
+    _rmtree_or_raise,
     _save_locked_document_to,
     _trees_absent_from_bundle,
 )

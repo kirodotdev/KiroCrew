@@ -188,6 +188,10 @@ def _queue_recovery(
         # The person's own words, replayed because the turn died before its
         # mirror echo point: the replay owes that echo (``_prompt_typed_in_dashboard``).
         _recovery_meta[MIRROR_ECHO_OWED_META_KEY] = True
+    # A retry of a workflow run's completion turn reports the same run: its entry
+    # names it the way the first queueing did (tracing/workflows.py).
+    from kiro_crew.tracing import workflows as trace_workflows
+
     _recovery_qid = slot.queue_insert(
         index,
         content,
@@ -202,6 +206,7 @@ def _queue_recovery(
         # attachment lists merged above ride along in _recovery_meta.
         meta={
             **_recovery_meta,
+            **trace_workflows.recovery_meta(_recovery_turn_id),
             TURN_ACTOR_META_KEY: _crew_log_actor,
             _RECOVERY_TURN_META_KEY: _recovery_turn_id,
         },
@@ -217,6 +222,11 @@ def _queue_recovery(
     # its message or a continuation) is the same Regenerate's next attempt: it
     # settles the previous reply, not this turn.
     carry_regenerate_target(slot, _recovery_qid)
+    # A retry of a completion turn still reports on the same sub-agent runs, so
+    # its trace joins theirs (tracing/subagents.py).
+    from kiro_crew.tracing import subagents as trace_subagents
+
+    trace_subagents.requeue(_recovery_turn_id, _recovery_qid)
     # A recovery of a channel message is still that channel's words: it keeps
     # the channels admission judges it by. A restriction only, so it is kept
     # even on a turn whose channel-origin flag a restart removed.

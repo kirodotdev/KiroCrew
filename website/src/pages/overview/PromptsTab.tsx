@@ -23,6 +23,7 @@ import { useProvider } from '../../providers'
 import { i18nT } from '../../i18n/t'
 import { Trans } from 'react-i18next'
 import { queryReadFailed } from '../../utils/queryReadFailed'
+import { compareText } from '../../i18n/format'
 interface Prompt {
   name: string
   fullName: string
@@ -247,7 +248,7 @@ export default function PromptsTab() {
   const grouped = useMemo(() => {
     const g: Record<string, Prompt[]> = {}
     for (const p of filteredPackage) (g[p.package || 'unknown'] ||= []).push(p)
-    return Object.entries(g).sort(([a], [b]) => a.localeCompare(b))
+    return Object.entries(g).sort(([a], [b]) => compareText(a, b))
   }, [filteredPackage])
 
   // A long list is cut at the pane's height, and with the scrollbar hidden

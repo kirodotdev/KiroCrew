@@ -120,7 +120,7 @@ async def _fire_dashboard_nudge(
         await load_window_off_loop(slot)
         if self.dashboard_state.get_slot(loop.slot_key) is not slot:
             return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
-    # An Ultra Mode "Pause all" holds this session: the wake is refused like a busy
+    # A conductor mode "Pause all" holds this session: the wake is refused like a busy
     # slot's, so it spends no cycle and dispatches nothing until Resume all.
     from kiro_crew import crew_pause
 
@@ -770,12 +770,15 @@ async def _steer_work_ledger_wake(
     try:
         # The wake names itself as this loop's automation; the session turns
         # that into the steer and the nudge row. The cycle is the one this
-        # delivery charges.
+        # delivery charges, and the generation lets the turn that carries the
+        # wake charge that cycle's fault to this loop.
         outcome = await session_deliver.deliver(
             state,
             slot,
             text,
-            session_deliver.automation(loop.cycle_count + 1, loop.id),
+            session_deliver.automation(
+                loop.cycle_count + 1, loop.id, generation=loop.config_generation
+            ),
             admission=admission,
         )
     except Exception:

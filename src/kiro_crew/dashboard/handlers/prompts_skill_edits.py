@@ -20,7 +20,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers.prompts_authoring import MAX_PROMPT_NAME_BYTES
+from kiro_crew.dashboard.handlers.prompts_authoring import MAX_PROMPT_NAME_BYTES, _utf8_or_none
 from kiro_crew.dashboard.handlers.prompts_caller_gates import (
     _audit_unread,
     _deny_foreign_app_skill_slot,
@@ -38,6 +38,7 @@ from ._shared import (
     _read_session_key,
     _resolve_skill_root,
     read_skill_file,
+    string_field_error,
 )
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.prompts")
@@ -91,6 +92,8 @@ async def api_skill_pin(request: web.Request) -> web.Response:
 
     if (not_object := body_not_object_error(body)) is not None:
         return not_object
+    if (bad_name := string_field_error("name", body.get("name", ""))) is not None:
+        return bad_name
     name = str(body.get("name", "")).strip()
     raw_pinned = body.get("pinned", True)
     if not isinstance(raw_pinned, bool):
@@ -171,6 +174,8 @@ async def api_skill_inject_on_trigger(request: web.Request) -> web.Response:
     # answers with a 400 and a code instead of AttributeError -> 500.
     if not isinstance(body, dict):
         body = {}
+    if (bad_name := string_field_error("name", body.get("name", ""))) is not None:
+        return bad_name
     name = str(body.get("name", "")).strip()
     raw_inject = body.get("inject")
     if not isinstance(raw_inject, bool):
@@ -362,7 +367,7 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
         try:
             body = await request.json()
         except Exception:
-            return web.json_response({"error": "invalid JSON"}, status=400)
+            return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
         from ._shared import body_not_object_error, string_field_error
 
         if (not_object := body_not_object_error(body)) is not None:
@@ -375,6 +380,13 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
             return not_string
         if not content:
             return web.json_response({"error": "content is required"}, status=400)
+        if _utf8_or_none(content) is None:
+            # JSON allows an escaped lone surrogate, which the SKILL.md writer
+            # cannot encode; the prompt routes answer the same code.
+            return web.json_response(
+                {"error": "content is not valid UTF-8 text", "code": "content_not_encodable"},
+                status=400,
+            )
         # Optional edit base, the same contract as the prompts PUT: the GET
         # hands out ``hash`` (sha256 of SKILL.md), and an editor that presents
         # it as ``base_hash`` is refused with 409 ``content_conflict`` when the
@@ -568,6 +580,13 @@ async def api_skills_create(request: web.Request) -> web.Response:
     if not content:
         return web.json_response(
             {"error": "content is required", "code": "content_required"}, status=400
+        )
+    if _utf8_or_none(content) is None:
+        # JSON allows an escaped lone surrogate, which the SKILL.md writer
+        # cannot encode; the prompt routes answer the same code.
+        return web.json_response(
+            {"error": "content is not valid UTF-8 text", "code": "content_not_encodable"},
+            status=400,
         )
     # Sanitize name: lowercase, alphanumeric + hyphens + slashes for nesting
     safe_name = re.sub(r"[^a-z0-9\-/]", "-", name.lower()).strip("-").strip("/")

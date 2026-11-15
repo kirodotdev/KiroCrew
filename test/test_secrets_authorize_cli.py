@@ -99,6 +99,30 @@ def test_authorize_publishes_only_inside_the_hidden_policy_directory(tmp_path, m
     assert verify_secret_authorizations(doc["authorizations"], doc[SIGNATURE_FIELD])
 
 
+def test_remove_of_an_absent_name_reports_nothing_removed_and_does_not_publish(
+    tmp_path, monkeypatch, capsys
+):
+    """`--remove` of a name that was never authorized says so and writes no policy.
+
+    Before this fix it printed "Removed ... for 'X'." and audited action=remove
+    even though nothing was removed. Now it reports nothing was removed, exits 0
+    (idempotent `--remove` still succeeds), and leaves no signed policy behind.
+    """
+    # First authorize one real name so the policy exists and is validly signed.
+    _run_authorize(monkeypatch, tmp_path, secret_name="REAL", origin="https://api.example.com")
+    before = policy_path(tmp_path).read_text(encoding="utf-8")
+    capsys.readouterr()  # drop the authorize output
+
+    # Removing an absent name is a no-op: accurate message, exit 0, policy untouched.
+    _run_authorize(monkeypatch, tmp_path, secret_name="NEVER_SET", remove=True)
+    out = capsys.readouterr().out
+    assert "nothing removed" in out
+    assert "NEVER_SET" in out
+    assert "Removed" not in out
+    # The signed policy is byte-identical: no re-sign, no dropped entry.
+    assert policy_path(tmp_path).read_text(encoding="utf-8") == before
+
+
 def test_authorize_refuses_without_the_gateway_owned_directory(tmp_path, monkeypatch):
     """The CLI never creates the hidden directory: one it created while a sandbox
     was running would be visible, unmasked, inside that sandbox."""
@@ -195,6 +219,23 @@ def test_authorize_reset_recovers_a_torn_policy(tmp_path, monkeypatch):
         monkeypatch, tmp_path, secret_name="K", origin="https://api.example.com", reset=True
     )
     assert load_authorization(tmp_path, "K").origin == "https://api.example.com"
+
+
+def test_remove_reset_on_a_torn_policy_publishes_a_fresh_signed_empty_policy(tmp_path, monkeypatch):
+    """`--remove --reset` on a damaged policy must repair the file, not exit early.
+
+    The no-op early return for a `--remove` of an absent name must not swallow a
+    pending `--reset` that discarded a damaged policy: the reset still has to
+    write, sign and audit a fresh empty policy, or the bad file stays on disk and
+    every later authorize keeps refusing.
+    """
+    policy = policy_path(tmp_path)
+    policy.write_text('{"version": 1, "authoriz', encoding="utf-8")
+    _run_authorize(monkeypatch, tmp_path, secret_name="GONE", remove=True, reset=True)
+    # The torn bytes are gone, replaced by a validly owner-signed empty policy.
+    doc = json.loads(policy.read_text(encoding="utf-8"))
+    assert doc["authorizations"] == {}
+    assert verify_secret_authorizations(doc["authorizations"], doc[SIGNATURE_FIELD])
 
 
 def test_authorize_discards_a_key_present_but_invalidly_signed_policy(tmp_path, monkeypatch):

@@ -56,7 +56,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import rewrite_in_place
 from kiro_crew.config import loader as config_loader
 
 logger = logging.getLogger(__name__)
@@ -174,9 +174,6 @@ KEEP_BROWSER_IMAGES: object = object()
 #: the switch is resolved from the keystone inside :data:`_SAVE_LOCK`, so a scope write
 #: cannot move it in either direction whatever the caller believes.
 KEEP_ENABLED: object = object()
-
-# Owner-only: the file records a security decision.
-_STATE_FILE_MODE = 0o600
 
 #: Serializes :func:`save_enabled`'s read-modify-write. The handler runs it on a
 #: thread, so two owner PUTs genuinely interleave, and resolving
@@ -393,7 +390,9 @@ def read_state_strict() -> dict:
     """Read the keystone for a MUTATION: raise on corrupt, ``{}`` when absent.
 
     A populated-but-unparseable ceiling must be reported, not overwritten: resetting
-    it to defaults would be a silent change to a security decision.
+    it to defaults would be a silent change to a security decision. An empty file
+    (a save cut off inside its in-place rewrite leaves one) is corrupt too: saving
+    over it would drop the browser opt-outs it held.
     """
     path = consent_path()
     if not path.exists():
@@ -423,7 +422,11 @@ def save_enabled(
     browser: object = KEEP_BROWSER,
     browser_images: object = KEEP_BROWSER_IMAGES,
 ) -> dict:
-    """Record *enabled* for *endpoint* atomically, owner-only; return the state written.
+    """Record *enabled* for *endpoint*, owner-only; return the state written.
+
+    The record is rewritten in place (``atomic_write.rewrite_in_place``), so a
+    running Linux sandbox's read-only mount of it stays sealed; a torn read during
+    the rewrite reads as not consented.
 
     Enabling records the endpoint the owner is consenting to -- the caller passes
     the one currently configured, so the keystone says where the messages will go
@@ -583,7 +586,7 @@ def save_enabled(
                     state.pop(key, None)
             elif value is not keep_value:
                 state[key] = value
-        atomic_write(consent_path(), json.dumps(state, indent=2) + "\n", mode=_STATE_FILE_MODE)
+        rewrite_in_place(consent_path(), json.dumps(state, indent=2) + "\n")
     return state
 
 
@@ -604,5 +607,5 @@ def rebind_if_enabled(endpoint: str) -> bool:
         if not is_enabled(state):
             return False
         state[STATE_KEY_ENDPOINT] = target
-        atomic_write(consent_path(), json.dumps(state, indent=2) + "\n", mode=_STATE_FILE_MODE)
+        rewrite_in_place(consent_path(), json.dumps(state, indent=2) + "\n")
     return True

@@ -34,6 +34,7 @@ from kiro_crew.mcp_gateway import stub as stub_mod
 from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.backend import Backend
 from kiro_crew.mcp_gateway.pool import BackendUnavailable, PoolAtCapacity, PoolKey
+from kiro_crew.start_priority import StartPriority
 from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 _POSIX_ONLY = pytest.mark.skipif(
@@ -701,6 +702,7 @@ _CAPACITY_FAILURES: list[tuple[str, BaseException, int]] = [
     ("gate wait spent", adm.SpawnGateTimeout(3, 4, 600.0), 30),
     ("gate closed", adm.SpawnGateClosed("drain"), 5),
     ("breaker OPEN", BackendUnavailable("breaker OPEN"), 60),
+    ("owner port unproven", gw.OwnerPortUnproven("'kirocrew-core': no port"), 30),
     *[
         (f"pressure errno {name}", OSError(getattr(errno, name), name), 30)
         for name in ("ENOMEM", "EAGAIN", "EMFILE", "ENFILE", "ENOSPC")
@@ -780,6 +782,7 @@ class TestRejectionClasses:
             adm.SpawnGateTimeout,
             adm.SpawnGateClosed,
             BackendUnavailable,
+            gw.OwnerPortUnproven,
         }
         measured = {type(exc) for _, exc, _ in _CAPACITY_FAILURES if not isinstance(exc, OSError)}
         assert measured == set(gw._CAPACITY_FAILURES)
@@ -1446,3 +1449,59 @@ class TestPrewarmYieldsToALiveStub:
             for task in queued:
                 task.cancel()
             await asyncio.gather(*queued, return_exceptions=True)
+
+
+# start order at the daemon: the gate's own order is pinned in test_mcp_gateway_spawn_order.py
+
+
+_FG = StartPriority.FOREGROUND
+_BG = StartPriority.BACKGROUND
+
+
+class TestStartPriorityAtTheDaemon:
+    @pytest.mark.asyncio
+    async def test_positions_follow_the_order_a_free_slot_is_handed_out_in(self) -> None:
+        gate = adm.SpawnGate(1)
+        held = await gate.acquire(label="held")
+        positions: dict[str, int] = {}
+
+        def seen(label: str) -> Callable[[adm.QueuePosition], Awaitable[None]]:
+            async def record(position: adm.QueuePosition) -> None:
+                positions[label] = position.position
+
+            return record
+
+        background = asyncio.create_task(
+            gate.acquire(label="bg", on_queued=seen("bg"), keepalive_secs=0.01)
+        )
+        await _settle()
+        person = asyncio.create_task(
+            gate.acquire(label="fg", on_queued=seen("fg"), keepalive_secs=0.01, priority=_FG)
+        )
+        await _await_state(lambda: {"bg", "fg"} <= positions.keys(), "both waiters reported")
+        assert positions == {"fg": 1, "bg": 2}
+
+        held.release()
+        (await _within_ceiling(person, "the person's grant")).release()
+        (await _within_ceiling(background, "the background grant")).release()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("frame", "priority"),
+        [({"start_priority": "fg"}, _FG), ({}, _BG), ({"start_priority": "urgent"}, _BG)],
+        ids=["person", "old-stub", "unknown-value"],
+    )
+    async def test_the_daemon_queues_a_spawn_at_the_priority_its_stub_registered(
+        self, peer_ok, monkeypatch, frame: dict[str, Any], priority: StartPriority
+    ) -> None:
+        acquire = AsyncMock(side_effect=PoolAtCapacity("full"))
+        monkeypatch.setattr(gw, "_acquire_backend", acquire)
+
+        await _handle(
+            _ScriptedReader(_register_frame(**frame), {"type": "ensure_backend"}),
+            _FakeWriter(),
+            _fake_pool(),
+            _admission(),
+        )
+
+        assert acquire.await_args.kwargs["priority"] is priority

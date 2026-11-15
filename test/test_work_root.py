@@ -404,6 +404,42 @@ class TestSweep:
         assert wr.sweep_work_root() == 0
         assert path.is_dir()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows has no change time, so a far-future date stands there",
+    )
+    def test_a_far_future_mtime_does_not_keep_an_idle_entry(self, root: Path) -> None:
+        # A write stamps the current clock, so a file utime() dated years ahead
+        # is read by when that utime() ran, not held until that date.
+        path = wr.allocate_work("k")
+        fixture = path / "fixture.csv"
+        fixture.write_text("x\n", encoding="utf-8")
+        now = time.time() + wr.IDLE_GRACE_SECONDS + 60
+        future = now + 10 * 365 * 86400.0
+        os.utime(fixture, (future, future))
+
+        assert wr.sweep_work_root(now=now) == 1
+        assert not path.exists()
+
+    def test_an_entry_written_before_the_clock_stepped_back_is_kept(self, root: Path) -> None:
+        # Every real write then reads as years ahead, by its change time too:
+        # that is a fast clock corrected, not a utime(), so the entry is fresh.
+        path = wr.allocate_work("k")
+        (path / "work.txt").write_text("x\n", encoding="utf-8")
+
+        assert wr.sweep_work_root(now=time.time() - 10 * 365 * 86400.0) == 0
+        assert path.is_dir()
+
+    def test_on_windows_a_far_future_mtime_stands(self, monkeypatch) -> None:
+        # Windows stat has no change time (st_ctime is creation time), and a
+        # file rewritten after it was created must not read as idle by it.
+        monkeypatch.setattr(sys, "platform", "win32")
+        reference = 1_800_000_000
+        mtime = reference + 10 * 365 * 86400
+        info = os.stat_result((stat.S_IFREG | 0o600, 0, 0, 1, 0, 0, 0, 0, mtime, reference - 7200))
+
+        assert wr._activity_time(info, reference) == mtime
+
     def test_a_stray_file_in_the_root_is_never_swept(self, root: Path) -> None:
         root.mkdir(parents=True)
         stray = root / "notes.txt"

@@ -12,11 +12,13 @@ import pytest
 
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.state import _ChatSlot
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-# The canonical AWS documentation example secret key, never a live credential,
-# and the same key without its `/`, so it fits an id or a field whole.
-KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-SEGMENT_KEY = "wJalrXUtnFEMIzK7MDENGqbPxRfiCYEXAMPLEKEY"
+# A synthetic 40-character AWS secret key, and the same key without its `/`, so it
+# fits an id or a field whole. (The AWS documentation example key would not do: the
+# structured detectors keep it visible as an identifier.)
+KEY = SAMPLE_AWS_SECRET
+SEGMENT_KEY = SAMPLE_AWS_SECRET.replace("/", "z", 1).replace("/", "q", 1)
 # A real-shaped Outlook item id (see test_document_link_redaction.OUTLOOK_ID).
 OUTLOOK_ID = (
     "AAMkAGVmMDEzMTM4LTZmYWUtNDdkNC1hMDZiLTU1OGY5OTZhYmY4OABGAAAAAAAiQ8W967B7TKBjgx9rVEURBwAi"

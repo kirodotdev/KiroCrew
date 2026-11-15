@@ -1,24 +1,30 @@
-"""Name tables from kiro-cli's tool names to goose's, opencode's, Strands' and claude's own.
+"""Name tables from kiro-cli's tool names to goose's, opencode's, Strands', claude's, codex's.
 
 A spec hook's tool matcher is written in kiro-cli's names (``execute_bash``,
 ``fs_write``). KAS states its own id for a call and
 :func:`kiro_crew.acp.kas_permissions.kas_tool_match_names` maps it back. goose,
-opencode and claude state no such id on a permission request, but each names the
-tool on the ``tool_call`` frame that comes first:
+opencode, claude and codex state no such id on a permission request, but each
+names the tool on the ``tool_call`` frame that comes first:
 
 * goose in ``_meta.goose.toolCall.toolName`` (``shell`` for its builtin shell);
 * opencode in the frame's ``title``, which on that first frame is the tool's own
   name (``bash``); later updates reuse the title for the command;
 * claude-agent-acp in ``_meta.claudeCode.toolName`` (``Bash``, ``Edit``); a frame
   carrying that block is never named by its title, which the adapter builds from
-  the call's arguments.
+  the call's arguments;
+* codex-acp in its adapter-authored fields: a top-level ``name`` on some calls
+  (``exec_command``, ``write_stdin``), else the ``kind`` and the shape of ``rawInput`` its reporters
+  write (``codex_tool_name``). Its title is a command or prose and is never read.
 
 The permission event carries that name as its ``harness_tool_id``, joined to the
 backend by :data:`HARNESS_TOOL_ID_SEPARATOR` (``goose#shell``). A KAS id never
 contains that character (``_dispatch._HARNESS_TOOL_ID_RE``), so a KAS id can never
-be read through these tables, and a goose id never through KAS's. Crew fires no
-spec hooks on claude, so there the id is what a Hooks-page PreToolUse matcher
-meets; it is read by hook matching alone, and a hook can only refuse a call.
+be read through these tables, and a goose id never through KAS's. On codex the
+``tool_call`` event carries the id too, because codex runs most calls without a
+permission request. Crew fires no ``preToolUse`` spec hooks on claude or codex, so
+there the id is what a Hooks-page PreToolUse matcher and a spec's ``postToolUse``
+matcher meet; it is read by hook matching alone, and a hook can only refuse or
+observe a call.
 
 Most ids below are tools the live harness offered, measured on goose 1.50.1 (its
 tool list as its request log sent it to the model) and on opencode 1.18.30 (as
@@ -43,20 +49,28 @@ hook on any of them still runs. When the
 fused title is also opencode's own tool (``apply_patch``), that tool's kiro-cli
 name stays the first name, so a spec hook's stdin still reports the built-in
 (``write``, :func:`kiro_crew.agent_sdk.spec_hooks.kiro_cli_hook_payload`).
+
+The module also holds the per-harness ARGUMENT spellings
+(:data:`HARNESS_PARAM_ALIASES`), the same kind of table one level down: a harness
+tool's own name for an argument Crew's gates read under another.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable
 
 from kiro_crew.acp.kas_permissions import KIRO_TOOL_ALIASES
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_GOOSE,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_STRANDS,
 )
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
 
 #: Joins a backend to the tool name its frame stated. Outside the characters a KAS
 #: ``toolId`` may carry, so the two id spaces cannot meet.
@@ -145,6 +159,65 @@ CLAUDE_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = {
     "use_subagent": ("Task", "Agent"),
 }
 
+#: kiro-cli tool name -> the codex model tools that do the same job, as codex-acp
+#: 2.3.0 offered them to the model (``exec_command``, ``write_stdin``,
+#: ``web_search``; ``shell`` is the classic shell tool of older codex releases).
+#: codex turns an ``apply_patch`` command into a file change, which it reports as
+#: kind ``edit``. ``view_image`` has no row: codex-acp reports it as one
+#: ``tool_call`` frame that is already ``completed`` and sends no update after it,
+#: so the turn gets no result for it and its ``postToolUse`` hooks could not fire. codex states no tool id on a permission
+#: request, and its ``tool_call`` frame states a tool name only for some calls, so
+#: the name is read from the frame's adapter-authored fields
+#: (:func:`kiro_crew.acp._dispatch_parts.tool_call_identity.codex_tool_name`), never
+#: from its title, which is a command or prose. An MCP call is named only by its
+#: ``@server/tool`` identity.
+CODEX_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = {
+    "execute_bash": ("exec_command", "write_stdin", "shell"),
+    "fs_write": ("apply_patch",),
+    "web_search": ("web_search",),
+}
+
+#: kiro-cli tool name -> the MiMo Code tools that do the same job, by the ids its
+#: 0.1.15 tool registry defines (``tool/*.ts``). A model the harness
+#: addresses in PascalCase (``Bash``) still reports the internal id on the wire,
+#: because the harness maps the name back before the frame is built. Like claude's
+#: table, this backend is outside ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``: the row
+#: names a call for the gate's own hooks on the calls that ask, while the spec's
+#: hooks are withheld because some of the harness's tools never ask. The fork's subagent tool
+#: is ``actor`` (``tool/actor.ts``, asking under its own ``actor`` permission); its
+#: ``task`` is a work-item tracker that never asks, not opencode's subagent ``task``.
+MIMOCODE_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = {
+    "execute_bash": ("bash",),
+    "fs_read": ("read", "view_image"),
+    "fs_write": ("write", "edit", "apply_patch", "multiedit", "notebook_edit"),
+    "grep": ("grep",),
+    "glob": ("glob",),
+    "web_fetch": ("webfetch",),
+    "web_search": ("websearch",),
+    "use_subagent": ("actor",),
+}
+
+#: The characters MiMo Code keeps in each half of a fused MCP name; any other is
+#: written as ``_`` (0.1.15 ``mcp/index.ts:361``, ``replace(/[^a-zA-Z0-9_-]/g,
+#: "_")``). Its MCP tools arrive under that fused ``<server>_<tool>`` title,
+#: captured as ``crew-probe_crew_probe_echo``.
+_MIMOCODE_UNSAFE_NAME_CHARS = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def _mimocode_spelled(text: str, unsafe: re.Pattern[str]) -> str:
+    """*text* with every *unsafe* character written as MiMo Code writes it.
+
+    The harness's ``replace`` walks UTF-16 code units, so a character outside the
+    Basic Multilingual Plane, two units there, becomes two ``_``.
+    """
+    return unsafe.sub(lambda m: "__" if ord(m.group()) > 0xFFFF else "_", text)
+
+
+def mimocode_spelling(name: str) -> str:
+    """One half of a fused MCP name as MiMo Code writes it (``repo.delete`` -> ``repo_delete``)."""
+    return _mimocode_spelled(name, _MIMOCODE_UNSAFE_NAME_CHARS)
+
+
 #: claude-agent-acp's read-only built-ins, keyed by the name the adapter stamps on
 #: a ``tool_call`` frame (``_meta.claudeCode.toolName``), mapped to the kiro-cli
 #: built-in that does the same job. It names that built-in on a Side Chat
@@ -183,11 +256,87 @@ HARNESS_TOOL_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
     ACP_BACKEND_OPENCODE: OPENCODE_TOOL_IDS_BY_KIRO_TOOL,
     ACP_BACKEND_STRANDS: STRANDS_TOOL_IDS_BY_KIRO_TOOL,
     ACP_BACKEND_CLAUDE: CLAUDE_TOOL_IDS_BY_KIRO_TOOL,
+    ACP_BACKEND_CODEX: CODEX_TOOL_IDS_BY_KIRO_TOOL,
+    ACP_BACKEND_MIMOCODE: MIMOCODE_TOOL_IDS_BY_KIRO_TOOL,
 }
 
-#: Every harness id in these tables, for the spec reader's "names no tool" warning.
+#: A harness's native tools that can complete with no permission request under its
+#: seeded asking posture, by the id its ``tool_call`` frame names. The unasked-call
+#: tripwire (``AcpClient._tripwire_pi_gate``) passes these and stops the harness on
+#: any other call that completes unasked. MiMo Code 0.1.15 (``tool/registry.ts``):
+#: ``memory``, ``history`` and ``task`` never call ``ctx.ask``; ``plan_exit`` and
+#: ``question`` ask the user through the question service, not the permission
+#: service; ``mcp_tool_search`` only searches the deferred MCP catalog; ``invalid``
+#: answers a call to a tool that does not exist. ``actor`` asks only to start a
+#: subagent, so it passes only when its input names nothing else
+#: (:func:`mimocode_actor_asks_nothing`). ``skill_search`` asks only to load the
+#: skill it matched, so a search with no match, or one under its auto-load score,
+#: completes unasked. Its keys are ``ACP_BACKENDS_UNASKED_NATIVE_TOOLS``.
+HARNESS_UNASKED_TOOL_IDS: dict[str, frozenset[str]] = {
+    ACP_BACKEND_MIMOCODE: frozenset(
+        {
+            "memory",
+            "history",
+            "task",
+            "plan_exit",
+            "question",
+            "mcp_tool_search",
+            "invalid",
+            "actor",
+            "skill_search",
+        }
+    ),
+}
+
+#: The ``actor`` actions that return before its ask (``tool/actor.ts``); ``run`` and
+#: ``spawn`` start a subagent and ask first.
+_MIMOCODE_ACTOR_UNASKED_ACTIONS = frozenset({"status", "wait", "cancel", "send", "models"})
+_MIMOCODE_ACTOR_UNASKED_LINE = re.compile(
+    r"[ \t]*actor[ \t]+(?:status|wait|cancel|send|models)(?:[ \t]|$)"
+)
+_MIMOCODE_ACTOR_CHAINING = re.compile(r"[;&|$`\\]|\bactor\b.*\bactor\b")
+
+
+def mimocode_actor_asks_nothing(params: object) -> bool:
+    """Whether a MiMo Code ``actor`` call's input names only actions that never ask.
+
+    Read as the harness lifts it (``recoverActorArgs``): ``{"operation": {...}}``, or
+    that envelope as a JSON string, passes when its ``action`` is one of
+    :data:`_MIMOCODE_ACTOR_UNASKED_ACTIONS`. A ``script`` (``parseActorScript``)
+    passes when every line is one such command with its verb spelled plainly and the
+    script holds no backslash, shell operator, ``$``, backtick or second ``actor`` on
+    a line, so no command can start mid-line whatever the tokenizer splits on. A bare
+    ``{subagent_type, description, prompt}`` is a launch, and anything unreadable is
+    read as one.
+    """
+    if not isinstance(params, dict):
+        return False
+    script = params.get("script")
+    if isinstance(script, str) and script.strip():
+        lines = [line for line in script.splitlines() if line.strip()]
+        return not _MIMOCODE_ACTOR_CHAINING.search(script) and all(
+            _MIMOCODE_ACTOR_UNASKED_LINE.match(x) for x in lines
+        )
+    operation = params.get("operation")
+    if isinstance(operation, str):
+        try:
+            operation = json.loads(operation)
+        except ValueError:
+            return False
+    action = operation.get("action") if isinstance(operation, dict) else None
+    return isinstance(action, str) and action in _MIMOCODE_ACTOR_UNASKED_ACTIONS
+
+
+#: Every harness id in these tables but MiMo Code's, for the spec reader's "names no
+#: tool" warning. MiMo Code's spec hooks are withheld, so a matcher that meets only a
+#: MiMo Code id names a tool no spec hook ever sees, and still warns.
 HARNESS_TOOL_MATCH_VOCABULARY: frozenset[str] = frozenset(
-    tool_id for table in HARNESS_TOOL_TABLES.values() for ids in table.values() for tool_id in ids
+    tool_id
+    for backend, table in HARNESS_TOOL_TABLES.items()
+    if backend in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
+    or backend in (ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX)
+    for ids in table.values()
+    for tool_id in ids
 )
 
 
@@ -224,6 +373,39 @@ def _opencode_mcp_splits(tool_name: str, mcp_servers: Iterable[str]) -> list[str
     return list(dict.fromkeys(splits))
 
 
+def mimocode_rewrites_name(server: str) -> bool:
+    """Whether MiMo Code writes *server* differently in a fused tool title.
+
+    A name of only ``[A-Za-z0-9_-]`` is written as it is, so the every-``_``
+    split already yields its exact ``@server/tool``; only another name needs
+    to be known to be split back exactly.
+    """
+    return bool(_MIMOCODE_UNSAFE_NAME_CHARS.search(server))
+
+
+def _mimocode_mcp_splits(tool_name: str, mcp_servers: Iterable[str]) -> list[str]:
+    """``@server/tool`` for every known server whose ``<server>_`` prefixes the name.
+
+    Compared in MiMo Code's own spelling of the server, since that is what the
+    title carries (``docs.server`` arrives as ``docs_server_``); the split keeps
+    the name Crew placed, so a matcher written with it still meets the call.
+    """
+    splits = []
+    for server in sorted({s for s in mcp_servers if s}, key=len, reverse=True):
+        prefix = f"{mimocode_spelling(server)}_"
+        if tool_name.startswith(prefix) and len(tool_name) > len(prefix):
+            splits.append(f"@{server}/{tool_name[len(prefix):]}")
+    # A server neither Crew placed nor the config read-back named still gets a
+    # split, at every "_". Each split only adds names a deny hook may meet; none
+    # is taken away.
+    splits += [
+        f"@{tool_name[:i]}/{tool_name[i + 1:]}"
+        for i, c in enumerate(tool_name)
+        if c == "_" and 0 < i < len(tool_name) - 1
+    ]
+    return list(dict.fromkeys(splits))
+
+
 def qualified_harness_tool_id(backend: str, tool_name: str, mcp_servers: Iterable[str] = ()) -> str:
     """``backend#tool_name`` for a backend with a table, else ``""``.
 
@@ -238,6 +420,10 @@ def qualified_harness_tool_id(backend: str, tool_name: str, mcp_servers: Iterabl
         return ""
     if backend == ACP_BACKEND_OPENCODE:
         splits = _opencode_mcp_splits(tool_name, mcp_servers)
+        if splits:
+            tool_name = _MCP_SPLIT_SEPARATOR.join(splits)
+    elif backend == ACP_BACKEND_MIMOCODE:
+        splits = _mimocode_mcp_splits(tool_name, mcp_servers)
         if splits:
             tool_name = _MCP_SPLIT_SEPARATOR.join(splits)
     return f"{backend}{HARNESS_TOOL_ID_SEPARATOR}{tool_name}"
@@ -278,7 +464,7 @@ def harness_tool_match_names(tool_id: str) -> tuple[str, ...] | None:
         for split in name.split(_MCP_SPLIT_SEPARATOR):
             server, _, tool = split[1:].partition("/")
             forms += [split, f"mcp__{server}__{tool}"]
-            fused.append(f"{_OPENCODE_UNSAFE_NAME_CHARS.sub('_', server)}_{tool}")
+            fused.append(f"{_fused_server_spelling(backend, server)}_{tool}")
         if backend in ENVELOPE_NAMED_TOOL_BACKENDS:
             # The envelope proved an MCP server's tool: only its MCP forms name it.
             # The fused spelling is opencode's, and on this harness ``web_fetch``
@@ -291,9 +477,69 @@ def harness_tool_match_names(tool_id: str) -> tuple[str, ...] | None:
     return _native_match_names(backend, name)
 
 
+def _fused_server_spelling(backend: str, server: str) -> str:
+    """*server* as *backend* writes it in a fused ``<server>_<tool>`` title.
+
+    The same spelling its ``_mcp_splits`` compares against, so the fused name a
+    matcher is handed is the one the harness stated: MiMo Code's writes a
+    character outside the BMP as ``__`` (:func:`mimocode_spelling`).
+    """
+    if backend == ACP_BACKEND_MIMOCODE:
+        return mimocode_spelling(server)
+    return _OPENCODE_UNSAFE_NAME_CHARS.sub("_", server)
+
+
 def _native_match_names(backend: str, name: str) -> tuple[str, ...]:
     """The kiro-cli name whose row reaches *name*, then *name*, then the aliases."""
     table = HARNESS_TOOL_TABLES[backend]
     kiro_names = sorted(kiro for kiro, ids in table.items() if name in ids)
     aliases = sorted(alias for alias, kiro in KIRO_TOOL_ALIASES.items() if kiro in kiro_names)
     return tuple(dict.fromkeys([*kiro_names, name, *aliases]))
+
+
+# Per-harness argument spellings, read onto the names Crew's gates judge.
+#
+# The path and patch checks in ``kiro_crew.platform.tool_paths`` read one set of
+# argument names on every backend (``file_path``, ``patchText``, ...). A harness
+# whose own tools name the same argument differently is listed here, by backend,
+# and only that backend's permission events gain the canonical spelling: no other
+# backend's arguments are read any differently, and the shared readers stay
+# unaware of which harness sent a call.
+#
+# MiMo Code 0.1.15 names ``notebook_edit``'s target ``notebook_path``
+# (``tool/notebook-edit.ts``) and ``apply_patch``'s envelope ``patch_text``
+# (``tool/apply_patch.ts``; the envelope and its parser are OpenCode's). Without
+# the alias a ``notebook_edit`` names no target the write-protected tier can read,
+# so every call is refused (captured live on xiaomi ``mimo-v2.6-flash``).
+
+#: backend -> {the harness's argument name: the name the gates read}.
+HARNESS_PARAM_ALIASES: dict[str, dict[str, str]] = {
+    ACP_BACKEND_MIMOCODE: {"notebook_path": "file_path", "patch_text": "patchText"},
+}
+
+
+def canonical_tool_params(backend: str, params: dict | None) -> dict | None:
+    """*params* with each of *backend*'s aliases also present under its canonical name.
+
+    The harness's own key is kept, so the approval and the audit still show what
+    the harness received, and *params* itself is never modified (it is the
+    caller's trusted cache entry). Nothing is chosen between two spellings, the
+    rule ``tool_paths.target_paths`` states for path aliases: a canonical key that
+    already holds a different value is given BOTH, as a list. The path walk reads
+    every string in that list; the patch gate reads a non-string envelope as
+    unverifiable and refuses the call. A backend with no aliases, and params that
+    are not a dict, come back as they are.
+    """
+    aliases = HARNESS_PARAM_ALIASES.get(backend)
+    if not aliases or not isinstance(params, dict):
+        return params
+    out = dict(params)
+    for harness_key, canonical in aliases.items():
+        if harness_key not in params:
+            continue
+        value = params[harness_key]
+        if canonical not in out:
+            out[canonical] = value
+        elif out[canonical] != value:
+            out[canonical] = [out[canonical], value]
+    return out

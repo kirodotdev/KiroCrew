@@ -89,7 +89,7 @@ class TestIsPlausibleMemoryFile:
     def test_header_with_empty_body_accepted(self):
         # An empty body after the exact header is the legitimate COMPLETE file
         # when the last entry is deleted (final project goes inactive);
-        # rejecting it would pin the stale entry forever (GPT 5.6 finding).
+        # rejecting it would pin the stale entry forever.
         assert _is_plausible_memory_file("# User Preferences\n\n", _PREFS_HEADER)
         assert _is_plausible_memory_file("# Active Projects", _PROJECTS_HEADER)
 

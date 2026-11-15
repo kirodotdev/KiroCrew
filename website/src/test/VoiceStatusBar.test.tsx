@@ -77,6 +77,20 @@ describe('VoiceStatusBar', () => {
     expect(screen.getByText('Default microphone')).toBeTruthy()
   })
 
+  it('shows how long the recording has run, only while recording', () => {
+    const { rerender } = render(<VoiceStatusBar recording level={0.2} />)
+    expect(screen.getByTestId('voice-recording-elapsed').textContent).toBe('0:00')
+    // Capture is over: the strip that explains the wait has no clock, since
+    // nothing is being recorded any more.
+    rerender(<VoiceStatusBar recording={false} level={0} download={{ done: 0, total: 0, stage: 'preparing' }} />)
+    expect(screen.queryByTestId('voice-recording-elapsed')).toBeNull()
+  })
+
+  it('shows no elapsed time beside a mic error', () => {
+    render(<VoiceStatusBar recording level={0.2} error="Microphone permission denied" />)
+    expect(screen.queryByTestId('voice-recording-elapsed')).toBeNull()
+  })
+
   it('shows a dismissible error and prefers it over the recording indicator', () => {
     const onDismissError = vi.fn()
     render(

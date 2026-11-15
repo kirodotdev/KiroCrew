@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard import channel_slots
 from kiro_crew.dashboard import chat_utils as cu
@@ -22,7 +23,7 @@ from kiro_crew.history import _safe_key
 from kiro_crew.security import exfil
 from kiro_crew.security.redaction_switch import owner_view
 
-SECRET = "AKIAIOSFODNN7EXAMPLE"
+SECRET = github_classic(seed=57)
 TENANT_URL = (
     "https://tenant.example.com/collect?data=c2VjcmV0LXRva2VuLXZhbHVlLTEyMzQ1Njc4OTAxMjM0NTY3ODkw"
 )
@@ -136,6 +137,24 @@ class TestEveryOutsideInputIsInTheKey:
         assert plain == _expected(rows, workspace="/ws/b")
         assert relaxed == _expected(rows, workspace="/ws/a")
         assert plain != relaxed
+
+    def test_an_engine_change_re_renders_without_the_verdict_store(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no verdict store (always on Windows, and before it is enabled), the
+        engine selector still keys the memo: a row rendered under one engine is
+        rendered again under the other."""
+        from kiro_crew.dashboard import display_verdicts
+        from kiro_crew.security.redaction_structured import compat
+
+        monkeypatch.setattr(display_verdicts, "mac_base", lambda: None)
+        key_id = "AKIA" + "RY5CJQX4BIPW3AHO"
+        rows = [{"role": "assistant", "content": f"id {key_id} end", "ts": "t0"}]
+        monkeypatch.setattr(compat, "_USE_RULE_TABLE", True)
+        assert key_id in _actual(rows)
+        monkeypatch.setattr(compat, "_USE_RULE_TABLE", False)
+        assert _actual(rows) == _expected(rows)
+        assert key_id not in _actual(rows)
 
     def test_token_prefix_change_re_renders(self, monkeypatch: pytest.MonkeyPatch) -> None:
         prefixes: dict[str, tuple[str, ...]] = {"v": ()}

@@ -197,6 +197,19 @@ def _run_chat_folder_create(args: dict[str, Any], ctx: ToolContext) -> str:
         d = ctx.client.post("/api/chat/folders", body, session_key=caller_key)
     except DashboardError as refused:
         return redact(f"Error: {refused.error}{made_note}")
+    if d.get("reused"):
+        # The endpoint handed back this caller's own same-name folder (200, not
+        # 201), as the path walk above reads it: nothing new exists.
+        d = {k: v for k, v in d.items() if k != "reused"}
+        reused_id = str(d.get("id") or "?")
+        # The returned row is the authority: the snapshot read before the POST
+        # may hold a stale name for the same id.
+        chat_folders = [f for f in chat_folders if str(f.get("id") or "") != reused_id]
+        chat_folders.append(d)
+        reused_path = _chat_folder_paths(chat_folders).get(reused_id) or str(d.get("name") or "?")
+        return redact(
+            f"Folder `{reused_path}` already exists (id={reused_id}); reused it.{made_note}"
+        )
     chat_folders.append(d)
     new_id = str(d.get("id") or "?")
     new_path = _chat_folder_paths(chat_folders).get(new_id) or str(d.get("name") or "?")

@@ -9,11 +9,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.coder import session_browse, session_launch
 from kiro_crew.coder.client import CoderClient, CoderClientError
 from kiro_crew.config import live, paths
 from kiro_crew.session_environment import SessionEnvironmentUnavailable
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 @pytest.fixture(autouse=True)
@@ -281,8 +283,8 @@ async def test_other_browse_errors_do_not_reinstall(browse_target, monkeypatch):
 @pytest.mark.parametrize(
     ("sensitive", "replacement"),
     [
-        ("AKIAIOSFODNN7EXAMPLE", "[REDACTED: credential]"),
-        ("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "[REDACTED: credential]"),
+        (github_classic(seed=22), "[REDACTED: credential]"),
+        (SAMPLE_AWS_SECRET, "[REDACTED: credential]"),
         ("?token=opaque-example", "?token=[REDACTED: credential]"),
         (
             "https://example.com/?data=" + "a" * 300,
@@ -337,7 +339,7 @@ async def test_git_browse_redacts_output_and_errors_with_framing(
 async def test_git_browse_redacts_failed_reply(browse_target):
     _config, _record, _runner, guest = browse_target
     guest.return_value = json.dumps(
-        {"git": False, "code": "git_failed", "error_text": "fatal: AKIAIOSFODNN7EXAMPLE"}
+        {"git": False, "code": "git_failed", "error_text": f"fatal: {github_classic(seed=22)}"}
     ).encode()
     result = await session_browse.browse_session(SESSION, "git_log", ".")
     assert result == {

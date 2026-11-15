@@ -9,7 +9,7 @@
  * `AppPanelTabsErrorNotice` reports a failed app list at panel level. `SidePanel.tsx` decides which tabs mount and which one shows,
  * and renders the category views itself; this module never imports it.
  */
-import { useState, useRef, useEffect, useCallback, Suspense, lazy } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { Hash, Pen, Columns2 } from 'lucide-react'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
@@ -31,7 +31,7 @@ import { scrollMemoryKeyFor } from '../../hooks/useScrollMemory'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { ContentSkeleton } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
-import ErrorBoundary from '../../components/ErrorBoundary'
+import { lazyRetry } from '../../components/lazyRetry'
 import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, partialReadCause, type PartialCause } from '../../utils/fileReadQuery'
 import { errMessage } from '../../utils/thunkError'
 import { useAppSelector } from '../../store'
@@ -42,7 +42,15 @@ import { DocumentPanelTabs } from './DocumentPanelTabs'
 import { openFilePopout } from '../../utils/filePopout'
 import { i18nT } from '../../i18n/t'
 
-const DashboardPreviewPanel = lazy(() => import('./DashboardPreviewPanel'))
+// A chunk that fails to load shows its notice in the tab, with Try Again, never
+// the route's card over the host page.
+// No hand-off: the side panel's other tabs and the host page can hold unsaved edits.
+const DashboardPreviewPanel = lazyRetry(() => import('./DashboardPreviewPanel'), {
+  layout: 'page',
+  title: () => i18nT('pages.membersPage.dashboard_unavailable'),
+  scope: 'dashboard-preview',
+  askAgent: false,
+})
 
 /** Body renderer for terminal + document tabs. Module-scope (NOT nested inside
  *  SidePanel): a nested component definition would produce a new component
@@ -418,9 +426,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
   if (tab.kind === 'artifact') {
     // A crewmate's staged dashboard rides the artifact tab (see `dashboardPreviewRef`).
     const previewTarget = dashboardPreviewTargetFromRef(tab.artifactSlug)
-    // A local boundary: a failed chunk load must not reach the route boundary and
-    // unmount the host page (and any unsaved form on it).
-    if (previewTarget) return <ErrorBoundary scope="dashboard-preview" retryOnly><Suspense fallback={null}><DashboardPreviewPanel target={previewTarget} /></Suspense></ErrorBoundary>
+    if (previewTarget) return <DashboardPreviewPanel target={previewTarget} />
     return (
       <DocumentPanelTabs target={{ kind: 'artifact', slug: tab.artifactSlug || '', artifactKind: tab.artifactKind || 'markdown' }} active={active} slot={slot}>
       {(docActive: boolean) => (

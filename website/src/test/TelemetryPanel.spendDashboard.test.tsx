@@ -73,7 +73,7 @@ const payload = (over: Record<string, unknown> = {}) => ({
   cost: cost(over),
 })
 
-vi.mock('../api/client', () => ({ api: { telemetryStartup: vi.fn() } }))
+vi.mock('../api/client', () => ({ api: { telemetryStartup: vi.fn(), usageTurns: vi.fn() } }))
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 const Wrapper = ({ children }: { children: React.ReactNode }) => (
@@ -275,5 +275,115 @@ describe('TelemetryPanel — the spend tab opens on the answer', () => {
     // An absent attribute, never aria-hidden="false" -- the two are not the same
     // to a reader.
     expect(document.querySelectorAll('[aria-hidden="false"]').length).toBe(0)
+  })
+})
+
+// A dollar-billed harness records `cost` and leaves `credits` empty, so the
+// gateway sums the window from `cost` and says so with `unit: 'usd'`. Read as
+// credits, a $4.25 window rendered as a bare "4.25" under "Credits".
+describe('TelemetryPanel — a window billed in dollars', () => {
+  const usd = {
+    unit: 'usd',
+    credits: 4.25,
+    per_turn: 0.0425,
+    prior_credits: 1.5,
+    prior_per_turn: 0.03,
+    priciest: { credits: 0.9, slot: 'chat-1-1700000000', ts: '2026-08-05' },
+    by_model: [row('claude-x', 4.25)],
+    by_category: [row('dashboard', 4.25)],
+    conversations: [convo({ credits: 4.25 })],
+  }
+
+  it('writes every amount as money and names it cost', async () => {
+    await mount(usd)
+    await waitFor(() => expect(screen.getAllByText('$4.25').length).toBeGreaterThan(0))
+    expect(screen.getByText('cost $1.50 · turns 50')).toBeInTheDocument()
+    expect(screen.getByText('Cost by origin')).toBeInTheDocument()
+    expect(screen.getByText('Cost by model')).toBeInTheDocument()
+    expect(screen.getByText('$0.90')).toBeInTheDocument()
+    expect(screen.queryByText('Credits by model')).toBeNull()
+  })
+
+  it('keeps credits when the gateway sends no unit', async () => {
+    await mount()
+    await waitFor(() => expect(screen.getByText('Credits by model')).toBeInTheDocument())
+    expect(screen.getByText('credits 500 · turns 50')).toBeInTheDocument()
+  })
+})
+
+// The dollar window's deeper views: the full table in each grouping, one
+// session's per-turn drill-down, and the mean-cost-per-turn line. Each reads
+// the unit on its own, so each is pinned on its own.
+describe('TelemetryPanel — the dollar window behind the summary', () => {
+  const usd = {
+    unit: 'usd',
+    credits: 4.25,
+    per_turn: 0.0425,
+    prior_credits: 1.5,
+    priciest: { credits: 0.9, slot: 'chat-1-1700000000', ts: '2026-08-05' },
+    by_model: [row('claude-x', 3.4)],
+    by_category: [row('dashboard', 3.0), row('bg', 1.25)],
+    conversations: [convo({ credits: 2.75 })],
+    context_bands: [{ label: '0k–200k', turns: 70, mean_credits: 0.031 }],
+  }
+
+  it('writes the full table in money under a Cost header, in every grouping', async () => {
+    localStorage.setItem('telemetry:spend-table-open', '1')
+    await mount(usd)
+    await waitFor(() => expect(screen.getByRole('columnheader', { name: /^Cost/ })).toBeInTheDocument())
+    expect(screen.getAllByText('$2.75').length).toBeGreaterThan(1)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('radio', { name: 'Origin' }))
+    expect(await screen.findAllByText('$1.25')).not.toHaveLength(0)
+    await user.click(screen.getByRole('radio', { name: 'Model' }))
+    expect(await screen.findAllByText('$3.40')).not.toHaveLength(0)
+  })
+
+  it('writes each turn of an expanded session as money', async () => {
+    localStorage.setItem('telemetry:spend-table-open', '1')
+    const { api } = await import('../api/client')
+    vi.mocked(api.usageTurns).mockResolvedValue({
+      turns: [{ ts: '2026-08-05T09:00:00Z', model: 'claude-x', cost: 0.0712, credits: 0 }],
+    } as never)
+    await mount(usd)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Show per-turn detail' }))
+    expect(await screen.findByText('$0.07')).toBeInTheDocument()
+    expect(screen.getAllByRole('columnheader', { name: 'Cost' }).length).toBeGreaterThan(0)
+  })
+
+  it('writes the mean cost per turn by context used as money', async () => {
+    await mount(usd)
+    expect(await screen.findByText('Mean cost per turn, bucketed by context used')).toBeInTheDocument()
+    expect(screen.getByText('$0.03')).toBeInTheDocument()
+  })
+})
+
+// A crew running a credit-billed and a dollar-billed harness side by side
+// spends in both units in one window; the gateway nests the dollar view under
+// `usd`, and the tab shows it as a second card rather than dropping it.
+describe('TelemetryPanel — a window billed in both units', () => {
+  it('shows the credits card and the cost card together', async () => {
+    const usdView = cost({
+      unit: 'usd',
+      credits: 0.75,
+      prior_credits: 0,
+      priciest: { credits: 0.5, slot: 'chat-2-1700000000', ts: '2026-08-05' },
+      by_model: [row('claude-x', 0.75)],
+      by_category: [row('dashboard', 0.75)],
+      conversations: [convo({ slot: 'chat-2-1700000000', credits: 0.75 })],
+    })
+    await mount({ usd: usdView })
+    await waitFor(() => expect(screen.getByText('Credits by model')).toBeInTheDocument())
+    expect(screen.getByText('Cost by model')).toBeInTheDocument()
+    expect(screen.getAllByText('$0.75').length).toBeGreaterThan(0)
+  })
+
+  it('remembers the nested cost card apart from the credits card', async () => {
+    localStorage.setItem('telemetry:spend-table-open', '1')
+    await mount({ usd: cost({ unit: 'usd', credits: 0.75, conversations: [convo({ credits: 0.75 })] }) })
+    await waitFor(() => expect(screen.getByText('Cost by model')).toBeInTheDocument())
+    const toggles = screen.getAllByRole('button', { name: /Full table/ })
+    expect(toggles.map(t => t.getAttribute('aria-expanded'))).toEqual(['true', 'false'])
   })
 })

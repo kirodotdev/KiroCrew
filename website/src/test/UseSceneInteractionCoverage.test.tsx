@@ -1137,19 +1137,19 @@ describe('useSceneInteraction — pending approval bar', () => {
   // caught error so the notice says which failure it was, and offers no agent
   // hand-off: the composer below may hold an unsent draft.
   const failureNotice = () => screen.getByTestId('scene-approval-failure')
-  // A refused decide for a request that is gone is a failed request too: it
-  // renders through the same ErrorNotice, in the refusal sentence.
-  const goneNotice = () => screen.getByTestId('scene-approval-failure')
+  // A refused decide for a request that is gone is status, not an error
+  // (#18203): a muted role="status" line in the refusal sentence.
+  const goneNotice = () => screen.getByTestId('scene-approval-gone')
 
-  it('renders a 404 refusal through ErrorNotice with the refusal sentence and no hand-off', async () => {
+  it('renders a 404 refusal as status with the refusal sentence and no hand-off', async () => {
     apiMocks.decideApproval.mockRejectedValue(new ApiError(404, 'not found or expired'))
     renderScene(withApproval())
     await clickAt(100, 100)
     fireEvent.click(screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') }))
     await flush()
-    expect(goneNotice()).toHaveAttribute('role', 'alert')
+    expect(goneNotice()).toHaveAttribute('role', 'status')
     expect(goneNotice()).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending') as string)
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('scene-approval-failure')).not.toBeInTheDocument()
     expect(screen.queryByText(i18nT('components.askAgent.ask_the_agent') as string)).not.toBeInTheDocument()
   })
 
@@ -1196,13 +1196,14 @@ describe('useSceneInteraction — pending approval bar', () => {
     const winner = { decision_id: 'd1', outcome: 'rejected' }
     await act(async () => { reject(new ApiError(409, 'already resolved', JSON.stringify({ code: 'already_resolved', decision: winner }))) })
     await flush()
-    expect(failureNotice()).toHaveAttribute('role', 'alert')
-    expect(failureNotice()).toHaveTextContent(i18nT('sharedCrew.already_rejected') as string)
+    // Decided elsewhere is gone too: status, not an error.
+    expect(goneNotice()).toHaveAttribute('role', 'status')
+    expect(goneNotice()).toHaveTextContent(i18nT('sharedCrew.already_rejected') as string)
     // The next request opens clean.
     const next = { origin: 'native' as const, id: 'req-10', slot: 'a', mid: 'mid-10' }
     view.rerender(<Harness sources={[source({ id: 'slot-a', pendingApproval: { tool: 'execute_bash', requestId: 'req-10', target: next } })]} />)
     await flush()
-    expect(screen.queryByTestId('scene-approval-failure')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('scene-approval-gone')).not.toBeInTheDocument()
   })
 
   it('keeps Approve/Deny after a retryable refusal', async () => {
@@ -1233,13 +1234,30 @@ describe('useSceneInteraction — pending approval bar', () => {
     expect(failureNotice()).toHaveTextContent(i18nT('components.approvalCard.decision_failed') as string)
   })
 
-  it('sends nothing for an approval the slot named no request for, and says it failed', async () => {
+  it('sends nothing for an approval the slot named no request for, and says it is gone', async () => {
     renderScene({ sources: [source({ id: 'slot-a', pendingApproval: { tool: 'execute_bash', requestId: 'req-9', target: null } })] })
     await clickAt(100, 100)
     fireEvent.click(screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') }))
     await flush()
     expect(apiMocks.decideApproval).not.toHaveBeenCalled()
     expect(goneNotice()).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending') as string)
+  })
+
+  it('drops the gone status for a redelivery under the same id, which gets its buttons back (#18203)', async () => {
+    apiMocks.decideApproval.mockRejectedValue(new ApiError(404, 'not found or expired'))
+    const view = renderScene(withApproval())
+    await clickAt(100, 100)
+    const approve = () => screen.queryByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') })
+    fireEvent.click(approve()!)
+    await flush()
+    expect(goneNotice()).toHaveAttribute('role', 'status')
+    expect(approve()).not.toBeInTheDocument()
+    // Request ids recur: a new delivery of req-9 is a new request.
+    const redelivered = { origin: 'native' as const, id: 'req-9', slot: 'a', mid: 'mid-2' }
+    view.rerender(<Harness sources={[source({ id: 'slot-a', pendingApproval: { tool: 'execute_bash', requestId: 'req-9', target: redelivered } })]} />)
+    await flush()
+    expect(approve()).toBeInTheDocument()
+    expect(screen.queryByTestId('scene-approval-gone')).not.toBeInTheDocument()
   })
 
   it('omits the bar when nothing is waiting on the user', async () => {

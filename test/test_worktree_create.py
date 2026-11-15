@@ -348,6 +348,13 @@ class TestWorktreeCreate:
             assert resp.status == 400
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", ["~\x00x", "~\ud800"], ids=repr)
+    async def test_a_repo_path_with_a_nul_or_surrogate_is_refused(self, repo, raw):
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.post("/api/worktree/create", json={"repo": raw, "branch": "feat/x"})
+            assert resp.status == 403
+
+    @pytest.mark.asyncio
     async def test_rejects_missing_directory(self, tmp_path, monkeypatch):
         # Reaches the git probe, so it needs a host where the sandbox can run
         # (a refusal answers 503 before any directory check is reported).

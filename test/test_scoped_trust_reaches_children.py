@@ -186,7 +186,8 @@ class TestProjection:
             patch.object(_SO, "scope_remaining_secs", return_value=5),
             patch.object(_SO, "is_scope_active") as enforce,
         ):
-            live_trust_scope(_slot(scope=_SCOPE))
+            # A grant with seconds left still shows as Trust, read without enforcing.
+            assert live_trust_scope(_slot(scope=_SCOPE)) == _SCOPE
         enforce.assert_not_called()
 
     def test_slot_dict_carries_the_field(self) -> None:

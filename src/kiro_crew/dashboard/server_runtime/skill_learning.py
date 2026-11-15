@@ -13,7 +13,6 @@ from urllib.parse import quote
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
-        _SKILL_APPROVAL_SETTING_URL,
         ContextBuilder,
         ConversationLog,
         DashboardState,
@@ -79,20 +78,6 @@ def _pending_skill_notification(info: dict) -> tuple[str, str, str, list[dict[st
             "id": "review-skill",
             "label": "Review update" if is_update else "Review skill",
             "url": review_url,
-        },
-        # The opt-out shortcut: lands on the approval_required toggle in
-        # Settings. Offered on every staged candidate — including
-        # script-bearing ones, where it still governs FUTURE prose-only
-        # skills (scripts always stage; the setting's own description
-        # explains that boundary). The label shares the destination
-        # toggle's polarity ("Require approval …" is ON; this stops it),
-        # and the trailing ellipsis signals that the button NAVIGATES to a
-        # settings page rather than flipping the setting itself —
-        # notification actions are navigation-only.
-        {
-            "id": "auto-approve-skills",
-            "label": "Stop requiring skill approval…",
-            "url": _SKILL_APPROVAL_SETTING_URL,
         },
     ]
     return title, body, review_url, actions

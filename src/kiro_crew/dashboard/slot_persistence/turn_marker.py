@@ -282,6 +282,15 @@ def _reconcile_local_turn_marker(
     """
     if generation <= 0:
         return False
+    # The dispatcher's evidence, kept past the clear below for a reader that runs
+    # later (a code channel's restart resume): the cut turn's generation and the
+    # identity of the row the turn was started from, when the copy names one.
+    prompt_meta_in = prompt.get("meta") if prompt is not None else None
+    slot._restored_turn_marker = {
+        "generation": generation,
+        "ts": str(prompt.get("ts") or "") if prompt is not None else "",
+        "mid": str(prompt_meta_in.get("mid") or "") if isinstance(prompt_meta_in, dict) else "",
+    }
     if prompt is not None and not _window_holds_row(
         slot.messages if persisted is None else persisted, prompt
     ):

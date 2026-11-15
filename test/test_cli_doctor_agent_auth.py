@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from kiro_crew import cli_doctor, kiro_cli
+from kiro_crew import cli_doctor
 
 
 class TestDoctorAgentAuth:
@@ -27,6 +27,7 @@ class TestDoctorAgentAuth:
         vault_holds=False,
         vault_detail=None,
         vault_import_fails=False,
+        kiro_cli="/opt/kiro/bin/kiro-cli",
     ):
         from kiro_crew import acp_backends
 
@@ -38,6 +39,8 @@ class TestDoctorAgentAuth:
 
         monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: backends)
         monkeypatch.setattr(cli_doctor, "_kiro_cli_signed_in", probe)
+        # Patched so no row depends on whether this host has kiro-cli installed.
+        monkeypatch.setattr(cli_doctor, "resolve_kiro_cli", lambda: kiro_cli)
         # The vault is always patched so no test reads the developer's real
         # sign-in vault -- the host-auth-callback row probes it via a deferred
         # import, and an unpatched probe would make these tests host-dependent.
@@ -86,6 +89,15 @@ class TestDoctorAgentAuth:
         assert probes == 1
         assert "could not check" in out
         assert "not signed in" not in out
+
+    def test_no_kiro_cli_is_not_a_failed_check(self, monkeypatch, capsys) -> None:
+        """With no kiro-cli there is nothing to ask, so the kiro row says so without a
+        warning or a sign-in remedy: the kiro-cli row above already reports the install."""
+        out, _probes = self._run(monkeypatch, capsys, [""], signed_in=None, kiro_cli=None)
+        assert "kiro auth:   ⏭  kiro-cli's own sign-in; kiro-cli not installed" in out
+        assert "could not check" not in out
+        assert "⚠" not in out
+        assert "kiro-cli login" not in out
 
     def test_a_vault_owned_kas_row_names_the_vault(self, monkeypatch, capsys) -> None:
         """When Crew's vault holds a usable identity the KAS spawn is vault-owned,
@@ -350,6 +362,24 @@ class TestDoctorKasBundle:
         out = capsys.readouterr().out
         assert "bundle:      ⚠  " in out
         assert "downloads it at the first chat" in out
+        assert issues == []
+
+    def test_the_sharing_preview_route_without_its_engine_is_not_an_issue(
+        self, monkeypatch, capsys
+    ):
+        """The preview picks the bundle with agent.kas_bundle off and the first chat
+        installs it: doctor must not claim the setting is on or fail the summary."""
+        from kiro_crew.acp import kas_route
+        from kiro_crew.agent_sdk import kas_bundle
+
+        self._automatic_route_without_the_pin(monkeypatch, [], installable=True)
+        preview = kas_route.KasRoute(bundle=True, reason=kas_route.REASON_SHARING_PREVIEW)
+        monkeypatch.setattr(kas_bundle, "kas_route", lambda: preview)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "downloads it at the first chat" in out
+        assert "agent.kas_bundle is on" not in out
         assert issues == []
 
     @pytest.mark.parametrize("on_disk", [[], ["0.66.33"]])
@@ -687,6 +717,23 @@ class TestDoctorAgentAuthOnTheBundleRoute:
         assert "kiro-cli's own sign-in; could not check" in out
         assert "Kiro Crew vault; not signed in" not in out
 
+    @pytest.mark.parametrize("signed_in", [False, None])
+    def test_the_relay_route_remedy_names_kas_login_first(self, monkeypatch, capsys, signed_in):
+        """A relay host reached by ssh may have no browser, so the remedy names
+        ``kirocrew kas login`` before the dashboard card, as ``kirocrew chat`` does."""
+        from kiro_crew import acp_backends
+
+        cfg = self._Cfg("kas", False)
+        monkeypatch.setattr(cli_doctor.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+        monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: ["kas"])
+        monkeypatch.setattr(cli_doctor, "_kiro_cli_signed_in", lambda: signed_in)
+        monkeypatch.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: False)
+        monkeypatch.setattr("kiro_crew.auth.bridge.describe_vault_identity", lambda: None)
+        cli_doctor._doctor_agent_auth()
+        out = capsys.readouterr().out
+        assert "(KAS through kiro-cli's relay)" in out
+        assert "Sign in with `kirocrew kas login` (or in the dashboard:" in out
+
 
 class TestDoctorKas:
     """`kirocrew doctor` KAS backend section — gated on acp_backend == kas.
@@ -933,7 +980,7 @@ class TestDoctorKas:
         assert "engine support unknown" in out
         assert issues == []
 
-    def test_probe_returns_help_text_even_without_the_flag(self, monkeypatch) -> None:
+    def test_probe_returns_help_text_even_without_the_flag(self, monkeypatch, tmp_path) -> None:
         """The probe must not swallow ran-but-lacks-the-flag into None.
 
         Pins the split directly: the previous implementation returned None for
@@ -941,21 +988,34 @@ class TestDoctorKas:
         let an unsupported kiro-cli pass.
         """
 
-        class _Proc:
-            stdout = "Usage: kiro-cli acp [OPTIONS]"
-            stderr = ""
+        from kiro_crew import kiro_prerequisite
+        from kiro_crew.kiro_prerequisite_process import ProcessResult
 
-        monkeypatch.setattr(kiro_cli.subprocess, "run", lambda *a, **k: _Proc())
-        got = cli_doctor._kas_relay_help("/x/kiro-cli")
+        async def _ran(*_a, **_k):
+            return ProcessResult(ok=True, output="Usage: kiro-cli acp [OPTIONS]", returncode=0)
+
+        binary = tmp_path / "kiro-cli"
+        binary.write_bytes(b"")
+        binary.chmod(0o755)
+        monkeypatch.setattr(kiro_prerequisite, "_run_process", _ran)
+        got = cli_doctor._kas_relay_help(str(binary))
         assert got is not None
         assert "--agent-engine" not in got
 
-    def test_probe_returns_none_when_the_spawn_fails(self, monkeypatch) -> None:
-        def _boom(*_a, **_k):
-            raise OSError("no such binary")
+    def test_probe_returns_none_when_the_spawn_fails(self, monkeypatch, tmp_path) -> None:
+        from kiro_crew import kiro_prerequisite
+        from kiro_crew.kiro_prerequisite_process import ProcessResult
 
-        monkeypatch.setattr(kiro_cli.subprocess, "run", _boom)
-        assert cli_doctor._kas_relay_help("/x/kiro-cli") is None
+        async def _failed(*_a, **_k):
+            return ProcessResult(ok=False, error="no such binary")
+
+        binary = tmp_path / "kiro-cli"
+        binary.write_bytes(b"")
+        binary.chmod(0o755)
+        monkeypatch.setattr(kiro_prerequisite, "_run_process", _failed)
+        assert cli_doctor._kas_relay_help(str(binary)) is None
+        # An absent binary is not probed at all.
+        assert cli_doctor._kas_relay_help(str(tmp_path / "absent")) is None
 
     def test_no_credential_probe_is_performed(self, monkeypatch, capsys) -> None:
         """The relay owns auth, so the doctor must not reach for a token.
@@ -1136,19 +1196,37 @@ class TestTheKasBlockReportsToolVocabularyDrift:
         assert f"{major}.{minor - 1}.{patch}" in out
         assert not any("tool" in i and "vocabul" in i for i in issues)
 
-    def test_a_newer_engine_warns_and_names_both_versions_and_the_fixture(
+    def test_a_newer_engine_is_informational_with_no_maintainer_steps(
+        self, monkeypatch, capsys
+    ) -> None:
+        """A current kiro-cli newer than the last measurement is the normal case,
+        so the row is ➖ in plain words and names no source-tree fixture."""
+        from kiro_crew.platform.tool_names import KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI
+
+        major, minor, patch = KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI[-1]
+        for version in ((major, minor + 1, patch), (major + 1, 3, 0)):
+            out, issues = self._run(monkeypatch, capsys, version)
+            assert "tool names:  ➖" in out
+            assert "⚠️" not in out.split("tool names:")[1].splitlines()[0]
+            assert ".".join(str(p) for p in version) in out
+            assert f"{major}.{minor}.{patch}" in out
+            assert "Nothing to do" in out
+            assert "kas_builtin_tool_ids.json" not in out
+            assert "verified_kiro_cli_versions" not in out
+            assert "Re-measure" not in out
+            assert not any("tool" in i and "vocabul" in i for i in issues)
+
+    def test_an_unlisted_engine_between_releases_is_informational(
         self, monkeypatch, capsys
     ) -> None:
         from kiro_crew.platform.tool_names import KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI
 
-        major, minor, patch = KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI[-1]
-        out, issues = self._run(monkeypatch, capsys, (major, minor + 1, patch))
-        assert "tool names:  ⚠️" in out
-        assert f"{major}.{minor + 1}.{patch}" in out
-        assert f"{major}.{minor}.{patch}" in out
-        assert "kas_builtin_tool_ids.json" in out
-        assert "verified_kiro_cli_versions" in out
-        # Advisory: not known to have drifted, only not known not to have.
+        oldest, newest = KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI[0], KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI[-1]
+        between = (oldest[0], oldest[1], oldest[2] + 7)
+        assert oldest < between < newest and between not in KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI
+        out, issues = self._run(monkeypatch, capsys, between)
+        assert "tool names:  ➖" in out
+        assert "test/fixtures" not in out
         assert not any("tool" in i and "vocabul" in i for i in issues)
 
     def test_an_unknown_version_is_its_own_row(self, monkeypatch, capsys) -> None:

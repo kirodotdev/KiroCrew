@@ -322,6 +322,10 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
             if not await _post_review_draft(
                 answer, slack, channel, reply_ts, thread_ts, user_id, session_key, clean_text
             ):
+                # No draft landed, so nothing owns "Awaiting review…". The clear
+                # at the top of delivery kept the status for the draft; take it
+                # down here or the requester waits on a review that never comes.
+                await turn.clear_working_indicators()
                 if _turn_completed_ok:
                     await turn.book_failure()
                 turn.release_permit()
@@ -726,7 +730,7 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
 
         # ── Bidirectional sync: mirror to dashboard if routed to a dashboard session ──
         if linked_session_key and _dashboard_state and answer.accumulated and not _skip_writes:
-            _mirror_to_dashboard(linked_session_key, text, answer.accumulated)
+            await _mirror_to_dashboard(linked_session_key, text, answer.accumulated)
         # A Link click while this turn ran may have imported its answer unfinished.
         if _dashboard_state and answer.accumulated and not _skip_writes:
             _backfill_late_link(

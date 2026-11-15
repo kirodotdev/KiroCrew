@@ -47,13 +47,21 @@ export const SESSION_ROW_WINDOW_MARGIN_PX = 1200
 export const SESSION_ROW_STUB_DEFAULT_PX = 76
 
 /** How many rows of each window ROOT mount on their first render, before the
- *  observer has reported anything, so the initial paint shows real rows. Per
- *  root, not per lane: every board column is its own root and scrolls on its
- *  own, so each column gets its own first two viewports of 64px rows. This is
- *  its own number: chat-sidebar/laneRows.tsx's SIDEBAR_DISPLACEMENT_WINDOW bounds which rows
- *  animate when the lane reorders, a separate concern that can change on its
- *  own without affecting this budget. */
-export const SESSION_ROW_INITIAL_MOUNT_BUDGET = 48
+ *  observer has reported anything: one viewport of rows, so the initial paint
+ *  shows real rows where the reader can see them and nothing more. Per root,
+ *  not per lane: every board column is its own root and scrolls on its own, so
+ *  each column gets its own first viewport. The rows below it start as stubs and
+ *  mount when the observer's first delivery arrives, which is a later task: the
+ *  first sidebar render is the longest main-thread task of opening the chat page,
+ *  and each row is expensive (see WHY above), so mounting two viewports up front
+ *  put rows nobody could see yet into that task. Sized for the shortest common
+ *  row (a two-line row, about 52px) so a short-row lane still fills its viewport.
+ *  This is its own number: chat-sidebar/laneRows.tsx's SIDEBAR_DISPLACEMENT_WINDOW
+ *  bounds which rows animate when the lane reorders, a separate concern that can
+ *  change on its own without affecting this budget. */
+export function sessionRowInitialMountBudget(viewportPx: number = typeof window === 'undefined' ? 0 : window.innerHeight): number {
+  return Math.ceil(viewportPx / 52) + 1
+}
 
 type Listener = (near: boolean, height: number) => void
 
@@ -89,14 +97,14 @@ export const SessionRowWindowContext = createContext<SessionRowWindow | null>(nu
  * row in the lane.
  *
  * `initialMountBudget` is how many rows mount on their first render under this
- * root before the observer has spoken (default SESSION_ROW_INITIAL_MOUNT_BUDGET;
+ * root before the observer has spoken (default sessionRowInitialMountBudget(), one viewport of rows;
  * tests pass a small one). The budget belongs to one render pass of the root:
  * the root renders before its rows, so resetting the claims here hands each
  * pass a fresh first-N. Rows that mount in a later pass without the root
  * re-rendering claim from where the last pass left off and, past the budget,
  * start as stubs until the observer's first delivery, which is immediate.
  */
-export function useSessionRowWindowRoot(initialMountBudget = SESSION_ROW_INITIAL_MOUNT_BUDGET): { rowWindow: SessionRowWindow | null; setRoot: (el: HTMLElement | null) => void } {
+export function useSessionRowWindowRoot(initialMountBudget = sessionRowInitialMountBudget()): { rowWindow: SessionRowWindow | null; setRoot: (el: HTMLElement | null) => void } {
   const stateRef = useRef<{ root: HTMLElement | null; io: IntersectionObserver | null; targets: Map<Element, Listener>; claims: Map<string, number>; budget: number } | null>(null)
   if (stateRef.current == null) stateRef.current = { root: null, io: null, targets: new Map(), claims: new Map(), budget: initialMountBudget }
   // Each render of the root is a new pass over its rows: forget the last pass's

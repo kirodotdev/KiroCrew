@@ -113,7 +113,7 @@ def test_every_windows_xdist_invocation_refuses_worker_replacement() -> None:
             f"{FLAG}: "
             f"{command!r}. Without it a timeout-killed worker sends the session "
             f"into xdist's node-replacement path, which hangs until the job cap "
-            f"(#4227). setup.cfg's --max-worker-restart=2 is a deliberate "
+            f". setup.cfg's --max-worker-restart=2 is a deliberate "
             f"developer-machine setting, so this has to be overridden per job."
         )
 
@@ -128,5 +128,5 @@ def test_the_flag_is_not_weakened_to_allow_a_replacement() -> None:
             assert value == "0", (
                 f"{job_name} sets --max-worker-restart={value}. Any "
                 f"nonzero value allows the node replacement that hangs the "
-                f"session; the first replacement is the one #4227 hit."
+                f"session, the first replacement included."
             )

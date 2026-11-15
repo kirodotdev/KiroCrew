@@ -542,6 +542,14 @@ def _sanitize_restored_context(raw: object) -> dict[str, Any] | None:
     poison pill that re-raises at every flush seam. Rebuilt with exactly the
     known keys, so a stale ``noteSession`` stamp is discarded (the flush stamps
     the live session at delivery).
+
+    A ``session_set_note`` ``admission`` keeps only its admitted ``workspace``.
+    The gate admits such a note with every boolean constraint false, which is
+    the floor the drain assumes for a key the admission lacks, so a forged
+    ``True`` or mirror identity is never carried back to widen delivery. The key
+    itself is always kept, empty if nothing in it is valid: it is what marks the
+    entry as a session note the drain judges (``drop_session_notes_out_of_reach``),
+    so losing it would let the note through as plain context.
     """
     if not isinstance(raw, dict):
         return None
@@ -577,6 +585,19 @@ def _sanitize_restored_context(raw: object) -> dict[str, Any] | None:
     }
     if max_age is not None:
         entry["maxAge"] = max_age
+    if "admission" in raw:
+        # circular: session_control reaches this module through state.
+        from kiro_crew.dashboard.session_control import QUEUED_CONTAINMENT_META_KEY
+
+        admission = raw["admission"]
+        recorded = (
+            admission.get(QUEUED_CONTAINMENT_META_KEY) if isinstance(admission, dict) else None
+        )
+        workspace = recorded.get("workspace") if isinstance(recorded, dict) else None
+        admitted: dict[str, str] = {}
+        if isinstance(workspace, str) and 0 < len(workspace) <= MAX_DEFERRED_NOTE_SESSION_CHARS:
+            admitted["workspace"] = workspace
+        entry["admission"] = {QUEUED_CONTAINMENT_META_KEY: admitted}
     return entry
 
 

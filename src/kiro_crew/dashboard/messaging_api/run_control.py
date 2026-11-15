@@ -389,7 +389,7 @@ async def api_spawn_lost(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
@@ -871,12 +871,38 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
     """
     state: DashboardState = request.app["state"]
     agent_id = request.match_info["agent_id"]
-    # Handle native kiro-cli subagents (native:* IDs not in SubagentManager)
+    # Harness-native subagents (native:* IDs not in SubagentManager)
     if agent_id.startswith("native:") and hasattr(state, "_native_cards"):
         card_info = getattr(state, "_native_cards", {}).get(agent_id)
         if card_info:
-            # Can't actually kill the kiro-cli internal sub-agent, but we can
-            # close the Activity card so it stops showing "Starting..."
+            from kiro_crew.dashboard.native_child_stop import harness_stops_native_child
+
+            # A harness that can stop this one child is asked to, and the card
+            # closes on the end the harness then reports, drawn as stopped.
+            stopping = await harness_stops_native_child(state, card_info)
+            # User-initiated cancellation is an auditable action (parity with
+            # the managed path, which audits inside SubagentManager.cancel()).
+            try:
+                _sel().log_tool_invocation(
+                    session_key=card_info["slot"],
+                    source="subagent",
+                    tool_name="cancel_native_subagent",
+                    outcome="cancelled_by_user",
+                    metadata={
+                        "card_id": agent_id,
+                        **({"harness_cancel": True} if stopping else {}),
+                    },
+                )
+            except Exception:
+                logger.debug("SEL audit failed for native cancel %s", agent_id, exc_info=True)
+            if stopping:
+                return web.json_response({"ok": True, "cancelled": True, "stopping": True})
+            if agent_id not in state._native_cards:
+                # The child ended while the harness was being asked: its own end
+                # closed the card, and a second close would redraw it as stopped.
+                return web.json_response({"ok": True, "cancelled": True})
+            # Otherwise the child runs on inside its parent's process, out of reach,
+            # so only the Activity card is closed: it stops showing "Starting...".
             state._native_cards.pop(agent_id, None)
             # Persist the stop on the slot-owned tracker record so WS replay
             # (native_subagent_snapshots) reconstructs this card as STOPPED for
@@ -898,18 +924,6 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
                     _rec["result"] = "(cancelled)"
             except Exception:
                 logger.debug("native cancel: tracker update failed for %s", agent_id, exc_info=True)
-            # User-initiated cancellation is an auditable action (parity with
-            # the managed path, which audits inside SubagentManager.cancel()).
-            try:
-                _sel().log_tool_invocation(
-                    session_key=card_info["slot"],
-                    source="subagent",
-                    tool_name="cancel_native_subagent",
-                    outcome="cancelled_by_user",
-                    metadata={"card_id": agent_id},
-                )
-            except Exception:
-                logger.debug("SEL audit failed for native cancel %s", agent_id, exc_info=True)
             state.broadcast_ws(
                 "subagent_done",
                 {

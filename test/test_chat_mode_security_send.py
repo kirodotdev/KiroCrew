@@ -1016,6 +1016,23 @@ async def test_only_the_ending_turns_own_recovery_continues_its_turn(
     assert ((TURN_END_WIRE_CLS, "") in [(m["cls"], m["content"]) for m in slot.drain()]) is marked
 
 
+@pytest.mark.parametrize(("own", "recovery_id"), [(True, "turn-a"), (False, "turn-b")])
+@pytest.mark.asyncio
+async def test_an_own_retry_keeps_its_turns_lineage(state, own: bool, recovery_id: str) -> None:
+    """The ending turn's own retry is that turn again under a new generation; any
+    other dispatch starts a turn of its own."""
+    slot = _user_slot(state)
+    slot.queue_append("first", directive_user_origin=True)
+    await _drain_once(state, slot)
+    first = slot._turn_generation
+    assert slot._turn_lineage_generation() == first
+    meta = {TURN_ACTOR_META_KEY: "app", chat_runner._RECOVERY_TURN_META_KEY: recovery_id}
+    slot.queue_insert(0, "retry", kind=SYNTHETIC_RECOVERY_KIND, meta=meta)
+    await _drain_once(state, slot, predecessor_actor="app", predecessor_turn_id="turn-a")
+    assert slot._turn_generation == first + 1
+    assert slot._turn_lineage_generation() == (first if own else first + 1)
+
+
 def _held_note(slot, text: str) -> None:
     slot._deferred_notes.append(
         {"id": "n1", "content": text, "cls": "reconcile-note", "context": None, "session": None}

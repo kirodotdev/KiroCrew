@@ -20,6 +20,11 @@ import pytest
 from test_dashboard_chat import TestRunChatTransientRetry as _TransientSuite
 
 from kiro_crew import llm_helpers
+from kiro_crew.dashboard.chat_utils import (
+    TRANSIENT_RETRYING_TEXT,
+    TRANSIENT_THROTTLE_GIVE_UP_TEXT,
+    TRANSIENT_THROTTLE_RETRYING_TEXT,
+)
 
 # The engine's answer to a throttled prompt, as KAS words it.
 _THROTTLE_FRAME = {
@@ -168,8 +173,12 @@ class TestThrottledTurnRetry:
         assert client.discard_unanswered_prompt.await_count == 2
         assert self._landed_stats(slot).get("retries") == 2
         assert any("ok-result" in t for t in self._assistant_texts(slot))
-        # Append-only and visible: the retry notice stays in the transcript.
-        assert any("Connection unstable" in t for t in self._err_texts(slot))
+        # Append-only and visible: the retry notice stays in the transcript, and
+        # it names the throttle, not the connection.
+        notices = [m for m in slot.messages if (m.get("meta") or {}).get("notice")]
+        assert [m["meta"]["notice"] for m in notices] == ["transient_throttle_retrying"] * 2
+        assert all(m["content"] == TRANSIENT_THROTTLE_RETRYING_TEXT for m in notices)
+        assert not any("Connection" in t for t in self._err_texts(slot))
         assert len(waits) == 2
         base = llm_helpers.THROTTLE_RETRY_BASE_DELAY
         assert base <= waits[0] <= 1.25 * base
@@ -231,6 +240,10 @@ class TestThrottledTurnRetry:
         assert 4.0 <= waits[1] <= 5.0
         assert self._landed_stats(slot).get("retries") == 2
         outcomes.assert_called_once_with("transient_5xx", "recovered", 2)
+        # A plain 5xx keeps the connection wording and its own token.
+        notices = [m for m in slot.messages if (m.get("meta") or {}).get("notice")]
+        assert [m["meta"]["notice"] for m in notices] == ["transient_retrying"] * 2
+        assert all(m["content"] == TRANSIENT_RETRYING_TEXT for m in notices)
 
     @pytest.mark.asyncio
     async def test_a_throttle_after_partial_output_keeps_the_attempt(self, tmp_path, monkeypatch):
@@ -242,6 +255,10 @@ class TestThrottledTurnRetry:
         assert kas.copies("hello") == 1
         assert any("partial answer" in t for t in self._assistant_texts(slot))
         assert kas.calls == 2  # the continuation, not a verbatim re-send
+        # The resuming row names the throttle, and settles under the same wording.
+        notices = [(m.get("meta") or {}).get("notice") for m in slot.messages]
+        assert [n for n in notices if n] == ["transient_throttle_resuming"]
+        assert not any("Connection" in t for t in self._err_texts(slot))
 
     @pytest.mark.asyncio
     async def test_stop_during_the_backoff_sends_nothing_and_rewinds_nothing(
@@ -272,6 +289,19 @@ class TestThrottledTurnRetry:
         assert kas.calls == 1
         client.discard_unanswered_prompt.assert_not_awaited()
         assert kas.copies("hello") == 1
+        # The ladder's last row names the throttle too, not the connection.
+        notices = [(m.get("meta") or {}).get("notice") for m in slot.messages]
+        assert [n for n in notices if n] == [
+            "transient_throttle_retrying",
+            "transient_throttle_give_up",
+        ]
+        give_up = [
+            m
+            for m in slot.messages
+            if (m.get("meta") or {}).get("notice") == "transient_throttle_give_up"
+        ]
+        assert give_up[0]["content"] == TRANSIENT_THROTTLE_GIVE_UP_TEXT
+        assert not any("Connection" in t for t in self._err_texts(slot))
 
     @pytest.mark.asyncio
     async def test_throttle_fallback_swap_rewinds_before_its_resend(self, tmp_path, monkeypatch):

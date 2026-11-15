@@ -20,6 +20,8 @@ from types import ModuleType
 from typing import Iterator
 
 import pytest
+from git_maintenance_helpers import git_global_config_text
+from refusing_git_hook_helpers import refusing_hooks_config
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _GATE_PATH = _REPO_ROOT / "scripts" / "check_memory_store_seam.py"
@@ -100,7 +102,9 @@ def whole_tree(gate: ModuleType) -> list:
     return [v for path in gate.tracked_files() for v in gate.scan_file(path)]
 
 
-def _run(args: list[str], env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+def _run(
+    args: list[str], env: dict[str, str] | None = None, cwd: Path = _REPO_ROOT
+) -> subprocess.CompletedProcess:
     merged = {k: v for k, v in os.environ.items() if k != "MEMSTORE_BASE_REF"}
     merged.update(env or {})
     return subprocess.run(
@@ -115,7 +119,7 @@ def _run(args: list[str], env: dict[str, str] | None = None) -> subprocess.Compl
         # The gate resolves everything from its own REPO_ROOT, but a child
         # inherits pytest's CWD (the checkout) and could write there; pin it to
         # the checkout explicitly rather than by accident.
-        cwd=str(_REPO_ROOT),
+        cwd=str(cwd),
         env=merged,
     )
 
@@ -130,6 +134,14 @@ def test_gate_self_test_passes() -> None:
     means a rule that stopped matching fails a local test run as well.
     """
     result = _run(["--test"])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_self_test_ignores_a_host_hook_that_refuses_commits(tmp_path: Path) -> None:
+    """The probe repo's commits must not run the caller's global hooks, which CI never has."""
+    config = tmp_path / "host.gitconfig"
+    config.write_text(git_global_config_text() + refusing_hooks_config(tmp_path), encoding="utf-8")
+    result = _run(["--test"], env={"GIT_CONFIG_GLOBAL": str(config)}, cwd=tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
 
 

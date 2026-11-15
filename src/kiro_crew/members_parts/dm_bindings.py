@@ -176,11 +176,10 @@ def _read_canonical_binding(slug: str) -> dict | None:
     try:
         path = dm_binding_path(slug)
     except (MemberSlugError, OSError, RuntimeError):
-        # dm_binding_path resolves real filesystem paths (and the one-time records
-        # move it can trigger creates directories), so an unreadable directory or
-        # a symlink loop surfaces here — read_dm_binding's
-        # totality contract says every such state reads as "not bound", and the
-        # restore paths rely on that to survive any on-disk state at boot.
+        # dm_binding_path touches the real filesystem (its one-time records move
+        # creates directories), so an unreadable directory or a symlink loop
+        # raises here. read_dm_binding never raises: every such state reads as
+        # "not bound", which boot-time restore relies on.
         return None
     try:
         raw = read_bytes_with_retry(path).decode("utf-8")
@@ -263,10 +262,9 @@ def write_dm_binding(slug: str, *, member: str, slot_key: str, memory_store: str
             platform_compat.restrict_dir_to_owner(_dir)
         except OSError:
             logger.debug("could not tighten mode on %s", _dir, exc_info=True)
-    # fsync: the binding is the thread's durability anchor — the orphan-history
-    # guard REFUSES to rebind a slug whose binding is gone while its transcript
-    # survives, so a binding lost to power failure after a transcript flush
-    # would strand that transcript behind member_binding_missing. The binding
+    # fsync: the orphan-history guard REFUSES to rebind a slug whose binding is
+    # gone but whose transcript survives, so a binding lost to a power failure
+    # would strand the transcript behind member_binding_missing. The binding
     # must be at least as durable as the transcript it attributes.
     atomic_write(path, json.dumps(binding, ensure_ascii=False), fsync=True)
     return binding

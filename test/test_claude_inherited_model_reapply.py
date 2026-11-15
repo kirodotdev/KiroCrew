@@ -174,6 +174,7 @@ class TestWhatIsLeftAlone:
         await client._apply_startup_model()
 
         client.set_config_option.assert_not_awaited()
+        assert client._resolved_model_id == "gateway-model-z"
 
     @pytest.mark.asyncio
     async def test_the_kiro_backend_is_unchanged(self, tmp_path):

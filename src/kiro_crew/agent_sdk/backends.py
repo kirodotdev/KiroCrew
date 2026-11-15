@@ -87,6 +87,10 @@ with no row here.
        accept being refused when a frame classifies as nothing)
    * - ``ACP_BACKENDS_SESSION_SHARING``
      - pre-session registry query (subagent session allocation)
+   * - ``ACP_BACKENDS_CHAT_RUNTIME_SHARING``
+     - pre-session registry query (whether a top-level dashboard chat slot may
+       share a runtime -- distinct from subagent sharing because the chat
+       teardown must leave this session's own resume record intact)
    * - ``ACP_BACKENDS_MEMBER_CAPABILITIES``
      - pre-session registry query (whether enrolled members can load a full saved spec)
    * - ``ACP_BACKENDS_MEMBER_TOOL_LIMITS``
@@ -104,7 +108,11 @@ with no row here.
    * - ``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS``
      - pre-session registry query and the claude settings seed (whether the MCP
        half of a crewmate worker's single-tool limits is honoured, so only a
-       native-tool exclude refuses the worker)
+       native-tool exclude the native set below does not carry refuses the worker)
+   * - ``ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS``
+     - pre-session registry query and the claude session options (whether a
+       crewmate worker's native-tool excludes are honoured, so only an entry no
+       built-in table covers refuses the worker)
    * - ``ACP_BACKENDS_MEMBER_DISPATCH``
      - driver-internal (whether a per-session tool set can be mounted)
    * - ``ACP_BACKENDS_MEMBER_PANEL``
@@ -127,6 +135,12 @@ with no row here.
      - semantic question (``SessionCapabilities.compacts_inline``)
    * - ``ACP_BACKENDS_UNMARKED_COMPACTION_PAIR``
      - frame translation (whether a compaction pair with no marker is read)
+   * - ``ACP_BACKENDS_SENT_IMAGE_RECORD``
+     - driver-internal (whether a session keeps a record of the pictures it sent)
+   * - ``ACP_BACKENDS_COMPACTION_REPORTED``
+     - semantic question (``LLMProvider.reports_compaction``: whether Crew sees
+       this harness's compaction, so what it sends once per conversation can be
+       sent again after one)
    * - ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION``
      - semantic question (whether a skipped autocompact is answered by the harness)
    * - ``ACP_BACKENDS_CONTEXT_RECYCLE``
@@ -179,10 +193,16 @@ with no row here.
    * - ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS``
      - driver-internal (whether an advertised ``<model>[<effort>]`` id is applied
        as two config-option writes)
+   * - ``ACP_BACKENDS_MODEL_SELECT_UNCHECKED``
+     - driver-internal (whether the client checks a model value against the
+       advertised select before writing it, because the harness does not)
    * - ``effort_config_option_id``
      - driver-internal (which ``configId`` carries the reasoning effort)
    * - ``effort_config_option_value``
      - driver-internal (which VALUE that option spells a Crew effort level with)
+   * - ``effort_refused_by_model``
+     - driver-internal (whether an effort write's error says the current model
+       takes no effort level)
    * - ``effort_config_option_levels``
      - driver-internal (which advertised values are levels, not "no override")
    * - ``effort_config_option_clear_value``
@@ -196,6 +216,9 @@ with no row here.
    * - ``ACP_BACKENDS_ULTRACODE_CONFIG_OPTION``
      - driver-internal (whether the session's advertised ``ultracode`` switch is
        read and written, by ``AcpProvider.ultracode_enabled`` / ``set_ultracode``)
+   * - ``ACP_BACKENDS_FAST_MODE_CONFIG_OPTION``
+     - driver-internal (whether the session's advertised ``fast`` switch is read
+       and written, by ``AcpProvider.fast_mode_enabled`` / ``set_fast_mode``)
    * - ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION``
      - semantic question (``SessionCapabilities.resolves_model_from_advertised_list``)
    * - ``ACP_BACKENDS_SEED_LOCAL_SETTINGS``
@@ -211,6 +234,39 @@ with no row here.
        the kiro-cli / KAS branch), and the card's kiro-family marker
    * - ``ACP_BACKENDS_NATIVE_TODOS``
      - semantic question (``SessionCapabilities.supports_native_todos``)
+   * - ``ACP_BACKENDS_PLAN_CHECKLIST``
+     - semantic question (``SessionCapabilities.keeps_own_checklist``: the dashboard
+       sends such a harness no ``todo_list`` sync or recovery block), and
+       driver-internal everywhere else (whether ``AcpClient`` reads an ACP ``plan``
+       update as the agent's read-only checklist, ``EVENT_TODO_UPDATE``, and whether
+       the claude launch asks Claude Code for its checklist tools)
+   * - ``ACP_BACKENDS_HARNESS_NOTICES``
+     - driver-internal (whether ``AcpClient`` declares ``session.notices``, reads
+       the harness's ``notice`` and ``current_mode_update`` updates as notice rows,
+       and lets a ``notice`` between prompts start an agent-started turn)
+   * - ``ACP_BACKENDS_RAW_SDK_TASKS``
+     - driver-internal (whether a claude session asks for the raw SDK messages of
+       its background tasks and API retries, and ``AcpClient`` reads them as
+       Workflow agent cards and notice rows)
+   * - ``ACP_BACKENDS_READ_PATH_ARG``
+     - driver-internal (whether ``AcpClient`` marks a ``read`` tool call with the
+       argument naming its file, ``AcpEvent.read_path_arg``, which the dashboard
+       keeps on the tool row for its image thumbnails)
+   * - ``ACP_BACKENDS_SUMMARIZED_THINKING``
+     - driver-internal (whether the claude launch asks the harness for summarized
+       thinking text, ``CLAUDE_CODE_THINKING_DISPLAY``, when nothing else decides it)
+   * - ``ACP_BACKENDS_NATIVE_CHILD_CANCEL``
+     - driver-internal (whether ``AcpClient.cancel_native_child`` sends
+       ``session/cancel`` naming a native child whose announce granted
+       ``capabilities.cancel``; the dashboard's card Stop asks the client, never
+       the set)
+   * - ``ACP_BACKENDS_COMPACTION_SUMMARY``
+     - driver-internal (whether ``AcpClient`` carries a native compaction's
+       summary, streamed or on its ``completed`` update, on the compaction event
+       the dashboard's compaction card folds)
+   * - ``ACP_BACKENDS_TOOL_TITLE_REFINEMENT``
+     - semantic question (``SessionCapabilities.refines_tool_call_titles``: whether
+       a Crew-spawned subagent's card takes a ``tool_call_update``'s title)
    * - ``ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS``
      - semantic question (``SessionCapabilities.runs_own_slash_commands``)
    * - ``ACP_BACKENDS_NATIVE_WORKFLOWS``
@@ -221,6 +277,10 @@ with no row here.
    * - ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS``
      - pre-session registry query (whether the dashboard answers every harness
        command itself, and which commands the ``/`` menu lists)
+   * - ``ACP_BACKEND_PROMPT_HANDLER_COMMANDS``
+     - pre-session registry query (which harness commands the harness's prompt
+       handler runs, so the dashboard answers the others itself and the ``/`` menu
+       lists only those and the ones the dashboard serves)
    * - ``ACP_BACKENDS_EFFORT_OVERLAY``
      - driver-internal (whether the workspace ``cli.json`` effort keys are written,
        read back at construction and cleared)
@@ -254,6 +314,9 @@ with no row here.
    * - ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``
      - driver-internal (whether a kindless permission frame takes the preceding
        tool_call's ``kind``; read per frame by the session handle's wire accessor)
+   * - ``ACP_BACKENDS_TOOL_SILENCE_TIMER``
+     - driver-internal (whether the session handle gives each non-shell tool call
+       its own silence bound, read once per dispatched call)
    * - ``ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED``,
        ``ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED``
      - driver-internal (whether that transport's permission events say
@@ -271,6 +334,14 @@ with no row here.
      - driver-internal (whether the direct client stamps the spec's shell and
        write allowlists on its own permission requests, and the claude seed adds
        the ``permissions.ask`` rules that make those calls reach the gate)
+   * - ``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING``
+     - context assembly (whether Crew puts the agent spec's ``file://`` steering
+       and the global and project steering trees into the prompt, asked by
+       provider label through ``drivers.acp.crew_loads_spec_steering``)
+   * - ``ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD``
+     - context assembly (whether that steering load leaves out the project's
+       ``AGENTS.md`` because the harness reads it from its working directory,
+       asked through ``drivers.acp.reads_project_agents_md``)
    * - ``ACP_BACKENDS_HOST_AUTH_CALLBACK``
      - driver-internal (whether the reader loop may answer the engine's
        ``_kiro/auth/getAccessToken`` from Crew's own vault)
@@ -292,6 +363,10 @@ with no row here.
    * - ``ACP_BACKENDS_RESUME_WITHOUT_LOAD``
      - driver-internal (which ACP verb restores a session, and which capability
        key advertises it)
+   * - ``ACP_BACKENDS_CWD_BOUND_SESSIONS``
+     - pre-session registry query (whether a saved session is restored only in
+       the directory it was created in, so a chat whose folder changed starts
+       fresh and replays its conversation)
    * - ``ACP_BACKENDS_FORK_AT_MESSAGE``
      - driver-internal (whether ``session/fork`` honours a fork point, so a
        rewind keeps the retained native history)
@@ -308,9 +383,18 @@ with no row here.
        is the resulting server list, which it already receives
    * - ``ACP_BACKENDS_HONOR_ZERO_TOOL_BAN``
      - semantic question (``SessionCapabilities.honors_zero_tool_ban``)
+   * - ``ACP_BACKENDS_UNASKED_NATIVE_TOOLS``
+     - driver-internal (whether some of the harness's own tools run with no
+       permission request under the seeded asking posture; an input to
+       ``ACP_BACKENDS_HONOR_ZERO_TOOL_BAN``'s membership rule, which no consumer
+       above the boundary asks on its own)
    * - ``ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP``
      - driver-internal (whether a ``session/new`` stdio element whose command
        cannot be found is left out and reported as failed before the request)
+   * - ``ACP_BACKENDS_NO_MCP_INIT_FRAMES``
+     - driver-internal (whether the drain after ``session/new`` folds only the
+       frames already buffered, because the harness sends no MCP init frame over
+       ACP)
    * - ``ACP_BACKENDS_ACP_CLIENT_SPAWNABLE``
      - semantic question (``SessionCapabilities.acp_client_spawnable``)
    * - ``ACP_BACKENDS_REMOTE_MCP_OAUTH``
@@ -386,7 +470,7 @@ ACP_BACKEND_PI = "pi"
 # ``session-load-live.jsonl``). Re-verify all three against a fresh capture before raising
 # this range, and re-capture the mode move deliberately -- it is the one a routine
 # re-record would not exercise. A session on a release outside the range is named at the
-# handshake (``AcpClient._note_goose_version`` reads ``agentInfo.version`` off
+# handshake (``GooseAcpClient._note_goose_version`` reads ``agentInfo.version`` off
 # ``initialize``), so the one silent loss has a signal before the first prompt.
 ACP_BACKEND_GOOSE = "goose"
 # DeepSeek Harness: a plugin host whose ``acp`` profile serves ACP v1 over stdio
@@ -415,6 +499,15 @@ ACP_BACKEND_COPILOT = "copilot"
 # strands-agents 1.63.0. The captures (``test/fixtures/acp_frames/strands/``) were
 # taken on 0.2.3; the published 0.2.4 package differs from it only in its version.
 ACP_BACKEND_STRANDS = "strands"
+# MiMo Code: Xiaomi's fork of OpenCode, a single binary that serves ACP itself
+# (``mimo acp``). It keeps OpenCode's permission rule algebra and its
+# ``debug config`` read-back, and its launch and mirror are its own modules
+# (``acp.harness.mimocode``, ``providers.mirrors.mimocode``) with its own spellings: a
+# different config variable (``MIMOCODE_CONFIG_CONTENT``), a different tested line
+# (0.1), and environment overrides that a read-back cannot see and the launch
+# therefore strips. A separate id, not an alias of ``opencode``: a saved choice or
+# a governance rule naming ``opencode`` must keep meaning OpenCode.
+ACP_BACKEND_MIMOCODE = "mimocode"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -461,6 +554,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -468,6 +562,12 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
 # known to launch independently. New adapters opt in after their install and
 # sandbox path is verified; a KAS-like backend cannot inherit the bypass merely
 # because its id is neither Kiro nor KAS.
+#
+# mimocode opts in on both: the install is one global npm package whose ``mimo``
+# binary the self-served ladder resolves, and a gateway on a host whose launcher
+# can create the user namespace spawned ``mimo acp`` under the sandbox with its
+# credential mask, read its routing back and ran sessions and sub-agents on
+# MiMo Code 0.1.15. Nothing on that path runs kiro-cli.
 ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
     {
         ACP_BACKEND_STRANDS,
@@ -478,6 +578,7 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -594,6 +695,21 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
 #:   ``Agent`` the project builds, and a read-back boot proves the gate loaded from
 #:   Crew's file under this session's nonce before the session starts. See
 #:   :data:`Routing.VERIFIED_GATE_EXTENSION` and :data:`Readback.LOAD_MARKER`.
+#:
+#: ``ACP_BACKEND_MIMOCODE`` is included on the same two conditions as OpenCode, met by
+#: the same mechanism with MiMo Code's own spellings:
+#:
+#: * ``backend_install`` probes for the ``mimo`` binary, one component, because
+#:   the harness's own package ships the executable that serves ACP.
+#: * its tool calls are ROUTED and the routing is VERIFIED: the client seeds
+#:   ``permission: "ask"`` through ``MIMOCODE_CONFIG_CONTENT`` and reads the
+#:   harness's resolved configuration back with ``mimo debug config``. Two
+#:   environment overrides change the asking posture without showing in that
+#:   read-back (``MIMOCODE_DANGEROUSLY_SKIP_PERMISSIONS`` and
+#:   ``MIMOCODE_AUTO_APPROVE_DELETE``), so the launch strips them; and because
+#:   the ACP server's own loopback HTTP listener can switch the session to
+#:   auto-allow mid-session, a shell call that completes without having asked
+#:   stops the harness (``acp.harness.mimocode``).
 BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -606,6 +722,7 @@ BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -633,6 +750,7 @@ POLICY_ID_BY_BACKEND: dict = {
     ACP_BACKEND_GOOSE: ACP_BACKEND_GOOSE,
     ACP_BACKEND_DEEPSEEK: ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_COPILOT: ACP_BACKEND_COPILOT,
+    ACP_BACKEND_MIMOCODE: ACP_BACKEND_MIMOCODE,
 }
 
 #: The backend a deployment policy may never deny.
@@ -1194,13 +1312,12 @@ def kiro_cli_pick_backend() -> str:
 # ``backend_identity`` beside them are consumers that read it through this module.
 
 
-# ``ACP_BACKENDS_KIRO_IDENTITY_STORE`` is gone, and it has no replacement HERE.
-# Whether a ``kiro-cli logout`` may retire a running child is a fact about how the
-# harness SIGNS IN, and it was the third hand-maintained copy of that fact -- beside
-# the credential floor and the sandbox mask, each of which had to agree with it. It is
-# now ``host_auth.backends_retired_by_host_logout()``, projected from the harness's own
-# declaration, which is where the same declaration also supplies the leaf the floor
-# fences and the leaf the mask spares.
+# There is no backend set HERE for "a ``kiro-cli logout`` retires this child".
+# That is a fact about how the harness SIGNS IN, which the credential floor and the
+# sandbox mask must also agree with, so it has one home:
+# ``host_auth.backends_retired_by_host_logout()``, projected from the harness's own
+# declaration, which also supplies the leaf the floor fences and the leaf the mask
+# spares.
 #
 # It could not become a projected SET in this module: this module supplies the backend
 # ids that table is keyed by, so importing ``host_auth`` from here would close a cycle.
@@ -1239,6 +1356,7 @@ from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported 
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
     ACP_BACKENDS_MCP_RELAUNCH_RELOAD,
     ACP_BACKENDS_MCP_WIRE_REINJECT,
+    ACP_BACKENDS_NO_MCP_INIT_FRAMES,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     ACP_BACKENDS_REMOTE_MCP_OAUTH,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
@@ -1246,12 +1364,14 @@ from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported 
     ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE,
     ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
+    ACP_BACKENDS_UNASKED_NATIVE_TOOLS,
     ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY,
     overlay_project_scope,
 )
 from kiro_crew.agent_sdk.backends_members import (  # noqa: E402,F401 - re-exported vocabulary
     ACP_BACKENDS_MATE_WORKER_KIT,
     ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
+    ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
     ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
@@ -1261,6 +1381,7 @@ from kiro_crew.agent_sdk.backends_members import (  # noqa: E402,F401 - re-expor
     crewmate_inherited_backend,
 )
 from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-exported vocabulary
+    _EFFORT_MODEL_REFUSAL_PHRASE_BY_BACKEND,
     _MODEL_REFUSAL_PHRASE_BY_BACKEND,
     _MODEL_REGISTRY_NAMESPACE_BY_BACKEND,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -1268,8 +1389,10 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_FAST_MODE_CONFIG_OPTION,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+    ACP_BACKENDS_MODEL_SELECT_UNCHECKED,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     ACP_BACKENDS_ULTRACODE_CONFIG_OPTION,
@@ -1282,11 +1405,13 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES,
     EFFORT_CONFIG_OPTION_VALUES,
     EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND,
+    FAST_MODE_CONFIG_OPTION_ID,
     ULTRACODE_CONFIG_OPTION_ID,
     effort_config_option_clear_value,
     effort_config_option_id,
     effort_config_option_levels,
     effort_config_option_value,
+    effort_refused_by_model,
     launch_effort_supported,
     model_refusal_phrase,
     model_registry_namespace,
@@ -1301,26 +1426,35 @@ from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-expor
     ACP_BACKEND_GATE_READBACK,
     ACP_BACKEND_PERMISSION_CONFIG,
     ACP_BACKEND_PERMISSION_SETTING,
+    ACP_BACKEND_PREFERRED_PERMISSION_CONFIG,
     ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST,
     ACP_BACKEND_ROUTING,
     ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
     ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
+    ACP_BACKENDS_CREW_LOADS_SPEC_STEERING,
     ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED,
     ACP_BACKENDS_HOOKS_LIST,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_META_IDENTITY,
+    ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD,
     ACP_BACKENDS_NATIVE_WORKFLOWS,
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED,
     ACP_BACKENDS_SIDE_READONLY,
+    ACP_BACKENDS_TOOL_SILENCE_TIMER,
+    KNOWN_LIMITATIONS,
+    KnownLimitation,
     Readback,
     Routing,
     gate_probe_command_for,
     gate_readback_for,
+    known_limitation_issue,
+    offers_config_value,
     permission_config_for,
     permission_setting_for,
+    permission_value_for,
     prompt_command_issue,
     routing_for,
     session_config_drift_issue,
@@ -1328,7 +1462,9 @@ from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-expor
 from kiro_crew.agent_sdk.backends_sessions import (  # noqa: E402,F401 - re-exported vocabulary
     ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
     ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKENDS_CHAT_RUNTIME_SHARING,
     ACP_BACKENDS_CLIENT_NEW_CONVERSATION,
+    ACP_BACKENDS_CWD_BOUND_SESSIONS,
     ACP_BACKENDS_FORK_AT_MESSAGE,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
@@ -1337,25 +1473,37 @@ from kiro_crew.agent_sdk.backends_sessions import (  # noqa: E402,F401 - re-expo
     ACP_BACKENDS_SERIAL_SESSION_STARTS,
     ACP_BACKENDS_SESSION_EVICTION,
     ACP_BACKENDS_SESSION_SHARING,
+    CHAT_RUNTIME_SHARING_HARNESSES,
 )
 from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exported vocabulary
+    ACP_BACKEND_PROMPT_HANDLER_COMMANDS,
     ACP_BACKENDS_AGENT_STARTED_TURNS,
     ACP_BACKENDS_COMPACT,
+    ACP_BACKENDS_COMPACTION_REPORTED,
+    ACP_BACKENDS_COMPACTION_SUMMARY,
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_HARNESS_MANAGED_COMPACTION,
+    ACP_BACKENDS_HARNESS_NOTICES,
     ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS,
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_KIRO_FAMILY,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_LOCAL_CLEAR,
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
+    ACP_BACKENDS_NATIVE_CHILD_CANCEL,
     ACP_BACKENDS_NATIVE_TODOS,
+    ACP_BACKENDS_PLAN_CHECKLIST,
+    ACP_BACKENDS_RAW_SDK_TASKS,
+    ACP_BACKENDS_READ_PATH_ARG,
     ACP_BACKENDS_REPORT_USAGE,
+    ACP_BACKENDS_SENT_IMAGE_RECORD,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
     ACP_BACKENDS_STEER_RETRACT,
     ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
+    ACP_BACKENDS_SUMMARIZED_THINKING,
+    ACP_BACKENDS_TOOL_TITLE_REFINEMENT,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     ACP_BACKENDS_UNMARKED_COMPACTION_PAIR,
     CLAUDE_PROMPT_CACHE_TTL_ENV,

@@ -110,7 +110,7 @@ describe('useWebSocket notification -> MC_LIVE_NOTIFICATION_EVENT', () => {
     act(() => { first.simulateOpen() })
     act(() => { first.simulateClose() })
     // The reconnect backoff opens a second socket; its open handler marks the
-    // catch-up window, which stays open until fetchSlots settles. Delivering
+    // catch-up window, which stays open until its connect snapshot. Delivering
     // the replayed frame inside the same act keeps it in that window.
     act(() => { vi.runOnlyPendingTimers() })
     const second = WS_INSTANCES[1]

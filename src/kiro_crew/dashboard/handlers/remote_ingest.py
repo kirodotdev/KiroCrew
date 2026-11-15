@@ -43,6 +43,7 @@ from aiohttp import web
 
 from kiro_crew import platform_compat, work_ledger
 from kiro_crew.crew_log import emit as crew_log_emit
+from kiro_crew.dashboard import trace_binding
 from kiro_crew.dashboard.handlers.work_ledger import (
     _WIDEST_EVENT_TEXT,
     _WIDEST_HEX_ID,
@@ -59,6 +60,7 @@ from kiro_crew.dashboard.handlers.work_ledger import (
     _refuse_if_dirty,
     _refuse_unrecorded,
 )
+from kiro_crew.tracing import work as trace_work
 from kiro_crew.validation import (
     WORK_REPORT_REMOTE_DISPATCH_SCHEMA,
     ValidationError,
@@ -128,6 +130,69 @@ async def settled_item(board: str, item_id: str) -> work_ledger.WorkItem | None:
             return None
 
 
+# ── the conductor's Trust (RFC §4) ────────────────────────────────────────
+
+
+def conductor_trusts(state: "DashboardState", board: str) -> bool:
+    """Whether *board*'s conductor slot is in Trust or YOLO right now.
+
+    The rule a local child follows: a Trust a person set on the slot carries
+    (``trust_carries``; a Crew Mode card trust does not), and a YOLO grant that
+    reaches the slot does. A scoped grant the slot holds is never passed on.
+    """
+    from kiro_crew.dashboard.approval_posture import trust_carries
+
+    get = getattr(state, "get_slot", None)
+    slot = get(board) if callable(get) else None
+    if slot is None:
+        return False
+    if trust_carries(slot):
+        return True
+    return bool(state.is_yolo_active() and state.yolo_reaches(slot))
+
+
+async def revoke_peer_trust(mgr: Any, instance_id: str, slot: str) -> bool:
+    """PATCH ``trust: false`` to the peer worker *slot*. True when the peer took it.
+
+    Best effort: a peer that cannot be reached keeps the grant only until its TTL,
+    and the next pull that sees ``trust_active`` asks again.
+    """
+    routes = _routes()
+    try:
+        status, _payload = await routes.peer_call(
+            mgr,
+            instance_id,
+            "PATCH",
+            f"api/chat/slots/{quote(slot, safe='')}/work-item",
+            body={"trust": False},
+        )
+    except routes.CrewCallError:
+        return False
+    return 200 <= status < 300
+
+
+async def revoke_if_closed(state: "DashboardState", board: str, item_id: str) -> None:
+    """End a closed remote item's peer grant. Never raises.
+
+    A pull skips a closed item, so the pull's own revoke never reaches it.
+    """
+    item = await settled_item(board, item_id)
+    if item is None or not item.is_terminal or not item.worker_instance_id:
+        return
+    mgr = getattr(state, "instances_manager", None)
+    if mgr is None or not item.worker_session_key:
+        return
+    try:
+        # Bounded like a decide forward, so a stalled peer cannot outlast the
+        # caller's request and turn a committed close into a reported failure.
+        await asyncio.wait_for(
+            revoke_peer_trust(mgr, item.worker_instance_id, item.worker_session_key),
+            DECIDE_DEADLINE_SECS,
+        )
+    except Exception:  # noqa: BLE001 - the recorded write already stands
+        logger.warning("remote trust revoke failed for %s", item_id, exc_info=True)
+
+
 # ── the bound create ──────────────────────────────────────────────────────
 
 
@@ -165,7 +230,21 @@ async def create_bound(
         "acceptance": item.acceptance,
         "decision": routes._outbound(item.decision),
     }
+    if conductor_trusts(state, board):
+        # Sent only when set, so a Normal conductor's create reads as before.
+        body["work_item"]["trust"] = True
     status, payload = await routes.peer_call(mgr, instance_id, "POST", "api/chat/slots", body=body)
+    if (
+        status == 400
+        and "trust" in body["work_item"]
+        and isinstance(payload, dict)
+        and payload.get("field") == "trust"
+    ):
+        # A peer that predates the field refuses it; its worker asks, as it always has.
+        body["work_item"].pop("trust")
+        status, payload = await routes.peer_call(
+            mgr, instance_id, "POST", "api/chat/slots", body=body
+        )
     if status == 503 and isinstance(payload, dict) and payload.get("code") == routes.CREW_BUSY:
         raise routes.CrewBusyError(payload)
     if not 200 <= status < 300:
@@ -597,6 +676,15 @@ async def _ingest_item(
                 record.report_floor, record.report_floor_known = peer_stamp, True
         record.ingested_at = record.attempted_at = _now()
         await asyncio.to_thread(_store, board, item.item_id, record)
+    # A conductor that left Trust ends the grant its worker still holds (RFC §4).
+    # Asked only when the peer says it holds one, so an older peer gets no new field.
+    if (
+        status == 200
+        and isinstance(payload, dict)
+        and payload.get("trust_active") is True
+        and not conductor_trusts(state, board)
+    ):
+        await revoke_peer_trust(mgr, crew, slot)
 
 
 #: Seconds before a pull retries a peer stamp whose filing the crew log refused.
@@ -866,6 +954,17 @@ async def _file_one(
         return "crew_log_unrecorded"
     await asyncio.to_thread(_mark_recorded, board, item.item_id)
     _audit(board, "work_ledger_read.ingest", "ok", resources=f"{item_id} status={item.status}")
+    # A peer's worker reported: no turn here made it, so it sits under its item.
+    await trace_work.recorded(
+        "",
+        board,
+        "report",
+        actor="worker",
+        item=item,
+        header=header,
+        event_id=event.id,
+        root_kind=lambda: trace_binding.root_kind(state, board),
+    )
     return None
 
 

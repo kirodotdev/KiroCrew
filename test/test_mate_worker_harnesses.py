@@ -11,7 +11,6 @@ names, which follows how the backend was chosen.
 from __future__ import annotations
 
 import json
-import re
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +23,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
+    ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
 )
 from kiro_crew.mate_worker import MATE_WORKER_AGENT
@@ -123,12 +123,14 @@ def test_kiro_cli_cannot_carry_the_worker_and_refuses_it():
     ``~/.kiro/agents/``, where the worker spec is not, so a worker that lands there
     (KAS not selectable) is refused with a remedy naming the hosts that carry it."""
     from kiro_crew.acp.session_provider import AcpSessionProvider
+    from kiro_crew.crewmate_harness import harness_label
     from kiro_crew.providers.acp import AcpProvider
 
     refusal = mate_worker.worker_kit_backend_refusal(ACP_BACKEND_KIRO)
     assert refusal is not None
-    assert "(kiro)" in refusal and "agent.member_acp_backend" in refusal
-    assert "kas" in refusal and "kiro," not in refusal
+    assert "(kiro)" in refusal and "change Settings → Agent Harness" in refusal
+    assert harness_label(ACP_BACKEND_KAS) in refusal
+    assert harness_label("kiro") not in refusal  # the stored spelling of ACP_BACKEND_KIRO
     client = SimpleNamespace(backend=ACP_BACKEND_KIRO)
     assert AcpProvider.mate_worker_kit_supported.fget(SimpleNamespace(_client=client)) is False
     runtime = SimpleNamespace(acp_backend=ACP_BACKEND_KIRO)
@@ -224,8 +226,9 @@ def test_a_kiro_pin_on_the_v2_launch_names_the_pin_and_the_kiro_cli_update():
 
 def test_with_kas_unservable_an_unpinned_refusal_offers_no_kas_and_names_its_fixes():
     """The member route took the kiro-cli floor because this host cannot serve KAS,
-    so setting it to kas changes nothing; the kiro-cli update and the bundle do."""
+    so picking kas changes nothing; the kiro-cli update and the bundle do."""
     from kiro_crew.agent_sdk import backends
+    from kiro_crew.crewmate_harness import harness_label
 
     backends.mark_backend_unservable(ACP_BACKEND_KAS, KAS_GAP)
     config = _pin_config()
@@ -233,8 +236,9 @@ def test_with_kas_unservable_an_unpinned_refusal_offers_no_kas_and_names_its_fix
 
     refusal = _refusal(config, "floorbot")
 
-    assert refusal is not None and "set agent.member_acp_backend to claude, codex." in refusal
-    assert re.search(r"member_acp_backend to [^.]*\bkas\b", refusal) is None
+    able = f"({harness_label(ACP_BACKEND_CLAUDE)}, {harness_label(ACP_BACKEND_CODEX)})"
+    assert refusal is not None
+    assert f"pick a harness that can {able} or change Settings → Agent Harness." in refusal
     assert f"because {KAS_GAP}" in refusal
     assert "update kiro-cli" in refusal and "agent.kas_bundle" in refusal
 
@@ -292,11 +296,14 @@ def test_the_worker_tabs_error_row_names_the_pin(monkeypatch):
     assert "agent.member_acp_backend" not in text
 
 
-def test_a_pinned_bots_chat_row_names_the_pin_not_the_member_setting():
+def test_a_pinned_bots_chat_row_names_the_pin_not_the_member_setting(monkeypatch):
     """A Bot pinned to a harness that cannot load its saved spec is moved by the
-    pin; without a pin the member setting stays the fix."""
+    pin; without a pin the fix is a pin or Settings -> Agent Harness, and a chat
+    started on a picked harness is told to start another."""
     from kiro_crew.dashboard import chat_runner
+    from kiro_crew.members_parts import member_sessions
 
+    monkeypatch.setattr(member_sessions, "_SESSION_BACKEND_PICKS", {})
     _store_pin("opencode")
 
     text = chat_runner._harness_unsupported_text("dashboard:member-pinbot")
@@ -306,7 +313,32 @@ def test_a_pinned_bots_chat_row_names_the_pin_not_the_member_setting():
     assert "agent.member_acp_backend" not in text
     _store_pin("")
     unpinned = chat_runner._harness_unsupported_text("dashboard:member-pinbot")
-    assert "Set agent.member_acp_backend to" in unpinned
+    assert "in this bot's settings pick a harness that can (" in unpinned
+    assert "change Settings → Agent Harness" in unpinned
+    assert "agent.member_acp_backend" not in unpinned
+    member_sessions.note_session_backend_pick("dashboard:member-pinbot", "opencode")
+    picked = chat_runner._harness_unsupported_text("dashboard:member-pinbot")
+    assert "start a new chat on a harness that can" in picked
+    assert "this bot's settings" not in picked
+
+
+def test_the_tool_limits_row_names_the_harness_the_session_runs_on(monkeypatch):
+    """The ``capability_tool_limits_unsupported`` row names the harness, not the
+    member setting a pin outranks, and a session's own pick outranks the pin."""
+    from kiro_crew.crewmate_harness import harness_label
+    from kiro_crew.dashboard import chat_runner
+    from kiro_crew.members_parts import member_sessions
+
+    monkeypatch.setattr(member_sessions, "_SESSION_BACKEND_PICKS", {})
+    _store_pin(ACP_BACKEND_CODEX)
+
+    assert chat_runner._chat_harness_name("dashboard:member-pinbot") == harness_label(
+        ACP_BACKEND_CODEX
+    )
+    member_sessions.note_session_backend_pick("dashboard:member-pinbot", ACP_BACKEND_CLAUDE)
+    assert chat_runner._chat_harness_name("dashboard:member-pinbot") == harness_label(
+        ACP_BACKEND_CLAUDE
+    )
 
 
 def test_codex_carries_the_worker_kit(pixel_worker):
@@ -562,6 +594,10 @@ def _claude_worker_provider(key, backend=ACP_BACKEND_CLAUDE, **_kwargs):
         def mate_worker_mcp_tool_limits_supported(self):
             return backend in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS
 
+        @property
+        def mate_worker_native_tool_limits_supported(self):
+            return backend in ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS
+
     return _ClaudeWorker()
 
 
@@ -572,8 +608,9 @@ def _claude_worker_provider(key, backend=ACP_BACKEND_CLAUDE, **_kwargs):
         {"mcpServers": {"jira": {"command": "jira-mcp", "disabledTools": ["x"]}}},
         {"excludedTools": ["@jira/delete_issue"]},
         {"excludedTools": ["fs_write"]},
+        {"excludedTools": ["use_aws"]},
     ],
-    ids=["disabledTools", "excluded-server-tool", "excluded-native-tool"],
+    ids=["disabledTools", "excluded-server-tool", "excluded-native-tool", "excluded-unmapped-tool"],
 )
 @pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX])
 async def test_the_allocation_refuses_a_tool_limited_worker_on_a_mirror(
@@ -581,9 +618,9 @@ async def test_the_allocation_refuses_a_tool_limited_worker_on_a_mirror(
 ):
     """The allocation itself, not only its source: a worker whose crewmate's file
     turns off single tools is refused on codex before anything starts, and on
-    claude when a limit is a native tool, which no MCP deny carries; claude starts
-    a worker whose limits are all MCP tools, and the same worker with no limits
-    starts on both."""
+    claude when a limit is a native tool its built-in table does not cover; claude
+    starts a worker whose limits are MCP tools or mapped native tools, and the same
+    worker with no limits starts on both."""
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.members_parts import member_sessions
     from kiro_crew.session import SessionManager
@@ -608,9 +645,9 @@ async def test_the_allocation_refuses_a_tool_limited_worker_on_a_mirror(
         return provider
 
     manager = SessionManager(KiroCrewConfig.load(), provider_factory=factory)
-    native = any(not ref.startswith("@") for ref in limits.get("excludedTools", []))
+    unmapped = "use_aws" in limits.get("excludedTools", [])
     try:
-        if backend in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS and not native:
+        if backend in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS and not unmapped:
             await manager.get_or_create(key, agent=MATE_WORKER_AGENT, cwd=str(tmp_path))
             assert made and made[0].starts == 1
             return

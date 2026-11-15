@@ -116,6 +116,10 @@ const ALL_TARGETS: readonly RefreshTarget[] = [
   TEMPLATES_TARGET,
   { queryKey: ['workspaces'] },
   { queryKey: ['kirocrewConfig'] },
+  // The Security panel's safety switches live in config.json; a save from
+  // another tab reaches this one only through the config refresh frame.
+  { queryKey: ['safety-switches'] },
+  { queryKey: ['mcp-tool-grants'] },
   // These answers derive from the config AND, for an `auto` default, the
   // installed agent spec rebuilt by the server's config applier. A refresh
   // frame is emitted only after that applier completes, so invalidate the
@@ -159,12 +163,24 @@ let turnEndCronTimer: ReturnType<typeof setTimeout> | null = null
 let turnEndCronClient: QueryClient | null = null
 let turnEndCronNotify: (() => void) | undefined
 
+/** The other caches a turn-end frame re-reads (config, registry, roster, artifacts)
+ *  follow the same window: the first frame after a quiet window re-reads them at
+ *  once, and the frames inside the window share one re-read when it ends. A writer
+ *  inside the gateway announces its own kind (`agents`, `crons`), which is never
+ *  held; only a write from an agent's shell waits, for at most the window. */
+let turnEndOthersAt = Number.NEGATIVE_INFINITY
+let turnEndOthersPending = false
+let turnEndOthersNotify: (() => void) | undefined
+
 /** Test seam: drop a pending turn-end cron refresh. */
 export function __resetTurnEndCronRefreshForTests(): void {
   if (turnEndCronTimer !== null) clearTimeout(turnEndCronTimer)
   turnEndCronTimer = null
   turnEndCronClient = null
   turnEndCronNotify = undefined
+  turnEndOthersAt = Number.NEGATIVE_INFINITY
+  turnEndOthersPending = false
+  turnEndOthersNotify = undefined
 }
 
 /** Re-read the cron caches once the window ends. Later frames inside the
@@ -182,6 +198,13 @@ function scheduleTurnEndCronRefresh(qc: QueryClient, onCronsStale?: () => void):
     turnEndCronNotify = undefined
     if (client) for (const target of CRON_TARGETS) client.invalidateQueries(target)
     notify?.()
+    if (!turnEndOthersPending) return
+    const others = turnEndOthersNotify
+    turnEndOthersPending = false
+    turnEndOthersNotify = undefined
+    turnEndOthersAt = Date.now()
+    if (client) for (const target of ALL_TARGETS) if (!CRON_TARGETS.includes(target)) client.invalidateQueries(target)
+    others?.()
   }, TURN_END_CRON_REFRESH_MS)
 }
 
@@ -203,18 +226,34 @@ const isTurnEndOnly = (kinds?: readonly string[]) => !!kinds?.length && kinds.ev
  * (the artifact library after an auth-expired window, #10867) would otherwise
  * stay empty until its own kind is pushed.
  *
- * A frame that names only `turn_end` or `history` refreshes everything but the cron caches
- * at once, and those once per `TURN_END_CRON_REFRESH_MS` (an errored one at
- * once, as above). `onCronsStale` is called whenever the cron caches are
+ * A frame that names only `turn_end` or `history` refreshes the cron caches once per
+ * `TURN_END_CRON_REFRESH_MS` (an errored one at once, as above), and the other
+ * caches at once when no such frame re-read them inside that window, otherwise
+ * once when the window ends. `onCronsStale` is called whenever the cron caches are
  * re-read, now or when that window ends, for a reader that holds the job list
- * outside React Query (the Schedule page).
+ * outside React Query (the Schedule page). `onOthersStale` is called whenever the
+ * other caches are re-read, for the readers keyed on the store's refresh counter
+ * (the agent catalog); a page on screen follows every frame through
+ * `liveRefreshTrigger` instead (the Memory view).
  */
-export function invalidateRefreshQueries(qc: QueryClient, kinds?: readonly string[], onCronsStale?: () => void): void {
+export function invalidateRefreshQueries(
+  qc: QueryClient, kinds?: readonly string[], onCronsStale?: () => void, onOthersStale?: () => void,
+): void {
   const narrow = !!kinds?.length && kinds.every(kind => Object.prototype.hasOwnProperty.call(NARROW_KINDS, kind))
   if (!narrow) {
     const turnEnd = isTurnEndOnly(kinds)
+    const held = turnEnd && Date.now() - turnEndOthersAt < TURN_END_CRON_REFRESH_MS
+    if (held) {
+      turnEndOthersPending = true
+      turnEndOthersNotify = onOthersStale
+    } else {
+      // Everything is re-read below: a re-read owed to an earlier frame is paid.
+      turnEndOthersPending = false
+      if (turnEnd) turnEndOthersAt = Date.now()
+      onOthersStale?.()
+    }
     for (const target of ALL_TARGETS) {
-      if (turnEnd && CRON_TARGETS.includes(target)) {
+      if (held || (turnEnd && CRON_TARGETS.includes(target))) {
         qc.invalidateQueries({ ...target, predicate: query => query.state.status === 'error' })
       } else {
         qc.invalidateQueries(target)
@@ -224,6 +263,7 @@ export function invalidateRefreshQueries(qc: QueryClient, kinds?: readonly strin
     else onCronsStale?.()
     return
   }
+  onOthersStale?.()
   // Every narrow kind names the cron caches.
   const named = kinds.flatMap(kind => NARROW_KINDS[kind])
   for (const target of ALL_TARGETS) {
@@ -274,6 +314,8 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   // another tab, which is how the update switches learn of it) was never
   // delivered either. Only observed readers refetch.
   queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+  queryClient.invalidateQueries({ queryKey: ['safety-switches'] })
+  queryClient.invalidateQueries({ queryKey: ['mcp-tool-grants'] })
   // The runtime monitor contract is fetched once with no staleTime, so a
   // gateway restart that registered a contributed monitor kind while the
   // socket was down would otherwise never refresh: its monitors would read as
@@ -348,6 +390,17 @@ export function handleCredentialRedactionChanged(queryClient: QueryClient, d: { 
   }
   queryClient.invalidateQueries({ queryKey: ['credential-redaction'] })
   purgeDocumentBodiesForRedactionChange(queryClient)
+}
+
+/** A credential-redaction setting that reaches no file body moved (the
+ *  prompt-and-logs switch), possibly in ANOTHER browser tab or by a policy
+ *  refresh: this document re-reads the settings so no open Settings card keeps
+ *  showing the old position. Nothing is purged. Owner sockets only receive it. */
+export function handleCredentialRedactionSettingsChanged(queryClient: QueryClient, d: FrameData | undefined): void {
+  if (d && typeof (d as { enabled?: unknown }).enabled === 'boolean') {
+    queryClient.setQueryData(['credential-redaction'], d)
+  }
+  queryClient.invalidateQueries({ queryKey: ['credential-redaction'] })
 }
 
 /** Live artifact refresh: the backend broadcasts from the artifact mutation

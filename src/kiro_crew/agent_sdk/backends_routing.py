@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from enum import Enum
 from typing import FrozenSet
 
@@ -31,6 +32,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -109,6 +111,9 @@ from kiro_crew.agent_sdk.backends import (
 #   reads no kiro agent spec, so the derived spec cannot express a read-only posture.
 # * pi: Crew's gate extension asks about every call but expresses no read-only
 #   posture.
+# * mimocode: for opencode's reason, and one of its own: its ``memory``, ``history``
+#   and ``task`` tools run without asking (``ACP_BACKENDS_UNASKED_NATIVE_TOOLS``), so
+#   a side turn could not be confined to reads even if every asked call were.
 ACP_BACKENDS_SIDE_READONLY = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -161,6 +166,20 @@ ACP_BACKENDS_META_IDENTITY: FrozenSet[str] = frozenset({ACP_BACKEND_GOOSE})
 # claude-agent-acp, codex-acp and the rest are unmeasured, and a wrong kind on a
 # permission event can only narrow or veto.
 ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL: FrozenSet[str] = frozenset({ACP_BACKEND_KAS})
+
+# Backends whose ``tool_call`` frame says, in a field the harness writes, whether
+# an MCP server served the call, so the session handle can give each non-shell
+# call its own silence bound (``acp.tool_silence``): a built-in, an MCP tool on a
+# network or a stdio server, or a sub-agent call. kiro-cli names the server in
+# ``_meta.kiro.mcpServerName`` on an MCP call and stamps ``_meta.kiro.toolName``
+# on every tool, built-ins included (``acp_frames/kiro/tool-classes-b-live.jsonl``,
+# ``acp_frames/kiro/side-read-only-live.jsonl``); KAS names the server in
+# ``_meta.kiro.serverName`` on an MCP call and stamps the tool's ACP ``kind`` on a
+# built-in (``acp_frames/kas/mcp-live-apply-live.jsonl``,
+# ``acp_frames/kas/side-read-only-live.jsonl``). A harness outside the set keeps
+# the oracle-driven tool-stall rules alone: with no such field a quiet MCP call
+# reads as a built-in and would get the built-in's five-minute bound.
+ACP_BACKENDS_TOOL_SILENCE_TIMER: FrozenSet[str] = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 # Backends whose sub-agent calls the direct ``AcpClient`` tells apart from the
 # parent's (``acp.client_permissions._is_child_permission_frame``): a frame under a
@@ -288,6 +307,12 @@ ACP_BACKENDS_NATIVE_WORKFLOWS = frozenset({ACP_BACKEND_KAS})
 #: matchers meet the Strands built-in names through
 #: :data:`kiro_crew.acp.harness_tool_names.STRANDS_TOOL_IDS_BY_KIRO_TOOL`, for a
 #: call the gate proved is that built-in only.
+#:
+#: mimocode is NOT a member, although it asks under the same seed opencode does: several
+#: of its own tools never reach its permission service at all (``memory``,
+#: ``history``, ``task``, and an edit under its memory directory; ``cron`` too,
+#: which the launch pins off), so a PreToolUse hook would be skipped on exactly
+#: those calls, the claude and codex ground.
 ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset(
     {ACP_BACKEND_KAS, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_STRANDS}
 )
@@ -297,19 +322,28 @@ ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset(
 #: ``userPromptSubmit``, ``agentSpawn`` and ``stop``. Every member of
 #: ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS`` is one, since Crew fires all five there.
 #:
-#: claude is a member of this set alone. Its harness is handed no spec, so nothing
-#: else runs the field, and none of these four events needs a permission request to
-#: fire on. ``preToolUse`` does: claude approves some calls inside the harness
-#: without asking, so a gating hook would be skipped on exactly those, and its
-#: ``preToolUse`` entries keep the session-start notice that says they do not run.
-#: That is why claude stays out of the gating set, whose every branch (the
-#: unreadable-spec block, the permission-request gate, the skipped informational
-#: fire) assumes each covered call reaches Crew as a permission request.
+#: claude and codex are members of this set alone. Neither harness is handed the
+#: spec, so nothing else runs the field, and none of these four events needs a
+#: permission request to fire on. ``preToolUse`` does, and each approves some calls
+#: inside the harness without asking: claude its pre-approved tools, codex every
+#: read and every command that stays inside its own sandbox under the ``read-only``
+#: mode Crew sets (the live codex captures needed a command asking to leave that
+#: sandbox to raise a request at all). A gating hook would be skipped on exactly
+#: those, so their ``preToolUse`` entries keep the session-start notice that says
+#: they do not run. That is why both stay out of the gating set, whose every branch
+#: (the unreadable-spec block, the permission-request gate, the skipped
+#: informational fire) assumes each covered call reaches Crew as a permission
+#: request.
+#:
+#: codex runs hooks of its own, but reads them from its own config layers
+#: (``~/.codex/hooks.json``, ``[hooks]`` in ``config.toml``), never from the Kiro
+#: spec, and codex-acp's ``session/new`` has no hooks field, so Crew firing the
+#: spec's hooks runs none of them twice.
 #:
 #: kiro-cli is NOT a member and must never become one: it runs the field itself,
 #: so membership would run every spec hook twice.
 ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS = ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS | frozenset(
-    {ACP_BACKEND_CLAUDE}
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
 )
 
 #: Backends on the direct ``AcpClient`` whose session never reads the agent spec's
@@ -331,6 +365,30 @@ ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS = ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
 #: commands kiro-cli allows. The other backends stay out until their seed is shown
 #: to make every shell and write call ask.
 ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS: FrozenSet[str] = frozenset({ACP_BACKEND_CLAUDE})
+
+#: Backends whose session never reads the agent spec's ``resources``, so Crew puts
+#: the steering documents its ``file://`` entries name into the prompt, with the
+#: global and project ``.kiro/steering`` trees kiro-cli adds to them
+#: (``context_assembly.inclusion.steering_resources_part``). Crew sends them at
+#: session start and again after a compaction, for the Kiro Crew default agent in a
+#: chat that is not a crew member's. Context assembly asks it by provider label
+#: (``agent_sdk.drivers.acp.crew_loads_spec_steering``).
+#:
+#: claude and codex are the members: each is handed no spec, and Crew's prompt text
+#: reaches each one. kiro-cli is NOT a member and must never become one: it reads
+#: the spec off disk, so membership would send every document twice. KAS is not
+#: either: it reports ``native_steering`` and loads the trees itself. The other
+#: harnesses stay out until their prompt is shown to carry the documents.
+ACP_BACKENDS_CREW_LOADS_SPEC_STEERING: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
+)
+
+#: Backends that read the project's ``AGENTS.md`` themselves from the session's
+#: working directory, so Crew's steering load leaves that file out
+#: (``agent_sdk.drivers.acp.reads_project_agents_md``). codex is the member: Crew
+#: sends the project as the ACP ``cwd``, and Codex's project-doc discovery reads
+#: ``AGENTS.md`` from it. claude is not: Crew's load is how the file reaches it.
+ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD: FrozenSet[str] = frozenset({ACP_BACKEND_CODEX})
 
 
 # ── How a harness is made to ask ──
@@ -438,6 +496,11 @@ ACP_BACKEND_ROUTING: dict = {
     # pi's and deepseek's member. Live capture:
     # ``test/fixtures/acp_frames/strands/permission-deny-allow-live.jsonl``.
     ACP_BACKEND_STRANDS: Routing.VERIFIED_GATE_EXTENSION,
+    # opencode's mechanism under MiMo Code's own variable: ``permission: "ask"`` in
+    # ``MIMOCODE_CONFIG_CONTENT``, read back from ``mimo debug config`` before the
+    # session spawns. Measured on 0.1.15: every shell and MCP call then sends
+    # ``session/request_permission`` (``test/fixtures/acp_frames/mimocode``).
+    ACP_BACKEND_MIMOCODE: Routing.VERIFIED_SEEDED_SETTINGS,
 }
 
 
@@ -466,6 +529,23 @@ ACP_BACKEND_PERMISSION_CONFIG: dict = {
 }
 
 
+#: Harness id -> the ``(option_id, value)`` written INSTEAD of the
+#: :data:`ACP_BACKEND_PERMISSION_CONFIG` value when ``session/new`` advertises it.
+#: The required value stays the floor: an adapter that does not offer the preferred
+#: one keeps it, so an older adapter still runs as it did before.
+#:
+#: Codex's ``read-only`` mode makes Codex build its own OS sandbox (bubblewrap,
+#: Seatbelt) inside Crew's, which Crew's seccomp filter and macOS both refuse, so
+#: every shell command fails. ``external-sandbox`` (offered only
+#: when the harness sets ``CODEX_ACP_EXTERNAL_SANDBOX=true``) runs commands inside
+#: Crew's wrap with Codex's ``untrusted`` approvals, so commands and edits still
+#: ask. ``resolve_spawn_masks`` refuses every unwrapped tier, so the host sandbox
+#: this mode relies on is always there.
+ACP_BACKEND_PREFERRED_PERMISSION_CONFIG: dict = {
+    ACP_BACKEND_CODEX: ("mode", "external-sandbox"),
+}
+
+
 #: Harness id -> the ``(setting_key, required_value)`` its
 #: ``VERIFIED_SEEDED_SETTINGS`` routing needs in the configuration Crew supplies at
 #: session start and then reads back out of the harness.
@@ -489,6 +569,7 @@ ACP_BACKEND_PERMISSION_CONFIG: dict = {
 #: ``UNVERIFIED`` instead.
 ACP_BACKEND_PERMISSION_SETTING: dict = {
     ACP_BACKEND_OPENCODE: ("permission", "ask"),
+    ACP_BACKEND_MIMOCODE: ("permission", "ask"),
     ACP_BACKEND_GOOSE: ("GOOSE_MODE", "approve"),
 }
 
@@ -734,6 +815,103 @@ def routing_for(backend: str) -> "Routing":
 def permission_config_for(backend: str) -> tuple:
     """The ``(option_id, value)`` *backend* needs, or ``("", "")`` when it needs none."""
     return ACP_BACKEND_PERMISSION_CONFIG.get(backend, ("", ""))
+
+
+def permission_value_for(backend: str, config_options: object) -> str:
+    """The value to write for *backend*'s permission option, given ``session/new``'s options.
+
+    The preferred value when the adapter advertises it, otherwise the required one.
+    """
+    option_id, required = permission_config_for(backend)
+    preferred_id, preferred = ACP_BACKEND_PREFERRED_PERMISSION_CONFIG.get(backend, ("", ""))
+    if not preferred or preferred_id != option_id:
+        return required
+    return preferred if offers_config_value(config_options, option_id, preferred) else required
+
+
+def offers_config_value(config_options: object, option_id: str, value: str) -> bool:
+    """Whether ``session/new``'s *config_options* list *value* among *option_id*'s choices.
+
+    Anything unreadable is False: the adapter is not known to offer it.
+    """
+    if not isinstance(config_options, list):
+        return False
+    for option in config_options:
+        if not isinstance(option, dict) or option.get("id") != option_id:
+            continue
+        values = option.get("options")
+        if isinstance(values, list) and any(
+            isinstance(entry, dict) and entry.get("value") == value for entry in values
+        ):
+            return True
+    return False
+
+
+@dataclass(frozen=True)
+class KnownLimitation:
+    """A harness problem a newer adapter release fixes, as plain data.
+
+    Read today by :func:`known_limitation_issue` for a new chat's notice; kept free
+    of any surface so a Settings card row can read the same entries later.
+    """
+
+    #: Stable handle for tests and a later card row's label key.
+    id: str
+    #: The ``agent.acp_backend`` id this applies to.
+    harness: str
+    #: The condition: the session is affected while ``session/new`` does NOT offer
+    #: this ``(option_id, value)`` (:func:`offers_config_value`).
+    missing_config_value: tuple[str, str]
+    #: What the user reads, in English like every other new-chat notice.
+    message: str
+    #: The package the fix ships in.
+    needs_adapter: str
+    #: The first ``needs_adapter`` release with the fix; ``""`` while none exists.
+    fixed_in: str
+
+
+#: Every known limitation, in the order a chat shows them.
+#:
+#: codex: Crew writes ``mode=external-sandbox`` only when the adapter offers it
+#: (:data:`ACP_BACKEND_PREFERRED_PERMISSION_CONFIG`); without it the session keeps
+#: ``read-only``, whose own OS sandbox Crew's sandbox refuses, so every shell command
+#: fails. The condition is that same offer, so the notice cannot disagree with what
+#: the session writes. No codex-acp release offers it yet
+#: (agentclientprotocol/codex-acp#732 is unmerged), so ``fixed_in`` is empty.
+KNOWN_LIMITATIONS: tuple[KnownLimitation, ...] = (
+    KnownLimitation(
+        id="codex_shell_in_crew_sandbox",
+        harness=ACP_BACKEND_CODEX,
+        missing_config_value=ACP_BACKEND_PREFERRED_PERMISSION_CONFIG[ACP_BACKEND_CODEX],
+        message=(
+            "Shell commands, git included, fail in this codex chat: this codex-acp "
+            "does not offer the external-sandbox mode Kiro Crew's sandbox needs. "
+            "No codex-acp release adds it yet (agentclientprotocol/codex-acp#732). "
+            "Once one does, a Kiro Crew update will name the release to install."
+        ),
+        # ``ACP_BACKEND_NODE_ADAPTER_PACKAGES[codex]``, spelled out: this leaf may not
+        # import ``backends_launch``; a test holds the two equal.
+        needs_adapter="@agentclientprotocol/codex-acp",
+        fixed_in="",
+    ),
+)
+
+
+def known_limitation_issue(backend: str, config_options: object) -> str:
+    """The notice for each :data:`KNOWN_LIMITATIONS` entry this session has, else ``""``.
+
+    *config_options* is the session's ``session/new`` ``configOptions``. Silent
+    while there are none (both drivers start from ``[]``), as the other new-chat
+    notices are before the handshake: no options is no evidence of a missing offer.
+    """
+    if not isinstance(config_options, list) or not config_options:
+        return ""
+    return " ".join(
+        entry.message
+        for entry in KNOWN_LIMITATIONS
+        if entry.harness == backend
+        and not offers_config_value(config_options, *entry.missing_config_value)
+    )
 
 
 def permission_setting_for(backend: str) -> tuple:

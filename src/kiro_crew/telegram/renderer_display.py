@@ -118,19 +118,15 @@ def _extract_options(text: str) -> tuple[str, list[str]]:
 # instruction (and gets a steer-ack reaction), so the raw inline marker is just
 # redundant noise in the bubble.
 #
-# The frame is recognised by its GRAMMAR, and opening with the sentinel is not
-# being a marker: ``messaging.driver._STEER_MARKER_RE`` requires ``steer-<id>``,
-# and so does the dashboard's own parser
-# (``website/src/app-sdk/protocol/steering.ts``). A bare ``[STEERING`` class
-# matched ordinary prose that merely mentions the sentinel and deleted it from
-# the delivered message — and because ``[^\]]*`` does not stop at a line end, it
-# ran on to whatever ``]`` came next, taking the text in between with it.
+# Matched by its GRAMMAR, ``steer-<id>`` required, like
+# ``messaging.driver._STEER_MARKER_RE`` and the dashboard parser
+# (``website/src/app-sdk/protocol/steering.ts``). A bare ``[STEERING`` would
+# delete prose that only mentions the word, and since ``[^\]]*`` crosses line
+# ends it would also eat everything up to the next ``]``.
 #
-# The id class matches driver's ``[0-9a-f-]+`` and is the SAME in both patterns,
-# because the summary is matched at the offset the marker pattern chose — a
-# narrower class there silently drops the summary. That is what the dash did:
-# the marker matched a dashed id through its old catch-all, the summary pattern
-# did not, and the chip lost the one piece of new information it carries.
+# The id class is driver's ``[0-9a-f-]+`` and the SAME in both patterns: the
+# summary is matched at the marker's offset, so a narrower class there (one
+# without the dash, say) silently drops the summary from the chip.
 _STEER_MARKER_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+(?:\s*:[^\]]*)?\]", re.IGNORECASE)
 # Same marker, capturing the ack SUMMARY kiro-cli embeds after "steer-<id>:".
 # The dashboard renders this summary as its "Steered — …" chip; we prefer it

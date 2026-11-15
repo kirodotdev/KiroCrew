@@ -174,7 +174,9 @@ def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
     # One gateway per data home, the sign-in screen included: the same lock the
     # gateway takes, held until this process exits.
     try:
-        lock = GatewayLock(config_dir(), port=port or None, bind_address=signin.BIND_HOST).acquire()
+        lock = GatewayLock(
+            config_dir(), port=port or None, bind_address=signin.BIND_HOST, signed_out=True
+        ).acquire()
     except GatewayLockError as lock_err:
         print(f"👻 {lock_err}", file=sys.stderr)
         sys.exit(LIVE_HOLDER_EXIT_CODE if lock_err.live_holder else 1)
@@ -437,6 +439,7 @@ def main() -> None:
     cli_parser_agent.register_chat_parser(sub, _jail_opts)
     cli_parser_gateway.register_doctor_parser(sub)
     cli_parser_gateway.register_ledger_sweep_parser(sub)
+    cli_parser_gateway.register_tmp_parser(sub)
 
     # gateway
     gw_parser = cli_help.add_command(sub, "gateway")
@@ -543,6 +546,7 @@ def main() -> None:
     cli_parser_gateway.register_manifest_parser(sub)
     cli_parser_agent.register_cron_parser(sub)
     cli_parser_agent.register_spawn_parser(sub)
+    cli_parser_agent.register_models_parser(sub)
     cli_parser_agent.register_run_parser(sub, _jail_opts)
     cli_parser_admin.register_snapshot_parser(sub)
     cli_parser_admin.register_restore_parser(sub)
@@ -629,6 +633,7 @@ def main() -> None:
             sub.add_parser(f"mcp-{_bname}")
 
     cli_parser_agent.register_computer_parser(sub)
+    cli_parser_agent.register_trace_parser(sub)
     cli_parser_agent.register_learn_parser(sub)
     cli_parser_agent.register_artifact_parser(sub)
     cli_parser_agent.register_memory_parser(sub)
@@ -951,6 +956,7 @@ def main() -> None:
         _doctor(
             platform_boot_error=_platform_boot_error,
             bundle=getattr(args, "bundle", False),
+            reconcile_memory=getattr(args, "reconcile_memory", False),
         )
     elif args.command == "ledger-sweep":
         # Lazy on purpose, through ``importlib`` like ``secrets`` above: the
@@ -959,6 +965,10 @@ def main() -> None:
             purge=args.purge,
             older_than_days=args.older_than_days,
             purge_unreadable=args.purge_unreadable,
+        )
+    elif args.command == "tmp":
+        importlib.import_module("kiro_crew.temp_reclaim").run_command(
+            args.paths, dry_run=args.dry_run
         )
     elif args.command == "manifest":
         _manifest(
@@ -974,6 +984,10 @@ def main() -> None:
         from kiro_crew.cli_commands import _spawn
 
         _spawn(args)
+    elif args.command == "models":
+        from kiro_crew.cli_models import _models
+
+        sys.exit(_models(args))
     elif args.command == "run":
         from kiro_crew.cli_server import _run_task
 
@@ -982,6 +996,10 @@ def main() -> None:
         from kiro_crew.cli_commands import _learn
 
         _learn(args)
+    elif args.command == "trace":
+        from kiro_crew.tracing.render import trace_show
+
+        trace_show(args)
     elif args.command == "artifact":
         from kiro_crew.cli_commands import _artifact
 
@@ -1096,6 +1114,13 @@ def main() -> None:
             from kiro_crew.cli_server import _update
 
             _update(force=args.force)
+            # A manual update that finished is the fix for a failed boot apply.
+            from kiro_crew import update_next_start
+
+            try:
+                update_next_start.clear_error()
+            except OSError:
+                pass  # the notice stays; the update itself succeeded
     elif args.command == "stop":
         from kiro_crew.cli_server import _stop
 
@@ -1115,7 +1140,7 @@ def main() -> None:
     elif args.command == "gateway-pid":
         from kiro_crew.cli_server import _gateway_pid
 
-        _gateway_pid()
+        _gateway_pid(args.port)
     elif args.command == "service":
         from kiro_crew.cli_server import _service_cmd
 
@@ -1265,6 +1290,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.cli_knowledge import _knowledge_stats  # noqa: F401
     from kiro_crew.cli_logging import (  # noqa: F401
+        _CONSOLE_DRAIN_TIMEOUT,
+        _CONSOLE_OFF_LOOP_COMMANDS,
+        _CONSOLE_QUEUE_LISTENER,
+        _CONSOLE_QUEUE_MAX,
         _GATEWAY_LOG_DETACHED,
         _GATEWAY_LOG_HANDLER,
         _GATEWAY_LOG_MAX_BYTES,
@@ -1274,12 +1303,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LONG_LIVED_COMMANDS,
         _chat_console_filter,
         _CliLogQueueHandler,
+        _ConsoleQueueHandler,
+        _ConsoleQueueListener,
         _fd_is_regular_file,
         _fd_targets_file,
         _FdTrackingRotatingFileHandler,
+        _move_console_echo_off_loop,
         _prune_older_boot_logs,
         _redirect_fds_to,
         _rotate_boot_logs,
+        _stop_console_queue_listener,
+        _stop_file_log_listener,
         _stop_log_queue_listener,
         drain_log_queue_before_hard_exit,
     )

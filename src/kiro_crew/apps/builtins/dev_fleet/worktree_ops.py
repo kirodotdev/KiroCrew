@@ -230,7 +230,9 @@ async def _prunable(path: str, branch: str | None, pr_rows: list[dict] | None = 
         #    guard is fail-closed: an OID that cannot be established withholds
         #    the candidate rather than trusting the name-based lookup.
         pr_oid = (
-            await fleet_state._fetch_pr_head_oid(branch, repo=(pr or {}).get("_repo"), rows=pr_rows)
+            await fleet_state._fetch_pr_head_oid(
+                branch, repo=(pr or {}).get("_repo"), rows=pr_rows, state="CLOSED"
+            )
             if branch
             else None
         )

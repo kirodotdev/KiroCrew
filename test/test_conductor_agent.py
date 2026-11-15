@@ -104,7 +104,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         """
         data = self._install(tmp_path, monkeypatch)
         prompt = " ".join(data["prompt"].split())
-        assert "Arm a loop on your own session with `monitor_start`" in prompt
+        assert "arm a loop on your own session with `monitor_start`" in prompt
         assert "If arming is refused outright" in prompt
         assert "drive that one round with `wait`" in prompt
         assert "autonudge_stop" in prompt
@@ -444,18 +444,36 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         assert "ledger_entry" not in prompt
 
     def test_prompt_and_skill_filter_the_batch_to_done_items(self, tmp_path, monkeypatch):
-        """``accept_batch`` is status-blind by design (it is the promotion seam), so
-        the procedure must filter it. Unfiltered, a ``progress`` worker whose stub
-        already satisfies a ``file`` condition earns a genuine ``pass`` and can be
-        closed under itself. Both the prompt and the skill have to state the
-        filter, because the agent copies whichever it read last.
+        """Only a ``done`` item may be evaluated. A ``progress`` worker whose stub
+        already satisfies a ``file`` condition would earn a genuine ``pass`` and be
+        closed under itself. Called with no document, ``accept_eval`` applies that
+        rule itself, and both the prompt and the skill say so. ``accept_batch`` is
+        status-blind by design (it is the promotion seam), so the skill still states
+        the filter for a document the conductor hands over itself.
         """
-        prompt = self._install(tmp_path, monkeypatch)["prompt"]
-        assert "Filter the `accept_batch`" in prompt
-        assert "whose status is `done`" in prompt
+        prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
+        assert "Call the `accept_eval` tool with no arguments" in prompt
+        assert "It never evaluates an item that is not `done`" in prompt
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        assert "Call the `accept_eval` tool with NO arguments" in body
+        assert "It evaluates `done` items only" in body
         assert "keep only the entries whose item is currently `status: done`" in body
         assert "Never pipe the unfiltered document" in body
+
+    def test_prompt_and_skill_settle_a_pass_with_one_write(self, tmp_path, monkeypatch):
+        """A pass is recorded and closed by one ``close`` that carries the verdict,
+        and a ``done`` wake goes straight to the evaluator. Both texts have to say
+        it, because the agent copies whichever it read last."""
+        prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
+        one_write = "`action=close` `state=accepted` `verdict=pass`"
+        assert one_write in prompt
+        assert "A wake naming a `done` item needs no read" in prompt
+        assert "Each answer carries `reported`" in prompt
+        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        assert one_write in body
+        assert "A wake that names a `done` item is the one exception" in body
+        assert "returns the worker's report beside the verdict" in body
+        assert "A `done` whose report (`reported.summary` beside its verdict)" in body
 
     def test_prompt_and_skill_make_a_nested_conductor_report_upward(self, tmp_path, monkeypatch):
         """A second-level conductor is bound as its parent's worker, and the parent
@@ -482,7 +500,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         """A loop without ``watch="work-ledger"`` is a plain timer that pays a turn
         every interval, and a 30-minute interval leaves a worker's report unread
         for half an hour. Both the prompt and the skill must make the watch
-        mandatory and keep the interval inside the 300..900 s band.
+        mandatory and fix the interval at 300 s, the gateway's one patrol interval.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
@@ -490,7 +508,8 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         assert '`watch="work-ledger"` is mandatory' in body
         for text in (prompt, body):
             assert 'monitor_update(watch="work-ledger")' in text
-            assert "300..900" in text
+            assert "300 seconds" in text
+            assert "300..900" not in text
             assert "interval_secs=1800" not in text
             assert "on a timer today" not in text
 
@@ -530,9 +549,9 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             assert "Can I pick a default?" not in text
 
     def test_back_to_back_rounds_keep_a_spend_bound(self, tmp_path, monkeypatch):
-        """Without a pause between rounds, a default concurrency cap and a no-progress
-        back-off are the only hard spend gates when the user set no bound. The item
-        total has no cap and no notice; it stays readable as ``goal_items_used``.
+        """Without a pause between rounds, resource_status sizes each wave, a bound the
+        user set is the concurrency cap, and a no-progress back-off stops the loop. The
+        item total has no cap and no notice; it stays readable as ``goal_items_used``.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
@@ -541,6 +560,12 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             assert "two rounds in a row" in text
             assert "goal_concurrency_cap_reached" in text
             assert "concurrency_cap=<N>" in text
+            assert "`resource_status` decides the wave" in text
+            # Whole words, so "at most 600 characters" elsewhere is not the old bound.
+            words = [w.strip(".,;:()`*") for w in text.split()]
+            triples = {tuple(words[i : i + 3]) for i in range(len(words) - 2)}
+            assert ("at", "most", "6") not in triples
+            assert ("more", "than", "6") not in triples
             assert "goal_items_used" in text
             # The advisory item cap and its one-time notice are gone
             # (rfc-drop-goal-item-cap.md).
@@ -548,8 +573,6 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             assert "cap_exceeded" not in text
             assert "keep going?" not in text.lower()
             assert "goal_item_cap_reached" not in text
-        assert "at most 6 ledger items OPEN at once" in prompt
-        assert "at most **6 ledger items open at once**" in body
 
     def test_prompt_names_its_own_skill_and_not_the_deprecated_alias(self, tmp_path, monkeypatch):
         """The procedure lives in ``goal-conductor``. ``goal-ledger-conductor`` is a
@@ -701,6 +724,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "@kirocrew-work/work_ledger_read",
             "@kirocrew-work/work_ledger_record",
             "@kirocrew-work/work_ledger_rebuild",
+            "@kirocrew-work/work_ask_record",
             "@kirocrew-work/work_brief",
             "@kirocrew-work/work_report",
             "@kirocrew-work/accept_eval",
@@ -743,6 +767,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         ]
         work_resources = [
             "kirocrew-work/accept_eval",
+            "kirocrew-work/work_ask_record",
             "kirocrew-work/work_brief",
             "kirocrew-work/work_ledger_read",
             "kirocrew-work/work_ledger_rebuild",
@@ -895,6 +920,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "@kirocrew-work/work_ledger_read",
             "@kirocrew-work/work_ledger_record",
             "@kirocrew-work/work_ledger_rebuild",
+            "@kirocrew-work/work_ask_record",
             "@kirocrew-work/work_brief",
             "@kirocrew-work/work_report",
             "@kirocrew-work/accept_eval",
@@ -925,11 +951,35 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         interval around approvals it does not pay — or walking into ones it does.
         """
         text = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
-        assert "Reads and creates do not prompt" in text
-        assert "`session_send` and `session_stop` are deliberately NOT auto-approved" in text
+        assert "**What prompts.** Granted by name" in text
+        # Own-child sends and closes are auto-approved (tool_approval._conductor_own_child_call).
+        assert (
+            "`session_send` and `session_close` into a session you created do not prompt"
+            " either (`agent.conductor_own_child_verbs`, on by default)"
+        ) in text
+        assert "aimed at any other session they prompt" in text
+        assert "`work_dispatch` prompts once per item" in text
+        assert (
+            "`session_stop` (it discards the target's in-flight work), `execute_bash`"
+            " and every other core tool prompt"
+        ) in text
         # The checks run as granted tools; only their shell fallback prompts.
         assert "`accept_eval` tool" in text
-        assert "each such call blocks on one approval" in text
+        assert "so every shell call prompts" in text
+
+    def test_skill_never_blocks_a_wake_on_a_question_card(self):
+        """A patrol wake has nobody at the keyboard, so a blocking card there stalls
+        the loop for up to 30 minutes; an unassertable item gets a report to check
+        instead of an invented ask.
+        """
+        text = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        assert (
+            "In a turn nobody typed (it opens with `[auto-nudge cycle`, `[work-ledger wake]`"
+            " or `[sent by session`, or a cron fired it), never call `ask_question`"
+        ) in text
+        assert "In a turn the user typed, ask with `ask_question`." in text
+        assert "make it a `file` item (a report the worker writes)" in text
+        assert "treat it as a needs-human item" not in text
 
     def test_skill_keeps_item_state_in_the_store_and_not_in_artifacts(self):
         """One record per item, in the one place the evaluator batch reads.

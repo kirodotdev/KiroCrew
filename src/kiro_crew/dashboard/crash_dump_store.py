@@ -91,9 +91,12 @@ class DumpFile:
     * Never closes the fd (the OS reclaims it on process exit).
     """
 
-    def __init__(self, fd: int, path: Path) -> None:
+    def __init__(self, fd: int, path: Path, due_offset: int | None = None) -> None:
         self._fd = fd
         self._path = path
+        # Byte offset of the header's fixed-width ``alarm-due=`` value, which
+        # :func:`record_alarm_due` overwrites in place. None: no such field.
+        self._due_offset = due_offset
 
     def fileno(self) -> int:
         return self._fd
@@ -684,14 +687,106 @@ def open_dump_file(dumps_dir: Path | None = None) -> DumpFile:
     # plain PID liveness).
     start_id = _pid_start_id(os.getpid())
     start_tok = f" start={start_id}" if start_id is not None else ""
-    f.write(
+    head = (
         f"# KiroCrew loop-stall crash dump — opened {ts} {_CLEAN_EXIT_AWARE_TOKEN}\n"  # brand-ok
+        f"# PID: {os.getpid()} @ {_pid_domain()}{start_tok}\n"
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired. "
+        f"{_ALARM_DUE_TOKEN}"
     )
-    f.write(f"# PID: {os.getpid()} @ {_pid_domain()}{start_tok}\n")
-    f.write("# If thread stacks appear below, the event loop wedged and faulthandler fired.\n")
-    f.write("\n")
+    f.write(f"{head}{_ALARM_DUE_UNKNOWN}\n\n")
+    f._due_offset = len(head.encode("utf-8"))
     _active_dump_file = f
     return f
+
+
+#: Header token naming when the armed stall alarm is due, in whole epoch
+#: seconds on the wall clock, as a fixed-width value overwritten in place.
+_ALARM_DUE_TOKEN = "alarm-due="
+_ALARM_DUE_WIDTH = 10
+_ALARM_DUE_UNKNOWN = "-" * _ALARM_DUE_WIDTH
+
+#: How much later than its recorded due time an alarm must have fired to say
+#: the process was not running when it expired. The watchdog records the due
+#: time once per poll and every beat moves it, so a recorded value trails the
+#: real deadline by up to one poll plus one heartbeat (5 s each by default).
+HOST_PAUSE_MIN_LATE_SECS = 20.0
+
+
+def record_alarm_due(dump: object, due_epoch: float | None) -> None:
+    """Write when the armed stall alarm is due into *dump*'s header, in place.
+
+    ``None`` says no alarm is armed. The value has a fixed width, so the
+    header keeps its length and line count (``_is_header_only`` counts lines),
+    and ``os.pwrite`` leaves the file offset faulthandler writes at alone.
+    The alarm dump that follows a stall then holds both the time the alarm
+    was due and, as the file's modification time, the time it fired.
+    Where ``os.pwrite`` does not exist (Windows, which has no process alarm)
+    nothing is written. Never raises.
+    """
+    if not isinstance(dump, DumpFile) or not hasattr(os, "pwrite"):
+        return
+    offset = dump._due_offset
+    if offset is None:
+        return
+    value = _ALARM_DUE_UNKNOWN if due_epoch is None else f"{int(due_epoch):0{_ALARM_DUE_WIDTH}d}"
+    if len(value) != _ALARM_DUE_WIDTH:
+        return
+    try:
+        os.pwrite(dump.fileno(), value.encode("ascii"), offset)
+    except OSError:
+        logger.debug("could not record the stall alarm's due time", exc_info=True)
+
+
+def _alarm_due(dump_path: Path) -> int | None:
+    """The ``alarm-due=`` epoch seconds in *dump_path*'s header, None when absent or unset."""
+    try:
+        head = _read_dump_head(dump_path)[0]
+    except OSError:
+        return None
+    for line in head.splitlines()[:_HEADER_LINES]:
+        _before, found, rest = line.partition(_ALARM_DUE_TOKEN)
+        if found:
+            value = rest[:_ALARM_DUE_WIDTH]
+            return int(value) if value.isdigit() and value.isascii() else None
+    return None
+
+
+def dump_fired_at(dump_path: Path) -> str:
+    """When the dump's stacks were written, as UTC ``YYYY-MM-DDTHH:MM:SSZ``.
+
+    A dump's NAME is the time its gateway started, because the file is opened
+    at startup; its modification time is the last write, which for a dump
+    with stacks is the alarm firing. Raises ``OSError`` when the file is gone.
+    """
+    mtime = dump_path.stat().st_mtime
+    return datetime.fromtimestamp(mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def dump_host_pause_secs(dump_path: Path) -> float | None:
+    """How late the stall alarm fired, when that shows a host-wide pause; else None.
+
+    The kernel delivers an expired alarm only when the process next runs. On a
+    wedged event loop the process is still scheduled, so the alarm fires on
+    time; when the whole host stopped running the gateway past the deadline
+    (memory reclaim, a frozen VM, ``SIGSTOP``), it fires on resume, as late as
+    the pause outlasted the budget. Lateness of
+    :data:`HOST_PAUSE_MIN_LATE_SECS` or more, between the header's recorded
+    due time and the file's modification time, is that pause.
+
+    None for a dump without stacks, a header that records no due time (an
+    older build, Windows, no alarm armed), or an alarm that fired on time.
+    """
+    try:
+        if _is_header_only(dump_path):
+            return None
+        fired = dump_path.stat().st_mtime
+    except OSError:
+        return None
+    due = _alarm_due(dump_path)
+    if due is None:
+        return None
+    late = fired - due
+    return late if late >= HOST_PAUSE_MIN_LATE_SECS else None
 
 
 #: Bumped by :func:`withdraw_clean_exit`. A marker write records the value it was

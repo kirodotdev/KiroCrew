@@ -976,3 +976,21 @@ class TestArgparse:
         rows = [ln for ln in spec.read_text(encoding="utf-8").splitlines() if "cron add" in ln]
         assert len(rows) == 1, rows
         return rows[0]
+
+
+class TestEveryBelowTheMinimum:
+    @pytest.mark.parametrize("every", [5, -5])
+    def test_a_raised_interval_is_named_on_stderr(self, home, capsys, every):
+        job = _stored_after_add(_ns(every=every))
+        out, err = capsys.readouterr()
+        assert job.schedule.every_secs == 60
+        assert out.startswith("Added job: ")
+        assert (
+            f"Warning: an interval of {every}s is below the 60s minimum, "
+            "so this job runs every 60s"
+        ) in err
+
+    def test_an_interval_at_or_above_the_minimum_warns_nothing(self, home, capsys):
+        job = _stored_after_add(_ns(every=60))
+        assert job.schedule.every_secs == 60
+        assert "minimum" not in capsys.readouterr().err

@@ -16,6 +16,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.handlers import (
     _sanitize_blocks,
@@ -282,10 +283,8 @@ class TestFileRead:
         # The viewer keeps the last copy of a file deleted outside the dashboard
         # and offers it for download; a body the credential pass rewrote is not
         # the file as written, and only a header can say so -- a file may quote
-        # the redaction tag itself. A synthetic key shape, never a real secret.
-        import hashlib
-
-        key = "A" + "KIA" + hashlib.sha256(b"kc-file-read-header").hexdigest().upper()[:16]
+        # the redaction tag itself. A synthetic token shape, never a real secret.
+        key = github_classic(seed=121)
         f = tmp_path / "notes.txt"
         f.write_text(f"token = {key}\n", encoding="utf-8")
         plain = tmp_path / "plain.txt"
@@ -413,9 +412,9 @@ class TestFileRead:
 
     @pytest.mark.asyncio
     async def test_read_utf8_multibyte_round_trip(self, tmp_path, mock_sel, home_patch):
-        # Regression: the dashboard file viewer reported "Invalid JSON" for
-        # files containing CJK characters. Verify that UTF-8 bytes survive
-        # the read pipeline (open + redactors + Response.text) byte-for-byte.
+        # UTF-8 bytes (CJK here) must survive the read pipeline (open +
+        # redactors + Response.text) byte-for-byte, or the file viewer shows
+        # "Invalid JSON".
         # Synthetic fixture only — no real customer/case data.
         payload = {
             "ascii_key": "value",
@@ -1137,7 +1136,7 @@ class TestSendMessage:
 
         assert seen, (
             "the off-loop prefetch never ran: either the read is happening inline "
-            "on the loop again (the #7408 defect) or this seam moved"
+            "on the loop again or this seam moved"
         )
         assert threading.get_ident() not in seen, (
             "the transcript was read on the event-loop thread; the handler must "

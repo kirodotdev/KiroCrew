@@ -826,8 +826,12 @@ class TestAnswerReleasesTheApprovalHold:
 
     @staticmethod
     def _releases(record: TurnRecord) -> list[str]:
+        # Only the answer's release: every turn's start also releases (unarmed).
         return [
-            call.args[0] for call in record.autonudge_calls if call.name == "release_approval_hold"
+            call.args[0]
+            for call in record.autonudge_calls
+            if call.name == "release_approval_hold"
+            and call.kwargs.get("why") == "an approval was answered"
         ]
 
     @pytest.mark.asyncio
@@ -843,3 +847,16 @@ class TestAnswerReleasesTheApprovalHold:
         record = await run_turn(_prompt_turn(), slot=slot)
         assert self._releases(record) == []
         assert record.notify_approval_stalled == [("chat-1", 600)]
+
+    @pytest.mark.asyncio
+    async def test_a_new_turn_releases_the_hold_unarmed_whoever_sent_it(self) -> None:
+        """A turn's start ends a hold left by an earlier turn; its own end re-arms."""
+        slot = SlotSpec(key="chat-1", autonudge=True)
+        record = await run_turn(_prompt_turn(answers={"req-1": APPROVED}), slot=slot)
+        releases = [
+            (call.args[0], call.kwargs.get("arm"))
+            for call in record.autonudge_calls
+            if call.name == "release_approval_hold"
+            and call.kwargs.get("why") == "a new turn started in the session"
+        ]
+        assert releases == [("chat-1", False)]

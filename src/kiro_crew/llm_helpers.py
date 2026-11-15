@@ -105,10 +105,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.llm_helpers_parts.background_turns import (  # noqa: F401
         _background_crew_log_owner,
         _cleanup_memory_consolidation_session,
+        _lite_resets_failed,
+        _lite_rewrite_tasks,
+        _lite_rewrites,
         _lite_spec_unconfirmed,
         _raise_if_unfinished,
         _record_background_crew_log,
         _refuse_while_memory_critical,
+        _rewrite_lite_spec,
         _start_fresh_conversation,
         background_turn,
         run_bg_oneliner,
@@ -152,6 +156,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.llm_helpers_parts.tool_approval import (  # noqa: F401
         ToolApprovalPolicy,
+        _body_field_link_origin,
         _orphan_reject_done,
         _orphan_rejects,
         _resolve_permission,
@@ -179,6 +184,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.llm_helpers_parts.turn_stream import (  # noqa: F401
         _UNFINISHED_TURN_STOP_REASONS,
+        _join_continued,
         stream_and_collect,
         stream_and_collect_json,
         unfinished_turn_error,
@@ -230,9 +236,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401
         STOP_REASON_STALE_RECOVER,
         STOP_REASON_TIMEOUT,
+        STOP_RECOVERY_MAX_RETRIES,
         AcpTimeoutError,
         engine_served_model,
         same_model,
+        timed_out_continuation,
         tracker_of,
         walk_outcome,
     )
@@ -288,6 +296,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.security import (  # noqa: F401
         MAX_SCANNABLE_COMMAND_CHARS,
+        MAX_SCANNABLE_SOURCE_BODY_CHARS,
         is_denied,
         is_denied_synthesized_target,
         is_sensitive_bash_command,
@@ -297,6 +306,13 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         sensitive_path_refusal,
         sensitive_write_path_refusal,
     )
+    from kiro_crew.security.mcp_body_fields import (  # noqa: F401
+        body_field_keys,
+        is_kirocrew_server,
+        named_size_refusal,
+        warn_body_field_matches,
+    )
+    from kiro_crew.security.paths_resolver import bounded_judgment  # noqa: F401
     from kiro_crew.security.readonly_bash import (  # noqa: F401
         command_invokes_git,
         is_read_only_bash,
@@ -308,3 +324,4 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.tool_gate_busy import (  # noqa: F401
         hook_gate_busy,
     )
+    from kiro_crew.tracing import surfaces as trace_surfaces  # noqa: F401

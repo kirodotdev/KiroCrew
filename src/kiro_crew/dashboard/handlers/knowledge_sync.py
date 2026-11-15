@@ -35,7 +35,11 @@ from kiro_crew.dashboard.handlers.knowledge_access import (
 )
 from kiro_crew.knowledge.agent_source import AGENT_SOURCE_URI
 from kiro_crew.knowledge.artifact_ingest import ARTIFACT_SOURCE_URI, ArtifactKnowledgeSync
-from kiro_crew.knowledge.ingestion import ImportChunkBudgetError, handoff_gate_context
+from kiro_crew.knowledge.ingestion import (
+    FileTooLargeError,
+    ImportChunkBudgetError,
+    handoff_gate_context,
+)
 from kiro_crew.knowledge.store import PENDING_REASON_IMPORT_BUDGET, PENDING_REASON_PROP
 from kiro_crew.knowledge.url_fetch import UrlFetchRefused, fetch_page, url_fetch_refusal
 from kiro_crew.security import is_sensitive_path, redact
@@ -343,7 +347,7 @@ async def _ingest_local_file_task(  # type: ignore[no-untyped-def]
         is_cancel = isinstance(exc, asyncio.CancelledError)
         if is_cancel:
             logger.debug("Background ingestion cancelled for %s", path)
-        else:
+        elif not isinstance(exc, FileTooLargeError):  # the pipeline already warned
             logger.exception("Background ingestion failed for %s", path)
         await _finalize_sync_status(store, source_id, "error")
         if is_cancel:
@@ -365,9 +369,10 @@ async def _hand_off_under_gate(  # type: ignore[no-untyped-def]
     task once it holds its own gate. The caller enters the gate BEFORE this
     call so its own lookup is covered too, and the gate's per-task re-entrancy
     makes that outer hold the one that counts. The task is created in a
-    hand-off context: it takes a real hold of its own, admitted past any
-    maintenance window that began waiting while this hold is open, so the
-    wait below cannot deadlock against that window (``handoff_gate_context``).
+    hand-off context: it takes a real hold of its own, admitted past a
+    maintenance window that is still waiting for this or another open hold, so
+    the wait below cannot deadlock against that window (``handoff_gate_context``).
+    A task that takes its hold after every hold is gone waits for the window.
     """
     settled: asyncio.Event = asyncio.Event()
     async with pipeline.ingestion_in_flight():
@@ -644,7 +649,7 @@ async def _background_url_sync(  # type: ignore[no-untyped-def]
         is_cancel = isinstance(exc, asyncio.CancelledError)
         if is_cancel:
             logger.debug("URL sync cancelled: source=%s url=%s", source_id, url)
-        else:
+        elif not isinstance(exc, FileTooLargeError):  # the pipeline already warned
             logger.exception("URL sync failed: source=%s url=%s", source_id, url)
         await _finalize_sync_status(store, source_id, "error")
         if is_cancel:

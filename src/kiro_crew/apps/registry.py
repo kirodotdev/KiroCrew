@@ -634,6 +634,7 @@ if _typing.TYPE_CHECKING:
         time,
     )
     from kiro_crew.apps.registry_pipeline.catalog import (  # noqa: F401
+        _MANIFEST_RESOLVE_CONCURRENCY,
         _VERSION_RELEASE_RE,
         _VERSION_STRING_RE,
         FIRST_PARTY_AUTHORS,
@@ -649,6 +650,7 @@ if _typing.TYPE_CHECKING:
         _external_registry_repos,
         _external_registry_row,
         _fold_author,
+        _gather_bounded,
         _identity,
         _is_catalog_row,
         _is_external_row,
@@ -702,6 +704,7 @@ if _typing.TYPE_CHECKING:
         _git_fetch_branch,
         _git_fetch_commit,
         _git_fetch_ref,
+        _mkdtemp_settled,
         _names_a_missing_ref,
         _read_clone_branch,
         _read_git_metadata_bounded,

@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
-from member_memory_helpers import DOCUMENT_CREDENTIAL, document_store
+from member_memory_helpers import document_store
 from member_memory_helpers import env as _member_env
 from member_memory_helpers import request, seed_body
 
@@ -28,7 +28,13 @@ from kiro_crew.dashboard.handlers import (
 )
 from kiro_crew.mcp_tools import learn
 from kiro_crew.memory import MemoryStore
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
+
+# A synthetic 40-char AWS secret for the "sensitive document" fixtures. An AWS key ID
+# is kept visible with the structured detectors on, so it does not make a document
+# sensitive.
+DOCUMENT_CREDENTIAL = SAMPLE_AWS_SECRET
 
 pytestmark = pytest.mark.xdist_group("member_memory_api")
 

@@ -108,6 +108,7 @@ from kiro_crew.history_search_query import (  # noqa: F401 - facade re-exports
     CJK_SEGMENT_MAX_RUNS,
     SEARCH_MAX_TOKENS,
     CjkSegmenter,
+    QueryOperators,
     SearchNeedle,
     TitleScope,
     _cjk_slot,
@@ -115,6 +116,7 @@ from kiro_crew.history_search_query import (  # noqa: F401 - facade re-exports
     _cjk_words_lock,
     _cjk_words_memo,
     _CjkSegmenterSlot,
+    _excludes,
     _forge_lead_in,
     _forge_spellings,
     _forge_type_suffix,
@@ -131,6 +133,7 @@ from kiro_crew.history_search_query import (  # noqa: F401 - facade re-exports
     _source_offset,
     _valid_words,
     count_needle,
+    exclusion_needles,
     is_han_run,
     logger,
     needles_match_text,
@@ -141,8 +144,18 @@ from kiro_crew.history_search_query import (  # noqa: F401 - facade re-exports
     reset_search_ref_resolver_for_tests,
     snippet_needle_tiers,
     snippet_needles,
+    split_query_operators,
     split_title_scope,
     tiered_first_hit,
+)
+from kiro_crew.history_search_rank import (  # noqa: F401 - facade re-exports
+    _BM25_B,
+    _BM25_K1,
+    _LENGTH_SMOOTHING_CHARS,
+    UNKNOWN_DF_IDF,
+    WordWeights,
+    inverse_document_frequency,
+    saturated_frequency,
 )
 from kiro_crew.jsonl_util import bounded_records
 
@@ -256,7 +269,9 @@ def search_candidate_cap(query: str = "") -> int:
 
     A ``title:`` query with nothing after its term reads titles only and is not
     held to the window, so for it the window itself is the cap. The ranking reads
-    no window on that path, so this is still the one read for the search.
+    no window on that path, so this is still the one read for the search. Any
+    text after the term, exclusions alone included, reads transcripts within the
+    window and takes the ceiling like any content search.
     """
     from kiro_crew.config.sections_limits import SEARCH_SCAN_WINDOW_MAX
 
@@ -582,11 +597,18 @@ class SessionCatalogProjection:
         return usage
 
     def search_sessions(
-        self, query: str, limit: int = 50, *, keys: Container[str] | None = None
+        self,
+        query: str,
+        limit: int = 50,
+        *,
+        keys: Container[str] | None = None,
+        snippets: bool = True,
     ) -> list[dict]:
         """Return session metadata for files whose message content matches *query*.
 
         Ranking, gating and *keys* are documented on :meth:`_search_sessions`.
+        ``snippets=False`` skips the per-row excerpt read for a caller that
+        builds its own excerpts for the rows it keeps.
 
         Unrestricted callers asking the same *query* and *limit* while one such
         search is running wait for it and get its rows, rather than each paying
@@ -595,8 +617,8 @@ class SessionCatalogProjection:
         that starts after a write never returns rows computed before it.
         """
         if keys is not None or not query or limit <= 0:
-            return self._search_sessions(query, limit, keys=keys)
-        slot = (str(self._log._dir), query, limit)
+            return self._search_sessions(query, limit, keys=keys, snippets=snippets)
+        slot = (str(self._log._dir), query, limit, snippets)
         epoch = self._log._dir_write_epoch()
         with _flights_lock:
             running = _flights.get(slot)
@@ -608,9 +630,9 @@ class SessionCatalogProjection:
             running.done.wait()
             if running.result is not None:
                 return _copy_rows(running.result)
-            return self._search_sessions(query, limit)
+            return self._search_sessions(query, limit, snippets=snippets)
         try:
-            rows = self._search_sessions(query, limit)
+            rows = self._search_sessions(query, limit, snippets=snippets)
             # A private copy, so a caller editing the rows it was handed cannot
             # change what a waiting caller receives.
             flight.result = _copy_rows(rows)
@@ -636,7 +658,12 @@ class SessionCatalogProjection:
         self._index_shortlist(window, [])
 
     def _search_sessions(
-        self, query: str, limit: int = 50, *, keys: Container[str] | None = None
+        self,
+        query: str,
+        limit: int = 50,
+        *,
+        keys: Container[str] | None = None,
+        snippets: bool = True,
     ) -> list[dict]:
         """Return session metadata for files whose message content matches *query*.
 
@@ -675,34 +702,30 @@ class SessionCatalogProjection:
         Ranking (higher is better)::
 
             score = ((title_hits * _TITLE_BOOST)
-                  + (content_hits / sqrt(1 + doc_chars / 1024))
+                  + content_hits
                   + saturated_hits) * recency
 
-        where ``*_hits`` sum the per-needle weighted counts, plus
-        ``_PHRASE_BOOST`` per occurrence of the exact whole query when it
-        carries more than a single needle. A short ASCII needle (``5``,
-        ``s3``; one or two characters, see ``_SHORT_NEEDLE_MAX_CHARS``)
-        contributes to ``saturated_hits`` instead of
+        where ``content_hits`` sums, per needle, its BM25 term-frequency factor
+        (:func:`~kiro_crew.history_search_rank.saturated_frequency`) times its
+        weight times its idf over the window, and ``title_hits`` sums its title
+        count times the same weight and idf. The idf comes from
+        :class:`~kiro_crew.history_search_rank.WordWeights`: a needle few visible
+        sessions hold counts for more than one most of them hold, and because a
+        needle's content factor levels off, a long transcript repeating a common
+        word cannot outscore a session holding a rarer one. A multi-needle
+        query also earns ``_PHRASE_BOOST`` times the same saturation of the exact
+        whole query's count, and ``_PHRASE_BOOST`` per title occurrence: at
+        comparable term frequency, the session holding the words TOGETHER as
+        typed ranks above one holding them far apart.
+
+        A short ASCII needle (``5``, ``s3``; one or two characters, see
+        ``_SHORT_NEEDLE_MAX_CHARS``) contributes to ``saturated_hits`` instead of
         ``content_hits``: ``log1p`` of its length-normalized body count. As a
-        substring it matches timestamps,
-        ids and hashes far more often than prose about the thing does, and
-        unsaturated a long transcript's thousands of incidental digit hits
-        out-score the session whose title IS the query. Saturating the
-        NORMALIZED count keeps body-only matches in frequency order (a
-        substantive long discussion still beats one stray mention in a short
-        session) without dividing by the length norm a second time. Its title
-        hits and its place in the AND gate are unchanged, and longer terms,
-        digit runs of three or more (``4411``) included,
-        keep raw frequency. The phrase bonus rewards adjacency:
-        at comparable term frequency, the session containing the words TOGETHER
-        as typed ranks above one that merely mentions them far apart.  It is
-        deliberately a bonus and not an override — a session repeating one term
-        far more often still wins on raw term frequency, exactly as it already
-        did for a single-token query.  (Saturating term frequency generally,
-        BM25-style, would change that and re-rank every existing single-token
-        query, so it stays out of scope; only the short needles above
-        are saturated, because for them frequency was measuring digit density,
-        not relevance.)
+        substring it matches timestamps, ids and hashes far more often than prose
+        about the thing does, and its frequency measures digit density rather
+        than relevance. The index cannot look it up, so its idf is never known.
+        Its title hits carry ``UNKNOWN_DF_IDF``, like any needle the index cannot
+        count, and its place in the AND gate is unchanged.
 
         ``recency`` is a bounded multiplicative boost — ``1 +
         _RECENCY_MAX_BOOST / (1 + age_days / _RECENCY_HALF_WEIGHT_DAYS)`` — so
@@ -718,13 +741,9 @@ class SessionCatalogProjection:
         often those words repeat. Every other query sorts by score alone.
 
         Title matches get a strong field boost - titles are short and
-        intentional, so a hit there is strong evidence.  Content matches
-        are normalized by a sqrt length factor so a long session with a
-        casual mention doesn't outrank a short, focused one.  (Simpler
-        than BM25's ``(1-b) + b*(dl/avgdl)`` because we avoid the
-        two-pass scan needed for corpus stats.)  Sessions missing any
-        required needle are dropped.  Ties break by recency (existing
-        ``list_sessions`` order - newest first).  Caps results at *limit*.
+        intentional, so a hit there is strong evidence. Sessions missing any
+        required needle are dropped. Ties break by recency (existing
+        ``list_sessions`` order - newest first). Caps results at *limit*.
         Only the ``session.search_scan_window`` most recent files are scored, so
         I/O stays bounded even with thousands of sessions. The rows come back as
         :class:`SearchRows`, which say when that window left sessions out.
@@ -736,10 +755,17 @@ class SessionCatalogProjection:
         it owns. Membership is re-judged under the transcript lock through snippet
         extraction for each output row; a failed check or lock timeout drops the row.
 
+        A ``"quoted phrase"`` must appear as typed, and a session holding any
+        ``-excluded`` term in its title or content is dropped before scoring; see
+        :func:`split_query_operators` for which quotes and hyphens count.
+
         A query that starts with ``title:`` (see :func:`split_title_scope`) is
         scoped to titles: only sessions whose title matches its term qualify, and
         any text after the term is searched as above among them. With nothing after
-        the term, :meth:`_search_titles` answers from titles alone. A bare
+        the term, :meth:`_search_titles` answers from titles alone. When that
+        text holds only ``-exclusions``, the title matches are judged within the
+        scan window like any other title-scoped query, and the ones whose title or
+        content holds an excluded term are dropped, newest first. A bare
         ``title:`` names no title yet and matches nothing.
         """
         if not query or limit <= 0 or not self._log._dir.exists():
@@ -756,8 +782,12 @@ class SessionCatalogProjection:
             # and the snippet look for, and the term only narrows the window.
             query = scope.rest
         needles, phrase, adjacency_floor = parse_search_query(query)
+        if not needles and title_filter is not None:
+            # Exclusions alone match nothing on their own, but under a title scope
+            # they remove sessions from the title matches.
+            needles = exclusion_needles(split_query_operators(query))
         if not needles:
-            # Whitespace-only query: no needles to require, so nothing can match.
+            # Whitespace or exclusions alone: no needles to require, so nothing can match.
             # Returning [] keeps this from degenerating into "match everything",
             # and skips reading every session file to reach that conclusion.
             return []
@@ -767,7 +797,7 @@ class SessionCatalogProjection:
         # collapses "a a" to one needle while its phrase is still two words, and
         # a single CJK term expands to several needles while the phrase is what
         # rewards its characters appearing together.
-        multi = [n.text for n in required] != [phrase]
+        multi = bool(required) and [n.text for n in required] != [phrase]
         gate = _MemoGate(needles, phrase, multi)
         # Pinned for the whole query: a memo full of other terms evicts those,
         # never the terms this query is reading and filling right now.
@@ -777,7 +807,15 @@ class SessionCatalogProjection:
             _pinned(self._snippet_memo, [snippet_group]),
         ):
             return self._search_parsed(
-                query, limit, keys, needles, phrase, adjacency_floor, gate, title_filter
+                query,
+                limit,
+                keys,
+                needles,
+                phrase,
+                adjacency_floor,
+                gate,
+                title_filter,
+                snippets=snippets,
             )
 
     def _search_titles(
@@ -796,9 +834,10 @@ class SessionCatalogProjection:
         picked = [
             (meta, False)
             # An app caller's *keys* keep the direct scan, as app-scoped listings do.
-            for meta in (
-                self._log.list_sessions if keys is not None else self._log.list_sessions_indexed
-            )()
+            # Stateless cron runs are left out, as every other search leaves them.
+            for meta in _searchable(
+                (self._log.list_sessions if keys is not None else self._log.list_sessions_indexed)()
+            )
             # The title first: it is a string test, while an app caller's *keys*
             # judges ownership per key.
             if title_filter(meta.get("title") or "") and (keys is None or meta["key"] in keys)
@@ -815,6 +854,8 @@ class SessionCatalogProjection:
         adjacency_floor: bool,
         gate: "_MemoGate",
         title_filter: Callable[[str], bool] | None = None,
+        *,
+        snippets: bool = True,
     ) -> list[dict]:
         """The scoring and snippet half of :meth:`_search_sessions`.
 
@@ -830,6 +871,9 @@ class SessionCatalogProjection:
         releases it.
         """
         multi = gate.multi
+        # False for a title scope followed by exclusions alone: every surviving
+        # session scores zero, and the rank tiebreak leaves them newest first.
+        ranks_on_terms = any(not needle.excluded for needle in needles)
         now = _time.time()
         # (verbatim runs hit, score, -rank, meta, needs_snippet)
         scored: list[tuple[int, float, int, dict, bool]] = []
@@ -864,7 +908,7 @@ class SessionCatalogProjection:
         # can overstate them, and a visible session pushed past the window by
         # private ones can go unreported. An accurate count would reveal them.
         searched = min(eligible, scan_window)
-        allowed, rowids = self._index_shortlist(window, needles)
+        allowed, rowids, postings = self._index_shortlist(window, needles)
         if keys is None and title_filter is None:
             # Only an unrestricted search sees every live session's row; one
             # restricted by *keys* or by a title would prune entries other
@@ -872,33 +916,68 @@ class SessionCatalogProjection:
             self._prune_content_memos(rowids)
         needle_keys = gate.needle_keys
         phrase_key = gate.phrase_key
+        # Each needle is weighted by how few visible sessions hold it; see
+        # history_search_rank for why only exactly answered needles are counted.
+        weights = WordWeights(needles, postings, SessionSearchIndex.answers_presence_exactly)
+        # (rank, meta, title_folded, doc_chars, (content, title) hits per needle,
+        #  phrase hits in content)
+        candidates: list[tuple[int, dict, str, int, list[tuple[int, int]], int]] = []
         for rank, meta in enumerate(window):
             key = meta["key"]
+            visible = not is_incognito_transcript(meta.get("memory_mode"))
+            title_folded = (meta.get("title") or "").casefold()
+            vouched = weights.has_postings and key in rowids
             if allowed is not None and key not in allowed:
                 # The index vouches for this session's current text and proved it
                 # cannot satisfy the gate, so it is skipped without the read and
                 # per-line parse that dominate a scan. This is the speedup; every
                 # line below is the unchanged exact evaluation, run on far fewer
                 # sessions.
+                if visible:
+                    weights.add_indexed(key, title_folded, rowids[key].doc_chars)
                 continue
-            title_folded = (meta.get("title") or "").casefold()
             content = _ContentCounts(self, key, rowids, gate, title_folded)
-            doc_chars = content.doc_chars
+            hits: list[tuple[int, int]] = []
+            disqualified = False
+            for needle, needle_key in zip(needles, needle_keys):
+                in_content = content.count(needle, needle_key)
+                in_title = count_needle(needle, title_folded)
+                if needle.excluded and (in_content or in_title):
+                    disqualified = True
+                    break
+                if needle.required and not in_content and not in_title:
+                    # AND semantics: one absent required needle disqualifies the
+                    # session, so stop counting the rest.
+                    disqualified = True
+                    break
+                hits.append((in_content, in_title))
+            if visible and vouched:
+                weights.add_indexed(key, title_folded, content.doc_chars)
+            elif visible:
+                weights.add_scanned(
+                    title_folded,
+                    content.doc_chars,
+                    lambda pos: (
+                        hits[pos][0]
+                        if pos < len(hits)
+                        else content.count(needles[pos], needle_keys[pos])
+                    ),
+                )
+            if disqualified:
+                continue
+            phrase_hits = content.count_phrase(phrase, phrase_key) if multi else 0
+            candidates.append((rank, meta, title_folded, content.doc_chars, hits, phrase_hits))
+        mean_doc_chars = weights.mean_doc_chars
+        idf = weights.idf()
+        for rank, meta, title_folded, doc_chars, hits, phrase_hits in candidates:
             length_norm = math.sqrt(1 + doc_chars / 1024)
             content_hits = 0.0
             saturated_hits = 0.0
             title_hits = 0.0
             adjacency_hits = 0
             verbatim_runs = 0
-            disqualified = False
-            for needle, needle_key in zip(needles, needle_keys):
-                in_content = content.count(needle, needle_key)
-                in_title = count_needle(needle, title_folded)
-                if needle.required and not in_content and not in_title:
-                    # AND semantics: one absent required needle disqualifies the
-                    # session, so stop counting the rest.
-                    disqualified = True
-                    break
+            for pos, (in_content, in_title) in enumerate(hits):
+                needle = needles[pos]
                 if needle.verbatim:
                     # Ranks by the sort key below, not by score: its repeats
                     # already score through the words it is made of.
@@ -917,9 +996,13 @@ class SessionCatalogProjection:
                     # dividing it again would compound the two penalties.
                     saturated_hits += math.log1p(in_content / length_norm) * needle.weight
                 else:
-                    content_hits += in_content * needle.weight
-                title_hits += in_title * needle.weight
-            if disqualified or not (content_hits or saturated_hits or title_hits):
+                    content_hits += (
+                        saturated_frequency(in_content, doc_chars, mean_doc_chars)
+                        * needle.weight
+                        * idf[pos]
+                    )
+                title_hits += in_title * needle.weight * idf[pos]
+            if ranks_on_terms and not (content_hits or saturated_hits or title_hits):
                 continue
             if adjacency_floor and not adjacency_hits:
                 # Adjacency floor: a CJK query whose characters ALL appear but
@@ -938,9 +1021,11 @@ class SessionCatalogProjection:
                 continue
             if multi:
                 # Reward the words appearing together, in order, as typed.
-                content_hits += content.count_phrase(phrase, phrase_key) * _PHRASE_BOOST
+                content_hits += (
+                    saturated_frequency(phrase_hits, doc_chars, mean_doc_chars) * _PHRASE_BOOST
+                )
                 title_hits += title_folded.count(phrase) * _PHRASE_BOOST
-            score = title_hits * _TITLE_BOOST + content_hits / length_norm + saturated_hits
+            score = title_hits * _TITLE_BOOST + content_hits + saturated_hits
             # Recency boost: multiplicative and bounded to (1.0, 2.5], so a
             # fresh session with comparable relevance outranks a stale one, but
             # an old session with a decisively better match still wins — the
@@ -962,7 +1047,9 @@ class SessionCatalogProjection:
         # original text, so offsets line up), so building one per match put a
         # full re-read back on the hot path — dominating the query once the fold
         # itself was memoized.
-        picked = [(meta, needs_snippet) for _v, _s, _r, meta, needs_snippet in scored[:limit]]
+        picked = [
+            (meta, needs_snippet and snippets) for _v, _s, _r, meta, needs_snippet in scored[:limit]
+        ]
         return SearchRows(
             self._result_rows(picked, keys, query), searched=searched, eligible=eligible
         )
@@ -1109,14 +1196,16 @@ class SessionCatalogProjection:
 
     def _index_shortlist(
         self, window: list[dict], needles: list[SearchNeedle]
-    ) -> tuple[set[str] | None, "dict[str, IndexRow]"]:
+    ) -> tuple[set[str] | None, "dict[str, IndexRow]", dict[int, set[str]] | None]:
         """Narrow *window* to the sessions that could satisfy the gate.
 
-        Returns ``(allowed, rowids)``. ``allowed`` is ``None`` when the index
-        cannot narrow this query — no needle was long enough to look up, or the
-        index is unavailable — in which case the caller scores every session
+        Returns ``(allowed, rowids, postings)``. ``allowed`` is ``None`` when the
+        index cannot narrow this query — no needle was long enough to look up, or
+        the index is unavailable — in which case the caller scores every session
         exactly as it always did. ``rowids`` addresses the folded text of the
-        sessions the index vouches for.
+        sessions the index vouches for. ``postings`` maps each looked-up needle's
+        position to the indexed sessions whose content holds it, from the same
+        snapshot, or is ``None`` when nothing was looked up.
 
         Three unions make ``allowed`` a provable SUPERSET of the true hit set,
         and all three are load-bearing:
@@ -1133,7 +1222,7 @@ class SessionCatalogProjection:
         """
         index = self.search_index
         if not index.available:
-            return (None, {})
+            return (None, {}, None)
         stats: dict[str, os.stat_result] = {}
         for meta in window:
             try:
@@ -1168,7 +1257,7 @@ class SessionCatalogProjection:
             ):
                 del rowids[key]
         if per_needle is None:
-            return (None, rowids)
+            return (None, rowids, None)
         unvouched = {meta["key"] for meta in window} - set(rowids)
         allowed: set[str] | None = None
         for pos, content_keys in per_needle.items():
@@ -1180,7 +1269,7 @@ class SessionCatalogProjection:
             }
             satisfied = content_keys | in_title | unvouched
             allowed = satisfied if allowed is None else (allowed & satisfied)
-        return (allowed, rowids)
+        return (allowed, rowids, per_needle)
 
     def _stat_key(self, key: str) -> os.stat_result:
         """``self._log._path(key).stat()`` without building a ``Path`` per call.
@@ -1530,10 +1619,11 @@ class SessionCatalogProjection:
         with no snippet at all. Within a tier needles are tried per message, so
         the first MESSAGE containing any of them wins rather than the best
         needle overall; that preserves the streaming early-exit above. A query
-        with no dictionary words is one tier. A query with them reads on past a
-        lower-tier hit until a message holds the phrase, a verbatim run or a
-        longer word, so a lone character in an early message cannot take the
-        snippet from the phrase later on.
+        with more than one tier reads on past a lower-tier hit until a message
+        holds a top-tier needle: the phrase, a verbatim run or a longer word. So
+        a lone character, or a two-letter ASCII term inside an unrelated word, in
+        an early message cannot take the snippet from the query's real words
+        later on. A query whose terms are all that short stays one tier.
 
         Returns ``''`` when no needle is locatable in any single message, or
         when the file cannot be read (display-only — never raises at the caller).
@@ -1614,6 +1704,8 @@ class SessionCatalogProjection:
 #                               ceilings, the single-flight table, memo-gated counts
 #   ``history_search_listing`` -- one catalog row from one transcript, shared by the
 #                               directory scan and the listing index
+#   ``history_search_rank``  -- how much each query word counts: idf over the window,
+#                               term-frequency saturation
 #
 # ``test/test_history_search_bindings.py`` pins the binding and the reach.
 # --------------------------------------------------------------------------- #
@@ -1622,6 +1714,7 @@ _OWNERS = (
     "kiro_crew.history_search_query",
     "kiro_crew.history_search_memo",
     "kiro_crew.history_search_listing",
+    "kiro_crew.history_search_rank",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)

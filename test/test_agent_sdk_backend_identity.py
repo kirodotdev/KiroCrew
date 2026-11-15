@@ -1,7 +1,7 @@
 """The ``agent.acp_backend`` axis has one comparison, and it lives in agent_sdk.
 
 Three sites delegate to :func:`kiro_crew.agent_sdk.backend_identity.is_claude_backend_name`;
-``AcpClient._is_claude`` keeps its own for layering. The helper takes the backend NAME,
+``ClaudeAcpClient`` keeps its own for layering (it registers under the constant). The helper takes the backend NAME,
 and reading that string keeps the predicates mock-safe, unlike the property.
 """
 
@@ -180,7 +180,7 @@ def test_delegating_files_ask_the_helper(rel: str) -> None:
 
 
 def test_acp_client_keeps_its_own_comparison() -> None:
-    """``AcpClient._is_claude`` is the documented exception, not an oversight.
+    """The ACP client keeps its own claude check, and it is the class it builds.
 
     ``agent_sdk`` sits above ``kiro_crew.acp``, so routing the client through the
     helper would invert the layering and drag the SDK package -- and the
@@ -192,9 +192,13 @@ def test_acp_client_keeps_its_own_comparison() -> None:
         "acp/client.py now imports the agent_sdk helper; that inverts the "
         "acp -> agent_sdk layering. If this is intended, remove this test."
     )
-    assert _constant_comparisons(SRC / "acp" / "client_class.py"), (
-        "acp/client.py no longer compares the constant itself; if its check "
-        "moved, this test is stale"
+    # The claude check moved off ``AcpClient``: its own class registers under the
+    # constant (``ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE)``), and the
+    # shared class compares it nowhere.
+    assert _constant_comparisons(SRC / "acp" / "client_class.py") == []
+    assert "serves=ACP_BACKEND_CLAUDE" in _source(SRC / "acp" / "client_claude.py"), (
+        "acp/client_claude.py no longer registers its class under the constant; "
+        "if its check moved, this test is stale"
     )
 
 

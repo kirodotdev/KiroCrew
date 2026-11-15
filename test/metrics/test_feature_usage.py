@@ -210,7 +210,12 @@ def test_findings_alone_are_not_a_lesson_tier(rec):
     assert _named(rec, fu.LESSON_INJECTED) == []
 
 
-def test_composition_counters_never_raise():
+def test_composition_counters_never_raise(rec):
+    fu.record_context_composition(object(), object())
+    assert [c["attrs"] for c in _named(rec, fu.MEMORY_RECALLED)] == [
+        {"path": "context", "hit": "false"}
+    ]
+    assert _named(rec, fu.LESSON_INJECTED) == []
     with patch("kiro_crew.metrics.provider.get_recorder", side_effect=RuntimeError("x")):
         fu.record_context_composition({"memory": 1}, {"lessons": {"ids": ["a"]}})
         fu.record_context_composition(object(), object())

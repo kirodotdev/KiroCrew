@@ -129,6 +129,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.agent_discovery_parts.spec_reads import (  # noqa: F401
         _APPLE_DOUBLE_MAGICS,
         _FENCE_PROBE_BYTES,
+        _HARDLINK_REFUSAL,
+        _HARDLINK_WARNED,
+        _HARDLINK_WARNED_LOCK,
+        _HARDLINK_WARNED_MAX,
         _KIRO_AGENTS_DIR,
         _WINDOWS,
         AgentSpecPinError,
@@ -137,6 +141,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SensitiveAgentSpecPathError,
         _audit_denied,
         _fence_refuses,
+        _first_hardlink_refusal,
         _kiro_agents_dir,
         _probe_spec_head,
         _read_agent_spec,

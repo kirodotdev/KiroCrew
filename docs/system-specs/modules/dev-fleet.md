@@ -8,7 +8,7 @@ pod test instances. It runs as a managed app backend SUBPROCESS: an aiohttp serv
 backend-assigned port, reached only through the gateway proxy. Every proxied request
 carries an HMAC signature (`X-KiroCrew-Proxy: <ts>:<hmac>` over
 `<ts>:<METHOD>:<path>[?q]:<sha256(body)>`, +/-60s window) verified fail-closed by the
-backend's middleware; the shared secret lives at `apps_dir()/dev-fleet/.app_secret`.
+backend's middleware; the shared secret reaches the backend as `KIROCREW_PROXY_SECRET` at spawn (the gateway keeps it outside the app folder).
 Gateway session auth (token/cookie) gates the proxy entrance as with all builtin apps.
 
 ## Responsibilities
@@ -139,6 +139,21 @@ own `/api/apps/<app>/` or `/apps/<app>/` namespace):
 `host_grants.py` is a data module, and the package `__init__` imports its two route
 modules inside `register_routes` only: the seam is read in the MCP servers and the
 config loader, which must not pay for the gateway route graph.
+
+**Adopted onto its own repository.** The wheel pins the app (`apps/adoption-pins.json`,
+[app-kit-platform.md § 33](app-kit-platform.md#33-former-built-in-adoption)) at
+`KiroCrewCaptain/kirocrew-app-dev-fleet` with `minAppSdkLevel` 7, the level of the exact
+`=/api/apps` entry its backend-down banner reads (its `agentTools` need level 2), so a
+host whose record is builtin-owned swaps it in place onto that tree at a restart, keeping
+`data/`, `.app_secret`, the approved grants and `enabled`; the rail keeps `/dev-fleet`
+and the `Server` glyph. The repository's `app.json` declares the same `permissions` as
+the wheel copy (its own namespaces, the gateway's `make-live`, `restart-gateway`,
+`pod-token` and `create-release-worktree` routes, `=/api/apps`, `network` and
+`terminal`) and the same `agentTools`, so E9 holds nothing back; its backend starts from a
+launcher file in the adopted tree. The grants in the table above are keyed by the
+installed name and read from the shipped package, so the adopted record keeps them while
+the wheel copy ships. A fix to the app lands in that repository first; a change to the
+wheel copy needs its `App repo:` line.
 
 ## Main Checkout Discovery
 
@@ -341,6 +356,13 @@ that file is bind-masked from the sandboxed backend **and every child it spawns*
 nested sandbox is denied by design, so a worktree's `npm ci` lifecycle script runs in the
 backend's namespace. See *Make Live → Pointer file*. `pod-token` is the exception: it
 needs the gateway's host namespaces, not the pointer.
+
+The page's four owner-only POSTs and its read of the app list (`GET /api/apps`, for
+the backend-down banner) are declared in the manifest's `permissions.api`: the four
+as bare entries, the list as the exact entry `=/api/apps`. The compiled page reaches
+them as dashboard code either way; the declaration is what lets the app repository's
+bundle reach them through the scoped client once its record adopts, with nothing held
+back (app-kit-platform.md § Scoped frontend HTTP transport).
 
 ### Create release worktree
 
@@ -1774,8 +1796,13 @@ raises it too, although no restart is needed for that build.
 Dev Fleet backend — repoints the live gateway at a different worktree by writing a
 **live-target pointer file** (`live_target.json`). The gateway resolves this
 pointer at startup and `execve`s into the named checkout's own `kirocrew` binary
-— moving the working directory and `PATH` with it. No service definition is
+— moving the working directory and `PATH` with it. An `execve` that fails leaves
+the installed build booting in the directory it started in. No service definition is
 ever mutated.
+
+The exec's `PATH` is the checkout's venv `bin`, then the inherited `PATH`, or, when
+none is inherited, the platform's default search path (`os.defpath`) without its
+empty or `.` entries, which would name the current directory.
 
 The mechanism is the version-selector shape used by `rustup` (reads
 `rust-toolchain.toml`), the Go toolchain (`go` execs from the `toolchain` line

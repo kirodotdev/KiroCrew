@@ -371,7 +371,9 @@ class TestTheRoute(_Served):
 
     async def test_hidden_characters_and_credentials_are_scrubbed_on_the_way_in(self) -> None:
         """The schema sees ``body_json`` as one string, where ``\\u200b`` is plain ASCII."""
-        secret = "AKIA" + "IOSFODNN7EXAMPLE"
+        from kiro_crew.testing.synthetic_credentials import github_classic
+
+        secret = github_classic(seed=108)
         raw = json.dumps({"pat\u200btern": "x", "fix": f"key {secret[:4]}\u200b{secret[4:]}"})
         self.assertNotIn("\u200b", raw)  # escaped: invisible to a string-level sanitizer
         patch, seen = self._recording("_handle_post_ledger")

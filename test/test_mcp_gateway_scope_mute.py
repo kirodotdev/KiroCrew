@@ -208,7 +208,8 @@ class TestACrewmateOverlay:
         mates = root / "mates" / "agents"
         mates.mkdir(parents=True)
         (mates / "pixel.json").write_text(
-            json.dumps({"name": "pixel", "mcpServers": {SERVER: dict(LIVE)}}), encoding="utf-8"
+            json.dumps({"name": "pixel", "tools": ["*"], "mcpServers": {SERVER: dict(LIVE)}}),
+            encoding="utf-8",
         )
         monkeypatch.setattr(mate_config, "crewmate_file_on_record", lambda mate_id: True)
         return root, agents, mates, store

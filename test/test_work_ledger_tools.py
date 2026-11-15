@@ -404,6 +404,7 @@ async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
         "item_closed": 409,
         "item_cap_exceeded": 409,
         "goal_concurrency_cap_reached": 409,
+        "host_memory_critical": 409,
         "depth_exceeded": 409,
         "crew_log_incomplete": 409,
         "cache_dirty": 409,
@@ -447,6 +448,11 @@ async def test_already_bound_is_409():
 @pytest.mark.asyncio
 async def test_item_closed_is_409_for_both_halves():
     ids = await two_by_two()
+    assert (
+        await _record(
+            CONDUCTOR_A, {"action": "verdict", "item_id": ids["item_a"], "verdict": "pass"}
+        )
+    )[0] == 200
     status, _ = await _record(
         CONDUCTOR_A, {"action": "close", "item_id": ids["item_a"], "state": "accepted"}
     )
@@ -517,6 +523,9 @@ async def test_goal_concurrency_cap_reached_is_409_and_concurrency_cap_raises_it
         CONDUCTOR_A, {"action": "create", "title": "d", "acceptance": acceptance}
     )
     assert (status, body["code"]) == (409, wl.CODE_GOAL_CONCURRENCY_CAP_REACHED)
+    assert (
+        await _record(CONDUCTOR_A, {"action": "verdict", "item_id": second, "verdict": "pass"})
+    )[0] == 200
     status, _ = await _record(
         CONDUCTOR_A, {"action": "close", "item_id": second, "state": "accepted"}
     )
@@ -657,6 +666,26 @@ async def test_invalid_action_is_400():
     status, body = await _record(CONDUCTOR_A, {"action": "delete"})
     assert status == 400
     assert body["code"] == wl.CODE_INVALID_ACTION
+
+
+@pytest.mark.asyncio
+async def test_an_unbound_session_is_told_what_not_bound_means():
+    """A bound worker reads its item; any other session gets ``not_bound`` with what
+    to do next in the refusal itself, so the caller has nothing to work out."""
+    ids = await two_by_two()
+    status, body = await _brief(WORKER_A)
+    assert status == 200, body
+    assert body["brief"]["item_id"] == ids["item_a"]
+
+    status, body = await _brief("chat-nobody-bound")
+    assert (status, body["code"]) == (403, "not_bound")
+    assert "the message you were given is your whole task" in body["error"]
+
+    # A refused report may come from a worker whose item moved on: it gets the
+    # code and no task.
+    status, body = await _report("chat-nobody-bound", {"status": "progress", "summary": "s"})
+    assert (status, body["code"]) == (403, "not_bound")
+    assert "whole task" not in body["error"]
 
 
 @pytest.mark.asyncio
@@ -834,10 +863,11 @@ async def test_a_done_item_waiting_on_the_conductor_is_not_stale():
 
 @pytest.mark.asyncio
 async def test_accept_is_a_route_action_not_a_store_action():
-    """The store's six are pinned by Phase 1, so the seventh lives one layer up."""
+    """The store's six are pinned by Phase 1, so accept and ask live one layer up."""
     assert "accept" not in wl.CONDUCTOR_ACTIONS
+    assert "ask" not in wl.CONDUCTOR_ACTIONS
     assert "accept" in routes.RECORD_ACTIONS
-    assert routes.RECORD_ACTIONS == wl.CONDUCTOR_ACTIONS | {"accept"}
+    assert routes.RECORD_ACTIONS == wl.CONDUCTOR_ACTIONS | {"accept", "ask"}
     assert routes.RECORD_ACTIONS == validation._WORK_RECORD_ACTIONS
 
 
@@ -1024,7 +1054,7 @@ def test_the_schema_caps_restate_the_stores_own():
 def test_the_worker_schema_has_no_conductor_field():
     """The absence IS the guarantee — stronger than an allowlist kept correct by hand."""
     names = {f.name for f in validation.WORK_REPORT_SCHEMA.fields}
-    assert names == {"status", "summary", "artifacts", "pr", "reason", "wake_at"}
+    assert names == {"status", "summary", "artifacts", "pr", "reason", "wake_at", "discussion"}
     for forbidden in (
         "item_id",
         "session",
@@ -1591,6 +1621,9 @@ async def test_read_filters_by_item_id(monkeypatch):
 @pytest.mark.asyncio
 async def test_read_filters_by_state(monkeypatch):
     ids = await _three_dated_items(monkeypatch)
+    assert (
+        await _record(CONDUCTOR_A, {"action": "verdict", "item_id": ids[0], "verdict": "pass"})
+    )[0] == 200
     status, body = await _record(
         CONDUCTOR_A, {"action": "close", "item_id": ids[0], "state": "accepted", "decision": "ok"}
     )

@@ -18,7 +18,11 @@ from kiro_crew.validation import SPAWN_RUN_SCHEMA, ValidationError, validate_too
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
 
-def _run_tool(args: dict[str, Any], responses: list[dict] | None = None) -> tuple[list[dict], str]:
+def _run_tool(
+    args: dict[str, Any],
+    responses: list[dict] | None = None,
+    session_key: str = "dashboard:chat-1",
+) -> tuple[list[dict], str]:
     """Run spawn_run against a fake gateway; return (POSTed bodies, result text)."""
     from kiro_crew import mcp_core
 
@@ -33,7 +37,7 @@ def _run_tool(args: dict[str, Any], responses: list[dict] | None = None) -> tupl
 
     with (
         patch.object(mcp_core, "_post", side_effect=_fake_post),
-        patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:chat-1"),
+        patch.object(mcp_core, "_resolve_session_key", return_value=session_key),
         patch.object(mcp_core, "sel", MagicMock()),
     ):
         result = mcp_core._call_tool("spawn_run", args)
@@ -155,11 +159,17 @@ class TestDeferredSubmission:
 
         manual_clock.install(monkeypatch, mcp_core)
         count = 128  # An eight-second POST per member outlives the progress ceiling.
+        beats = []
+        submitted = []
 
         def submit(path, body, **_kwargs):
+            if path == "/api/session-keepalive":
+                beats.append(body)
+                return {"ok": True}
             assert path == "/api/spawn"
+            submitted.append(body)
             manual_clock.advance(8)
-            return {"id": f"a{gateway.call_count}"}
+            return {"id": f"a{len(submitted)}"}
 
         gateway.side_effect = submit
         step = spawn_run("spawn_run", {"tasks": [f"task {i}" for i in range(count)]})
@@ -167,14 +177,19 @@ class TestDeferredSubmission:
         start = manual_clock.monotonic()
         for index in range(count):
             text = step.step()
-            assert gateway.call_count == index + 1
-            assert gateway.call_args.args[1]["task"] == f"task {index}"
+            assert len(submitted) == index + 1
+            assert submitted[-1]["task"] == f"task {index}"
             assert step.due_at() == manual_clock.monotonic()
             assert entry.progressing(manual_clock.monotonic())
             assert (text is not None) == (index == count - 1)
         assert manual_clock.monotonic() - start > PROGRESS_WEDGE_CEILING_SECS
         assert len(step.agent_ids) == count
         assert f"Spawned {count} subagent(s)." in text
+        # The submission outlives every silence bound, so the call beats through it.
+        # A step starts every 8 s and a beat is due 30 s after the last one, so
+        # the beats land every 32 s until the last step starts.
+        assert len(beats) == (count - 1) * 8 // 32
+        assert all(b["phase"] == "submit" for b in beats)
 
     def test_refused_name_skips_only_its_siblings_and_reconciles_each(self, gateway):
         from kiro_crew.mcp_tools.spawn import spawn_run
@@ -333,6 +348,27 @@ class TestDeferredSubmission:
             "boundary. Wait for the [Subagent completion event] messages. "
             "Dispatch is not completion."
         )
+
+    def test_subagent_caller_is_pointed_at_spawn_sub_agents(self):
+        """A ``subagent:`` parent's completion rings the bell only, so the
+        receipt must not tell it to end its turn and wait for an event, nor to
+        poll (a spawn_run parent keeps its slot)."""
+        _, text = _run_tool({"task": "one"}, responses=[{"id": "s1"}], session_key="subagent:p1")
+        assert "END YOUR TURN" not in text
+        assert "completion events:" not in text
+        assert "will not reach" in text and "spawn_sub_agents" in text
+        assert "poll" not in text
+
+    def test_subagent_continue_is_pointed_at_spawn_status(self):
+        from kiro_crew import mcp_core
+
+        with (
+            patch.object(mcp_core, "_post", return_value={"id": "r2"}),
+            patch.object(mcp_core, "_resolve_session_key", return_value="subagent:p1"),
+        ):
+            text = mcp_core._call_tool("spawn_continue", {"conversation": "c1", "task": "more"})
+        assert "END YOUR TURN" not in text
+        assert "will not reach" in text and "spawn_status(agent_id='r2')" in text
 
     @pytest.mark.parametrize("field", ["tasks", "agents"])
     def test_batch_member_limit_is_checked_before_any_post(self, gateway, field):

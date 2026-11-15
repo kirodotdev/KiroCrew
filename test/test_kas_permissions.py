@@ -797,23 +797,23 @@ class TestTheVersionProbeItself:
 
     @pytest.fixture
     def pinned(self, monkeypatch, tmp_path):
-        """A pinned binary that exists on disk, and a recorder for the spawn."""
-        import subprocess
-
-        from kiro_crew import kiro_cli
+        """A pinned binary that exists on disk, and a recorder for the sandboxed runner."""
+        from kiro_crew import kiro_cli, kiro_prerequisite
+        from kiro_crew.kiro_prerequisite_process import ProcessResult
 
         binary = tmp_path / "kiro-cli"
         binary.write_text("", encoding="utf-8")
+        binary.chmod(0o755)
         monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (str(binary), False))
         monkeypatch.setattr(kiro_cli, "_version_cache", {})
         calls: list[dict] = []
 
         def _install(stdout: str, returncode: int = 0):
-            def _run(argv, **kwargs):
-                calls.append({"argv": argv, **kwargs})
-                return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
+            async def _run(command, args, **kwargs):
+                calls.append({"argv": [command, *args], **kwargs})
+                return ProcessResult(ok=returncode == 0, output=stdout, returncode=returncode)
 
-            monkeypatch.setattr(kiro_cli.subprocess, "run", _run)
+            monkeypatch.setattr(kiro_prerequisite, "_run_process", _run)
             return calls
 
         return binary, _install
@@ -826,15 +826,15 @@ class TestTheVersionProbeItself:
         assert installed_kiro_cli_version() == (2, 23, 0)
         assert calls[0]["argv"] == [str(binary), "--version"]
 
-    def test_the_output_is_decoded_as_utf8_not_the_platform_locale(self, pinned):
-        """A locale decode can mangle the token, and mangled reads as refusing."""
+    def test_the_probe_runs_through_the_sandboxed_runner(self, pinned):
+        """The pinned binary's directory is agent-writable, so the probe is sandboxed."""
         from kiro_crew.kiro_cli import installed_kiro_cli_version
 
         _binary, install = pinned
         calls = install("kiro-cli 2.23.0\n")
         installed_kiro_cli_version()
-        assert calls[0]["encoding"] == "utf-8"
-        assert calls[0]["timeout"] > 0
+        assert calls[0]["first_party_fixed_argv"] is True
+        assert calls[0]["timeout_secs"] > 0
 
     def test_a_non_zero_exit_or_garbage_is_unknown(self, pinned):
         from kiro_crew import kiro_cli
@@ -869,7 +869,7 @@ class TestTheVersionProbeItself:
         monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (None, True))
         monkeypatch.setattr(kiro_cli, "_version_cache", {})
         monkeypatch.setattr(
-            kiro_cli.subprocess, "run", lambda *a, **k: pytest.fail("spawned without a pin")
+            kiro_cli, "_sandboxed_probe", lambda *a, **k: pytest.fail("spawned without a pin")
         )
         assert kiro_cli.installed_kiro_cli_version() is None
 

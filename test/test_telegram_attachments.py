@@ -479,16 +479,18 @@ class TestTextInjectLimit:
     @pytest.mark.parametrize(
         ("section", "kept_chars", "tail"),
         [
-            ({}, 50 * 1024, "\n[… truncated]"),
+            ({}, 50 * 1024, "\n[… truncated: 51200 of 81920 characters of text shown]"),
             ({"max_text_inject_kb": 100}, 80 * 1024, ""),
-            ({"max_text_inject_kb": 0}, 1024, "\n[… truncated]"),
+            ({"max_text_inject_kb": 0}, 1024, "\n[… truncated: 1024 of 81920 characters of text shown]"),
         ],
         ids=["unset-keeps-50-kib", "set-to-100-kib", "zero-raised-to-1-kib"],
     )
     def test_the_key_sets_how_much_of_a_text_file_reaches_the_prompt(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, section, kept_chars, tail
     ) -> None:
-        """An 80 KiB CSV is cut at 50 KiB by default, whole at 100, and at the 1 KiB floor for 0."""
+        """An 80 KiB CSV is cut at 50 KiB by default, whole at 100, and at the 1 KiB floor for 0.
+
+        A cut names the file that carries the whole text, after the marker."""
         body = ("2026-01-02,BUY,12.50\n" * 4000)[: 80 * 1024]
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         (tmp_path / "config.json").write_text(json.dumps({"telegram": section}), encoding="utf-8")
@@ -520,4 +522,6 @@ class TestTextInjectLimit:
 
         prompt = d.ctx_builder.build_calls[-1]["text"]  # type: ignore[attr-defined]
         injected = prompt.split("[File: tx.csv]\n", 1)[1].split("\n[End of file]", 1)[0]
-        assert injected == body[:kept_chars] + tail
+        inline, note, _ = injected.partition("\n[Its whole text is in ")
+        assert inline == body[:kept_chars] + tail
+        assert bool(note) == bool(tail)

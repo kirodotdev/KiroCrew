@@ -5,6 +5,9 @@ from __future__ import annotations
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+from redaction_structured_cases import github_classic
+
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 class TestSlotDetailPaginationPersistedSuffix:
@@ -85,7 +88,7 @@ class TestSlotDetailPaginationPersistedSuffix:
             redact_exfiltration_urls,
         )
 
-        secret = "key AKIAIOSFODNN7EXAMPLE here"
+        secret = f"key {SAMPLE_AWS_SECRET} here"
         redacted, _ = redact_exfiltration_urls(secret)
         redacted, _ = redact_credentials(redacted)
         assert redacted != secret, "fixture needs content the real redactor changes"
@@ -157,8 +160,8 @@ class TestSlotDetailPaginationPersistedSuffix:
 
         # Two credential KINDS that redact to the same tag, so no second key-shaped
         # literal is needed.
-        mine = "key AKIAIOSFODNN7EXAMPLE here"
-        theirs = "key aws_secret_access_key=x here"
+        mine = f"key {SAMPLE_AWS_SECRET} here"
+        theirs = f"key {github_classic(seed=51)} here"
         assert mine != theirs, "fixture needs two DISTINCT bodies"
         assert (
             red(mine) == red(theirs) != mine

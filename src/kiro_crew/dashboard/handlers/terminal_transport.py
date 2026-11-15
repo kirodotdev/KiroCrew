@@ -78,6 +78,118 @@ _STALE_OWNER_ERROR_MESSAGE = "Another connection owns this terminal session"
 _STALE_OWNER_ERROR_CODE = "displaced"
 
 
+# The CSI questions xterm.js answers by typing the reply through ``onData``,
+# keyed by (private marker, intermediate bytes, final byte): DSR/CPR
+# ``CSI [?] Ps n``, DA1/DA2 ``CSI [>] Ps c`` and DECRQM ``CSI [?] Ps $ p``.
+# The marker is part of the key: ``CSI > Ps n`` is not a question, it resets
+# xterm's key modifiers.
+_CSI_QUERIES = frozenset(
+    {
+        (b"", b"", b"n"),
+        (b"?", b"", b"n"),
+        (b"", b"", b"c"),
+        (b">", b"", b"c"),
+        (b"", b"$", b"p"),
+        (b"?", b"$", b"p"),
+    }
+)
+
+
+def _csi_query_end(data: bytes, start: int) -> int | None:
+    """End of the CSI question whose parameters begin at ``start``, else None.
+
+    Grammar: an optional private marker (``?`` / ``>``), parameter bytes
+    (digits and ``;``), intermediate bytes (0x20-0x2f) and one final byte
+    (0x40-0x7e). A sequence cut off by the end of ``data`` is no question.
+    """
+    i = start
+    marker = b""
+    if i < len(data) and data[i] in b"?>":
+        marker = data[i : i + 1]
+        i += 1
+    while i < len(data) and data[i] in b"0123456789;":
+        i += 1
+    params_end = i
+    while i < len(data) and 0x20 <= data[i] <= 0x2F:
+        i += 1
+    if i >= len(data) or not 0x40 <= data[i] <= 0x7E:
+        return None
+    if (marker, data[params_end:i], data[i : i + 1]) not in _CSI_QUERIES:
+        return None
+    return i + 1
+
+
+def _string_end(data: bytes, start: int, *, bel: bool) -> tuple[int, int] | None:
+    """(body end, sequence end) of an OSC/DCS string whose body begins at ``start``.
+
+    The body ends at the first ``ESC \\`` (ST), or at ``BEL`` when ``bel`` is
+    true. Any other ``ESC``, or no terminator before the end of ``data``,
+    is not a complete string: None.
+    """
+    for k in range(start, len(data)):
+        if data[k] == 0x07:
+            return (k, k + 1) if bel else None
+        if data[k] == 0x1B:
+            return (k, k + 2) if data[k + 1 : k + 2] == b"\\" else None
+    return None
+
+
+def _is_colour_query(body: bytes) -> bool:
+    """An OSC 4 palette (``4;Pi;?`` pairs) or OSC 10/11/12 colour (``1x;?``) question."""
+    fields = body.split(b";")
+    values = fields[1:]
+    if fields[0] == b"4":
+        indexes, queries = values[::2], values[1::2]
+        return (
+            bool(values)
+            and len(indexes) == len(queries)
+            and all(n.isdigit() and q == b"?" for n, q in zip(indexes, queries))
+        )
+    return fields[0] in (b"10", b"11", b"12") and bool(values) and all(v == b"?" for v in values)
+
+
+def _strip_terminal_queries(data: bytes) -> bytes:
+    """Drop terminal questions from the scrollback replayed on reconnect.
+
+    Replay feeds old output into a freshly reset xterm.js, which answers every
+    question still in it. The program that asked is long done, so the answers
+    reach the shell's line editor as typed junk (``11;rgb:ffff/ffff/ffff;1R``).
+    A question carries no screen state, so removing it changes nothing drawn.
+
+    Walks each ``ESC`` and drops only the forms xterm.js answers: the CSI
+    questions in ``_CSI_QUERIES``, the OSC 4/10/11/12 colour questions and a
+    DECRQSS (``DCS $ q ... ST``). Every other byte, and any sequence cut off at
+    the end of ``data``, is copied through unchanged.
+
+    shortcut: 7-bit ``ESC`` forms only; upgrade if 8-bit C1 queries (0x9b /
+    0x9d) show up in real output.
+    """
+    out = bytearray()
+    copied = 0
+    i = data.find(b"\x1b")
+    while i != -1:
+        kind = data[i + 1 : i + 2]
+        end: int | None = None
+        if kind == b"[":
+            end = _csi_query_end(data, i + 2)
+        elif kind == b"]":
+            span = _string_end(data, i + 2, bel=True)
+            if span is not None and _is_colour_query(data[i + 2 : span[0]]):
+                end = span[1]
+        elif kind == b"P" and data[i + 2 : i + 4] == b"$q":
+            span = _string_end(data, i + 4, bel=False)
+            if span is not None:
+                end = span[1]
+        if end is None:
+            i = data.find(b"\x1b", i + 1)
+            continue
+        out += data[copied:i]
+        copied = end
+        i = data.find(b"\x1b", end)
+    out += data[copied:]
+    return bytes(out)
+
+
 def _write_all(fd: int, data: bytes) -> None:
     """Write every byte of ``data`` to ``fd``, tolerating short writes.
 
@@ -200,7 +312,7 @@ async def _replace_terminal_ws(
     async with sess.replace_lock:
         async with sess.output_lock:
             sent_output_bytes = sess.output_bytes
-            retained_output = bytes(sess.scrollback)
+            retained = bytes(sess.scrollback)
 
         def catch_up_span() -> int | None:
             """Bytes this candidate still lacks, or None when a live owner would
@@ -231,6 +343,11 @@ async def _replace_terminal_ws(
                 )
             sent_output_bytes = current_output_bytes
             return True
+
+        # The snapshot is history: whoever asked a question in it is not
+        # waiting on this socket. Catch-up bytes stay as they are, since they
+        # are live output that may still want an answer.
+        retained_output = _strip_terminal_queries(retained)
 
         # PTY output continues to the current owner while output_bytes records
         # what this unpublished candidate still needs.

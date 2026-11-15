@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.dashboard.crash_dump_store import current_process_identity, pid_identity_alive
 from kiro_crew.platform_compat import is_link_or_junction
 
@@ -123,7 +124,7 @@ def _read_own_file(path: Path, max_bytes: int) -> str | None:
             return None
         with os.fdopen(fd, "rb") as fh:
             fd = -1  # fdopen owns it now
-            return fh.read(max_bytes + 1).decode("utf-8")
+            return bounded_read(fh, max_bytes + 1).decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return None
     finally:
@@ -240,7 +241,9 @@ def write_marker(
         pid_domain, pid_start = current_process_identity()
         payload = {
             "job_id": job_id,
-            "name": name,
+            # Display text only, cut like the attribution record's: an
+            # uncut 500-emoji name passes the reader's size cap once escaped.
+            "name": name[:_RECORD_NAME_MAX_CHARS],
             "started_at": float(started_at if started_at is not None else time.time()),
             "pid": os.getpid(),
             "pid_domain": pid_domain,

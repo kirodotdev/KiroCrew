@@ -1,7 +1,7 @@
 import { configureStore } from '@reduxjs/toolkit'
 
 /* `dashboard.new_chat_crew_mode`: a create that opts in (`crewModeDefault:
- * true`, the person's own New chat entry points) turns Ultra Mode on the way the
+ * true`, the person's own New chat entry points) turns conductor mode on the way the
  * composer chip does, by the ordinary agent switch to the conductor after the
  * create, and only for a chat the chip would be offered on. The create request
  * itself is unchanged. */
@@ -22,7 +22,8 @@ vi.mock('../api/client', () => ({ api }))
 import dashboardReducer, { addSlotOptimistic } from './dashboardSlice'
 import chatReducer, { createSlot } from './chatSlice'
 import { resetCrewModeCatalog, setCrewModeCatalog } from '../lib/crewMode'
-import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
+import { turnOffCrewModeAsLts } from '../test/crewModeOff'
+import { FEATURE_PREVIEW_LOCK_WAIT_MS, __setFeaturePreviewLockKnownForTests } from '../utils/editionLocks'
 
 const CONDUCTOR = 'kirocrew-conductor'
 const CATALOG = { agents: [], default_agent: 'kirocrew', crew_mode_agent: CONDUCTOR, conductor_agents: [CONDUCTOR] }
@@ -38,7 +39,7 @@ const created = async (opts: Parameters<typeof createSlot>[0], row: Record<strin
   return makeStore().dispatch(createSlot(opts)).unwrap()
 }
 
-describe('createSlot new chat Ultra Mode default', () => {
+describe('createSlot new chat conductor mode default', () => {
   beforeEach(() => {
     api.createChatSlot.mockReset()
     api.chatSlotAgent.mockReset()
@@ -47,12 +48,10 @@ describe('createSlot new chat Ultra Mode default', () => {
     api.agentCatalog.mockResolvedValue(CATALOG)
     api.dashboardConfig.mockReset()
     api.dashboardConfig.mockResolvedValue({ default_memory_mode: 'persistent', new_chat_crew_mode: true })
-    setPreviewFlag(PREVIEW_CREW_MODE, true)
     setCrewModeCatalog(CONDUCTOR, [CONDUCTOR], 'kirocrew')
   })
   afterEach(() => {
     resetCrewModeCatalog()
-    localStorage.removeItem(PREVIEW_CREW_MODE)
   })
 
   it('switches an opted-in New chat to the conductor and opens it switched', async () => {
@@ -92,8 +91,32 @@ describe('createSlot new chat Ultra Mode default', () => {
     expect(api.chatSlotAgent).not.toHaveBeenCalled()
   })
 
-  it('leaves the chat plain while the Ultra Mode preview is off', async () => {
-    localStorage.removeItem(PREVIEW_CREW_MODE)
+  it('waits for the edition lock before deciding, then switches once a standard build answers', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    __setFeaturePreviewLockKnownForTests(false)
+    const pending = created({ crewModeDefault: true })
+    // Everything but the lock has answered; the decision is still waiting on it.
+    await vi.advanceTimersByTimeAsync(FEATURE_PREVIEW_LOCK_WAIT_MS - 1)
+    expect(api.createChatSlot).toHaveBeenCalled()
+    expect(api.chatSlotAgent).not.toHaveBeenCalled()
+    __setFeaturePreviewLockKnownForTests(true)
+    await pending
+    expect(api.chatSlotAgent).toHaveBeenCalledWith('NEW', CONDUCTOR, 'template')
+  })
+
+  it('leaves the chat plain when the edition lock never arrives within the wait', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    __setFeaturePreviewLockKnownForTests(false)
+    const pending = created({ crewModeDefault: true })
+    await vi.advanceTimersByTimeAsync(FEATURE_PREVIEW_LOCK_WAIT_MS)
+    await pending
+    expect(api.chatSlotAgent).not.toHaveBeenCalled()
+  })
+
+  it('leaves the chat plain in a build without conductor mode (LTS)', async () => {
+    turnOffCrewModeAsLts()
     await created({ crewModeDefault: true })
     expect(api.chatSlotAgent).not.toHaveBeenCalled()
   })

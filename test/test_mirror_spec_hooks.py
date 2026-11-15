@@ -32,6 +32,7 @@ from kiro_crew.agent_sdk import spec_hooks
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
@@ -185,7 +186,7 @@ def test_a_live_shell_permission_request_carries_the_harness_tool(backend):
 @pytest.mark.parametrize("backend", _MIRRORS)
 def test_a_backend_with_no_table_gets_no_harness_tool_id(backend):
     # The same frames on a backend with no name table build the event as before.
-    assert _permission_event(backend, as_backend=ACP_BACKEND_CODEX).harness_tool_id == ""
+    assert _permission_event(backend, as_backend=ACP_BACKEND_COPILOT).harness_tool_id == ""
 
 
 def test_opencodes_later_titles_name_the_command_not_the_tool():
@@ -607,7 +608,10 @@ def test_a_rewritten_server_from_opencodes_own_config_meets_its_exact_deny(tmp_p
     # spawn's read-back named. The fused "docs_server_lookup" splits back to the
     # exact name, so a deny written mcp__docs.server__lookup still blocks.
     client = _bare_client(ACP_BACKEND_OPENCODE)
-    client._opencode_config_mcp_servers = ("docs.server",)
+    from kiro_crew.acp.harness import process_adapter_for
+
+    client._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
+    client._harness_read_back().config_mcp_servers = ("docs.server",)
     event = _direct_permission_event(client, "docs_server_lookup")
     assert event is not None
     assert event.harness_tool_id.split("|")[0] == "opencode#@docs.server/lookup"

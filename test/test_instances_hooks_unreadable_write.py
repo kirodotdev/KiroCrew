@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -55,9 +56,10 @@ def _fail_reads_of(path: Path, monkeypatch, *, readers: bool = True, times: int 
     """
     left = [times]
 
-    def _held(original):
+    def _held(original, *, only_from: str = ""):
         def read(self, *args, **kwargs):
-            if Path(self) == path and left[0] != 0:
+            caller = sys._getframe(1).f_code.co_name
+            if Path(self) == path and left[0] != 0 and (not only_from or caller == only_from):
                 left[0] -= 1
                 raise PermissionError(*_SHARING_VIOLATION)
             return original(self, *args, **kwargs)
@@ -68,7 +70,9 @@ def _fail_reads_of(path: Path, monkeypatch, *, readers: bool = True, times: int 
         monkeypatch.setattr(Path, "read_bytes", _held(Path.read_bytes))
     else:
         monkeypatch.setattr(
-            registry_mod, "read_bytes_with_retry", _held(registry_mod.read_bytes_with_retry)
+            registry_mod,
+            "read_bytes_with_retry",
+            _held(registry_mod.read_bytes_with_retry, only_from="_read_for_update"),
         )
 
 
@@ -147,6 +151,20 @@ def test_readers_still_degrade_an_unparseable_registry_to_empty(
     path = tmp_path / "instances.json"
     path.write_bytes(content)
     assert InstancesRegistry(path=path).list() == []
+
+
+def test_a_reader_retries_a_write_in_progress_instead_of_reading_empty(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """On Windows a read that lands in another process's write retries, like a mutation does."""
+    from kiro_crew import atomic_write, platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0)
+    path = tmp_path / "instances.json"
+    reg = _seed_two(path)
+    _fail_reads_of(path, monkeypatch, times=2)
+    assert [i.name for i in reg.list()] == ["alpha", "beta"]
 
 
 def test_a_missing_registry_still_starts_empty(tmp_path: Path) -> None:

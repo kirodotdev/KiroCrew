@@ -163,10 +163,10 @@ describe('ChatSidebar — the Older Sessions header explains the list', () => {
     renderSidebar()
     expect(disclosure().getAttribute('aria-expanded')).toBe('false')
     fireEvent.click(glyph())
-    // Pinned: the bubble is open and the glyph's `title` fallback is dropped
+    // Pinned: the bubble is open and the glyph's `title` fallback is emptied
     // so the browser's own tooltip never doubles it.
     expect(glyph().getAttribute('aria-expanded')).toBe('true')
-    expect(glyph().getAttribute('title')).toBeNull()
+    expect(glyph().getAttribute('title')).toBe('')
     expect(screen.getByRole('tooltip').textContent).toBe(TIP)
     // The row's own click would have opened the pane; the glyph's did not
     // reach it.

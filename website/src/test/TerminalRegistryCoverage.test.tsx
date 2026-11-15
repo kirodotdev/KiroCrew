@@ -331,6 +331,40 @@ describe('terminalRegistry', () => {
       expect(decode(ws)).toBe(code)
     })
 
+    // ConPTY hands a bare LF to the console as Ctrl+Enter, which PSReadLine binds
+    // to InsertLineAbove: a multi-line snippet then lands in reverse order and is
+    // never submitted. A PowerShell session gets CR, the Enter key, per line.
+    it.each([
+      ['C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', 'Get-Date', 'Get-Date\r'],
+      ['C:\\Program Files\\PowerShell\\7\\pwsh.exe', '$a = 2\n$b = 3\n$a + $b\n\n', '$a = 2\r$b = 3\r$a + $b\r'],
+      ['C:\\Program Files\\PowerShell\\7\\pwsh.exe', "$t = @'\r\nlinha um\r\n'@", "$t = @'\rlinha um\r'@\r"],
+    ])('submits each line with Enter on a PowerShell session (%s)', (shell, code, sent) => {
+      const id = session('send-powershell')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      act(() => { ws.simulateOpen(); ws.simulateJson({ type: 'ready', shell }) })
+      expect(sendToTerminalSession(id, code)).toBe(true)
+      expect(decode(ws)).toBe(sent)
+    })
+
+    it('uses Enter for a PowerShell session on the verbatim path too', () => {
+      const id = session('send-powershell-verbatim')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      act(() => { ws.simulateOpen(); ws.simulateJson({ type: 'ready', shell: 'C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' }) })
+      expect(sendToTerminalSession(id, 'Write-Output "a "\nWrite-Output b', { preserveTrailingWhitespace: true })).toBe(true)
+      expect(decode(ws)).toBe('Write-Output "a "\rWrite-Output b\r')
+    })
+
+    it('keeps LF for a POSIX session', () => {
+      const id = session('send-posix')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      act(() => { ws.simulateOpen(); ws.simulateJson({ type: 'ready', shell: '/bin/bash' }) })
+      expect(sendToTerminalSession(id, 'echo a\necho b')).toBe(true)
+      expect(decode(ws)).toBe('echo a\necho b\n')
+    })
+
     it('sends raw data without appending a newline', () => {
       const id = session('send-raw')
       const ws = openSocket(id)

@@ -332,3 +332,19 @@ _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 #: ``os.access``'s own identity per call would silently disable the ACL arm for any caller
 #: that had substituted the function.
 _ACCESS_HONOURS_EFFECTIVE_IDS = os.access in os.supports_effective_ids
+
+
+def c_strlen_address() -> int:
+    """Address of the C runtime's ``strlen``, or 0 when it cannot be resolved.
+
+    For native code that needs a function pointer it may call from a thread that
+    does not hold the interpreter lock (the embedding model's abort callback,
+    :mod:`kiro_crew.embeddings_preempt`). POSIX resolves it from the process's own
+    symbol namespace, where the C library is always loaded; Windows has no such
+    namespace for ``ctypes.CDLL(None)``, so it takes the always-present ``msvcrt``.
+    """
+    try:
+        libc = ctypes.cdll.msvcrt if IS_WINDOWS else ctypes.CDLL(None)  # type: ignore[attr-defined]
+        return int(ctypes.cast(libc.strlen, ctypes.c_void_p).value or 0)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return 0

@@ -52,11 +52,10 @@ describe('collapsed tool group with the permission-row decide', () => {
 
     fireEvent.click(screen.getByText(T('approve')))
 
-    // A refused decide is a failed request: it renders through ErrorNotice
-    // (errors-use-error-notice), the gone sentence included.
-    const gone = await screen.findByRole('alert')
+    // A gone approval is status, not an error (#18203).
+    const gone = await screen.findByRole('status')
     expect(gone).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.queryByLabelText(T('resolved'))).not.toBeInTheDocument()
   })
 })

@@ -1043,7 +1043,7 @@ class TestPinnedModelWithheld:
 
         state = MagicMock()
 
-        async def _reset(_key, *, skip_if_busy=False):
+        async def _reset(_key, *, skip_if_busy=False, forget_unused_start=False):
             return True
 
         state.sessions.reset = _reset
@@ -1069,7 +1069,7 @@ class TestPinnedModelWithheld:
 
         state = MagicMock()
 
-        async def _declined(_key, *, skip_if_busy=False):
+        async def _declined(_key, *, skip_if_busy=False, forget_unused_start=False):
             return False
 
         state.sessions.reset = _declined
@@ -1090,7 +1090,7 @@ class TestPinnedModelWithheld:
 
         state = MagicMock()
 
-        async def _boom(_key, *, skip_if_busy=False):
+        async def _boom(_key, *, skip_if_busy=False, forget_unused_start=False):
             raise RuntimeError("teardown exploded")
 
         state.sessions.reset = _boom

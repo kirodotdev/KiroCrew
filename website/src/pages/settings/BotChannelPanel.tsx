@@ -413,6 +413,10 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
   const [botId, setBotId] = useState('')
   const [botIdClear, setBotIdClear] = useState(false)
   const [formKey, setFormKey] = useState(0)  // bump to remount secret field after save
+  // The save's onSuccess reads the secret fields as they are when it lands,
+  // not as they were when the request started.
+  const secretsRef = useRef({ botToken, botClear, botId, botIdClear })
+  useEffect(() => { secretsRef.current = { botToken, botClear, botId, botIdClear } }, [botToken, botClear, botId, botIdClear])
   const [saved, setSaved] = useState(false)
   const [restartHint, setRestartHint] = useState(false)
   const [verifyWarning, setVerifyWarning] = useState('')
@@ -425,9 +429,9 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
   const [thresholdError, setThresholdError] = useState('')
   const thresholdErrorId = useId()
 
-  // Sync the local draft when server config arrives. Guarded so only the
-  // initial load and post-save invalidation reseed it — a background refetch
-  // must not discard in-progress edits (including a just-pasted token).
+  // Sync the local draft when server config first arrives. Only the initial
+  // load seeds it: a background refetch or a save's invalidation must not
+  // discard in-progress edits (including a just-pasted token).
   const syncArmed = useRef(true)
   useEffect(() => {
     if (data && syncArmed.current) {
@@ -461,8 +465,26 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       setRestartHint(!!res.restart_required)
       setVerifyWarning(res.verify_warning || '')
       setTokenVerified(!!vars.bot_token && !res.verify_warning)
-      syncArmed.current = true
-      setFormKey(k => k + 1)
+      // Not re-arming the draft sync: the server took the values we sent, and
+      // a reseed would overwrite any field edited while the save was in
+      // flight. Only the secrets just sent are cleared, and only while the
+      // field still holds what was sent.
+      const s = secretsRef.current
+      const nextToken = vars.bot_token && s.botToken.trim() === vars.bot_token ? '' : s.botToken
+      const nextId = vars.bot_id && s.botId.trim() === vars.bot_id ? '' : s.botId
+      setBotToken(nextToken)
+      setBotId(nextId)
+      if (vars.bot_token_clear) setBotClear(false)
+      if (vars.bot_id_clear) setBotIdClear(false)
+      const clearPending = (!vars.bot_token_clear && s.botClear) || (!vars.bot_id_clear && s.botIdClear)
+      // Collapse the secret fields back to their stored preview only when no
+      // newer credential edit is pending in them; a remount would hide it.
+      if (!nextToken && !nextId && !clearPending) setFormKey(k => k + 1)
+      // A blank folder name was saved as the channel's own name: show that,
+      // unless the field was cleared after a named folder was sent.
+      setDraft(d => (d && d.session_folder_on && !d.session_folder.trim() && vars.session_folder === spec.name
+        ? { ...d, session_folder: vars.session_folder }
+        : d))
       setTimeout(() => setSaved(false), 6000)
       qc.invalidateQueries({ queryKey: [spec.queryKey] })
     },
@@ -617,6 +639,9 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               isSet={!!data.bot_id_set}
               preview={data.bot_id_preview ?? ''}
               readOnly={ro}
+              // A value still pending (typed during a save) stays in the editor,
+              // even once the refetch reports a stored credential.
+              editing={botId ? true : undefined}
               value={botId}
               onChange={setBotId}
               cleared={botIdClear}
@@ -632,6 +657,9 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             isSet={data.bot_token_set}
             preview={data.bot_token_preview}
             readOnly={ro}
+            // A value still pending (typed during a save) stays in the editor,
+            // even once the refetch reports a stored credential.
+            editing={botToken ? true : undefined}
             value={botToken}
             onChange={setBotToken}
             cleared={botClear}

@@ -230,6 +230,12 @@ def _start_kas_cli_floor(cfg: KiroCrewConfig) -> "asyncio.Task[None]":
 
     async def _run() -> None:
         try:
+            # A kiro-cli found only through PATH has its version read inside the
+            # sandbox, on a thread of its own. Started here, with the other
+            # boot-time kiro-cli probes, so the first session finds the answer.
+            from kiro_crew import kiro_cli_path_probe
+
+            kiro_cli_path_probe.warm()
             main_default, member_default = await asyncio.to_thread(_kas_floor_gates_spawns, cfg)
             kas_floor_wait.release_kas_floor_wait(
                 task, main=not main_default, member=not member_default
@@ -636,6 +642,16 @@ async def run_gateway(
                     await asyncio.to_thread(staging.sweep_staging)
                 except Exception:
                     logging.getLogger(__name__).debug("staging sweep failed", exc_info=True)
+                # The dashboard import extracts under its own sandbox-hidden leaf;
+                # the same idle sweep reclaims a tree that a killed import left there.
+                try:
+                    from kiro_crew import staging
+
+                    await asyncio.to_thread(
+                        staging.sweep_staging, leaf=staging.IMPORT_STAGING_DIRNAME
+                    )
+                except Exception:
+                    logging.getLogger(__name__).debug("import staging sweep failed", exc_info=True)
                 # The per-run work directories of subagent and stateless cron
                 # sessions ride the same wake. The ordinary end of a run reclaims
                 # its own (AcpProvider.shutdown); the boot sweep took what a dead

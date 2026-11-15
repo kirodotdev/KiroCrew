@@ -15,6 +15,8 @@ import { usePanelDocumentActions } from '../hooks/usePanelDocumentActions'
 import { ThemeProvider } from '../hooks/useTheme'
 import { useChatPageResourcesController } from '../pages/chat/useChatPageResourcesController'
 import { i18nT } from '../i18n/t'
+import { forgetSlotSuccession, recordSlotSuccession } from '../utils/slotSuccession'
+import { clearSlotUploadFailures, takeSlotUploadFailure } from '../utils/slotUploadFailures'
 
 afterEach(() => { vi.restoreAllMocks() })
 
@@ -200,6 +202,141 @@ describe('dropping a space-named folder (#30416)', () => {
     expect(setUploadHint).not.toHaveBeenCalledWith(i18nT('components.chatInput.tree_drop_folder_refused'))
     // Local pre-check refused the files: nothing was sent.
     expect(uploadSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('a failed upload reports to the chat it started in', () => {
+  afterEach(() => { clearSlotUploadFailures() })
+
+  function render(activeSlotRef: { current: string | null }, setUploadError: (v: string) => void, dispatch: (a: unknown) => void) {
+    vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ upload_max_mb: 50 } as never)
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, createElement(ThemeProvider, null, children))
+    const noop = vi.fn()
+    const props = {
+      activeSlot: 'slot-a', activeSlotRef, messages: [], slotLoading: false,
+      dispatch: dispatch as never, queryClient, showActionError: noop,
+      composer: {
+        inputRef: ref(''), setInput: noop, drafts: ref({}), fileDrafts: ref({}), setPendingFiles: noop,
+        currentProjectRef: ref(undefined), voiceCaretRef: ref(null), voicePendingCaretRef: ref(null), saveDrafts: noop,
+        composerLockedRef: ref(false),
+      },
+      capture: {
+        setUploading: noop, setUploadError, setUploadHint: noop, setResizedInfo: noop,
+        snipSlotRef: ref(null), setSnipFrame: noop,
+      },
+    } as unknown as Parameters<typeof useChatPageResourcesController>[0]
+    return renderHook(() => useChatPageResourcesController(props), { wrapper })
+  }
+
+  it('holds the failure for the started chat when another chat is on screen', async () => {
+    let settle!: (v: unknown) => void
+    vi.spyOn(api, 'uploadFiles').mockReturnValue(new Promise(r => { settle = r }) as never)
+    const activeSlotRef = ref<string | null>('slot-a')
+    const setUploadError = vi.fn()
+    const dispatch = vi.fn()
+    const { result } = render(activeSlotRef, setUploadError, dispatch)
+    let pending: Promise<boolean> | undefined
+    act(() => { pending = result.current.uploadFiles([new File(['x'], 'a.txt', { type: 'text/plain' })]) })
+    activeSlotRef.current = 'slot-b'
+    setUploadError.mockClear()
+    await act(async () => { settle({ error: 'disk full' }); await pending })
+    expect(setUploadError).not.toHaveBeenCalledWith(expect.stringContaining('disk full'))
+    expect(takeSlotUploadFailure('slot-b')).toBe('')
+    expect(takeSlotUploadFailure('slot-a')).toContain('disk full')
+    // Shown once: taking it again finds nothing.
+    expect(takeSlotUploadFailure('slot-a')).toBe('')
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+
+  it('holds a failed native screenshot for the chat it was taken for', async () => {
+    let fail!: (e: unknown) => void
+    vi.spyOn(api, 'screenshot').mockReturnValue(new Promise((_r, rej) => { fail = rej }) as never)
+    const activeSlotRef = ref<string | null>('slot-a')
+    const dispatch = vi.fn()
+    const { result } = render(activeSlotRef, vi.fn(), dispatch)
+    let pending: Promise<void> | undefined
+    act(() => { pending = result.current.handleCapture() })
+    activeSlotRef.current = 'slot-b'
+    await act(async () => { fail(new Error('capture timed out')); await pending })
+    expect(takeSlotUploadFailure('slot-a')).toContain('capture timed out')
+  })
+
+  it('holds the failure when the chat page has unmounted before the upload fails', async () => {
+    let settle!: (v: unknown) => void
+    vi.spyOn(api, 'uploadFiles').mockReturnValue(new Promise(r => { settle = r }) as never)
+    const setUploadError = vi.fn()
+    const dispatch = vi.fn()
+    const { result, unmount } = render(ref<string | null>('slot-a'), setUploadError, dispatch)
+    let pending: Promise<boolean> | undefined
+    act(() => { pending = result.current.uploadFiles([new File(['x'], 'a.txt', { type: 'text/plain' })]) })
+    unmount()
+    setUploadError.mockClear()
+    await act(async () => { settle({ error: 'disk full' }); await pending })
+    expect(setUploadError).not.toHaveBeenCalledWith(expect.stringContaining('disk full'))
+    expect(takeSlotUploadFailure('slot-a')).toContain('disk full')
+  })
+
+  it('holds a failed screenshot for the slot that replaced the one it started in', async () => {
+    let fail!: (e: unknown) => void
+    vi.spyOn(api, 'screenshot').mockReturnValue(new Promise((_r, rej) => { fail = rej }) as never)
+    const activeSlotRef = ref<string | null>('slot-a')
+    const dispatch = vi.fn()
+    const { result } = render(activeSlotRef, vi.fn(), dispatch)
+    let pending: Promise<void> | undefined
+    act(() => { pending = result.current.handleCapture() })
+    // A memory-mode switch replaces slot-a with slot-a2 while the capture runs,
+    // and the person is on a third chat when it fails.
+    recordSlotSuccession('slot-a', 'slot-a2')
+    activeSlotRef.current = 'slot-b'
+    await act(async () => { fail(new Error('capture timed out')); await pending })
+    expect(takeSlotUploadFailure('slot-a')).toBe('')
+    expect(takeSlotUploadFailure('slot-a2')).toContain('capture timed out')
+    forgetSlotSuccession('slot-a')
+  })
+
+  it('follows the successor when the page unmounted with the replaced chat still in its frozen ref', async () => {
+    let fail!: (e: unknown) => void
+    vi.spyOn(api, 'screenshot').mockReturnValue(new Promise((_r, rej) => { fail = rej }) as never)
+    const { result, unmount } = render(ref<string | null>('slot-a'), vi.fn(), vi.fn())
+    let pending: Promise<void> | undefined
+    act(() => { pending = result.current.handleCapture() })
+    // The person left /chat; a remounted page then replaced slot-a with slot-a2.
+    // This instance's ref still names slot-a.
+    unmount()
+    recordSlotSuccession('slot-a', 'slot-a2')
+    await act(async () => { fail(new Error('capture timed out')); await pending })
+    expect(takeSlotUploadFailure('slot-a')).toBe('')
+    expect(takeSlotUploadFailure('slot-a2')).toContain('capture timed out')
+    forgetSlotSuccession('slot-a')
+  })
+
+  it('shows the banner when a memory-mode switch put the upload\'s successor on screen', async () => {
+    let settle!: (v: unknown) => void
+    vi.spyOn(api, 'uploadFiles').mockReturnValue(new Promise(r => { settle = r }) as never)
+    const activeSlotRef = ref<string | null>('slot-a')
+    const setUploadError = vi.fn()
+    const { result } = render(activeSlotRef, setUploadError, vi.fn())
+    let pending: Promise<boolean> | undefined
+    act(() => { pending = result.current.uploadFiles([new File(['x'], 'a.txt', { type: 'text/plain' })]) })
+    // The switch made slot-a2 active but has not handed the upload over yet.
+    recordSlotSuccession('slot-a', 'slot-a2')
+    activeSlotRef.current = 'slot-a2'
+    await act(async () => { settle({ error: 'disk full' }); await pending })
+    expect(setUploadError).toHaveBeenCalledWith(expect.stringContaining('disk full'))
+    expect(takeSlotUploadFailure('slot-a')).toBe('')
+    forgetSlotSuccession('slot-a')
+  })
+
+  it('keeps the banner when the started chat is still on screen', async () => {
+    vi.spyOn(api, 'uploadFiles').mockResolvedValue({ error: 'disk full' } as never)
+    const setUploadError = vi.fn()
+    const dispatch = vi.fn()
+    const { result } = render(ref<string | null>('slot-a'), setUploadError, dispatch)
+    await act(async () => { await result.current.uploadFiles([new File(['x'], 'a.txt', { type: 'text/plain' })]) })
+    expect(setUploadError).toHaveBeenCalledWith(expect.stringContaining('disk full'))
+    expect(takeSlotUploadFailure('slot-a')).toBe('')
   })
 })
 

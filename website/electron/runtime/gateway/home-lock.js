@@ -141,9 +141,14 @@ function createHomeLock({
    * (holder=indeterminate), and a packaged app's refusal to run a
    * PATH-fallback `kirocrew`.
    *
+   * With `port`, the CLI names a held lock whose stamp a Windows mandatory
+   * lock hides from the gateway's fresh run record for that port
+   * (`gateway-pid --port`); without it such a lock stays `held`.
+   *
+   * @param {{port?: number}} [options]
    * @returns {Promise<{verdict:"captured"|"released"|"held"|"unverified"|"refused", pid:number|null}>}
    */
-  function probeLockHolderPid() {
+  function probeLockHolderPid({ port } = {}) {
     const { KIROCREW_PORT: _ignored, ...cleanEnv } = processObj.env;
     const bin = resolveGatewayBin();
     // The same refusal spawnGateway applies: a packaged Windows app with no
@@ -154,7 +159,11 @@ function createHomeLock({
       return Promise.resolve({ verdict: "refused", pid: null });
     }
     const bundled = bin.includes("backend-dist");
-    const { bin: probeBin, args: probeArgs } = gatewayCliInvocation(bin, ["gateway-pid"], path);
+    const { bin: probeBin, args: probeArgs } = gatewayCliInvocation(
+      bin,
+      Number.isInteger(port) && port > 0 ? ["gateway-pid", "--port", String(port)] : ["gateway-pid"],
+      path,
+    );
     return new Promise((resolve) => {
       execFile(probeBin, probeArgs, {
         timeout: STUCK_GATEWAY_STOP_TIMEOUT_MS,

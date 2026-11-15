@@ -161,6 +161,16 @@ def toplevel(path: str) -> str | None:
     return _wt._git_toplevel(path)
 
 
+def toplevel_or_refusal(path: str) -> tuple[str | None, str, str]:
+    """``(root, "", "")`` for ``path``, else ``(None, code, git's line)`` saying why
+    git would not open it, read the way the follow-up card's worktree create reads it."""
+    root, stderr = _wt._toplevel_probe(path)
+    if root:
+        return root, "", ""
+    code, _message, line = _wt._not_a_repo_refusal(stderr)
+    return None, code, line
+
+
 def checkout_filter(root: str) -> str:
     """A repo-declared checkout filter git would run (refusal reason), or ``""``."""
     return _wt._checkout_filter(root)

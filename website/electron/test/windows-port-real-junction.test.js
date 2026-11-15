@@ -16,6 +16,10 @@
 // execFile refuses a `.cmd` here (EINVAL), so `kirocrew gateway-pid` is reached
 // only through gatewayCliInvocation's unwrap of the bundled
 // backend-dist\kirocrew-backend\bin\kirocrew.cmd to the python.exe beside it.
+//
+// A fourth asks real PowerShell 5.1 for a process's ExecutablePath under an
+// ASCII and a non-ASCII folder, so the identity probe's UTF-8 output line is
+// proven on Windows, not only by the argv it sends.
 
 const { describe, it, test } = require("node:test");
 const assert = require("node:assert");
@@ -144,6 +148,47 @@ test("a process launched through a junction is matched however Win32_Process spe
     await new Promise((resolve) => child.once("exit", resolve));
   }
 }));
+
+// The identity probe's output encoding, asked of real Windows PowerShell 5.1
+// from a hidden-console child, as the desktop app spawns it. An interpreter
+// under an ASCII folder and one under a non-ASCII folder must each come back
+// as the exact path it was launched from: the ASCII one proves the encoding
+// line changes nothing for an ordinary install, the non-ASCII one that it
+// keeps the letters the OEM code page used to turn into replacement marks.
+for (const folder of ["Programs", "José Zoë Ünïcode"]) {
+  test(`the identity probe reports a process under "${folder}" byte-exact`, { skip }, () => withScratch(async (root) => {
+    const dir = path.join(root, folder);
+    fs.mkdirSync(dir);
+    const exe = path.join(dir, "python.exe");
+    fs.copyFileSync(process.execPath, exe);
+
+    await warmUpCimProvider();
+
+    const child = spawn(exe, ["-e", "setTimeout(() => {}, 120000)"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    try {
+      await new Promise((resolve, reject) => {
+        child.once("spawn", resolve);
+        child.once("error", reject);
+      });
+      const identity = await windowsProcessCommand(child.pid, CI_PROBE_BUDGET);
+      const reported = /^"([^"]+)"/.exec(identity);
+      assert.ok(reported, `identity starts with a quoted ExecutablePath: ${JSON.stringify(identity)}`);
+      assert.ok(!reported[1].includes("\uFFFD"), `no replacement character: ${JSON.stringify(reported[1])}`);
+      assert.ok(canonicalWindowsPath(exe), "the launched interpreter resolves");
+      assert.strictEqual(
+        canonicalWindowsPath(reported[1]),
+        canonicalWindowsPath(exe),
+        `reported=${JSON.stringify(reported[1])} launched=${JSON.stringify(exe)}`
+      );
+    } finally {
+      child.kill();
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  }));
+}
 
 describe("gatewayCliInvocation on a real Windows host", { skip: IS_WIN ? false : "a .cmd launcher and its EINVAL refusal exist only on Windows" }, () => {
   it("unwraps the bundled kirocrew.cmd to the bundled python.exe with -s -P -m kiro_crew", () => {

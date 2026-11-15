@@ -656,6 +656,40 @@ def test_a_workers_report_wakes_its_conductor_through_the_bus(real_crew_log, mon
     asyncio.run(body())
 
 
+def test_who_else_can_report_is_read_off_the_folds_own_board(real_crew_log, monkeypatch):
+    """END TO END for the wake window's one exemption.
+
+    Whether a reporter is alone is read off the board the ``work`` fold renders, never
+    off a second store. With another worker bound and open the report waits the window;
+    once that item is closed, the same worker's next report is armed at once.
+    """
+    monkeypatch.setenv(conductor_wake.WAKE_BATCH_ENV, "7")
+    _board("acp-c", CONDUCTOR, WORKER)
+    base = {"slot": CONDUCTOR, "actor": "conductor", "by": CONDUCTOR, "item_id": "it_q"}
+    _write("acp-c", **base, action="create", title="t", acceptance={"kind": "human_approval"})
+    _write("acp-c", **base, action="bind", worker_session_key="chat-worker-b")
+    _unit("acp-w", WORKER)
+
+    async def body() -> None:
+        svc = _Listing(_Loop())
+        _on_this_loop(monkeypatch, svc)
+        await _sync_and_join(svc)
+        assert conductor_wake._registry.live[CONDUCTOR] == {"it_p", "it_q"}
+        await asyncio.to_thread(_report, "acp-w", CONDUCTOR, WORKER, "2026-10-02T00:00:01Z")
+        assert await _until(lambda: svc.delays), "the report reached the conductor's loop"
+        assert svc.delays == [7.0], "a second worker is still out"
+
+        await asyncio.to_thread(_write, "acp-c", **base, action="close", state="accepted")
+        assert await _until(lambda: conductor_wake._registry.live[CONDUCTOR] == {"it_p"})
+        await asyncio.to_thread(
+            _report, "acp-w", CONDUCTOR, WORKER, "2026-10-02T00:00:02Z", status="question"
+        )
+        assert await _until(lambda: len(svc.delays) == 2)
+        assert svc.delays == [7.0, 0.0], "nobody is left to share the turn with"
+
+    asyncio.run(body())
+
+
 def test_a_progress_report_wakes_nobody_through_the_bus(real_crew_log, monkeypatch):
     """END TO END, and the case the whole change exists for.
 

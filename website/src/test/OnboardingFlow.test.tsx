@@ -138,6 +138,17 @@ describe('OnboardingFlow — About You step', () => {
     expect(localStorage.getItem('mc-onboarding-step')).toBeNull()
   })
 
+  it('forgets a saved step once the user is onboarded without finishing the tour', async () => {
+    localStorage.setItem('mc-onboarding-step', '2')
+    localStorage.setItem('mc-onboarded', '1')
+    try {
+      renderWithProviders(<OnboardingFlow initialOpen={false} onComplete={vi.fn()} />)
+      await waitFor(() => expect(localStorage.getItem('mc-onboarding-step')).toBeNull())
+    } finally {
+      localStorage.removeItem('mc-onboarded')
+    }
+  })
+
   it('ignores a saved step once the user is onboarded (a /onboarding replay starts at step 1)', () => {
     localStorage.setItem('mc-onboarding-step', '4')
     localStorage.setItem('mc-onboarded', '1')

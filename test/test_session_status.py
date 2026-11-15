@@ -158,6 +158,18 @@ class TestLiveness:
         row = _rows(_status(state, caller))["chat-2"]
         assert row["status"] == "queued" and row["queue_depth"] == 1
 
+    def test_an_idle_session_holding_only_restored_cards_is_idle(self, tmp_path):
+        """A card restored after a restart never runs on its own, so the row asks
+        for a decision instead of telling the patrol to wait for it."""
+        from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        child = _child(state, "chat-2", caller)
+        child._queue[:] = [{"id": "r1", "content": "restored", RESTORED_QUEUE_KEY: True}]
+        row = _rows(_status(state, caller))["chat-2"]
+        assert row["status"] == "idle" and row["queue_depth"] == 1
+
     def test_a_row_carries_the_title_the_person_sees(self, tmp_path):
         state = _make_state(tmp_path)
         caller = _slot(state, "chat-1")

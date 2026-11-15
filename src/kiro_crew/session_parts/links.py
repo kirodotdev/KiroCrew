@@ -124,6 +124,17 @@ def slack_link_nonce(self: SessionManager, key: str) -> str:
     return self._session_map.slack_link_nonce(key)
 
 
+def session_map_generation(self: SessionManager) -> tuple[int, int]:
+    """``(map identity, mutation counter)``: unchanged means no link read here can differ.
+
+    Every link, pause flag and nonce the accessors above return lives in the
+    one ``SessionMap``, whose counter moves after each mutation. The identity
+    covers a map swapped out from under the manager.
+    """
+    session_map = self._session_map
+    return id(session_map), session_map.mutation_generation()
+
+
 def set_mirror_opt_out(self: SessionManager, key: str, opted_out: bool) -> None:
     """Record (or withdraw) a refusal of AUTOMATIC origin mirroring.
 

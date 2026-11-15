@@ -505,12 +505,14 @@ slow link.
   but every live session retains context and runtime state, and other session
   shapes still own a dedicated process.
 
-Embeddings cannot be traded away here: they are always-on and there is no
-config knob to disable them (`embedding_provider` is coerced to `llama_cpp`
-whatever you set, and `POST /api/memory/disable-embeddings` is a deliberate
-HTTP 410 stub). On a memory-constrained host they degrade gracefully to
-keyword/FTS search while the model is absent, so a memory cap is the lever,
-not a provider swap.
+Embeddings themselves stay on: there is no config knob to disable them, and
+`POST /api/memory/disable-embeddings` is a deliberate HTTP 410 stub. The
+in-process `llama_cpp` provider is the default; setting
+`memory.embedding_provider` to `ollama_http` moves the model out of the
+gateway process to an Ollama server at `memory.ollama_url` (set
+`memory.ollama_model` and `memory.embedding_dim` to match its model). On a
+memory-constrained host search degrades gracefully to keyword/FTS while the
+model is absent, so a memory cap remains the main lever.
 
 ---
 

@@ -196,6 +196,46 @@ describe('BotChannelPanel optional blocks', () => {
 })
 
 describe('BotChannelPanel save', () => {
+  it('keeps an allow-list entry added while the save was in flight', async () => {
+    let finish: (v: unknown) => void = () => {}
+    let loads = 0
+    const spec = makeSpec({
+      getConfig: () => { loads += 1; return Promise.resolve(config(loads > 1 ? { connected: true } : {})) },
+      saveConfig: vi.fn().mockReturnValue(new Promise(res => { finish = res })),
+    })
+    renderPanel(spec)
+    await screen.findByText('Allowed user IDs')
+    await act(async () => { fireEvent.click(await saveBtn()) })
+    const entry = screen.getByPlaceholderText('123')
+    fireEvent.change(entry, { target: { value: '777' } })
+    fireEvent.keyDown(entry, { key: 'Enter' })
+    await act(async () => { finish({ ok: true, restart_required: false, verify_warning: '' }) })
+    // The invalidation refetches a changed config (now connected) that only holds
+    // '42'; the entry added during the save must stay.
+    await waitFor(() => expect(loads).toBeGreaterThan(1))
+    expect(await screen.findByText('Connected')).toBeInTheDocument()
+    expect(screen.getByText('777')).toBeInTheDocument()
+  })
+
+  it('keeps a replacement token typed while the save was in flight on screen', async () => {
+    let finish: (v: unknown) => void = () => {}
+    let loads = 0
+    const saveConfig = vi.fn().mockReturnValueOnce(new Promise(res => { finish = res }))
+    const spec = makeSpec({
+      getConfig: () => { loads += 1; return Promise.resolve(config(loads > 1 ? { connected: true } : {})) },
+      saveConfig,
+    })
+    renderPanel(spec)
+    await screen.findByText('Allowed user IDs')
+    await act(async () => { fireEvent.click(await saveBtn()) })
+    fireEvent.click(screen.getByRole('button', { name: /^Replace/ }))
+    fireEvent.change(screen.getByPlaceholderText('zz-token-placeholder'), { target: { value: 'zz-new-token' } })
+    await act(async () => { finish({ ok: true, restart_required: false, verify_warning: '' }) })
+    expect(await screen.findByText('Connected')).toBeInTheDocument()
+    // The field stays open on the typed token rather than collapsing to the
+    // stored preview, so the next save sends something the user can see.
+    expect(screen.getByPlaceholderText('zz-token-placeholder')).toHaveValue('zz-new-token')
+  })
   it('refuses a threshold outside 1-100 without calling the API', async () => {
     const saveConfig = vi.fn()
     renderPanel(makeSpec({ saveConfig }))

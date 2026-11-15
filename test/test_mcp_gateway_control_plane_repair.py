@@ -76,7 +76,7 @@ def test_a_hand_authored_control_plane_launches_the_managed_binary_and_passes_th
     version-pinned path an upgrade has reaped); the stub must carry the managed
     command and args, and the daemon gate -- the real one, on that exact launch --
     must hand over the token."""
-    spec = {"name": "team-config", "mcpServers": {"kirocrew-core": dict(declared)}}
+    spec = {"name": "team-config", "tools": ["*"], "mcpServers": {"kirocrew-core": dict(declared)}}
     with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.rewriter"):
         new_spec, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"kirocrew-core"}))
 
@@ -109,7 +109,11 @@ def test_the_target_env_the_daemon_reads_names_the_managed_binary(
 ) -> None:
     """``_collect_target_env`` is what gatewayd's ``env_target_resolver`` spawns
     from; it must agree with the stub, or the PoolKey lies about the binary."""
-    spec = {"name": "team-config", "mcpServers": {"kirocrew-core": dict(TOOLBOX_SHIM)}}
+    spec = {
+        "name": "team-config",
+        "tools": ["*"],
+        "mcpServers": {"kirocrew-core": dict(TOOLBOX_SHIM)},
+    }
     new_spec, _ = _rewrite(spec, tmp_path, stub_servers=frozenset({"kirocrew-core"}))
     target_env: dict[str, str] = {}
     rewriter._collect_target_env(new_spec["mcpServers"], target_env)
@@ -126,6 +130,7 @@ def test_the_repair_warning_never_prints_the_declared_arguments(
     token = "ghp_1234567890abcdefghijklmnopqrstuvwxyzAB"
     spec = {
         "name": "team-config",
+        "tools": ["*"],
         "mcpServers": {"kirocrew-core": {**TOOLBOX_SHIM, "args": ["mcp-core", "--token", token]}},
     }
     with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.rewriter"):
@@ -192,6 +197,7 @@ def test_a_spec_already_naming_the_managed_launch_is_not_rewritten_or_warned(
     round-trip silently -- the warning is for hand-authored specs only."""
     spec = {
         "name": "kirocrew",
+        "tools": ["*"],
         "mcpServers": {
             "kirocrew-core": {"command": managed_core["command"], "args": managed_core["args"]}
         },
@@ -220,6 +226,7 @@ def test_a_scalar_args_on_a_reserved_name_does_not_abort_the_rewrite_pass(
     third-party entry with the same malformed shape is wrapped too."""
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {
             "kirocrew-core": {"command": "kirocrew", "args": bad_args},
             "third": {"command": managed_core["command"], "args": bad_args},

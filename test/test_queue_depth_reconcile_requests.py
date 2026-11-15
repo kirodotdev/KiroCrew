@@ -173,6 +173,43 @@ async def test_a_steady_stream_of_requests_cannot_withhold_every_frame(
         _close(mgr)
 
 
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@PUMP_MODES
+async def test_a_zero_read_that_sends_no_frame_still_forgets_the_label(
+    monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
+) -> None:
+    """A heal request lands during the first 0 read, which then outlasts the
+    withhold cap: it is published bare and keeps the parent's label. The read
+    behind it is 0 again, the depth already published, so the heal sends no
+    frame; no request overlapped that read, so it forgets the label anyway."""
+    mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop)
+    clock = {"now": 0.0}
+    monkeypatch.setattr(run_mod, "_queue_depth_clock", lambda: clock["now"])
+    real = SpawnAdmissionCoordinator.taskq_chip_overflow_async
+    reads: list[str] = []
+
+    async def heal_during_first(self: Any, parent: str) -> int | None:
+        reads.append(parent)
+        if len(reads) == 1:
+            mgr._run_events._request_queue_depth(_PARENT, set(), heal=True)
+            clock["now"] += run_mod._QUEUE_DEPTH_MAX_WITHHOLD_SECS
+        return await real(self, parent)
+
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "taskq_chip_overflow_async", heal_during_first)
+    try:
+        events = _record(mgr)
+        mgr._queue_wait[_PARENT] = dict(_STALE_WAIT)
+        mgr._emit_queue_depth(_PARENT)
+        await _settle(mgr)
+
+        assert reads == [_PARENT, _PARENT]
+        assert _depths(events) == [{"queued": 0}], "a heal at the published depth sends nothing"
+        assert _PARENT not in mgr._queue_wait, "a 0 no request overlapped forgets it"
+    finally:
+        _close(mgr)
+
+
 # ── the delayed re-read: one per parent, answered by any frame ──────────────
 
 

@@ -167,6 +167,7 @@ class TestReleasePermissions:
         assert _permission_block(lines, "  version:") is None
         assert _permission_block(lines, "  resolve-promotion:") == {
             "actions": "read",
+            "checks": "read",
             "contents": "read",
         }
         assert _permission_block(lines, "  record-promotion:") == {

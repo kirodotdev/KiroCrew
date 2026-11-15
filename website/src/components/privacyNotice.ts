@@ -1,5 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
+// Leaf modules, not `../api/client`: most tests mock that module with a bare
+// factory, and the second read below must not depend on exports they leave out.
+import { ApiError } from '../api/apiError'
+import { pendingRefresh } from '../api/refreshOnce'
 import type { BeaconStatus } from './PrivacyDisclosure'
 
 /**
@@ -12,16 +16,33 @@ import type { BeaconStatus } from './PrivacyDisclosure'
  * something new. The backend keeps the same number as
  * `beacon.PRIVACY_NOTICE_VERSION`; a backend test pins the two together.
  */
-export const PRIVACY_NOTICE_VERSION = 2
+export const PRIVACY_NOTICE_VERSION = 3
 
 /** GET /api/telemetry/collection, the fields the notice reads. */
 interface CollectionStatus {
   enabled?: boolean
+  /** A `config.local.json` entry decides the switch. */
+  overlay_override?: boolean
   env_pinned?: boolean
   env_var?: string
   /** Recording would also send metrics to a configured destination. */
   otlp_configured?: boolean
+  /** That destination is sent to now: recording was turned on explicitly. */
+  export_permitted?: boolean
+  /** Off only by a written false older builds wrote: the chapter offers Turn on once. */
+  off_offer?: boolean
+  /** Each destination by name; `provider` + `locked` rows are shipped by the build. */
+  otlp_destinations?: Array<{ name: string; source?: string; locked?: boolean }>
 }
+
+/** The destination the public build ships for product usage metrics. */
+export const KIRO_TELEMETRY_DESTINATION = 'kiro-telemetry'
+
+/** Whether a destination row is the build's own Kiro telemetry, not an operator entry. */
+export function isKiroTelemetryRow(row: { name: string; source?: string; locked?: boolean }): boolean {
+  return row.name === KIRO_TELEMETRY_DESTINATION && row.source === 'provider' && row.locked === true
+}
+
 
 /**
  * Why usage data is off. `config` is a choice the user can change in Settings;
@@ -40,10 +61,36 @@ export interface UsageDataState {
   heartbeatOn: boolean
   /** Local recording is on AND sends metrics to a configured destination. */
   exportOn: boolean
+  /** Local recording is on AND the build's Kiro telemetry destination gets product metrics. */
+  kiroTelemetryOn?: boolean
+  /** Recording is off only by a written false an older build wrote: offer Turn on once. */
+  offerOn?: boolean
   /** Set only when `on` is false. */
   offReason: UsageOffReason | null
   /** The env var to name when `offReason` is `env`. */
   envVar: string
+  /** Off, and a `config.local.json` entry holds a switch off (not the user's own setting). */
+  overlayOff?: boolean
+}
+
+/**
+ * One status read, tried once more when the gateway refused it because the
+ * dashboard sign-in had run out. On that refusal the client starts renewing the
+ * sign-in and hands the refusal back unchanged (`checkSessionExpired`), so the
+ * first read after a lapse fails while the same read a moment later answers.
+ * The second read waits for a renewal that is still running. A renewal that
+ * failed, or a second read that fails, leaves the read failed.
+ */
+async function readAfterRenewal<T>(read: () => Promise<T>): Promise<T> {
+  try {
+    return await read()
+  } catch (e) {
+    // A proxy's own sign-in page sets `authRequired` too, and no renewal clears it.
+    if (!(e instanceof ApiError && e.authRequired && !e.edgeChallenge)) throw e
+    const renewal = pendingRefresh()
+    if (renewal && !(await renewal).ok) throw e
+    return read()
+  }
 }
 
 /**
@@ -59,13 +106,13 @@ export interface UsageDataState {
 export function useUsageDataState(enabled: boolean): UsageDataState {
   const beaconQ = useQuery<BeaconStatus>({
     queryKey: ['beaconStatus'],
-    queryFn: () => api.beaconStatus(),
+    queryFn: () => readAfterRenewal(() => api.beaconStatus()),
     enabled,
     retry: false,
   })
   const collectionQ = useQuery<CollectionStatus>({
     queryKey: ['telemetryCollection'],
-    queryFn: () => api.collectionStatus(),
+    queryFn: () => readAfterRenewal(() => api.collectionStatus()),
     enabled,
     retry: false,
   })
@@ -79,14 +126,23 @@ export function useUsageDataState(enabled: boolean): UsageDataState {
   }
   const recordingOn = !!collection.enabled
   const heartbeatOn = !!beacon.enabled && !beacon.env_override && !beacon.governance_override
-  const exportOn = recordingOn && !!collection.otlp_configured
+  // Absent reads as permitted: a disclosure errs toward "sent". The build's Kiro
+  // telemetry row is named on its own line (`kiroTelemetryOn`), so it does not
+  // count here; an empty or absent list (posture unknown) still does.
+  const rows = collection.otlp_destinations ?? []
+  const otherDestination = rows.length === 0 || rows.some(row => !isKiroTelemetryRow(row))
+  const exportOn = recordingOn && !!collection.otlp_configured && collection.export_permitted !== false
+    && otherDestination
+  const kiroTelemetryOn = recordingOn && rows.some(isKiroTelemetryRow)
   if (recordingOn || heartbeatOn) {
-    return { status: 'ready', on: true, recordingOn, heartbeatOn, exportOn, offReason: null, envVar: '' }
+    const offerOn = !recordingOn && !!collection.off_offer
+    return { status: 'ready', on: true, recordingOn, heartbeatOn, exportOn, kiroTelemetryOn, offerOn, offReason: null, envVar: '' }
   }
   const envVar = (beacon.env_override ? beacon.env_var : collection.env_pinned ? collection.env_var : '') ?? ''
   let offReason: UsageOffReason = 'config'
   if (beacon.governance_override) offReason = 'governance'
   else if (envVar === 'DO_NOT_TRACK') offReason = 'do_not_track'
   else if (envVar) offReason = 'env'
-  return { status: 'ready', on: false, recordingOn: false, heartbeatOn: false, exportOn: false, offReason, envVar }
+  const overlayOff = !!(beacon.overlay_override || collection.overlay_override)
+  return { status: 'ready', on: false, recordingOn: false, heartbeatOn: false, exportOn: false, offReason, envVar, overlayOff }
 }

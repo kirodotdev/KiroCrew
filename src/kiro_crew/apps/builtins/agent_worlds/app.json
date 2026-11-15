@@ -21,6 +21,17 @@
   "heroImageDark": "/app-assets/worlds/hero-dark.svg",
   "heroImageDetail": "/app-assets/worlds/hero-detail-light.svg",
   "heroImageDetailDark": "/app-assets/worlds/hero-detail-dark.svg",
+  "permissions": {
+    "api": [
+      "=/api/chat",
+      "/api/chat/slots",
+      "/api/approvals",
+      "=/api/crons",
+      "=/api/spawn",
+      "=/api/config/default-agent",
+      "=/api/dashboard/config"
+    ]
+  },
   "ui": {
     "pages": [
       {

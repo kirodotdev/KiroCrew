@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider, onlineManager } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
 import type { ReactElement } from 'react'
+import { createTestStore } from './helpers'
+import { setUpdateProgress } from '../store/dashboardSlice'
 
 // The copy control's outcome is decided by the clipboard helper; stub it so
 // the tests pin what the card paints for each answer.
@@ -670,6 +673,25 @@ describe('ErrorCard — a session start that failed twice in a row', () => {
       // The failure being fixed stops reading as an alarm above the restarting line.
       expect(screen.getByTestId('error-card-session-start-prose')).toHaveClass('text-muted')
       expect(screen.getByTestId('error-card-session-start-prose')).not.toHaveClass('text-danger')
+    })
+
+    it('a restart refused after its 200 drops the restarting line and shows the reason, keeping the retry (#35351)', async () => {
+      const store = createTestStore()
+      render(
+        <Provider store={store}>
+          <QueryClientProvider client={new QueryClient({ defaultOptions: { mutations: { retry: false } } })}>
+            <ErrorCard content={prose} meta={{ kind: 'session_start_failed' }} sessionStartRepeat onRestartGateway={() => Promise.resolve({ ok: true, status: 'restarting' })} />
+          </QueryClientProvider>
+        </Provider>,
+      )
+      armAndConfirm()
+      await screen.findByTestId('error-card-restarting')
+      act(() => { store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' })) })
+      act(() => { store.dispatch(setUpdateProgress({ step: 'error', detail: 'Sessions did not drain in time.' })) })
+      const notice = await screen.findByTestId('error-card-restart-failed')
+      expect(notice).toHaveTextContent('Sessions did not drain in time.')
+      expect(screen.queryByTestId('error-card-restarting')).toBeNull()
+      expect(button()).toBeInTheDocument()
     })
 
     it('a request the gateway never answered is a failure, not a restart: the notice, the terminal hint and the button stay', async () => {

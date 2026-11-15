@@ -45,7 +45,7 @@ async def api_slack_pins(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
@@ -145,7 +145,7 @@ async def api_slack_reactions(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
@@ -234,7 +234,7 @@ def _missing_scope_message(needed: str) -> str:
         f"This Slack action requires {scope_clause}, which is not granted to this app. "
         "Reinstall the app after granting the required permissions in the Slack Dashboard. "
         f"Alternatively, {add_clause} the app manifest and recreate the app by following "
-        "the steps in docs/guides/slack-setup.md."
+        "the steps in https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/slack-setup.md"
     )
 
 
@@ -247,7 +247,7 @@ async def api_slack_profile(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object

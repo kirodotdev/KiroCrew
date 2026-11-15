@@ -21,6 +21,7 @@ from acp_session_mcp_helpers import _write_spec
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import client_claude_session
 from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.raw_sdk_tasks import RAW_SDK_MESSAGE_FILTER
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.knowledge.llm_pool import _get_acp_backend
@@ -34,6 +35,9 @@ _ZERO_TOOL_OPTIONS = {
     "strictMcpConfig": True,
     "allowDangerouslySkipPermissions": False,
 }
+
+#: What a claude session asks for beside its options (``acp.raw_sdk_tasks``).
+_RAW_SDK_FILTER = list(RAW_SDK_MESSAGE_FILTER)
 
 
 async def _session_new_params(client: AcpClient, tmp_path: Path, monkeypatch) -> list[dict]:
@@ -93,7 +97,9 @@ async def test_a_zero_tool_session_is_sent_no_tool(tmp_path, agents_dir, monkeyp
     [params] = await _session_new_params(client, tmp_path, monkeypatch)
     assert client.spec_zero_tools is True
     assert params["mcpServers"] == []
-    assert params["_meta"] == {"claudeCode": {"options": _ZERO_TOOL_OPTIONS}}
+    assert params["_meta"] == {
+        "claudeCode": {"options": _ZERO_TOOL_OPTIONS, "emitRawSDKMessages": _RAW_SDK_FILTER}
+    }
 
 
 @pytest.mark.asyncio

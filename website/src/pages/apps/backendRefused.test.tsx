@@ -33,7 +33,7 @@ vi.mock('../../i18n/t', async importOriginal => {
   }
 })
 
-import { backendRefusedNotice, backendRefusedReason } from '../../components/appstore/backendRefused'
+import { appActionNotice, backendRefusedNotice, backendRefusedReason } from '../../components/appstore/backendRefused'
 import { useAppActions } from './useAppActions'
 import { useAppUpdates } from './useAppUpdates'
 import type { AppsData } from './useAppsData'
@@ -62,6 +62,29 @@ describe('backendRefusedNotice', () => {
     expect(backendRefusedNotice('Notes', { backend_refused: 42 })).toBe('')
     expect(backendRefusedNotice('Notes', undefined)).toBe('')
     expect(backendRefusedReason(null)).toBe('')
+  })
+})
+
+const WARN_ON = 'pages.appsPage.action_warnings_enabled'
+const WARN_OFF = 'pages.appsPage.action_warnings_disabled'
+
+describe('appActionNotice', () => {
+  it('says which action landed, then names the gateway warnings', () => {
+    expect(appActionNotice('Notes', { ok: true, warnings: ['hooks failed: boom', 'config sync failed: denied'] }, 'disable'))
+      .toBe(`${WARN_OFF} ${JSON.stringify({ name: 'Notes', warnings: 'hooks failed: boom; config sync failed: denied' })}`)
+    expect(appActionNotice('Notes', { ok: true, warnings: ['hooks failed: boom'] }, 'enable'))
+      .toBe(`${WARN_ON} ${JSON.stringify({ name: 'Notes', warnings: 'hooks failed: boom' })}`)
+  })
+
+  it('shows a refused backend and the warnings together, and is empty with no usable warnings', () => {
+    expect(appActionNotice('Notes', { backend_refused: REASON, warnings: ['hooks failed: boom'] }, 'enable'))
+      .toBe(`${KEY} ${JSON.stringify({ name: 'Notes', reason: REASON })} ${WARN_ON} ${JSON.stringify({ name: 'Notes', warnings: 'hooks failed: boom' })}`)
+    expect(appActionNotice('Notes', { backend_refused: REASON }, 'enable'))
+      .toBe(`${KEY} ${JSON.stringify({ name: 'Notes', reason: REASON })}`)
+    expect(appActionNotice('Notes', { ok: true }, 'disable')).toBe('')
+    expect(appActionNotice('Notes', { warnings: ['  ', 7] }, 'disable')).toBe('')
+    expect(appActionNotice('Notes', { warnings: 'hooks failed' }, 'disable')).toBe('')
+    expect(appActionNotice('Notes', undefined, 'disable')).toBe('')
   })
 })
 
@@ -138,6 +161,15 @@ describe('useAppActions.runEnable — a refused backend is a warning', () => {
     await act(async () => { await result.current.runEnable('notes') })
 
     expect(result.current.displayError).toBe(`${KEY} ${JSON.stringify({ name: 'Notes', reason: REASON })}`)
+  })
+
+  it('shows the gateway warnings in the page notice after a successful enable', async () => {
+    apiEnableApp.mockResolvedValueOnce({ ok: true, warnings: ['hooks failed: boom'] })
+    const { result } = setupActions()
+
+    await act(async () => { await result.current.runEnable('notes') })
+
+    expect(result.current.displayError).toBe(`${WARN_ON} ${JSON.stringify({ name: 'Notes', warnings: 'hooks failed: boom' })}`)
   })
 
   it('leaves the notice empty when the backend was not refused', async () => {

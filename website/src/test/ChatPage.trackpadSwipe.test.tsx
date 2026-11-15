@@ -18,7 +18,7 @@ import { ThemeProvider } from '../hooks/useTheme'
 import { __resetPanelTabs } from '../hooks/usePanelTabs'
 import { setSidePanelDock } from '../hooks/useSidePanelDock'
 import { switchSlot, openActivityPanel } from '../store/chatSlice'
-import { swipeTiming, SWIPE_GESTURE_IDLE_MS } from '../hooks/useTrackpadSwipe'
+import { swipeTiming, SWIPE_GESTURE_IDLE_MS, SWIPE_THRESHOLD_PX } from '../hooks/useTrackpadSwipe'
 import { MotionGlobalConfig, frame, frameData } from 'framer-motion'
 
 // --- Stub child components (the ChatPage.responsivePanel scaffold) ---
@@ -162,6 +162,15 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
   })
   const steps = (dx: number, n: number, t0: number, gap = 16): Array<[number, number]> =>
     Array.from({ length: n }, (_, i) => [dx, t0 + i * gap])
+  /** A closed panel moves only once a leftward run has gone SWIPE_THRESHOLD_PX:
+   *  exactly that far in steps of `dx` (the first takes the remainder), ending
+   *  just before `t0`, so the steps from `t0` move it from its closed edge. */
+  const leadIn = (dx: number, t0: number, gap = 16) => {
+    const n = Math.ceil(SWIPE_THRESHOLD_PX / dx)
+    const lead = steps(dx, n, t0 - n * gap, gap)
+    lead[0][0] = SWIPE_THRESHOLD_PX - (n - 1) * dx
+    return lead
+  }
   const tailSteps = (dx: number, n: number, t0: number, ratio = 0.85): Array<[number, number]> =>
     Array.from({ length: n }, (_, i) => [dx * ratio ** (i + 1), t0 + (i + 1) * 16])
 
@@ -185,7 +194,9 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
   it('a leftward run pulls the closed panel in under the fingers, the column as wide as its visible part, then settles open', async () => {
     const { store, container } = renderChat()
     expect(column()).toBeNull()
-    // Fingers moving left: a trackpad reports a positive deltaX.
+    // Fingers moving left: a trackpad reports a positive deltaX. The first
+    // 80px take the run past the start distance.
+    swipe(chat(container), 20, 4)
     expect(swipe(chat(container), 20, 5)).toBe(5)
     expect(sliding()).toBe(true)
     expect(slot.contains(screen.getByTestId('side-panel'))).toBe(true)
@@ -217,7 +228,7 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     const { store, container } = renderChat()
     const n = Math.round((PANEL * 0.15) / 3)
     const t0 = performance.now()
-    wheelSeq(chat(container), steps(3, n, t0))
+    wheelSeq(chat(container), [...leadIn(3, t0), ...steps(3, n, t0)])
     await waitFor(() => expect(spacerW()).toBeCloseTo(3 * n, 0))
     await waitFor(() => expect(column()).toBeNull(), { timeout: 3000 })
     expect(store.getState().chat.activityOpen).toBe(false)
@@ -300,7 +311,8 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     })
     act(() => { emit!('begin') })
     // 30% in (120px of 400), slowly, then the fingers rest on the pad.
-    wheelSeq(chat(container), steps(4, 30, performance.now()))
+    const t0 = performance.now()
+    wheelSeq(chat(container), [...leadIn(4, t0), ...steps(4, 30, t0)])
     act(() => { vi.advanceTimersByTime(30 * 16) })
     // 600ms: past the gap that ends a drag in a browser, still the same drag.
     act(() => {
@@ -378,11 +390,12 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     })
   }
 
-  it('rule C: a fast drag commits before any lift-off and settles open within 150ms', async () => {
+  it('rule C: a fast drag past the start distance commits before any lift-off and settles open within 150ms', async () => {
     const { store, container } = renderChat()
     const paint = manualClocks()
     // 10px per 16ms (0.6 px/ms): past the commit speed after three steps.
-    wheelSeq(chat(container), steps(10, 4, performance.now()))
+    const t0 = performance.now()
+    wheelSeq(chat(container), [...leadIn(10, t0), ...steps(10, 4, t0)])
     // No gap has passed and no lift came: it is already settling.
     let frames = 0
     while (column()?.getAttribute('data-sliding') === 'true' && frames < 60) { await paint(1000 / 60); frames += 1 }
@@ -412,8 +425,10 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     const paint = manualClocks()
     const t0 = performance.now()
     // A fast open (commits mid-drag), its momentum decaying, then the fingers
-    // come straight back the other way: no gap anywhere.
+    // come straight back the other way: no gap anywhere. The lead-in is slow,
+    // so the commit comes with the panel partly in.
     wheelSeq(chat(container), [
+      ...leadIn(10, t0, 80),
       ...steps(10, 4, t0),
       ...tailSteps(10, 4, t0 + 3 * 16),
       ...steps(-10, 4, t0 + 8 * 16),
@@ -427,7 +442,8 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     const { store, container } = renderChat()
     const paint = manualClocks()
     const t0 = performance.now()
-    wheelSeq(chat(container), [...steps(10, 6, t0), ...steps(-10, 4, t0 + 6 * 16)])
+    // A slow lead-in, so the fast open commits with the panel partly in.
+    wheelSeq(chat(container), [...leadIn(10, t0, 80), ...steps(10, 6, t0), ...steps(-10, 4, t0 + 6 * 16)])
     for (let i = 0; i < 60 && column(); i++) await paint(1000 / 60)
     expect(column()).toBeNull()
     expect(store.getState().chat.activityOpen).toBe(false)
@@ -438,7 +454,7 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     const paint = manualClocks()
     const t0 = performance.now()
     // 120px in (30%) at 0.19 px/ms: past the share, and still following.
-    wheelSeq(chat(container), steps(3, 40, t0))
+    wheelSeq(chat(container), [...leadIn(3, t0), ...steps(3, 40, t0)])
     await paint()
     expect(sliding()).toBe(true)
     expect(spacerW()).toBeCloseTo(120, 0)
@@ -456,11 +472,21 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     expect(store.getState().chat.activityOpen).toBe(false)
   })
 
-  it('a fast 10% flick with a momentum tail opens the panel', async () => {
+  it('a fast 10% flick past the start distance, with a momentum tail, opens the panel', async () => {
     const { store, container } = renderChat()
     const per = Math.round((PANEL * 0.1) / 4)
     const t0 = performance.now()
-    wheelSeq(chat(container), [...steps(per, 4, t0), ...tailSteps(per, 12, t0 + 3 * 16)])
+    wheelSeq(chat(container), [...leadIn(per, t0), ...steps(per, 4, t0), ...tailSteps(per, 12, t0 + 3 * 16)])
+    await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
+    expect(store.getState().chat.activityOpen).toBe(true)
+  })
+
+  it('a quick flick that only just passes the start distance opens the panel: its speed before 80px counts', async () => {
+    const { store, container } = renderChat()
+    const t0 = performance.now()
+    // About 2px/ms, crossing 80px on its last step (90px), then momentum.
+    wheelSeq(chat(container), [[5, t0], [15, t0 + 16], [30, t0 + 32], [40, t0 + 48], ...tailSteps(40, 12, t0 + 48)])
+    expect(sliding()).toBe(true)
     await waitFor(() => expect(sliding()).toBe(false), { timeout: 3000 })
     expect(store.getState().chat.activityOpen).toBe(true)
   })
@@ -494,7 +520,7 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     })
     let t = performance.now()
     // 240px in (60%), slowly, lifted with no speed: it settles open.
-    wheelSeq(chat(container), steps(20, 12, t, 80))
+    wheelSeq(chat(container), [...leadIn(20, t, 80), ...steps(20, 12, t, 80)])
     t += 12 * 80
     await paint()
     expect(spacerW()).toBeCloseTo(240, 0)
@@ -528,16 +554,30 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     expect(store.getState().chat.activityOpen).toBe(false)
   })
 
+  /** Pick a session the way the sidebar does: the page stays mounted. */
+  const pickSlot = (store: ReturnType<typeof renderChat>['store'], key: string) => act(() => {
+    store.dispatch(switchSlot.pending(`req-${key}`, key))
+    store.dispatch(switchSlot.fulfilled({
+      key, messages: [{ role: 'assistant', content: 'hi', cls: '' }],
+      running: false, hasMore: false, total: 1, queue: [],
+    }, `req-${key}`, key))
+  })
+
+  it('a session switch while an opening run is still short of its start distance drops the run', () => {
+    const { store, container } = renderChat()
+    const t0 = performance.now()
+    // 60px in, still short of the start distance; then session B, and the
+    // same run goes on past 80px there.
+    wheelSeq(chat(container), steps(20, 3, t0))
+    pickSlot(store, 'slot-b')
+    wheelSeq(chat(container), steps(20, 6, t0 + 3 * 16))
+    expect(column()).toBeNull()
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
   it("a session switch mid-settle retires the settle: it never closes the next session's panel", async () => {
     const { store, container } = renderChat()
-    /** Pick a session the way the sidebar does: the page stays mounted. */
-    const pick = (key: string) => act(() => {
-      store.dispatch(switchSlot.pending(`req-${key}`, key))
-      store.dispatch(switchSlot.fulfilled({
-        key, messages: [{ role: 'assistant', content: 'hi', cls: '' }],
-        running: false, hasMore: false, total: 1, queue: [],
-      }, `req-${key}`, key))
-    })
+    const pick = (key: string) => pickSlot(store, key)
     // Both sessions have the panel open.
     await openPanel(store)
     pick('slot-b')
@@ -806,6 +846,15 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     const { container } = renderChat()
     expect(swipe(chat(container), -20, 12)).toBe(0)
     expect(column()).toBeNull()
+  })
+
+  it("a mouse thumb wheel's stray creep never slides the closed panel out", () => {
+    const { store, container } = renderChat()
+    // The reporter's capture: 1-2px leftward steps, about 28px in all.
+    const creep = [1.67, 0.83, 1.67, 6.67, 1.67, 1.67, 1.67, ...Array<number>(15).fill(0.83)]
+    wheelSeq(chat(container), creep.map((dx, i): [number, number] => [dx, performance.now() + i * 45]))
+    expect(column()).toBeNull()
+    expect(store.getState().chat.activityOpen).toBe(false)
   })
 
   it('under reduced motion there is no live drag: a clear swipe switches once at the end', async () => {

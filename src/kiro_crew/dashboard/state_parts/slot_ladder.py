@@ -21,7 +21,7 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_model_access_fallback_used``, ``_native_subagent_output``,
 ``_native_subagent_tracker``, ``_pending_steers``, ``_pending_subagent_failures``,
 ``_pending_synthesis``, ``_poisoned_reset_used``, ``_posttoken_retry_used``,
-``_prestream_exhausted_cycles``, ``_promise_only_retries``, ``_prompt_busy_retries``,
+``_prestream_exhausted_cycles``, ``_prev_turn_ctx_session``, ``_prev_turn_ctx_used``, ``_promise_only_retries``, ``_prompt_busy_retries``,
 ``_refusal_client_pick_epoch``, ``_refusal_fallback_attempted``,
 ``_refusal_fallback_candidate``, ``_refusal_fallback_primary``,
 ``_refusal_fallback_session_key``, ``_refusal_pick_gen``,
@@ -40,6 +40,7 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_tool_stall_exhausted_emitted``, ``_tool_stall_retries``, ``_transient_5xx_retries``,
 ``_transient_ladder_started``, ``_turn_agent_started``, ``_turn_channel_narrowed``,
 ``_turn_channel_origin``, ``_turn_owner_sent``, ``_turn_retries``, ``_turn_user_sent``,
+``_turn_wrote_text``,
 ``_wait_contested``, ``_wait_last_ping``,
 ``_wait_state``, ``_wait_steer_baseline``, ``replays``.
 """
@@ -88,7 +89,7 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # text (set by `_turn_record_outcome`, read by the same fire gate).
     self._synthesis_final_turn_ran = False
     # Race guard: number of sub-agent completion deliveries
-    # currently in flight for this slot (incremented in gateway._subagent_done
+    # currently in flight for this slot (incremented in subagent_wiring._subagent_done
     # from entry until the completion is queued/launched). The synthesis
     # fire-gate requires this to be 0 so a concurrently-finishing sibling
     # can't let an earlier turn fire synthesis before its result lands.
@@ -278,8 +279,14 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # True once any turn of the CURRENT empty-turn episode was productive.
     self._empty_episode_productive = False
     # First-token clock of the last top-level turn, reused by its recovery
-    # turns until one saves the row (``chat_runner._turn_clock``).
+    # turns until one saves the row (``chat_turn.turn_stats._turn_clock``).
     self._carried_ttft_clock = None
+    # Context size the last completed turn ended at, in memory only, and the
+    # backend session it was read in: the next turn's cache-rewrite check compares
+    # against it only in that same session (``cache_rewrite``). 0 means no previous
+    # turn, so the first turn after a restart is never flagged.
+    self._prev_turn_ctx_used = 0
+    self._prev_turn_ctx_session = ""
     # One bounded synthetic continuation when a turn ended on a promise-only
     # final message (announced an immediate action, then yielded with no tool
     # call). Reset like the other per-turn retry budgets on a landed turn.
@@ -443,6 +450,9 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     self._turn_owner_sent = False
     # Set by every outermost turn's open, so it describes the turn running now.
     self._turn_agent_started = False
+    # Whether the turn running now has streamed reply text. Reset by every
+    # outermost turn's open and exit, set by the text-chunk handler.
+    self._turn_wrote_text = False
     # The containment that held when an in-flight steer was AUTHORIZED, keyed by
     # the same message text and kept in the same LOCKSTEP. The requeue stamps it
     # on the queue entry instead of reading the slot again: its own moment is the
@@ -532,8 +542,9 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # entry, so the sub-agent hold lets it drain instead of parking it.
     self._steer_act_now = set()
     # Pending AUTOMATION steers (a work-ledger wake), each with the
-    # ``meta.nudge`` its row carries. Requeue stamps it on the entry
-    # (``AUTOMATION_STEER_META``), so the drained row is a nudge row too.
+    # ``meta.nudge`` its row carries plus the loop's generation, which no row
+    # carries. Requeue stamps the nudge on the entry (``AUTOMATION_STEER_META``),
+    # so the drained row is a nudge row too.
     self._steer_automation = {}
     # In-flight `wait` tool sleep, as reported by the tool's own keepalive
     # ping: {"wait_id": str, "seconds": int, "deadline_ts": float}. The

@@ -662,9 +662,9 @@ class TestBuiltinDenyPatterns:
         from kiro_crew.security import is_denied
 
         # Process substitution, input and output forms, and a bare subshell.
-        assert is_denied(f"grep x <({self.ROOT_WIPE}tmp/victim)") is not None
+        assert is_denied(f"grep x <({self.ROOT_WIPE}srv/victim)") is not None
         assert is_denied(f'grep -rn "x" <({self.ROOT_WIPE})') is not None
-        assert is_denied(f"grep x >({self.ROOT_WIPE}tmp/victim)") is not None
+        assert is_denied(f"grep x >({self.ROOT_WIPE}srv/victim)") is not None
         assert is_denied(f"grep x ({self.ROOT_WIPE})") is not None
         # bash >= 5.3 funsub -- the opener that defeated the `(`-only guard.
         assert is_denied(f"grep x ${{ {self.ROOT_WIPE};}}") is not None

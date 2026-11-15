@@ -18,6 +18,7 @@ function loadPreload() {
     ipcRenderer: {
       send: (channel, ...args) => sent.push([channel, ...args]),
       invoke: () => Promise.resolve(),
+      sendSync: () => false,
       on: (channel, fn) => { if (channel === "focus-mode:cursor-away") listeners.add(fn); },
       once: () => {},
       removeListener: (channel, fn) => { if (channel === "focus-mode:cursor-away") listeners.delete(fn); },

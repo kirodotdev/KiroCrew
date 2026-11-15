@@ -15,6 +15,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from runner_watchdog import Api, ApiError
@@ -45,6 +46,28 @@ def _rate_limit_hints(headers: Any) -> tuple[float | None, str | None]:
         except (TypeError, ValueError):
             pass
     return None, remaining
+
+
+def _rate_limit_reset(headers: Any) -> float | None:
+    """``X-RateLimit-Reset`` as an epoch second, or ``None`` when absent or non-numeric."""
+    reset = headers.get("X-RateLimit-Reset") if headers is not None else None
+    try:
+        return float(reset) if reset else None
+    except (TypeError, ValueError):
+        return None
+
+
+def rate_limit_abort_detail(exc: ApiError) -> str:
+    """What a tick a rate limit cut short reports: the remaining quota and reset time when
+    the headers prove the quota is spent, otherwise the refusal itself."""
+    if not exc.quota_exhausted:
+        return str(exc)
+    if exc.reset_at is None:
+        reset = "an unreported reset time"
+    else:
+        moment = datetime.fromtimestamp(exc.reset_at, timezone.utc)
+        reset = moment.strftime("%Y-%m-%d %H:%M:%S UTC")
+    return f"installation quota {exc.remaining} remaining, resets at {reset}"
 
 
 class GitHubApi:
@@ -117,7 +140,11 @@ class GitHubApi:
                 if remaining is not None:
                     self.rate_limit_remaining = remaining
                 raise ApiError(
-                    exc.code, detail, retry_after=retry_after, remaining=remaining
+                    exc.code,
+                    detail,
+                    retry_after=retry_after,
+                    remaining=remaining,
+                    reset_at=_rate_limit_reset(exc.headers),
                 ) from exc
             except urllib.error.URLError as exc:
                 # Usually the connection itself failed, but a timeout while

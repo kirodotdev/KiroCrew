@@ -15,7 +15,6 @@ import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { store as globalStore } from '../store'
-import { api } from '../api/client'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { postNativeNotification, nativeNotificationPermitted } from '../lib/nativeNotify'
 import { isWindowAway } from '../hooks/windowAway'
@@ -156,14 +155,13 @@ describe('interactive approval OS toast from the permission row', () => {
 
   it('a row replayed during reconnect catch-up never toasts', async () => {
     const ws = await connect()
-    let finishSync!: () => void
-    vi.mocked(api.chatSlots).mockImplementationOnce(() => new Promise(resolve => {
-      finishSync = () => resolve([])
-    }))
     act(() => ws.open())
     ws.frame('chat_message', permissionRow(SLOT, 'req-2', 'mid-2'))
     expect(postNativeNotification).not.toHaveBeenCalled()
-    await act(async () => finishSync())
+    // The connect snapshot ends the catch-up window: a live row toasts again.
+    ws.frame('slots', [{ key: SLOT, messages: 1, running: true }])
+    ws.frame('chat_message', permissionRow(SLOT, 'req-3', 'mid-3'))
+    expect(postNativeNotification).toHaveBeenCalledTimes(1)
   })
 
   it('a non-permission row never toasts', async () => {

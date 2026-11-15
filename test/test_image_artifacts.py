@@ -21,6 +21,7 @@ import types
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import image_artifacts
 from kiro_crew.artifacts import (
@@ -220,7 +221,7 @@ class TestSerializeShape:
         """
         from kiro_crew.dashboard.handlers.artifacts import _serialize
 
-        leak = "AKIAIOSFODNN7EXAMPLE"
+        leak = github_classic(seed=21)
         art = store.create_image(
             name=f"pic {leak}",
             image_bytes=_png_bytes(4, 4),
@@ -622,7 +623,7 @@ class TestSchedulerGate:
         assert calls == [("![a](/abs/x.png)", "ts-x", "s1")]
 
 
-# ── Hardening regressions (review findings) ─────────────────────────────────
+# ── Hardening ───────────────────────────────────────────────────────────────
 
 
 class TestAssetReadHardening:

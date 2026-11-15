@@ -221,7 +221,10 @@ async def import_bundle(request: web.Request) -> web.Response:
     # what the synchronous call raised; the rejection arms keep their own
     # audit lines because they are tied to the HTTP response they build.
     def _import_and_audit() -> dict:
-        result = store.import_bundle(body)
+        # An import writes entities and aliases, and the launch's maintenance sweeps
+        # (the split-entity merge among them) assume no such writer runs in the window.
+        with store.ingestion_in_flight():
+            result = store.import_bundle(body)
         _sel_log("import", **result)
         return result
 
@@ -244,6 +247,7 @@ async def import_bundle(request: web.Request) -> web.Response:
         sqlite3.IntegrityError,
         sqlite3.ProgrammingError,
         sqlite3.DataError,
+        UnicodeEncodeError,
     ) as exc:
         # Only failures that genuinely mean a bad bundle earn a 400:
         # IntegrityError (constraint/FK violations), ProgrammingError and
@@ -251,7 +255,9 @@ async def import_bundle(request: web.Request) -> web.Response:
         # required field), and OverflowError (a bundle integer field, e.g.
         # chunk_index, too large for SQLite's 64-bit INTEGER, raised at bind
         # time inside the store call -- neither a KeyError nor a
-        # sqlite3.Error, so it needs its own arm).  The exception detail
+        # sqlite3.Error, so it needs its own arm).  UnicodeEncodeError is the
+        # same bind-time class for text: JSON allows an escaped lone
+        # surrogate, which SQLite cannot bind as UTF-8.  The exception detail
         # stays server-side: the dashboard renders ``error`` verbatim, so
         # raw driver text must not reach the client.
         logger.warning("Knowledge bundle import rejected: %s", exc)

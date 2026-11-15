@@ -53,6 +53,14 @@
    from body). Do not promote any of this to an unscoped rule. */
 html[data-font-family="mono"] .rail-community-links{ letter-spacing:-0.05em; word-spacing:-2.5px; gap:3px }
 
+/* Devanagari (hi) and Bengali (bn) hang each word from one headline stroke and
+   join letters into conjuncts, so letter-spacing pulls a word apart (or crowds it).
+   Under those UI languages every Latin-tuned tracking goes back to normal: the
+   tracking-* utilities, plus the classes that set letter-spacing in a stylesheet.
+   Matched by class, not `*`, because xterm's DOM renderer aligns its cell grid
+   through inherited letter-spacing. Kept after the mono rule so it wins that tie. */
+html:is(:lang(hi), :lang(bn)) :is([class*="tracking-"], .rail-community-links, .le-palette-label, .le-cell-preview){ letter-spacing:normal }
+
 /* OpenDyslexicMono (data-font-family="opendyslexic" in CLI mode) is measured
    ~22% wider than JetBrains Mono at 12px (advance 8.784 vs 7.20 for capital 'S'
    from fontTools on the shipped .woff2). The rail budget above therefore has

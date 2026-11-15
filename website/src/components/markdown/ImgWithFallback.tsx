@@ -24,6 +24,57 @@ import {
 } from './remoteMedia'
 import { dispatchLightbox } from './Lightbox'
 
+/** A deep stand-in for the document's folder. URL resolution stops at the root,
+ *  so `..` past a shallow base would make `../d.png` and `../../d.png` look the
+ *  same; a relative path that climbs out of this base resolves to null instead. */
+const IMAGE_LINK_BASE_ROOT = '/d0/'
+const IMAGE_LINK_BASE = 'http://image.invalid' + Array.from({ length: 64 }, (_, i) => `/d${i}`).join('') + '/'
+
+function resolveImageLink(value: string): string | null {
+  let absolute = value.startsWith('/')
+  try {
+    new URL(value)
+    absolute = true
+  } catch { /* relative */ }
+  const url = new URL(value, IMAGE_LINK_BASE)
+  if (!absolute && !url.pathname.startsWith(IMAGE_LINK_BASE_ROOT)) return null
+  return url.href
+}
+
+/** Whether a link around an image points at that same image, the common
+ *  "click to enlarge" shape. Both sides are resolved against one fixed base,
+ *  so `./d.png` and `d.png` match. Any other link (a heading, an artifact, a
+ *  session, another file or web page) keeps its own click. */
+function linkIsTheImage(href: string | null, src: string | undefined): boolean {
+  if (!href || !src) return false
+  try {
+    const a = resolveImageLink(href)
+    return a !== null && a === resolveImageLink(src)
+  } catch {
+    return false
+  }
+}
+
+/** One click does one thing. Markdown often wraps an image in a link to the
+ *  image (`[![d](d.png)](d.png)`), and that link opens in a new tab, so a
+ *  click left to bubble opened the viewer here AND a new tab. A plain click
+ *  on such an image opens only the viewer. A modified click (Cmd/Ctrl/Shift/
+ *  Alt) is left to the link, and so is any click on an image whose link goes
+ *  somewhere else. */
+function onImageClick(e: React.MouseEvent<HTMLImageElement>, src: string | undefined): void {
+  const img = e.currentTarget
+  const link = img.closest('a[href]')
+  if (link) {
+    const modified = e.metaKey || e.ctrlKey || e.shiftKey || e.altKey
+    if (modified || !linkIsTheImage(link.getAttribute('href'), src)) return
+    // Stop the anchor's own handlers too: a local-path link would otherwise
+    // open the file beside the viewer.
+    e.preventDefault()
+    e.stopPropagation()
+  }
+  dispatchLightbox(img)
+}
+
 /** Markdown image with a React-rendered fallback chip when the URL is broken
  *  (see `BrokenImage`). The fallback is React-rendered rather than a hand-built
  *  SVG swapped in via .replaceWith(), so it never mutates DOM React owns —
@@ -595,7 +646,7 @@ export function ImgWithFallback({
           ? 'ms-auto max-w-[240px] max-h-[180px] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity'
           : 'max-w-[min(100%,760px)] max-h-[60vh] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity'}`}
         style={imgStyle}
-        onClick={(e) => dispatchLightbox(e.currentTarget)}
+        onClick={(e) => onImageClick(e, src)}
         data-lightbox-image=""
         // Pages with the turn's file cards (see dispatchLightbox).
         data-lightbox-turn=""

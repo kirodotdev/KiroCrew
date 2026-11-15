@@ -54,6 +54,7 @@ OWNERS = (
     "kiro_crew.mcp_shared_wire",
     "kiro_crew.mcp_shared_calls",
     "kiro_crew.mcp_shared_policy",
+    "kiro_crew.mcp_shared_listing",
     "kiro_crew.mcp_shared_dispatch",
 )
 
@@ -294,7 +295,7 @@ def test_the_layering_check_can_fail() -> None:
     trees[OWNERS[0]] = ast.parse("from kiro_crew.mcp_shared_dispatch import _WakePipe\n")
     trees[OWNERS[2]] = ast.parse("from kiro_crew import mcp_shared\n")
     assert _layering_gaps(trees) == {
-        OWNERS[0]: [OWNERS[3]],
+        OWNERS[0]: [OWNERS[-1]],
         OWNERS[2]: [FACADE],
     }
 

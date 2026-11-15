@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import VoiceDictationPanel from '../components/VoiceDictationPanel'
 import { createAudioSample } from '../hooks/mic'
 
@@ -19,6 +19,24 @@ describe('VoiceDictationPanel', () => {
     render(<VoiceDictationPanel sampleRef={sampleRef} value="" deviceLabel="MacBook Pro Microphone" />)
     expect(screen.getByText('Listening')).toBeTruthy()
     expect(screen.getByText('MacBook Pro Microphone')).toBeTruthy()
+  })
+
+  it('shows how long the recording has run, and holds it once capture has ended', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] })
+    try {
+      const { rerender } = render(<VoiceDictationPanel sampleRef={sampleRef} value="" />)
+      const reading = () => screen.getByTestId('voice-recording-elapsed').textContent
+      expect(reading()).toBe('0:00')
+      act(() => { vi.advanceTimersByTime(9_000) })
+      expect(reading()).toBe('0:09')
+      // The panel outlives the release for the streaming drain. The mic is
+      // closed by then, so the reading must not keep climbing.
+      rerender(<VoiceDictationPanel sampleRef={sampleRef} value="" captureEnded />)
+      act(() => { vi.advanceTimersByTime(20_000) })
+      expect(reading()).toBe('0:09')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('omits the device row entirely when no label is known', () => {

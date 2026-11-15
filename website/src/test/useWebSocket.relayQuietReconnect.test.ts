@@ -183,12 +183,30 @@ describe('useWebSocket quiet reconnect through the relay', () => {
     act(() => { WS_INSTANCES[0].simulateClose(4401) })
     act(() => { vi.advanceTimersByTime(0) })
     act(() => { WS_INSTANCES[1].simulateClose(1006) })
+    // With no live socket the probe brings the reconnect forward to at most 1s.
     act(() => { result.current.forceReconnect() })
-    act(() => { vi.advanceTimersByTime(0) })
+    act(() => { vi.advanceTimersByTime(1000) })
     expect(WS_INSTANCES).toHaveLength(3)
     act(() => { WS_INSTANCES[2].simulateOpen() })
     expect(testStore.getState().dashboard.connected).toBe(true)
     expect(testStore.getState().dashboard.offlineCause).toBeNull()
+    unmount()
+  })
+
+  it('the health probe brings a stopped session back after an earlier early drop', () => {
+    const { result, unmount } = openFirst()
+    // A drop before the socket proved healthy, then a reconnect that opens.
+    act(() => { WS_INSTANCES[0].simulateClose(1006) })
+    act(() => { vi.advanceTimersByTime(1000) })
+    act(() => { WS_INSTANCES[1].simulateOpen() })
+    // Its token expires and the reconnect after the 4401 is refused at its upgrade.
+    act(() => { WS_INSTANCES[1].simulateClose(4401) })
+    act(() => { vi.advanceTimersByTime(0) })
+    act(() => { WS_INSTANCES[2].simulateClose(1006) })
+    act(() => { result.current.forceReconnect() })
+    act(() => { vi.advanceTimersByTime(1000) })
+
+    expect(WS_INSTANCES).toHaveLength(4)
     unmount()
   })
 
@@ -198,7 +216,7 @@ describe('useWebSocket quiet reconnect through the relay', () => {
     act(() => { vi.advanceTimersByTime(0) })
     act(() => { WS_INSTANCES[1].simulateClose(1006) })
     act(() => { result.current.forceReconnect() })
-    act(() => { vi.advanceTimersByTime(0) })
+    act(() => { vi.advanceTimersByTime(1000) })
     // A network blip before the probe's socket opens.
     act(() => { WS_INSTANCES[2].simulateClose(1006) })
     act(() => { vi.advanceTimersByTime(1000) })

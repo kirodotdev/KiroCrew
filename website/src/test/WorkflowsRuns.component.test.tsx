@@ -19,7 +19,7 @@ vi.mock("../pierre", async (importOriginal) => ({
 import WorkflowsRuns, {
   type RunDetail,
   type RunSummary,
-} from "../apps/workflows/WorkflowsRuns";
+} from "../components/workflows/WorkflowsRuns";
 import { i18nT } from "../i18n/t";
 
 const TASK_PLAN_SOURCE = "agents:\n  verify:\n    prompt: run tests\n";

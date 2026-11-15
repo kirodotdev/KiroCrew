@@ -119,6 +119,12 @@ class AcpRequestTimeout(AcpRuntimeError):
     # the method set it True.
     session_start_failed = False
 
+    # Whether Crew's own managed MCP servers missed the KAS readiness deadline
+    # (``session_handle_mcp._readiness_timeout``, its only raise site). The
+    # dashboard chat reads it to show a plain card; the message stays the row's
+    # English content and the log line.
+    mcp_readiness_timeout = False
+
 
 class AcpRuntimeOverloaded(AcpRequestTimeout):
     """``initialize`` went unanswered while the agents slice was being throttled.

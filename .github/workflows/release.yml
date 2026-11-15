@@ -209,6 +209,9 @@ jobs:
       group: kirocrew-runners
     permissions:
       actions: read
+      # Reads an empty head_sha runs listing through the commit's check-runs
+      # (scripts/release_promotion.py).
+      checks: read
       contents: read
     outputs:
       source_version: ${{ steps.resolve.outputs.source_version }}

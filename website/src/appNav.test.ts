@@ -47,6 +47,21 @@ describe('isAppNavigable', () => {
   })
 })
 
+describe('appNavTarget — a built-in that became a core surface', () => {
+  it('gives the record it left behind no rail row or palette result, enabled or orphaned', () => {
+    const projects = { name: 'projects', origin: 'builtin', manifest: { ui: { pages: [{ route: '/projects' }] } } }
+    expect(appNavTarget(app(projects))).toBeNull()
+    expect(appNavTarget(app({ ...projects, orphaned: true }))).toBeNull()
+    expect(appNavTargets([app(projects), app({ name: 'my-app', origin: 'installed' })]).map(t => t.name)).toEqual(['my-app'])
+  })
+
+  it('leaves an app a user installed under that name as its own app', () => {
+    const t = appNavTarget(app({ name: 'projects', origin: 'local' }))
+    expect(t?.route).toBe('/apps/projects')
+    expect(t?.id).toBe('app-projects')
+  })
+})
+
 describe('appNavTarget — routing', () => {
   it('routes an installed app through AppHost', () => {
     const t = appNavTarget(app({ name: 'my-app', origin: 'installed' }))

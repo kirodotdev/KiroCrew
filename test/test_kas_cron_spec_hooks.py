@@ -86,10 +86,10 @@ def ran(monkeypatch) -> dict:
 
 
 def _spec(monkeypatch, hooks, *, lost=(), stale=False):
-    async def fake_turn_spec_hooks(provider, agent):
+    async def fake_turn_spec_hooks(provider, agent, **_kw):
         return spec_hooks.TurnSpecHooks(list(hooks), "/w", False, True, tuple(lost))
 
-    async def fake_stale(provider, agent):
+    async def fake_stale(provider, agent, **_kw):
         return stale
 
     monkeypatch.setattr(spec_hooks, "turn_spec_hooks", fake_turn_spec_hooks)
@@ -131,7 +131,7 @@ def test_a_cron_turn_gates_its_permission_requests_on_the_specs_pre_tool_hooks(
 
 
 def test_an_unreadable_spec_blocks_a_cron_turns_tools_as_in_a_dashboard_chat(monkeypatch, ran):
-    async def unreadable(provider, agent):
+    async def unreadable(provider, agent, **_kw):
         return spec_hooks.TurnSpecHooks([], "/w", True, True)
 
     monkeypatch.setattr(spec_hooks, "turn_spec_hooks", unreadable)
@@ -173,7 +173,7 @@ def test_a_stale_batch_runs_no_spec_hooks_and_says_so(monkeypatch, ran):
 def test_a_mid_turn_switch_rereads_the_spec_for_the_new_agent(monkeypatch, ran):
     seen: list = []
 
-    async def fake_turn_spec_hooks(provider, agent):
+    async def fake_turn_spec_hooks(provider, agent, **_kw):
         seen.append(agent)
         return spec_hooks.TurnSpecHooks([], "/w", False, True)
 

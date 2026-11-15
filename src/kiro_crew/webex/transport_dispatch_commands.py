@@ -245,7 +245,7 @@ async def _handle_sessions(self: WebexDispatcher, inbound: "WebexInbound") -> No
     try:
         rows = [
             row
-            for row in await asyncio.to_thread(self.conv_log.list_sessions)
+            for row in await asyncio.to_thread(self.conv_log.list_sessions_indexed)
             # The bucket itself (generation 0) or one of its generations. The
             # separator is required so a bucket cannot match a longer route
             # that merely starts with the same characters.
@@ -384,10 +384,8 @@ async def _handle_dashboard(self: WebexDispatcher, inbound: "WebexInbound") -> N
         )
         return
     # parse_duration owns the <N>h / <N>m grammar and already clamps to the
-    # server maximum; the outer min() keeps the clamp explicit at the call
-    # site. A malformed duration falls back rather than erroring: the user
-    # asked for a link, and refusing one over a typo trades a working link
-    # for a lecture.
+    # server maximum; min() keeps the clamp visible here. A malformed duration
+    # falls back to the default instead of failing: the user asked for a link.
     ttl_secs = min(parse_duration(_ttl_spec(arg)) or _DEFAULT_TTL_SECS, MAX_SESSION_TTL_SECS)
     caller = f"webex:{inbound.person_email}"
     try:

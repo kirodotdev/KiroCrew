@@ -414,7 +414,8 @@ async def test_an_observation_the_service_declined_is_not_recorded(tmp_path):
 
 
 def test_the_producer_vocabulary_is_closed_and_starts_with_the_probe():
-    assert OBJECT_PRODUCERS == ("probe",)
+    # Each is code: the monitor's probe and the warm welcome's PR read.
+    assert OBJECT_PRODUCERS == ("probe", "warm_brief")
     spec = SESSION_ENTRY_TYPES[ENTRY_TYPE]
     producer = next(field for field in spec.fields if field.name == "producer")
     assert producer.enum_closed
@@ -525,6 +526,22 @@ def test_a_session_with_no_crew_log_is_a_policy_no_op():
     assert_drained()
     assert not CrewLog.exists(KIND_SESSION, "acp-never-opened")
     assert crew_log_emit.dropped_writes() == 0
+
+
+def test_an_observation_that_cannot_land_settles_false():
+    """A caller that marks a record on commit hears "not recorded", not silence."""
+    answers: list[bool] = []
+    crew_log_emit.on_object_observed(
+        "",
+        producer=OBJECT_PRODUCER_PROBE,
+        kind=KIND,
+        target=TARGET,
+        fingerprint="fp-1",
+        facts=_canonical(),
+        observed_at=160.0,
+        on_settled=answers.append,
+    )
+    assert answers == [False]
 
 
 def test_a_disabled_emitter_does_no_fit_work(monkeypatch):

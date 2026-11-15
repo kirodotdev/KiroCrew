@@ -151,15 +151,15 @@ class _Session:
     prev_turn_cancelled: bool = False
     # Set when a provider switch, failed native resume, or Tool Search
     # compatibility fallback creates a fresh provider that still needs Kiro Crew
-    # history. Non-destructive slash commands read without clearing; a confirmed
-    # native `/clear` consumes it so replay cannot undo the user's deletion. The
-    # first provider event (or admission, on a delivered lease) records
-    # acceptance only in the dashboard runner's turn-local state; the shared
-    # lease remains armed until a clean, non-synthetic, non-empty end_turn
-    # atomically promotes the fresh SID and consumes it. Cancellation, raised streams, empty verdicts, and synthetic
-    # terminals leave it armed because kiro-cli discards or cannot prove those
-    # turns. This preserves replay across empty streams, pre-output failures, and
-    # soft Stops while surviving loss of the separate ``first_turn`` observation.
+    # history. Non-destructive slash commands read it without clearing; a
+    # confirmed native `/clear` consumes it so replay cannot undo the deletion.
+    # The first provider event (or admission, on a delivered lease) marks
+    # acceptance only in the dashboard runner's turn-local state. The shared
+    # lease stays armed until a clean, non-synthetic, non-empty end_turn
+    # atomically promotes the fresh SID and consumes it. Cancellation, raised
+    # streams, empty verdicts and synthetic terminals leave it armed, because
+    # kiro-cli discards those turns or cannot prove them. So replay survives
+    # empty streams, pre-output failures, soft Stops and a lost ``first_turn``.
     provider_switch_replay: bool = False
     # The provider's ``context_incarnation`` when a turn that did not land kept
     # the replay-bearing prompt (``_kiro_cli_kept_the_prompt``): later prompts on

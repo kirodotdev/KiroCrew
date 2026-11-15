@@ -102,6 +102,7 @@ function paneCopy(_languageGeneration: number, facts: {
   const { sidMatches, switchSlotGone, unresumableResume, undeletableHistory } = facts
   return {
     dismiss: i18nT('app.dismiss'),
+    resumeChat: i18nT('components.notifications.notificationDetailPanel.resume_chat'),
     sidAlsoNames: sidMatches
       ? i18nT('pages.chatPage.short_name_also_names', {
         name: sidMatches.name,
@@ -131,6 +132,8 @@ interface ChatPaneNoticesProps {
   sidMatches: { name: string; opened: ShortNameMatch; others: ShortNameMatch[] } | null
   setSidMatches: (matches: null) => void
   openShortNameMatch: (match: ShortNameMatch) => void
+  /** Resumes the closed session a dead `?sid=` link names; null when it has no transcript. */
+  resumeSidClosed: (() => void) | null
   /** For the effort-options notice: the slot's ACP capability read failed. */
   activeSlot: string | null
   provider: ReturnType<typeof useProvider>
@@ -165,6 +168,7 @@ export default function ChatPaneNotices({
   sidMatches,
   setSidMatches,
   openShortNameMatch,
+  resumeSidClosed,
   activeSlot,
   provider,
   selectionCapabilitiesQ,
@@ -213,6 +217,7 @@ export default function ChatPaneNotices({
         message={sidError}
         onDismiss={() => setSidError('')}
         askAgent
+        footer={resumeSidClosed ? <Btn type="button" onClick={resumeSidClosed}>{copy.resumeChat}</Btn> : undefined}
         className="mx-4 mt-2 mb-0 animate-rise"
         testId="sid-error"
       />

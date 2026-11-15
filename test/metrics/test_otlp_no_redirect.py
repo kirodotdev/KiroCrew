@@ -12,6 +12,9 @@ entry (process-wide header variable), a ``telemetry.otlp_endpoints`` list entry
 (``headers_env``), and a destination built in code with its own ``session``.
 
 Skipped without the optional ``otlp`` extra, like the other OTLP wire tests.
+
+The same loopback setup checks that no export sends a ``.netrc`` login for the
+collector's host, with or without a configured ``Authorization`` header.
 """
 
 from __future__ import annotations
@@ -88,25 +91,29 @@ def _url(server) -> str:
     return f"http://{host}:{port}/v1/metrics"
 
 
-def _destination(kind: str, endpoint: str, monkeypatch) -> OtlpDestination:
-    """A destination of *kind* whose export carries the planted header value."""
+def _destination(
+    kind: str, endpoint: str, monkeypatch, header: str = _HEADER, value: str = _PLANTED
+) -> OtlpDestination:
+    """A destination of *kind* whose export carries *header* set to *value*."""
+    from urllib.parse import quote
+
     metrics = frozenset({"metrics"})
     if kind == "legacy":
-        monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_HEADERS", f"{_HEADER}={_PLANTED}")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_HEADERS", f"{header}={quote(value)}")
         return OtlpDestination("legacy", endpoint, metrics)
     if kind == "list-entry":
-        monkeypatch.setenv(_HEADER_VAR, _PLANTED)
+        monkeypatch.setenv(_HEADER_VAR, value)
         return OtlpDestination(
             "entry",
             endpoint,
             metrics,
-            headers_env={_HEADER: _HEADER_VAR},
+            headers_env={header: _HEADER_VAR},
             process_env_credentials=False,
         )
     import requests
 
     session = requests.Session()
-    session.headers[_HEADER] = _PLANTED
+    session.headers[header] = value
     return OtlpDestination("edition", endpoint, metrics, session=session)
 
 
@@ -267,3 +274,44 @@ def test_a_redirect_fails_the_export_and_reaches_no_other_host(kind, status, mon
     ), "the redirect did not fail the export"
     leaked = [r.getMessage() for r in caplog.records if _PLANTED in r.getMessage()]
     assert leaked == [], "a log record quotes the header value"
+
+
+@pytest.mark.parametrize("configured", [True, False], ids=["with-authorization", "no-header"])
+@pytest.mark.parametrize("kind", ["legacy", "list-entry", "edition-session"])
+def test_a_netrc_login_for_the_collector_host_is_never_sent(
+    kind, configured, tmp_path, monkeypatch
+):
+    """``requests`` reads ``$NETRC`` (else ``~/.netrc``) for a session with no
+    ``auth``, and its Basic login replaces a configured ``Authorization`` header
+    or adds one. The export sends the configured header, or none, never that login."""
+    from opentelemetry.sdk.metrics import MeterProvider
+
+    netrc = tmp_path / "netrc"
+    # Fake and split, so no scanner reads it as a credential.
+    netrc.write_text("machine 127.0.0.1 login unrelated password not-" + "for-metrics\n")
+    netrc.chmod(0o600)
+    monkeypatch.setenv("NETRC", str(netrc))
+    for var in (
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+        "OTEL_PYTHON_EXPORTER_OTLP_HTTP_CREDENTIAL_PROVIDER",
+        "OTEL_PYTHON_EXPORTER_OTLP_HTTP_METRICS_CREDENTIAL_PROVIDER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    bearer = f"Bearer {_PLANTED}"
+    with _server() as collector:
+        if configured:
+            dest = _destination(kind, _url(collector), monkeypatch, "authorization", bearer)
+        else:
+            dest = _destination(kind, _url(collector), monkeypatch)
+        reader = pm._build_otlp_reader(dest, _Cfg())
+        assert reader is not None, "the extra is installed, so the builder must produce a reader"
+        provider = MeterProvider(metric_readers=[reader])
+        try:
+            provider.get_meter("nonetrc-test").create_counter("kirocrew.test.nonetrc").add(1)
+            provider.force_flush()
+            hits = list(collector.hits)
+        finally:
+            provider.shutdown()
+
+    assert [hit.get("authorization") for hit in hits] == [bearer if configured else None]

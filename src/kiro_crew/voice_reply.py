@@ -51,6 +51,13 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
     redact_with_findings,
 )
+from kiro_crew.speech_providers import (  # noqa: F401
+    DEFAULT_PROVIDER,
+    PROVIDER_POLLY,
+    PROVIDER_SYSTEM,
+    REMOVED_PROVIDERS,
+    VALID_PROVIDERS,
+)
 from kiro_crew.voice_reply_registered import (  # noqa: F401 - re-exported
     _synthesize_registered,
     iter_registered_chunks,
@@ -85,22 +92,6 @@ def resolve_polly_cli() -> str | None:
     """
     aws_bin = resolve_aws_bin()
     return aws_bin if shutil.which(aws_bin) else None
-
-
-# ── Provider constants ──
-PROVIDER_POLLY = "polly"
-PROVIDER_SYSTEM = "system"
-VALID_PROVIDERS = frozenset({PROVIDER_POLLY, PROVIDER_SYSTEM})
-# Removed providers a saved config may still name. Each resolves to the
-# default with one warning per process; see docs/request-for-change/
-# rfc-remove-piper-tts.md. The ``piper_*`` keys beside it are left in
-# config.json, unread, so a downgrade still finds them.
-REMOVED_PROVIDERS = frozenset({"piper"})
-# The host's built-in speech engine is the default because it is the only
-# provider that needs nothing installed and no account: macOS and Windows both
-# ship one, so auto-speak works on a fresh machine. Polly is the paid cloud
-# option, used only when explicitly selected.
-DEFAULT_PROVIDER = PROVIDER_SYSTEM
 
 
 def valid_providers() -> frozenset[str]:
@@ -1396,6 +1387,34 @@ class VoiceSynthesisError(RuntimeError):
         self.code = code
 
 
+def _stitch_ffmpeg() -> str | None:
+    """The ffmpeg the stitch runs: a trusted directory first, then ``PATH``.
+
+    The stitch runs in the gateway, outside the agent sandbox, and the
+    gateway's ``PATH`` can hold a directory the sandbox can write
+    (``~/.local/bin`` in the service unit). So the fixed system and
+    package-manager directories the transcriber trusts
+    (``transcribe._find_system_ffmpeg``) win whenever one of them has an
+    ffmpeg, and a ``PATH`` entry cannot shadow them. Only when none does is the
+    ``PATH`` lookup used, so every ffmpeg the stitch found before is still
+    found; that fallback is logged with the path it chose.
+    """
+    # Read through the facade at call time, which is the patch surface every
+    # ffmpeg caller shares.
+    from kiro_crew import transcribe
+
+    trusted = transcribe._find_system_ffmpeg()
+    if trusted is not None:
+        return trusted
+    found = shutil.which("ffmpeg")
+    if found is not None:
+        logger.warning(
+            "voice_reply: no ffmpeg in a trusted system directory; " "stitching with %s from PATH",
+            found,
+        )
+    return found
+
+
 async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None:
     """Concatenate MP3 files into a single file using ffmpeg.
 
@@ -1404,9 +1423,15 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
     argument) is removed on any unsuccessful exit; a caller-supplied
     ``output`` path is left untouched.
 
-    Windows: ffmpeg is not guaranteed on PATH, so the stitch can return ``None``
-    there; the dashboard caller then completes the request without a replay
-    clip. The Slack thread-upload path is unaffected.
+    Which ffmpeg runs is decided by :func:`_stitch_ffmpeg`: the fixed system
+    and package-manager directories the transcriber trusts come first, and the
+    gateway's ``PATH`` is used only when none of them has one. The bundled and
+    stored decoders are not used: they are audio-only builds with no concat
+    demuxer and no MP3 muxer, so they cannot stitch.
+
+    A host with no ffmpeg in those directories or on ``PATH`` returns ``None``;
+    the dashboard caller then completes the request without a replay clip. The
+    Slack thread-upload path is unaffected.
     """
     if not paths:
         return None
@@ -1433,6 +1458,14 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
     listing: str | None = None
     succeeded = False
     try:
+        # The lookup probes the filesystem, so it runs off the event loop.
+        ffmpeg_bin = await asyncio.to_thread(_stitch_ffmpeg)
+        if ffmpeg_bin is None:
+            logger.warning(
+                "voice_reply: no ffmpeg in a trusted system directory; "
+                "skipping the replay clip stitch"
+            )
+            return None
         # The chunk paths go in a list file for ffmpeg's concat demuxer, so the
         # command line keeps one length for any chunk count: Windows refuses
         # one over 32,767 characters. Single quotes keep each path literal, and
@@ -1443,7 +1476,7 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
                 quoted = path.replace("'", "'\\''")
                 f.write(f"file '{quoted}'\n")
         proc = await asyncio.create_subprocess_exec(
-            "ffmpeg",
+            ffmpeg_bin,
             "-y",
             "-f",
             "concat",

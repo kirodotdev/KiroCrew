@@ -86,7 +86,7 @@ describe('ChatEmptyState before the first slot list lands', () => {
       store.dispatch(fetchSlots.rejected(new Error('gateway down'), 'r1', undefined))
     })
     expect(startButton()).toBeTruthy()
-    // The reconnect catch-up dispatches a fresh fetch.
+    // A reconnect whose connect snapshot is empty or missing dispatches a fresh fetch.
     act(() => { store.dispatch(fetchSlots.pending('r2', undefined)) })
     expect(loading()).toBeTruthy()
     expect(startButton()).toBeNull()

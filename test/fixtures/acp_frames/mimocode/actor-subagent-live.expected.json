@@ -1,0 +1,253 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "actor",
+        "tool_call_id": "call-1",
+        "tool_kind": "other",
+        "wire_title": "actor"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "once",
+            "label": "Allow once"
+          },
+          {
+            "id": "always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Reject"
+          }
+        ],
+        "request_id": 2,
+        "shell_classified": true,
+        "title": "actor",
+        "tool_call_id": "call-1",
+        "tool_kind": "other"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always",
+      "once": "once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "operation": {
+            "action": "run",
+            "description": "Run echo actor-child-ok",
+            "prompt": "Use the bash tool to run exactly this command and nothing else:\n\necho actor-child-ok > ~/mimo-proj/actor-fg.txt\n\nAfter it succeeds, report back: the exact command you ran, whether it exited successfully, and any output (or note that redirect produced no stdout). Do not run any other commands. Do not inspect the file after.",
+            "subagent_type": "explore"
+          }
+        },
+        "title": "actor",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"operation\": {\n    \"action\": \"run\",\n    \"subagent_type\": \"explore\",\n    \"description\": \"Run echo actor-child-ok\",\n    \"prompt\": \"Use the bash tool to run exactly this command and nothing else:\\n\\necho actor-child-ok > ~/mimo-proj/actor-fg.txt\\n\\nAfter it succeeds, report back: the exact command you ran, whether it exited successfully, and any output (or note that redirect produced no stdout). Do not run any other commands. Do not inspect the file after.\"\n  }\n}",
+        "tool_kind": "other",
+        "wire_title": "actor"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "operation": {
+            "action": "run",
+            "description": "Run echo actor-child-ok",
+            "prompt": "Use the bash tool to run exactly this command and nothing else:\n\necho actor-child-ok > ~/mimo-proj/actor-fg.txt\n\nAfter it succeeds, report back: the exact command you ran, whether it exited successfully, and any output (or note that redirect produced no stdout). Do not run any other commands. Do not inspect the file after.",
+            "subagent_type": "explore"
+          }
+        },
+        "title": "actor",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"operation\": {\n    \"action\": \"run\",\n    \"subagent_type\": \"explore\",\n    \"description\": \"Run echo actor-child-ok\",\n    \"prompt\": \"Use the bash tool to run exactly this command and nothing else:\\n\\necho actor-child-ok > ~/mimo-proj/actor-fg.txt\\n\\nAfter it succeeds, report back: the exact command you ran, whether it exited successfully, and any output (or note that redirect produced no stdout). Do not run any other commands. Do not inspect the file after.\"\n  }\n}",
+        "tool_kind": "other",
+        "wire_title": "actor"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "title": "bash",
+        "tool_call_id": "call-2",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo actor-child-ok > ~/mimo-proj/actor-fg.txt",
+          "description": "Write actor-child-ok to actor-fg.txt"
+        },
+        "title": "Write actor-child-ok to actor-fg.txt",
+        "tool_call_id": "call-2",
+        "tool_input": "{\n  \"command\": \"echo actor-child-ok > ~/mimo-proj/actor-fg.txt\",\n  \"description\": \"Write actor-child-ok to actor-fg.txt\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "once",
+            "label": "Allow once"
+          },
+          {
+            "id": "always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "echo actor-child-ok > ~/mimo-proj/actor-fg.txt",
+          "description": "Write actor-child-ok to actor-fg.txt"
+        },
+        "request_id": 7,
+        "shell_classified": true,
+        "title": "bash",
+        "tool_call_id": "call-2",
+        "tool_input": "{\n  \"command\": \"echo actor-child-ok > ~/mimo-proj/actor-fg.txt\",\n  \"description\": \"Write actor-child-ok to actor-fg.txt\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always",
+      "once": "once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo actor-child-ok > ~/mimo-proj/actor-fg.txt",
+          "description": "Write actor-child-ok to actor-fg.txt"
+        },
+        "title": "Write actor-child-ok to actor-fg.txt",
+        "tool_call_id": "call-2",
+        "tool_input": "{\n  \"command\": \"echo actor-child-ok > ~/mimo-proj/actor-fg.txt\",\n  \"description\": \"Write actor-child-ok to actor-fg.txt\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-2",
+        "tool_final": true,
+        "tool_output": "(no output)",
+        "tool_output_bytes": 11,
+        "tool_output_digest": "efefc15c24ee8645a3f5f6958389db729c1577eb6b32aeac4caab2a86d90daa3",
+        "tool_status": "completed"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo actor-child-ok > ~/mimo-proj/actor-fg.txt",
+          "description": "Write actor-child-ok to actor-fg.txt"
+        },
+        "title": "Write actor-child-ok to actor-fg.txt",
+        "tool_call_id": "call-2",
+        "tool_input": "{\n  \"command\": \"echo actor-child-ok > ~/mimo-proj/actor-fg.txt\",\n  \"description\": \"Write actor-child-ok to actor-fg.txt\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "Write actor-child-ok to actor-fg.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-1",
+        "tool_final": true,
+        "tool_output": "actor_id: explore-1 (to give this subagent more work, `send` it another message)\n\n<actor_result status=\"unknown\">\n- **Command run:** `echo actor-child-ok > ~/mimo-proj/actor-fg.txt`\n- **Exit:** successful (no error reported)\n- **Output:** none — redirect produced no stdout\n</actor_result>",
+        "tool_output_bytes": 291,
+        "tool_output_digest": "f11c09a0a8196a1c39c04252b1a5d3876f912ff4eaa1f37b45446d74add9b572",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "operation": {
+            "action": "run",
+            "description": "Run echo actor-child-ok",
+            "prompt": "Use the bash tool to run exactly this command and nothing else:\n\necho actor-child-ok > ~/mimo-proj/actor-fg.txt\n\nAfter it succeeds, report back: the exact command you ran, whether it exited successfully, and any output (or note that redirect produced no stdout). Do not run any other commands. Do not inspect the file after.",
+            "subagent_type": "explore"
+          }
+        },
+        "title": "Run echo actor-child-ok",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"operation\": {\n    \"action\": \"run\",\n    \"subagent_type\": \"explore\",\n    \"description\": \"Run echo actor-child-ok\",\n    \"prompt\": \"Use the bash tool to run exactly this command and nothing else:\\n\\necho actor-child-ok > ~/mimo-proj/actor-fg.txt\\n\\nAfter it succeeds, report back: the exact command you ran, whether it exited successfully, and any output (or note that redirect produced no stdout). Do not run any other commands. Do not inspect the file after.\"\n  }\n}",
+        "tool_kind": "other",
+        "wire_title": "Run echo actor-child-ok"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  }
+]

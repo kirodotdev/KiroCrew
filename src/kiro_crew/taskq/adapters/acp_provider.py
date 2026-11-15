@@ -153,7 +153,7 @@ def _retry_at_in_text(haystack: str, now: float | None) -> float | None:
     if match is None:
         return None
     base = time.time() if now is None else now
-    return base + float(int(match.group(1)))
+    return _http.delay_retry_at(match.group(1), base)
 
 
 def classify_raw_error(error: object, *, scope: str = SCOPE_DEFAULT) -> DependencySignal | None:

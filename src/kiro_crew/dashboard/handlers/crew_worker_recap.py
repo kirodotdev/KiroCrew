@@ -286,7 +286,7 @@ async def api_crew_worker_recap(request: web.Request) -> web.Response:
     state = request.app["state"]
     root = request.match_info.get("slot", "")
     worker = request.match_info.get("worker", "")
-    rows = crew_workers._stamped_rows(state)
+    rows = await crew_workers._stamped_rows(state)
     if not (crew_workers._live_root(rows, root)[0] or crew_workers._closed_root_kind(state, root)):
         return crew_workers._not_root()
     live = crew_workers._tree_workers(rows, root)

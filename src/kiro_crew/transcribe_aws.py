@@ -183,8 +183,11 @@ def _make_temp_ogg() -> str:
 
 def _read_audio_bytes(audio_path: str) -> bytes:
     """Read at most one byte beyond AWS Transcribe's upload limit."""
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read
+
     with open(audio_path, "rb") as audio_file:
-        return audio_file.read(_TRANSCRIBE_MAX_BYTES + 1)
+        return bounded_read(audio_file, _TRANSCRIBE_MAX_BYTES + 1)
 
 
 async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]

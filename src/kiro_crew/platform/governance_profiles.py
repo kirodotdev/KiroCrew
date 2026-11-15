@@ -28,7 +28,6 @@ Resolution principles (from the design + the grounding analysis):
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 from dataclasses import dataclass, field, replace
@@ -44,6 +43,7 @@ from kiro_crew.platform.governance import (
     deny_all_profile,
     parse_profile,
 )
+from kiro_crew.user_json import loads_user_json
 
 
 @dataclass(frozen=True)
@@ -67,8 +67,9 @@ class _Snapshot:
     restrictive profiles. ``_ensure_fresh`` uses this to decide that the FIRST
     load may not be skipped.
 
-    ``fallback_profiles`` records file stems where the deny-all fallback was
-    substituted because the file could not be read or parsed. This is distinct
+    ``fallback_profiles`` records file stems where the fallback was substituted
+    because the file could not be read or parsed or its ``extends`` was broken,
+    plus any profile composed over such a parent. This is distinct
     from ``unrecoverable`` (which tracks bind-unrecoverable files for boot-abort).
     A profile in ``fallback_profiles`` is still governed (deny-all), so
     enforcement is correct — but the operator cannot tell a deliberate lockdown
@@ -762,7 +763,7 @@ class ProfileStore:
                 fallback_stems.add(stem)
                 continue
             try:
-                data = json.loads(raw)
+                data = loads_user_json(raw)
                 if not isinstance(data, dict):
                     raise PlatformCompositionError("profile is not a JSON object")
                 by_name[stem] = parse_profile(data)
@@ -836,6 +837,11 @@ class ProfileStore:
                     fallback_stems.add(name)
                 else:
                     by_name[name] = compose_profiles(parent, profile)
+                    if profile.extends in fallback_stems:
+                        # Composed over a parent that failed to load, so it runs on
+                        # that parent's fallback controls: report it as one too, or
+                        # ``policy validate`` would print this child as OK.
+                        fallback_stems.add(name)
         # Build the bind index.  Last writer wins on a duplicate bind, logged.
         for name, profile in by_name.items():
             if profile.bind is not None:
@@ -990,7 +996,7 @@ def fallback_profile_names() -> "frozenset[str]":
 
     A non-empty result means at least one profile is present on disk but could not
     be USED by this build — it was unreadable, it failed to parse, or its
-    ``extends`` parent is missing or chained. Its surface is correctly denied
+    ``extends`` parent is missing or chained, or itself one of these. Its surface is correctly denied
     (enforcement is intact), but the operator cannot tell a deliberate lockdown
     from a broken file. The Security page uses this to render a warning banner.
 
@@ -1100,6 +1106,25 @@ def session_profiles_govern(ref: str, session_key: str, *, app: Optional[str]) -
     return any(
         profile is not None and not may_skip_gate(ref, profile)  # type: ignore[arg-type]
         for profile in candidates
+    )
+
+
+def any_configured_profile_constrains(scope: str) -> bool:
+    """True if ANY loaded profile's ruleset for *scope* constrains anything.
+
+    The scope-level sibling of :func:`any_configured_profile_governs`, for a reader
+    with no ref to ask about: a harness whose calls carry no identity in that scope
+    (``governance.mcp_scope_governed_now``). Same fail-closed rule for an
+    unresolved store.
+    """
+    from kiro_crew.platform.governance import _ruleset_has_an_opinion
+    from kiro_crew.platform.governance_parts.evaluator import policy_level_control
+
+    if not _STORE.resolved():
+        return True
+    return any(
+        _ruleset_has_an_opinion(policy_level_control(profile, scope))  # type: ignore[arg-type]
+        for profile in _STORE.all_profiles()
     )
 
 

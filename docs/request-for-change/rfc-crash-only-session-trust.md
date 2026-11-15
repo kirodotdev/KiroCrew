@@ -46,8 +46,6 @@ for:
 
 - the loop-stall watchdog's dump-then-exit, typically after the host swaps under
   memory pressure;
-- the stale-asset watchdog's self-restart after an install update prunes the
-  running build;
 - an OOM kill or another crash.
 
 The supervisor relaunches the gateway and the chats come back untrusted.
@@ -96,8 +94,9 @@ status. `_shutdown_and_exit` in `slack/gateway_runtime/exit_path.py` exits **0**
 stop: SIGTERM or SIGINT (`kirocrew stop`, `kirocrew restart`, Ctrl-C,
 `systemctl stop`, and the SIGTERM a host reboot delivers) and the owner shutdown
 route. Every self-initiated shutdown that exists to be relaunched exits non-zero
-so a restart-on-failure supervisor brings it back. That includes the stale-asset
-watchdog (`STALE_ASSET_EXIT_CODE = 75`) and the listener guard.
+so a restart-on-failure supervisor brings it back. That includes the listener guard.
+The stale-asset watchdog no longer ends a running gateway: it keeps serving and
+shows a restart notice, so no update path exits the process on its own.
 
 | Exit | Exit status | Trust |
 |---|---|---|
@@ -283,12 +282,11 @@ malformed or wrong-version record restores nothing and tells the owner so.
 
 ## Open questions
 
-1. Should an automatic self-update restart count as an owner stop? It depends on
-   the route. The desktop app stops the gateway through the owner shutdown route
-   before installing (exit 0), and an applied in-app update restarts in place;
-   both are owner actions and both clear trust. The stale-asset self-restart,
-   which follows an install the gateway did not start, exits non-zero and keeps
-   it. The question is whether that last route should agree with the others.
+1. Does an update-driven restart count as an owner stop? Yes, on every route
+   that exists now. No update restarts a running gateway by itself: the desktop
+   app stops the gateway through the owner shutdown route and applies the update
+   at its quit (exit 0), and a standalone gateway applies an armed update at its
+   next start. Both follow an action by the owner and clear trust.
 2. Should the dashboard show which chats had trust restored after a crash? This
    design only audits it. A one-line notice would make the carry-over visible
    without requiring an action.

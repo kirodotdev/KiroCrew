@@ -1,8 +1,11 @@
-"""Serve Plumb-4B on this machine's CPU for Kiro Crew's decision seam.
+"""Serve Plumb-4B for Kiro Crew's decision seam.
 
 Runs inside the model's own environment, never the gateway's: it imports torch
 and jevk5, which Kiro Crew does not depend on. The weights are a directory the
 gateway already downloaded and verified, so nothing here reaches the network.
+
+The model loads on the Apple Silicon GPU (``mps``) when this torch can use it,
+and on the CPU otherwise or when loading on the GPU fails.
 """
 
 import argparse
@@ -170,7 +173,35 @@ parser.add_argument("--weights", required=True)
 parser.add_argument("--port", type=int, required=True)
 args = parser.parse_args()
 
-model = JevK5(args.weights, device="cpu", dtype=torch.bfloat16, graphs=False)
+
+def _model_device() -> str:
+    """``mps`` when this torch can use the Apple Silicon GPU, else ``cpu``."""
+    try:
+        if torch.backends.mps.is_available():
+            return "mps"
+    except Exception:
+        return "cpu"
+    return "cpu"
+
+
+def _load_model(weights: str):
+    # jevk5's graph path is CUDA-only, so graphs stay off on every device. A GPU
+    # load that fails (a sandbox hiding the device, too little memory) loads on
+    # the CPU instead of failing the server.
+    device = _model_device()
+    try:
+        model = JevK5(weights, device=device, dtype=torch.bfloat16, graphs=False)
+    except Exception as exc:
+        if device == "cpu":
+            raise
+        print(f"plumb-4b: loading on {device} failed ({exc!r})", file=sys.stderr, flush=True)
+        device = "cpu"
+        model = JevK5(weights, device=device, dtype=torch.bfloat16, graphs=False)
+    print(f"plumb-4b device={device}", file=sys.stderr, flush=True)
+    return model
+
+
+model = _load_model(args.weights)
 Handler = _one_at_a_time(make_handler(model, "plumb-4b"), QUEUE_WAIT_SECS)
 
 

@@ -42,6 +42,7 @@ import type { CronFolder } from '../utils/cronFolders'
 import CronFolderHeader from '../components/CronFolderHeader'
 import CronBatchActionsMenu from '../components/CronBatchActionsMenu'
 import { useScheduleBatchActions, BatchRunConfirmDialog } from './SchedulePageBatchActions'
+import ScheduleCrewmateRosterNotice from './ScheduleCrewmateRosterNotice'
 import CronRowActions from '../components/CronRowActions'
 import AddJobSplitButton from '../components/AddJobSplitButton'
 import {
@@ -270,13 +271,14 @@ export function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder:
       {confirming && (
         <div className="flex items-center gap-3 px-3 py-1.5 mb-1.5 text-sm rounded-md bg-danger/5 border border-danger/20">
           <span className="text-text">{i18nT('pages.schedulePage.cronFolders.confirm_delete_folder', { name: folder.name })}</span>
-          <Btn danger onClick={() => { setConfirming(false); onDelete() }}>
+          {/* The stock Btn is transparent, so on the danger tint it has no edge until hovered. */}
+          <Btn danger onClick={() => { setConfirming(false); onDelete() }} className="border-border-strong bg-bg-elevated">
             {i18nT('pages.schedulePage.cronFolders.delete_folder_named', { name: folder.name })}
           </Btn>
           {/* Cancel unmounts the row and itself with it, which would drop
               focus to the page: hand it back to the trigger, as the rename
               editor does, a frame later so the row has gone. */}
-          <Btn onClick={() => {
+          <Btn className="border-border-strong bg-bg-elevated" onClick={() => {
             setConfirming(false)
             requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }))
           }}>
@@ -359,7 +361,8 @@ export default function SchedulePage() {
   // "By crewmate": '' lists every job, a crewmate name lists only that
   // crewmate's own schedules (rows whose `member_id` resolves to it).
   const [crewmateFilter, setCrewmateFilter] = useState('')
-  const { data: rosterData, isError: crewmateRosterFailed, error: crewmateRosterError, refetch: reloadCrewmateRoster, isFetching: crewmateRosterReloading } = useQuery(membersRosterQuery)
+  const crewmateRosterRead = useQuery(membersRosterQuery)
+  const rosterData = crewmateRosterRead.data
   const roster = useMemo(() => (Array.isArray(rosterData) ? rosterData : []), [rosterData])
   const [selected, setSelected] = useState<CronJob | null>(null)
   /**
@@ -548,6 +551,8 @@ export default function SchedulePage() {
   const handleMoveJob = useCallback(async (jobId: string, folderId: string) => {
     try {
       await api.updateCron(jobId, { folder_id: folderId })
+      // Only this job's own refusal: the slot is shared with other rows' errors.
+      setActionError(prev => (prev?.id === jobId ? null : prev))
       // Auto-expand the target folder so moved job stays visible
       if (folderId) {
         setCollapsedFolders(prev => {
@@ -608,7 +613,7 @@ export default function SchedulePage() {
   }), [sanitizedJobs, cronFilter, activeCrewmate, roster])
   const filterActive = !!cronFilter || !!activeCrewmate
   const scheduleComparators = useMemo(() => ({
-    name: (a: CronJob, b: CronJob) => a.name.localeCompare(b.name),
+    name: (a: CronJob, b: CronJob) => compareText(a.name, b.name),
     // Clock time first, so `9:00 AM` precedes `1:00 PM` -- the label sorts wrongly
     // as text. Rows with no clock (raw fallback, intervals) go last, then by label.
     schedule: (a: CronJob, b: CronJob) => {
@@ -786,22 +791,7 @@ export default function SchedulePage() {
           )}
           {/* Only when a listed job needs the roster: with no crewmate job the
               failed read costs the page nothing worth reporting. */}
-          {crewmateRosterFailed && jobs.some(j => j.member_id) && !detailDialogOpen && (
-            <div className="flex flex-wrap items-center gap-2 mb-3">
-              {/* askAgent on: the job dialog is closed, so no job draft can be lost. */}
-              <ErrorNotice
-                variant="inline"
-                className="flex-1 min-w-0"
-                title={i18nT('pages.membersPage.roster_load_failed')}
-                message={queryErrorMessage(crewmateRosterError)}
-                askAgent
-                testId="schedule-crewmate-roster-error"
-              />
-              <Btn onClick={() => void reloadCrewmateRoster()} disabled={crewmateRosterReloading} aria-busy={crewmateRosterReloading}>
-                {i18nT('pages.schedulePage.retry')}
-              </Btn>
-            </div>
-          )}
+          <ScheduleCrewmateRosterNotice read={crewmateRosterRead} show={jobs.some(j => j.member_id) && !detailDialogOpen} errorMessage={queryErrorMessage} />
           {lateFailures.map(f => (
             <ErrorNotice
               key={f.id}
@@ -932,6 +922,7 @@ export default function SchedulePage() {
                         setActionError({ id: 'batch-move', msg: i18nT('pages.schedulePage.cronFolders.batch_move_failed', { count: failedIds.length, total: ids.length }) })
                       } else {
                         setSelectedIds(new Set())
+                        setActionError(prev => (prev?.id === 'batch-move' ? null : prev))
                       }
                       if (folderId) {
                         setCollapsedFolders(prev => {
@@ -1014,7 +1005,7 @@ export default function SchedulePage() {
                   silently is not. Widening any px column means moving `min-w` by
                   the same amount: the two numbers are one statement, and editing
                   only the column takes the difference out of Message. */}
-            <div className="relative">
+            <div className="@container relative">
             {/* The scroller is the shadcn Table's own wrapper (the table's
                 parentElement — `relative w-full overflow-x-auto` in
                 ui/table.tsx); `sticky right-0` on the Actions cells resolves
@@ -1128,6 +1119,7 @@ export default function SchedulePage() {
                       </TableRow>
                     )}
                     {!isCollapsed && group.jobs.map(j => (
+              <Fragment key={j.id}>
               <TableRow key={j.id} className={`group/jobrow cursor-pointer ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''} ${selected?.id === j.id || selectedIds.has(j.id) ? '[&_button.border-border]:[--border:var(--border-strong)]' : ''}`} {...guidePick(j.name)} onClick={() => openDetail(j)}>
                 <TableCell className="px-2 text-center" onClick={e => e.stopPropagation()}>
                   <input
@@ -1297,11 +1289,18 @@ export default function SchedulePage() {
                       onNewFolder={handleNewFolder}
                     />
                   </div>
-                  {/* askAgent on: row actions (pause, strict, move, run, delete)
-                      act on a persisted job; the row holds no draft. */}
-                  {actionError?.id === j.id && <ErrorNotice variant="inline" className="mt-1 whitespace-normal" message={actionError.msg} askAgent testId="schedule-job-action-error" />}
                 </TableCell>
               </TableRow>
+              {/* Own full-width row, sticky and wrapping at the scroller's width (100cqw of the @container above). askAgent: job is persisted. */}
+              {actionError?.id === j.id && (
+                <TableRow>
+                  <TableCell colSpan={SCHEDULE_COLUMNS}>
+                    <div className="sticky left-4 inline-flex max-w-[calc(100cqw-2rem)] whitespace-normal" data-testid="schedule-job-action-error-pin">
+                      <ErrorNotice variant="inline" message={actionError.msg} askAgent testId="schedule-job-action-error" />
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )}</Fragment>
                     ))}</Fragment>
                   )
                 })
@@ -1659,9 +1658,11 @@ export function JobSecretsPanel({ job, onSaved }: { job: CronJob; onSaved: () =>
             >
               {i18nT('pages.schedulePage.secrets_approve')}
             </SendBtn>
+            {/* The stock Btn is transparent, so on the warn tint it has no edge until hovered. */}
             <Btn
               danger
               disabled={busy}
+              className="border-border-strong bg-bg-elevated"
               onClick={() =>
                 act({
                   deny_pending: true,
@@ -1850,7 +1851,7 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
           </div>
         )}
         {detailTab === 'logs' && job ? (
-          <JobLogsView jobId={job.id} jobName={job.name} isRunning={job.is_running} runningSince={job.running_since} cancelError={panelError} onCancel={async () => { setPanelError(null); try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed')) } }} />
+          <JobLogsView jobId={job.id} jobName={job.name} canHideIdle={!!job.script} isRunning={job.is_running} runningSince={job.running_since} cancelError={panelError} onCancel={async () => { setPanelError(null); try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed')) } }} />
         ) : (
           <>
             {job && <TemplateUpdatedNotice job={job} />}

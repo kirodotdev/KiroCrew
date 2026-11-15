@@ -146,12 +146,20 @@ def _reconciled(env: SimpleNamespace) -> None:
 
 
 class _Count:
-    def __init__(self) -> None:
+    """Calls made through :meth:`wrap`; with *thread*, only those made on that thread.
+
+    A patched ``os.stat`` is process-wide, so threads other tests in the same worker
+    left running are counted too unless the count is held to the listing's thread.
+    """
+
+    def __init__(self, thread: int | None = None) -> None:
         self.calls: list = []
+        self._thread = thread
 
     def wrap(self, real):
         def counted(*args, **kwargs):
-            self.calls.append(args)
+            if self._thread is None or threading.get_ident() == self._thread:
+                self.calls.append(args)
             return real(*args, **kwargs)
 
         return counted
@@ -300,12 +308,17 @@ def test_steady_listing_op_budget(tmp_path, monkeypatch) -> None:
     os.utime(d, ns=(_BASE_NS, _BASE_NS))
     env = _attach(ConversationLog(base_dir=d))
     env.log.list_sessions_indexed()
-    stats, scans, rows = _Count(), _Count(), _Count()
+    stats, scans, rows = _Count(threading.get_ident()), _Count(), _Count()
     monkeypatch.setattr(os, "stat", stats.wrap(os.stat))
     monkeypatch.setattr(SessionListingIndex, "_scan", scans.wrap(SessionListingIndex._scan))
     monkeypatch.setattr(
         SessionCatalogProjection, "_listing_row", rows.wrap(SessionCatalogProjection._listing_row)
     )
+    # Another thread's stat, as a thread left behind by an earlier test in the same
+    # worker makes, is not the listing's work.
+    stray = threading.Thread(target=os.stat, args=(tmp_path,))
+    stray.start()
+    stray.join()
     for _ in range(3):
         assert len(env.log.list_sessions_indexed()) == 2000
     assert (len(stats.calls), len(scans.calls), len(rows.calls)) == (3, 0, 0)

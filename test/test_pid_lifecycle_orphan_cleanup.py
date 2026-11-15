@@ -314,20 +314,33 @@ class TestCleanupOrphanedMcpServers:
         assert "77777" not in pid_file.read_text(encoding="utf-8")  # stale entry pruned
 
     def test_track_child_pids_records_start_token(self, pid_file: Path) -> None:
-        """_track_child_pids persists the child's start identity as field 3."""
+        """_track_child_pids persists the captured start identity as field 3."""
         from kiro_crew.session_pid import _track_child_pids
 
-        with patch("kiro_crew.session_pid._pid_start_token", return_value="424242"):
-            _track_child_pids({555: None}, parent_pid=111)
+        _track_child_pids({555: ("424242", b"node")}, parent_pid=111)
 
         lines = pid_file.read_text(encoding="utf-8").strip().splitlines()
         assert lines == ["555:111:424242"]
 
-        # Unreadable identity at track time degrades to the legacy shape.
-        with patch("kiro_crew.session_pid._pid_start_token", return_value=None):
-            _track_child_pids({556: None}, parent_pid=111)
+        # No captured identity degrades to the legacy shape.
+        _track_child_pids({556: None}, parent_pid=111)
         lines = pid_file.read_text(encoding="utf-8").strip().splitlines()
         assert "556:111" in lines
+
+    def test_track_child_pids_writes_the_captured_token_not_a_live_reread(
+        self, pid_file: Path
+    ) -> None:
+        """A live read at write time could be a stranger's that took the number since
+        the capture; written as the identity, it would let the sweep kill that process."""
+        from kiro_crew.session_pid import _track_child_pids
+
+        with patch("kiro_crew.session_pid._pid_start_token", return_value="stranger-token"):
+            _track_child_pids({555: ("captured-token", b"node")}, parent_pid=111)
+            _track_child_pids({556: None}, parent_pid=111)
+        assert pid_file.read_text(encoding="utf-8").split() == [
+            "555:111:captured-token",
+            "556:111",
+        ]
 
     def test_bare_pid_dead_pruned(self, pid_file: Path) -> None:
         """Dead bare PIDs should be pruned from the file."""
@@ -588,6 +601,32 @@ class TestCleanupOrphanedSessions:
         assert removed == 1
         assert not (tmp_path / "session_pid_99999.txt").exists()
         assert session_pid_file.read_text() == "111:222\n"
+
+    def test_one_undeletable_dead_mapping_does_not_stop_the_prune(
+        self, tmp_path: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Boot and shutdown call the prune unguarded, so one entry that cannot be
+        removed (here a directory at a mapping's name) must not raise out of it."""
+        from kiro_crew.session_pid import _prune_stale_session_pid_files
+
+        monkeypatch.setattr("kiro_crew.session_pid.config_dir", lambda: tmp_path)
+        (tmp_path / "session_pid_99999.txt").mkdir()
+        (tmp_path / "session_pid_99998.txt").write_text("sess-dead")
+
+        # Pinned dead at the seam the prune calls, so no live pid on any
+        # platform (Windows never reaches os.kill) keeps a mapping.
+        escaped: OSError | None = None
+        removed = None
+        with patch("kiro_crew.platform_compat.pid_exists", return_value=False):
+            try:
+                removed = _prune_stale_session_pid_files(narrow_with_leaders=False)
+            except OSError as exc:
+                escaped = exc
+
+        assert escaped is None, f"one undeletable mapping stopped the prune: {escaped!r}"
+        assert removed == 1
+        assert not (tmp_path / "session_pid_99998.txt").exists()
+        assert (tmp_path / "session_pid_99999.txt").is_dir()
 
     def test_stale_snapshot_does_not_delete_a_live_mapping(
         self, tmp_path: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch

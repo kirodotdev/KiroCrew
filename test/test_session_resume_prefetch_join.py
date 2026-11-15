@@ -335,3 +335,49 @@ async def test_a_resume_prefetch_a_provider_switch_left_nothing_to_load_stands_d
     assert key not in mgr._sessions
     assert mgr._allocation_state.speculative_starts == {}
     await mgr.close_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("focus_resume", [True, False], ids=["owners-return", "reload-respawn"])
+async def test_the_allocation_tells_the_provider_whether_the_owner_came_back(
+    cfg, tmp_path, monkeypatch, focus_resume
+):
+    """A resume prefetch keeps its BACKGROUND place either way; only the owner's
+    return to the chat marks the provider as one a person is about to wait on, and a
+    typed send that joins it gets that same session."""
+    sid = "prior-sid-focus-resume"
+    gate = asyncio.Event()
+    providers: list = []
+    entered: list = []
+    factory = _saved_session_factory(tmp_path, monkeypatch, sid, gate, providers, entered)
+    mgr = SessionManager(cfg, provider_factory=factory)
+    key = "dashboard:focus-resume-prefetch"
+    mgr._session_map.set(key, sid)
+
+    prefetch = asyncio.create_task(
+        mgr.get_or_create(
+            key,
+            speculative=True,
+            speculative_resume=True,
+            start_priority=StartPriority.BACKGROUND,
+            focus_resume=focus_resume,
+        )
+    )
+    await async_wait_until(lambda: len(entered) == 1, describe=lambda: len(entered))
+    # Read at the moment the agent process would spawn: set before the start.
+    assert providers[0].focus_resume is focus_resume
+    assert providers[0].start_priority is StartPriority.BACKGROUND
+    send = asyncio.create_task(mgr.get_or_create(key, start_priority=StartPriority.FOREGROUND))
+    await async_wait_until(
+        lambda: len(providers) >= 2 or _parked_on_the_prefetch(mgr, key),
+        describe=lambda: len(providers),
+    )
+
+    gate.set()
+    await await_until(prefetch, what="the prefetch")
+    mgr.release(key)
+    claimed, _is_new, _resumed = await await_until(send, what="the typed send")
+    # One process: the send joined the prefetch's session.
+    assert providers == [claimed]
+    mgr.release(key)
+    await mgr.close_all()

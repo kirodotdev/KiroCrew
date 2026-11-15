@@ -21,6 +21,7 @@ import os
 import queue
 import stat
 import sys
+import time
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
 
@@ -331,6 +332,85 @@ _LONG_LIVED_COMMANDS = {"serve", "gateway", "chat", None}
 
 _LOG_QUEUE_LISTENER: QueueListener | None = None
 
+# The servers the loop-stall watchdog guards. A foreground one echoes to a
+# terminal or pipe, and a write there blocks for as long as the reader stops
+# reading (output paused with Ctrl-S, a stalled terminal app, an undrained
+# pipe). So their console echo also runs on a listener thread, behind a
+# bounded queue that drops records once full: ``gateway.log`` has every one.
+# ``chat`` keeps its synchronous echo: its terminal is the conversation, so
+# a log line must land in order with the chat's own output.
+_CONSOLE_OFF_LOOP_COMMANDS = {"serve", "gateway"}
+_CONSOLE_QUEUE_MAX = 10_000
+_CONSOLE_DRAIN_TIMEOUT = 2.0
+
+_CONSOLE_QUEUE_LISTENER: "_ConsoleQueueListener | None" = None
+
+
+class _ConsoleQueueHandler(_CliLogQueueHandler):
+    """Never blocks and never grows past its queue: a full queue drops the record."""
+
+    def enqueue(self, record: logging.LogRecord) -> None:
+        try:
+            self.queue.put_nowait(record)
+        except queue.Full:
+            # Not handleError: its traceback goes to the very stderr that stopped reading.
+            pass
+
+
+class _ConsoleQueueListener(QueueListener):
+    """The console echo's listener, with a stop that gives up at a deadline."""
+
+    def __init__(
+        self, bounded: "queue.Queue[logging.LogRecord | None]", *handlers: logging.Handler
+    ) -> None:
+        # respect_handler_level: a service's stderr file echoes WARNING and up only.
+        super().__init__(bounded, *handlers, respect_handler_level=True)
+        self.bounded = bounded
+
+    def stop_within(self, deadline: float) -> None:
+        end = time.monotonic() + deadline  # one budget for the put and the join
+        try:
+            self.bounded.put(None, timeout=deadline)  # None is QueueListener's stop sentinel
+        except queue.Full:
+            return  # the reader is stuck; nothing queued after this would land
+        thread = self._thread
+        if thread is not None:
+            thread.join(max(0.0, end - time.monotonic()))
+            if not thread.is_alive():
+                self._thread = None  # what QueueListener.stop leaves behind
+
+
+def _stop_console_queue_listener(timeout: float | None = None) -> None:
+    """Drain the console echo for at most ``timeout`` seconds, never longer.
+
+    The console may be the thing that stopped reading, so exit must not wait
+    on it: the listener thread is a daemon and is left behind when the
+    deadline passes.
+    """
+    global _CONSOLE_QUEUE_LISTENER
+    listener, _CONSOLE_QUEUE_LISTENER = _CONSOLE_QUEUE_LISTENER, None
+    if listener is None:
+        return
+    try:
+        listener.stop_within(_CONSOLE_DRAIN_TIMEOUT if timeout is None else timeout)
+    except Exception:
+        return  # interpreter-teardown races must not raise
+
+
+def _move_console_echo_off_loop() -> None:
+    """Put the root logger's console handlers behind a bounded queue listener."""
+    global _CONSOLE_QUEUE_LISTENER
+    root = logging.getLogger()
+    console = [h for h in root.handlers if type(h) is logging.StreamHandler]
+    if not console:
+        return
+    for handler in console:
+        root.removeHandler(handler)
+    bounded: "queue.Queue[logging.LogRecord | None]" = queue.Queue(maxsize=_CONSOLE_QUEUE_MAX)
+    _CONSOLE_QUEUE_LISTENER = _ConsoleQueueListener(bounded, *console)
+    _CONSOLE_QUEUE_LISTENER.start()
+    root.addHandler(_ConsoleQueueHandler(bounded))
+
 
 def _stop_log_queue_listener(timeout: float | None = None) -> None:
     """Stop the log queue listener, draining every queued record to disk.
@@ -346,7 +426,22 @@ def _stop_log_queue_listener(timeout: float | None = None) -> None:
     wedged disk cannot hang the force exit. When the thread does not finish
     in time, flush/close are skipped — they would block on the same wedged
     handler.
+
+    The ``gateway.log`` tail drains first; the console echo gets only what is
+    left of ``timeout``, so a terminal that stopped reading never costs the
+    file the records a post-mortem needs most.
     """
+    started = time.monotonic()
+    try:
+        _stop_file_log_listener(timeout)
+    finally:
+        if timeout is None:
+            _stop_console_queue_listener()
+        else:
+            _stop_console_queue_listener(max(0.0, timeout - (time.monotonic() - started)))
+
+
+def _stop_file_log_listener(timeout: float | None) -> None:
     global _LOG_QUEUE_LISTENER
     listener, _LOG_QUEUE_LISTENER = _LOG_QUEUE_LISTENER, None
     if listener is None:
@@ -569,10 +664,15 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     # hooks the log-record FACTORY, upstream of any handler.
     if command in _LONG_LIVED_COMMANDS:
         global _LOG_QUEUE_LISTENER
+        # Re-entrant call: basicConfig was a no-op (root still held the console
+        # queue handler), so the console handlers come back from the old listener.
+        prior_console = list(_CONSOLE_QUEUE_LISTENER.handlers) if _CONSOLE_QUEUE_LISTENER else []
         _stop_log_queue_listener()  # re-entrant call (tests): retire the old thread
         for lgr in (logging.getLogger(), logging.getLogger("kiro_crew")):
             for stale in [h for h in lgr.handlers if isinstance(h, _CliLogQueueHandler)]:
                 lgr.removeHandler(stale)  # re-entrant call: orphaned producer
+        for handler in prior_console:
+            logging.getLogger().addHandler(handler)
         log_queue: "queue.SimpleQueue[logging.LogRecord]" = queue.SimpleQueue()
         # No level on the queue handler either, and no handler-level re-check at
         # dequeue: the loggers decide what enters the queue, and everything that
@@ -584,6 +684,8 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
         _LOG_QUEUE_LISTENER.start()
         atexit.register(_stop_log_queue_listener)
         target_logger.addHandler(queue_handler)
+        if command in _CONSOLE_OFF_LOOP_COMMANDS and not detached:
+            _move_console_echo_off_loop()
     else:
         target_logger.addHandler(fh)
 

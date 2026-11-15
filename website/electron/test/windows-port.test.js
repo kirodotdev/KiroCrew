@@ -156,6 +156,36 @@ test("windowsProcessCommand prefers PowerShell command-line output", async () =>
   assert.match(calls[0].args.at(-1), /ExecutablePath/);
 });
 
+test("windowsProcessCommand asks PowerShell for UTF-8 output without a BOM", async () => {
+  const calls = [];
+  const execFileFn = (command, args, options, callback) => {
+    calls.push({ command, args });
+    callback(null, '"C:\\Users\\José\\AppData\\Local\\Programs\\KiroCrew\\kirocrew.exe" gateway\r\n');
+  };
+  const command = await windowsProcessCommand(4242, { execFileFn, tools: TEST_TOOLS });
+  const script = calls[0].args.at(-1);
+  assert.match(
+    script,
+    /^\[Console\]::OutputEncoding = New-Object System\.Text\.UTF8Encoding \$false; /,
+    "the encoding is set before anything is written",
+  );
+  assert.strictEqual(command, '"C:\\Users\\José\\AppData\\Local\\Programs\\KiroCrew\\kirocrew.exe" gateway');
+});
+
+test("a non-ASCII install path is ours only when it matches exactly", () => {
+  // The output encoding changes how the path is READ, never which path is
+  // trusted: identity stays an exact match against the resolver's own paths.
+  const ours = "C:\\Users\\José\\AppData\\Local\\Programs\\KiroCrew\\kirocrew.exe";
+  const options = { trustedExecutablePaths: [ours] };
+  assert.ok(isKirocrewCommand(`"${ours}" gateway`, options));
+  // One letter off, the same name in another profile, and the replacement
+  // character the OEM code page produced: all foreign.
+  assert.ok(!isKirocrewCommand(`"${ours.replace("José", "Jose")}" gateway`, options));
+  assert.ok(!isKirocrewCommand('"C:\\Users\\Zoë\\AppData\\Local\\Programs\\KiroCrew\\kirocrew.exe" gateway', options));
+  assert.ok(!isKirocrewCommand(`"${ours.replace("José", "Jos\uFFFD")}" gateway`, options));
+  assert.ok(!isKirocrewCommand('"C:\\Temp\\Ünïcode\\kirocrew.exe" gateway', options));
+});
+
 test("windowsProcessCommand falls back to WMIC and unwraps its value", async () => {
   const calls = [];
   const execFileFn = (command, args, _options, callback) => {

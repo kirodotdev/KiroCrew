@@ -35,7 +35,7 @@ function props(over: Partial<Props> = {}): Props {
     slotHasMore: false, slotOldestIndex: 0, cursorIsForActiveSlot: true, loadingOlder: false, chatConfig: loadChatConfig(),
     activeSlotRemoteBound: false, automationId: undefined, setAutomationOpen: fn(), handleArtifactOpen: vi.fn(async () => undefined),
     handleFileOpen: fn() as never, handleFolderOpen: fn(), handleOpenDiff: fn(), handleSubagentPanelOpen: fn(), sessionTitles: new Map(),
-    handleFork: vi.fn(async () => undefined), highlightTs: null, selectSessionTab: fn(), linkPreviewsOn: false, socialShareOn: false,
+    handleFork: vi.fn(async () => false), highlightTs: null, selectSessionTab: fn(), linkPreviewsOn: false, socialShareOn: false,
     connectionsUiOn: false, planTaskId: '', showRefusedPress: fn(), decideRow: vi.fn(async () => undefined),
     revealAppInPanel: fn(), lastTextIdx: -1, regenerating: false, handleRegenerate: fn(), replacingMids: new Set<string>(), continuable: false, continuing: false,
     freshSession: { phase: 'idle' } as never, handleContinue: fn(), handleFreshSession: fn(), interrupted: false, openDefaultModelSetting: fn(),
@@ -177,6 +177,22 @@ describe('message row handlers', () => {
     expect(latest.handleJumpToQuote).toHaveBeenCalledWith({ ts: 'r0' })
     expect(latest.handleRegenerate).toHaveBeenCalledTimes(1)
     expect(first.handleTogglePinForMessage).not.toHaveBeenCalled()
+  })
+
+  it('forks with the earlier messages and opens the model picker only on the chat the fork opened', async () => {
+    const { hook, first, rows } = mount()
+    const handleFork = vi.fn(async () => true)
+    const openModelPickerFromError = vi.fn()
+    hook.rerender({ ...first, handleFork, openModelPickerFromError })
+    const forkWithModel = () => (rows().reply.props.onForkWithModel as (i: number, mid?: string) => Promise<void>)(1, 'm-reply')
+    await forkWithModel()
+    expect(handleFork).toHaveBeenCalledWith(1, 'm-reply', 'head')
+    expect(openModelPickerFromError).toHaveBeenCalledTimes(1)
+    // The person opened another chat while the fork ran: the picker would act on that one.
+    handleFork.mockResolvedValueOnce(false)
+    await forkWithModel()
+    expect(handleFork).toHaveBeenCalledTimes(2)
+    expect(openModelPickerFromError).toHaveBeenCalledTimes(1)
   })
 
   it('gives a replaced row object handlers over its new content', () => {

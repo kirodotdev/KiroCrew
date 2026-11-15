@@ -1,4 +1,4 @@
-/** An Ultra Mode root row's one state word, drawn so Running and Waiting read
+/** A conductor mode root row's one state word, drawn so Running and Waiting read
  *  apart at a glance and without colour: Running is a solid dot and a heavier
  *  word, Waiting a hollow ring and the muted word. The marks are the row's own
  *  11px glyph size (the session count's bubble), and they never move, so a
@@ -18,13 +18,13 @@ export interface CrewStateStyle {
 }
 
 export const CREW_STATE_STYLE: Record<CrewStateKind, CrewStateStyle> = {
-  needs_you: { wordKey: 'components.crewMode.ultra_needs_you', tone: 'crew-tone-warn font-medium', mark: null },
+  needs_you: { wordKey: 'components.crewMode.conductor_mode_needs_you', tone: 'crew-tone-warn font-medium', mark: null },
   running: { wordKey: 'commandCenter.running', tone: 'text-text font-semibold', mark: 'filled' },
   // A stalled goal loop is a failure, not live work.
-  stalled: { wordKey: 'components.crewMode.ultra_paused', tone: 'text-danger font-medium', mark: null },
-  paused: { wordKey: 'components.crewMode.ultra_paused', tone: 'crew-tone-warn', mark: null },
+  stalled: { wordKey: 'components.crewMode.conductor_mode_paused', tone: 'text-danger font-medium', mark: null },
+  paused: { wordKey: 'components.crewMode.conductor_mode_paused', tone: 'crew-tone-warn', mark: null },
   // Open ledger work gone quiet, its next step not taken (`lib/crewWork.ts`).
-  quiet: { wordKey: 'components.crewMode.ultra_row_stalled', tone: 'crew-tone-warn font-medium', mark: null },
+  quiet: { wordKey: 'components.crewMode.conductor_mode_row_stalled', tone: 'crew-tone-warn font-medium', mark: null },
   waiting: { wordKey: 'commandCenter.worker_group_waiting', tone: 'text-muted', mark: 'ring' },
   done: { wordKey: 'commandCenter.worker_group_done', tone: 'crew-tone-ok', mark: null },
 }
@@ -49,7 +49,7 @@ export function CrewStateWord({ kind, title, className = '' }: { kind: CrewState
   )
 }
 
-/** The Ultra Mode row's own state as one short word, from the row-state branch
+/** The conductor mode row's own state as one short word, from the row-state branch
  *  that won: what the person owes reads "Needs you", live work "Running", an
  *  interrupted turn "Paused", queued work "Waiting". The branch's own line
  *  stays in the tooltip. */

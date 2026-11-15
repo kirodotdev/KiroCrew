@@ -24,6 +24,7 @@ from kiro_crew.dashboard.handlers.mcp import (
     _find_server_spec_anywhere,
     _get_mcp_lock,
     _is_valid_mcp_name,
+    _mcp_config_corrupt,
     _offload_config_write,
     _set_kirocrew_entry,
 )
@@ -406,9 +407,11 @@ async def api_mcp_discover_install(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "Invalid JSON body"}, status=400)
+        return web.json_response({"error": "Invalid JSON body", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
-        return web.json_response({"error": "Request body must be a JSON object"}, status=400)
+        return web.json_response(
+            {"error": "Request body must be a JSON object", "code": "body_not_object"}, status=400
+        )
     provider_name = body.get("provider")
     server_id = body.get("id")
     if not isinstance(provider_name, str) or not isinstance(server_id, str):
@@ -502,7 +505,47 @@ async def _install_from_official(request: web.Request, server_id: str) -> web.Re
             # Fresh install: always written disabled (consent default).
             # The store write can apply a Windows owner-only DACL —
             # blocking filesystem work kept off the event loop.
-            await _offload_config_write(_set_kirocrew_entry, name, enabled=enable_now, spec=spec)
+            action = await _offload_config_write(
+                _set_kirocrew_entry, name, enabled=enable_now, spec=spec
+            )
+            if action == "corrupt":
+                # The store exists but is not a readable MCP config, so nothing
+                # was written: report that, not an install.
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="mcp_discover_install",
+                    outcome="error",
+                    source="dashboard",
+                    resources=f"official:{name} store unreadable",
+                )
+                return _mcp_config_corrupt("the Kiro Crew mcp.json")
+            if action == "ambiguous":
+                # Two store keys alias to this name and nothing was written:
+                # the same refusal the toggle answers, not an install.
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="mcp_discover_install",
+                    outcome="denied",
+                    source="dashboard",
+                    resources=f"official:{name} ambiguous",
+                )
+                return web.json_response(
+                    {"error": "name already in use", "code": "mcp_server_name_ambiguous"},
+                    status=409,
+                )
+            if action == "registry":
+                # The name is a catalog-governed registry pointer: left as it is.
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="mcp_discover_install",
+                    outcome="denied",
+                    source="dashboard",
+                    resources=f"official:{name} registry pointer",
+                )
+                return web.json_response(
+                    {"error": "name already in use", "code": "mcp_server_name_in_use"},
+                    status=409,
+                )
         else:
             # Identical spec already present — a reinstall is a pure no-op:
             # the user's env values AND enabled/disabled state survive.
@@ -558,6 +601,8 @@ async def _install_via_capability(request: web.Request, server_id: str) -> web.R
     from kiro_crew.dashboard.handlers.mcp import (
         _agent_home_not_owned,
         _agent_home_not_owned_response,
+        _mcp_config_busy,
+        _mcp_write_failed,
         _sync_mcp_to_agent,
     )
 
@@ -591,6 +636,10 @@ async def _install_via_capability(request: web.Request, server_id: str) -> web.R
             # before it. Answered as the refusal it is, like every other write
             # failure on this path.
             return _agent_home_not_owned_response(server_id)
+        except PermissionError:
+            return _mcp_config_busy("mcp discover install")
+        except OSError:
+            return _mcp_write_failed("mcp discover install", "kirocrew.json")
     state = request.app["state"]
     state.push_refresh("agents")
 

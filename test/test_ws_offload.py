@@ -28,6 +28,7 @@ import logging
 import threading
 import time
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -411,6 +412,63 @@ async def test_cached_status_snapshot_reads_bundle_id_off_event_loop(monkeypatch
 
     assert seen["bundle"] != loop_thread, "served_bundle_id must run off the event loop"
     assert seen_kwargs["bundle_id"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_cached_status_snapshot_reads_the_armed_update_record_off_event_loop(monkeypatch):
+    """The armed-update file read runs in a worker thread, never on the loop."""
+    from kiro_crew import update_next_start
+    from kiro_crew.dashboard import status_counts as sc_module
+
+    async def fake_refresh(_state):
+        return (0, 0)
+
+    monkeypatch.setattr(sc_module, "_refresh_status_counts", fake_refresh)
+    loop_thread = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    def recording_fields():
+        seen["thread"] = threading.get_ident()
+        return {"update_armed_version": "9.9.9", "pending_apply_error": None}
+
+    monkeypatch.setattr(update_next_start, "status_fields", recording_fields)
+    seen_kwargs: dict = {}
+
+    def fake_snapshot(**kwargs):
+        seen_kwargs.update(kwargs)
+        return {}
+
+    state = SimpleNamespace(status_snapshot=fake_snapshot, background_turn_stats=dict)
+
+    await sc_module.cached_status_snapshot(state)  # type: ignore[arg-type]
+
+    assert seen["thread"] != loop_thread, "the armed-update record must be read off the loop"
+    assert seen_kwargs["update_armed_version"] == "9.9.9"
+
+
+@pytest.mark.asyncio
+async def test_update_check_reads_the_armed_update_record_off_event_loop(monkeypatch):
+    from kiro_crew import update_next_start
+    from kiro_crew.dashboard.handlers import updates, updates_check
+
+    loop_thread = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    def recording_fields():
+        seen["thread"] = threading.get_ident()
+        return {"update_armed_version": None, "pending_apply_error": None}
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(update_next_start, "status_fields", recording_fields)
+    # Through the facade: these names are bound by more than one owner of the family.
+    monkeypatch.setattr(updates, "_do_update_check", _noop)
+    monkeypatch.setattr(updates, "_refresh_auto_update_effect_once", _noop)
+
+    await updates_check.api_update_check(MagicMock())
+
+    assert seen["thread"] != loop_thread, "the armed-update record must be read off the loop"
 
 
 @pytest.mark.asyncio

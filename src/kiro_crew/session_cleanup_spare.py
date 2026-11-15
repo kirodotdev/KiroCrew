@@ -19,8 +19,57 @@ import asyncio
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.metrics.chat_runtime_share import record_reclaimed, record_rss_sample
+
 if TYPE_CHECKING:
     from kiro_crew.session_cleanup import SessionCleanup
+
+
+def rss_limit_for(cleanup: SessionCleanup, pid: int, rss: int | None = None) -> int:
+    """The RSS ceiling for runtime *pid*, scaled by how many chat sessions it serves.
+
+    Given the measured *rss*, a SHARED runtime over that ceiling is also closed to
+    new chats (``RuntimeOwnership.close_to_joins``), so the recycles that follow
+    drain it instead of feeding it. A runtime the watchdog then holds instead of
+    recycling (``session_rss_rebound``) stays closed as well: it is over its
+    ceiling, and a new chat founds a process of its own.
+
+    ``session.watchdog_rss_max_mb`` is a budget for ONE session's runtime. A shared
+    chat runtime (``chat_runtime_sharing`` preview) serves several, and the figure
+    compared is the whole process tree, so an unscaled comparison would charge one
+    session's budget for N sessions' memory and recycle a healthy session every tick
+    once sharing begins. The count is the chat LEASES on the pid, so an unshared
+    runtime (one lease) and a subagent's tenancy (no lease) keep the plain ceiling.
+    """
+    from kiro_crew.runtime_ownership import RUNTIME_OWNERSHIP
+
+    leases = RUNTIME_OWNERSHIP.leases_on_pid(pid)
+    limit = cleanup.state.rss_max_mb * max(1, leases)
+    if rss is not None and rss > limit and leases > 1:
+        # A shared process over its ceiling is reclaimed by draining it, not by
+        # one lease: recycling a co-tenant releases a lease and frees nothing,
+        # and that chat would rejoin the same process. Closed to joins, recycled
+        # and returning chats found a new one, and this one dies with its last
+        # holder as the next ticks recycle the rest. Under a hold nothing is
+        # recycled, and the process stays closed to new chats while it lives.
+        if RUNTIME_OWNERSHIP.close_to_joins(pid):
+            record_reclaimed("rss")
+    return limit
+
+
+def note_rss_measured(pid: int, rss: int) -> None:
+    """Count one tick's tree-RSS reading of *pid* when it is a SHARED chat process.
+
+    Called where a tick measures a pid for the first time (the reading is cached
+    per tick and every co-tenant reuses it), so a process is counted once per tick
+    however many chats are on it. An unshared runtime (one lease) is not counted:
+    its memory is already in the session RSS records.
+    """
+    from kiro_crew.runtime_ownership import RUNTIME_OWNERSHIP
+
+    leases = RUNTIME_OWNERSHIP.leases_on_pid(pid)
+    if leases > 1:
+        record_rss_sample(tenants=leases, rss_mb=rss)
 
 
 async def build_rss_measure(

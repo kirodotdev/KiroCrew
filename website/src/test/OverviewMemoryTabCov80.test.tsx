@@ -56,6 +56,9 @@ vi.mock('../pages/overview/VectorMemoryCard', () => ({
 }))
 vi.mock('../pages/overview/EmbeddingModelCard', () => ({ default: () => <div data-testid="embed-card" /> }))
 vi.mock('../pages/overview/MemoryRecordsEditor', () => ({ default: () => <div data-testid="records-editor" /> }))
+vi.mock('../pages/overview/MemoryFailuresCard', () => ({
+  default: ({ onLessonSaved }: { onLessonSaved?: () => unknown }) => <button type="button" aria-label="save a failure lesson" data-testid="failures-card" onClick={() => void onLessonSaved?.()} />,
+}))
 
 const MemoryTab = (await import('../pages/overview/MemoryTab')).default
 
@@ -1312,5 +1315,18 @@ describe('MemoryTab — manual consolidation', () => {
     expect(screen.getByText(/Summarized/)).toBeInTheDocument()
     await act(async () => { vi.advanceTimersByTime(3000) })
     expect(screen.queryByText(/Summarized/)).toBeNull()
+  })
+})
+
+describe('MemoryTab — a lesson saved from Repeated failures', () => {
+  it('re-reads both the lessons list and the vector card\'s semantic browser', async () => {
+    const { queryClient } = renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await waitFor(() => expect(api.lessons).toHaveBeenCalledTimes(1))
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+
+    fireEvent.click(screen.getByTestId('failures-card'))
+
+    await waitFor(() => expect(api.lessons).toHaveBeenCalledTimes(2))
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['member-memory', 'default'] })
   })
 })

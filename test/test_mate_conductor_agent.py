@@ -371,7 +371,7 @@ def test_by_default_the_mapped_conductor_still_inherits_the_users_skills(user_sk
     assert {goal, user, workspace} <= set(scope)
 
 
-# -- scoped: the mapping is the whole scope, for every caller, as on Ultra Mode ---- #
+# -- scoped: the mapping is the whole scope, for every caller, as on conductor mode ---- #
 
 
 @pytest.fixture

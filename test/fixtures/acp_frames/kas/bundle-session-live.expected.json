@@ -14,7 +14,8 @@
           },
           "checkpoints": true,
           "executionTargets": [
-            "local"
+            "local",
+            "cloud-sandbox"
           ],
           "extensionMethods": [
             "_kiro/knowledge",
@@ -58,36 +59,40 @@
             "_kiro/workflow/resumeAll",
             "_kiro/workflow/retry",
             "_kiro/workflow/update",
-            "_kiro/workflow/resume"
+            "_kiro/workflow/resume",
+            "_kiro/sourceProviders/list",
+            "_kiro/sourceProviders/listResources"
           ],
           "logging": {
             "channels": [
               {
-                "filePath": "~/.kiro/logs/20261110T210941054-1060608/kiro.log",
+                "filePath": "~/.kiro/logs/20261110T230813262-3498583/kiro.log",
                 "name": "kiro"
               },
               {
-                "filePath": "~/.kiro/logs/20261110T210941054-1060608/mcp.log",
+                "filePath": "~/.kiro/logs/20261110T230813262-3498583/mcp.log",
                 "name": "mcp"
               },
               {
-                "filePath": "~/.kiro/logs/20261110T210941054-1060608/powers.log",
+                "filePath": "~/.kiro/logs/20261110T230813262-3498583/powers.log",
                 "name": "powers"
               }
             ],
-            "logDir": "~/.kiro/logs/20261110T210941054-1060608"
+            "logDir": "~/.kiro/logs/20261110T230813262-3498583"
           },
           "modelFallbackReporting": true,
           "policyNotifications": true,
           "replayMarking": true,
           "sessionList": true,
           "sessionListScopes": [
-            "workspace"
+            "workspace",
+            "user"
           ],
           "sessionSources": [
-            "local"
+            "local",
+            "remote"
           ],
-          "sourceProviders": false
+          "sourceProviders": true
         }
       },
       "loadSession": true,
@@ -230,23 +235,6 @@
                     "origin": "bundled"
                   }
                 },
-                "source": "bundled",
-                "welcomeMessage": "You are using Default v2, an experimental agent mode."
-              }
-            },
-            "description": "Adaptive agent that plans, delegates, and verifies as the task demands",
-            "name": "Default v2",
-            "value": "default-v2"
-          },
-          {
-            "_meta": {
-              "kiro": {
-                "resource": {
-                  "resourceType": "agent",
-                  "source": {
-                    "origin": "bundled"
-                  }
-                },
                 "source": "bundled"
               }
             },
@@ -273,7 +261,7 @@
               }
             },
             "description": "Models chosen by task for optimal usage and consistent quality",
-            "name": "auto",
+            "name": "Auto",
             "value": "auto"
           }
         ],
@@ -315,7 +303,7 @@
         "type": "select"
       },
       {
-        "currentValue": "disabled",
+        "currentValue": "enabled",
         "id": "contentCollection",
         "name": "Content Collection",
         "options": [
@@ -345,7 +333,6 @@
         "bug-fix",
         "plan",
         "autonomous",
-        "default-v2",
         "semantic_reviewer"
       ]
     },

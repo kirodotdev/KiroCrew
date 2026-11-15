@@ -865,8 +865,7 @@ class TestWaveDigest:
             "settle on the bare _on_done return is a no-op for this route too"
         )
         assert members[9]._delivery_queued is True, (
-            "the flushing member's own tombstone is deferred to the drain with "
-            "the same debt (issue #4839)"
+            "the flushing member's own tombstone is deferred to the drain with " "the same debt"
         )
         # The debt is parked in the ledger, keyed on the queued announce, and
         # names the flushing member itself plus its held siblings — so the

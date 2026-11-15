@@ -420,6 +420,18 @@ def test_a_coerced_value_cannot_be_kept(retired, capsys):
         assert SD.acked_superseded() == {}
 
 
+def test_a_named_coerced_key_that_cannot_be_kept_is_refused_on_stderr(retired, capsys):
+    """Naming the key asks for it by name, so its refusal is an error line, not output."""
+    _run(_args(keys=["stt.provider"], keep=True), retired)
+    out, err = capsys.readouterr()
+    assert "stt.provider ('whisper') cannot be kept" in err
+    assert "cannot be kept" not in out
+    saved = json.loads((retired / "config.json").read_text(encoding="utf-8"))
+    assert saved["stt"]["provider"] == "whisper"
+    with patch("kiro_crew.config.loader.config_dir", return_value=retired):
+        assert SD.acked_superseded() == {}
+
+
 def test_a_selectable_provider_is_not_coerced(tmp_path):
     assert SD.coerced_value_drift({"stt": {"provider": "local"}}) == []
     assert SD.coerced_value_drift({"stt": {}}) == []

@@ -55,7 +55,7 @@ def home(tmp_path, monkeypatch):
 
 def _verdict(**overrides):
     kwargs = dict(
-        provider_type="codex",
+        provider_type="opencode",
         native_steering=False,
         project=None,
         agent=None,
@@ -91,6 +91,14 @@ def _verdict(**overrides):
                 "agent": "my-custom-agent",
                 "loaded": plan.LOADER_KEPT,
             },
+            (plan.REACHES_NO, plan.REASON_CUSTOM_AGENT),
+        ),
+        (
+            {"provider_type": "codex", "loaded": plan.LOADER_KEPT},
+            (plan.REACHES_YES, ""),
+        ),
+        (
+            {"provider_type": "codex", "agent": "my-custom-agent", "loaded": plan.LOADER_KEPT},
             (plan.REACHES_NO, plan.REASON_CUSTOM_AGENT),
         ),
         (
@@ -136,6 +144,17 @@ def test_kiro_cli_without_inheritance_still_loads_what_the_agent_declares(
     by_name = {row["name"]: (row["reaches"], row["reason"]) for row in rows}
     assert by_name["team.md"] == (plan.REACHES_HARNESS, plan.REASON_AGENT_RESOURCES)
     assert by_name["always.md"] == (plan.REACHES_NO, plan.REASON_INHERITANCE_OFF)
+
+
+def test_a_file_uri_spelled_absolute_resource_is_a_declared_target(home, tmp_path):
+    """``file:///C:/...``, what ``Path.as_uri()`` writes on Windows, names its own folder."""
+    rule = _write(tmp_path / "abs-rules" / "abs.md", "# Abs\n")
+    glob = "file:///" + (tmp_path / "abs-rules").as_posix().lstrip("/") + "/*.md"
+    _write(
+        home / ".kiro" / "agents" / "kirocrew.json",
+        json.dumps({"name": "kirocrew", "resources": [glob]}),
+    )
+    assert plan.declared_steering_targets("kirocrew", None) == frozenset({rule.resolve()})
 
 
 def test_a_project_agent_spec_makes_kiro_cli_verdicts_unknown(home, tmp_path, monkeypatch):
@@ -231,7 +250,7 @@ def test_a_folder_document_is_listed_once_as_delivered():
     rows = plan.chat_steering_plan(
         listed=listed,
         folder_documents=("~/.kiro/steering/style.md", "~/standards/own.md"),
-        provider_type="codex",
+        provider_type="opencode",
         native_steering=False,
         project=None,
         agent=None,
@@ -329,7 +348,7 @@ def test_a_tree_file_the_folder_cap_cuts_says_so():
         listed=listed,
         folder_documents=(),
         folder_cut=("~/.kiro/steering/style.md",),
-        provider_type="codex",
+        provider_type="opencode",
         native_steering=False,
         project=None,
         agent=None,
@@ -384,12 +403,19 @@ async def _get(state: DashboardState, slot: str, app_name: str = "") -> tuple[in
 
 
 @pytest.mark.asyncio
-async def test_a_codex_chat_lists_global_steering_as_not_reaching_it(home, monkeypatch):
-    """The route answers for a cold chat on the harness it would start on."""
-    _config(monkeypatch, "codex")
+@pytest.mark.parametrize(
+    ("backend", "reaches", "reason"),
+    [("codex", "yes", ""), ("opencode", "no", "harness_has_no_path")],
+)
+async def test_a_cold_chat_lists_global_steering_as_its_harness_receives_it(
+    home, monkeypatch, backend, reaches, reason
+):
+    """The route answers for a cold chat on the harness it would start on: Crew's
+    steering load reaches Codex, and OpenCode has no path for the trees."""
+    _config(monkeypatch, backend)
     status, data = await _get(_state(_ChatSlot("main")), "main")
     assert status == 200
-    assert data["provider"] == "codex"
+    assert data["provider"] == backend
     row = next(r for r in data["files"] if r["name"] == "always.md")
     # The display path uses the host's own separator.
     assert Path(row.pop("path")) == Path("~/.kiro/steering/always.md")
@@ -397,9 +423,26 @@ async def test_a_codex_chat_lists_global_steering_as_not_reaching_it(home, monke
         "name": "always.md",
         "source": "global",
         "applies": "always",
-        "reaches": "no",
-        "reason": "harness_has_no_path",
+        "reaches": reaches,
+        "reason": reason,
+        "switch": "none",
     }
+
+
+@pytest.mark.asyncio
+async def test_a_codex_chat_does_not_list_the_project_agents_md(home, tmp_path, monkeypatch):
+    """Codex reads the project's ``AGENTS.md`` itself, so Crew's load and the list
+    leave it out; on Claude Code the load sends it and the list names it."""
+    project = tmp_path / "project"
+    _write(project / "AGENTS.md", "# Agents\n")
+    for backend, listed in (("codex", False), ("claude", True)):
+        _config(monkeypatch, backend)
+        slot = _ChatSlot("main")
+        slot.project = str(project)
+        status, data = await _get(_state(slot), "main")
+        assert status == 200
+        names = {r["name"] for r in data["files"] if r["source"] == "agent"}
+        assert ("AGENTS.md" in names) is listed, backend
 
 
 @pytest.mark.asyncio
@@ -430,3 +473,299 @@ async def test_a_channel_linked_chat_lists_its_own_project(home, tmp_path, monke
 async def test_an_app_cannot_read_a_slot_it_does_not_own(home):
     status, _data = await _get(_state(_ChatSlot("main")), "main", app_name="some-app")
     assert status == 404
+
+
+def test_a_listed_file_the_folder_carries_in_a_cold_kiro_cli_chat_is_not_switchable(
+    home, tmp_path, monkeypatch
+):
+    """With no launch record the folder carries a tree file kiro-cli loads as well."""
+    from kiro_crew import context as ctx
+
+    monkeypatch.setattr(ctx.acp_driver, "inherits_default_resources", lambda _p: True)
+    listed = list_steering_blocking(None)["files"]
+    path = next(e["path"] for e in listed if e["name"] == "always.md")
+    rows = plan.chat_steering_plan(
+        listed=listed,
+        folder_documents=(path,),
+        provider_type=PROVIDER_ACP,
+        native_steering=False,
+        project=None,
+        agent="kirocrew",
+        is_member=False,
+    )
+    row = next(r for r in rows if r["name"] == "always.md")
+    assert (row["reaches"], row["switch"]) == (plan.REACHES_YES, plan.SWITCH_NONE)
+
+
+def test_a_stored_switch_off_does_not_change_the_cap_on_a_harness_that_ignores_it(
+    home, tmp_path, monkeypatch
+):
+    """On kiro-cli the turn renders every folder document, so the list's cap does too."""
+    from kiro_crew import context as ctx
+    from kiro_crew import steering_off
+    from kiro_crew.folder_steering import SteeringCollection
+
+    monkeypatch.setattr(ctx.acp_driver, "inherits_default_resources", lambda _p: False)
+    monkeypatch.setattr(chat_steering, "_resolved_agent", lambda *_a: "kirocrew")
+    root = tmp_path / "standards"
+    cap = ctx._resolve_caps(None).steering
+    documents = [(str(root / "a.md"), "a" * (cap + 500)), (str(root / "b.md"), "small")]
+    monkeypatch.setattr(
+        ctx, "collect_folder_steering", lambda *_a, **_k: SteeringCollection(documents=documents)
+    )
+    stored = frozenset({str((root / "a.md").resolve())})
+    monkeypatch.setattr(steering_off, "steering_off_for", lambda _key: stored)
+    rows = chat_steering._plan_blocking(
+        _ChatSlot("main"), "main", None, (str(root),), PROVIDER_ACP, False
+    )
+    by_name = {r["name"]: (r["reaches"], r["reason"]) for r in rows if r["source"] == "folder"}
+    assert by_name["a.md"] == (plan.REACHES_YES, "")
+    assert by_name["b.md"] == (plan.REACHES_NO, plan.REASON_FOLDER_CAP)
+
+
+@pytest.mark.parametrize(
+    ("provider_type", "native_steering"),
+    [("codex", False), (PROVIDER_CLAUDE_CODE, False), (PROVIDER_ACP, False), (PROVIDER_ACP, True)],
+)
+def test_no_folder_row_is_switchable_on_any_harness(
+    home, tmp_path, monkeypatch, provider_type, native_steering
+):
+    """A folder over the project root carries AGENTS.md, which Codex and kiro-cli load
+    themselves, so Crew's copy is not the only sender: no folder row offers a switch."""
+    from kiro_crew import context as ctx
+
+    monkeypatch.setattr(ctx.acp_driver, "inherits_default_resources", lambda _p: True)
+    project = tmp_path / "project"
+    agents_md = _write(project / "AGENTS.md", "# Agents\n")
+    own = _write(tmp_path / "standards" / "own.md", "# Own\n")
+    rows = plan.chat_steering_plan(
+        listed=[],
+        folder_documents=("~/project/AGENTS.md", "~/standards/own.md"),
+        folder_resolved={
+            "~/project/AGENTS.md": str(agents_md.resolve()),
+            "~/standards/own.md": str(own.resolve()),
+        },
+        provider_type=provider_type,
+        native_steering=native_steering,
+        project=str(project),
+        agent=None,
+        is_member=False,
+        steering_off=frozenset({str(own.resolve())}),
+    )
+    assert {r["name"]: (r["reaches"], r["switch"]) for r in rows} == {
+        "AGENTS.md": (plan.REACHES_YES, plan.SWITCH_NONE),
+        "own.md": (plan.REACHES_YES, plan.SWITCH_NONE),
+    }
+
+
+def test_only_crew_s_own_claude_code_load_offers_a_switch(home, monkeypatch):
+    """Codex runs the same load but is not offered the switch, and kiro-cli loads the
+    trees itself: no switch on either."""
+    from kiro_crew import context as ctx
+    from kiro_crew.context_assembly.agent_spec import steering_resource_documents
+
+    monkeypatch.setattr(ctx.acp_driver, "inherits_default_resources", lambda _p: True)
+    listed = list_steering_blocking(None)["files"]
+    loader = [(str(p), r, b is not None) for p, r, b in steering_resource_documents(None)]
+    switch = {}
+    for provider_type in (PROVIDER_CLAUDE_CODE, "codex", PROVIDER_ACP):
+        rows = plan.chat_steering_plan(
+            listed=listed,
+            folder_documents=(),
+            loader_documents=loader if provider_type != PROVIDER_ACP else (),
+            provider_type=provider_type,
+            native_steering=False,
+            project=None,
+            agent=None,
+            is_member=False,
+        )
+        switch[provider_type] = next(r for r in rows if r["name"] == "always.md")["switch"]
+    assert switch == {
+        PROVIDER_CLAUDE_CODE: plan.SWITCH_ON,
+        "codex": plan.SWITCH_NONE,
+        PROVIDER_ACP: plan.SWITCH_UNAVAILABLE,
+    }
+
+
+def test_a_loader_file_the_folder_also_sends_offers_no_switch(home, tmp_path):
+    """The project AGENTS.md in both Crew's Claude Code load and a folder over the project
+    root: switching off the load's copy would leave the folder's, so no switch."""
+    project = tmp_path / "project"
+    agents_md = _write(project / "AGENTS.md", "# Agents\n").resolve()
+    rows = plan.chat_steering_plan(
+        listed=[],
+        folder_documents=("~/project/AGENTS.md",),
+        folder_resolved={"~/project/AGENTS.md": str(agents_md)},
+        loader_documents=[("~/project/AGENTS.md", agents_md, True)],
+        provider_type=PROVIDER_CLAUDE_CODE,
+        native_steering=False,
+        project=str(project),
+        agent=None,
+        is_member=False,
+    )
+    assert [(r["name"], r["source"], r["reaches"], r["switch"]) for r in rows] == [
+        ("AGENTS.md", "folder", plan.REACHES_YES, plan.SWITCH_NONE)
+    ]
+
+
+def test_a_file_outside_the_two_trees_offers_no_switch(home, tmp_path):
+    """Claude Code loads ``~/.claude/CLAUDE.md`` by itself, so neither the load's own
+    row for it nor a tree link that resolves to it can switch it off."""
+    claude_md = _write(home / ".claude" / "CLAUDE.md", "# Native\n").resolve()
+    (home / ".kiro" / "steering" / "alias.md").symlink_to(claude_md)
+    listed = list_steering_blocking(None)["files"]
+    always = (home / ".kiro" / "steering" / "always.md").resolve()
+    rows = plan.chat_steering_plan(
+        listed=listed,
+        folder_documents=(),
+        loader_documents=[
+            ("~/.kiro/steering/always.md", always, True),
+            ("~/.kiro/steering/alias.md", claude_md, True),
+            ("~/.claude/CLAUDE.md", claude_md, True),
+        ],
+        provider_type=PROVIDER_CLAUDE_CODE,
+        native_steering=False,
+        project=None,
+        agent=None,
+        is_member=False,
+    )
+    switch = {r["name"]: r["switch"] for r in rows}
+    assert switch["always.md"] == plan.SWITCH_ON
+    assert switch["alias.md"] == plan.SWITCH_NONE
+    assert all(s == plan.SWITCH_NONE for n, s in switch.items() if n not in ("always.md",))
+
+
+def test_a_tree_root_that_links_elsewhere_offers_no_switch(home, tmp_path):
+    """A project ``.kiro/steering`` that is itself a link to ``~/.claude``: the
+    ``CLAUDE.md`` Claude Code loads by itself must not read as in-tree."""
+    claude_dir = home / ".claude"
+    claude_md = _write(claude_dir / "CLAUDE.md", "# Native\n").resolve()
+    project = tmp_path / "project"
+    (project / ".kiro").mkdir(parents=True)
+    (project / ".kiro" / "steering").symlink_to(claude_dir, target_is_directory=True)
+    rows = plan.chat_steering_plan(
+        listed=[
+            {
+                "name": "CLAUDE.md",
+                "path": "~/project/.kiro/steering/CLAUDE.md",
+                "source": "workspace",
+                "rel": "CLAUDE.md",
+            }
+        ],
+        folder_documents=(),
+        loader_documents=[("~/project/.kiro/steering/CLAUDE.md", claude_md, True)],
+        provider_type=PROVIDER_CLAUDE_CODE,
+        native_steering=False,
+        project=str(project),
+        agent=None,
+        is_member=False,
+    )
+    assert [(r["name"], r["switch"]) for r in rows] == [("CLAUDE.md", plan.SWITCH_NONE)]
+
+
+def test_a_file_the_load_withholds_offers_no_switch(home):
+    """A ``manual`` file the Claude Code load reads but does not send reaches no turn,
+    so the row keeps its own reason and offers no switch to turn it off."""
+    from kiro_crew.context_assembly.agent_spec import steering_resource_documents
+
+    rows = plan.chat_steering_plan(
+        listed=list_steering_blocking(None)["files"],
+        folder_documents=(),
+        loader_documents=[
+            (str(p), r, b is not None) for p, r, b in steering_resource_documents(None)
+        ],
+        provider_type=PROVIDER_CLAUDE_CODE,
+        native_steering=False,
+        project=None,
+        agent=None,
+        is_member=False,
+    )
+    manual = next(r for r in rows if r["name"] == "manual.md")
+    assert (manual["reaches"], manual["reason"], manual["switch"]) == (
+        plan.REACHES_NO,
+        plan.REASON_INCLUSION_WITHHELD,
+        plan.SWITCH_NONE,
+    )
+
+
+def test_a_tree_file_a_claude_memory_file_links_to_offers_no_switch(home, tmp_path):
+    """A project ``CLAUDE.md`` that links to a tree file: Claude Code reads that file
+    by itself, so removing Crew's copy would not hold and no switch is offered."""
+    from kiro_crew.context_assembly.agent_spec import steering_resource_documents
+
+    project = tmp_path / "project"
+    style = _write(project / ".kiro" / "steering" / "style.md", "# Style\n")
+    (project / "CLAUDE.md").symlink_to(style)
+    rows = plan.chat_steering_plan(
+        listed=list_steering_blocking(str(project))["files"],
+        folder_documents=(),
+        loader_documents=[
+            (str(p), r, b is not None) for p, r, b in steering_resource_documents(str(project))
+        ],
+        provider_type=PROVIDER_CLAUDE_CODE,
+        native_steering=False,
+        project=str(project),
+        agent=None,
+        is_member=False,
+    )
+    switch = {r["name"]: r["switch"] for r in rows if r["source"] != "agent"}
+    assert switch["style.md"] == plan.SWITCH_NONE
+    assert switch["always.md"] == plan.SWITCH_ON
+
+
+def test_a_relocated_claude_config_dir_memory_link_offers_no_switch(home, tmp_path, monkeypatch):
+    """``CLAUDE_CONFIG_DIR`` moves the user memory file; a ``CLAUDE.md`` there that
+    links to a tree file makes Claude Code read that file by itself."""
+    from kiro_crew.context_assembly.agent_spec import steering_resource_documents
+
+    config_dir = tmp_path / "claude-config"
+    config_dir.mkdir()
+    (config_dir / "CLAUDE.md").symlink_to(home / ".kiro" / "steering" / "always.md")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    rows = plan.chat_steering_plan(
+        listed=list_steering_blocking(None)["files"],
+        folder_documents=(),
+        loader_documents=[
+            (str(p), r, b is not None) for p, r, b in steering_resource_documents(None)
+        ],
+        provider_type=PROVIDER_CLAUDE_CODE,
+        native_steering=False,
+        project=None,
+        agent=None,
+        is_member=False,
+    )
+    always = next(r for r in rows if r["name"] == "always.md")
+    assert always["switch"] == plan.SWITCH_NONE
+
+
+def test_a_link_to_a_switched_off_file_reads_switched_off_too(home, tmp_path):
+    """A project tree link to a global file: the load sends their text once, so
+    switching the global row off drops it for the project row as well."""
+    from kiro_crew.context_assembly.agent_spec import steering_resource_documents
+
+    always = (home / ".kiro" / "steering" / "always.md").resolve()
+    project = tmp_path / "project"
+    (project / ".kiro" / "steering").mkdir(parents=True)
+    (project / ".kiro" / "steering" / "alias.md").symlink_to(always)
+    rows = plan.chat_steering_plan(
+        listed=list_steering_blocking(str(project))["files"],
+        folder_documents=(),
+        loader_documents=[
+            (str(p), r, b is not None) for p, r, b in steering_resource_documents(str(project))
+        ],
+        provider_type=PROVIDER_CLAUDE_CODE,
+        native_steering=False,
+        project=str(project),
+        agent=None,
+        is_member=False,
+        steering_off=frozenset({str(always)}),
+    )
+    by_name = {r["name"]: r for r in rows}
+    assert (by_name["always.md"]["reason"], by_name["always.md"]["switch"]) == (
+        plan.REASON_SWITCHED_OFF,
+        plan.SWITCH_OFF,
+    )
+    assert (by_name["alias.md"]["reaches"], by_name["alias.md"]["reason"]) == (
+        plan.REACHES_NO,
+        plan.REASON_SWITCHED_OFF,
+    )

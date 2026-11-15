@@ -113,6 +113,34 @@ export type CostRow = {
 
 type CostBand = { label: string; turns: number; mean_credits: number }
 
+/**
+ * One measured recommendation. The gateway sends an id and the numbers; the
+ * sentence is worded here, in the reader's language. An id this build does not
+ * know is skipped rather than shown as a blank line.
+ */
+export type SpendAdvice =
+  | { id: 'high_context'; share_pct: number; tokens: number }
+  | { id: 'costly_model'; share_pct: number; model: string; cheaper_model: string; ratio: number }
+
+/**
+ * What a session delivered, read by the gateway from the session's own
+ * transcript. The whole object is absent when nothing was found, so a missing
+ * `outcome` on a row read as "none" only when `Cost.outcome_scan` says the row
+ * was read.
+ */
+export type CostOutcome = {
+  commits: number
+  lines_added: number
+  lines_removed: number
+  prs: number
+  /** Pull requests the gateway has seen merged. Owner-only; absent for anyone else. */
+  merged?: number
+  /** Pull requests whose state the gateway has not read yet, so not counted as merged. */
+  unchecked?: number
+  /** The session's spend divided by `merged`; present only when `merged` is above zero. */
+  per_merged?: number
+}
+
 export type CostConvo = {
   slot: string
   /**
@@ -136,10 +164,22 @@ export type CostConvo = {
   first_ts: number
   growth_pct_per_turn?: number | null
   turns_to_compaction?: number | null
+  outcome?: CostOutcome
 }
 
 export type Cost = {
   window_days: number
+  /**
+   * What every amount in this block is counted in. `usd` when the window's turns
+   * were billed in dollars; absent from an older gateway, which means credits.
+   * The amount keys keep their `credits` names either way.
+   */
+  unit?: 'credits' | 'usd'
+  /**
+   * The same view over the window's dollar-billed turns, present only when the
+   * window also holds credit-billed ones; this block is then the credits view.
+   */
+  usd?: Cost | null
   credits: number
   turns: number
   per_turn: number
@@ -153,10 +193,22 @@ export type Cost = {
   /** Spend by the session taxonomy — the grouping the panel offers. */
   by_category: CostRow[]
   context_bands: CostBand[]
+  /** Absent from an older gateway, which means no recommendations. */
+  advice?: SpendAdvice[]
   conversations: CostConvo[]
+  /** How many of the costliest conversations were read for an `outcome`; absent when none had one. */
+  outcome_scan?: number
   conversation_count: number
   navigable_category: string
 }
+
+/**
+ * Every spend row of a block, both units included. A window billed in both
+ * units carries its dollar-billed sessions only in the nested `usd` view, and
+ * the Context tab titles and links its rows from this list.
+ */
+export const allConversations = (c: Cost | null | undefined): CostConvo[] | undefined =>
+  c ? [...c.conversations, ...(c.usd?.conversations ?? [])] : undefined
 
 export type Resp = {
   enabled: boolean

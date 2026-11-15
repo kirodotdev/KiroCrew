@@ -109,6 +109,8 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
         d["jobFamilies"] = list(manifest.jobFamilies)
     if manifest.credentialMasks:
         d["credentialMasks"] = list(manifest.credentialMasks)
+    if manifest.agentReadOnlyDirs:
+        d["agentReadOnlyDirs"] = list(manifest.agentReadOnlyDirs)
     notif_d = manifest.notifications.to_dict()
     if notif_d:
         d["notifications"] = notif_d

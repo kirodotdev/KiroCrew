@@ -26,6 +26,7 @@ from crew_log_emit_helpers import (  # noqa: F401 -- the autouse fixture registe
     _owned_elsewhere,
     _remove_as_retention_does,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import emit
@@ -116,7 +117,7 @@ def test_a_resume_closes_a_child_the_registry_no_longer_lists():
 
 
 def test_a_resume_leaves_a_child_the_registry_still_lists_alone():
-    # The same-process case that made an earlier revision corrupt the file: idle
+    # The same-process case that can corrupt the file: idle
     # teardown, reset, resume -- while the child is still running and will file its
     # own terminal. The registry still lists it, so the repair must not invent one.
     emit.set_child_liveness(lambda agent_id: agent_id == "sub-1")
@@ -197,11 +198,11 @@ def test_a_credential_in_the_task_text_never_reaches_the_log():
     """
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
-    emit.on_subagent_spawned(
-        SESSION, 1, agent_id="sub-1", task="deploy with AKIAIOSFODNN7EXAMPLE now"
-    )
+    # An AWS key ID is an Identifier with the structured detectors on.
+    secret = github_classic(seed=25)
+    emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1", task=f"deploy with {secret} now")
     assert_drained()
-    assert "AKIAIOSFODNN7EXAMPLE" not in _opener("subagent/spawned")["task"]
+    assert secret not in _opener("subagent/spawned")["task"]
 
 
 def test_a_completed_child_records_the_credits_it_billed():
@@ -532,10 +533,13 @@ def test_a_claim_that_cannot_own_the_log_writes_nothing_and_counts_the_loss():
         ), "the entries this process could not write are not counted"
 
     # Ownership released: the same emitter writes again, so the refusal was about
-    # the moment rather than a state it latched.
+    # the moment rather than a state it latched, and the marker admitting both lost
+    # entries leads that write.
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn", duration_ms=5)
     assert_drained()
-    assert [e["type"] for e in _body()][-1] == "turn/completed"
+    tail = _body()[-2:]
+    assert [e["type"] for e in tail] == ["write/dropped", "turn/completed"]
+    assert tail[0]["data"]["dropped_count"] == 2
 
 
 def test_a_claim_does_not_take_back_a_pin_a_queued_closer_still_owes(monkeypatch):

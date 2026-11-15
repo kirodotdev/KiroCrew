@@ -52,7 +52,7 @@ from kiro_crew.shared_crew import turn_gate
 from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
 
 # A credential-shaped string the agent's own reply carries; it must be stored redacted.
-_SECRET = "AKIA" + "Z" * 16
+_SECRET = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
 _ORIGIN = {"kind": "agent"}
 
 

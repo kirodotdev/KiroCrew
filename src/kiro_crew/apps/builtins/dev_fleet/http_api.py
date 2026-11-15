@@ -26,24 +26,10 @@ def _load_app_secret() -> str:
     global _APP_SECRET
     if _APP_SECRET is not None:
         return _APP_SECRET
-    from kiro_crew.config.loader import config_dir
-
-    secret_path = config_dir() / "apps" / APP_NAME / ".app_secret"
-    if secret_path.is_file():
-        _APP_SECRET = secret_path.read_text().strip()
-    else:
-        # Fallback: try the apps dir from manager
-        try:
-            from kiro_crew.apps.manager import app_dir
-
-            alt = app_dir(APP_NAME) / ".app_secret"
-            if alt.is_file():
-                _APP_SECRET = alt.read_text().strip()
-        except Exception:
-            pass
-    # Do NOT cache emptiness: the secret may be provisioned after this
-    # backend starts (install race) — retry on the next request, matching
-    # the gateway-side _get_app_secret semantics.
+    # The gateway hands its backend the secret at spawn (``apps.backend``); it keeps
+    # no copy in the app's folder. Do NOT cache emptiness, matching the gateway-side
+    # _get_app_secret semantics.
+    _APP_SECRET = os.environ.get("KIROCREW_PROXY_SECRET", "").strip() or None
     return _APP_SECRET or ""
 
 
@@ -263,13 +249,17 @@ async def _json_body(
     except (LookupError, RecursionError, ValueError):
         if code:
             return None, web.json_response({"error": "invalid JSON body", "code": code}, status=400)
-        return None, web.json_response({"error": "invalid JSON body"}, status=400)
+        return None, web.json_response(
+            {"error": "invalid JSON body", "code": "invalid_json"}, status=400
+        )
     if not isinstance(body, dict):
         if code:
             return None, web.json_response(
                 {"error": "body must be an object", "code": code}, status=400
             )
-        return None, web.json_response({"error": "body must be an object"}, status=400)
+        return None, web.json_response(
+            {"error": "body must be an object", "code": "body_not_object"}, status=400
+        )
     return body, None
 
 
@@ -312,9 +302,13 @@ async def api_dev_fleet_prune_run(request: web.Request) -> web.Response:
     try:
         body = await request.json() if request.content_length else {}
     except ValueError:
-        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+        return web.json_response(
+            {"ok": False, "error": "invalid JSON body", "code": "invalid_json"}, status=400
+        )
     if not isinstance(body, dict):
-        return web.json_response({"ok": False, "error": "body must be an object"}, status=400)
+        return web.json_response(
+            {"ok": False, "error": "body must be an object", "code": "body_not_object"}, status=400
+        )
     raw_names = body.get("names") or []
     if not isinstance(raw_names, list) or not all(isinstance(n, str) for n in raw_names):
         return web.json_response(

@@ -81,7 +81,8 @@ Current status:
   real progress. At 100% it reopens Kiro Crew and closes automatically. A
   persistent message on that progress page warns that the handoff can take
   several minutes; a Windows notification tells the user to reopen Kiro Crew
-  from the Start menu if the relaunch does not happen. New clients call
+  from the Start menu if the relaunch does not happen (after Restart now it says
+  Kiro Crew will reopen after installing, since the app comes back on its own). New clients call
   `quitAndInstall(false, true)` so NSIS is visible;
   the installer also converts a legacy `/S --updated` launch back to this same
   visible path, which covers the first upgrade from clients that predate the
@@ -388,7 +389,7 @@ while the other 503s. Concretely:
 | Dashboard terminal tab title | not on Windows — the tab keeps its default title. The live label (the running command, else the cwd basename) reads the foreground process group with POSIX `tcgetpgrp` and the shell's cwd from `/proc` (or `lsof`), and ConPTY offers neither, so `_session_title` and `_session_cwd` in `dashboard/handlers/terminal.py` return nothing here. The same cwd probe also feeds path completion, which has no cwd here, and the path on terminal output handed to chat, which falls back to the directory the terminal started in rather than the one you `cd` to. Command completion does not run here either: its probe in `dashboard/terminal_commands.py` is POSIX-only. The terminal session itself is unaffected |
 | Browser automation (`browser` tool) | works (Settings → Browser installs the engine; your own Chrome or Edge via `chrome://inspect/#remote-debugging`, or Kiro's headless Chromium) |
 | `kirocrew pod` (isolated worktree test gateways) | works, through **Task Scheduler**, unelevated. A pod is a per-user disposable gateway, so `sc.exe` is the wrong tool twice over (it needs `SeCreateServiceNamePrivilege` and installs a machine-wide LocalSystem service); `schtasks.exe` creates a task in your own namespace with no elevation, matching `systemd --user` and launchd's `gui/<uid>`. A task carries no environment block, so the action is a generated `.cmd` wrapper under `KIROCREW_POD_ENV_DIR` that pins the pod plane and re-enters `kirocrew pod _run <name>` — a plane path containing a double quote or a newline is refused at `pod up`, since cmd.exe cannot quote it. The memory and fork-bomb ceiling IS enforced here, by a Job object attached to the gateway while it is still suspended (the same `resource_limits` config and the same seam the agent-subprocess path uses), but it is not parity with the Linux cgroup: the process bound counts processes where `TasksMax` counts threads, and there is no CPU cap. Two limits remain, neither of them silent: **no restart on crash** (Task Scheduler retries a failed *start*, not a non-zero exit, so a crashed pod stays down; the wrapper records the boot's exit code and `pod ls` / `pod up` read it as the crash signal), and **`pod api` refuses** because its authenticated request travels over the pod's private AF_UNIX dashboard socket with no TCP fallback and CPython here has no `AF_UNIX` — use `pod token` plus your own client against the loopback port. `pod up/down/ls/status/token/url/logs/prune/provision/scenarios` all work. Two Windows-specific mechanics worth knowing: `schtasks` output is **localized**, so the backend never parses it (liveness, the pid and the last result come from files the supervised process itself writes, and `schtasks` is used only where its exit code is the answer), and Windows has no `exec`, so the gateway is supervised as the wrapper's child with its pid plus creation-time identity recorded — that is what keeps `port_owner`'s ownership proof honest here. If `pod up` reports that your user cannot create a scheduled task, that is Group Policy, a disabled `Schedule` service, or a principal without `TASK_CREATE`; there is no non-admin workaround |
-| Vector memory / embeddings | works — embeddings run **in-process** through the vendored llama-cpp-python (`_vendor/llama_cpp_libs/win_amd64`), which loads the Qwen3-Embedding-0.6B GGUF from `~/.kiro/crew/models`. No remote endpoint, no Docker and no Ollama server is involved on any platform |
+| Vector memory / embeddings | works — embeddings run **in-process** through the vendored llama-cpp-python (`_vendor/llama_cpp_libs/win_amd64`), which loads the Qwen3-Embedding-0.6B GGUF from `~/.kiro/crew/models`. With the default `memory.embedding_provider` (`llama_cpp`) no remote endpoint, no Docker and no Ollama server is involved on any platform; an Ollama server is used only when you set it to `ollama_http` |
 | STT (whisper / optional cloud transcription) | works |
 | Voice reply | works out of the box on the default `system` provider: it drives `System.Speech` through Windows PowerShell 5.1, needs no install, and deliberately does NOT route through `wrap_argv`, so the missing sandbox backend does not block it. `polly` DOES route through `wrap_argv` and therefore runs unconfined under this platform's default; declare `sandbox_allow_unsandboxed_exec=false` and synthesis returns no audio, with the log naming that setting |
 | Launching a cloud crew | `kirocrew cloud launch` works. The dashboard's **Set up a new one** launcher does not: it needs a Linux or macOS gateway, and the tab says so instead of checking AWS. See [Launch a cloud crew from Windows](#launch-a-cloud-crew-from-windows) |
@@ -451,20 +452,51 @@ app. Quit the desktop app first, or start the WSL gateway on another port with
 
 ## Secret-at-rest posture on Windows
 
-Files under `%USERPROFILE%\.kiro\crew` that hold auth material — the token
-signing key, refresh-token state, per-app secrets, snapshot tarballs, and the
-cron internal-secret temp file — are locked down to the current user via an
-owner-only NTFS DACL (inheritance stripped, `S-1-3-4:F` = Owner Rights full
-control). This is applied through `platform_compat.restrict_to_owner`, which
-routes to `os.chmod(..., 0o600)` on POSIX and, on Windows, builds the descriptor
-in-process through `advapi32` (`SetNamedSecurityInfoW` with
-`PROTECTED_DACL_SECURITY_INFORMATION`, the equivalent of
-`icacls /inheritance:r /grant:r "*S-1-3-4:F"`). It is a direct API call rather
-than a subprocess, far cheaper than spawning `icacls`, so it is safe to call on the gateway's event loop. Failure is
-fail-loud (raises `OSError`) so the
-security-warning handlers in each caller fire — a naive `if IS_POSIX: os.chmod`
-guard would silently no-op on Windows, leaving secrets group/world-readable
-under NTFS.
+Files that hold auth material are locked down to the current user with an
+owner-only NTFS DACL: inheritance stripped, and two full-control grants. Owner
+Rights (`S-1-3-4`) covers the file's current owner. The invoking user's own SID
+keeps the file readable by that user when another principal created it (an
+elevated first run, a backup restore, a `SYSTEM` service); with Owner Rights
+alone, that user would be locked out of their own file (the token signing key,
+for example).
+
+The user's SID is read from the process's own access token. When it cannot be
+read, the lockdown raises `OSError` and applies nothing; it never falls back to
+Owner Rights alone.
+
+Which files get it is a rule, not a list: every file passed to
+`platform_compat.restrict_to_owner` or written by
+`atomic_write(restrict_to_owner=True)`, which `.env`'s writer
+`hidden_leaf_staging.publish_env` uses. Under `%USERPROFILE%\.kiro\crew` that
+includes the token signing key, refresh-token state, per-app secrets, snapshot
+tarballs, `.env` (chat-channel tokens), and the vault's key `.vault\.vault_key`
+and store `.vault\secrets.enc`. The cron internal-secret temp file gets it
+too, in `%TEMP%` (`kirocrew_secret_*`, there only while a script cron runs).
+The remote-workspace relay token file (`<name>.relay`, in the session's scratch
+directory) gets the same two grants, applied directly rather than through those
+helpers.
+
+`restrict_to_owner` routes to `os.chmod(..., 0o600)` on POSIX and, on Windows,
+builds the descriptor in-process through `advapi32` (`SetNamedSecurityInfoW` with
+`PROTECTED_DACL_SECURITY_INFORMATION`), replacing the file's whole DACL. For a
+new file, whose entries are all inherited, the equivalent command, with your SID
+from `whoami /user`, is:
+
+```text
+icacls <file> /inheritance:r /grant:r "*S-1-3-4:F" /grant:r "*<your-user-SID>:F"
+```
+
+On a file that already carries an explicit entry for another account, that
+command keeps the entry, while the in-process lockdown removes it.
+`icacls <file>` on a locked-down file lists two `(F)` entries, Owner Rights
+(`OWNER RIGHTS` on an English system, `S-1-3-4` or a translated name elsewhere)
+and your own account, and no inherited `(I)` entry.
+
+The lockdown is a direct API call rather than a subprocess, far cheaper than
+spawning `icacls`, so it is safe to call on the gateway's event loop. Failure
+is fail-loud so the security-warning handlers in each caller fire — a naive
+`if IS_POSIX: os.chmod` guard would silently no-op on Windows, leaving secrets
+group/world-readable under NTFS.
 
 `restrict_to_owner` is file-shaped by design: its grants are deliberately
 non-inheritable (inheritance flags mean nothing on a file). A **directory**
@@ -697,6 +729,33 @@ Two details are load-bearing rather than incidental:
   handle, and ending that runtime ends the job after the exact-handle drain, so a
   member whose parent exited first goes too; a gateway exit just closes it.
 
+### Sub-agent work as background work (opt-in)
+
+With `agent.windows_background_qos` set to `true` (off by default), two
+separate processes are marked as background work while still suspended, through
+the same `apply_windows_resource_ceiling` seam: the process a chat's task runs
+use, and the shared sub-agent runtime a chat's sub-agents use when the chat
+cannot host them in its own process
+(`session_allocation_parts.companions`). The process's Job object gets a
+weight-based CPU share of 3 (Windows' default is 5), it moves to
+`BELOW_NORMAL_PRIORITY_CLASS`, which the git, build and test processes it
+starts inherit, and it gets EcoQoS (`SetProcessInformation(ProcessPowerThrottling)`,
+what Task Manager's Efficiency mode sets). The priority class and the weight
+only matter when the CPU is contended, so the chat you are in gets the CPU
+first; EcoQoS asks Windows to lower clocks and prefer efficiency cores whether
+or not it is, so it can slow that work on an idle machine too. A process a
+person's own task run started (`FOREGROUND` start priority) is not marked, but
+the process is cached per chat, so a person's task run that reuses one that
+background work started runs marked until that process is replaced. Each
+call fails soft: a build without EcoQoS logs once and keeps the other two.
+
+Sub-agents that share the chat's own kiro-cli process, the default while
+`agent.session_sharing` is on, are not marked: the chat runs in that process,
+and a process-level hint cannot tell the two apart. Not covered yet: dedicated
+sub-agent processes (session sharing off, `keep`, a remote workspace), the
+`_bg` helper runtime, MCP gateway backends and cron scripts
+([#35537](https://github.com/kirodotdev/KiroCrew/issues/35537)).
+
 Windows pod teardown does not infer a clean stop from the gateway PID record
 vanishing. Before `/End`, it opens an exact handle to the recorded gateway and
 validates that handle's creation identity against the record, then retains exact
@@ -757,7 +816,8 @@ POSIX fleet too, where the Windows branches never execute.
 ## The RSS-recycle ceiling measures real trees on Windows
 
 `session.watchdog_rss_max_mb` (default `4096`) recycles a
-non-busy session whose process tree exceeds the ceiling. Its measurement is
+non-busy session whose process tree grows past the ceiling; a tree found
+already over it is held at its own size. Its measurement is
 `/proc`-based on POSIX. On Windows `get_session_rss_mb` delegates to
 `platform_compat.proc_rss_tree_mb_for_pid`; a `/proc` read there would measure
 every tree as 0 MiB, so the ceiling could never be reached.
@@ -940,15 +1000,16 @@ supervision is a separate piece of work, proposed in
   (`--disable-features=RendererCodeIntegrity`) has been a no-op since Chromium
   118 even though the Chrome enterprise *policy* of the same name still works.
 
-  If instead the symptom is the agent's **`git`/`cr` commands** being killed
-  ("A process was blocked because malicious behavior was detected") while the
-  app window itself is fine, that is a different case: read the detection entry
-  in your security console to find the exact image path and detection id, then
-  ask whoever administers endpoint security to scope an exception to that pair.
-  The spawn mechanism described in
+  If instead the symptom is the agent's **commands** (`git`, `cr`, a build, a
+  test run) being blocked, or failing with `EPERM`, while the app window itself
+  is fine, that is a different case. On the default backend (KAS) the agent's
+  shell is started by the KAS engine's `node.exe`, not by Kiro Crew's Python, so
+  a rule against a script host starting PowerShell matches every shell call.
+  Read the detection entry in your security console for the exact image path and
+  detection id, then ask whoever administers endpoint security to scope an
+  exception to that pair.
   [endpoint-security-blocking-spawned-tools.md](endpoint-security-blocking-spawned-tools.md)
-  is macOS/Linux-specific, so use that guide's "durable fix" steps for scoping
-  the exception, not its explanation of the cause.
+  names which `node.exe` that is for each KAS route.
 - **Desktop gateway recovery refuses to force-stop the port** - the Electron
   launcher uses `netstat -ano` to identify the listener, PowerShell
   (`Get-CimInstance`) with a WMIC fallback to read its command line, and

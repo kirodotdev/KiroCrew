@@ -663,6 +663,9 @@ async def test_a_rebuild_never_reclaims_a_worker_another_board_now_holds(monkeyp
         WORKER, {"status": "done", "summary": "finished", "artifacts": {"commit": "abc1234"}}
     )
     assert status == 200, body
+    assert (await _record(CONDUCTOR, {"action": "verdict", "item_id": item_id, "verdict": "pass"}))[
+        0
+    ] == 200
     status, body = await _record(
         CONDUCTOR, {"action": "close", "item_id": item_id, "state": "accepted"}
     )

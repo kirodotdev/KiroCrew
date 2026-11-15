@@ -143,7 +143,8 @@ def _find_python_via_launcher(version: str) -> str | None:
 
 
 #: The interpreter floor, ``requires-python`` in ``pyproject.toml`` (pinned by
-#: ``test_pod``). A worktree venv on any newer minor is as valid as one on this.
+#: ``test_pod_provision.py::test_min_python_is_pyproject_requires_python``). A worktree
+#: venv on any newer minor is as valid as one on this.
 MIN_PYTHON = (3, 12)
 
 #: Minor versions asked for by name (``python3.N``), after the gateway's own.
@@ -904,6 +905,14 @@ def _run_uv(cmd: list[str], checkout: Path) -> int:
         return 1
 
 
+def _runs_from_venv(checkout: Path) -> bool:
+    """True when this interpreter is the one inside *checkout*'s ``.venv``."""
+    try:
+        return Path(sys.prefix).resolve() == (checkout / ".venv").resolve()
+    except OSError:
+        return False
+
+
 def ensure_venv(checkout: Path) -> bool:
     """Create the worktree's editable venv if missing. Idempotent. Returns True if
     the venv is ready afterward.
@@ -917,8 +926,14 @@ def ensure_venv(checkout: Path) -> bool:
     exactly as it already does over a venv an interrupted pip provision left
     behind, so two provisioners racing on one checkout (CLI and Dev Fleet) can
     never remove each other's finished venv.
+
+    A venv this process is itself running from is never rebuilt: it is accepted
+    on presence alone. Re-running ``python -m venv`` over the interpreter that is
+    executing fails on Windows (the running ``python.exe`` is locked, EACCES) and
+    on POSIX rewrites the install under the live command. Whoever built that venv
+    (a CI step, a manual ``pip install -e .``) owns its freshness.
     """
-    if has_venv(checkout):
+    if has_venv(checkout, require_stamp=not _runs_from_venv(checkout)):
         return True
     py = _find_python()
     if not py:
@@ -1074,7 +1089,7 @@ def build_dist(checkout: Path) -> bool:
     dst.parent.mkdir(parents=True, exist_ok=True)
     # A LINK is checked before is_dir()/is_file() so a DANGLING one is still
     # replaced -- and via is_link_or_junction because this very path is
-    # published as a link by `frontend._ensure_tree_dist`, through
+    # published as a link by `frontend.ensure_dev_dist_symlink`, through
     # `platform_compat.symlink_or_junction`, which falls back to a directory
     # JUNCTION on Windows (a directory symlink there needs
     # SeCreateSymbolicLinkPrivilege). A dangling junction answers False to

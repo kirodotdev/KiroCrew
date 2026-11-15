@@ -19,6 +19,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
+from kiro_crew.apps.desktop_capabilities import declared_capabilities
 from kiro_crew.apps.manifest_names import KEBAB_RE
 from kiro_crew.apps.user_session_reach import declared_verbs
 
@@ -504,6 +505,10 @@ class BackendConfig:
     # Only the literal JSON boolean true enables it: a string or a number keeps
     # the default off, so a malformed manifest never widens what a backend trusts.
     signedPrincipal: bool = False  # noqa: N815
+    # Opt in to an app web origin: the gateway serves this backend at
+    # ``http://<name>.apps.localhost:<dashboard port>`` (apps/app_web_origin.py).
+    # Same strict parse as signedPrincipal: only the JSON boolean true turns it on.
+    webOrigin: bool = False  # noqa: N815
     hooks: HooksConfig = field(default_factory=HooksConfig)
 
     def to_dict(self) -> dict[str, Any]:
@@ -520,6 +525,8 @@ class BackendConfig:
             d["type"] = self.type
         if self.signedPrincipal:
             d["signedPrincipal"] = True
+        if self.webOrigin:
+            d["webOrigin"] = True
         hooks_d = self.hooks.to_dict()
         if hooks_d:
             d["hooks"] = hooks_d
@@ -536,6 +543,7 @@ class BackendConfig:
             routes=str(data.get("routes", "")),
             type=str(data.get("type", "")),
             signedPrincipal=data.get("signedPrincipal") is True,  # noqa: N815
+            webOrigin=data.get("webOrigin") is True,  # noqa: N815
             hooks=hooks,
         )
 
@@ -592,6 +600,15 @@ class Permissions:
     #: ``ctx.turns``: tool-gated under this app's identity, admitted as Crew
     #: automation. Declared for the same reason as ``spawn``.
     agentTurns: bool = False  # noqa: N815
+    #: May open and drive dashboard chat slots under its own key prefix through
+    #: ``ctx.chat_slots`` (``apps/chat_slot_sdk.py``): turns through the host's
+    #: chat runner, its queue, stop, archive and AutoNudge loops on those slots.
+    #: Shown at the trust prompt.
+    chatSlots: bool = False  # noqa: N815
+    #: Keeps the chats this app creates under its own id as their mode out of the
+    #: session lists (``apps/hidden_sessions.py``). Shown on the app's detail page.
+    #: Hides a list row only: approvals and questions still reach the owner.
+    hiddenSessions: bool = False  # noqa: N815
     #: May hold a bounded, audited auto-approve grant on the app's OWN worker
     #: slots through ``ctx.auto_approve`` (``apps/worker_auto_approve.py``).
     #: Shown at the trust prompt and held back on a widening update like a new
@@ -602,6 +619,16 @@ class Permissions:
     #: which is the default. Shown at the trust prompt and held back on a widening
     #: update like a new API path.
     reachableByUserSessions: list[str] = field(default_factory=list)  # noqa: N815
+    #: What the app's hosted desktop windows may ask the shell for
+    #: (``"screenCapture"``, ``"localFiles"``, ``"gatewayChoice"``;
+    #: ``apps/desktop_capabilities.py``). Empty = none, which is the default. Shown at
+    #: the trust prompt and held back on a widening update like a new API path.
+    desktopCapabilities: list[str] = field(default_factory=list)  # noqa: N815
+    #: Takes inbound webhook deliveries on its own routes, governed as the
+    #: ``webhooks`` source named by the app's name (``webhook_sources``) and asked
+    #: through ``ctx.webhook_source``. Reaches nothing new: it lets the policy
+    #: answer for the app, and it is shown at the trust prompt.
+    webhookSource: bool = False  # noqa: N815
     # WS cross-app visibility opt-in: app names (or ["*"]) allowed to use
     # slots:app:<this-app> / subagent:app:<this-app> declarations to observe
     # this app's slots and subagents. Empty list = no cross-app visibility.
@@ -635,10 +662,18 @@ class Permissions:
             d["proposeCrewmate"] = True
         if self.agentTurns:
             d["agentTurns"] = True
+        if self.chatSlots:
+            d["chatSlots"] = True
+        if self.hiddenSessions:
+            d["hiddenSessions"] = True
         if self.workerAutoApprove:
             d["workerAutoApprove"] = True
         if self.reachableByUserSessions:
             d["reachableByUserSessions"] = self.reachableByUserSessions
+        if self.desktopCapabilities:
+            d["desktopCapabilities"] = self.desktopCapabilities
+        if self.webhookSource:
+            d["webhookSource"] = True
         if self.exposeToApps:
             d["exposeToApps"] = self.exposeToApps
         return d
@@ -670,8 +705,12 @@ class Permissions:
             jobs=data.get("jobs") is True,
             proposeCrewmate=data.get("proposeCrewmate") is True,  # noqa: N815
             agentTurns=data.get("agentTurns") is True,  # noqa: N815
+            chatSlots=data.get("chatSlots") is True,  # noqa: N815
+            hiddenSessions=data.get("hiddenSessions") is True,  # noqa: N815
             workerAutoApprove=data.get("workerAutoApprove") is True,  # noqa: N815
             reachableByUserSessions=declared_verbs(data.get("reachableByUserSessions")),
+            desktopCapabilities=declared_capabilities(data.get("desktopCapabilities")),
+            webhookSource=data.get("webhookSource") is True,  # noqa: N815
             exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815
         )
 
@@ -1273,8 +1312,9 @@ class NotificationsConfig:
 
 
 #: A locale key: a 2-3 letter language, optionally one region or script subtag
-#: (``de``, ``pt-BR``, ``zh-CN``). The dashboard looks a locale up by exactly this key
-#: and then by its base language, so a key outside the grammar could never be read.
+#: (``de``, ``pt-BR``, ``zh-CN``). The dashboard looks a locale up by this key and then
+#: by its base language, both without case, so a key outside the grammar could never
+#: be read.
 L10N_LOCALE_RE = re.compile(r"^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$")
 MAX_L10N_LOCALES = 32
 MAX_L10N_HIGHLIGHTS = 12

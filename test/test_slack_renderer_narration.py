@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
+from redaction_structured_cases import github_classic
 from test_slack_renderer import _Provider, _RecSlack
 
 from kiro_crew.acp.types import (
@@ -120,7 +121,7 @@ class TestNarrationFoldsIntoSteps:
         assert streamed == ["Started the deploy; it runs for an hour."], rec.calls
 
     def test_narration_in_a_step_is_redacted(self):
-        key = "AKIA" + "1234567890ABCDEX"
+        key = github_classic(seed=169)
         _, streamed, tasks = self._run(
             [
                 AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"Using key {key} now. "),

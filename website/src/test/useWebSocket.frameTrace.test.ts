@@ -32,7 +32,7 @@ import chatReducer, { setActiveSlot } from '../store/chatSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import instancesReducer from '../store/instancesSlice'
 import { store as globalStore } from '../store'
-import { useWebSocket } from '../hooks/useWebSocket'
+import { RECONNECT_HEALTHY_MS, useWebSocket } from '../hooks/useWebSocket'
 import { memberProjectionStore } from '../state/memberProjectionStore'
 import { threadLiveStore } from '../state/threadLiveStore'
 import { _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
@@ -699,7 +699,9 @@ describe('useWebSocket lifecycle trace', () => {
     expect(trace).toEqual(EXPECTED_LIFECYCLE['reconnect after an update restart reloads'])
   })
 
-  it('backoff doubles to a 10s cap and an open resets it', async () => {
+  it('backoff doubles to a 10s cap and only a healthy open resets it', async () => {
+    // The whole backoff each time: the jitter's random part is pinned to nothing.
+    vi.spyOn(Math, 'random').mockReturnValue(0)
     const { ws } = await mountOpen()
     /** Advance in 500 ms steps until a new socket is constructed, and return
      *  how long that took. Bounded well past the 10 s cap, so a regression
@@ -721,8 +723,14 @@ describe('useWebSocket lifecycle trace', () => {
         act(() => { WS_INSTANCES[WS_INSTANCES.length - 1].drop() })
       }
       expect(delays).toEqual([1000, 2000, 4000, 8000, 10000, 10000])
+      // An open that drops at once keeps the backoff where it was.
       waitForNextSocket()
       act(() => { WS_INSTANCES[WS_INSTANCES.length - 1].open() })
+      act(() => { WS_INSTANCES[WS_INSTANCES.length - 1].drop() })
+      expect(waitForNextSocket()).toBe(10000)
+      // One that stays open long enough to prove healthy starts it over.
+      act(() => { WS_INSTANCES[WS_INSTANCES.length - 1].open() })
+      act(() => { vi.advanceTimersByTime(RECONNECT_HEALTHY_MS) })
       act(() => { WS_INSTANCES[WS_INSTANCES.length - 1].drop() })
       expect(waitForNextSocket()).toBe(1000)
     } finally {
@@ -1021,6 +1029,8 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'query setQueryData ["chat-folders"]',
     'query invalidateQueries ["chat-folders"]',
     'query invalidateQueries ["dashboardConfig"]',
+    'query invalidateQueries ["decisionsProvider"]',
+    'query invalidateQueries ["decisionsConsent"]',
     'event mc:app:slots',
   ],
   "slots repeated frame only reconciles the queued depth": [
@@ -1196,6 +1206,8 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'query invalidateQueries ["agent-templates"] {"exact":true}',
     'query invalidateQueries ["workspaces"]',
     'query invalidateQueries ["kirocrewConfig"]',
+    'query invalidateQueries ["safety-switches"]',
+    'query invalidateQueries ["mcp-tool-grants"]',
     'query invalidateQueries ["resolved-model"]',
     'query invalidateQueries ["agent-resolved-model"]',
     'query invalidateQueries ["artifacts"]',
@@ -1484,6 +1496,8 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'query invalidateQueries ["agent-templates"] {"exact":true}',
     'query invalidateQueries ["workspaces"]',
     'query invalidateQueries ["kirocrewConfig"]',
+    'query invalidateQueries ["safety-switches"]',
+    'query invalidateQueries ["mcp-tool-grants"]',
     'query invalidateQueries ["resolved-model"]',
     'query invalidateQueries ["agent-resolved-model"]',
     'query invalidateQueries ["artifacts"]',
@@ -1499,6 +1513,8 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'query invalidateQueries ["agent-templates"] {"exact":true}',
     'query invalidateQueries ["workspaces"]',
     'query invalidateQueries ["kirocrewConfig"]',
+    'query invalidateQueries ["safety-switches"]',
+    'query invalidateQueries ["mcp-tool-grants"]',
     'query invalidateQueries ["resolved-model"]',
     'query invalidateQueries ["agent-resolved-model"]',
     'query invalidateQueries ["artifacts"]',
@@ -1509,7 +1525,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action dashboard/setUpdateProgress {"step":"downloading","detail":"1/2"}',
     'action dashboard/setUpdateProgress {"step":"restarting","detail":""}',
     'action dashboard/setUpdateProgress {"step":"failed","detail":"boom"}',
-    'action dashboard/setUpdateProgress null',
+    'action dashboard/setUpdateProgress {"step":"done","detail":""}',
   ],
   "channel frames": [
     'event kirocrew-channel {"type":"channel_message","data":{"id":1}}',
@@ -1550,6 +1566,7 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'send {"type":"chunk_watch","slots":["slot-a"]}',
     'query invalidateQueries ["crew-log-projections"] {"cancelRefetch":false}',
     'query invalidateQueries ["config-pending"] {"cancelRefetch":false}',
+    'query invalidateQueries ["mcpGatewayStatus"] {"cancelRefetch":false}',
     'query invalidateQueries ["shared-crew"] {"cancelRefetch":false}',
     'action dashboard/sseConnected undefined',
     'query fetchQuery ["automation-seed","legacy"] {"staleTime":0,"retry":false}',
@@ -1573,11 +1590,11 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'send {"type":"chunk_watch","slots":["slot-a"]}',
     'query invalidateQueries ["crew-log-projections"] {"cancelRefetch":false}',
     'query invalidateQueries ["config-pending"] {"cancelRefetch":false}',
+    'query invalidateQueries ["mcpGatewayStatus"] {"cancelRefetch":false}',
     'query invalidateQueries ["shared-crew"] {"cancelRefetch":false}',
     'action stream/flush {"slots":[{"slot":"slot-a","thinking":"kept","status":{"content":true,"thinking":true}}],"subagents":[],"recency":[]}',
     'cancel-frame 1',
     'action dashboard/sseConnected undefined',
-    'action dashboard/fetchSlots/pending',
     'query invalidateQueries ["session-summary"]',
     'query invalidateQueries ["chat-pins"]',
     'query resetQueries ["dashboard-card"]',
@@ -1586,6 +1603,8 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'query invalidateQueries ["artifacts"]',
     'query invalidateQueries ["artifact-folders"]',
     'query invalidateQueries ["kirocrewConfig"]',
+    'query invalidateQueries ["safety-switches"]',
+    'query invalidateQueries ["mcp-tool-grants"]',
     'query invalidateQueries ["monitor-contract"]',
     'query invalidateQueries ["instances"] {"exact":true}',
     'query fetchQuery ["credential-redaction"] {"staleTime":0}',
@@ -1605,7 +1624,6 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'action chat/clearSubagentsForSnapshot undefined',
     'send {"type":"subscribe_subagents","slots":["slot-a"]}',
     'send {"type":"slot_focused","slot":"slot-a","announce":true}',
-    'action dashboard/fetchSlots/fulfilled',
     'action chat/reconcileWorkflowRuns []',
     'query setQueryData ["command-center","workflows"]',
     'action chat/setAutomations {"records":[],"legacyComplete":true,"structuredComplete":true,"protectedSlots":[]}',
@@ -1619,6 +1637,7 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'send {"type":"chunk_watch","slots":["slot-a"]}',
     'query invalidateQueries ["crew-log-projections"] {"cancelRefetch":false}',
     'query invalidateQueries ["config-pending"] {"cancelRefetch":false}',
+    'query invalidateQueries ["mcpGatewayStatus"] {"cancelRefetch":false}',
     'query invalidateQueries ["shared-crew"] {"cancelRefetch":false}',
     'reload',
   ],
@@ -1634,9 +1653,9 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'send {"type":"chunk_watch","slots":["slot-a"]}',
     'query invalidateQueries ["crew-log-projections"] {"cancelRefetch":false}',
     'query invalidateQueries ["config-pending"] {"cancelRefetch":false}',
+    'query invalidateQueries ["mcpGatewayStatus"] {"cancelRefetch":false}',
     'query invalidateQueries ["shared-crew"] {"cancelRefetch":false}',
     'action dashboard/sseConnected undefined',
-    'action dashboard/fetchSlots/pending',
     'query invalidateQueries ["session-summary"]',
     'query invalidateQueries ["chat-pins"]',
     'query resetQueries ["dashboard-card"]',
@@ -1645,6 +1664,8 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'query invalidateQueries ["artifacts"]',
     'query invalidateQueries ["artifact-folders"]',
     'query invalidateQueries ["kirocrewConfig"]',
+    'query invalidateQueries ["safety-switches"]',
+    'query invalidateQueries ["mcp-tool-grants"]',
     'query invalidateQueries ["monitor-contract"]',
     'query invalidateQueries ["instances"] {"exact":true}',
     'query fetchQuery ["credential-redaction"] {"staleTime":0}',
@@ -1664,7 +1685,6 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'action chat/clearSubagentsForSnapshot undefined',
     'send {"type":"subscribe_subagents","slots":["slot-a"]}',
     'send {"type":"slot_focused","slot":"slot-a","announce":true}',
-    'action dashboard/fetchSlots/fulfilled',
     'action chat/reconcileWorkflowRuns []',
     'query setQueryData ["command-center","workflows"]',
     'action chat/setAutomations {"records":[],"legacyComplete":true,"structuredComplete":true,"protectedSlots":[]}',
@@ -1680,6 +1700,7 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'send {"type":"chunk_watch","slots":["slot-a"]}',
     'query invalidateQueries ["crew-log-projections"] {"cancelRefetch":false}',
     'query invalidateQueries ["config-pending"] {"cancelRefetch":false}',
+    'query invalidateQueries ["mcpGatewayStatus"] {"cancelRefetch":false}',
     'query invalidateQueries ["shared-crew"] {"cancelRefetch":false}',
     'action dashboard/sseConnected undefined',
     'query fetchQuery ["automation-seed","legacy"] {"staleTime":0,"retry":false}',

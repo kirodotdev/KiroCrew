@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Dict, List, Mapping, Optional
 
 from kiro_crew.config.paths import config_dir
 from kiro_crew.owner_only_files import mkdirs_owner_only, write_text_owner_only
+from kiro_crew.user_json import loads_user_json
 
 if TYPE_CHECKING:
     import importlib.metadata
@@ -742,7 +743,7 @@ def load_admission_policy() -> AdmissionPolicy:
         return _fail_closed_policy()
     try:
         raw_text = path.read_text(encoding="utf-8")
-        data = json.loads(raw_text)
+        data = loads_user_json(raw_text)
     except Exception:
         # A present-but-unreadable policy is a fail-closed signal: a fleet meant
         # to enforce something. Refuse to silently fall open.

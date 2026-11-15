@@ -1,6 +1,7 @@
 import { createElement } from 'react'
 import type { ReactNode } from 'react'
 import { useMemo } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import type { NavigateFunction } from 'react-router-dom'
 import {
@@ -15,6 +16,7 @@ import {
 } from 'lucide-react'
 
 import { getAdvertisedSurfaces, surfaceLabel } from '../../../surfaces/registry'
+import { surfaceSwitchedOn } from '../../../surfaces/surfaceData'
 import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
 import { readPreviewFlag } from '../../../utils/previewFlags'
 import { EXTRA_PAGES, EXTRA_PAGE_TITLE_KEY } from './pagesData'
@@ -92,13 +94,15 @@ const EXTRA_PAGE_ICON: Record<string, typeof LayoutGrid> = {
  * always reflected — which is also what makes it the right place to resolve
  * titles for the current language.
  */
-function collectPages(): PageEntry[] {
+function collectPages(config: unknown): PageEntry[] {
   const byRoute = new Map<string, PageEntry>()
   // `getAdvertisedSurfaces()`, not `getBuiltinSurfaces()`: a preview-gated
   // surface is not released yet, so it must not be reachable from Search
   // Everywhere either — the palette is a second front door to the rail, and
   // gating only the rail would leave the unpolished page one ⌘K away.
   for (const s of getAdvertisedSurfaces()) {
+    // A surface its setting turned off has no rail row, so it has no result here.
+    if (!surfaceSwitchedOn(s, config)) continue
     byRoute.set(s.route, {
       key: s.navId,
       // `surfaceLabel(s)`, not `s.label`: the registry's `label` is a frozen
@@ -115,6 +119,8 @@ function collectPages(): PageEntry[] {
     // Same gate the `getAdvertisedSurfaces()` loop above applies to registry
     // surfaces: an unreleased page must not be one ⌘K away either.
     if (p.previewFlag && !readPreviewFlag(p.previewFlag)) continue
+    // And the setting gate: an alias of a page its setting turned off leaves with it.
+    if (!surfaceSwitchedOn(p, config)) continue
     if (!byRoute.has(p.route)) {
       byRoute.set(p.route, {
         key: p.key,
@@ -138,7 +144,11 @@ const compareResults = makeScoreThenNameComparator<Result>(
  * hooks) so it can be unit-tested by mocking the surfaces registry and passing
  * a stub navigate.
  */
-export function createPagesProvider(navigate: NavigateFunction): ResourceProvider {
+export function createPagesProvider(
+  navigate: NavigateFunction,
+  /** Reads the `['kirocrewConfig']` cache a surface's `configSwitch` is judged by. */
+  readConfig: () => unknown = () => undefined,
+): ResourceProvider {
   return {
     id: PROVIDER_ID,
     // A GETTER, not a plain call: the provider object is built inside a `useMemo`
@@ -152,7 +162,7 @@ export function createPagesProvider(navigate: NavigateFunction): ResourceProvide
     icon: inlineIcon(LayoutGrid),
     search(query: string): Result[] {
       const results: Result[] = []
-      for (const page of collectPages()) {
+      for (const page of collectPages(readConfig())) {
         const match = fuzzyMatch(query, page.title)
         if (!match) continue
         const route = page.route
@@ -185,5 +195,9 @@ export function createPagesProvider(navigate: NavigateFunction): ResourceProvide
  */
 export function usePagesProvider(): ResourceProvider {
   const navigate = useNavigate()
-  return useMemo(() => createPagesProvider(navigate), [navigate])
+  const queryClient = useQueryClient()
+  return useMemo(
+    () => createPagesProvider(navigate, () => queryClient.getQueryData(['kirocrewConfig'])),
+    [navigate, queryClient],
+  )
 }

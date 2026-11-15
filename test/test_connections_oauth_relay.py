@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
 import struct
@@ -342,7 +343,7 @@ async def test_relay_sends_bracketed_ipv6_host_header(monkeypatch):
         await callback_server.wait_closed()
 
 
-async def _post_relay(port: int) -> tuple[int, dict]:
+async def _post_relay(port: int, host: str = "127.0.0.1") -> tuple[int, dict]:
     """Drive the relay endpoint against a loopback port and return (status, body)."""
     relay_app = web.Application()
     relay_app.router.add_post("/api/mcp/oauth/relay", connections.api_mcp_oauth_relay)
@@ -352,11 +353,189 @@ async def _post_relay(port: int) -> tuple[int, dict]:
     try:
         response = await relay_client.post(
             "/api/mcp/oauth/relay",
-            json={"server": "notion", "redirect_url": f"http://127.0.0.1:{port}/?code=one-time"},
+            json={"server": "notion", "redirect_url": f"http://{host}:{port}/?code=one-time"},
         )
         return response.status, await response.json()
     finally:
         await relay_client.close()
+
+
+@pytest.mark.parametrize(
+    ("host", "dial_hosts"),
+    [
+        ("127.0.0.1", ("127.0.0.1",)),
+        ("[::1]", ("::1",)),
+        ("localhost", ("::1", "127.0.0.1")),
+        ("LOCALHOST", ("::1", "127.0.0.1")),
+    ],
+)
+def test_only_a_localhost_paste_names_both_loopback_families(host, dial_hosts):
+    """A literal names its own address; ``localhost`` names whichever one the
+    minting client's resolver put first, so the relay must be able to try both."""
+    callback = connections._validated_loopback_return_address(
+        f"http://{host}:43123/oauth/callback?code=one-time&state=opaque"
+    )
+    assert callback is not None
+    assert callback.dial_hosts == dial_hosts
+
+
+@pytest.mark.asyncio
+@pytest.mark.ipv6_required
+async def test_a_localhost_paste_reaches_a_listener_bound_to_ipv6_loopback_only(monkeypatch):
+    """KAS binds its callback listener to ``localhost``, which Node resolves to
+    ``[::1]`` alone on macOS. A ``localhost`` paste must reach that live listener,
+    not be answered with ``approval_superseded``."""
+    received: list[bytes] = []
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        received.append(await reader.readuntil(b"\r\n\r\n"))
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    try:
+        callback_server = await asyncio.start_server(handle, "::1", 0)
+    except OSError:
+        pytest.skip("IPv6 loopback unavailable in this environment")
+    port = int(callback_server.sockets[0].getsockname()[1])
+    monkeypatch.setattr(connections, "sel", lambda: MagicMock())
+
+    try:
+        status, body = await _post_relay(port, host="localhost")
+    finally:
+        callback_server.close()
+        await callback_server.wait_closed()
+
+    assert (status, body) == (200, {"ok": True})
+    assert len(received) == 1
+    assert received[0].startswith(b"GET /?code=one-time HTTP/1.1\r\n")
+
+
+def _scripted_dial(outcomes: dict[str, object], dialled: list[str]):
+    """An ``_open_loopback_connection`` that answers each host from *outcomes*:
+    an exception instance is raised, ``"real"`` dials for real."""
+
+    async def dial(host: str, port: int):
+        dialled.append(host)
+        outcome = outcomes[host]
+        if outcome == "real":
+            return await asyncio.open_connection(host, port)
+        assert isinstance(outcome, BaseException)
+        raise outcome
+
+    return dial
+
+
+@pytest.mark.asyncio
+async def test_a_localhost_paste_falls_back_to_ipv4_when_ipv6_refuses(monkeypatch):
+    """Where the client's resolver put ``127.0.0.1`` first, the ``::1`` refusal is
+    not the verdict: the IPv4 listener still gets the code."""
+
+    async def callback(_request: web.Request) -> web.Response:
+        return web.Response(status=200)
+
+    callback_app = web.Application()
+    callback_app.router.add_get("/", callback)
+    callback_server = TestServer(callback_app, host="127.0.0.1")
+    await callback_server.start_server()
+    dialled: list[str] = []
+    monkeypatch.setattr(connections, "sel", lambda: MagicMock())
+    monkeypatch.setattr(
+        connections,
+        "_open_loopback_connection",
+        _scripted_dial({"::1": ConnectionRefusedError(), "127.0.0.1": "real"}, dialled),
+    )
+
+    try:
+        status, body = await _post_relay(int(callback_server.port or 0), host="localhost")
+    finally:
+        await callback_server.close()
+
+    assert (status, body) == (200, {"ok": True})
+    assert dialled == ["::1", "127.0.0.1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ipv6_absence",
+    [
+        ConnectionRefusedError(),
+        OSError(errno.EADDRNOTAVAIL, "Can't assign requested address"),
+        OSError(errno.EAFNOSUPPORT, "Address family not supported"),
+        OSError(errno.ENETUNREACH, "Network is unreachable"),
+    ],
+    ids=["refused", "EADDRNOTAVAIL", "EAFNOSUPPORT", "ENETUNREACH"],
+)
+async def test_a_localhost_paste_is_spent_only_when_both_families_prove_absence(
+    monkeypatch, caplog, ipv6_absence
+):
+    """An IPv4-only host answers the ``::1`` dial with a family-absent errno rather
+    than a refusal. That proves absence just as well, so a dead ``localhost`` port
+    there keeps the spent-approval verdict it had when only IPv4 was dialled."""
+    dialled: list[str] = []
+    audit = MagicMock()
+    monkeypatch.setattr(connections, "sel", lambda: audit)
+    monkeypatch.setattr(
+        connections,
+        "_open_loopback_connection",
+        _scripted_dial({"::1": ipv6_absence, "127.0.0.1": ConnectionRefusedError()}, dialled),
+    )
+    caplog.set_level(logging.INFO, logger=connections.logger.name)
+
+    status, body = await _post_relay(43123, host="localhost")
+
+    assert status == 409
+    assert body["code"] == "approval_superseded"
+    assert dialled == ["::1", "127.0.0.1"]
+    assert audit.log_api_access.call_args.kwargs["outcome"] == "denied"
+    lines = _relay_log_lines(caplog)
+    assert [r.levelno for r in lines] == [logging.WARNING]
+    assert "no local callback listener on ::1 or 127.0.0.1" in lines[0].getMessage()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "inconclusive",
+    [TimeoutError(), OSError(errno.ECONNRESET, "Connection reset by peer")],
+    ids=["timeout", "ECONNRESET"],
+)
+async def test_a_localhost_paste_with_an_inconclusive_dial_stays_a_delivery_failure(
+    monkeypatch, inconclusive
+):
+    """A refusal on one family and a timeout or reset on the other does not prove
+    the listener absent, so it must not be reported as a spent approval."""
+    audit = MagicMock()
+    monkeypatch.setattr(connections, "sel", lambda: audit)
+    monkeypatch.setattr(
+        connections,
+        "_open_loopback_connection",
+        _scripted_dial({"::1": ConnectionRefusedError(), "127.0.0.1": inconclusive}, []),
+    )
+
+    status, body = await _post_relay(43123, host="localhost")
+
+    assert status == 502
+    assert body["code"] == "oauth_callback_unreachable"
+    assert audit.log_api_access.call_args.kwargs["outcome"] == "failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("host", "dialled_host"), [("127.0.0.1", "127.0.0.1"), ("[::1]", "::1")])
+async def test_a_literal_paste_dials_only_its_own_address(monkeypatch, host, dialled_host):
+    """Only ``localhost`` widens the dial; a literal keeps its single address."""
+    dialled: list[str] = []
+    monkeypatch.setattr(connections, "sel", lambda: MagicMock())
+    monkeypatch.setattr(
+        connections,
+        "_open_loopback_connection",
+        _scripted_dial({dialled_host: ConnectionRefusedError()}, dialled),
+    )
+
+    status, body = await _post_relay(43123, host=host)
+
+    assert status == 409
+    assert body["code"] == "approval_superseded"
+    assert dialled == [dialled_host]
 
 
 @pytest.mark.asyncio

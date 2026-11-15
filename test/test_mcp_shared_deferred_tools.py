@@ -428,8 +428,8 @@ class TestDeferredToolCancellation:
         retained = threading.Event()
         entry_type = mcp_shared._DeferredEntry
 
-        def record_entry(*args):
-            entry = entry_type(*args)
+        def record_entry(*args, **kwargs):
+            entry = entry_type(*args, **kwargs)
             retained.set()
             return entry
 

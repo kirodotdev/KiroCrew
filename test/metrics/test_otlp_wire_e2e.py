@@ -13,8 +13,8 @@ leaves the process. These tests close it by driving that live path and reading
 what an exporter actually received.
 
 Two tiers, because the OTLP exporter is an optional extra
-(``pip install "kirocrew[otlp]"``) that a default dev/CI environment does not
-have:
+(``pip install "kirocrew[otlp]"``) that a default dev environment does not have
+(CI's backend test lanes install it):
 
 * **Tier 1 — serialization (always runs).** The live build's own JSONL exporter
   writes real records to disk. Asserts the full instrument roster arrives, that

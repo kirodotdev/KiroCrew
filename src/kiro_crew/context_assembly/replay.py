@@ -562,7 +562,9 @@ def stop_event_notes(messages: list[dict]) -> str:
     return "\n".join(notes) + "\n\n"
 
 
-def cancelled_turn_preamble(recent: list[dict], *, user_cap: int, assist_cap: int) -> str:
+def cancelled_turn_preamble(
+    recent: list[dict], *, user_cap: int, assist_cap: int, newest_request: bool = False
+) -> str:
     """The ``[PREVIOUS TURN WAS CANCELLED …]`` restore for *recent* rows, or ``""``.
 
     Scans backwards for a ``stop_event`` marker, then takes the user message
@@ -570,6 +572,11 @@ def cancelled_turn_preamble(recent: list[dict], *, user_cap: int, assist_cap: in
     steers in between. A steer the person took back (``steerState: retracted``)
     keeps its row with its text cleared and is stepped past, so *recent* must
     carry each row's ``meta``.
+
+    *newest_request*: the caller persists the new message only after this runs,
+    so a request after the marker is the stopped one and the marker is an older
+    surface's Stop (a channel Stop writes none). The dashboard, whose drained
+    queue row can already sit after its own marker, leaves it off.
     """
     if not recent:
         return ""
@@ -595,6 +602,10 @@ def cancelled_turn_preamble(recent: list[dict], *, user_cap: int, assist_cap: in
                 break
         except (ValueError, TypeError):
             continue
+    if newest_request and any(
+        row.get("role") == "user" and not _is_steer_row(row) for row in recent[stop_idx + 1 :]
+    ):
+        stop_idx = -1
     # Find the most recent user message. If a stop_event was found, the user
     # message must precede it; otherwise just take the latest user entry.
     search_end = stop_idx if stop_idx >= 0 else len(recent)

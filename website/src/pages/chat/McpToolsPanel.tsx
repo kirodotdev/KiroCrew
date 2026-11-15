@@ -345,7 +345,7 @@ export default function McpToolsPanel({
         // that is exactly the clash case, so it is named here instead of lost.
         <div role="status" className="mt-2 text-[11px] text-warn leading-snug">
           {i18nT('pages.chatPage.mcp_session_no_tools_also', {
-            names: [...extraNoTools, ...(noToolsOmitted > 0 ? [`+${noToolsOmitted}`] : [])].join(', '),
+            names: fmtList([...extraNoTools, ...(noToolsOmitted > 0 ? [`+${noToolsOmitted}`] : [])], { style: 'narrow' }),
           })}
         </div>
       )}

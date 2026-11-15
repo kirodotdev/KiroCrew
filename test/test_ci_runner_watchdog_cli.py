@@ -5,7 +5,7 @@ break out of its step-summary row. The summary names every run the tick acted
 on or held. The parser reads the workflow's environment, the HTTP client
 counts and retries its calls, a kicked tick stands down when another tick ran
 inside the schedule interval, and a GitHub rate limit ends the tick with a
-non-zero exit instead of a crash.
+non-zero exit instead of a crash, except a spent installation quota, which warns.
 """
 
 from __future__ import annotations
@@ -854,9 +854,19 @@ def test_a_live_tick_under_the_read_bound_behaves_as_before() -> None:
 
 
 def _rate_limit_get(
-    api: FakeApi, pattern: str, *, times: int, retry_after: float | None = None
+    api: FakeApi,
+    pattern: str,
+    *,
+    times: int,
+    retry_after: float | None = None,
+    remaining: str | None = "0",
+    reset_at: float | None = None,
 ) -> None:
-    """Make the next ``times`` GETs matching ``pattern`` raise a rate-limited ApiError."""
+    """Make the next ``times`` GETs matching ``pattern`` raise a rate-limited ApiError.
+
+    ``remaining="0"`` is the primary quota spent; ``remaining=None`` is a limit
+    whose headers report no quota, the shape of a secondary rate limit.
+    """
     original_get = api.get
     left = {"n": times}
 
@@ -866,8 +876,9 @@ def _rate_limit_get(
             raise wd.ApiError(
                 403,
                 "API rate limit exceeded for installation ID 12345",
-                remaining="0",
+                remaining=remaining,
                 retry_after=retry_after,
+                reset_at=reset_at,
             )
         return original_get(path)
 
@@ -881,7 +892,9 @@ def test_a_rate_limit_mid_listing_aborts_the_tick_and_preserves_already_decided_
         {"in_progress": [_run(1, branch="a"), _run(2, minutes_ago=59, branch="b")]},
         {1: [_job(11)], 2: [_job(21, run_id=2)]},
     )
-    _rate_limit_get(api, r"/actions/runs/2/jobs", times=1)  # one page fails, then serves
+    # One page fails, then serves. No quota header: a limit not proven to be the
+    # spent installation quota keeps the failed outcome.
+    _rate_limit_get(api, r"/actions/runs/2/jobs", times=1, remaining=None)
     logged: list[str] = []
     clock = _Clock()
     verdicts, outcomes = wd.run_watchdog(
@@ -905,7 +918,7 @@ def test_a_page_two_rate_limit_keeps_and_heals_page_one_candidates() -> None:
     verdicts, outcomes = _sweep(api)
     assert _verdict_of(verdicts, 1).verdict == wd.ORPHANED
     assert outcomes[1] == wd.OUTCOME_HEALED
-    assert outcomes[wd.RATE_LIMIT_MARKER_ID] == wd.OUTCOME_ABORTED_RATE_LIMITED
+    assert outcomes[wd.RATE_LIMIT_MARKER_ID] == wd.OUTCOME_QUOTA_EXHAUSTED
     assert api.posts[:2] == [
         f"repos/{REPO}/actions/runs/1/cancel",
         f"repos/{REPO}/actions/runs/1/rerun",
@@ -992,6 +1005,132 @@ def test_a_normal_healthy_tick_exits_zero(
     monkeypatch.setattr(wd, "run_watchdog", lambda *_a, **_k: ([], {}))
     assert wd.main(["--repo", REPO, "--summary", str(summary)]) == 0
     assert "::error::" not in capsys.readouterr().out
+
+
+QUOTA_RESET = datetime(2026, 11, 11, 20, 0, 0, tzinfo=timezone.utc).timestamp()
+QUOTA_DETAIL = "installation quota 0 remaining, resets at 2026-11-11 20:00:00 UTC"
+
+
+def _main_over(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, result: tuple[list[Any], dict[int, str]]
+) -> tuple[int, str]:
+    """Run the entry point over a tick result the real ``run_watchdog`` produced."""
+    monkeypatch.setenv("GH_TOKEN", "t")
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    summary = tmp_path / "summary.md"
+    monkeypatch.setattr(wd, "run_watchdog", lambda *_a, **_k: result)
+    code = wd.main(["--repo", REPO, "--summary", str(summary)])
+    return code, summary.read_text(encoding="utf-8")
+
+
+def test_a_tick_cut_short_only_by_the_spent_quota_warns_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: Any
+) -> None:
+    """The first listing finds the shared quota at 0, so the tick looked at nothing."""
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    _rate_limit_get(api, r"/actions/runs\?", times=99, reset_at=QUOTA_RESET)
+    result = _sweep(api)
+    assert result[1] == {wd.RATE_LIMIT_MARKER_ID: wd.OUTCOME_QUOTA_EXHAUSTED}
+    assert wd.OUTCOME_QUOTA_EXHAUSTED not in wd.FAILED_OUTCOMES
+    code, text = _main_over(monkeypatch, tmp_path, result)
+    printed = capsys.readouterr().out
+    assert code == 0
+    assert "::error::" not in printed
+    assert f"::warning::the shared GitHub token quota is spent ({QUOTA_DETAIL})" in printed
+    assert f"Aborted (quota exhausted): {QUOTA_DETAIL}" in text
+    assert "recovery pass did not run" in text
+
+
+def test_a_spent_quota_still_reds_a_tick_that_saw_an_orphan_it_cannot_heal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    api = FakeApi({"in_progress": [_run(1, workflow="main-ratchet-audit.yml")]}, {1: [_job(11)]})
+    _rate_limit_get(api, r"status=cancelled", times=99, reset_at=QUOTA_RESET)
+    result = _sweep(api)
+    assert result[1] == {
+        1: wd.OUTCOME_HUMAN_REQUIRED,
+        wd.RATE_LIMIT_MARKER_ID: wd.OUTCOME_QUOTA_EXHAUSTED,
+    }
+    code, text = _main_over(monkeypatch, tmp_path, result)
+    assert code == 1
+    assert wd.OUTCOME_HUMAN_REQUIRED in text
+
+
+def test_a_spent_quota_on_the_pre_heal_re_read_still_reds_the_classified_orphan(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Run 1 is classified orphaned, then the quota runs out for run 2 and for run 1's re-read."""
+    api = FakeApi(
+        {"in_progress": [_run(1, branch="a"), _run(2, minutes_ago=59, branch="b")]},
+        {1: [_job(11)], 2: [_job(21, run_id=2)]},
+    )
+    _rate_limit_get(api, r"/actions/runs/2/jobs|/actions/runs/1$", times=99, reset_at=QUOTA_RESET)
+    result = _sweep(api)
+    assert result[1][1] == wd.OUTCOME_ABORTED_RATE_LIMITED
+    assert result[1][wd.RATE_LIMIT_MARKER_ID] == wd.OUTCOME_QUOTA_EXHAUSTED
+    assert api.posts == []
+    code, _text = _main_over(monkeypatch, tmp_path, result)
+    assert code == 1
+
+
+def test_a_cancel_refused_on_a_spent_quota_still_reds_the_orphan() -> None:
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+
+    def refuse(path: str) -> None:
+        api.posts.append(path)
+        raise wd.ApiError(403, "API rate limit exceeded", remaining="0", reset_at=QUOTA_RESET)
+
+    api.post = refuse  # type: ignore[method-assign]
+    _, outcomes = _sweep(api)
+    assert outcomes[1] == wd.OUTCOME_ABORTED_RATE_LIMITED
+    assert wd.OUTCOME_ABORTED_RATE_LIMITED in wd.FAILED_OUTCOMES
+
+
+def test_a_limit_whose_headers_report_no_spent_quota_still_reds_the_tick(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: Any
+) -> None:
+    """A secondary limit names a rate limit in its body, but the quota is not what ran out."""
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    _rate_limit_get(api, r"/actions/runs\?", times=99, remaining=None)
+    result = _sweep(api)
+    assert result[1] == {wd.RATE_LIMIT_MARKER_ID: wd.OUTCOME_ABORTED_RATE_LIMITED}
+    code, text = _main_over(monkeypatch, tmp_path, result)
+    assert code == 1
+    assert "::error::a GitHub rate limit cut this tick short" in capsys.readouterr().out
+    assert "Aborted (rate limited)" in text
+
+
+def test_the_http_client_reads_a_spent_quota_and_its_reset_from_the_headers() -> None:
+    def refusal(remaining: str, reset: str) -> Any:
+        headers = email.message.Message()
+        headers["X-RateLimit-Remaining"] = remaining
+        headers["X-RateLimit-Reset"] = reset
+
+        def opener(request: Any, timeout: float) -> Any:
+            raise urllib.error.HTTPError(
+                request.full_url, 403, "forbidden", headers, io.BytesIO(b"rate limit")
+            )
+
+        return opener
+
+    client = wd.GitHubApi(
+        "token",
+        "https://api.example.invalid",
+        sleep=lambda _s: None,
+        opener=refusal("0", str(int(QUOTA_RESET))),
+    )
+    with pytest.raises(wd.ApiError) as spent:
+        client.get("repos/x/y")
+    assert spent.value.quota_exhausted and spent.value.reset_at == QUOTA_RESET
+    assert wd.rate_limit_abort_detail(spent.value) == QUOTA_DETAIL
+
+    client = wd.GitHubApi(
+        "token", "https://api.example.invalid", sleep=lambda _s: None, opener=refusal("12", "x")
+    )
+    with pytest.raises(wd.ApiError) as secondary:
+        client.get("repos/x/y")
+    assert secondary.value.rate_limited and not secondary.value.quota_exhausted
+    assert secondary.value.reset_at is None
 
 
 def test_a_cheap_rate_limit_reset_is_waited_out_and_retried() -> None:

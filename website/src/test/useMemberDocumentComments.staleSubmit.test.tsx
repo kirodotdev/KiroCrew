@@ -1,5 +1,5 @@
 /**
- * The crewmate page's document Submit sends with the page's LATEST Auto (Jev)
+ * The crewmate page's document Submit sends with the page's LATEST Auto (decision model)
  * answer, even from a callback the side panel was handed in an earlier render
  * (the panel sits under AnimatePresence and can keep one).
  *

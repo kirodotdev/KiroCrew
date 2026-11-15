@@ -970,8 +970,8 @@ class TestSessionBus:
         assert rt.user_manager_unit(4242) is None
 
         # A uid unit in a NON-`/etc` directory must count. Searching a narrower
-        # list for this shape than for the template is what made the probe report
-        # "absent" on a host with a working manager, which is the bug this PR fixes.
+        # list for this shape than for the template makes the probe report
+        # "absent" on a host with a working manager.
         (vendor / "user@4242.service").touch()
         # Build the expectation the way the probe does. These are systemd unit
         # paths, so the probe joins with "/" on every platform; rendering the

@@ -192,6 +192,137 @@ def test_a_card_press_empties_the_waiting_list_with_no_typed_reply(appended, mon
     assert appended[-1][2] == {"items": [], "total": 0}
 
 
+class _Handle:
+    def __init__(self, delay: float, fn: Any, args: tuple[Any, ...]) -> None:
+        self.delay, self.fn, self.args = delay, fn, args
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+class _Loop:
+    def __init__(self) -> None:
+        self.armed: list[_Handle] = []
+
+    def call_later(self, delay: float, fn: Any, *args: Any) -> _Handle:
+        handle = _Handle(delay, fn, args)
+        self.armed.append(handle)
+        return handle
+
+
+def test_a_card_that_expires_is_read_off_the_waiting_list_with_no_growth(appended, monkeypatch):
+    # An expiry writes nothing to the thread's log, so the feed arms its own read
+    # for the moment the soonest open card runs out.
+    now = 1792348860.0
+    monkeypatch.setattr(crewmate_feed, "_expiry_timers", {}, raising=False)
+    monkeypatch.setattr(
+        crewmate_feed,
+        "time",
+        type("_Clock", (), {"time": staticmethod(lambda: now)}),
+        raising=False,
+    )
+    slot = _Slot([])
+    state = _State(slot)
+    loop = _Loop()
+    state.serving_loop = loop  # type: ignore[attr-defined]
+    _cards(
+        monkeypatch,
+        [
+            {
+                "status": "pending",
+                "title": "Set the milestones",
+                "created_at": now,
+                "expires_at": now + 7200,
+            },
+            {
+                "status": "failed",
+                "title": "Save tools",
+                "created_at": now,
+                "expires_at": now + 3600,
+            },
+            {"status": "applied", "title": "Done", "expires_at": now + 60},
+        ],
+    )
+    assert crewmate_feed.record_waiting(state, slot) is True
+    assert len(loop.armed) == 1
+    armed = loop.armed[0]
+    assert armed.fn is crewmate_feed._retired
+    assert armed.args == (SLOT,)
+    assert armed.delay == pytest.approx(3600 + crewmate_feed._SETTLE_SECONDS)
+    # The read the timer starts finds both cards expired: the list empties, and with
+    # nothing left open no timer is armed again.
+    _cards(
+        monkeypatch,
+        [{"status": "expired", "title": "Set the milestones", "finished_at": now + 7200}],
+    )
+    assert crewmate_feed.record_waiting(state, slot) is True
+    assert appended[-1][2] == {"items": [], "total": 0}
+    assert armed.cancelled
+    assert len(loop.armed) == 1
+    assert crewmate_feed._expiry_timers == {}
+
+
+def test_an_expiry_whose_append_is_rejected_is_read_again(monkeypatch):
+    # A rejected append grows no log, so the feed's own timer is what retries it.
+    now = 1792348860.0
+    monkeypatch.setattr(crewmate_feed, "_expiry_timers", {}, raising=False)
+    monkeypatch.setattr(
+        crewmate_feed,
+        "time",
+        type("_Clock", (), {"time": staticmethod(lambda: now)}),
+        raising=False,
+    )
+    outcomes = iter([True, False, True])
+    seen: list[dict] = []
+
+    def write(_sid: str, data: dict, *, on_settled: Any = None) -> None:
+        seen.append(data)
+        on_settled(next(outcomes))
+
+    monkeypatch.setattr(emit, "on_waiting_changed", write)
+    monkeypatch.setattr(crewmate_feed, "_session_of", lambda slot: "s-atlas")
+    slot = _Slot([])
+    state = _State(slot)
+    loop = _Loop()
+    state.serving_loop = loop  # type: ignore[attr-defined]
+    _cards(
+        monkeypatch, [{"status": "pending", "title": "Set the milestones", "expires_at": now + 60}]
+    )
+    assert crewmate_feed.record_waiting(state, slot) is True
+    _cards(monkeypatch, [{"status": "expired", "title": "Set the milestones"}])
+    assert crewmate_feed.record_waiting(state, slot) is True  # rejected
+    assert len(loop.armed) == 2
+    assert loop.armed[1].delay == crewmate_feed._EXPIRY_RETRY_SECONDS
+    assert crewmate_feed.record_waiting(state, slot) is True  # appended again, committed
+    assert seen[-1] == {"items": [], "total": 0}
+    assert len(loop.armed) == 2
+    assert crewmate_feed._expiry_timers == {}
+
+
+def test_a_card_past_its_expiry_but_still_open_is_read_again_after_the_retry_delay(
+    appended, monkeypatch
+):
+    # A step in flight holds an expired card open; reading again every settle
+    # interval until it reports would spin the loop.
+    now = 1792348860.0
+    monkeypatch.setattr(crewmate_feed, "_expiry_timers", {}, raising=False)
+    monkeypatch.setattr(
+        crewmate_feed,
+        "time",
+        type("_Clock", (), {"time": staticmethod(lambda: now)}),
+        raising=False,
+    )
+    slot = _Slot([])
+    state = _State(slot)
+    loop = _Loop()
+    state.serving_loop = loop  # type: ignore[attr-defined]
+    _cards(monkeypatch, [{"status": "failed", "title": "Save tools", "expires_at": now - 5}])
+    crewmate_feed.record_waiting(state, slot)
+    assert len(loop.armed) == 1
+    assert loop.armed[0].delay == crewmate_feed._EXPIRY_RETRY_SECONDS
+
+
 def test_a_goal_write_reaches_the_feed_and_is_recorded_once(appended, monkeypatch):
     slot = _Slot([])
     state = _State(slot)

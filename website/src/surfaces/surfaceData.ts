@@ -8,8 +8,9 @@
  * Everywhere and the agent's location index cannot name a surface three ways.
  *
  * Only route, label key, group and the advertising flags live here. A field the
- * registry documents (`appOnly`, `hiddenFromNav`, `previewFlag`, `pinnable`)
- * means exactly what `registry.ts` says it means.
+ * registry documents (`appOnly`, `hiddenFromNav`, `previewFlag`, `pinnable`,
+ * `configSwitch`, `configSwitchDefault`, `formerApp`) means exactly what
+ * `registry.ts` says it means.
  */
 import { PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 
@@ -40,6 +41,9 @@ export interface SurfaceNavData {
   hiddenFromNav?: boolean
   previewFlag?: string
   pinnable?: boolean
+  configSwitch?: string
+  configSwitchDefault?: boolean
+  formerApp?: string
 }
 
 /** One built-in surface per key, keyed by `navId`. Order = rail order. */
@@ -58,7 +62,12 @@ export const BUILTIN_SURFACE_NAV = {
   },
   projects: {
     navId: 'projects', route: '/projects', label: surfaceMachineValue('Task Runner'), labelKey: 'nav.task_runner',
-    group: surfaceMachineValue('Apps'), appOnly: true,
+    group: surfaceMachineValue('Apps'), configSwitch: 'taskrunner.enabled', formerApp: 'projects',
+  },
+  channels: {
+    navId: 'channels', route: '/channels', label: surfaceMachineValue('Channels'), labelKey: 'nav.channels',
+    group: surfaceMachineValue('Apps'), configSwitch: 'dashboard.channels_enabled', configSwitchDefault: false,
+    formerApp: 'channels',
   },
   schedule: {
     navId: 'schedule', route: '/schedule', label: surfaceMachineValue('Schedule'), labelKey: 'nav.schedule',
@@ -96,7 +105,7 @@ export const BUILTIN_SURFACE_NAV = {
 export const CAPABILITY_SUB_ITEM_NAV: readonly { tab: string; labelKey: string; label: string }[] = [
   { tab: 'crews', labelKey: 'pages.capabilitiesPage.crews_label', label: surfaceMachineValue('Crews') },
   { tab: 'skills', labelKey: 'pages.capabilitiesPage.skills_label', label: surfaceMachineValue('Skills') },
-  { tab: 'mcp', labelKey: 'pages.capabilitiesPage.connections_label', label: surfaceMachineValue('Connections') },
+  { tab: 'mcp-servers', labelKey: 'nav.mcp_servers', label: surfaceMachineValue('MCP Servers') },
   { tab: 'knowledge', labelKey: 'pages.capabilitiesPage.knowledge_label', label: surfaceMachineValue('Knowledge') },
   { tab: 'prompts', labelKey: 'pages.capabilitiesPage.prompts_label', label: surfaceMachineValue('Prompts') },
   { tab: 'steering', labelKey: 'pages.capabilitiesPage.steering_label', label: surfaceMachineValue('Steering files') },
@@ -114,4 +123,31 @@ export function capabilitySubItemNav(s: { tab: string; labelKey: string; label: 
     group: surfaceMachineValue('Main'),
     pinnable: true,
   }
+}
+
+/**
+ * The built-in apps a core surface replaced (`formerApp`), each to the route of
+ * the surface that replaced it. A built-in record such an app left behind, kept
+ * because the boot cleanup could not retire it yet, is not a second rail row or
+ * palette result, and its old `/apps/<name>` URL opens the surface. An app a user
+ * installed under the same name is its own app.
+ */
+export const SURFACE_FORMER_APPS: ReadonlyMap<string, string> = new Map(
+  Object.values(BUILTIN_SURFACE_NAV as Record<string, SurfaceNavData>).flatMap(s => (s.formerApp ? [[s.formerApp, s.route] as const] : [])),
+)
+
+/**
+ * Whether a surface's `configSwitch` lets it be offered, given the
+ * `['kirocrewConfig']` read. A surface with no switch is offered. A switch that
+ * holds no boolean (a config not read yet) reads as its `configSwitchDefault`:
+ * on unless that is `false`, so a default-on surface is offered as before and a
+ * default-off one stays off until the gateway says it is on.
+ */
+export function surfaceSwitchedOn(s: { configSwitch?: string; configSwitchDefault?: boolean }, config: unknown): boolean {
+  if (!s.configSwitch) return true
+  let value: unknown = config
+  for (const part of s.configSwitch.split('.')) {
+    value = value !== null && typeof value === 'object' ? (value as Record<string, unknown>)[part] : undefined
+  }
+  return typeof value === 'boolean' ? value : s.configSwitchDefault !== false
 }

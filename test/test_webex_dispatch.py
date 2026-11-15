@@ -1008,6 +1008,7 @@ class TestApprovals:
         d = _dispatcher(sessions, FakeCtx(), client)
         key = d._session_key(_EMAIL)
 
+        webex_dispatch._APPROVALS.reserve(key, 1)
         task = asyncio.create_task(
             webex_dispatch._APPROVALS.decide_with_cause(key, SimpleNamespace(request_id=1))
         )
@@ -1027,6 +1028,7 @@ class TestApprovals:
         d = _dispatcher(sessions, FakeCtx(), client)
         key = d._session_key(_EMAIL)
 
+        webex_dispatch._APPROVALS.reserve(key, 1)
         task = asyncio.create_task(
             webex_dispatch._APPROVALS.decide_with_cause(key, SimpleNamespace(request_id=1))
         )
@@ -1051,6 +1053,7 @@ class TestApprovals:
         d = _dispatcher(sessions, FakeCtx(), client)
         key = d._session_key(_EMAIL)
 
+        webex_dispatch._APPROVALS.reserve(key, 1)
         task = asyncio.create_task(
             webex_dispatch._APPROVALS.decide_with_cause(key, SimpleNamespace(request_id=1))
         )
@@ -1121,6 +1124,7 @@ class TestApprovals:
             "kiro_crew.webex.transport_dispatch.inbound_permitted",
             new=mock.AsyncMock(return_value=False),
         ):
+            webex_dispatch._APPROVALS.reserve(key, 1)
             approve_task = asyncio.create_task(
                 webex_dispatch._APPROVALS.decide_with_cause(key, SimpleNamespace(request_id=1))
             )
@@ -1151,6 +1155,7 @@ class TestApprovals:
         key_a = d._approval_key(email_a)
         assert d._approval_key(email_b) != key_a
 
+        webex_dispatch._APPROVALS.reserve(key_a, 1)
         task = asyncio.create_task(
             webex_dispatch._APPROVALS.decide_with_cause(key_a, SimpleNamespace(request_id=1))
         )

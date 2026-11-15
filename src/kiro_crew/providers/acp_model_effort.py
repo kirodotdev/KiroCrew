@@ -2,7 +2,7 @@
 
 The advertised-model revalidation the picker reads, the live model switch, the
 reasoning-effort vocabulary, resolution, live push, rollback and clear, and the
-claude harness's per-session ``ultracode`` switch beside it.
+claude harness's per-session ``ultracode`` and ``fast`` (Fast mode) switches beside it.
 
 Each function here whose first parameter is ``self`` is an ``AcpProvider`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -20,8 +20,9 @@ import asyncio
 import functools
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp._dispatch import redact_text
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpClient,
@@ -30,6 +31,7 @@ from kiro_crew.acp.client import (
     advertised_model_ids,
     catalog_row_would_drop,
 )
+from kiro_crew.acp.command_refused import AcpCommandRefused
 from kiro_crew.acp.launch_tuning import switch_launch_model, switch_launch_tuning
 from kiro_crew.acp.session_handle import (
     _READ_PATH_PROBE_DEADLINE_SECS,
@@ -49,8 +51,11 @@ from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_DEFAULT_PSEUDO_MODEL,
     ACP_BACKENDS_EFFORT_AT_LAUNCH,
+    ACP_BACKENDS_FAST_MODE_CONFIG_OPTION,
     ACP_BACKENDS_ULTRACODE_CONFIG_OPTION,
+    FAST_MODE_CONFIG_OPTION_ID,
     ULTRACODE_CONFIG_OPTION_ID,
+    effort_refused_by_model,
     launch_effort_supported,
 )
 from kiro_crew.effort import EFFORT_LEVELS, model_supports_effort, resolve_effort_for_model
@@ -306,19 +311,35 @@ def supports_effort(self: AcpProvider) -> bool:
     return model_supports_effort(self._effort_model)
 
 
-def ultracode_enabled(self: AcpProvider) -> bool | None:
-    """Whether the session's ``ultracode`` switch is on; ``None`` when it offers none.
+def _switch_option(
+    client: AcpClient, backends: frozenset[str], option_id: str
+) -> dict[str, Any] | None:
+    """The session's on/off switch *option_id*; ``None`` when it offers none.
 
-    Read live from ``configOptions``: the adapter advertises the switch only on a
-    model that supports it, so a model switch can add or drop it. Crew opts into no
-    boolean config options, so the adapter sends it as an ``on``/``off`` select.
+    Only a harness in *backends* has its option of that id read. Read live from
+    ``configOptions``: the adapter advertises each switch only on a model that supports
+    it, so a model switch can add or drop it. Crew opts into no boolean config options,
+    so the adapter sends it as an ``on``/``off`` select.
     """
-    if self._client.backend not in ACP_BACKENDS_ULTRACODE_CONFIG_OPTION:
+    if client.backend not in backends:
         return None
-    for opt in self._client.acp_config_options:
-        if isinstance(opt, dict) and opt.get("id") == ULTRACODE_CONFIG_OPTION_ID:
-            return opt.get("currentValue") == "on"
+    for opt in client.acp_config_options:
+        if isinstance(opt, dict) and opt.get("id") == option_id:
+            return opt
     return None
+
+
+def _switch_state(client: AcpClient, backends: frozenset[str], option_id: str) -> bool | None:
+    """Whether the session's on/off switch *option_id* is on; ``None`` when it offers none."""
+    opt = _switch_option(client, backends, option_id)
+    return None if opt is None else opt.get("currentValue") == "on"
+
+
+def ultracode_enabled(self: AcpProvider) -> bool | None:
+    """Whether the session's ``ultracode`` switch is on; ``None`` when it offers none."""
+    return _switch_state(
+        self._client, ACP_BACKENDS_ULTRACODE_CONFIG_OPTION, ULTRACODE_CONFIG_OPTION_ID
+    )
 
 
 async def set_ultracode(self: AcpProvider, enabled: bool) -> bool | None:
@@ -331,6 +352,80 @@ async def set_ultracode(self: AcpProvider, enabled: bool) -> bool | None:
         return None
     await self._client.set_config_option(ULTRACODE_CONFIG_OPTION_ID, "on" if enabled else "off")
     return self.ultracode_enabled()
+
+
+def fast_mode_enabled(self: AcpProvider) -> bool | None:
+    """Whether the session's ``fast`` switch (Fast mode) is on; ``None`` when it offers none."""
+    return _switch_state(
+        self._client, ACP_BACKENDS_FAST_MODE_CONFIG_OPTION, FAST_MODE_CONFIG_OPTION_ID
+    )
+
+
+#: The description claude-agent-acp gives its ``fast`` option while nothing blocks Fast
+#: mode (``session-fast-mode.js`` ``FAST_MODE_DESCRIPTION``). A blocked switch carries
+#: this text, `` — ``, and the reason.
+FAST_MODE_AVAILABLE_DESCRIPTION = "Faster responses on supported models"
+#: Bound on the reason ``selection-capabilities`` carries: it fills one hint row.
+FAST_MODE_UNAVAILABLE_MAX = 300
+#: A description longer than this is read as a reason with no words. Cutting it before
+#: the redactor runs could sever a credential into a fragment no pattern matches, and
+#: the redactor's scan grows with its input on a read the dashboard polls.
+_FAST_MODE_DESCRIPTION_READ_MAX = 4 * FAST_MODE_UNAVAILABLE_MAX
+#: What may sit between the available description and the reason.
+_FAST_MODE_REASON_SEPARATORS = " \t—–-:;,"
+
+
+def fast_mode_unavailable_reason(description: object) -> str | None:
+    """The reason a ``fast`` option's *description* gives for Fast mode being blocked.
+
+    ``None`` for the adapter's available description (a trailing period aside) and for
+    no description. Any other text is a reason: the part after the available
+    description when it starts with it, else the whole text, redacted, bounded to
+    :data:`FAST_MODE_UNAVAILABLE_MAX` and without a closing period; ``""`` when no
+    words are left or the text is over :data:`_FAST_MODE_DESCRIPTION_READ_MAX`. The
+    text is the adapter's, never Crew's: a caller shows it as data.
+    """
+    if not isinstance(description, str):
+        return None
+    text = description.strip()
+    if not text or text.rstrip(".") == FAST_MODE_AVAILABLE_DESCRIPTION:
+        return None
+    if len(text) > _FAST_MODE_DESCRIPTION_READ_MAX:
+        return ""
+    if text.startswith(FAST_MODE_AVAILABLE_DESCRIPTION):
+        text = text[len(FAST_MODE_AVAILABLE_DESCRIPTION) :].lstrip(_FAST_MODE_REASON_SEPARATORS)
+    return redact_text(text)[:FAST_MODE_UNAVAILABLE_MAX].strip().rstrip(".").rstrip()
+
+
+def fast_mode_unavailable(self: AcpProvider) -> str | None:
+    """Why the session's ``fast`` switch cannot be turned on, as the adapter words it.
+
+    ``None`` when the session offers no switch, the switch reads on, or nothing blocks
+    it. claude-agent-acp keeps advertising the switch on a model that supports Fast
+    mode even where the account or API provider cannot serve it (the free plan, a
+    third-party provider, an environment setting), and says so only by folding the
+    reason into the option's description while the switch reads off
+    (``session-fast-mode.js`` ``createFastModeConfigOption``):
+    :func:`fast_mode_unavailable_reason` reads it back out.
+    """
+    opt = _switch_option(
+        self._client, ACP_BACKENDS_FAST_MODE_CONFIG_OPTION, FAST_MODE_CONFIG_OPTION_ID
+    )
+    if opt is None or opt.get("currentValue") == "on":
+        return None
+    return fast_mode_unavailable_reason(opt.get("description"))
+
+
+async def set_fast_mode(self: AcpProvider, enabled: bool) -> bool | None:
+    """Write the ``fast`` switch and return what the session reads back.
+
+    ``None``, with nothing sent, when the session offers no switch. The reply's
+    ``configOptions`` replace the stored ones, so the read-back is the adapter's.
+    """
+    if self.fast_mode_enabled() is None:
+        return None
+    await self._client.set_config_option(FAST_MODE_CONFIG_OPTION_ID, "on" if enabled else "off")
+    return self.fast_mode_enabled()
 
 
 def _resolve_effort(self: AcpProvider) -> str | None:
@@ -459,7 +554,9 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
     command for ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``, ``session/set_config_option``
     for ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION``. Returns False when the current
     model does not support effort, or when this harness is in neither set and
-    so has no effort channel at all.
+    so has no effort channel at all. A session that advertises the option but
+    whose model refuses the write (``effort_refused_by_model``) raises
+    ``AcpCommandRefused`` after the stored level and overlay are rolled back.
     """
     model = self._effort_model
     if not self.supports_effort():
@@ -532,7 +629,7 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
             await self._set_effort_config_option(level)
         else:
             await self._client.send_command("/effort", args={"level": level})
-    except Exception:
+    except Exception as exc:
         # Roll back to the prior state before propagating to the caller.
         if _prev is None:
             self._effort_per_model.pop(model, None)
@@ -564,6 +661,17 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
                     model,
                     level,
                 )
+        if effort_refused_by_model(self._client.backend, exc):
+            # The session advertises the option but its current model takes no
+            # level. Rolled back above; raised as a command refusal, because a
+            # False return makes the dashboard store the level and reset, and the
+            # respawn would re-apply the level this rollback just undid.
+            logger.info(
+                "change_effort refused — model %s has no effort setting (backend=%s)",
+                model,
+                self._client.backend,
+            )
+            raise AcpCommandRefused(str(exc), code=getattr(exc, "code", None)) from exc
         logger.warning(
             "ACP effort live push failed (model=%s effort=%s) — rolled back", model, level
         )

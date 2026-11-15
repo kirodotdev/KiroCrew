@@ -1,6 +1,6 @@
 {
   "name": "meetings",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "displayName": "Meetings",
   "description": "An AI meeting assistant. Transcribes a live meeting, keeps structured notes and diagrams as it goes, extracts action items, and lets you review them before filing.",
   "author": "adunuthu",
@@ -43,6 +43,9 @@
     "storage": true,
     "agentTurns": true
   },
+  "agentReadOnlyDirs": [
+    "notes"
+  ],
   "backend": {
     "routes": "backend.routes:register_routes"
   },

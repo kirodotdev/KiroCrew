@@ -50,6 +50,7 @@ vi.mock('../api/client', () => ({
       })
     }),
     resumeChatSlot: vi.fn(() => Promise.resolve({ ok: true })),
+    deleteChatSlot: vi.fn(() => Promise.resolve({ ok: true })),
   },
 }))
 
@@ -60,7 +61,10 @@ import chatReducer, {
   refreshSlot,
   clearMessages,
   isSupersededPagingRejection,
+  deleteSlot,
+  resumeFromHistory,
 } from './chatSlice'
+import dashboardReducer, { addSlotOptimistic } from './dashboardSlice'
 import { api } from '../api/client'
 import { landResume } from '../test/resumeLanded'
 
@@ -181,6 +185,85 @@ describe('older-history fetch is cancelled when the user switches chat', () => {
 
     // The handle is released on settle, so switchSlot has nothing to cancel.
     expect(olderSignals[0]!.aborted).toBe(false)
+  })
+})
+
+describe('older-history fetch is cancelled when the user closes the chat', () => {
+  it('closing the only chat cancels its older page, so it cannot end the next chat load', async () => {
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: dashboardReducer },
+      middleware: (getDefault) => getDefault({ serializableCheck: false, immutableCheck: false }),
+    })
+    store.dispatch(addSlotOptimistic({ key: 'A', title: 'A', messages: 0, running: false }))
+    resumed(store, 'A')
+    const pA = store.dispatch(loadOlderMessages())
+    await flush()
+
+    // No other chat to land on: the close clears the pane without a switch.
+    await store.dispatch(deleteSlot('A'))
+
+    // The user resumes an older session and its first page starts loading.
+    resumed(store, 'R')
+    const pR = store.dispatch(loadOlderMessages())
+    await flush()
+    expect(olderSignals).toHaveLength(2)
+
+    // The closed chat's server reply arrives while R's page is still out.
+    releaseOlder[0]()
+    await pA
+    await flush()
+    expect(store.getState().chat.loadingOlder).toBe(true)
+    expect(olderSignals[0]!.aborted).toBe(true)
+
+    releaseOlder[1]()
+    await pR
+  })
+})
+
+describe('older-history fetch is cancelled when the chat on screen is opened again', () => {
+  it('a page in flight cannot land above the re-opened window and leave a gap', async () => {
+    const store = makeStore()
+    resumed(store)
+    const first = store.dispatch(loadOlderMessages())
+    await flush()
+    releaseOlder[0]()
+    await first
+    const second = store.dispatch(loadOlderMessages())
+    await flush()
+
+    // The palette's Enter on the session already open re-attaches it.
+    vi.mocked(api.resumeChatSlot).mockResolvedValueOnce({ ok: true, key: 'A', messages: HISTORY.slice(TOTAL - PAGE), has_more: true, next_before: TOTAL - PAGE, total: TOTAL, mode: '', surface: '' } as never)
+    await store.dispatch(resumeFromHistory({ key: 'A', title: 'A' }))
+    releaseOlder[1]()
+    await second
+    await flush()
+
+    expect(store.getState().chat.messages.map((m) => m.content)).toEqual(HISTORY.slice(TOTAL - PAGE).map((m) => m.content))
+    expect(store.getState().chat.slotOldestIndex).toBe(TOTAL - PAGE)
+  })
+
+  it('a chat re-opened from another chat cannot take its own late page above the new window', async () => {
+    const store = makeStore()
+    resumed(store)
+    const first = store.dispatch(loadOlderMessages())
+    await flush()
+    releaseOlder[0]()
+    await first
+    const second = store.dispatch(loadOlderMessages())
+    await flush()
+
+    vi.mocked(api.resumeChatSlot)
+      .mockResolvedValueOnce({ ok: true, key: 'R', messages: [], has_more: false, total: 0, mode: '', surface: '' } as never)
+      .mockResolvedValueOnce({ ok: true, key: 'A', messages: HISTORY.slice(TOTAL - PAGE), has_more: true, next_before: TOTAL - PAGE, total: TOTAL, mode: '', surface: '' } as never)
+    await store.dispatch(resumeFromHistory({ key: 'R', title: 'R' }))
+    await store.dispatch(resumeFromHistory({ key: 'A', title: 'A' }))
+    releaseOlder[1]()
+    await second
+    await flush()
+
+    expect(store.getState().chat.activeSlot).toBe('A')
+    expect(store.getState().chat.messages.map((m) => m.content)).toEqual(HISTORY.slice(TOTAL - PAGE).map((m) => m.content))
+    expect(store.getState().chat.slotOldestIndex).toBe(TOTAL - PAGE)
   })
 })
 

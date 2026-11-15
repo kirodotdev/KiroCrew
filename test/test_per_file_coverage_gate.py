@@ -16,7 +16,7 @@ import types
 
 import pytest
 
-# Two tests spawn a real child interpreter to pin the CLI contract; pin the
+# Several tests spawn a real child interpreter to pin the CLI contract; pin the
 # module to a dedicated xdist worker so concurrent cold-starts under -n auto
 # don't starve each other. Requires --dist loadgroup.
 pytestmark = pytest.mark.xdist_group(name="subprocess_spawn")

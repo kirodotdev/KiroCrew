@@ -778,7 +778,14 @@ class TestStaleTurnOpenToolCall:
                 async for _action, _msg in client._prompt_loop(req_id=87, timeout=5.0):
                     pass
 
+        # The agent is not the part that stalled, so it gets the stdin-close grace.
+        from kiro_crew.acp.client_timeouts import _EOF_EXIT_GRACE_SECS
+
         client._kill_process.assert_awaited_once()
+        assert client._kill_process.await_args.kwargs == {
+            "force": True,
+            "exit_grace": _EOF_EXIT_GRACE_SECS,
+        }
 
 
 class TestStaleTurnProbeAccounting:
@@ -932,7 +939,7 @@ class TestToolStallWatchdog:
 
     @pytest.mark.asyncio
     async def test_progress_frame_then_stall_still_trips(self, tmp_path, monkeypatch):
-        # Regression: a dispatched tool that emits ONE inbound frame and then
+        # A dispatched tool that emits ONE inbound frame and then
         # goes silent must still trip the watchdog.  _prompt_loop must not clear
         # _tool_dispatched on inbound frames — only an actual tool result or
         # turn completion (handled in _dispatch_events) clears it.  The

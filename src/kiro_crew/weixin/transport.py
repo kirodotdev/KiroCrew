@@ -437,7 +437,11 @@ class WeixinTransport(MessagingTransport):
                     # nothing about whether the session is still expired.
                     expired = False
                     self._report_state(True, "")
-                self._sync_buf = resp.get("get_updates_buf", self._sync_buf)
+                # Only a non-empty cursor replaces the saved one: an empty or
+                # null one would restart the sync and redeliver recent messages.
+                cursor = resp.get("get_updates_buf")
+                if isinstance(cursor, str) and cursor:
+                    self._sync_buf = cursor
                 for msg in resp.get("msgs") or []:
                     task = asyncio.current_task()
                     if task is not None:
@@ -528,7 +532,14 @@ class WeixinTransport(MessagingTransport):
         from_user = str(raw_envelope.get("from_user_id") or "").strip()
         if not from_user:
             return
-        msg_id = str(raw_envelope.get("msg_id") or raw_envelope.get("client_id") or "")
+        # iLink names the server's id ``message_id`` (a number); ``msg_id`` and
+        # ``client_id`` are kept for envelopes that carry those instead.
+        msg_id = str(
+            raw_envelope.get("message_id")
+            or raw_envelope.get("msg_id")
+            or raw_envelope.get("client_id")
+            or ""
+        )
         if msg_id and self._dedup(msg_id):
             return
 

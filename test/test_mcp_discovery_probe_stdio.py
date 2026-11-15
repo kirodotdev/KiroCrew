@@ -25,6 +25,7 @@ from mcp_discovery_helpers import (  # noqa: F401 -- the autouse fixture registe
     _passthrough_sandbox,
     _stub_remote_probe_ssrf_vet,
 )
+from redaction_structured_cases import github_classic
 from stray_line_helpers import too_deep_line
 
 from conftest import host_abs
@@ -335,8 +336,8 @@ class TestProbeServerStderrCapture:
         stub.write_text(
             "import sys\n"
             "print('config error: AWS_SECRET_"
-            "ACCESS_KEY=AKIAIOSFODNN7"
-            "EXAMPLEXXX', file=sys.stderr)\n"
+            "ACCESS_KEY=Qh4Tm2Vx9KpRc/Z8Nw3Hd"
+            "/Jf1Lb5Gs0Ye9Ua2WkE', file=sys.stderr)\n"
             "sys.exit(1)\n",
             encoding="utf-8",
         )
@@ -353,7 +354,7 @@ class TestProbeServerStderrCapture:
         # The redaction is checked on a captured tail, not on an error that has none.
         assert "stderr:" in (result.error or "")
         # The literal secret must not appear verbatim in the error field.
-        assert "AKIAIOSFODNN7" "EXAMPLEXXX" not in (result.error or "")
+        assert "Qh4Tm2Vx9KpRc/Z8Nw3Hd" "/Jf1Lb5Gs0Ye9Ua2WkE" not in (result.error or "")
 
     @pytest.mark.asyncio
     async def test_long_probe_error_keeps_remedy_sentence(self, monkeypatch) -> None:
@@ -368,8 +369,7 @@ class TestProbeServerStderrCapture:
         # A credential early in the message must be REDACTED (not merely
         # truncated away): raising the cap must not widen a disclosure hole.
         long_msg = (
-            "Sandbox backend unavailable, token=AKIAIOSFODNN7"
-            "EXAMPLEXXX. "
+            f"Sandbox backend unavailable, token={github_classic(seed=1)}. "
             "Probe detail: not Linux. "
             + ("x" * 300)
             + " set agent.sandbox_allow_unsandboxed_exec=true in ~/.kiro/crew/config.json"
@@ -393,7 +393,7 @@ class TestProbeServerStderrCapture:
         assert "sandbox_allow_unsandboxed_exec=true" in (result.error or "")
         assert len(result.error or "") <= _PROBE_ERROR_MAX_CHARS
         # The credential is redacted before it reaches server.error.
-        assert "AKIAIOSFODNN7" "EXAMPLEXXX" not in (result.error or "")
+        assert github_classic(seed=1) not in (result.error or "")
 
 
 class TestProbeStdioReadLimit:
@@ -894,7 +894,8 @@ class TestProbeServerLauncherStdout:
         from kiro_crew.mcp_discovery import _STDOUT_TAIL_LINE_CHARS
 
         # Synthetic credentials, each split so no scanner reads it as one literal.
-        key_line = ("launcher: key " + "AKIAIOSFODNN7" "EXAMPLE" + " rejected\n").encode()
+        key = github_classic(seed=93)
+        key_line = ("launcher: key " + key + " rejected\n").encode()
         url = "https://collector.example.net/c?d=" + base64.b64encode(b"x" * 80).decode()
         url_line = f"launcher: GET {url} failed\n".encode()
         token = "gh" + "p_" + "Q7x9Kd2mLp4Rt8Vw1Zb6Nc3Hf5Jg0Ys2Ae4X"
@@ -906,7 +907,7 @@ class TestProbeServerLauncherStdout:
         result = await self._probe([key_line, url_line, straddle_line, b""])
 
         assert result.status == "error"
-        assert "AKIAIOSFODNN7" "EXAMPLE" not in result.error
+        assert key not in result.error
         assert "launcher: key [REDACTED: credential] rejected" in result.error
         assert "collector.example.net/c?d=" not in result.error
         assert "[REDACTED: suspicious URL to collector.example.net]" in result.error

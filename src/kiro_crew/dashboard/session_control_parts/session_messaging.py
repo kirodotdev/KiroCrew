@@ -31,6 +31,7 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     prewarm_enabled_check,
 )
 from kiro_crew.dashboard.session_control_parts.delivery_containment import (
+    SESSION_SEND_QUEUED_META,
     containment_meta,
     containment_snapshot,
     newly_held_constraints,
@@ -527,8 +528,8 @@ async def send_to_target(
                 state,
                 slot,
                 prompt,
-                session_deliver.peer(steer=False),
-                queue_meta=send_origin_meta(state, caller_key),
+                session_deliver.peer(steer=False, sender=caller_session_key),
+                queue_meta={**send_origin_meta(state, caller_key), SESSION_SEND_QUEUED_META: True},
                 relay_meta=relay_meta,
             )
             logger.info(
@@ -718,12 +719,13 @@ async def send_to_target(
                 state,
                 slot,
                 prompt,
-                session_deliver.peer(steer=False),
+                session_deliver.peer(steer=False, sender=caller_session_key),
                 # Only the QUEUE arm keeps it (the run arm has no entry): a
                 # delivery that waits is the one a later drain can drop, and this
                 # stamp is what lets that drop be reported back to us instead of
-                # ending at the target's own transcript.
-                queue_meta=send_origin_meta(state, caller_key),
+                # ending at the target's own transcript. The marker is what
+                # `session_queue` reads as "yours"; no steer requeue writes it.
+                queue_meta={**send_origin_meta(state, caller_key), SESSION_SEND_QUEUED_META: True},
                 relay_meta=relay_meta,
             )
             == session_deliver.DELIVERED_TURN
@@ -1034,12 +1036,13 @@ async def broadcast_to_targets(
         # The DEFAULT audience's own bound. An explicit list was already refused
         # above, before resolution, and deduplication only ever shrinks it -- so
         # this now guards the fence-built audience, whose size the caller did not
-        # choose. It should be unreachable: ``broadcast_audience`` returns the live
-        # slots this caller created, which ``MAX_SLOTS_PER_CREATOR`` bounds at or
-        # below this cap (see ``MAX_BROADCAST_TARGETS``). Kept because "unreachable
-        # because two constants are ordered correctly" is a property a later edit
-        # can break, and truncating a fleet-wide send is the failure that must not
-        # be the fallback.
+        # choose. Unreachable at the default per-creator cap: ``broadcast_audience``
+        # returns the live slots this caller created, which
+        # ``MAX_SLOTS_PER_CREATOR`` bounds at or below this cap (see
+        # ``MAX_BROADCAST_TARGETS``). Reachable once the owner raises
+        # ``session.max_per_creator`` above it, and the refusal then tells the
+        # caller to send to a named subset: truncating a fleet-wide send is the
+        # failure that must not be the fallback.
         raise _too_many_targets(len(audience))
 
     results: list[dict[str, Any]] = []

@@ -235,8 +235,9 @@ from kiro_crew.acp.transport_errors import (
 
 # The block-wide noqa covers _RESPONSE_WRITE_MIN_PROGRESS_BYTES, which is bound
 # for re-export rather than used here: the refactor-facade tests pin runtime and
-# client to one shared copy of this floor (test_acp_refactor_transport_framing /
-# test_acp_refactor_facade), while _stall_window_phrase owns the floor's only read.
+# client to one shared copy of this floor
+# (test_acp_refactor_facade::test_the_transports_share_one_copy_of_each_moved_helper),
+# while _stall_window_phrase owns the floor's only read.
 from kiro_crew.acp.transport_framing import (  # noqa: F401
     _RESPONSE_WRITE_BOUND_SECS,
     _RESPONSE_WRITE_MIN_PROGRESS_BYTES,
@@ -516,14 +517,13 @@ def __dir__() -> list[str]:
     return sorted(set(globals()) | set(_EXPORTS))
 
 
-# The ``runtime_*`` owner modules hold code that was this module's own: the
-# ``AcpRuntime`` members the class binds, and the module-level names re-imported
-# above, which this module keeps binding. ``_facade_mirror`` keeps the whole patch
-# surface: a name in ``_EXPORTS`` is forwarded to its one owner exactly as before
-# (read, write and delete there; ``dir()`` lists it), and a write of any other name
-# this module binds reaches every runtime owner binding the same object -- the
-# readers one global of this module had before the split. ``surface`` is this
-# module's own namespace, so an owner's private helper is never part of the facade.
+# The ``runtime_*`` owner modules hold the ``AcpRuntime`` members the class binds
+# and the module-level names re-imported above, which this module keeps binding.
+# ``_facade_mirror`` keeps the whole patch surface: a name in ``_EXPORTS`` is
+# forwarded to its one owner (read, write and delete there; ``dir()`` lists it), and
+# a write of any other name this module binds reaches every runtime owner binding
+# the same object. ``surface`` is this module's own namespace, so an owner's private
+# helper is never part of the facade.
 # ``test/test_runtime_bindings.py`` pins the reach.
 #: The runtime's owner modules, lowest layer first: an owner imports only owners
 #: listed before it.

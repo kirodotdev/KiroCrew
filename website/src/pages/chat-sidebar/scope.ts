@@ -21,7 +21,7 @@ import type { useConductorLane } from './conductor'
 import type { useFolderChatCreate, useSessionCreate } from './create'
 import type { useFolderDropOps, useNativeSessionDrag, useSidebarDragHandlers, useSidebarMoveUndo } from './dnd/useSidebarDrag'
 import type { useSessionFilterState, useSessionStatusFilters } from './filters'
-import type { useFolderFilterReveal, useFolderFilterRows, useFolderMutations, useFolderSort, useFolderTree, useFolderVisibility, useRootFolderLanes } from './folders'
+import type { useFolderFilterReveal, useFolderFilterRows, useFolderMutations, useFolderSort, useFolderTree, useFolderVisibility, useRootFolderLanes, useUnfiledAboveFolders } from './folders'
 import type { useHistoryPane } from './history'
 import type { useHoverHold } from './hoverHold'
 import type { useLaneCycle, useSidebarLane } from './lanes'
@@ -236,6 +236,10 @@ export interface SidebarScope {
   filterCounts: SidebarRows['statusCounts']
   boardLaneActive: boolean
   flatLaneActive: boolean
+  /** The flat lane is drawn for an active search: rows in relevance order. */
+  searchLaneActive: boolean
+  /** The count / clear-filters line above the search lane's rows; null otherwise. */
+  searchHeader: React.ReactNode
   folderRowsDrawn: boolean
   setLaneScrollEl: (el: HTMLDivElement | null) => void
   rowAnimEnabled: boolean
@@ -295,6 +299,8 @@ export interface SidebarScope {
   activeFilters: ReturnType<typeof useSessionFilterState>['activeFilters']
   filtersPaused: ReturnType<typeof useSessionFilterState>['filtersPaused']
   setAllFiltersPaused: ReturnType<typeof useSessionFilterState>['setAllFiltersPaused']
+  pausedFilters: ReturnType<typeof useSessionFilterState>['pausedFilters']
+  toggleFilterPaused: ReturnType<typeof useSessionFilterState>['toggleFilterPaused']
   filterHiddenFolders: ReturnType<typeof useSessionFilterState>['filterHiddenFolders']
   toggleFolderFilter: ReturnType<typeof useSessionFilterState>['toggleFolderFilter']
   showAllFolders: ReturnType<typeof useSessionFilterState>['showAllFolders']
@@ -307,6 +313,8 @@ export interface SidebarScope {
   kindSections: KindSections | null
   setFoldersShelved: ReturnType<typeof useSessionFilterState>['setFoldersShelved']
   toggleFoldersShelved: ReturnType<typeof useSessionFilterState>['toggleFoldersShelved']
+  foldersUnreadFirst: ReturnType<typeof useSessionFilterState>['foldersUnreadFirst']
+  toggleFoldersUnreadFirst: ReturnType<typeof useSessionFilterState>['toggleFoldersUnreadFirst']
   toggleFilter: ReturnType<typeof useSessionFilterState>['toggleFilter']
   hiddenFilters: ReturnType<typeof useSessionFilterState>['hiddenFilters']
   toggleHideFilter: ReturnType<typeof useSessionFilterState>['toggleHideFilter']
@@ -362,12 +370,20 @@ export interface SidebarScope {
   // From `useFolderSort`
   folderSortRead: ReturnType<typeof useFolderSort>['folderSortRead']
   folderSortMode: ReturnType<typeof useFolderSort>['folderSortMode']
+  /** The mode order without the unread-first view. */
+  folderModeCompare: ReturnType<typeof useFolderSort>['folderCompare']
   folderCompare: ReturnType<typeof useFolderSort>['folderCompare']
   folderReorderable: ReturnType<typeof useFolderSort>['folderReorderable']
   folderDragWithheld: ReturnType<typeof useFolderSort>['folderDragWithheld']
   folderReorderHint: ReturnType<typeof useFolderSort>['folderReorderHint']
   folderReorderHintRef: ReturnType<typeof useFolderSort>['folderReorderHintRef']
   folderSortMut: ReturnType<typeof useFolderSort>['folderSortMut']
+
+  // From `useUnfiledAboveFolders`
+  unfiledAboveFolders: ReturnType<typeof useUnfiledAboveFolders>['unfiledAboveFolders']
+  toggleUnfiledAboveFolders: ReturnType<typeof useUnfiledAboveFolders>['toggleUnfiledAboveFolders']
+  unfiledAboveFoldersError: ReturnType<typeof useUnfiledAboveFolders>['unfiledAboveFoldersError']
+  dismissUnfiledAboveFoldersError: ReturnType<typeof useUnfiledAboveFolders>['dismissUnfiledAboveFoldersError']
 
   // From `useFolderRename`
   folderEditInputRef: ReturnType<typeof useFolderRename>['folderEditInputRef']

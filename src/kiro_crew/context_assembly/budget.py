@@ -323,17 +323,26 @@ class ContextParts:
     so the blocks do not use up its pool either.
     """
 
-    __slots__ = ("authored", "parts", "protected")
+    __slots__ = ("authored", "held_chars", "parts", "protected")
 
     def __init__(self) -> None:
         self.parts: list[str] = []
         self.protected: set[int] = set()
         self.authored: set[int] = set()
+        self.held_chars = 0
 
     def append_required(self, text: str) -> None:
         # User rules, preferences and steering are not disposable background.
         self.protected.add(len(self.parts))
         self.parts.append(text)
+
+    def charge_held(self, text: str) -> None:
+        """Charge a protected block the session head carries instead of this message.
+
+        The model still reads it, so it keeps its protected charge and memory
+        admission is the same as when the block was in the message.
+        """
+        self.held_chars += len(text)
 
     def append_authored(self, text: str) -> None:
         """Append a protected block sized by its own startup allowance, not the pool."""

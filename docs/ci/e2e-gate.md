@@ -21,7 +21,8 @@ must succeed before scenarios run, and the model backend remains the packaged fa
 executable.
 
 The real private-workflow MCP test runs separately in the
-`e2e-private-namespace` job on `ubuntu-latest`. That job enables unprivileged user
+`e2e-private-namespace` job on a hosted Linux runner (`kirocrew-linux-4-core` in
+this repository, `ubuntu-latest` in a fork). That job enables unprivileged user
 namespaces, requires `unshare --mount --map-root-user true` to succeed, and fails
 if either the precondition or the test fails.
 
@@ -843,7 +844,8 @@ any run made under it.
   `pytest` exits 0 on a fully skipped module, so the exit code cannot tell seven
   booted gateways from a module that was never collected. Raise the number when
   you add a test to that file.
-- **`shell: bash` on every leg**, so one command text serves all three; the
+- **bash on every leg** (`shell: bash` on macOS and Windows, the
+  `/usr/local/bin/ci-shell` bash wrapper on Ubuntu), so one command text serves all three; the
   Windows default is pwsh, where `tee` and `grep` are not these tools.
 
 `pr-readiness.yml` needs no entry: it resolves lanes by WORKFLOW FILE
@@ -1023,7 +1025,7 @@ session can reach, and the pod's `require_backend()` probes it by creating a tas
 
 ### The canary
 
-Copied from `ci.yml`'s macOS peer-identity step: run by path with `-v -n0`, tee
+Copied from `platform-tests.yml`'s macOS peer-identity step: run by path with `-v -n0`, tee
 to `pod-scenarios.log`, then `grep -qE '(^|[^0-9])55 passed'` and fail the step
 otherwise. 55 is six user-flow scenarios plus the 49 fixture-isolation checks in
 `test/e2e/scenarios/test_conftest.py`, which run in the same invocation. An exit

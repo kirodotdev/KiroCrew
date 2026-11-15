@@ -34,6 +34,8 @@ import subprocess
 import sys
 from typing import Any, NoReturn
 
+from kiro_crew.bounded_read import bounded_read
+
 #: The crew data-home leaf the snapshots live in.
 SNAPSHOT_LEAF = "kas-mcp-launch"
 #: The leaf Crew-owned Connection bridge snapshots live in: a connection slug, the
@@ -112,7 +114,7 @@ def _read_snapshot(path: str, server: str) -> dict[str, Any]:
             _refuse(server, "its launch snapshot is too large")
         with os.fdopen(fd, "rb") as fh:
             fd = -1
-            raw = fh.read(_MAX_SNAPSHOT_BYTES + 1)
+            raw = bounded_read(fh, _MAX_SNAPSHOT_BYTES + 1)
     finally:
         if fd != -1:
             os.close(fd)

@@ -77,7 +77,7 @@ export interface ContributedFileMenuItem {
    * deceptively, call its row "Download". Without a visible owner the reader cannot
    * tell that clicking it hands the file's path to a third party.
    *
-   * Mirrors `appLabel` in `apps/command-bar/contributedCommands.ts`, whose own note
+   * Mirrors `appLabel` in `components/commandBar/contributedCommands.ts`, whose own note
    * records why this must never degrade to empty: a row with no attribution renders
    * character-for-character like a builtin. So it steps down -- `displayName`, else
    * `name`, else that name clipped to `MAX_LABEL` -- and is always non-empty for a row

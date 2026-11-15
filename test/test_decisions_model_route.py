@@ -15,7 +15,7 @@ which is what an unconsented install does, so each is asserted as "the provider 
 never asked to switch" rather than as an exception.
 
 WHOSE TURN it is. The point runs for a normal dashboard chat turn of a slot whose
-owner picked ``Auto (Jev)``, and for nothing else: a cron delivery, a sub-agent
+owner picked ``Auto (decision model)``, and for nothing else: a cron delivery, a sub-agent
 turn, an app injection and an autonudge wake each already resolve their model
 through their own tier, and none has an owner watching what the answer costs.
 

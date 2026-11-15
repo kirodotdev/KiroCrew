@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 from onboarding_import_coverage_helpers import _POSIX_FS_ONLY, _reasons, _scan
+from redaction_structured_cases import github_classic
 
 from kiro_crew import onboarding_plan, onboarding_scan, onboarding_sources
 from kiro_crew.dashboard.handlers import onboarding_import as onboarding_handler
@@ -26,6 +27,9 @@ from kiro_crew.onboarding_sources import codex as codex_source
 from kiro_crew.onboarding_sources import hermes as hermes_source
 from kiro_crew.onboarding_sources import lineage as lineage_source
 from kiro_crew.onboarding_sources import openclaw as openclaw_source
+
+#: A synthetic GitHub token with a valid checksum, which the credential plan redacts.
+_TOKEN = github_classic(seed=46)
 
 # Keep apply_import's MCP sidecar lock off the real ~/.kiro/settings (see the
 # shared fixture in test/conftest.py).
@@ -532,7 +536,7 @@ class TestLineageMemoryDatabase:
         scan = _scan(tmp_path, "predecessor")
         _lineage_db(
             scan.root / "memory.db",
-            semantic=[("pref.key", '"AKIAIOSFODNN7EXAMPLE"', 1.0, 0, "default", None)],
+            semantic=[("pref.key", f'"{_TOKEN}"', 1.0, 0, "default", None)],
         )
 
         lineage_source._scan_lineage_memory_db(scan)
@@ -564,7 +568,7 @@ class TestLineageMemoryDatabase:
             scan.root / "memory.db",
             semantic=[
                 ("pref.k", "{oops", 1.0, 0, "", None),
-                ("pref.key", '"AKIAIOSFODNN7EXAMPLE"', 1.0, 0, "", None),
+                ("pref.key", f'"{_TOKEN}"', 1.0, 0, "", None),
             ],
         )
 
@@ -635,7 +639,7 @@ class TestLineageMemoryDatabase:
         scan = _scan(tmp_path, "predecessor")
         _lineage_db(
             scan.root / "memory.db",
-            episodic=[("e1", "the key is AKIAIOSFODNN7EXAMPLE", 0.5, 0, "", None)],
+            episodic=[("e1", f"the key is {_TOKEN}", 0.5, 0, "", None)],
         )
 
         lineage_source._scan_lineage_memory_db(scan)
@@ -890,7 +894,7 @@ class TestSkillPackaging:
     def test_a_credential_bearing_asset_drops_the_package(self, tmp_path: Path) -> None:
         scan = _scan(tmp_path, "codex")
         manifest = self._skill(scan.root, "demo")
-        (manifest.parent / "notes.md").write_text("AKIAIOSFODNN7EXAMPLE", encoding="utf-8")
+        (manifest.parent / "notes.md").write_text(_TOKEN, encoding="utf-8")
 
         assert onboarding_scan._skill_package(scan, scan.root, manifest) is None
         assert "credential_bearing_skill" in _reasons(scan)

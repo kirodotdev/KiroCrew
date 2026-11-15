@@ -136,7 +136,12 @@ def test_a_catch_all_admits_a_provider_with_no_host(isolated_home, fake_sel, ins
     assert admits_registry("skill", "edition", "")
 
 
-def test_a_deny_list_refuses_the_hosts_it_names(isolated_home, fake_sel, install) -> None:
+@pytest.mark.parametrize("edition", ["default", "lts"])
+def test_a_deny_list_refuses_the_hosts_it_names(
+    request, edition, isolated_home, fake_sel, install
+) -> None:
+    if edition == "lts":
+        request.getfixturevalue("lts")
     install({"mode": "deny", "deny": ["skills.sh"]})
     assert not admits_registry("skill", "skillsh", SKILLSH)
     assert admits_registry("mcp", "official", OFFICIAL_MCP)
@@ -175,12 +180,6 @@ def test_lts_policy_allow_list_narrows(lts, isolated_home, fake_sel, install) ->
     install({"mode": "allow", "allow": ["registry.modelcontextprotocol.io"]})
     assert admits_registry("mcp", "official", OFFICIAL_MCP)
     assert not admits_registry("skill", "skillsh", SKILLSH)
-
-
-def test_lts_policy_deny_list_narrows(lts, isolated_home, fake_sel, install) -> None:
-    install({"mode": "deny", "deny": ["skills.sh"]})
-    assert not admits_registry("skill", "skillsh", SKILLSH)
-    assert admits_registry("mcp", "official", OFFICIAL_MCP)
 
 
 @pytest.fixture

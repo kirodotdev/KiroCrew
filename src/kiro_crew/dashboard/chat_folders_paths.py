@@ -60,7 +60,10 @@ def _validate_project_dir(raw: str) -> tuple[str, str | None]:
         return "", None
     if not os.path.isabs(raw) and not raw.startswith("~"):
         return "", "Project directory must be an absolute path"
-    resolved = os.path.realpath(os.path.expanduser(raw))
+    try:
+        resolved = os.path.realpath(os.path.expanduser(raw))
+    except ValueError:  # a NUL byte or a lone surrogate in the path
+        return "", "Project directory must be an existing directory"
     err = _sensitive_refusal(resolved, operation="chat.folder_project_dir", field="project_dir")
     if err:
         return "", err

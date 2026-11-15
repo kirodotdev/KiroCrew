@@ -375,6 +375,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
 # ``print('<name>'); log('<verb>')``, which mints nothing.
 _INTERP_BINDING_RE = re.compile(r"\b([a-z_]\w*)\s*=\s*('[^']*'|\"[^\"]*\")")
 _INTERP_IDENT_RE = re.compile(r"\b[a-z_]\w*\b")
+_INTERP_ROW_NEEDS = "crew"  # every alternative of both rows needs it: without it, no copy is built
 
 
 # ``"<name> %s" % "<verb>"`` -- printf-style formatting is the same evasion as adjacent
@@ -636,9 +637,8 @@ def is_denied(
     # therefore also matched against a copy with those joins collapsed.  Scoped to those
     # two patterns on purpose: collapsing text for all the other rules would change
     # inputs they were never measured against.
-    joined = _inline_interpreter_bindings(
-        _collapse_percent_format(_rules._LITERAL_CONCAT_RE.sub("", lower))
-    )
+    collapsed = _collapse_percent_format(_rules._LITERAL_CONCAT_RE.sub("", lower))
+    joined = _inline_interpreter_bindings(collapsed) if _INTERP_ROW_NEEDS in collapsed else lower
     if joined != lower:
         for interpreter_pattern in regex_patterns:
             if interpreter_pattern not in _rules._INTERPRETER_RULE_PATTERNS:
@@ -780,7 +780,7 @@ def is_denied(
         ("credential-exfil-kirocrew-token", _argv._is_credential_mint),
         ("self-protection-kill", _argv._is_self_kill),
         ("self-protection-dev-mode-out-of-root-confirm", _argv._is_dev_mode_out_of_root_confirm),
-        ("sandbox-escape-ssh-self", _argv._is_ssh_to_self),
+        ("sandbox-escape-ssh-self", _argv._reaches_self_over_ssh),
     ):
         pattern = _rules._SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
         if pattern is None or pattern not in floor_enabled:
@@ -846,7 +846,34 @@ def is_denied(
             )
 
     # ── Pattern passes (shared with the synthesized tier's ``segments=True``) ──
-    pattern_denial = _deny_pattern_passes(tool_name, lower, all_patterns, _reason, shipped, waive)
+    # The shipped ``rm -rf /.*`` row matches every absolute path. It reads a view where
+    # each plain ``rm`` of scratch entries only (``rm -rf /tmp/build``) is blanked, so it
+    # still judges every other rm and every other mention of the text. An operator's
+    # own copy of the pattern is not shipped-only and keeps reading the full text.
+    _rm = _submodule("rm_floor")
+    rm_root = (_rm._RM_FLOOR_BY_KIND.get("root", ("", ""))[1], True)
+    scratch_view = (
+        _rm.scratch_rm_view(tool_name)
+        if rm_root in all_patterns and rm_root[0] in shipped
+        else None
+    )
+    if scratch_view is None:
+        pattern_denial = _deny_pattern_passes(
+            tool_name, lower, all_patterns, _reason, shipped, waive
+        )
+    else:
+        # Matched on the view; every event still records the command as submitted.
+        pattern_denial = _deny_pattern_passes(
+            tool_name,
+            scratch_view.lower(),
+            [rm_root],
+            _reason,
+            shipped,
+            waive,
+            match_text=scratch_view,
+        ) or _deny_pattern_passes(
+            tool_name, lower, [p for p in all_patterns if p != rm_root], _reason, shipped, waive
+        )
     if pattern_denial is not None:
         return pattern_denial
     # ── Recursive-force rm floor (argv-structural, UNION with the regex) ──
@@ -855,7 +882,6 @@ def is_denied(
     # for recursive + force in any spelling against the root or home dir itself,
     # only for a row still in the effective set, and only when the text could
     # hold an rm at all, so a command with none is never refused by it.
-    _rm = _submodule("rm_floor")
     rm_enabled = {
         kind: rule for kind, rule in _rm._RM_FLOOR_BY_KIND.items() if rule[1] in regex_patterns
     }
@@ -921,16 +947,21 @@ def _deny_pattern_passes(
     reason: "Callable[[str], str]",
     shipped: frozenset[str] = frozenset(),
     waive: "Callable[[str], bool] | None" = None,
+    *,
+    match_text: "str | None" = None,
 ) -> str | None:
     """Run :func:`is_denied`'s whole-string and per-segment passes over *all_patterns*.
 
     Exceptions and the s3 download narrowing apply as there; no floor runs here.
     *shipped* gates the s3 download narrowing to shipped-only patterns. *waive* is
     the caller's :class:`_DenyWaiver`: a pattern it answers True for is skipped
-    where it would refuse, and every other pattern is still judged.
+    where it would refuse, and every other pattern is still judged. *match_text*, when
+    given, is the text the segments are cut from (*lower* is its lowercase); every
+    event still records *tool_name*, the command as submitted.
     """
     _rules = _submodule("denied_rules")
     _shell = _submodule("shell_normalizer")
+    text = tool_name if match_text is None else match_text
 
     # Memoizes the s3 download reading per command: the same command is asked
     # about once per matching segment.
@@ -1001,7 +1032,7 @@ def _deny_pattern_passes(
     # ``bash -c 'r\`` and ``m -rf /'`` and the ``-c`` script is never seen.
     # Emitting no view for the command itself is what keeps
     # this from fabricating one across its separators.
-    folded = _shell._fold_line_continuations(tool_name)
+    folded = _shell._fold_line_continuations(text)
     segments = [seg.strip() for seg in _split_segments(folded)]
     segments = [seg for seg in segments if seg]
     work: list[tuple[str, tuple[str, ...]]] = []
@@ -1012,7 +1043,7 @@ def _deny_pattern_passes(
     # not already produce.  Measured: skipping the duplicate halves the cost on a
     # command padded with thousands of interpreter tokens (a stall risk).
     if len(segments) != 1 or segments[0] != folded.strip():
-        work.append(("", _deny_segment_views(tool_name, False)))
+        work.append(("", _deny_segment_views(text, False)))
     for seg_raw in segments:
         work.append((seg_raw.lower(), _deny_segment_views(seg_raw)))
     for seg_lower, segment_views in work:
@@ -1246,12 +1277,14 @@ def _s3_download_narrows(
 ) -> bool:
     """Whether an ``aws s3 cp|mv|sync`` row is narrowed away on *view*.
 
-    True only for one plain download command :func:`~.s3_direction._s3_download_only`
-    read in full, so a command it cannot read stays denied. It gets *raw*, the
-    command before case folding, to refuse any non-ASCII, and narrows only a
-    pattern in *shipped*, so an operator's own copy stays denied. Returns False
-    for every other pattern. The verdict is cached per command: every matching
-    segment would otherwise re-read the whole command.
+    True only when :func:`~.s3_direction._s3_download_only` reads *view* as a
+    sequence of statements whose every ``aws s3`` transfer is a plain download, so
+    a command it cannot read in full -- an upload anywhere on the line, an
+    unresolvable variable, a pipe, a subshell or a command substitution -- stays
+    denied. It gets *raw*, the command before case folding, to refuse any non-ASCII,
+    and narrows only a pattern in *shipped*, so an operator's own copy stays denied.
+    Returns False for every other pattern. The verdict is cached per command: every
+    matching segment would otherwise re-read the whole command.
     """
     s3 = _submodule("s3_direction")
     if pattern not in s3._S3_TRANSFER_PATTERNS or pattern not in shipped:

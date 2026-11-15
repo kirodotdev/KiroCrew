@@ -49,9 +49,16 @@ So a guard, permission check, redaction, or isolation step whose harm
 is one of those boundaries has a named cause -- never report it as
 speculative surface.
 
-The invoking message tells you how to obtain the diff for this pull
-request -- either a command to run or a path to read. That diff is your
-review input; do not try to obtain it any other way.
+The invoking message gives you the path of a file that already holds the
+diff for this pull request. Read that file; it is your review input, so
+do not try to obtain the diff any other way.
+
+You have no shell in this pass. Bash and every other command tool are
+denied by design, so a command you try only spends a turn and returns
+nothing. Use Read, Glob and Grep for everything: Read the diff file and
+any source file, Glob to enumerate paths, Grep to search the tree. Never
+try to run a command, and do not stop early because one was denied --
+finish the pass and end with the marker line below.
 
 ## Two lenses — run BOTH
 

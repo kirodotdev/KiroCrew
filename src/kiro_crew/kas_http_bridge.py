@@ -17,7 +17,10 @@ projection does not bridge such an entry). Redirects are not followed, so a
 header is only ever sent to the recorded url's origin. No header value is ever
 written to stderr or into an error the engine sees.
 
-Standard library only: the engine starts this once per server.
+Standard library only, plus the standard-library leaf
+:mod:`kiro_crew.mcp_structured_text`: the engine starts this once per server. A
+result whose payload is only in ``structuredContent`` is relayed with that object
+added as a JSON text block, since the engine reads only ``content``.
 """
 
 from __future__ import annotations
@@ -32,6 +35,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import IO, Any, Iterator
+
+from kiro_crew.mcp_structured_text import with_structured_text
 
 _SESSION_HEADER = "Mcp-Session-Id"
 _PROTOCOL_HEADER = "MCP-Protocol-Version"
@@ -186,6 +191,11 @@ class Bridge:
                         version = result.get("protocolVersion")
                         if isinstance(version, str) and version:
                             self._protocol = version
+                    # The engine reads only ``content``: a payload only in
+                    # ``structuredContent`` reached it as no output.
+                    with_text = with_structured_text(result)
+                    if with_text is not None:
+                        item = {**item, "result": with_text}
                 self._out.write(json.dumps(item, separators=(",", ":")).encode("utf-8") + b"\n")
             self._out.flush()
         return answered

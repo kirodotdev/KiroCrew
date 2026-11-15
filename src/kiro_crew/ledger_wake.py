@@ -276,6 +276,38 @@ def worker_looping(nudge_service: Any, session_key: str) -> bool:
     return False
 
 
+def worker_loop_held(nudge_service: Any, session_key: str) -> bool:
+    """Whether *session_key*'s session holds an ACTIVE loop that cannot fire.
+
+    Held on an unanswered approval, or past its runtime budget or cycle cap. Such a
+    loop is what a worker's ``progress`` report may lean on ("my loop checks every 20
+    minutes"), yet it wakes nobody, so ``work_ledger.is_stale`` stops honouring that
+    report's ``wake_at``. A stopped loop is no loop: its worker's ``wake_at`` is a
+    plain wait the ``wait_due`` wake ends.
+
+    Anything unreadable answers False, which keeps today's ``wake_at`` deferral.
+    """
+    if nudge_service is None or not session_key:
+        return False
+    getter = getattr(nudge_service, "get_by_slot", None)
+    if not callable(getter):
+        return False
+    try:
+        from kiro_crew.autonudge_service.model import budget_elapsed, cap_reached
+
+        for candidate in _loop_keys(session_key):
+            loop = getter(candidate)
+            if loop is not None and getattr(loop, "active", False) is True:
+                return bool(
+                    getattr(loop, "approval_stalled", False)
+                    or budget_elapsed(loop)
+                    or cap_reached(loop)
+                )
+    except Exception:
+        logger.debug("wake gate: loop hold lookup failed for %s", session_key, exc_info=True)
+    return False
+
+
 def _loop_can_fire(loop: Any) -> bool:
     """Whether *loop* is active, BOUNDED, and has budget left to wake its session again.
 
@@ -624,9 +656,10 @@ def wake_brief(*, item_id: str, status: str) -> str:
     the boundary the store's importer allowlist exists to draw, without the
     server-resolved identity check that path requires.
 
-    Nothing is lost by it. The conductor reads the record with ``work_ledger_read``,
-    which is exactly what the footer tells it to do, so the wake's job is to name
-    WHICH item moved and how, not to restate what the tool returns whole.
+    Nothing is lost by it. The conductor reads the record with the tool the footer
+    names (``work_ledger_read``, or ``accept_eval`` for a ``done`` item, whose reply
+    carries the worker's report), so the wake's job is to name WHICH item moved and
+    how, not to restate what the tool returns whole.
     """
     return f"[work-ledger wake] item={item_id} status={status or '(unset)'}"
 
@@ -674,8 +707,16 @@ MAX_WAKE_BRIEF_CHARS = 4_000
 #: item that moved is one row, and the conductor's periodic sweep of everything else
 #: is the compact board. The ``<id>`` is deliberately a placeholder -- the ids are on
 #: the brief lines above this one, and one wake can name several.
+#:
+#: A ``done`` item is the one move that needs no read first: ``accept_eval`` reads the
+#: item's bar from the ledger itself and returns what the worker reported beside the
+#: verdict, so pointing a ``done`` at a read would cost the conductor a model round
+#: trip for a document it then hands straight back.
 WAKE_READ_POINTER = (
-    "[work-ledger] read the ledger before acting: work_ledger_read(item_id=<id>) "
+    "[work-ledger] for status=done call accept_eval(item_id=<id>): it reads the "
+    "item's bar itself and returns the worker's report beside the verdict, so no "
+    "read is needed first. "
+    "Otherwise read the ledger before acting: work_ledger_read(item_id=<id>) "
     "for an item named above, or work_ledger_read(compact=true) for the board."
 )
 

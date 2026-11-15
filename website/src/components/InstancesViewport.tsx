@@ -43,7 +43,7 @@ import {
   readChainedCrewNotice,
 } from '../lib/chainAnnounce'
 import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
-import { WARM_SET_CAP_AUTO_CEILING } from '../utils/remoteCrew'
+import { WARM_SET_CAP_AUTO_CEILING, usesSsmTransport } from '../utils/remoteCrew'
 import { SettingsLink } from './SettingsLink'
 import { useAppDispatch, useAppSelector, useAppStore } from '../store'
 import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm, type WarmConn } from '../store/instancesSlice'
@@ -1361,7 +1361,9 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         ({ inst: i, depth, parentName, reachable, brokenAt }) => ({
           id: i.id,
           name: i.name,
-          sshHost: i.ssh_host,
+          // The machine the row names, as the local bar picks it: an SSM crew has
+          // no ssh_host. The key keeps its old name because a pane reads it.
+          sshHost: usesSsmTransport(i) ? i.ssm_target : i.ssh_host,
           state: i.status?.state,
           unread: unread[i.id] || 0,
           depth,

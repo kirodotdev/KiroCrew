@@ -469,9 +469,9 @@ def _is_own_recovery(items: "list[dict]", predecessor_actor: str, predecessor_tu
 _REPLAYS_COMPLETION_KEY = "_replays_completion"
 
 #: Process-local key on a synthetic-recovery queue entry that a loop's own cycle
-#: queued for itself: that loop's ``(id, config generation)``, so the recovery's
-#: fault is charged to the loop like the cycle it retries. Never persisted: a kinded
-#: entry is not durable.
+#: queued for itself, or on a requeued automation steer (a loop's steered wake):
+#: that loop's ``(id, config generation)``, so the turn's fault is charged to the
+#: loop like the cycle it carries. Never persisted: it is not a durable queue key.
 _RECOVERED_WAKE_KEY = "_recovered_wake"
 
 
@@ -586,7 +586,7 @@ async def _start_next_queued_turn(
     if _gateway_shutdown_requested(state):
         return False
 
-    # An Ultra Mode "Pause all" holds the root and every member it stopped: the
+    # A conductor mode "Pause all" holds the root and every member it stopped: the
     # queue stays as it is until Resume all (or the member's own Continue) lets it go.
     # Imported here: this module's functions run on the composing module's globals.
     from kiro_crew import crew_pause
@@ -1195,6 +1195,7 @@ async def _start_next_queued_turn(
         CHANNEL_RECIPIENT_META_KEY,
         QUEUED_CONTAINMENT_META_KEY,
         SEND_ORIGIN_META_KEY,
+        SESSION_SEND_QUEUED_META,
         audit_queued_allow,
     )
 
@@ -1298,6 +1299,8 @@ async def _start_next_queued_turn(
     _drained_meta.pop(PROMPT_ON_CHANNEL_META_KEY, None)
     # Queue plumbing: read above to pick the row, never part of a row's meta.
     _drained_meta.pop(REQUEUED_STEER_ROW_MID_META, None)
+    # Queue plumbing for ``session_queue``'s ownership read; never row meta.
+    _drained_meta.pop(SESSION_SEND_QUEUED_META, None)
     # Queue plumbing like the steer mark above, read the way the channel origin is:
     # ANY consumed entry a channel hand-off stamped keeps the merged text content,
     # so a batch cannot smuggle a channel's "/clear" into a command by sitting
@@ -1533,7 +1536,10 @@ async def _start_next_queued_turn(
         _run_kwargs["_synthetic_recovery_turn"] = True
         if len(consumed) == 1 and consumed[0].get(_REPLAYS_COMPLETION_KEY) is True:
             _run_kwargs["_replays_completion"] = True
-        if len(consumed) == 1 and consumed[0].get(_RECOVERED_WAKE_KEY):
+    # Read only while the entry is still the recovery or the wake: a person's edit
+    # takes the automation origin off a requeued wake, and its words charge no loop.
+    if (is_recovery or is_automation_steer) and len(consumed) == 1:
+        if consumed[0].get(_RECOVERED_WAKE_KEY):
             _run_kwargs["_recovered_wake"] = consumed[0][_RECOVERED_WAKE_KEY]
     if _possibly_delivered_steer:
         _run_kwargs["_steer_possibly_delivered"] = True
@@ -1568,13 +1574,32 @@ async def _start_next_queued_turn(
     # this turn's own call, so it ends with this dispatch (``turn_entry`` adopts
     # it only for a user-sent opener).
     _run_kwargs["_directive_owner_origin"] = directive_owner_origin
-    with independent_turn(), initiated_by(queued_initiator(consumed)), queued_work(consumed):
+    from kiro_crew.tracing import steps as trace_steps
+    from kiro_crew.tracing import subagents as trace_subagents
+    from kiro_crew.tracing import workflows as trace_workflows
+
+    # The sub-agent results, or the workflow run, these entries deliver: the
+    # turn's trace joins that run's. Their queue wait and senders ride its turn span.
+    with (
+        independent_turn(),
+        initiated_by(queued_initiator(consumed)),
+        queued_work(consumed),
+        trace_subagents.delivered(item.get("id") for item in consumed),
+        trace_workflows.delivering(trace_workflows.run_of(consumed)),
+        trace_steps.drained(consumed),
+    ):
         task = spawn_guarded_turn(
             state,
             slot,
             _run_chat(state, slot, next_msg, **_run_kwargs),
         )
+    # A retry the ending turn queued for itself (``_is_own_recovery``) is that
+    # turn again under a new generation: it keeps the turn's first generation.
+    lineage = slot._turn_lineage_generation()
+    own_retry = _is_own_recovery(consumed, predecessor_actor, predecessor_turn_id)
     slot.task = task
+    if own_retry:
+        slot._turn_lineage = (slot._turn_generation, lineage)
     if _run_kwargs.get("_turn_start_background"):
         BACKGROUND_START_TASKS.add(task)
     # A recovery replay of a Regenerate's message takes over its target now

@@ -313,7 +313,9 @@ def test_a_worker_card_spent_during_the_channel_grant_grants_nothing(
 
 
 def test_a_decoded_command_is_redacted_again(chan: Any) -> None:  # noqa: F811
-    key = "AKIA" + "QWERTYUIOPASDFGH"
+    from redaction_structured_cases import github_classic
+
+    key = github_classic(seed=119)
     escaped = "".join(f"\\u{ord(c):04x}" for c in key)
     raw = '{"command": "echo ' + escaped + '", "env": "' + escaped + '"}'
     texts = _texts(_card_blocks(chan, raw))

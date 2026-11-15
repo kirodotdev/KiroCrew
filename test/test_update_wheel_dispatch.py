@@ -655,6 +655,55 @@ class TestUpdateDispatch:
         git_calls = [c for c in calls if c[0] == "git"]
         assert any("rev-parse" in c for c in git_calls)
 
+    def test_a_source_checkout_with_no_project_dir_takes_the_git_path(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """Run outside its clone with no saved project dir, a checkout still updates by git.
+
+        With KIROCREW_PROJECT_DIR unset, the checkout the package loads from is the
+        install root, so the update fetches there instead of checking the release feed.
+        """
+        proj = tmp_path / "project"
+        proj.mkdir()
+        _init_repo(proj)
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+
+        import kiro_crew.cli_server as cs
+
+        # raising=False: without the fallback the test still reaches its assertion.
+        monkeypatch.setattr(cs, "_source_checkout_root", lambda: proj, raising=False)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: root == str(proj),
+        )
+
+        def _no_wheel(_layout):  # pragma: no cover - must not be called
+            raise AssertionError("a source checkout must not take the release-feed path")
+
+        monkeypatch.setattr(cs, "_update_wheel", _no_wheel)
+        calls: list[tuple[list[str], object]] = []
+
+        def fake_run(args, **kwargs):
+            calls.append((args, kwargs.get("cwd")))
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = f"{proj}\n" if "--show-toplevel" in args else "main\n"
+            return result
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.resolve_remote_url", lambda *a, **k: ""
+        )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.update_blocked_reason", lambda *a: ""
+        )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.repo_exec_config_reason", lambda proj, **_k: ""
+        )
+
+        cs._update()
+        assert any(args[:2] == ["git", "fetch"] and cwd == str(proj) for args, cwd in calls)
+
 
 class TestUpdateDivergenceGuard:
     """The git update path refuses a hard reset on a DIVERGED checkout.
@@ -722,6 +771,9 @@ class TestUpdateDivergenceGuard:
                 elif "--verify" in args:
                     # The upstream pin every later judgment and the reset name.
                     result.stdout = "0123456789abcdef0123456789abcdef01234567\n"
+                elif "diff" in args and "--name-status" in args:
+                    # The changed-path listing: BYTES, exit 0.
+                    result.stdout = b""
                 elif "diff" in args:
                     # Non-zero: the upstream has new commits, so the update
                     # proceeds past the up-to-date early return.

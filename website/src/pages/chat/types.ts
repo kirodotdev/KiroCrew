@@ -10,10 +10,13 @@ export const SOFT_STOP_DEBOUNCE_MS = 150
  * it to decide whether a tool result is worth copying onto the tool message's
  * meta at all, and `SubagentRunCard` uses it as a cheap reject before parsing.
  * Tool output can reach the server's 1 MB cap and `state.messages` is not
- * capped the way `toolLog` is (100 entries), so a blanket copy would let a long
+ * capped the way `toolLog` is (`TOOL_LOG_CAP` entries), so a blanket copy would let a long
  * turn grow the heap without bound.
  */
 export const SPAWN_LAUNCH_MARKER = 'subagent(s).'
+
+/** Entries a slot's tool log keeps: `sseToolActivity` drops the oldest past this. */
+export const TOOL_LOG_CAP = 100
 
 export type TurnItem =
   | { kind: 'single'; msg: ChatMessage; idx: number }

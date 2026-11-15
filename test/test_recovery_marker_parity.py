@@ -32,6 +32,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from kiro_crew.timed_out_call import TOOL_STALL_RECOVERY_PREFIX
+
 _REPO = Path(__file__).resolve().parents[1]
 _BACKEND_FILES = (
     _REPO / "src" / "kiro_crew" / "dashboard" / "state.py",
@@ -58,7 +60,8 @@ def _backend_markers() -> dict[str, str]:
         for hit in _BACKEND_RE.findall(path.read_text(encoding="utf-8"))
     ]
     assert found, "no *_RECOVERY_PREFIX constants found in state.py"
-    return {name: prefix for name, prefix in found}
+    # Declared once in ``timed_out_call`` with a ``\u2014`` escape the literal scan cannot read.
+    return {**dict(found), "TOOL_STALL_RECOVERY_PREFIX": TOOL_STALL_RECOVERY_PREFIX}
 
 
 def _frontend_markers() -> dict[str, str]:

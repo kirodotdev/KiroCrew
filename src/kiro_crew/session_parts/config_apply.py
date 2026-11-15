@@ -11,7 +11,7 @@ on an instance reaches every caller.
 
 Instance fields written: ``_adopted_autocompact_pct``, ``_cfg``.
 
-Instance fields read: ``_background_runtime``, ``_compaction``.
+Instance fields read: ``_background_runtime``, ``_cold_start_agent``, ``_compaction``.
 """
 
 from __future__ import annotations
@@ -149,12 +149,15 @@ def _sync_autocompact_pct(self: SessionManager) -> None:
         self._cfg.session.autocompact_pct = published
 
 
-async def reload_provider_factory(self: SessionManager, cfg: KiroCrewConfig | None = None) -> None:
+async def reload_provider_factory(
+    self: SessionManager, cfg: KiroCrewConfig | None = None, *, defer_busy: bool = False
+) -> None:
     """Rebuild the provider factory and retire sessions created by the old one.
 
     ``cfg`` is the config the live applier already holds; ``None`` loads.
+    ``defer_busy`` resets a session a turn holds when that turn ends instead of now.
     """
-    await self._lifecycle_boundary().reload_provider_factory(cfg=cfg)
+    await self._lifecycle_boundary().reload_provider_factory(cfg=cfg, defer_busy=defer_busy)
 
 
 def widen_cold_start_queues(self: SessionManager) -> None:
@@ -165,7 +168,12 @@ def widen_cold_start_queues(self: SessionManager) -> None:
     published runtime spawn width move from their floors to the host-sized
     widths without a probe here. An explicit integer is already at its
     width, so this is a no-op for it. Never shrinks a queue.
+
+    Sized from the settings the manager was built with, not from ``_cfg``: both
+    widths are restart settings and this runs again whenever a later host
+    reading raises the ``auto`` width (``start_gate_widening``), by which time
+    a config change may have replaced ``_cfg``.
     """
-    agent = getattr(self._cfg, "agent", None)
+    agent = self._cold_start_agent
     configure_runtime_spawn_width(agent)
     widen_cold_start_semaphore(self._start_sem, cached_cold_start_concurrency(agent))

@@ -16,6 +16,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
+    ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_GOOSE,
+    ACP_BACKEND_MIMOCODE,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
+)
+from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.messaging.link import telemetry_channel_of
 
@@ -53,6 +65,31 @@ _TOKEN_USAGE_DIR: Path | None = None
 #: Window (in days) the Session Activity card and its Daily History table cover.
 #: The per-day credits column reads the same window so the two line up.
 _SESSIONS_HISTORY_DAYS = 30
+
+#: Usage-row providers whose sessions write no transcript the Session Activity
+#: parse reads (the kiro-cli ``cli`` directory and the KAS records), so their
+#: sessions are counted from the per-turn usage rows instead. A positive set: a
+#: provider that writes those transcripts is counted from them and never twice.
+_SHARD_COUNTED_PROVIDERS = frozenset({PROVIDER_CLAUDE_CODE})
+
+#: The same rule for a row's ``harness`` (the ``kirocrew.harness`` vocabulary,
+#: :func:`kiro_crew.metrics.harness.harness_of`), which tells a Codex turn from a
+#: kiro-cli one where ``provider`` cannot: both record ``acp``. Positive: kiro-cli
+#: and KAS are not members, since their transcripts are read, and a row with no
+#: ``harness`` (written before the field) or one outside the set counts as before.
+_SHARD_COUNTED_HARNESSES = frozenset(
+    {
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_COPILOT,
+        ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_MIMOCODE,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_PI,
+        ACP_BACKEND_STRANDS,
+    }
+)
 
 
 def _token_usage_dir() -> Path:
@@ -398,9 +435,11 @@ def _coerce_int(value: Any) -> int:
     """Coerce ``value`` to ``int``, defaulting to 0 for non-numeric input.
 
     Keeps the emitted record JSON-serializable even if a caller passes a
-    non-numeric context value.
+    non-numeric context value, and keeps a row's infinite value (``json.loads``
+    reads ``Infinity`` and ``1e999`` as ``inf``, which ``int`` refuses with
+    ``OverflowError``) from failing the reader that holds it.
     """
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0

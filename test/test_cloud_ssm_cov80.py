@@ -131,10 +131,11 @@ class TestInstallCommandHint:
         os.name == "nt" or shutil.which("bash") is None,
         reason="runs the POSIX one-liner",
     )
-    @pytest.mark.parametrize("matches", [True, False])
+    @pytest.mark.parametrize(("matches", "sudo_exit"), [(True, 0), (True, 1), (False, 0)])
     def test_deb_one_liner_reaches_sudo_only_on_a_matching_download(
-        self, fake_platform, monkeypatch, tmp_path, matches
+        self, fake_platform, monkeypatch, tmp_path, matches, sudo_exit
     ) -> None:
+        """...and exits non-zero when the check or sudo fails, so a failure shows."""
         payload = tmp_path / "payload.deb"
         payload.write_bytes(b"pretend deb")
         pinned = hashlib.sha256(payload.read_bytes()).hexdigest() if matches else "0" * 64
@@ -151,7 +152,9 @@ class TestInstallCommandHint:
             f'cp "{payload}" "$out"\n',
             encoding="utf-8",
         )
-        (stubs / "sudo").write_text(f'#!/bin/sh\ntouch "{marker}"\n', encoding="utf-8")
+        (stubs / "sudo").write_text(
+            f'#!/bin/sh\ntouch "{marker}"\nexit {sudo_exit}\n', encoding="utf-8"
+        )
         if not gnu_sha256sum:
             # The one-liner targets Debian's GNU `sha256sum -c`, which reads its
             # list from stdin. macOS ships a BSD `sha256sum` that prints its
@@ -179,6 +182,8 @@ class TestInstallCommandHint:
             check=False,
         )
         assert marker.exists() is matches, proc.stdout + proc.stderr
+        assert (proc.returncode == 0) is (matches and sudo_exit == 0), proc.stderr
+        assert not [p for p in tmp_path.iterdir() if p.name.startswith("tmp.")]
 
     def test_linux_without_a_package_manager_has_no_one_liner(self, fake_platform) -> None:
         fake_platform("Linux", "x86_64")
@@ -203,6 +208,12 @@ class TestInstallPlan:
     def test_non_posix_platform_has_no_plan(self, fake_platform, tmp_path) -> None:
         fake_platform("Windows", "x86_64")
         assert ssm._session_manager_plugin_install_plan(tmp_path) is None
+
+    def test_can_install_is_true_only_where_a_plan_exists(self, fake_platform) -> None:
+        fake_platform("Windows", "x86_64", available=("dpkg",))
+        assert ssm.session_manager_plugin_can_install() is False
+        fake_platform("Linux", "x86_64", available=("dpkg",))
+        assert ssm.session_manager_plugin_can_install() is True
 
     def test_dpkg_plan_installs_the_deb(self, fake_platform, tmp_path) -> None:
         fake_platform("Linux", "x86_64", available=("dpkg",))
@@ -232,6 +243,59 @@ class TestInstallPlan:
 
 
 class TestInstallSessionManagerPlugin:
+    @pytest.fixture(autouse=True)
+    def _sudo_can_prompt(self, _floor_monkeypatch) -> None:
+        """The host's terminal, sudo setup and installed plugin must not decide these tests."""
+        _floor_monkeypatch.setattr(ssm, "_sudo_cannot_prompt", lambda: False)
+        _floor_monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: None)
+
+    def test_no_terminal_for_a_sudo_password_says_so_when_the_install_fails(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(ssm, "_sudo_cannot_prompt", lambda: True)
+        monkeypatch.setattr(
+            ssm,
+            "_session_manager_plugin_install_plan",
+            lambda tmp: ("https://example.invalid/p.deb", "0" * 64, tmp / "p.deb", [["sudo"]]),
+        )
+        ran: list[object] = []
+        monkeypatch.setattr(ssm, "_download_file", lambda *a: ran.append("download"))
+        monkeypatch.setattr(
+            ssm, "_run_install_command", lambda argv: ran.append(argv) or (1, "", "")
+        )
+        result = ssm.install_session_manager_plugin()
+        assert result.ok is False
+        assert result.message == (
+            "Installing it needs your admin password, and with no terminal sudo cannot ask for it."
+        )
+        assert ran == ["download", ["sudo"]]
+
+    def test_a_sudo_rule_for_only_the_installer_still_installs(self, monkeypatch) -> None:
+        """`sudo -n true` failing must not refuse an installer sudo lets run."""
+        states = iter([False, True])
+        monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: next(states))
+        monkeypatch.setattr(ssm, "_sudo_cannot_prompt", lambda: True)
+        monkeypatch.setattr(
+            ssm,
+            "_session_manager_plugin_install_plan",
+            lambda tmp: (
+                "https://example.invalid/p.deb",
+                "0" * 64,
+                tmp / "p.deb",
+                [["sudo", "dpkg", "-i", "p.deb"]],
+            ),
+        )
+        ran: list[object] = []
+        monkeypatch.setattr(ssm, "_download_file", lambda *a: ran.append("download"))
+        monkeypatch.setattr(
+            ssm, "_run_install_command", lambda argv: ran.append(argv) or (0, "", "")
+        )
+        result = ssm.install_session_manager_plugin()
+        assert result.ok is True
+        assert result.message == "session-manager-plugin installed"
+        assert ran == ["download", ["sudo", "dpkg", "-i", "p.deb"]]
+
     def test_already_installed_short_circuits(self, monkeypatch) -> None:
         monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: True)
         result = ssm.install_session_manager_plugin()
@@ -332,6 +396,38 @@ class TestInstallSessionManagerPlugin:
         result = ssm.install_session_manager_plugin()
         assert result.ok is True
         assert result.message == "session-manager-plugin installed"
+
+
+class TestSudoCannotPrompt:
+    @pytest.mark.parametrize(
+        ("has_terminal", "sudo", "expected"),
+        [
+            (True, "never run", False),
+            (False, 0, False),
+            (False, 1, True),
+            (False, "missing", False),
+        ],
+    )
+    def test_only_a_password_with_no_terminal_counts(
+        self, monkeypatch, has_terminal, sudo, expected
+    ) -> None:
+        def _open(path, mode):
+            assert (path, mode) == ("/dev/tty", "rb")
+            if not has_terminal:
+                raise OSError("no controlling terminal")
+            return io.BytesIO()
+
+        def _run(argv, **kwargs):
+            assert sudo != "never run"
+            assert argv == ["sudo", "-n", "true"]
+            assert kwargs["stdin"] is subprocess.DEVNULL
+            if sudo == "missing":
+                raise FileNotFoundError("sudo")
+            return subprocess.CompletedProcess(argv, sudo)
+
+        monkeypatch.setattr(ssm, "open", _open, raising=False)
+        monkeypatch.setattr(ssm.subprocess, "run", _run)
+        assert ssm._sudo_cannot_prompt() is expected
 
 
 class TestPluginPrerequisite:

@@ -82,7 +82,11 @@ def _reject_internal_endpoint(endpoint: str) -> None:
     host once and refuses it if ANY answer is non-public. The port allowlist is a
     link-preview concern, so it is lifted; the address rule is not.
     """
-    if urlparse(endpoint).scheme != "https":
+    try:
+        scheme = urlparse(endpoint).scheme
+    except ValueError as exc:  # e.g. an unterminated IPv6 literal: https://[::1/x
+        raise PushSubscriptionError("subscription.endpoint must be an https URL") from exc
+    if scheme != "https":
         raise PushSubscriptionError("subscription.endpoint must be an https URL")
     try:
         vet_unfurl_url(endpoint, allow_any_port=True)

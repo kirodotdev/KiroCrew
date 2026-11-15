@@ -360,7 +360,7 @@ async def test_a_resource_change_over_a_malformed_fresh_value_does_not_split_it(
 
 
 # --------------------------------------------------------------------------- #
-# GPT 6.1 / Opus 5.5 F2 (security): the dashboard PATCH re-records the
+# Security: the dashboard PATCH re-records the
 # dashboard-author ownership digest only for a PRE-confirmed managed spec, so a
 # routine edit does not freeze it against a tightened ceiling, and a user file
 # at the stem is never stamped managed.

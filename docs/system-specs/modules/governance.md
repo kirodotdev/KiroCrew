@@ -30,6 +30,22 @@ omitted name from the original conversation or parent session, the runner also
 checks that effective name against the parent's `capabilities.spawn` agent scope
 before provider allocation, using the same evaluator and app identity.
 
+When the parent is itself a sub-agent run, both checks name the agents that
+`_spawning_agents` returns for it. A profile bound to such a name
+(`{"type": "task", "id": "<agent>"}`) decides `capabilities.spawn` ahead of the
+`subagent` surface profile. Each spawning run adds names this way:
+
+1. A run started with an explicit agent is judged by that agent's profile.
+2. A follow-up with no agent override is judged by the explicit agent of the run
+   it continues, while the manager still holds that run.
+3. A run with no explicit agent in its lineage is judged by the surface profile
+   alone, as its own tool gate is. A template that the run only inherits adds
+   no profile.
+
+The run's own tool gate still receives its explicit `agent`. An agent with no
+profile leaves the surface profile deciding. When live runs share the same key,
+every name must be permitted. The policy ceiling binds in every case.
+
 ## The four archetypes (one composition algebra each)
 
 Every governed control is exactly one of four shapes. The evaluator dispatches
@@ -166,7 +182,7 @@ In an `oss` build a scope the policy does not name is ungoverned and permitted (
 - **Not gated.** `BASELINE_UNGATED` lists, each with its reason, the scopes that keep Crew's own default: the two ordinals (`approval_mode`, `sandbox.min_level`) and the open controls of RFC D3 as amended on 2026-11-02 (`mcp`, `filesystem.read`, `filesystem.write`, `commands`, `tools`, `capabilities.spawn`, `capabilities.cron`, `apps`; appendix "Crew default") and as amended on 2026-11-05 (`capabilities.memory_writes`, `capabilities.theme_persona`, `capabilities.milestones`, `capabilities.decisions_local`). Open means permitted, not switched on: a feature's preview flag or user setting, where it has one, keeps its `oss` default, and `capabilities.decisions_local` only narrows `capabilities.decisions`, which stays in the baseline off. `capabilities.app_dev_mode` and `app_versions` stay in `BASELINE_CONTROLS`. `edition_locks.policy_permits` (the process-wide switch milestones read) lets an open scope's `default`-layer permit stand; every other scope it answers still needs a policy-layer permit (`follows_policy`). With the policy silent, an open control answers as in `oss`, ungoverned; a remote policy that names one still decides, and a local tier composed under a silent central policy still narrows it. A scope in neither table (one registered at run time) is denied.
 - **Minimal sets that differ from the appendix wording.** `approval_modes` is `normal`, `trust`, `trust_reads` (only `yolo` is off; the catalog floor is `normal` alone, so a remote `permission_mode` rule may narrow it). `updates.source` is not a catalog scope and has no baseline.
 - **A proven non-shell call is judged in its own scopes.** `classify_tool_title` reads an unprefixed name as a command body and a tool name both, and kiro-cli titles an MCP call `Running: @server/tool`, so with `commands` off (a remote policy that turns it off) every built-in and every MCP call was refused. In an LTS build `GateFacts.governance_own_scopes` proves, from the trusted identity of a call the client did not classify as shell, that the call is MCP-served (`("mcp",)`) or a host built-in whose `BUILTIN_TOOL_SCOPES` row has no `commands` (`("tools", *row)`; a KAS id through its admitting kiro-cli alias only, so `delete_file`, `run_command` and `code` stay unproven). `gate_decision(own_scopes=...)` then keeps every `commands` pair, the title's `tools` pair, an MCP identity's `tools` pair, and a built-in's argument pair outside its row as deny-only: an explicit deny there (a local `curl *` deny) still refuses, an allow-mode miss does not. Each scope in a built-in's row that its arguments name no target in is asked about `_NO_TARGET_ITEM`, so an allow-mode `filesystem.read` the remote policy names refuses a pathless `grep` or `glob` (it searches a directory the gate cannot see), and an allow-mode `filesystem.write` refuses a write that does not arrive as an edit. A relative path is anchored at the gateway's working directory, as for every `filesystem.*` rule. `oss` never sets `own_scopes`.
-- **A shell call is judged on its recovered command.** A harness may title its shell call without the command (KAS titles it `Run Command`), so a `commands` rule read off the title alone never met the command, and a policy deny such as `*backdoor*` let `echo backdoor` through to the `read-only` row's auto-approve. The `governance` row therefore also asks `Running: <recovered command>` (`ToolCall.command`, the same command every shell row judges) under `commands`, beside the title, in the form kiro-cli's own shell title takes. A deny on it refuses the call before any grant or classify row runs. A shell call with no recovered command never reaches this row (`unverifiable-shell` refuses it).
+- **A shell call is judged on its recovered command.** A harness may title its shell call without the command (KAS titles it `Run Command`), so a `commands` rule read off the title alone never met the command, and a policy deny such as `*backdoor*` let `echo backdoor` through to the `read-only` row's auto-approve. The `governance` row therefore passes the recovered command (`ToolCall.command`, the same command every shell row judges) as `gate_decision(shell_command=...)`, and the call's `commands` items are that whole command plus each command of its chain (`allowed_commands.chain_commands`). A deny on any of them refuses the call before any grant or classify row runs, so a deny glob still meets the whole string. An allow-mode `commands` set admits the call only when it lists every item (the title `Run Command` is on no list, and before this every KAS shell call was refused); the parts matter because `*` in a glob also matches `&&`, `;` and `|`, so `git *` alone would admit `git status && python3 -c x`. A command `chain_commands` cannot split (a quote inside a chain, a redirect, a substitution, a newline, too long) is also asked about a never-permittable marker, an item of its own type (`matching._UnmatchableCommand`) that the command matcher refuses for every pattern (even `*`); a real command is always matched on its text, whatever characters it holds, so an allow-mode set refuses it while a deny-mode or ungoverned scope permits it. Every other `commands` pair of the call, the title and a tool name read as a command body, may refuse it only by an explicit deny, as an off-scope pair of a proven non-shell call does. A shell call with no recovered command never reaches this row (`unverifiable-shell` refuses it). This strict reading applies only when the title's own `commands` item is not the recovered command, and only to what the earlier reading refused. The call is first judged as before (the title and `Running: <command>` both judged in full); whatever that admits, such as every command under `allow: ["*"]`, stays admitted, so nothing it permitted is newly refused. Only a call it refused, which under allow mode means a title on no list, is judged on its command, its parts and the marker, since anything admitted there is new permission. A title that carries the command (kiro-cli's `Running: <command>`) is judged on that title exactly as before. A stricter, opt-in reading for every shell call is tracked in #35404.
 - **Inner lists the remote leaves out.** `BASELINE_INNER_LISTS` names inner lists that keep their baseline even when the remote policy names their capability: today `capabilities.publish` `regions`, `audience` and `accounts`, all off. `parsing.with_inner_baseline` fills them into a remote-named gate, in `evaluator._policy_level` and in `tiers._with_lts_baseline` for a central authority, so a local tier cannot supply a list the remote left out.
 - **Local policy tiers.** `compose_tier_ladder` first fills the authority tier's unnamed scopes from the baseline (`tiers._with_lts_baseline`), so the tighten-only `_intersect_ceilings` composes a local tier (`env`, `home`, `bundled`) WITH the baseline: a local tier can narrow it and never supply a scope's whole answer. With no central document the authority is itself local, so it is intersected with the baseline scope by scope rather than filled; only a central authority's named scopes replace the baseline. The installed ceiling therefore names every gated scope in an LTS build, and `kirocrew policy show` lists the baseline rows beside the document's own.
 - **Not covered here.** The `ceiling is None and profile is None` early returns in `hook_runtime/governance_gate.py`, `mcp_gateway/app_call.py` and `governance_profiles.governance_permits` still permit before `resolve` runs; an enterprise host with no policy at all is the LTS gate's to refuse (RFC Migration plan phase 2).
@@ -308,6 +324,8 @@ degrades to ungoverned. One leading UTF-8 byte-order mark (what Windows editors
 and PowerShell 5.1 `Set-Content -Encoding UTF8` write) is not content: the env and
 home readers parse through `user_json.loads_user_json`, so such a file loads at its
 tier. Any other encoding (UTF-16, a second mark) or invalid JSON still refuses.
+`admission.load_admission_policy` and `ProfileStore._reload` parse the same way, so
+a marked admission policy or profile loads as authored instead of failing closed.
 
 ## Update pins (`updates`) — policy-only
 
@@ -343,28 +361,35 @@ every wheel apply checks the pin again under the update lock before downloading
 (`wheel_engine.check_policy_channel`, enforced inside `apply_wheel_update` under the update lock immediately before `promote` swaps the stable link, which the dashboard approve, the scheduled auto-apply and `kirocrew update` all reach; the reads before the download are advisory). Two tiers fold to the
   authority's channel, else the subordinate's. The `cli.sh` installer still
   reads the file directly.
-- **`min_version`** — the minimum version the fleet may run. On an install
-  whose gateway updates itself, a host below it takes a **mandatory** update,
-  overriding the user's `auto_update=false` (user config sits under the
-  enterprise ceiling). It never refuses to *boot*: bricking a fleet on a policy
-  typo would remove the surface an admin needs to fix it. An unparseable floor
-  imposes none, for the same reason. What "takes the update" means depends on
-  the install (`slack/gateway_runtime/update_schedule.py` `_check_for_updates`
-  and `_check_for_updates_via_provider`):
-  - **A policy provider** (`check_command` below) applies whenever the check
-    reports a version.
-  - **A git checkout** on a primary branch applies only toward a build whose
+- **`min_version`**: the minimum version the fleet may run. A host below it
+  gets a **mandatory** update notice, overriding the user's `auto_update=false`
+  (user config sits under the enterprise ceiling): the update prompt cannot be
+  dismissed. It never refuses to *boot*: bricking a fleet on a policy typo would
+  remove the surface an admin needs to fix it. An unparseable floor imposes none,
+  for the same reason. The gateway never restarts itself for a floor (maintainer
+  decision of 2026-11-10,
+  [decision](../../decisions/2026-11-10-updates-never-restart-a-running-gateway.md)),
+  so what "takes the update" means depends on the install
+  (`slack/gateway_runtime/update_schedule.py` `_check_for_updates` and
+  `_check_for_updates_via_provider`):
+  - **A policy provider** (`check_command` below) only announces: its
+    `apply_command` rewrites the running install in place, so a person's Update
+    only arms it and the gateway runs it at its next start, before it serves
+    anything (`update_boot_apply`; a gateway the desktop app hosts leaves it to
+    the app).
+  - **A git checkout** only announces: a reset rewrites the tree the gateway
+    serves from. A person's Update arms it, the next start applies it, and only toward a build whose
     `__version__` outranks the running one AND that the checkout can take
     cleanly (behind-only, or already pulled and awaiting a restart). Below the
     floor with nothing newer, or with a diverged checkout that a reset would
-    strip of local commits, it notifies and refreshes the badge instead of
-    resetting to every new upstream commit, released or not
-    ([#15796](https://github.com/kirodotdev/KiroCrew/issues/15796)). A no-op
-    apply (the required code already on disk) leaves a restart pending without
-    arming a reload. A non-primary branch never applies, floor or not.
-  - **The `cli.sh` managed venv** re-runs the installer when the feed has a
-    newer build that `source` permits. With nothing newer it writes a log line
-    and does not reinstall; About can still read "up to date".
+    strip of local commits, the badge is refreshed and nothing resets
+    ([#15796](https://github.com/kirodotdev/KiroCrew/issues/15796)). A
+    non-primary branch never applies, floor or not.
+  - **The `cli.sh` managed venv** builds the newer build the feed offers (that
+    `source` permits) beside the running install and stages it ("update ready,
+    restart to use it"); the new version starts at the next restart a person
+    chooses. With nothing newer it writes a log line and builds nothing; About
+    can still read "up to date".
   - **pip and pipx installs** only light the update badge, even when the feed
     has nothing newer.
   - **Docker and the desktop app's bundled gateway** (without a provider) do
@@ -372,10 +397,7 @@ every wheel apply checks the pin again under the update lock before downloading
     updater does not act on the floor: with the app's update switch off, the
     floor only makes the update-found prompt undismissable, and with it on (the
     default) the floor has no effect.
-  - A mandatory apply waits for idle like any other
-    ([configuration.md → Updates](../../../src/kiro_crew/docs/configuration.md#when-the-gateway-checks))
-    and is never forced: the grace period (`_MANDATORY_UPDATE_MAX_DEFER_SECS`)
-    only logs.
+  - No floor forces a restart, however long the update has been waiting.
 - **`check_command`** / **`apply_command`** — select the command update
   provider (`platform/update_provider.py` `CommandProvider`), which then owns
   the check, the badge and the Update button, and is resolved before any
@@ -405,7 +427,7 @@ every wheel apply checks the pin again under the update lock before downloading
   provider on every host, so a host whose platform has no command then never
   checks or applies.
 - **`unattended_apply`** — a JSON boolean; absent or `null` reads `true`. `false`
-  stops the gateway installing an update by itself on every install shape,
+  stops the gateway preparing an update by itself on every install shape,
   whatever the user's `auto_update` says: the check still runs, the badge still
   lights, and a person's Update applies it. `auto_update_effect` answers `notify`
   but keeps the route, so the provider path still reads `can_apply` off it, the
@@ -417,7 +439,8 @@ every wheel apply checks the pin again under the update lock before downloading
   unlike every other pin (see "an unresolvable pin" below). Each routine install reads
   the pin again at its last step before it changes anything, so a policy
   installed while the update waited still decides. A build below `min_version`
-  still takes its mandatory update, because the floor is the stronger pin. A
+  still gets its mandatory notice (and, on the managed venv, its staged build),
+  because the floor is the stronger pin. A
   string such as `"false"` fails the load rather than reading as on.
 
 The bullets above name every key `updates` accepts (`UpdatePins.from_dict`). Any
@@ -440,7 +463,7 @@ else*; a per-app profile that could redirect the update source would be
 privilege escalation.
 
 `platform/update_governance.py` is the one seam the three update paths share
-(`POST /api/update`, `kirocrew update`, the gateway-boot auto-apply) so they
+(`POST /api/update`, `kirocrew update`, the gateway's staged apply) so they
 cannot drift. It resolves the remote git would *actually* fetch from — reading
 `branch.<name>.remote` rather than assuming `origin`, via `ls-remote --get-url`
 so `url.<base>.insteadOf` rewriting is applied — and returns a blocking reason or
@@ -1488,7 +1511,10 @@ the rule. Its sibling `availableAgents` travels as a `deny` with the listed name
 `exclude`, which only narrows and so travels whatever the ceiling says.
 
 The projection is built per session, so the translated merge asks
-`may_skip_gate_for_session(session_key, app)` instead of `may_skip_gate_now`. The ceiling
+`may_skip_gate_for_session(session_key, app)` instead of `may_skip_gate_now`, and so does
+the spec's own sub-agent allow (`use_subagent` in `allowedTools`, a `subagent` allow in its
+`permissions`, `kas_agents._authored_allow_gate`); the spec's other authored allows still
+ask `may_skip_gate_now`. The ceiling
 and `hooks.confirm_tools` are asked as before. Of the profiles, only those the gate could
 resolve for one of that session's calls count
 (`governance_profiles.session_profiles_govern`): the one `resolve_active_scope(session_key)`
@@ -1771,7 +1797,7 @@ either, which is how a bearer token reaches an agent-authored cron script. A tes
 the list against `POLICY_DISTRIBUTION_ENV_VARS` (which owns the set) and separately
 drives `_clean_cron_env` to prove the exact-match consumer really drops them.
 
-`apps/backend.py` puts an app backend in **cache-only mode** (`KIROCREW_POLICY_CACHE_ONLY`)
+`apps/backend.py`, the shared ACP launch tail, and managed MCP entries put child processes in **cache-only mode** (`KIROCREW_POLICY_CACHE_ONLY`)
 rather than forwarding the source at all. That resolves a real tension instead of picking
 a side: forwarding the settings would hand arbitrary third-party code the fleet's control
 plane (the header is a live token, and a pre-signed URL is itself the credential), while
@@ -1798,7 +1824,8 @@ flagging that child would refuse to start an app on a host running perfectly wel
 `KIROCREW_POLICY_CACHE_ONLY` is also in the tier's **entry** condition in
 `load_security_policy`: such a child has no source by design, so gating entry on one would
 skip the tier and drop it to a local ceiling — the failure cache-only mode exists to
-prevent.
+prevent. The policy parser also permits a source-less `distribution` declaration in this
+mode: the child inherits the gateway's verified cache and never starts its own fetch.
 
 ### Sandboxed processes in an LTS build
 
@@ -1994,10 +2021,16 @@ documented design choice — so the shell route rests on the OS sandbox, which s
 the agents dir. The registry leaf gets no seal, by maintainer decision (#14837): an
 `autoApprove` written there is honoured whoever wrote it, until the owner turns
 `mcp.honour_auto_approve` off ([security](security.md), "kiro-cli's MCP registry").
+kiro-cli's permission rule files (`permissions.yaml` / `permissions.json` under
+`~/.kiro/settings` and `~/.kiro/workspace-roots`) join the same tier only when the owner
+turns `mcp.protect_kiro_permission_rules` on; it is off by default ([security](security.md),
+"kiro-cli's tool auto-approve rules"). The owner changes both keys in Settings → Security →
+Safety switches, whose owner-gated route audits each change before it is written
+([security](security.md), "Owner's MCP safety switches").
 
 **The Bot folder `~/.kiro/mates/agents` and its state files beside it** (`owners.json`, `revoked-approvals.json`, `tool-access.json`, `migrated.json`) sit on the same write-only tier, also under `KIRO_HOME`. Only gateway handlers write them, directly rather than through the tool gate, so the agent's file-edit tools are refused and reads are unchanged.
 
-**Every other harness's own permission files sit on the same write-only tier**, listed per harness in `agent_sdk.native_allow_stores.NATIVE_ALLOW_STORES`: claude `~/.claude/settings*.json`, goose `permission.yaml` and `config.yaml`, opencode's global config, codex `config.toml`, pi `settings.json` and `extensions/`, copilot `mcp-config.json` and `installed-plugins/` (its `config.json`, which carries its permission settings, is already refused both ways as its credential leaf), each also at its harness's own home variable (`GOOSE_PATH_ROOT`, `XDG_CONFIG_HOME`, `CLAUDE_CONFIG_DIR` / `CLAUDE_HOME`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, `COPILOT_HOME`) and through a symlinked config dir, plus a project's own harness config in any directory (`PROJECT_ALLOW_STORES`): `.claude/settings*.json`, opencode's `opencode.json` / `opencode.jsonc` and everything under `.opencode/`, and pi's `.pi/settings.json`, `.pi/mcp.json` and everything under `.pi/extensions/`. goose reads no project file of this kind, and copilot's are not listed: a Copilot session is refused outright where one exists (`acp/harness/copilot.py`). `agent.env` refuses each of those home variables, so a store cannot move for the harness child alone. Only the agent's file-edit tools are refused; a shell write to these files is not fenced yet. `test/test_native_allow_stores.py` fails when a harness has neither a row nor a stated reason.
+**Every other harness's own permission files sit on the same write-only tier**, listed per harness in `agent_sdk.native_allow_stores.NATIVE_ALLOW_STORES`: claude `~/.claude/settings*.json`, goose `permission.yaml` and `config.yaml`, opencode's global config, MiMo Code's global config (`~/.config/mimocode/`; its other relocation, `MIMOCODE_HOME`, is refused at the launch), codex `config.toml`, pi `settings.json` and `extensions/`, copilot `mcp-config.json` and `installed-plugins/` (its `config.json`, which carries its permission settings, is already refused both ways as its credential leaf), each also at its harness's own home variable (`GOOSE_PATH_ROOT`, `XDG_CONFIG_HOME`, `CLAUDE_CONFIG_DIR` / `CLAUDE_HOME`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, `COPILOT_HOME`) and through a symlinked config dir, plus a project's own harness config in any directory (`PROJECT_ALLOW_STORES`): `.claude/settings*.json`, opencode's `opencode.json` / `opencode.jsonc` and everything under `.opencode/`, MiMo Code's `mimocode.json` / `mimocode.jsonc` and everything under `.mimocode/` (the home directory's own `.mimocode/` included), and pi's `.pi/settings.json`, `.pi/mcp.json` and everything under `.pi/extensions/`. goose reads no project file of this kind, and copilot's are not listed: a Copilot session is refused outright where one exists (`acp/harness/copilot.py`). `agent.env` refuses each of those home variables, so a store cannot move for the harness child alone. Only the agent's file-edit tools are refused; a shell write to these files is not fenced yet. `test/test_native_allow_stores.py` fails when a harness has neither a row nor a stated reason.
 
 That residual matters for the same reason the whole gap did. Since
 `hooks.on_tool_call` runs **only** from the `EVENT_PERMISSION_REQUEST` branch (the
@@ -2096,7 +2129,7 @@ disposition:
 - **Inbound message receive (`messaging.identity.channel_inbound_permitted`)**
   gates each transport's per-message dispatch on the SAME `channels` allowlist,
   resolved on the host surface with `fail_closed=True` and run OFF the event loop
-  (it walks the ProfileStore). Called at the top of every dispatcher's
+  (it walks the ProfileStore). Called on every message by every dispatcher's
   `handle_message` (Slack / Discord / Telegram / Webex / WeCom — Slack is NOT
   exempt), it closes the gap the connect-time gate alone leaves: a host-profile
   deny added AFTER a transport connected would otherwise keep dispatching inbound
@@ -2579,11 +2612,18 @@ read-your-writes should add it deliberately, with its own tests.
   `mcp_core._vet_memory_writes_governance` (at `learn_add`); script-hook
   execution in `hooks._script_hooks_capability_denied` (at `run_script_hook`,
   asking `events:<event>` so the row's inner `events` list can name the trigger
-  events a hook may fire on; an unnamed list permits every event); inbound
+  events a hook may fire on; an unnamed list permits every event; then
+  `hooks:<name>` for its inner `hooks` list, where an agent spec's hook is
+  `<agent>/<Event>/<n>`, the `#n` of its name, and a Hooks-page hook is its
+  name; an unnamed list permits every hook, a refused PreToolUse hook still
+  blocks the tool, and a listed hook still meets the shell deny list and the
+  sandbox; `hook_event_governance.hook_refusal`); inbound
   webhook sources in `webhook_sources.source_refusal` (the `webhooks` scope,
-  members `agent` for `POST /api/hooks/agent` and `ops-mission-control` for that
-  app's signal webhook; policy layer only, asked before the token or signature is
-  checked; with no policy each source keeps its own switch);
+  members `agent` for `POST /api/hooks/agent` and, through
+  `webhook_sources.app_source_refusal`, the name of each app whose manifest
+  declares `permissions.webhookSource` for that app's own route
+  (`app-kit-platform.md` section 42); policy layer only, asked before the token or
+  signature is checked; with no policy each source keeps its own switch);
   app activation in `apps.manager._app_activation_denied` (at `enable_app`).
 
 Plane A carries **no live ordinal clamp**. The computer-use governance model —
@@ -2870,12 +2910,14 @@ otherwise let a denied channel trigger a download by attaching a file to the one
 word that skips the gate. Both arguments default to the gated behaviour, so a
 caller that does not pass them is unchanged. This matters most where the channel
 has no widgets: with `max_buttons=0` a typed `/stop` is the only cancel
-affordance the operator has. The Feishu, iMessage, Teams, Webex, WeCom and Weixin
-dispatchers pass `text` only when their own `parse_command` reads the message as
-`stop` (Feishu, Webex and WeCom after removing the bot's @mention; never for a Teams or
-Webex card press, and never for drained turn content), so a cancel word another
-channel spells, such as `!stop`, keeps the strict gate instead of passing into
-the busy path's steer. WhatsApp passes its text as is.
+affordance the operator has. The Discord, Feishu, iMessage, Teams, Telegram, Webex,
+WeCom and Weixin dispatchers pass `text` only when their own `parse_command` reads the
+message as `stop` (Feishu, Webex and WeCom after removing the bot's @mention, Telegram
+after removing its own `@username`; never for a Teams or Webex card press, and never for
+drained turn content), so a cancel word another channel spells, such as `!stop`, keeps
+the strict gate instead of passing into the busy path's steer. Discord's `/stop` slash
+command passes the same gate as `!stop`, and a Telegram stop is never taken as the
+answer to a bridged approval note. WhatsApp passes its text as is.
 
 `_CANCEL_ALIASES` is the recognised set, and it is a MIRROR of the per-channel
 command tables (`/stop`, `/cancel`, Discord's `!` bang forms, WeCom's `停止`),
@@ -2941,7 +2983,10 @@ switched off. Two fields keep that honest:
   rule content, so the POSTURE-only boundary is unchanged. `_reload` substitutes
   that built-in at three sites — a present-but-unreadable file, a file whose JSON
   or schema does not parse, and a file that parses but `extends` a parent that is
-  missing or chained — and enforcement is correct in all three. What is NOT correct
+  missing or chained — and enforcement is correct in all three. A profile that
+  `extends` a parent substituted at the first two sites is composed over that
+  substitute, so it is listed here too (a child of a parent substituted at the
+  third site is itself substituted there). What is NOT correct
   without this field is the *display*: the substitute reports `source: "profile"`,
   so an unusable file renders identically to a deliberate operator lockdown, and an
   operator has to read server logs to tell them apart.
@@ -3025,6 +3070,13 @@ denials leave the same forensic trail.
   profile. An app's own in-process tool calls (which carry `KIROCREW_APP_NAME`)
   do bind a per-app profile. App blast-radius is contained today by the `apps`
   activation allowlist + per-surface profiles.
+- **A harness whose MCP calls carry no identity is refused before it mounts.** An
+  OpenCode-family MCP call carries only its fused `<server>_<tool>` title, so the `mcp`
+  scope is never asked about it. `governance.mcp_scope_governed_now()` answers whether
+  the ceiling or any configured profile constrains `mcp` at all (scope-level,
+  fail-closed; a deny-mode ruleset with no patterns does not count), and a `mimocode`
+  session that would mount any server is refused at launch and stopped mid-session
+  when the answer turns yes (acp-client.md, MiMo Code). `opencode` does not ask it yet.
 - **Shell GUI automation is a `commands` item, never re-parsed.** `osascript`,
   `cliclick`, `xdotool`, `ydotool`, `wtype`, `screencapture`, `scrot`, `grim`,
   `import -window` and `nircmd` inside a Bash tool are governed by the
@@ -3209,7 +3261,13 @@ profile does not take part), and an unreadable ceiling keeps redaction on. A
 folded ceiling (`lower_tier_folded`) also keeps it on, even when the top tier
 named the row itself, because the fold does not say which tier did. What
 the switch then does is in [security](security.md), "Owner's credential-redaction
-switch").
+switch"), and `capabilities.credential_redaction_seams_off` (the same opt-in rule,
+a row of its own: only a policy that names it `enabled: true` lets the owner turn
+credential redaction off for the conversation replayed into the agent's prompt and
+for server log lines; `owner_may_disable_seams` reads it the same way. The Files-view
+row does not grant it, because those sinks reach the external model provider and the
+logs, which the Files-view opt-in never covered; see [security](security.md),
+"Owner's output-seams switch").
 Only the live `approval_mode` clamp remains reserved.
 
 The `commands` scope now **doubles as the enterprise force-pin** for built-in
@@ -3716,8 +3774,9 @@ started by hand on a preset's port from answering. Both
 chokepoints select the row from the configured provider and the runtime, never from
 the request. `PUT /api/decisions/provider`
 refuses a switch to a withdrawn side with `403 decisions_capability_denied`, and its
-`GET` reports `hosted_permitted` / `local_permitted` so the picker greys that side
-out. `decisions_enabled` is `true` while EITHER side permits, so the card is withheld
+`GET` reports `hosted_permitted` / `local_permitted` / `sagemaker_permitted`; the
+picker hides a refused hosted option and greys out a refused local one, and the
+PUT also asks the `endpoints` list for a hosted or SageMaker host, as does an enabling `PUT /api/decisions/consent`, and a refused hosted default reads as `active: "none"` (see decisions.md). `decisions_enabled` is `true` while EITHER side permits, so the card is withheld
 only when `capabilities.decisions` is pinned off (which covers both sides) or both
 rows are. A fleet that permits hosted Jev but wants no local model pins this row.
 
@@ -3736,14 +3795,19 @@ evaluation, no SEL row and no second `await`; past that line consent IS on, whic
 exactly when a denial is a fact an auditor needs recorded.
 
 **The reads are presentation, not the control.**
-`GET /api/decisions/consent` folds a denial into `permits` (there is no separate
-reason field — nothing read one, and the surface a caller acts on is the 403);
+`GET /api/decisions/consent` folds a denial into `permits` and reports it beside
+that as `withdrawn`, so the card tells a refusal from consent given for another
+address (the surface a caller acts on is still the 403);
 `GET /api/dashboard/config` reports a read-only `decisions_enabled`
-(`decisions/capability.py`) and the frontend draws the Decisions card in
-Settings › Developer › Feature Previews only when it is `true`. A denial withholds
-the CARD rather than disabling it — the section's other unavailable states (an old
-gateway, an unreadable config) fade the card and name the fix because the user can
-act on those, and a ceiling is not something they can act on. The field is dropped
+(`decisions/capability.py`), and the Decisions card in Settings › Developer ›
+Feature Previews draws its controls only when it is `true`. A literal `false` draws
+the card's name and one plain notice that the administrator's policy turned decision
+models off for this dashboard, with no switch and no picker: a ceiling is not something
+the user can act on, so it is stated rather than shown as a disabled control. The notice
+claims nothing about other surfaces, which a policy may treat differently, and a failed
+refetch shows the read failure rather than the last denial. An absent field draws no
+card. The section's other unavailable states (an old gateway, an unreadable config)
+fade the card and name the fix, because the user can act on those. The field is dropped
 from the `PUT` body (both settings surfaces round-trip the whole `GET`), so it can
 never be written. The ceiling viewer needs no i18n key: the humanising fallback
 renders the `decisions` leaf as "Decisions".
@@ -3782,6 +3846,14 @@ seam. A policy pins the seam off MACHINE-WIDE with one object -- every surface, 
 
 ```json
 {"version": 1, "capabilities": {"decisions": {"scopes": {"models": {"mode": "allow", "allow": ["jev-latest"]}, "points": {"mode": "deny", "deny": ["tool.risk"]}}}}}
+```
+
+**Which decision models: the `providers` list.** A fourth inner ruleset, `providers` (`identifier`), is the per-model allow list: every decision model the picker offers has its own entry, by its picker id (`decisions/capability.py::provider_id`: `jev` for the hosted provider, each local preset id (`plumb-4b`, `strands-decider-2b`, `laya`), `sagemaker`; "No model" is never asked). Each is an exact check, never a host parse: `jev` is the configured address equal to the hosted default endpoint, a preset is the address the provider route builds for it, `sagemaker` is the `sagemaker://` scheme. The ids are stable policy ids: they are the ids the picker stores, a policy names them, and renaming one would silently turn an allow or deny into a no-op, so `test_decisions_provider_allowlist.py` pins the list. An endpoint the owner wrote by hand has no id and is not governed by the list (the row's `enabled` off switch and the `endpoints` list still apply to it). Every check that reads the row for the CONFIGURED provider asks that provider's entry too, inside the same policy-generation bracket (`capability.is_decisions_denied(provider=...)`): the send path (`gate._consented_for`), the consent and provider writes (`403 decisions_capability_denied`), the consent carry, the SageMaker connection test and the local runtime's resume. So a model the list refuses is neither selectable nor used, whichever writer named it in `config.json`, and the recorded consent stays in place but inert. `GET /api/decisions/provider` reports the per-model answer as `provider_permitted`, and the picker draws a refused model greyed with the administrator's wording. Like `models` and `endpoints` it binds the decision provider only, not the judge's LLM lane. A ceiling without the list permits every model. The row's `enabled` stays the full off switch, for which the card draws a plain notice, about this dashboard only, in place of its controls. Detail: [decisions](decisions.md) section 7.2.
+
+Only the exact hosted default endpoint counts as `jev`, so a fleet that wants the hosted host refused however it is spelled names it in the `endpoints` host list as well; the edition snippet carries both:
+
+```json
+{"version": 1, "capabilities": {"decisions": {"scopes": {"providers": {"mode": "deny", "deny": ["jev"]}, "endpoints": {"mode": "deny", "deny": ["api.typesafe.ai"]}}}}}
 ```
 
 ### Extensions, app versions and developer mode — `capabilities.extension_install`, `app_versions`, `capabilities.app_dev_mode`
@@ -4319,7 +4391,9 @@ denies `trust` already refuses the first three.
 **`approval_modes` is the single precedence point.** Every site that asks governance
 whether a mode may be selected or honoured asks `approval_mode_permitted`,
 `session_mode_permitted` or `yolo_policy_permits`, and all three answer from the
-`approval_modes` scope alone. The ordinal `approval_mode` is subordinate to it: only
+`approval_modes` scope alone. `approval_mode_permitted` answers `trust` and
+`trust_reads` by calling `session_mode_permitted`, so those two modes have one verdict
+wherever they are asked. The ordinal `approval_mode` is subordinate to it: only
 its boot floor is enforced, its live clamp stays reserved (see its note under "Scope
 boundaries"), and it can never permit a mode `approval_modes` denies.
 
@@ -4411,7 +4485,7 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   It keeps the auto-approve surface it decides itself (`may_skip_gate` with
   `BUILTIN_TOOL_SCOPES` / `BUILTIN_TOOL_CAPABILITIES`, `strip_ungoverned_auto_approve`,
   the `hooks.confirm_tools` gate, `may_skip_gate_now`, `withheld_by_confirm_tools`,
-  `sanitize_agent_config_governance`) and the two boot checks,
+  `mcp_scope_governed_now`, `sanitize_agent_config_governance`) and the two boot checks,
   `assert_governance_floor` and `assert_governance_paths_protected`. Its owners, one
   responsibility each, lowest layer first; new work goes to the owner it belongs to:
   - `platform/governance_parts/matching.py` — the enforcer-owned registries `_MATCHERS` /
@@ -4455,7 +4529,8 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   check's deadline (`updates_check._GIT_FETCH_TIMEOUT_S`, 300s) must cover the whole
   transfer of a far-behind checkout; after every fetch, timed-out ones included, it reaps
   stale `tmp_pack_*` from the checkout's object store through `git_tmp_packs`. The
-  throwaway dir carries no scratch owner record, so the scratch sweep never reclaims it:
+  throwaway dir carries no scratch owner record and no allocator name, so the scratch sweep
+  leaves it:
   it is removed on every path, including an error while it is built and a cancel that
   lands while the off-loop prepare step is still building it. A cancel does not wait on
   that worker: whichever side sees the other's mark under one lock removes the dir.

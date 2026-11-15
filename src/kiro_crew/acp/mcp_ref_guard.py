@@ -336,7 +336,11 @@ def warn_unset_env_placeholders(
     skipped, because its text can carry one. Returns ``(entries, omitted)``
     exactly as :func:`warn_remote_header_secret_refs` does.
     """
-    from kiro_crew.mcp_gateway.rewriter import _ENV_VAR_PLACEHOLDER, _placeholder_source_env
+    from kiro_crew.mcp_gateway.rewriter import (
+        _ENV_VAR_PLACEHOLDER,
+        _placeholder_source_env,
+        _placeholder_value,
+    )
 
     routed_view = _placeholder_source_env()
     found: list[str] = []
@@ -350,13 +354,17 @@ def warn_unset_env_placeholders(
             values = [item.get("value") for item in env if isinstance(item, Mapping)]
         else:
             values = []
-        present = child_env if by_kiro_cli else routed_view
         unset = dict.fromkeys(
             ref
             for value in values
             if isinstance(value, str)
             for ref in _ENV_VAR_PLACEHOLDER.findall(value)
-            if ref.isidentifier() and ref not in present
+            if ref.isidentifier()
+            and (
+                ref not in child_env
+                if by_kiro_cli
+                else _placeholder_value(routed_view, ref) is None
+            )
         )
         server = sanitize_sink_text(name, NAME_CAP)
         names = [n for n in (sanitize_sink_text(ref, NAME_CAP) for ref in unset) if n]

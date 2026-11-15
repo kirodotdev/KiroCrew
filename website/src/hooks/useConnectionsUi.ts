@@ -48,3 +48,12 @@ export function useConnectionsUiEnabled(): boolean {
   const { data } = useQuery({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() })
   return connectionsUiEnabled(data)
 }
+
+/** True while that config is still on its first read. A page whose layout
+ *  follows the flag waits this out, so a form shown for "off" is not swapped
+ *  for the gallery (and its typed draft dropped) when the read lands. A failed
+ *  read settles to off. */
+export function useConnectionsUiPending(): boolean {
+  const { isPending } = useQuery({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() })
+  return isPending
+}

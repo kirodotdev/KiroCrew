@@ -5,8 +5,8 @@
  * and i18n catalog, seeded with one pending permission row on the active slot.
  * ?kind=native seeds a chat runner's own request (it can take a standing Trust
  * grant); ?kind=coordinator seeds a coordinator approval parked in the chat,
- * which is decided one-shot by its own target, so the bar offers no Trust and
- * says why.
+ * which is decided one-shot by its own target, so the bar holds Trust's place
+ * with a disabled control that says why.
  *
  *   ?kind=native|coordinator&theme=dark|light
  */

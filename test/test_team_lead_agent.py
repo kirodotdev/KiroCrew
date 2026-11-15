@@ -24,7 +24,12 @@ import pytest
 
 from kiro_crew import agent
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES, TEAM_LEAD_AGENT_FILENAME
-from kiro_crew.agent_materialization import managed_mcp, service_agents
+from kiro_crew.agent_materialization import auto_approve, managed_mcp, service_agents
+
+#: The lead auto-approves ``session_create`` and not ``session_send``, so the
+#: governed tail closes its charter with the one line that says so.
+_SEED_RULE_TAIL = f"\n{auto_approve.SEED_AFTER_CREATE_RULE}\n"
+_INSTALLED_PROMPT = agent._TEAM_LEAD_SYSTEM_PROMPT + _SEED_RULE_TAIL
 
 _SKILL = (
     pathlib.Path(__file__).resolve().parents[1]
@@ -73,7 +78,7 @@ class TestTheInstallerWritesADefaultAgent:
 
     def test_the_file_carries_this_agent_name_and_charter(self, installed):
         assert installed["name"] == "kirocrew-team-lead"
-        assert installed["prompt"] == agent._TEAM_LEAD_SYSTEM_PROMPT
+        assert installed["prompt"] == _INSTALLED_PROMPT
         assert installed["prompt"].startswith("# Kiro Crew Team Lead")
         assert installed["description"]
 
@@ -91,9 +96,8 @@ class TestTheInstallerWritesADefaultAgent:
         baseline = service_agents._without_guide_server(agent.build_agent_config())
         mounted = {"name", "description", "prompt", "tools", "allowedTools", "mcpServers"}
         mounted |= {"permissions"}
-        # ``resources`` is mounted too: the installer maps the skills this prompt names
-        # (``TestItMapsTheSkillsItsPromptNames``), and the baseline's own steering globs
-        # are kept beside them, which that class pins.
+        # ``resources`` is mounted too: the installer maps the skills this prompt names,
+        # and the baseline's own steering globs are kept beside them.
         mounted |= {"resources"}
         assert set(baseline) - {"permissions"} <= set(installed)
         for key in set(installed) - mounted:
@@ -118,7 +122,7 @@ class TestTheInstallerWritesADefaultAgent:
 
         installed = json.loads(target.read_text(encoding="utf-8"))
         assert installed["name"] == "kirocrew-team-lead"
-        assert installed["prompt"] == agent._TEAM_LEAD_SYSTEM_PROMPT
+        assert installed["prompt"] == _INSTALLED_PROMPT
         assert sorted(p.name for p in tmp_path.iterdir()) == [TEAM_LEAD_AGENT_FILENAME]
 
 
@@ -271,7 +275,8 @@ class TestTheLeadCanDispatch:
         from kiro_crew.agent_parts.spec_prompts import _ASK_ONLY_WHEN_NEEDED_RULE
 
         shared = _ASK_ONLY_WHEN_NEEDED_RULE.splitlines()
-        assert len(prompt.splitlines()) - len(shared) < 40
+        charter = prompt.removesuffix(_SEED_RULE_TAIL)
+        assert len(charter.splitlines()) - len(shared) < 40
         # Nothing copied from the conductor charter; the one shared rule is named, not copied.
         for line in agent._CONDUCTOR_SYSTEM_PROMPT.splitlines():
             if len(line) > 60 and line not in shared:
@@ -332,7 +337,7 @@ class TestTheSkillCarriesTheTeamProcedure:
 
 
 # --------------------------------------------------------------------------- #
-# GPT 6.1 F1: a failed team-lead rewrite must leave the ceiling HELD, not synced.
+# A failed team-lead rewrite must leave the ceiling HELD, not synced.
 # --------------------------------------------------------------------------- #
 
 
@@ -426,7 +431,7 @@ def test_a_failed_research_install_holds_the_ceiling_instead_of_syncing(
 
 
 def test_both_conductor_charters_carry_the_ask_only_when_needed_rule() -> None:
-    """Ultra Mode runs on the team lead, a goal on the conductor: both agent prompts
+    """Conductor mode runs on the team lead, a goal on the conductor: both agent prompts
     (not session context, which ranks below the skill) say when to stop and ask."""
     from kiro_crew.agent_parts.spec_prompts import _ASK_ONLY_WHEN_NEEDED_RULE
 

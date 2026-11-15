@@ -337,6 +337,7 @@ _BLOCK_ORDER_OMITTED = {
     "working_folder": "§2 per-turn table",
     "folder_path": "§2 per-turn table",
     "resource_advisory": "§2 per-turn table",
+    "mcp_servers": "§2 per-turn table",
     "user_display": "§2 per-turn table",
     "reply_format_rules": "§2 per-turn table",
     "request_header": "§2 per-turn table",

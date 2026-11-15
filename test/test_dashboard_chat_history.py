@@ -14,6 +14,7 @@ from chat_test_helpers import _make_app, _make_state, close_before_resume
 
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.history import ConversationLog
+from kiro_crew.testing.wait import await_until
 
 # ── History persistence and disk fallback ──
 
@@ -185,9 +186,8 @@ class TestPrepareMessagesInterleaved:
 
 class TestKiroReadinessQueueHandoff:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("wait_end", ["stop", "deadline"])
     async def test_turn_identity_precedes_memory_preparation_wait_and_is_retired_on_stop(
-        self, tmp_path, monkeypatch, wait_end
+        self, tmp_path
     ):
         """A transient startup fence delays a turn without becoming its failure.
 
@@ -231,8 +231,6 @@ class TestKiroReadinessQueueHandoff:
         # The turn now reaches the transcript save; a MagicMock ``_path`` would
         # otherwise materialise a ``MagicMock/`` tree in the current directory.
         state.conversation_log._path.return_value = tmp_path / "transcript.jsonl"
-        if wait_end == "deadline":
-            monkeypatch.setattr("kiro_crew.memory_startup.MEMORY_ADMISSION_WAIT_SECONDS", 0.0)
         state.memory_startup_task = asyncio.create_task(prepare_memory())
         slot = state.get_or_create_slot("memory-startup-admission")
         slot.queue_append("keep queued during startup")
@@ -243,9 +241,8 @@ class TestKiroReadinessQueueHandoff:
             assert slot._active_turn_session_key == "dashboard:memory-startup-admission"
             state.sessions.get_or_create.assert_not_awaited()
 
-            if wait_end == "stop":
-                turn.cancel()
-            await turn
+            turn.cancel()
+            await await_until(turn, what="the stopped turn")
             assert not state.memory_startup_task.cancelled()
             assert not state.memory_startup_task.done()
             assert slot.task is None
@@ -256,11 +253,6 @@ class TestKiroReadinessQueueHandoff:
             state.sessions.get_or_create.assert_not_awaited()
             state.sessions.record_failure.assert_not_awaited()
             state.conversation_log.update_metadata.assert_not_called()
-            if wait_end == "deadline":
-                error = next(message for message in slot.messages if message["role"] == "error")
-                assert error["meta"]["code"] == "memory_unavailable"
-                assert "Retry shortly" in error["content"]
-
             slot._queue.clear()
             release.set()
             await state.memory_startup_task
@@ -731,6 +723,39 @@ class TestResumeExpectedIdentity:
 
         assert (response.status, body["code"]) == (400, "invalid_expected_created_at")
         assert state._slots == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", [123, ["x"], {"a": 1}])
+    async def test_a_non_string_key_is_refused_before_a_slot_is_created(
+        self, tmp_path, monkeypatch, key
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.conversation_log.append("dashboard:guarded", "user", "hello")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post("/api/chat/slots/guarded/resume", json={"key": key})
+            body = await response.json()
+
+        assert (response.status, body["code"]) == (400, "invalid_field_type")
+        assert state._slots == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("title", [5, ["t"], {"a": 1}])
+    async def test_a_non_string_title_is_not_stored_as_the_slot_title(
+        self, tmp_path, monkeypatch, title
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.conversation_log.append("dashboard:guarded", "user", "hello")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/guarded/resume", json={"key": "dashboard:guarded", "title": title}
+            )
+
+        assert response.status == 200
+        assert isinstance(state._slots["guarded"].title, str)
 
     @pytest.mark.asyncio
     async def test_an_app_gets_the_same_answer_for_a_foreign_open_session_with_or_without_a_pin(
@@ -1234,6 +1259,83 @@ class TestCronTranscriptResume:
 
         assert list(state._slots) == ["cron-job1"]
         assert state.get_slot("cron-job1") is tab
+
+
+class TestTaskReviewTranscriptResume:
+    @pytest.mark.asyncio
+    async def test_a_resumed_review_transcript_saves_to_its_own_transcript(
+        self, tmp_path, monkeypatch
+    ):
+        """A task-runner review chat reopened from History keeps saving to its own transcript.
+
+        Unbound, the tab reads ``taskrunner_t1_chat_abc.jsonl`` but saves every new
+        turn to a second ``dashboard:taskrunner_t1_chat_abc`` file, which the delete
+        witness refuses, so the turns are never kept.
+        """
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("taskrunner:t1:chat:abc", "user", "review prompt")
+        log.append("taskrunner:t1:chat:abc", "assistant", "review answer")
+        line = {"linked_session_key": "taskrunner:t1:chat:abc"}
+        await asyncio.to_thread(log.update_metadata, "taskrunner:t1:chat:abc", line)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/taskrunner_t1_chat_abc/resume",
+                json={"key": "taskrunner_t1_chat_abc"},
+            )
+            assert resp.status == 200, await resp.text()
+
+        slot = state.get_slot("taskrunner_t1_chat_abc")
+        assert slot.linked_session_key == "taskrunner:t1:chat:abc"
+        slot.append("user", "follow-up after resume")
+        slot.drain()
+        assert _save_slot_to_history(state, slot) is True, "the resumed tab's save was refused"
+        assert (
+            log.read_messages("taskrunner:t1:chat:abc")[-1]["content"] == "follow-up after resume"
+        )
+        assert log.read_messages("dashboard:taskrunner_t1_chat_abc") == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["incognito", "temporary"])
+    async def test_a_resumed_private_review_transcript_keeps_its_mode_on_its_session(
+        self, tmp_path, monkeypatch, mode
+    ):
+        """The reopened tab runs on ``taskrunner:t1:chat:abc``, which no ``dashboard:`` mark names.
+
+        Unless the transcript's mode is admitted for that key, the restricted-session
+        gates let the tab's agent write what its mode refuses, and read memory when
+        temporary.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.handlers._shared_session_memory import (
+            _blocks_reads_session,
+            is_restricted_session_key,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path, context_builder=SimpleNamespace(_session_memory_modes={}))
+        log = state.conversation_log
+        log.append("taskrunner:t1:chat:abc", "user", "review prompt")
+        line = {"linked_session_key": "taskrunner:t1:chat:abc", "memory_mode": mode}
+        await asyncio.to_thread(log.update_metadata, "taskrunner:t1:chat:abc", line)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/taskrunner_t1_chat_abc/resume",
+                json={"key": "taskrunner_t1_chat_abc"},
+            )
+            assert resp.status == 200, await resp.text()
+
+        key = state.get_slot("taskrunner_t1_chat_abc").linked_session_key
+        assert key == "taskrunner:t1:chat:abc"
+        assert is_restricted_session_key(state, key)
+        request = SimpleNamespace(headers={"X-Session-Key": key})
+        assert _blocks_reads_session(state, request) is (mode == "temporary")
 
 
 # ── History key prefix handling ──

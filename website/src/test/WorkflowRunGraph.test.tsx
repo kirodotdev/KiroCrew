@@ -8,8 +8,8 @@
  */
 import { act, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
-import WorkflowRunGraph from '../apps/workflows/WorkflowRunGraph'
-import type { RunPlan } from '../apps/workflows/planModel'
+import WorkflowRunGraph from '../components/workflows/WorkflowRunGraph'
+import type { RunPlan } from '../components/workflows/planModel'
 import { i18next, initI18n } from '../i18n/all'
 import { renderWithProviders } from './helpers'
 

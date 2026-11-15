@@ -21,8 +21,6 @@ from kiro_crew.knowledge.embedder import InProcessEmbedder, floats_to_bytes
 from kiro_crew.knowledge.retrieval import HybridRetriever, vector_leg
 from kiro_crew.knowledge.store import KnowledgeStore
 
-pytest.importorskip("numpy")
-
 # A bound on every wait, so a broken handshake fails instead of hanging.
 _WAIT_SECS = 10.0
 

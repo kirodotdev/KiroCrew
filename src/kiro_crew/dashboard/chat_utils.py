@@ -57,15 +57,24 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_utils")
 #: these values against the frontend table.
 TRANSIENT_NOTICE_META_KEY = "notice"
 TRANSIENT_NOTICE_RETRYING = "transient_retrying"
+#: The same pending link when the provider answered with a throttle: the
+#: network is fine, so the row names the throttle instead of the connection.
+TRANSIENT_NOTICE_THROTTLE_RETRYING = "transient_throttle_retrying"
 TRANSIENT_NOTICE_RESUMING = "transient_resuming"
+TRANSIENT_NOTICE_THROTTLE_RESUMING = "transient_throttle_resuming"
 TRANSIENT_NOTICE_GIVE_UP = "transient_give_up"
+#: The terminal row of a throttle ladder that ends without a re-send.
+TRANSIENT_NOTICE_THROTTLE_GIVE_UP = "transient_throttle_give_up"
 
 #: English fallback text for the rows above. Plain language on purpose: the
 #: failure is an upstream model-backend 5xx the gateway is already retrying
 #: against, and neither "backend" nor "hiccup" tells a reader that.
 TRANSIENT_RETRYING_TEXT = "⟳ Connection unstable — retrying…"
+TRANSIENT_THROTTLE_RETRYING_TEXT = "⟳ The model provider is throttling requests — retrying…"
 TRANSIENT_RESUMING_TEXT = "⟳ Connection unstable — resuming…"
+TRANSIENT_THROTTLE_RESUMING_TEXT = "⟳ The model provider is throttling requests — resuming…"
 TRANSIENT_GIVE_UP_TEXT = "⟳ Connection unstable — please try again."
+TRANSIENT_THROTTLE_GIVE_UP_TEXT = "⟳ The model provider is throttling requests — please try again."
 
 
 # Per-turn compaction-failure backoff. See
@@ -149,7 +158,7 @@ def _redact_tool_field(text: str | None, *, limit: int = _MAX_TOOL_FIELD) -> str
 
 
 #: Wire frame pushed onto ``slot._pending`` at a turn's end, before the queue
-#: drain or the cycle's end writes anything (``chat_runner._mark_turn_end``); a
+#: drain or the cycle's end writes anything (``chat_turn.queue_drain._mark_turn_end``); a
 #: recovery the ending turn queued for itself is the same turn and gets none.
 #: ``done`` marks the end of the whole queue cycle; this marks the end of one
 #: turn, which is where an app's stream on a user's session stops
@@ -659,10 +668,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SLOT_DETAIL_MAX_LIMIT,
         UNKNOWN_ROW_FIELDS_KEY,
         _broadcast_expired_oauth_banners,
+        _cache_engine_is,
         _clean_verdict_key,
         _clear_display_redaction_cache,
         _collapse_wire_rows,
         _cut_preview,
+        _display_cache_engine,
+        _display_cache_epoch,
         _display_clean_add,
         _display_clean_old,
         _display_clean_seen,
@@ -683,6 +695,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DisplayRedactionKey,
         _expire_dead_child_oauth_meta,
         _live_child_instance,
+        _oauth_banner_row_key,
+        _open_oauth_banner_rows,
         _prepare_messages,
         _prepare_messages_scoped,
         _redact_for_display,
@@ -695,8 +709,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _remember_preview_by_object,
         _remember_redacted,
         _same_preview_context,
+        _sync_cache_engine,
         _variant_for_emit,
         adopt_variant_text,
+        display_redaction_stamp,
         drop_records_without_placeholders,
         serialize_wire_content,
         variant_from_row,
@@ -730,6 +746,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         IMAGE_REPAIR_KIND,
         KIRO_CLI_MISSING_KIND,
         MCP_APP_MESSAGE_KIND,
+        MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND,
         MODEL_UNAVAILABLE_KIND,
         MODEL_UNENTITLED_KIND,
         REQUEUED_STEER_ROW_MID_META,
@@ -749,7 +766,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _dequeue_next_message,
         _dequeue_next_system_message,
         _edit_queued_by_id,
+        _queued_row_id,
         _remove_queued_by_id,
+        _reorder_queued_rows,
         _stamped_turn_actor,
         app_inject_row,
         carries_attachments,

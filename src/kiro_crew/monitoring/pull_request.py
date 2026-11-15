@@ -526,19 +526,16 @@ def pull_request_conditions(canonical: Mapping[str, object]) -> tuple[MonitorCon
         )
     comment_digest = canonical.get("pr_comment_body_digest")
     if isinstance(comment_digest, str) and comment_digest:
-        # The digest is inside the KEY, not only the brief: the engine dedupes
-        # per condition key, so a stable key with a changing brief would be
-        # masked and never wake again. A bot rewrites a verdict comment IN PLACE
-        # -- created_at does not move -- so a count or a newest-timestamp probe
-        # cannot see it, only a digest over the bodies can. WAKE / NEVER: a
-        # comment belongs to the conversation, not the commit, so a force-push
-        # must not replay it (the same reasoning as the two review conditions
-        # above). Fail-closed lives in the provider: it emits "" (so this key is
-        # absent) on an incomplete comment read, so an empty/absent digest is the
-        # incomplete-read signal and no condition is emitted. There is no separate
-        # ``pr_comments_complete`` canonical field because an always-present key
-        # would break the pinned full-canonical shape and the public projection,
-        # and PR-level comment completeness has no bearing on readiness anyway.
+        # The digest is in the KEY, not only the brief: the engine dedupes per
+        # condition key, so a changing brief under a stable key would never wake.
+        # A bot rewrites a verdict comment IN PLACE (created_at does not move), so
+        # only a digest over the bodies sees it. WAKE / NEVER: a comment belongs
+        # to the conversation, not the commit, so a force-push must not replay it.
+        # The provider fails closed: on an incomplete comment read it emits "",
+        # so no condition is emitted. No separate ``pr_comments_complete`` field:
+        # an always-present key would break the pinned full-canonical shape and
+        # the public projection, and comment completeness does not affect
+        # readiness.
         conditions.append(
             MonitorCondition(
                 key=f"review_comment_bodies:{comment_digest}",

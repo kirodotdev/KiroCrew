@@ -150,12 +150,15 @@ property: every meeting agent ships `fs_read`/`fs_write` and is handed the meeti
 directory's absolute path, so a note stored inside that directory — the first
 version used `<meeting>/_note.md`, whose underscore only proved no agent's DERIVED
 output filename could collide with it — was one prompt-injected `fs_write` away from
-being overwritten. Unlike `edits/`, `notes/` is on the shared **WRITE-only** tier
-(`security.paths._WRITE_PROTECTED_HOME_PATHS`, the `app-sources` shape), not the
-read+write floor, and the asymmetry is load-bearing: pasted images are served through
+being overwritten. Unlike `edits/`, `notes/` is fenced **WRITE-only**: the app's
+`app.json` declares it in `agentReadOnlyDirs`
+([app-kit-platform](app-kit-platform.md#39-an-apps-agent-read-only-directories-are-declared-in-its-manifest-seam-level-7)),
+which puts it on the file-tool gate's write-protected tier (the `app-sources` shape)
+and seals it read-only in every sandbox mode. It is not on the read+write floor, and
+the asymmetry is load-bearing: pasted images are served through
 `/api/file-raw`, which applies the READ floor, so a note tree on that floor answers
-403 for every image. Reads stay open — the note is the user's own text in the user's
-own meeting — and what the fence refuses is an agent file tool rewriting it. Pinned
+403 for every image. Reads stay open: the note is the user's own text in the user's
+own meeting, and what the fence refuses is an agent rewriting it. Pinned
 by `test_the_tree_is_on_the_write_only_fence_and_stays_readable`, against the live
 gate rather than this app's own list. Nothing is migrated from the old location: the
 feature never shipped with it, and a migration would import whatever an agent had
@@ -1128,8 +1131,7 @@ path helpers); the core needs nothing from the app, so no seam is involved.
 pinned list that may only shrink: the `meetings` skill id in
 `metrics/feature_usage.py`, the data-home floors that name its stores
 (`owner_only_files.STARTUP_SWEEP_STORES`, the HIDDEN sandbox leaf and file-tool
-fence of `apps/meetings/data/edits`, the write fence of `apps/meetings/data/notes`),
-and the `security_posture.py` rows classifying its backend modules. Because the app
+fence of `apps/meetings/data/edits`), and the `security_posture.py` rows classifying its backend modules. Because the app
 id is an ordinary word, the list also carries the Zoom connector's
 `zoom.meetings.*` operation ids, which are not the app. Its dashboard half is
 `website/src/apps/meetings/meetingsBoundary.test.ts`: outside `src/apps/meetings/`,
@@ -1141,3 +1143,17 @@ surface row, the capture harnesses under `website/capture/` and
 `website/scripts/capture-meetings-*.mjs`, and the repo-level `test/test_meetings_*`
 suites with their helpers (one of which, `test_meetings_providers.py`, the native
 IPv6 CI lane names by path).
+
+**Adopted onto its own repository.** The wheel pins the app (`apps/adoption-pins.json`,
+[app-kit-platform.md § 33](app-kit-platform.md#33-former-built-in-adoption)) at
+`KiroCrewCaptain/kirocrew-app-meetings` with `minAppSdkLevel` 7, the level of the
+`agentReadOnlyDirs` entry `notes` (`ctx.turns`, `ctx.untrusted` and
+`permissions.agentTurns` need level 2), so a host whose record is builtin-owned swaps it
+in place onto that tree at a restart, keeping `data/` (meetings, transcripts, notes and
+the calendar sync state), `.app_secret`, the approved grants and `enabled`; the rail
+keeps `/meetings` and the `CalendarClock` glyph. The repository's `app.json` declares the
+same `permissions` (`/api/ws/stt` and `agentTurns` included) and the same three agents
+as the wheel copy, so E9 holds nothing back. It ships the `meetings` skill under
+`skills/meetings`; once the record is adopted the bundled `builtin_skills/meetings/` copy
+stands down (`test/test_released_builtin_skill_copies.py`). A fix to the app lands in
+that repository first; a change to the wheel copy needs its `App repo:` line.

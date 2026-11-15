@@ -1,10 +1,10 @@
 ---
 title: Crewmate settings — Trust by default, set on the profile, not in the chat
-status: accepted
+status: implemented
 author: iamwhatever
 created: 2026-10-07
-last-audited: 2026-10-07
-audited-at: 99c76a43d6
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr:
 implementation-prs: [17836]
 tracking-issues: []
@@ -14,7 +14,8 @@ superseded-by: []
 
 # RFC: Crewmate settings — Trust by default, set on the profile, not in the chat
 
-- Status: accepted. This is the product owner's decision, given 2026-10-07 in the
+- Status: implemented in [#17836](https://github.com/kirodotdev/KiroCrew/pull/17836)
+  (`ce89f96ac2`); verified at `1d08e941b3`. Accepted as the product owner's decision, given 2026-10-07 in the
   "Crew page polish" goal (item D). It amends
   [rfc-crewmates-launch.md](rfc-crewmates-launch.md) (the crewmate DM and its
   profile card). Claims about today's code were checked at `99c76a43d6` (main).

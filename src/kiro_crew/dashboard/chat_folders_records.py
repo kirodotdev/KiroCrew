@@ -762,16 +762,18 @@ async def create_folder_record(
 
 
 async def migrate_folder_member_labels(state: DashboardState, cfg: KiroCrewConfig) -> None:
-    """Rewrite each folder Default agent that holds a crewmate's label to that crewmate's key.
+    """Name, in one notice, each folder whose Default agent holds a crewmate's label.
 
     The folder picker once listed crewmates by key, so a person who knew a crewmate
     by its label saved the label, and the create route binds a label as a template,
-    without the crewmate's model, workspace or memory. A label that is itself a key,
-    or that two crewmates share, is left as saved. Runs once per data home
-    (:data:`FOLDER_MEMBER_LABELS_MARKER`): a template picked later under the same
-    name is the person's choice and stays. A config whose crewmates could not be
-    read, or a failed write, leaves the marker unwritten, so the next start tries
-    again. Never raises.
+    without the crewmate's model, workspace or memory. The picker now saves that same
+    label for a same-named custom agent's row, so the stored value cannot say which
+    was meant: it is left as saved, and the notice asks the person to pick the
+    crewmate where that was meant. A label that is itself a key, or that two
+    crewmates share, is not named. Runs once per data home
+    (:data:`FOLDER_MEMBER_LABELS_MARKER`). A config whose crewmates could not be
+    read, a notice call that raises, a notice whose write fails, or a failed marker
+    write leaves the marker unwritten, so the next start tries again. Never raises.
     """
     marker = config_dir() / FOLDER_MEMBER_LABELS_MARKER
     try:
@@ -784,17 +786,32 @@ async def migrate_folder_member_labels(state: DashboardState, cfg: KiroCrewConfi
             if agent.display_name and agent.display_name not in cfg.agents:
                 shown_by.setdefault(agent.display_name, []).append(key)
 
-        def _rewrite(folders: list[dict[str, Any]]) -> tuple[bool, bool]:
-            changed = False
+        def _named(folders: list[dict[str, Any]]) -> tuple[bool, list[str]]:
+            named = []
             for folder in folders:
-                keys = shown_by.get(str(folder.get("default_agent") or ""), [])
-                if len(keys) == 1:
-                    folder["default_agent"] = keys[0]
-                    changed = True
-            return changed, changed
+                label = str(folder.get("default_agent") or "")
+                if len(shown_by.get(label, [])) == 1:
+                    named.append(f"{folder.get('name') or ''} ({label})")
+            return False, named
 
-        if await state.mutate_folders(_rewrite):
-            state.push_slots_update()
+        named = await state.mutate_folders(_named)
+        if named:
+            folders = ", ".join(named)
+            state.notify(
+                "agent",
+                "Check a folder's Default agent",
+                f"These folders' Default agent has a bot's name, but new chats there do not "
+                f"run on that bot: {folders}. To use the bot, pick it as the Default agent in "
+                "the folder's settings.",
+                i18n={"id": "folder_agent_label", "params": {"folders": folders}},
+            )
+            # Read before any await: a later note replaces the state-wide future.
+            persisted = state.last_notification_persist
+            if persisted is not None and not await persisted:
+                logger.warning(
+                    "folder Default agent notice was not stored; it runs again next start"
+                )
+                return
         await asyncio.to_thread(marker.touch, mode=OWNER_ONLY_FILE_MODE)
     except Exception:
         logger.warning(
@@ -814,7 +831,7 @@ def _caller_reaches_a_channel(request: web.Request, caller_key: str) -> bool:
     a ``channel:`` key (an agent spawned for a channel thread, which
     ``is_channel_session_key`` does not name) and a channel-born slot
     (``session_control._channel_link_of``). The ledger's entry gate covers a
-    channel-born caller through ``_caller_admission``; this endpoint has no
+    channel-born caller through ``caller_admission_with_route``; this endpoint has no
     such gate, so it reads the slot's link here, on the slot found by the
     ledger's normalisation of the key (``session_ledger.ledger_key``).
     """

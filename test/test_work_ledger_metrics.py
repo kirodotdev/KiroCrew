@@ -397,6 +397,9 @@ async def test_a_validation_refused_write_counts_nothing(counted, recorded):
 @pytest.mark.asyncio
 async def test_closing_an_already_closed_item_counts_nothing_the_second_time(counted, recorded):
     item_id = await _board()
+    assert (await _record(CONDUCTOR, {"action": "verdict", "item_id": item_id, "verdict": "pass"}))[
+        0
+    ] == 200
     counted.clear()
     status, body = await _record(
         CONDUCTOR, {"action": "close", "item_id": item_id, "state": "accepted"}
@@ -461,6 +464,9 @@ async def test_each_fails_bucket_edge_is_reachable_through_a_verdict(
                 {"action": "verdict", "item_id": item_id, "verdict": "fail", "fails": fails},
             )
         )[0] == 200
+    assert (await _record(CONDUCTOR, {"action": "verdict", "item_id": item_id, "verdict": "pass"}))[
+        0
+    ] == 200
     counted.clear()
     assert (await _record(CONDUCTOR, {"action": "close", "item_id": item_id, "state": "accepted"}))[
         0
@@ -483,6 +489,9 @@ async def test_each_duration_bucket_is_reachable_from_the_committed_stamps(
 ):
     item_id = await _board()
     _age_item(item_id, **age)
+    assert (await _record(CONDUCTOR, {"action": "verdict", "item_id": item_id, "verdict": "pass"}))[
+        0
+    ] == 200
     counted.clear()
     assert (await _record(CONDUCTOR, {"action": "close", "item_id": item_id, "state": "accepted"}))[
         0
@@ -494,6 +503,9 @@ async def test_each_duration_bucket_is_reachable_from_the_committed_stamps(
 @pytest.mark.parametrize("state", ["accepted", "rejected", "abandoned"])
 async def test_each_terminal_state_counts_under_its_own_name(counted, recorded, state):
     item_id = await _board()
+    if state == "accepted":
+        verdict = {"action": "verdict", "item_id": item_id, "verdict": "pass"}
+        assert (await _record(CONDUCTOR, verdict))[0] == 200
     counted.clear()
     assert (await _record(CONDUCTOR, {"action": "close", "item_id": item_id, "state": state}))[
         0
@@ -607,6 +619,9 @@ async def test_a_failed_status_is_refused_by_the_route_and_counts_nothing(counte
 @pytest.mark.asyncio
 async def test_a_report_on_a_closed_item_counts_nothing(counted, recorded):
     item_id = await _board()
+    assert (await _record(CONDUCTOR, {"action": "verdict", "item_id": item_id, "verdict": "pass"}))[
+        0
+    ] == 200
     assert (await _record(CONDUCTOR, {"action": "close", "item_id": item_id, "state": "accepted"}))[
         0
     ] == 200
@@ -627,6 +642,9 @@ async def test_a_rebuild_from_the_crew_log_re_counts_nothing(counted, monkeypatc
     _real_units(monkeypatch)
     item_id = await _board()
     assert (await _report(WORKER, {"status": "progress", "summary": "half way"}))[0] == 200
+    assert (await _record(CONDUCTOR, {"action": "verdict", "item_id": item_id, "verdict": "pass"}))[
+        0
+    ] == 200
     assert (await _record(CONDUCTOR, {"action": "close", "item_id": item_id, "state": "accepted"}))[
         0
     ] == 200
@@ -654,6 +672,9 @@ async def test_a_board_purged_and_reopened_on_the_same_slot_counts_again(counted
         {"kind": "item", "depth": "0"},
     ]
     # An empty board is not finished, so the purge needs the item closed first.
+    assert (await _record(CONDUCTOR, {"action": "verdict", "item_id": item_id, "verdict": "pass"}))[
+        0
+    ] == 200
     assert (await _record(CONDUCTOR, {"action": "close", "item_id": item_id, "state": "accepted"}))[
         0
     ] == 200
@@ -685,6 +706,9 @@ async def test_nothing_is_recorded_when_telemetry_is_off(monkeypatch, tmp_path, 
     async def _drive() -> None:
         item_id = await _board()
         assert (await _report(WORKER, {"status": "progress", "summary": "half way"}))[0] == 200
+        assert (
+            await _record(CONDUCTOR, {"action": "verdict", "item_id": item_id, "verdict": "pass"})
+        )[0] == 200
         assert (
             await _record(CONDUCTOR, {"action": "close", "item_id": item_id, "state": "accepted"})
         )[0] == 200

@@ -96,7 +96,7 @@ class TestBootRefusesAnUnverifiableOsHome:
         passes vacuously if boot started refusing everything."""
         # The last gate in ``boot`` spawns a real kiro-cli child when the pod's PATH holds
         # one. The stub returns at once, so the exit code depends on the OS home alone.
-        monkeypatch.setattr(rt, "_probe_pod_child_bootstrap", lambda _env: None)
+        monkeypatch.setattr(rt, "_probe_pod_child_bootstrap", lambda _env, **_kw: None)
         code, seen, c = self._boot(tmp_path, monkeypatch)
 
         assert code == 0, code

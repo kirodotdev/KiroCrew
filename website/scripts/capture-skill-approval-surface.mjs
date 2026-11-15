@@ -6,8 +6,8 @@
  * in-process static server, every /api/** answered from fixtures.
  *
  * Frames:
- *   01-notification-actions  bell feed detail: the new "Auto-approve future
- *                            skills" action beside "Review skill"
+ *   01-notification-actions  bell feed detail: "Review skill" as the
+ *                            notification's only action
  *   02-pending-panel         review queue: reworded hint (opt-out + script
  *                            caveat) with the settings link, and the script
  *                            badge (title-bearing) on the script row
@@ -27,10 +27,9 @@ const PREFIX = process.argv[3] || 'after'
 mkdirSync(OUT, { recursive: true })
 
 const REVIEW_URL = '/capabilities?tab=skills&review=summarize-oncall-handoffs'
-const SETTING_URL = '/settings?tab=skills&highlight=key:skills.approval_required'
 
-// The note exactly as the changed backend now emits it: review deep-link plus
-// the auto-approve settings shortcut.
+// The note exactly as the backend emits it: the review deep-link is its only
+// action.
 const SKILL_NOTE = {
   kind: 'skills',
   source: 'system',
@@ -46,7 +45,6 @@ const SKILL_NOTE = {
   url: REVIEW_URL,
   actions: [
     { id: 'review-skill', label: 'Review skill', url: REVIEW_URL },
-    { id: 'auto-approve-skills', label: 'Stop requiring skill approval…', url: SETTING_URL },
   ],
   slug: 'summarize-oncall-handoffs',
   candidate_kind: 'new',
@@ -106,14 +104,14 @@ const { srv, base } = await serveDist()
 const browser = await chromium.launch()
 
 try {
-  // ── Frame 01: notification detail with both actions ──
+  // ── Frame 01: notification detail with its single review action ──
   {
     const page = await browser.newPage({ viewport: { width: 1280, height: 860 } })
     logPageProblems(page)
     await stubDashboardApi(page, { extra: apiFor(PENDING) })
     await page.goto(`${base}/notifications`, { waitUntil: 'networkidle' })
     await page.getByText('New skill awaiting review').first().click()
-    await page.getByText('Stop requiring skill approval').first().waitFor()
+    await page.getByText('Review skill').first().waitFor()
     await shot(page, '01-notification-actions')
     await page.close()
   }

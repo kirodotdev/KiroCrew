@@ -429,3 +429,68 @@ describe('ChatPane plan-shaped follow-ups', () => {
     expect(slot).toBe('pane-sendnow-plain')
   })
 })
+
+/** A discussion card's Start / No thanks, as GrillCard dispatches it. */
+function cardSend(text: string, slot: string) {
+  const detail: { text: string; slot: string; result: string | null } = { text, slot, result: null }
+  act(() => { window.dispatchEvent(new CustomEvent('mc:compose-send', { detail })) })
+  return detail.result
+}
+
+describe('ChatPane discussion-card sends (the follow-up chips\' Quick Send gate)', () => {
+  // `mockResolvedValue` outlives clearAllMocks: reset it both ways so no test here or after sees another's Quick Send.
+  const quickSendOff = () => { ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: false }) }
+  beforeEach(quickSendOff)
+  afterEach(quickSendOff)
+
+  it('puts the text in the pane\'s box when Quick Send is off', async () => {
+    await renderPane('pane-g1')
+    expect(cardSend('不用讨论了', 'pane-g1')).toBe('staged')
+    await waitFor(() => expect(composer().value).toBe('不用讨论了'))
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('sends it through the pane\'s send path when Quick Send is on', async () => {
+    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: true })
+    await renderPane('pane-g2')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
+    expect(cardSend('不用讨论了', 'pane-g2')).toBe('sent')
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    const [wireText, slot] = (api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(wireText).toBe('不用讨论了')
+    expect(slot).toBe('pane-g2')
+  })
+
+  it('stages instead of sending while the pane is busy', async () => {
+    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: true })
+    await renderPane('pane-g3', { subagents_running: true })
+    expect(cardSend('不用讨论了', 'pane-g3')).toBe('staged')
+    await waitFor(() => expect(composer().value).toBe('不用讨论了'))
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('stages instead of sending while a chip selection is open', async () => {
+    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: true })
+    await renderPane('pane-g4')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
+    vi.useFakeTimers()
+    await act(async () => { clickOption('Alpha', { shiftKey: true }) })
+    vi.useRealTimers()
+    expect(cardSend('不用讨论了', 'pane-g4')).toBe('staged')
+    await waitFor(() => expect(composer().value).toBe('Alpha\n\n不用讨论了'))
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('puts the same reply in the box once, however often the card is pressed', async () => {
+    await renderPane('pane-g6')
+    expect(cardSend('不用讨论了', 'pane-g6')).toBe('staged')
+    expect(cardSend('不用讨论了', 'pane-g6')).toBe('staged')
+    await waitFor(() => expect(composer().value).toBe('不用讨论了'))
+  })
+
+  it('leaves a card from another chat alone', async () => {
+    await renderPane('pane-g5')
+    expect(cardSend('不用讨论了', 'pane-other')).toBeNull()
+    expect(composer().value).toBe('')
+  })
+})

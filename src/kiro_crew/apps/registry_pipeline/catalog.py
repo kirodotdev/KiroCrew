@@ -67,6 +67,20 @@ from kiro_crew.sandbox import (
 
 logger = logging.getLogger(_FACADE)
 
+# A manifest cache miss spawns a ``git clone``; on Windows asyncio's CreateProcess
+# runs on the loop thread, so an unbounded burst stalls the loop past its watchdog.
+_MANIFEST_RESOLVE_CONCURRENCY = 8
+
+
+async def _gather_bounded(entries: list[Any], resolve: Any) -> list[Any]:
+    gate = asyncio.Semaphore(_MANIFEST_RESOLVE_CONCURRENCY)
+
+    async def _one(entry: Any) -> Any:
+        async with gate:
+            return await resolve(entry)
+
+    return await asyncio.gather(*[_one(e) for e in entries], return_exceptions=True)
+
 
 # Source type prefix for registry-installed apps.
 SOURCE_REGISTRY_PREFIX = "registry:"
@@ -733,10 +747,7 @@ async def _append_external_registry_apps(
     # installed version until that checkout moves. The index is then the only
     # listing input that has seen the registry's newer release.
     index_versions = [e.get("version") for e in kept]
-    resolved = await asyncio.gather(
-        *[_resolve_manifest(e) for e in kept],
-        return_exceptions=True,
-    )
+    resolved = await _gather_bounded(kept, _resolve_manifest)
     kept = [r if isinstance(r, dict) else kept[i] for i, r in enumerate(resolved)]
     for row, index_version in zip(kept, index_versions, strict=True):
         # The index may only RAISE the version: a manifest fetched from the remote
@@ -811,6 +822,8 @@ async def list_registry() -> list[dict[str, Any]]:
                         _entry_git_url(row),
                         _entry_git_url(entries[idx]),
                     )
+    except official_catalog.CatalogUnavailable as exc:
+        official_catalog.log_unavailable(logger, "no official catalog inventory this listing", exc)
     except Exception:  # noqa: BLE001 - degrade, never 500 the store
         # No catalog inventory this listing. That is the behaviour the store had
         # before this module existed (seed + built-ins discovered on disk), and it
@@ -843,9 +856,8 @@ async def list_registry() -> list[dict[str, Any]]:
     # what the catalog already told us is the per-app network cost this document
     # exists to remove -- and it is O(N) in the number of third-party apps, which
     # is exactly the number the store is meant to grow.
-    resolved = await asyncio.gather(
-        *[_identity(e) if _is_catalog_row(e) else _resolve_manifest(e) for e in entries],
-        return_exceptions=True,
+    resolved = await _gather_bounded(
+        entries, lambda e: _identity(e) if _is_catalog_row(e) else _resolve_manifest(e)
     )
     entries = [r if isinstance(r, dict) else entries[i] for i, r in enumerate(resolved)]
 
@@ -930,6 +942,9 @@ def _catalog_installable_rows() -> dict[str, dict[str, Any]]:
             for row in official_catalog.inventory(entries)
             if isinstance(row.get("name"), str)
         }
+    except official_catalog.CatalogUnavailable as exc:
+        official_catalog.log_unavailable(logger, "cannot confirm catalog install coordinates", exc)
+        return {}
     except Exception:  # noqa: BLE001 - degrade to the seed, never 500 the store
         logger.warning("cannot confirm the catalog's install coordinates", exc_info=True)
         return {}
@@ -1010,10 +1025,7 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
         # ``version`` come from the app's own app.json.
         for row in edition_rows:
             row["_index_author"] = row.get("author")
-        resolved_edition = await asyncio.gather(
-            *[_resolve_manifest(row) for row in edition_rows],
-            return_exceptions=True,
-        )
+        resolved_edition = await _gather_bounded(edition_rows, _resolve_manifest)
         edition_rows = [
             r if isinstance(r, dict) else edition_rows[i] for i, r in enumerate(resolved_edition)
         ]

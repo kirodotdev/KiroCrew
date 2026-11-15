@@ -46,12 +46,15 @@ test("fetchRemoteToken runs one bounded ssh against the port's crew and parses i
   assert.strictEqual(calls.length, 1);
   assert.strictEqual(calls[0].file, "/usr/bin/ssh");
   assert.deepStrictEqual(
-    calls[0].args.slice(0, 6),
-    ["-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "myhost.example.com"],
-    "stdin closed, no prompt, and ssh's connect deadline inside the kill budget",
+    calls[0].args.slice(0, 8),
+    [
+      "-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
+      "-o", "ClearAllForwardings=yes", "myhost.example.com",
+    ],
+    "stdin closed, no prompt, connect deadline inside the kill budget, no config forwards",
   );
-  assert.strictEqual(calls[0].args.length, 7);
-  assert.match(calls[0].args[6], /KIROCREW_PORT=7000/, "the crew's own port, not the local end");
+  assert.strictEqual(calls[0].args.length, 9);
+  assert.match(calls[0].args[8], /KIROCREW_PORT=7000/, "the crew's own port, not the local end");
   assert.deepStrictEqual(calls[0].options, { timeout: 5000 }, "the SSH budget never drops below 5s");
   assert.ok(logs.includes("SSH token fetch: /usr/bin/ssh myhost.example.com for port 7000"));
 });
@@ -75,7 +78,7 @@ test("fetchRemoteToken defaults the SSH budget and the remote port to the tab's 
   assert.deepStrictEqual(await supervisor.fetchRemoteToken(7778), { token: "", error: null });
   assert.deepStrictEqual(calls[0].options, { timeout: 20000 });
   assert.ok(calls[0].args.includes("ConnectTimeout=18"));
-  assert.match(calls[0].args[6], /KIROCREW_PORT=7778/);
+  assert.match(calls[0].args[8], /KIROCREW_PORT=7778/);
 });
 
 function windowsCrewHarness(kernelRoot, execFileFn) {
@@ -1078,7 +1081,7 @@ test("an adopted gateway from another install is left alone by the update stop",
 
 test("a client-only launch whose crew opted in opens the managed tunnel before asking the port", async () => {
   const timers = fakeTimers();
-  const { supervisor, spawnCalls } = harness({
+  const { supervisor, spawnCalls, tunnelCalls } = harness({
     timers,
     store: remoteCrewStore(5477, {
       host: "devbox.example.com",
@@ -1092,8 +1095,8 @@ test("a client-only launch whose crew opted in opens the managed tunnel before a
 
   const started = supervisor.start();
   await flush();
-  assert.strictEqual(spawnCalls.length, 1, "the keeper is spawned first");
-  const [, args] = spawnCalls[0];
+  assert.strictEqual(tunnelCalls.length, 1, "the keeper is spawned first");
+  const [, args] = tunnelCalls[0];
   assert.deepStrictEqual(args.slice(0, 2), ["desktop", "tunnel"]);
   assert.deepStrictEqual(
     args.slice(2),
@@ -1107,22 +1110,120 @@ test("a client-only launch whose crew opted in opens the managed tunnel before a
     await flush();
   }
   assert.strictEqual(await started, false);
-  assert.strictEqual(spawnCalls.length, 1, "client-only still starts no local gateway");
+  assert.strictEqual(spawnCalls.length, 0, "client-only still starts no local gateway");
 
   supervisor.stopOnQuit();
-  assert.ok(spawnCalls[0].child.killed, "quitting stops the keeper");
+  assert.ok(tunnelCalls[0].child.killed, "quitting stops the keeper");
 });
 
-test("without the opt-in a client-only launch spawns nothing and does not wait", async () => {
-  const { supervisor, spawnCalls } = harness({
-    store: remoteCrewStore(5477, {
-      host: "devbox.example.com",
-      binPath: "kirocrew",
-      remotePort: "5476",
-      remotePath: "",
-    }, { runLocalGateway: false }),
+const NOT_OPTED_IN_CREW = {
+  host: "devbox.example.com",
+  binPath: "kirocrew",
+  remotePort: "5476",
+  remotePath: "",
+  manageTunnel: false,
+};
+
+// The listener probe (lsof) reporting `pids` on the launch port.
+function lsofReports(pids) {
+  return (file, _args, _options, callback) => {
+    if (!String(file).endsWith("lsof")) throw new Error(`unexpected ${file}`);
+    callback(null, pids.map((pid) => `${pid}\n`).join(""), "");
+  };
+}
+
+test("without the opt-in, a client-only port nothing answers still gets the forward", async () => {
+  // A crew the Add Remote Crew form saved unticked: nothing else forwards the
+  // port, so without this the launch fails on every reopen.
+  const timers = fakeTimers();
+  const { supervisor, spawnCalls, tunnelCalls } = harness({
+    timers,
+    store: remoteCrewStore(5477, NOT_OPTED_IN_CREW, { runLocalGateway: false }),
+    port: 5477,
+    execFileFn: lsofReports([]),
+  });
+
+  const started = supervisor.start();
+  for (let i = 0; i < 20 && tunnelCalls.length === 0; i += 1) await flush();
+  assert.strictEqual(tunnelCalls.length, 1, "the keeper is spawned once the port is found unanswered");
+  const [, args] = tunnelCalls[0];
+  assert.deepStrictEqual(
+    args,
+    ["desktop", "tunnel", "--host", "devbox.example.com", "--local-port", "5477", "--remote-port", "5476"],
+  );
+  while (timers.pending.some((timer) => timer.ms === 500)) {
+    timers.fire(500);
+    await flush();
+  }
+  assert.strictEqual(await started, false);
+  assert.strictEqual(spawnCalls.length, 0, "client-only still starts no local gateway");
+  supervisor.stopOnQuit();
+  assert.ok(tunnelCalls[0].child.killed, "quitting stops the keeper");
+});
+
+test("without the opt-in, a port something else answers is never taken over", async () => {
+  // The user's own VPN, kubectl or ssh forward already carries the port.
+  const http = switchableHttp({ status: 200, body: JSON.stringify({ app: "kirocrew", version: "0.6.0" }) });
+  const { supervisor, tunnelCalls } = harness({
+    store: remoteCrewStore(5477, NOT_OPTED_IN_CREW, { runLocalGateway: false }),
+    port: 5477,
+    httpMod: http,
+  });
+  await supervisor.start();
+  assert.ok(http.requests.length > 0, "the port was asked");
+  assert.strictEqual(tunnelCalls.length, 0);
+});
+
+test("a remote-crew save that stays unticked stops the launch-time fallback forward", async () => {
+  const timers = fakeTimers();
+  const { supervisor, tunnelCalls } = harness({
+    timers,
+    store: remoteCrewStore(5477, NOT_OPTED_IN_CREW, { runLocalGateway: false }),
+    port: 5477,
+    execFileFn: lsofReports([]),
+  });
+  const started = supervisor.start();
+  for (let i = 0; i < 20 && tunnelCalls.length === 0; i += 1) await flush();
+  assert.strictEqual(tunnelCalls.length, 1);
+  while (timers.pending.some((timer) => timer.ms === 500)) {
+    timers.fire(500);
+    await flush();
+  }
+  await started;
+  // What Set Remote Host calls after saving the launch port's crew.
+  supervisor.syncTunnel();
+  assert.ok(tunnelCalls[0].child.killed, "the saved false ends the fallback");
+  assert.strictEqual(tunnelCalls.length, 1);
+});
+
+test("without the opt-in, a port held by a forward whose far end is down is never taken over", async () => {
+  // Nothing answers over HTTP, but the user's own ssh still listens on the port.
+  const { supervisor, spawnCalls, tunnelCalls } = harness({
+    store: remoteCrewStore(5477, NOT_OPTED_IN_CREW, { runLocalGateway: false }),
+    port: 5477,
+    execFileFn: lsofReports([4321]),
+  });
+  assert.strictEqual(await supervisor.start(), false);
+  assert.strictEqual(tunnelCalls.length, 0);
+  assert.strictEqual(spawnCalls.length, 0);
+});
+
+test("without the opt-in, a port the listener probe cannot read is never taken over", async () => {
+  // The default harness execFile throws, so the probe answers "unknown".
+  const { supervisor, tunnelCalls } = harness({
+    store: remoteCrewStore(5477, NOT_OPTED_IN_CREW, { runLocalGateway: false }),
     port: 5477,
   });
   assert.strictEqual(await supervisor.start(), false);
-  assert.strictEqual(spawnCalls.length, 0);
+  assert.strictEqual(tunnelCalls.length, 0);
+});
+
+test("with the local gateway on, an unanswered crew port opens no unrequested forward", async () => {
+  const { supervisor, spawnCalls, tunnelCalls } = harness({
+    store: remoteCrewStore(5477, NOT_OPTED_IN_CREW, { runLocalGateway: true }),
+    port: 5477,
+  });
+  assert.strictEqual(await supervisor.start(), false);
+  assert.strictEqual(tunnelCalls.length, 0);
+  assert.strictEqual(spawnCalls.length, 0, "and no gateway is bound over the crew's port");
 });

@@ -31,6 +31,7 @@ from kiro_crew.dashboard import revocation_gen, token_auth, websocket_hub
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.dashboard.state import _websocket_for
 from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_WS_FLAG
+from kiro_crew.dashboard.ws_snapshot_hold import HELD_FRAMES_KEY
 from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import async_wait_until
 
@@ -111,9 +112,16 @@ async def _harness(state, body):
 
         reader = asyncio.ensure_future(_read())
         sock = await _stalled_socket(client.host, client.port, token, origin)
+
+        def _ready() -> bool:
+            # Registered is not ready: a connect still waiting for its slot list holds
+            # its frames (ws_snapshot_hold), and the limit is about frames in a buffer.
+            return len(state._ws_clients) >= 2 and all(
+                ws.get(HELD_FRAMES_KEY) is None for ws in state._ws_clients
+            )
+
         await async_wait_until(
-            lambda: len(state._ws_clients) >= 2,
-            describe=lambda: f"{len(state._ws_clients)} of 2 tabs registered",
+            _ready, describe=lambda: f"{len(state._ws_clients)} of 2 tabs registered"
         )
         local = sock.getsockname()
         stalled = next(

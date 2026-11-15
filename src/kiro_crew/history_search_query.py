@@ -159,6 +159,12 @@ class SearchNeedle(NamedTuple):
     such a split came from: scoring-only, it neither gates nor adds score, and a
     session holding it ranks ahead of every session that does not (see
     :meth:`SessionCatalogProjection._search_parsed`).
+
+    ``quoted`` marks a required needle the user wrote in double quotes: its text
+    must appear exactly as typed, and it anchors the snippet ahead of every
+    other term. ``excluded`` marks a term written after a leading ``-``: it never
+    gates or scores, and a session whose title or content holds it is left out
+    (see :func:`split_query_operators`).
     """
 
     text: str
@@ -170,6 +176,8 @@ class SearchNeedle(NamedTuple):
     saturate_body: bool = False
     word: bool = False
     verbatim: bool = False
+    quoted: bool = False
+    excluded: bool = False
 
 
 def _is_short_term(term: str) -> bool:
@@ -417,14 +425,15 @@ def _forge_spellings(ref: _ForgeRef) -> tuple[str, tuple[str, ...]]:
     )
 
 
-def _forge_lead_in(parts: list[str], index: int) -> tuple[str, ...]:
-    """The contiguous run of reference-vocabulary words before ``parts[index]``.
+def _forge_lead_in(parts: list[str], index: int, floor: int) -> tuple[str, ...]:
+    """Reference-vocabulary words before ``parts[index]``, bounded by ``floor``.
 
     Raw material for :func:`_forge_type_suffix`, which decides how much of the
-    run is actually part of the reference.
+    run is actually part of the reference. ``floor`` is the first plain word
+    after the most recent query operator, which a lead-in cannot cross.
     """
     back = index - 1
-    while back >= 0 and parts[back] in _FORGE_REF_WORDS:
+    while back >= floor and parts[back] in _FORGE_REF_WORDS:
         back -= 1
     return tuple(parts[back + 1 : index])
 
@@ -763,7 +772,118 @@ def _cjk_words(runs: list[str]) -> dict[str, tuple[str, ...]]:
     return out
 
 
-def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
+class QueryOperators(NamedTuple):
+    """A query split into its plain words, its quoted phrases and its exclusions.
+
+    ``positive`` holds the words and phrases in the order typed, which is the
+    order the whole-query phrase bonus and the snippet read them in. Every
+    phrase and exclusion has its whitespace collapsed; nothing is casefolded.
+    ``word_run_starts`` holds indices into ``words`` where a phrase or exclusion
+    ended the preceding contiguous run of plain words; index zero is implicit.
+    """
+
+    words: tuple[str, ...]
+    phrases: tuple[str, ...]
+    excluded: tuple[str, ...]
+    positive: tuple[str, ...]
+    word_run_starts: tuple[int, ...] = ()
+
+
+def _excludes(query: str, start: int) -> bool:
+    """Whether the ``-`` at *start* begins an exclusion rather than literal text.
+
+    A ``-`` excludes when a quote follows it, or a word that starts with a letter
+    and is longer than :data:`_SHORT_NEEDLE_MAX_CHARS`. Everything else stays text
+    a person can search for: ``--force``, a lone ``-``, a negative number such as
+    ``-32603``, and short command flags such as ``-k`` or ``-rf``. Excluding one of
+    those would drop every session holding that one or two letters anywhere,
+    which is nearly all of them. A longer flag (``-name``) does exclude; quoting
+    it (``"-name"``) searches for it as text.
+    """
+    following = query[start + 1 : start + 2]
+    if following == '"':
+        return True
+    end = start + 1
+    while end < len(query) and not query[end].isspace():
+        end += 1
+    word = query[start + 1 : end]
+    return following.isalpha() and not _is_short_term(word)
+
+
+def exclusion_needles(operators: QueryOperators) -> list[SearchNeedle]:
+    """The weightless ``excluded`` needles for *operators*' ``-exclusions``, deduplicated."""
+    excluded = dict.fromkeys(text.casefold() for text in operators.excluded)
+    return [
+        SearchNeedle(text, 0.0, False, excluded=True) for text in list(excluded)[:SEARCH_MAX_TOKENS]
+    ]
+
+
+def split_query_operators(query: str) -> QueryOperators:
+    """Split *query* into words, ``"quoted phrases"`` and ``-exclusions``.
+
+    A double quote opens a phrase only at the start of a token, and the phrase
+    runs to the next double quote. A quote with no closing partner is dropped and
+    the rest of the query is read as plain words, so a half-typed phrase still
+    searches while it is being typed; after a ``-`` that rest is excluded instead. ``-word`` and ``-"a phrase"`` are
+    exclusions (see :func:`_excludes` for which hyphens count). A query with no
+    quote and no such hyphen comes back as its whitespace-split words alone,
+    which is exactly the parse it always had.
+    """
+    words: list[str] = []
+    phrases: list[str] = []
+    excluded: list[str] = []
+    positive: list[str] = []
+    # Where the next plain word would land each time an operator is read.
+    operator_positions: list[int] = []
+    index, length = 0, len(query)
+    while index < length:
+        if query[index].isspace():
+            index += 1
+            continue
+        negate = query[index] == "-" and _excludes(query, index)
+        body = index + 1 if negate else index
+        if query[body : body + 1] == '"':
+            close = query.find('"', body + 1)
+            if close < 0:
+                rest = query[body + 1 :].split()
+                if negate:
+                    # A half-typed exclusion still excludes what is typed so far:
+                    # read as plain words it would require the very text the person
+                    # is asking to leave out.
+                    if rest:
+                        excluded.append(" ".join(rest))
+                else:
+                    # The dropped quote is no operator, so its words continue the run.
+                    words.extend(rest)
+                    positive.extend(rest)
+                break
+            inner = " ".join(query[body + 1 : close].split())
+            if inner:
+                (excluded if negate else phrases).append(inner)
+                if not negate:
+                    positive.append(inner)
+            operator_positions.append(len(words))
+            index = close + 1
+            continue
+        end = body
+        while end < length and not query[end].isspace():
+            end += 1
+        if negate:
+            excluded.append(query[body:end])
+            operator_positions.append(len(words))
+        else:
+            words.append(query[index:end])
+            positive.append(query[index:end])
+        index = end
+    word_run_starts = sorted({at for at in operator_positions if 0 < at < len(words)})
+    return QueryOperators(
+        tuple(words), tuple(phrases), tuple(excluded), tuple(positive), tuple(word_run_starts)
+    )
+
+
+def parse_search_query(
+    query: str, *, operators: bool = True
+) -> tuple[list[SearchNeedle], str, bool]:
     """Return ``(needles, phrase, adjacency_floor)`` for a search *query*, casefolded.
 
     ``phrase`` is the whole normalized query. ``needles`` are derived from the
@@ -854,13 +974,37 @@ def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
     direction when the alternative is a keystroke-driven search stalling for
     seconds.
 
+    Two operators come out of :func:`split_query_operators` first. A
+    ``"quoted phrase"`` becomes one required ``quoted`` needle, matched as typed
+    and placed ahead of the words so a token cap never drops it. An ``-exclusion``
+    becomes an ``excluded`` needle after every other one: it carries no weight and
+    leaves out any session holding it. A query left with no word and no phrase
+    (only exclusions) matches nothing, like an empty one, rather than every
+    session. ``operators=False`` reads quotes and hyphens as plain text, for a
+    caller whose term is already one literal token, such as a ``title:`` term.
+
     A whitespace-only query yields ``([], "", False)``; callers treat that as
     "matches nothing" rather than "matches everything".
     """
-    parts = query.casefold().split()
-    if not parts:
+    split = (
+        split_query_operators(query)
+        if operators
+        else QueryOperators(tuple(query.split()), (), (), tuple(query.split()))
+    )
+    # One part per word: a word holds no whitespace and casefolding adds none, so
+    # the operator split's word indices are the parts' indices too.
+    parts = [word.casefold() for word in split.words]
+    word_run_starts = set(split.word_run_starts)
+    quoted_texts = list(dict.fromkeys(text.casefold() for text in split.phrases))
+    if not parts and not quoted_texts:
         return ([], "", False)
-    phrase = " ".join(parts)
+    phrase = " ".join(" ".join(split.positive).casefold().split())
+    quoted_needles = [
+        SearchNeedle(text, 1.0, True, saturate_body=_is_short_term(text), quoted=True)
+        for text in quoted_texts
+    ]
+    # Quoted literals stay outside the mutable reference ledger so a later
+    # reference cannot widen their alternatives or remove them as lead-in text.
     required: dict[str, SearchNeedle] = {}
     extras: dict[str, SearchNeedle] = {}
     ranking: dict[str, SearchNeedle] = {}
@@ -881,8 +1025,11 @@ def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
     # the cap. Keyed rather than counted so the order the two forms appear in
     # cannot change the outcome.
     charged: set[str] = set()
+    run_floor = 0
     for index, part in enumerate(parts):
-        lead = _forge_lead_in(parts, index)
+        if index in word_run_starts:
+            run_floor = index
+        lead = _forge_lead_in(parts, index, run_floor)
         ref = _parse_forge_ref(part, lead)
         if ref is None and not part.isdigit():
             # Built-ins always win: only a token no forge shape recognized is
@@ -1056,10 +1203,16 @@ def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
             del ranking[key]
         elif spellings != (needle.text, *needle.alts):
             ranking[key] = needle._replace(text=spellings[0], alts=spellings[1:])
-    needles = list(required.values())[:SEARCH_MAX_TOKENS]
+    # Collapse only a plain required term whose matching and scoring semantics
+    # are identical to the quoted needle. A forge reference may share its text
+    # while still carrying bounded alternative spellings that must remain.
+    quoted_equivalents = {needle._replace(quoted=False) for needle in quoted_needles}
+    required_needles = [needle for needle in required.values() if needle not in quoted_equivalents]
+    needles = (quoted_needles + required_needles)[:SEARCH_MAX_TOKENS]
     needles.extend(list(extras.values())[:_SEARCH_MAX_SCORING_EXTRAS])
     needles.extend(list(verbatim.values())[:_SEARCH_MAX_SCORING_EXTRAS])
     needles.extend(ranking.values())
+    needles.extend(exclusion_needles(split))
     # Bigrams arm the floor; a verbatim run is not adjacency evidence, and
     # counting one here would arm a floor that no session could meet. A REQUIRED
     # word of 2+ characters that survived the cut already proves adjacency in
@@ -1099,12 +1252,15 @@ def snippet_needle_tiers(query: str) -> list[list[str]]:
     across tiers a later message holding a better needle wins. Returns ``[]`` for
     a whitespace-only query.
 
-    A query with no dictionary words is ONE tier, in :func:`snippet_needles`
-    order, so its snippet is exactly what the first matching message gives.
-    A query with dictionary words has three: the phrase and each verbatim run,
-    then the full-weight needles (words of two or more characters, whole terms),
-    then the down-weighted ones (one-character words, lone characters). That is
-    what keeps a lone ``普`` in an early ``普通`` from beating ``吉普力`` later on.
+    A query with no dictionary words is one tier, in :func:`snippet_needles`
+    order, so its snippet is what the first matching message gives, except that
+    its one- and two-character ASCII terms form a last tier when it also has a
+    longer term. A query with dictionary words has three tiers: the phrase and
+    each verbatim run, then the full-weight needles (words of two or more
+    characters, whole terms), then the down-weighted ones (one-character words,
+    lone characters), and the short ASCII terms after those. That is what keeps
+    a lone ``普`` in an early ``普通`` from beating ``吉普力`` later on, and an
+    ``is`` in an early ``this`` from beating the query's real words.
     """
     needles, phrase, _ = parse_search_query(query)
     if not needles:
@@ -1114,9 +1270,21 @@ def snippet_needle_tiers(query: str) -> list[list[str]]:
 
 def _snippet_tiers(needles: Sequence[SearchNeedle], phrase: str) -> list[list[str]]:
     """:func:`snippet_needle_tiers` from an already-parsed query."""
+    # An excluded term is absent from every matching session, and a quoted phrase
+    # is what the person asked to see, so it gets a tier of its own above the rest.
+    needles = [n for n in needles if not n.excluded]
+    quoted = [n.text for n in needles if n.quoted]
     # Stable sort on weight only: within a weight class the parse's insertion
     # order (required terms first-seen, then bigrams) is the display order.
-    ordered = sorted((n for n in needles if not n.verbatim), key=lambda n: -n.weight)
+    ordered = sorted(
+        (n for n in needles if not n.verbatim and not n.quoted), key=lambda n: -n.weight
+    )
+    # A one- or two-character ASCII term is a substring of so much incidental text
+    # (``is`` in ``this``, ``at`` in ``that``) that an early message holding only it
+    # would take the snippet from the message about the query's real words, so it
+    # anchors a snippet only when no message holds anything better.
+    terms = [n for n in ordered if not n.saturate_body]
+    short = [n for n in ordered if n.saturate_body]
 
     def spellings(group: Iterable[SearchNeedle]) -> list[str]:
         return [text for n in group for text in (n.text, *n.alts)]
@@ -1124,11 +1292,18 @@ def _snippet_tiers(needles: Sequence[SearchNeedle], phrase: str) -> list[list[st
     if any(n.word or n.verbatim for n in needles):
         tiers = [
             [phrase, *(n.text for n in needles if n.verbatim)],
-            spellings(n for n in ordered if n.weight >= 1.0),
-            spellings(n for n in ordered if n.weight < 1.0),
+            spellings(n for n in terms if n.weight >= 1.0),
+            spellings(n for n in terms if n.weight < 1.0),
+            spellings(short),
         ]
+    elif terms:
+        tiers = [[phrase, *spellings(terms)], spellings(short)]
     else:
-        tiers = [[phrase, *spellings(ordered)]]
+        # Nothing better to wait for, so the first message holding any of them
+        # still ends the read.
+        tiers = [[phrase, *spellings(short)]]
+    if quoted:
+        tiers.insert(0, [phrase, *quoted])
     seen: set[str] = set()
     out: list[list[str]] = []
     for tier in tiers:
@@ -1212,14 +1387,17 @@ def needles_match_text(
 
     Satisfaction is per NEEDLE, not per literal: a needle carrying alternative
     spellings (a forge reference) is satisfied by any one of them, via the
-    shared :func:`count_needle`.
+    shared :func:`count_needle`. A text holding an ``excluded`` needle fails.
     """
     if not needles:
         return False
     adjacency_hit = False
     has_adjacency = False
     for needle in needles:
-        if needle.required:
+        if needle.excluded:
+            if count_needle(needle, folded_text):
+                return False
+        elif needle.required:
             if not count_needle(needle, folded_text):
                 return False
         elif needle.adjacency:
@@ -1258,7 +1436,8 @@ class TitleScope(NamedTuple):
             return lambda _title: False
         if self.quoted:
             return lambda title: term in " ".join(title.split()).casefold()
-        needles, _phrase, adjacency_floor = parse_search_query(term)
+        # The term is one literal token: a leading hyphen is part of the title text.
+        needles, _phrase, adjacency_floor = parse_search_query(term, operators=False)
         return lambda title: needles_match_text(needles, title.casefold(), adjacency_floor)
 
 

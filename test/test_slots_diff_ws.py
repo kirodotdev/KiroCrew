@@ -14,13 +14,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 from aiohttp import WSMsgType
 from aiohttp.test_utils import TestClient, TestServer
+from app_token_records import mark_apps_live
 from chat_test_helpers import _make_app, _make_state
 
-from kiro_crew.dashboard import revocation_gen, token_auth
+from kiro_crew.dashboard import revocation_gen, token_auth, ws_event_scope
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.dashboard.state import SlotOrigin
 from kiro_crew.dashboard.websocket_hub import SLOT_DIFF_CAPABILITY
@@ -36,6 +38,7 @@ def e2e_state(tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     monkeypatch.setattr(token_auth, "_get_secret", lambda: b"slots-diff-test-signing-key")
+    mark_apps_live(monkeypatch)
     monkeypatch.setattr(token_auth, "_state", token_auth.TokenStateManager())
     monkeypatch.setattr(token_auth, "_app_perms_cache", {})
     monkeypatch.setattr(token_auth, "_revoked_store_singleton", None)
@@ -48,6 +51,14 @@ def e2e_state(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "kiro_crew.dashboard.ws.load_declared_events_for_connect",
         lambda _app: (True, frozenset({"slots", "refresh"})),
+    )
+    # The real read also primes the declared-scope cache; with it cold, the connect's
+    # live scope check starts a manifest refresh that finds no such app and narrows
+    # the socket at a time the test does not control.
+    monkeypatch.setitem(
+        ws_event_scope._declared_cache,
+        _APP,
+        (time.monotonic(), True, frozenset({"slots", "refresh"})),
     )
     st = _make_state(tmp_path)
     st._slots_broadcast_interval = 0.0

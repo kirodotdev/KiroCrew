@@ -271,7 +271,7 @@ describe('close reach on a card with sessions under it', () => {
     })
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
     qc.setQueryData(['chat-folders'], [])
-    const { container } = render(
+    const { container, findByRole } = render(
       <QueryClientProvider client={qc}>
         <Provider store={store}>
           <ThemeProvider>
@@ -285,7 +285,11 @@ describe('close reach on a card with sessions under it', () => {
     const reach = 'Close this session only. Sessions under it stay open.'
     await waitFor(() => expect(container.querySelector(`[data-slot-key="k-lead"] button[aria-label="${reach}"]`)).not.toBeNull())
     const x = container.querySelector(`[data-slot-key="k-lead"] button[aria-label="${reach}"]`) as HTMLElement
-    expect(x.getAttribute('title')).toBe(reach)
+    // No native title: hovering shows the reach in the instant tip instead.
+    expect(x.hasAttribute('title')).toBe(false)
+    fireEvent.mouseEnter(x)
+    expect((await findByRole('tooltip')).textContent).toBe(reach)
+    fireEvent.mouseLeave(x)
     expect(container.querySelector('[data-slot-key="k-worker"] button[aria-label="Close session"]')).not.toBeNull()
   })
 })

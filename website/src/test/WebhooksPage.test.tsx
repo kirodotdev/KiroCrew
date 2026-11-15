@@ -474,7 +474,7 @@ describe('two-step destructive controls and the keyboard', () => {
 
 describe('global kill switch', () => {
   it('takes two clicks to turn off and one click to turn back on', async () => {
-    setWebhooksEnabled.mockResolvedValue({ ok: true })
+    setWebhooksEnabled.mockResolvedValueOnce({ ok: true })
     mount(POPULATED)
     await screen.findByTestId('webhook-switch-row')
     fireEvent.click(screen.getByTestId('webhook-switch-off'))
@@ -550,6 +550,19 @@ describe('request examples and responsive shell', () => {
 })
 
 describe('failure handling', () => {
+  it('clears a failed action notice once a later action succeeds', async () => {
+    updateWebhookToken.mockRejectedValueOnce(new Error('zz-pause-refused'))
+    setWebhooksEnabled.mockResolvedValue({ ok: true })
+    mount(POPULATED)
+    await openSource()
+    fireEvent.click(screen.getByTestId('webhook-source-toggle-wht_review'))
+    expect(await screen.findByTestId('webhooks-mutation-error')).toHaveTextContent('zz-pause-refused')
+
+    fireEvent.click(screen.getByTestId('webhook-switch-off'))
+    fireEvent.click(screen.getByTestId('webhook-switch-off-confirm'))
+    await waitFor(() => expect(setWebhooksEnabled).toHaveBeenCalledWith(false))
+    await waitFor(() => expect(screen.queryByTestId('webhooks-mutation-error')).toBeNull())
+  })
   it('keeps source creation usable when settings are unavailable', async () => {
     webhooks.mockRejectedValue(new Error('HTTP 404'))
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })

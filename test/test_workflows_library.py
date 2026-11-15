@@ -6,6 +6,7 @@ import json
 import threading
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import security
 from kiro_crew.workflows import store as workflow_store
@@ -258,7 +259,9 @@ def test_get_accepts_the_unique_slug(tmp_path) -> None:
 
 def test_create_rejects_source_that_persistence_would_redact(tmp_path) -> None:
     library = WorkflowDefinitionLibrary(tmp_path)
-    sensitive_source = SOURCE_V1.replace("debug the project", "debug using AKIAIOSFODNN7EXAMPLE")
+    sensitive_source = SOURCE_V1.replace(
+        "debug the project", f"debug using {github_classic(seed=51)}"
+    )
 
     with pytest.raises(ValueError, match="sensitive data"):
         library.create(source=sensitive_source, name="Sensitive")
@@ -268,7 +271,7 @@ def test_create_rejects_source_that_persistence_would_redact(tmp_path) -> None:
 
 def test_create_redacts_metadata_before_deriving_the_slug(tmp_path) -> None:
     library = WorkflowDefinitionLibrary(tmp_path)
-    credential = "AKIAIOSFODNN7EXAMPLE"
+    credential = github_classic(seed=52)
 
     created = library.create(
         source=SOURCE_V1,

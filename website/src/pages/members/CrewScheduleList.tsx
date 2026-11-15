@@ -20,7 +20,9 @@ export function inDuration(remaining: number): string {
   const h = Math.floor((remaining % 86400) / 3600)
   const m = Math.floor((remaining % 3600) / 60)
   const parts: Array<[number, 'day' | 'hour' | 'minute']> = d > 0 ? [[d, 'day'], [h, 'hour']] : h > 0 ? [[h, 'hour'], [m, 'minute']] : [[Math.max(m, 1), 'minute']]
-  return fmtDuration(parts, { dropZero: true })
+  // `short`, not fmtUnit's narrow default: it sits inside a sentence, where ja
+  // reads `13 分後`, not `13m後`.
+  return fmtDuration(parts, { dropZero: true, unitDisplay: 'short' })
 }
 
 function lastRunFailed(job: CronJob): boolean {
@@ -38,7 +40,7 @@ function lastRunFailed(job: CronJob): boolean {
  * opens that job's detail on the Schedule page (`/schedule?job=<id>`), where it
  * is edited, paused or run; the footer opens the create form.
  */
-export default function CrewScheduleList({ jobs, loading, error = false, nowTs, onOpenAll, onOpenJob, onCreate, selfWaking = false }: {
+export default function CrewScheduleList({ jobs, loading, error = false, nowTs, onOpenAll, onOpenJob, onCreate, selfWaking = false, checkInsOn = false }: {
   jobs: CronJob[]
   loading: boolean
   error?: boolean
@@ -50,6 +52,9 @@ export default function CrewScheduleList({ jobs, loading, error = false, nowTs, 
   /** The mate already wakes on its own (its Heartbeat is on, the row above
    *  this list): the empty line then says only that there are no schedules. */
   selfWaking?: boolean
+  /** A goal check-in is on. It wakes the mate but is listed only on the Goals
+   *  tab, so the empty line points there. */
+  checkInsOn?: boolean
 }) {
   const { t } = useTranslation()
   const sorted = [...jobs].sort((a, b) => (a.next_run_ts ?? Infinity) - (b.next_run_ts ?? Infinity))
@@ -85,7 +90,9 @@ export default function CrewScheduleList({ jobs, loading, error = false, nowTs, 
       ) : jobs.length === 0 ? (
         !error && (
           <div className="rounded-2xl border border-dashed border-border-strong bg-bg px-4 py-8 text-center text-[13px] text-muted" data-testid="crew-schedule-empty">
-            {t(selfWaking ? 'pages.membersPage.schedule_none_self_waking' : 'pages.membersPage.schedule_none')}
+            {t(checkInsOn
+              ? 'pages.membersPage.schedule_none_check_ins'
+              : selfWaking ? 'pages.membersPage.schedule_none_self_waking' : 'pages.membersPage.schedule_none')}
           </div>
         )
       ) : (

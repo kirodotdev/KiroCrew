@@ -14,12 +14,17 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.chat import restore_recent_sessions, restore_recent_sessions_async
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import ConversationLog
 
 # ── Helpers ──
+
+
+# A GitHub token with a valid checksum, which the redactor masks.
+_TOKEN = github_classic(seed=46)
 
 
 def _make_state(tmp_path, **kwargs):
@@ -50,6 +55,20 @@ def _write_session(
     for m in messages:
         lines.append(json.dumps(m))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _race_on_tail_read_too(monkeypatch, log, hook) -> None:
+    """Fire a race *hook* on the tail read as well as the full transcript read.
+
+    The startup restore builds a person's own recent tab as a sidebar row, which
+    reads only the transcript's tail, so a race injected on the full read alone
+    would never fire there.
+    """
+
+    def _tail(key, limit):
+        return hook(key)[-limit:]
+
+    monkeypatch.setattr(log, "read_messages_chained_tail", _tail)
 
 
 def _make_config_app(tmp_path):
@@ -147,7 +166,11 @@ class TestRestoreRecentSessions:
     ):
         """A malformed session (a non-string title, a malformed row) is rolled
         back, slot and the restricted marker it added, and every other recent
-        session restores. A marker that was there before the build stays."""
+        session restores. A marker that was there before the build stays.
+
+        The async driver restores a tab as a sidebar row whose rows load on
+        first read, so a malformed row surfaces there instead: the row fails
+        closed, stays pending, and every read retries."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         hi = {"role": "user", "content": "hi", "ts": "2026-03-23T10:00:00"}
         _write_session(tmp_path, "dashboard_badtitle", [hi], meta={"title": 42})
@@ -164,11 +187,21 @@ class TestRestoreRecentSessions:
             restored = restore_recent_sessions(state, window_minutes=60)
         else:
             restored = asyncio.run(restore_recent_sessions_async(state, window_minutes=60))
-        assert restored == 1
         assert state._slots["good"].title == "Good"
-        assert "badtitle" not in state._slots and "badrow" not in state._slots
-        assert "dashboard:badrow" not in state._restricted_keys
+        assert "badtitle" not in state._slots
         assert "dashboard:badtitle" in state._restricted_keys
+        if driver == "inline":
+            assert restored == 1
+            assert "badrow" not in state._slots
+            assert "dashboard:badrow" not in state._restricted_keys
+            return
+        assert restored == 2
+        row = state._slots["badrow"]
+        assert row.window_pending is True
+        for _ in range(2):
+            with pytest.raises(Exception):
+                row.messages
+            assert row.window_pending is True
 
     def test_skips_old_sessions(self, tmp_path, monkeypatch):
         """Sessions older than the window are not restored."""
@@ -397,7 +430,7 @@ class TestRestoreRecentSessions:
                 {"role": "user", "content": "show me the key", "ts": "2026-03-23T10:00:00"},
                 {
                     "role": "assistant",
-                    "content": "Here: AKIAIOSFODNN7EXAMPLE",
+                    "content": f"Here: {_TOKEN}",
                     "ts": "2026-03-23T10:00:01",
                 },
             ],
@@ -416,14 +449,14 @@ class TestRestoreRecentSessions:
 
         emitted = _prepare_messages(slot.messages, False, live_child="")
         rendered = " ".join(m.get("content", "") for m in emitted)
-        assert "AKIAIOSFODNN7EXAMPLE" not in rendered
+        assert _TOKEN not in rendered
         assert "[REDACTED" in rendered
         # ...and from the prompt-building paths that leave the process.
         from kiro_crew.dashboard.chat_persistence import _build_history_prefix
         from kiro_crew.dashboard.side_context import _format_parent_snapshot
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in _build_history_prefix(slot)
-        assert "AKIAIOSFODNN7EXAMPLE" not in _format_parent_snapshot(slot)
+        assert _TOKEN not in _build_history_prefix(slot)
+        assert _TOKEN not in _format_parent_snapshot(slot)
 
     def test_zero_window_restores_all_sessions(self, tmp_path, monkeypatch):
         """window_minutes=0 means infinite — restores sessions regardless of age."""
@@ -1509,6 +1542,7 @@ class TestAsyncRestoreRecentSessionsOffLoop:
             return real_chained(key)
 
         monkeypatch.setattr(log, "read_messages_chained", _publish_then_read)
+        _race_on_tail_read_too(monkeypatch, log, _publish_then_read)
 
         restored = await restore_recent_sessions_async(state, window_minutes=60)
 
@@ -1547,6 +1581,7 @@ class TestAsyncRestoreRecentSessionsOffLoop:
             return real_chained(key)
 
         monkeypatch.setattr(log, "read_messages_chained", _close_then_read)
+        _race_on_tail_read_too(monkeypatch, log, _close_then_read)
 
         assert await restore_recent_sessions_async(state, window_minutes=60) == 0
         assert "dismissed" not in state._slots, "resurrected a tab the user closed"
@@ -1613,6 +1648,7 @@ class TestAsyncRestoreRecentSessionsOffLoop:
             return msgs
 
         monkeypatch.setattr(log, "read_messages_chained", _delete_then_read)
+        _race_on_tail_read_too(monkeypatch, log, _delete_then_read)
 
         assert await restore_recent_sessions_async(state, window_minutes=60) == 0
         assert "doomed" not in state._slots, (

@@ -13,6 +13,7 @@ registry topics live beside this file: subprocess-timeout reaping in
 
 from __future__ import annotations
 
+import asyncio
 import importlib.machinery
 import importlib.util
 import json
@@ -651,6 +652,41 @@ class TestApplyTrustFields:
         assert "featured" not in rows["ext-app"]
         # The internal snapshot key never leaks into the API payload.
         assert all("_index_author" not in r for r in rows.values())
+
+    @pytest.mark.asyncio
+    async def test_list_registry_bounds_concurrent_manifest_resolves(self, monkeypatch):
+        """A large external registry must not resolve every manifest at once:
+        each cache miss spawns a git clone, and on Windows that spawn runs on
+        the event-loop thread, so an unbounded burst stalls the loop."""
+        from kiro_crew.apps.registry_pipeline.catalog import _MANIFEST_RESOLVE_CONCURRENCY
+
+        limit = _MANIFEST_RESOLVE_CONCURRENCY
+        ext = [{"name": f"ext-{i}", "_registry": "labs"} for i in range(limit * 5)]
+        release = asyncio.Event()
+        in_flight = peak = 0
+
+        async def _fake_resolve(entry):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            if in_flight >= limit:
+                # Deferred, so every resolve already started runs before release.
+                asyncio.get_running_loop().call_soon(release.set)
+            await release.wait()
+            in_flight -= 1
+            return entry
+
+        async def _fake_external():
+            return ext
+
+        monkeypatch.setattr(registry, "_load_registry_file", lambda: [])
+        monkeypatch.setattr(registry, "_load_external_registries", _fake_external)
+        monkeypatch.setattr(registry, "_resolve_manifest", _fake_resolve)
+        monkeypatch.setattr(registry, "list_installed_apps", lambda: [])
+
+        rows = await asyncio.wait_for(registry.list_registry(), timeout=30)
+        assert {r["name"] for r in rows} >= {e["name"] for e in ext}
+        assert peak <= limit
 
 
 # External registries must surface on the ONLINE catalog path.
@@ -1387,3 +1423,40 @@ class TestCatalogFailureNeverBreaksTheStore:
             await self._rows(monkeypatch)
         assert any("catalog" in r.message for r in caplog.records)
         assert any(r.exc_info for r in caplog.records), "expected a traceback"
+
+    CAUSE = "a recent catalog fetch failed; not retrying yet"
+
+    def _unreachable(self, monkeypatch):
+        def unreachable():
+            raise registry.official_catalog.CatalogUnavailable(self.CAUSE)
+
+        monkeypatch.setattr(registry.official_catalog, "fetch_inventory_entries", unreachable)
+
+    def _assert_one_line_with_the_cause(self, caplog, what):
+        warnings = [r for r in caplog.records if r.levelname == "WARNING" and what in r.message]
+        assert len(warnings) == 1
+        assert self.CAUSE in warnings[0].getMessage()
+        assert not warnings[0].exc_info, "an expected miss must not log a traceback"
+        assert any(
+            r.levelname == "DEBUG" and r.exc_info for r in caplog.records
+        ), "the stack must stay available at DEBUG"
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_catalog_logs_one_line_with_the_cause(self, monkeypatch, caplog):
+        """Offline, every store listing hits this branch, so a traceback per
+        listing buries the log. The expected miss is one line naming the cause;
+        the stack is still there at DEBUG for whoever turns it on.
+        """
+        self._unreachable(monkeypatch)
+        with caplog.at_level("DEBUG", logger=registry.logger.name):
+            rows = await self._rows(monkeypatch)
+        assert "seed-app" in rows
+        self._assert_one_line_with_the_cause(caplog, "no official catalog inventory")
+
+    def test_an_unreachable_catalog_install_lookup_logs_one_line(self, monkeypatch, caplog):
+        """The catalog-first listing asks the same fetch whether a catalog-only row
+        is installable, so it answers an outage the same way."""
+        self._unreachable(monkeypatch)
+        with caplog.at_level("DEBUG", logger=registry.logger.name):
+            assert registry._catalog_installable_rows() == {}
+        self._assert_one_line_with_the_cause(caplog, "install coordinates")

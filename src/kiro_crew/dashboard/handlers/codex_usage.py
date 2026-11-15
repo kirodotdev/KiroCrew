@@ -15,6 +15,7 @@ import math
 import os
 import stat
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,9 @@ _MAX_ROLLOUTS = 5
 #: newest block sits in the tail and a long session costs no more than a short one.
 _TAIL_BYTES = 1 << 20
 _RATE_LIMITS_KEY = b'"rate_limits"'
+#: The newest reading found and the ``sessions`` directory it came from. It answers when a
+#: disposable session has deleted the only log that held a block.
+_last_reading: tuple[Path, dict[str, Any]] | None = None
 
 
 def _sessions_dir() -> Path:
@@ -122,15 +126,55 @@ def _reading(line: bytes, now: float) -> dict[str, Any] | None:
     }
 
 
+def _restale(reading: dict[str, Any], now: float) -> dict[str, Any]:
+    """A copy of a kept *reading* whose ``stale`` flags are judged at *now*."""
+    copy = dict(reading)
+    for key in ("five_hour", "weekly"):
+        window = reading.get(key)
+        if isinstance(window, dict):
+            resets_at = window.get("resets_at")
+            copy[key] = {**window, "stale": resets_at is not None and resets_at <= now}
+    return copy
+
+
+def _captured_ts(reading: dict[str, Any]) -> float | None:
+    """The epoch seconds of *reading*'s ``captured_at``, or ``None`` when it has none."""
+    captured = reading.get("captured_at")
+    if not isinstance(captured, str):
+        return None
+    try:
+        return datetime.fromisoformat(captured.replace("Z", "+00:00")).timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _newer(kept: dict[str, Any], found: dict[str, Any]) -> bool:
+    """Whether the *kept* reading was recorded after the *found* one.
+
+    The record timestamps decide when both have one, because a log's modification time
+    also moves for lines that carry no block. Otherwise the log modification times decide.
+    """
+    kept_ts, found_ts = _captured_ts(kept), _captured_ts(found)
+    if kept_ts is not None and found_ts is not None:
+        return kept_ts > found_ts
+    return bool(kept.get("source_mtime", 0) > found.get("source_mtime", 0))
+
+
 def read_codex_rate_limits() -> dict[str, Any] | None:
     """The newest windows Codex recorded locally, or ``None`` when there is no reading.
 
     ``five_hour`` is the block's ``primary`` window and ``weekly`` its ``secondary``; either
     is ``None`` when the block lacks it. ``source_mtime`` is the log's modification time.
+    A disposable Codex session deletes its rollout at teardown, so the last reading found for
+    the same store is held in memory only. It is returned when none of the newest logs holds
+    a block that was recorded after it.
     Blocking file I/O: call it off the event loop.
     """
+    global _last_reading
     now = time.time()
-    for mtime, path in _newest_rollouts(_sessions_dir()):
+    sessions = _sessions_dir()
+    kept = _last_reading[1] if _last_reading is not None and _last_reading[0] == sessions else None
+    for mtime, path in _newest_rollouts(sessions):
         try:
             lines = _tail_lines(path)
         except OSError:
@@ -139,5 +183,12 @@ def read_codex_rate_limits() -> dict[str, Any] | None:
             reading = _reading(line, now)
             if reading is not None:
                 reading["source_mtime"] = mtime
+                if kept is not None and _newer(kept, reading):
+                    # This log's newest block is older than the kept reading; an older
+                    # log can still hold a newer block.
+                    break
+                _last_reading = (sessions, dict(reading))
                 return reading
+    if kept is not None:
+        return _restale(kept, now)
     return None

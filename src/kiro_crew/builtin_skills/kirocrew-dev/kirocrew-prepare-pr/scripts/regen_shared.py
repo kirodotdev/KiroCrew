@@ -255,6 +255,14 @@ def regen(root, base, entries):
     if _git_lines(root, "rev-parse", "--is-inside-work-tree") is None:
         return 2, ["ERROR: not inside a git repository (or git not found)."]
     if _git_lines(root, "rev-parse", "--verify", "--quiet", "origin/" + base) is None:
+        remote, _, branch = base.partition("/")
+        if branch and _git_lines(root, "rev-parse", "--verify", "--quiet", "refs/remotes/" + base):
+            # A remote ref (upstream/main from a fork clone): no fetch from origin brings it.
+            return 2, [
+                "ERROR: {0} is a ref of the remote {1}; pass the branch name instead: {2}. "
+                "The base is always read from origin/{2}, so in a fork clone sync your "
+                "fork's {2} with upstream first (CONTRIBUTING.md).".format(base, remote, branch)
+            ]
         return 2, ["ERROR: origin/{0} not found - run: git fetch origin {0}".format(base)]
     merge_base = _git_lines(root, "merge-base", "origin/" + base, "HEAD")
     if not merge_base:

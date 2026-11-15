@@ -32,6 +32,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from file_change_snapshots_helpers import short_tmp_dir_fixture  # noqa: F401
 from file_change_snapshots_helpers import _make_slot_with_assistant_message
+from redaction_structured_cases import aws_secret
 from turn_harness import SlotSpec, TurnScript, run_turn
 
 from conftest import requires_symlinks
@@ -54,6 +55,8 @@ from kiro_crew.dashboard.chat_runner import (
     _truncate_snapshot,
 )
 from kiro_crew.dashboard.state import _ChatSlot, row_mid
+
+_AWS_SECRET = aws_secret(seed=54)
 
 # ── _truncate_snapshot ──────────────────────────────────────────────────────
 
@@ -539,24 +542,22 @@ class TestFlushFileChanges:
 
     def test_redacts_credentials_in_after_content(self, tmp_path: Path):
         f = tmp_path / "config.ini"
-        f.write_text("aws_access_key_id=AKIAIOSFODNN7EXAMPLE\n")
+        f.write_text(f"aws_secret_access_key={_AWS_SECRET}\n")
         slot = _make_slot_with_assistant_message()
         slot._file_changes = [{"path": str(f), "content": "(empty)"}]
         _flush_file_changes(slot)
         changes = slot.messages[-1]["meta"]["file_changes"]
-        # AKIA key is scrubbed before reaching the UI.
-        assert "AKIAIOSFODNN7EXAMPLE" not in changes[0]["after"]
+        # The AWS secret is scrubbed before reaching the UI.
+        assert _AWS_SECRET not in changes[0]["after"]
 
     def test_redacts_credentials_in_before_content(self, tmp_path: Path):
         f = tmp_path / "post-edit.ini"
         f.write_text("clean\n")
         slot = _make_slot_with_assistant_message()
-        slot._file_changes = [
-            {"path": str(f), "content": "aws_secret_access_key=AKIAIOSFODNN7EXAMPLE\n"}
-        ]
+        slot._file_changes = [{"path": str(f), "content": f"aws_secret_access_key={_AWS_SECRET}\n"}]
         _flush_file_changes(slot)
         changes = slot.messages[-1]["meta"]["file_changes"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in changes[0]["before"]
+        assert _AWS_SECRET not in changes[0]["before"]
 
     def test_an_unchanged_credential_line_is_not_turned_into_a_phantom_diff(
         self, tmp_path: Path
@@ -1159,15 +1160,13 @@ class TestContentBlockRedactionAndTruncation:
 
         slot = _make_slot_with_assistant_message()
         # Before content contains a credential (from content block)
-        slot._file_changes = [
-            {"path": str(f), "content": "aws_access_key_id=AKIAIOSFODNN7EXAMPLE\n"}
-        ]
+        slot._file_changes = [{"path": str(f), "content": f"aws_secret_access_key={_AWS_SECRET}\n"}]
         _flush_file_changes(slot)
         meta = slot.messages[-1].get("meta", {})
         assert "file_changes" in meta
         changes = meta["file_changes"]
-        # The AKIA key in before must be scrubbed
-        assert "AKIAIOSFODNN7EXAMPLE" not in changes[0]["before"]
+        # The AWS secret in before must be scrubbed
+        assert _AWS_SECRET not in changes[0]["before"]
 
     def test_chip_scrub_is_the_exfil_first_composition(self, short_tmp_dir: Path):
         """A long-query exfil URL in chip content loses its WHOLE url.

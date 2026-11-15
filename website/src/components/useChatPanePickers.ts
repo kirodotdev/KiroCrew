@@ -33,7 +33,7 @@ import { slotRowByKey } from '../store/slotIndex'
  * `ChatPane`'s agent and model pickers, bound to the pane's own slot through
  * the same hooks and data sources ChatPage uses. `useChatPanePickerModels` is
  * what the pickers and the composer chips show: the agent roster and default,
- * the model list (hidden models, the `Auto (Jev)` row, codex pair models), the
+ * the model list (hidden models, the `Auto (decision model)` row, codex pair models), the
  * model that will actually run, effort support and level, and the chip
  * markers. `useChatPanePickerActions` is what a pick does: the agent and model
  * switch protocols, their in-pane failure notice, and the menus' roving-focus

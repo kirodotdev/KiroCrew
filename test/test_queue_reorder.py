@@ -85,7 +85,7 @@ class TestQueueReorderEndpoint:
         id1 = slot.queue_append("first")
         id2 = slot.queue_append("second")
         id3 = slot.queue_append("third")
-        # Add queued messages to match
+        # Mirror each queue entry as a "queued" history row with its queue_id.
         slot.append("queued", "first", json.dumps({"queue_id": id1}))
         slot.append("queued", "second", json.dumps({"queue_id": id2}))
         slot.append("queued", "third", json.dumps({"queue_id": id3}))
@@ -128,6 +128,35 @@ class TestQueueReorderEndpoint:
         assert cls1["queue_id"] == id1
         # Non-queued message is preserved
         assert slot.messages[0]["role"] == "user"
+
+    @pytest.mark.asyncio
+    async def test_reorder_reseats_an_app_twin_row(self):
+        """An app twin carries its id in ``meta.queueId``, not in ``cls``; the card's
+        reorder seats it in the new order instead of leaving it at the back."""
+        state = _make_state()
+        slot = state.get_or_create_slot("chat-1")
+        id1 = slot.queue_append("typed")
+        id2 = slot.queue_append("from the app")
+        slot.append("queued", "typed", json.dumps({"queue_id": id1}))
+        slot.messages.append(
+            {
+                "role": "queued",
+                "content": "from the app",
+                "cls": "msg msg-queued",
+                "meta": {"queueId": id2},
+            }
+        )
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.put(
+                "/api/chat/slots/chat-1/queue/order", json={"order": [id2, id1]}
+            )
+            assert resp.status == 200
+
+        queued = [m for m in slot.messages if m.get("role") == "queued"]
+        assert [m["content"] for m in queued] == ["from the app", "typed"]
+        assert [q["content"] for q in slot._queue] == ["from the app", "typed"]
 
     @pytest.mark.asyncio
     async def test_reorder_slot_not_found(self):
@@ -248,3 +277,36 @@ class TestQueueReorderEndpoint:
 
         # Original order preserved
         assert [q["id"] for q in slot._queue] == [id1, id2]
+
+    @pytest.mark.asyncio
+    async def test_a_repeated_id_keeps_one_entry_at_its_first_place(self):
+        """``[b, a, b]`` reads as ``[b, a]``: kept twice, ``b`` would run as two turns."""
+        state = _make_state()
+        slot = state.get_or_create_slot("chat-1")
+        id1 = slot.queue_append("a")
+        id2 = slot.queue_append("b")
+        slot.append("queued", "a", json.dumps({"queue_id": id1}))
+        slot.append("queued", "b", json.dumps({"queue_id": id2}))
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.put(
+                "/api/chat/slots/chat-1/queue/order", json={"order": [id2, id1, id2]}
+            )
+            assert resp.status == 200
+
+        assert [q["id"] for q in slot._queue] == [id2, id1]
+        queued = [m for m in slot.messages if m.get("role") == "queued"]
+        assert [json.loads(m["cls"])["queue_id"] for m in queued] == [id2, id1]
+
+
+def test_the_row_reseat_keeps_one_row_per_repeated_id():
+    """The shared re-seat holds the same rule for any caller, not just this route."""
+    from kiro_crew.dashboard.chat_utils_injected_rows import _reorder_queued_rows
+
+    rows = [
+        {"role": "user", "content": "hi"},
+        {"role": "queued", "content": "a", "cls": json.dumps({"queue_id": "qa"})},
+        {"role": "queued", "content": "b", "cls": json.dumps({"queue_id": "qb"})},
+    ]
+    _reorder_queued_rows(rows, ["qb", "qa", "qb"])
+    assert [r["content"] for r in rows] == ["hi", "b", "a"]

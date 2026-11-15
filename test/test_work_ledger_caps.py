@@ -56,8 +56,17 @@ def _create_and_close_n(count: int, prefix: str = "t") -> None:
             CONDUCTOR, "create", title=f"{prefix}{index}", acceptance={}
         )
         wl.apply_conductor_action(
-            CONDUCTOR, "close", item_id=made["item"].item_id, state="accepted"
+            CONDUCTOR, "close", item_id=made["item"].item_id, state="abandoned"
         )
+
+
+#: A bound a user set on a goal, the only way a goal cap sits below the store's.
+USER_CAP = 6
+
+
+def _goal_with_user_cap() -> None:
+    wl.ensure_conductor(CONDUCTOR)
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="g", concurrency_cap=USER_CAP)
 
 
 def _refused_create(title: str = "one too many") -> wl.WorkLedgerError:
@@ -66,16 +75,24 @@ def _refused_create(title: str = "one too many") -> wl.WorkLedgerError:
     return caught.value
 
 
-def test_the_concurrency_cap_refuses_the_seventh_open_item_by_default():
-    """The bound on parallel work: six open at once, and the seventh is refused.
+def test_with_no_user_bound_the_goal_cap_is_the_stores_open_bound():
+    """No fixed number sits below the store's bound: resource_status sizes the wave.
 
-    Red before the cap existed: a goal board admitted a seventh open item.
+    Red on the old default of 6: the seventh open item was refused.
     """
     wl.ensure_conductor(CONDUCTOR)
     wl.apply_conductor_action(CONDUCTOR, "goal", goal="g")
     header = wl.read_conductor(CONDUCTOR)
-    assert header.concurrency_cap == wl.DEFAULT_GOAL_CONCURRENCY_CAP == 6
-    _create_n(6)
+    assert header.concurrency_cap == wl.DEFAULT_GOAL_CONCURRENCY_CAP
+    assert wl.DEFAULT_GOAL_CONCURRENCY_CAP == wl.MAX_ITEMS_PER_CONDUCTOR
+    _create_n(wl.MAX_ITEMS_PER_CONDUCTOR)
+    assert _refused_create().code == wl.CODE_ITEM_CAP_EXCEEDED
+
+
+def test_a_user_set_concurrency_cap_refuses_past_it_and_says_wait():
+    """A bound the user set: six open at once, and the seventh is refused."""
+    _goal_with_user_cap()
+    _create_n(USER_CAP)
     before = sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir())
     header_before = wl.read_conductor(CONDUCTOR).to_dict()
     refused = _refused_create("seventh")
@@ -83,6 +100,7 @@ def test_the_concurrency_cap_refuses_the_seventh_open_item_by_default():
     assert refused.field == "concurrency_cap"
     message = str(refused)
     assert "open items" in message and "action=goal concurrency_cap=" in message
+    assert "wait for a seat" in message and "ask the user" not in message
     # A refusal writes nothing.
     assert sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir()) == before
     assert wl.read_conductor(CONDUCTOR).to_dict() == header_before
@@ -90,10 +108,11 @@ def test_the_concurrency_cap_refuses_the_seventh_open_item_by_default():
 
 @pytest.mark.parametrize("terminal_state", sorted(wl.TERMINAL_ITEM_STATES))
 def test_closing_an_item_frees_a_seat_under_the_concurrency_cap(terminal_state: str):
-    wl.ensure_conductor(CONDUCTOR)
-    wl.apply_conductor_action(CONDUCTOR, "goal", goal="g")
-    ids = _create_n(6)
+    _goal_with_user_cap()
+    ids = _create_n(USER_CAP)
     assert _refused_create().code == wl.CODE_GOAL_CONCURRENCY_CAP_REACHED
+    if terminal_state == "accepted":
+        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=ids[0], verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[0], state=terminal_state)
     minted = wl.apply_conductor_action(CONDUCTOR, "create", title="next", acceptance={})
     assert minted["item"].state == "open"
@@ -104,19 +123,17 @@ def test_closing_an_item_frees_a_seat_under_the_concurrency_cap(terminal_state: 
 def test_closed_items_never_count_toward_the_concurrency_cap():
     """A goal that has created far more than its cap still dispatches, so long as
     no more than the cap is running: the cap is on parallel work, not on history."""
-    wl.ensure_conductor(CONDUCTOR)
-    wl.apply_conductor_action(CONDUCTOR, "goal", goal="g")
+    _goal_with_user_cap()
     _create_and_close_n(30)
     header = wl.read_conductor(CONDUCTOR)
     assert header.goal_items_used == 30 and header.created_total == 30
-    _create_n(6, "live")
+    _create_n(USER_CAP, "live")
     assert _refused_create().code == wl.CODE_GOAL_CONCURRENCY_CAP_REACHED
 
 
 def test_a_raised_concurrency_cap_admits_more_open_items_and_keeps_the_count():
-    wl.ensure_conductor(CONDUCTOR)
-    wl.apply_conductor_action(CONDUCTOR, "goal", goal="g")
-    _create_n(6)
+    _goal_with_user_cap()
+    _create_n(USER_CAP)
     assert _refused_create().code == wl.CODE_GOAL_CONCURRENCY_CAP_REACHED
     # Raising the cap is a goal write; it must not restart the goal's item count.
     wl.apply_conductor_action(CONDUCTOR, "goal", concurrency_cap=8)
@@ -133,10 +150,10 @@ def test_a_lowered_concurrency_cap_refuses_until_enough_items_land():
     wl.apply_conductor_action(CONDUCTOR, "goal", concurrency_cap=2)
     assert _refused_create().code == wl.CODE_GOAL_CONCURRENCY_CAP_REACHED
     for item_id in ids[:2]:
-        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
+        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="abandoned")
     # Two open against a cap of two: still full.
     assert _refused_create().code == wl.CODE_GOAL_CONCURRENCY_CAP_REACHED
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[2], state="accepted")
+    wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[2], state="abandoned")
     wl.apply_conductor_action(CONDUCTOR, "create", title="fits", acceptance={})
 
 
@@ -156,9 +173,10 @@ def test_a_board_that_never_records_a_goal_has_no_goal_concurrency_cap():
     """A queue board (pipeline, security) writes no ``goal``; only the store's open
     cap bounds its fan-out."""
     wl.ensure_conductor(CONDUCTOR)
-    _create_n(wl.DEFAULT_GOAL_CONCURRENCY_CAP + 1, "q")
+    _create_n(wl.MAX_ITEMS_PER_CONDUCTOR, "q")
     open_items = [i for i in wl.list_work_items(CONDUCTOR) if i.state == "open"]
-    assert len(open_items) == wl.DEFAULT_GOAL_CONCURRENCY_CAP + 1
+    assert len(open_items) == wl.MAX_ITEMS_PER_CONDUCTOR
+    assert _refused_create().code == wl.CODE_ITEM_CAP_EXCEEDED
 
 
 @pytest.mark.parametrize("bad", [0, -1, wl.MAX_GOAL_CONCURRENCY_CAP + 1, "six", 2.5])
@@ -189,15 +207,30 @@ def test_a_header_from_before_the_concurrency_cap_is_bounded_by_the_default():
     stored.pop("concurrency_cap")
     header_path.write_text(json.dumps(stored), encoding="utf-8")
     assert wl.read_conductor(CONDUCTOR).concurrency_cap == wl.DEFAULT_GOAL_CONCURRENCY_CAP
-    _create_n(6)
-    assert _refused_create().code == wl.CODE_GOAL_CONCURRENCY_CAP_REACHED
+    _create_n(wl.DEFAULT_GOAL_CONCURRENCY_CAP)
+    assert _refused_create().code == wl.CODE_ITEM_CAP_EXCEEDED
     # The first write stores the key.
     assert "concurrency_cap" in json.loads(header_path.read_text(encoding="utf-8"))
 
 
-def test_the_concurrency_cap_holds_under_concurrent_creates():
+def test_a_stored_cap_is_kept_across_goals_and_never_migrated():
+    """RFC §7.2: a goal write that names no cap keeps the stored one, so an upgraded
+    board that stored the old 6 keeps 6, and no read rewrites a stored value."""
     wl.ensure_conductor(CONDUCTOR)
-    wl.apply_conductor_action(CONDUCTOR, "goal", goal="g")
+    header_path = wl.conductor_dir(CONDUCTOR) / "conductor.json"
+    stored = json.loads(header_path.read_text(encoding="utf-8"))
+    stored["concurrency_cap"] = 6
+    header_path.write_text(json.dumps(stored), encoding="utf-8")
+    assert wl.read_conductor(CONDUCTOR).concurrency_cap == 6
+    for cap in (6, 2):
+        wl.apply_conductor_action(CONDUCTOR, "goal", goal="g", concurrency_cap=cap)
+        wl.apply_conductor_action(CONDUCTOR, "goal", goal="reworded")
+        wl.apply_conductor_action(CONDUCTOR, "goal", goal=f"next {cap}", new_goal=True)
+        assert wl.read_conductor(CONDUCTOR).concurrency_cap == cap
+
+
+def test_the_concurrency_cap_holds_under_concurrent_creates():
+    _goal_with_user_cap()
     refused: list[str] = []
 
     def create() -> None:
@@ -212,7 +245,7 @@ def test_the_concurrency_cap_holds_under_concurrent_creates():
         thread.start()
     for thread in threads:
         thread.join(timeout=120)
-    assert len(wl.list_work_items(CONDUCTOR)) == wl.DEFAULT_GOAL_CONCURRENCY_CAP
+    assert len(wl.list_work_items(CONDUCTOR)) == USER_CAP
     assert refused and set(refused) == {wl.CODE_GOAL_CONCURRENCY_CAP_REACHED}
 
 
@@ -392,6 +425,8 @@ def test_closed_items_do_not_count_toward_the_item_cap(terminal_state: str):
         wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
     assert caught.value.code == wl.CODE_ITEM_CAP_EXCEEDED
 
+    if terminal_state == "accepted":
+        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=ids[0], verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[0], state=terminal_state)
     minted = wl.apply_conductor_action(CONDUCTOR, "create", title="next ticket", acceptance={})
     assert minted["item"].state == "open"
@@ -414,6 +449,7 @@ def test_closed_items_stay_on_disk_listed_and_readable_past_the_cap():
         for index in range(wl.MAX_ITEMS_PER_CONDUCTOR)
     ]
     for item_id in ids:
+        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
         wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     closed_bytes = {item_id: _bytes_on_disk(item_id) for item_id in ids}
 
@@ -455,7 +491,7 @@ def test_a_board_keeps_dispatching_past_256_lifetime_creates():
         item_id = wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
             "item"
         ].item_id
-        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
+        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="abandoned")
     header = wl.read_conductor(CONDUCTOR)
     assert header is not None and header.created_total == total
     assert len(wl.list_work_items(CONDUCTOR)) == total
@@ -605,7 +641,7 @@ def test_acceptance_must_be_json_serialisable():
 def test_an_oversized_acceptance_is_refused(monkeypatch):
     wl.ensure_conductor(CONDUCTOR)
     # Above the header's own size (the header must still read back), below the blob's.
-    monkeypatch.setattr(wl, "MAX_RECORD_BYTES", 360)
+    monkeypatch.setattr(wl, "MAX_RECORD_BYTES", 440)
     with pytest.raises(wl.WorkLedgerError) as caught:
         wl.apply_conductor_action(CONDUCTOR, "create", title="t", acceptance={"blob": "x" * 400})
     assert caught.value.code == wl.CODE_FIELD_TOO_LONG

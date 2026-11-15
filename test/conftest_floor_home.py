@@ -432,6 +432,10 @@ def _isolate_kirocrew_home(request, _isolation_dirs, _floor_monkeypatch):
     ``KIROCREW_BOUND_PORT`` is cleared because ``_export_bound_port`` writes it into
     the real process environment when a test boots a server, so a port exported by one
     test would leak into every later test's port resolution on that worker.
+    ``KIROCREW_PORT`` and ``KIROCREW_SANDBOX_ACTIVE`` / ``KIROCREW_SANDBOX_LEVEL`` are
+    cleared because a Kiro Crew agent session exports them to every child, the suite
+    included: the port names the agent's own gateway, and the sandbox marks make
+    every test run as a sandboxed child. CI exports none of them.
     ``KIROCREW_DEV_MODE`` / ``KIROCREW_STRICT_ON_LOOP_PERSIST`` are cleared so a
     developer who exports them does not flip the off-loop-IO guards strict for the
     whole suite.
@@ -491,7 +495,10 @@ def _isolate_kirocrew_home(request, _isolation_dirs, _floor_monkeypatch):
     # absence first makes teardown delete whatever landed.
     for _name in (
         "KIROCREW_PROJECT_DIR",
+        "KIROCREW_PORT",
         "KIROCREW_BOUND_PORT",
+        "KIROCREW_SANDBOX_ACTIVE",
+        "KIROCREW_SANDBOX_LEVEL",
         "KIROCREW_DEV_MODE",
         "KIROCREW_STRICT_ON_LOOP_PERSIST",
         "KIROCREW_SCRATCH_ROOT",

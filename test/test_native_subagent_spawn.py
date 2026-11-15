@@ -27,6 +27,7 @@ from kiro_crew.dashboard.state import (
     DashboardState,
     native_subagent_output_tail,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 def _make_state():
@@ -188,7 +189,7 @@ class TestNativeSubagentSync:
 
     def test_done_result_keeps_newest_tail_with_marker(self):
         # Over the cap, keep the NEWEST 8000 chars and prefix an explicit
-        # truncation marker so the dropped head is signalled (finding 3).
+        # truncation marker so the dropped head is signalled.
         state = _make_state()
         slot = _make_slot()
         tracker: dict = {}
@@ -248,11 +249,11 @@ class TestNativeSubagentSync:
         _native_subagent_sync(
             state,
             slot,
-            [_sub("s1", "n", "role", "key AKIAIOSFODNN7EXAMPLE here", "working")],
+            [_sub("s1", "n", "role", f"key {SAMPLE_AWS_SECRET} here", "working")],
             {},
         )
         spawn = _ws_calls(state)["subagent_spawn"][0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in spawn["task"]
+        assert SAMPLE_AWS_SECRET not in spawn["task"]
 
     def test_nongeneric_status_message_emits_tool(self):
         state = _make_state()
@@ -760,7 +761,7 @@ class TestNativeTerminalHydration:
         # terminal (done) cards (dropping running cards + output buffers) so a
         # reconnect in the idle gap after the parent turn exits still replays
         # them. A fresh tracker at the next turn start clears them — no
-        # cross-turn leak (finding 2).
+        # cross-turn leak.
         slot._native_subagent_tracker = _retain_terminal_native(tracker)
         slot._native_subagent_output = {}
         after = DashboardState.native_subagent_snapshots(state)

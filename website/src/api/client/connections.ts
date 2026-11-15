@@ -62,6 +62,11 @@ export interface ConnectionStatus {
    *  KAS, or a Connect that signs in on the KAS engine and saves it in Crew's grant
    *  vault. Test runs on Kiro CLI's grant, so the card does not offer it. */
   crewHeld?: boolean
+  /** Where this provider's sign-in returns, for an org admin's redirect allowlist.
+   *  `exact` is the one redirect Crew's own sign-in registers; `anyPort` lists
+   *  loopback origins when Kiro CLI or the KAS engine picks the port per sign-in.
+   *  Present only for a registry entry with an `org_admin_guide`. */
+  signInRedirect?: { exact?: string; anyPort?: string[] }
   /** Other configured MCP entries backed by the SAME OAuth grant as this provider.
    *  Present and non-empty only for a provider whose grant is present AND shared.
    *  It lets the card show, proactively, that a local disconnect/reconnect keeps

@@ -10,9 +10,9 @@ import io
 import json
 import logging
 import threading
-import time
 import urllib.error
 import urllib.request
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
@@ -207,16 +207,25 @@ class TestEmbed:
         assert body == {"model": _MODEL, "input": ["hello"], "truncate": True}
         assert timeout == 30.0
 
-    def test_a_caller_deadline_shortens_the_request(self) -> None:
+    def test_a_caller_deadline_shortens_the_request(self, monkeypatch) -> None:
+        # Frozen through the facade, which rebinds `time` in every owner holding it:
+        # with a live clock the remainder (now + half) - now can round one ulp above
+        # `half` when both reads return the same tick, which a 15.6 ms Windows clock
+        # does routinely.
+        now = 4081.056
+        monkeypatch.setattr(emb, "time", SimpleNamespace(monotonic=lambda: now))
         opener = _FakeOpener()
         half = embeddings_ollama._REQUEST_TIMEOUT_SECS / 2
+        deadline = now + half
         previous = embedding_work.get()
-        embedding_work.set(EmbeddingWork(time.monotonic() + half))
+        embedding_work.set(EmbeddingWork(deadline))
         try:
             assert _embedder(opener).embed("x") == [0.5] * _DIM
         finally:
             embedding_work.set(previous)
-        assert 0 < opener.requests[0][2] <= half
+        # The request gets the caller's remaining time, not the default timeout.
+        assert opener.requests[0][2] == deadline - now
+        assert opener.requests[0][2] < embeddings_ollama._REQUEST_TIMEOUT_SECS
 
     def test_a_spent_deadline_sends_nothing(self) -> None:
         opener = _FakeOpener()

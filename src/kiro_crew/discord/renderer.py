@@ -1256,9 +1256,8 @@ class DiscordRenderer(Renderer):
             # The prompt never reached the channel, so nothing can be pressed and
             # no wait will run the ``finally`` that normally closes this window.
             # Retire it here instead of leaving a live nonce and reservation for a
-            # prompt nobody saw. Raised on, because a caller that swallowed this
-            # would leave the driver waiting out the whole window on an invisible
-            # prompt and then call that elapsed wait a decision.
+            # prompt nobody saw. Raised on, so the turn fails with the send's own
+            # error.
             DiscordApprovalDecider.retire(key)
             raise
 

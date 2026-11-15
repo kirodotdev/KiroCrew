@@ -2,7 +2,8 @@
 
 Covers ``useLegacyMcpJson`` (P1-17), glob ``disabledTools`` on the mcp.json
 servers KAS starts (P0-14), the undeclared ones a not-opted-in agent does not
-start (P0-13), and the 120 s default and ``mcp.initTimeout`` floor (P0-21, P1-37).
+start (P0-13), the 120 s default (300 s for a remote server) and the
+``mcp.initTimeout`` floor (P0-21, P1-37).
 """
 
 from __future__ import annotations
@@ -14,7 +15,11 @@ import pytest
 from kas_agents_helpers import _spec
 
 from kiro_crew import agent as agent_mod
+from kiro_crew import mcp_cleanup
+from kiro_crew.acp import kas_agents as kas_agents_mod
+from kiro_crew.acp import kas_settings_mcp as settings_mcp_mod
 from kiro_crew.acp._dispatch import attach_kas_custom_agents
+from kiro_crew.acp.harness import harness_for
 from kiro_crew.acp.kas_agents import KasAgentTranslationError, to_client_custom_agent
 from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
 from kiro_crew.acp.kas_settings_mcp import (
@@ -29,7 +34,10 @@ from kiro_crew.acp.kas_tool_limits import (
     unmatched_globs_notice,
     with_switched_off_tools,
 )
+from kiro_crew.acp.types import ACP_BACKEND_KAS
 from kiro_crew.agent_materialization.auto_approve import govern_spec
+from kiro_crew.config import paths as paths_mod
+from kiro_crew.mcp_gateway import session_servers as session_servers_mod
 
 
 @pytest.fixture
@@ -104,6 +112,48 @@ class TestUndeclaredFileServers:
         out = _finish(_agent(), work, [{"name": "pooled"}])
         assert out["excludedTools"] == ["@pooled"]
 
+    @pytest.mark.asyncio
+    async def test_a_server_a_config_scope_mutes_does_not_keep_its_file_entry(
+        self, home, work, tmp_path, monkeypatch
+    ):
+        """A server the dashboard mutes is not the agent's, so the mcp.json one is excluded."""
+        monkeypatch.setattr(agent_mod, "require_fork_governance", lambda agent, work_dir: None)
+        monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda agent: None)
+        monkeypatch.setattr(
+            session_servers_mod, "injection_server_names", lambda overlay, agent: frozenset()
+        )
+        monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: tmp_path)
+        monkeypatch.setattr(mcp_cleanup, "mcp_scope_muted_aliases", lambda: frozenset({"off"}))
+        monkeypatch.setattr(
+            kas_agents_mod, "build_kas_custom_agents", lambda *_a, **_kw: [{"id": "a"}]
+        )
+        _write(home / "mcp.json", {"mcpServers": {"off": {"command": "o"}}})
+        servers = {"off": {"command": "o"}, "own": {"command": "x"}}
+        spec = {"name": "a", "prompt": "p", "tools": [], "includeMcpJson": False}
+        _write(tmp_path / "a.json", {**spec, "mcpServers": servers})
+        extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(work))
+        (entry,) = extras.custom_agents
+        assert finish_settings_mcp(entry).get("excludedTools") == ["@off"]
+
+    def test_a_server_a_config_scope_switches_off_is_not_declared(self, monkeypatch):
+        """The dashboard's switch-off lives in a scope file, not in the spec it mutes."""
+        monkeypatch.setattr(mcp_cleanup, "mcp_scope_muted_aliases", lambda: frozenset({"scoped"}))
+        servers = {"own": {"command": "x"}, "scoped": {"command": "s"}}
+        assert settings_mcp_mod.declared_servers({"mcpServers": servers}) == ["own"]
+
+    def test_the_config_scopes_are_read_once_for_every_declared_server(self, monkeypatch):
+        reads: list[int] = []
+
+        def scope_muted():
+            reads.append(1)
+            return frozenset({"scoped"})
+
+        monkeypatch.setattr(mcp_cleanup, "mcp_scope_muted_aliases", scope_muted)
+        servers = {f"s{i}": {"command": "x"} for i in range(5)} | {"scoped": {"command": "s"}}
+        declared = settings_mcp_mod.declared_servers({"mcpServers": servers})
+        assert declared == [f"s{i}" for i in range(5)]
+        assert len(reads) == 1
+
     def test_opted_in_agent_keeps_them_and_gets_their_glob_disabled_tools(self, home, work):
         _write(
             home / "mcp.json",
@@ -176,8 +226,9 @@ class TestUndeclaredFileServers:
         assert without_excluded_stubs([{"name": "pooled"}], stamped) == []
         assert finish_settings_mcp(stamped[0])["excludedTools"] == ["@pooled"]
 
-    def test_each_unreadable_file_gets_one_notice_line(self, home, work):
-        utf16 = b"\xff\xfe" + json.dumps({"mcpServers": {"x": {}}}).encode("utf-16-le")
+    @pytest.mark.parametrize("mark", [b"\xff\xfe", b""], ids=["marked", "unmarked"])
+    def test_each_unreadable_file_gets_one_notice_line(self, home, work, mark):
+        utf16 = mark + json.dumps({"mcpServers": {"x": {}}}).encode("utf-16-le")
         (home / "mcp.json").write_bytes(utf16)
         (work / ".kiro" / "settings").mkdir(parents=True)
         (work / ".kiro" / "settings" / "mcp.json").write_bytes(utf16)
@@ -270,7 +321,17 @@ class TestTimeout:
     def test_unset_timeout_gets_kiro_cli_default(self, home, work):
         out = _finish(_agent(mcpServers={"s": {"command": "x"}, "r": {"url": "https://h"}}), work)
         assert out["mcpServers"]["s"]["timeout"] == 120_000
-        assert out["mcpServers"]["r"]["timeout"] == 120_000
+        assert out["mcpServers"]["r"]["timeout"] == 300_000
+
+    def test_only_a_server_kas_reaches_by_url_gets_the_sign_in_wait(self, home, work):
+        # A remote entry Crew relays through a local launcher is a stdio server to
+        # KAS, and a longer ``mcp.initTimeout`` still raises the remote floor.
+        servers = {"r": {"url": "https://h"}, "bridged": {"url": "https://h", "command": "x"}}
+        out = _finish(_agent(mcpServers=servers), work)["mcpServers"]
+        assert out["bridged"]["timeout"] == 120_000
+        _write(home / "cli.json", {"mcp.initTimeout": 450_000})
+        out = _finish(_agent(mcpServers=servers), work)["mcpServers"]
+        assert out["r"]["timeout"] == 450_000
 
     def test_set_timeout_is_kept_and_alias_is_mapped(self, home, work):
         servers = {

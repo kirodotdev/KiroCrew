@@ -568,8 +568,8 @@ def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:
 
 
 # ── Discovered OAuth endpoints (verified from an operator-configured MCP server) ──
-# Filled only by ``mcp_oauth_discovery``; trust anchor, bounds and why this does
-# not lower the agent's ceiling: docs/system-specs/modules/security.md,
+# Filled by ``mcp_oauth_discovery`` and Crew's owner-server sign-in. Anchor, bounds,
+# why the ceiling holds: docs/system-specs/modules/security.md,
 # "Discovery-verified consent endpoints".
 _OAUTH_DISCOVERED_TTL_SECONDS = 24 * 60 * 60
 _OAUTH_DISCOVERED_CAP = 64
@@ -593,11 +593,11 @@ def _discovered_oauth_endpoint_approved(key: tuple[str, str]) -> bool:
 def record_discovered_oauth_endpoint(host: str, path: str, *, mcp_url: str) -> bool:
     """Approve an authorization endpoint verified by MCP OAuth discovery.
 
-    Called ONLY by ``kiro_crew.mcp_oauth_discovery`` after it matched the
-    endpoint against the metadata advertised for an operator-configured MCP
-    server. Returns False (and records nothing) for a host or path the operator
-    file's validators would refuse. A newly recorded endpoint is SEL-audited
-    with the server URL it was verified from.
+    Called by ``kiro_crew.mcp_oauth_discovery`` and by ``connections.crew_oauth``'s
+    sign-in for an owner-recorded server, each after its own discovery from the
+    configured url found the endpoint. Returns False (and records nothing) for a
+    host or path the operator file's validators would refuse. A newly recorded
+    endpoint is SEL-audited with the server URL it was verified from.
     """
     host_norm = host.lower()
     if not _OAUTH_EXTENSION_HOST_RE.fullmatch(host_norm) or not _valid_oauth_extension_path(path):

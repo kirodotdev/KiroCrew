@@ -43,6 +43,7 @@ function stubDesktop(info: Record<string, unknown> | null) {
     onState: () => () => {},
     check: vi.fn().mockResolvedValue({ ok: true }),
     download: vi.fn().mockResolvedValue({ ok: true }),
+    armsOnQuit: true,
     install: vi.fn().mockResolvedValue({ ok: true }),
     getInfo: vi.fn().mockResolvedValue(info),
     setChannel: vi.fn().mockResolvedValue({ ok: true }),

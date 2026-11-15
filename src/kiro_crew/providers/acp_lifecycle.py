@@ -19,13 +19,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncContextManager
 
 from kiro_crew.acp.client import DEFAULT_MODEL, AcpClient
+from kiro_crew.acp.types import METHOD_SESSION_DELETE
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_EFFORT_AT_LAUNCH
 from kiro_crew.agent_sdk.claude_transcripts import delete_claude_session_files
+from kiro_crew.agent_sdk.codex_transcripts import delete_codex_session_files, spawn_env_overrides
+from kiro_crew.agent_sdk.opencode_transcripts import delete_opencode_session_rows
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.dashboard.chat_utils_awaits import drained_to_thread
 from kiro_crew.providers.acp_model_effort import launch_effort_level
@@ -118,15 +122,73 @@ async def start(self: AcpProvider) -> None:
 async def shutdown(self: AcpProvider) -> None:
     session_id = self.session_id
     try:
-        await self._client.shutdown()
+        if self.memory_mode != "persistent" and session_id and self.is_pi_backend:
+            await _delete_pi_session(self._client, session_id)
     finally:
         try:
-            if self.memory_mode != "persistent" and session_id:
-                await self.cleanup_session(session_id)
+            await self._client.shutdown()
         finally:
-            # A cancel delivered during the transcript delete must not skip the reclaim.
-            if self._disposable_work_dir:
-                await self._reclaim_work_dir()
+            try:
+                if self.memory_mode != "persistent" and session_id:
+                    await self.cleanup_session(session_id)
+            finally:
+                # A cancel delivered during the transcript delete must not skip the reclaim.
+                if self._disposable_work_dir:
+                    await self._reclaim_work_dir()
+
+
+async def _delete_pi_session(client: AcpClient, session_id: str) -> None:
+    """Ask pi to delete its record of a disposable session, while it still runs.
+
+    pi writes the session to a JSONL file whose folder its own settings choose, and
+    pi-acp keeps a map from the id to that file. pi-acp's ``session/delete`` removes
+    both, so pi's own answer is used rather than a second guess at its paths. Sent
+    only when the handshake advertised ``sessionCapabilities.delete`` and the
+    process is alive. The answer is awaited for ``_TERMINATE_TIMEOUT``, also while
+    the gateway shuts down; a failure is logged and the shutdown goes on.
+
+    shortcut: a pi process that died before the shutdown keeps the file, since
+    nothing is left to ask. Upgrade by reading pi-acp's session map from disk.
+    """
+    from kiro_crew.acp.runtime import _TERMINATE_TIMEOUT
+
+    init = client.initialize_result
+    capabilities = init.get("agentCapabilities") if isinstance(init, dict) else None
+    session_caps = (
+        capabilities.get("sessionCapabilities") if isinstance(capabilities, dict) else None
+    )
+    if not isinstance(session_caps, dict) or not isinstance(session_caps.get("delete"), dict):
+        logger.warning("pi session cleanup: the adapter offers no session/delete")
+        return
+    if not client._is_process_alive():
+        logger.warning("pi session cleanup: the process ended before the delete")
+        return
+    try:
+        req_id = await client._send_request(METHOD_SESSION_DELETE, {"sessionId": session_id})
+        await _await_answer(client, req_id, _TERMINATE_TIMEOUT)
+    except Exception:
+        logger.warning("pi session cleanup: session/delete failed", exc_info=True)
+
+
+async def _await_answer(client: AcpClient, req_id: int, timeout: float) -> None:
+    """Read stdout until *req_id* is answered or *timeout* passes.
+
+    Not ``_wait_for_response``: that one stops at once when the gateway is shutting
+    down, which is exactly when a gateway stop ends every open chat, so the delete
+    would never be waited for. Other frames are dropped: the process ends next.
+    """
+    deadline = time.monotonic() + timeout
+    await client._claim_stdout()
+    try:
+        while (remaining := deadline - time.monotonic()) > 0:
+            msg = await client._read_message(timeout=min(remaining, 1.0), check_cancel=False)
+            if msg is not None and msg.is_response_for(req_id):
+                if msg.error:
+                    logger.warning("pi session cleanup: session/delete was refused")
+                return
+        logger.warning("pi session cleanup: session/delete got no answer in time")
+    finally:
+        client._release_stdout()
 
 
 def set_work_dir_claim_probe(
@@ -202,13 +264,24 @@ async def cleanup_session(self: AcpProvider, session_id: str) -> None:
     kiro-cli's replay log is ``<sid>.json`` + ``.jsonl`` under
     ``~/.kiro/sessions/cli``. A Claude session's record is Claude Code's own
     store instead (``agent_sdk.claude_transcripts``), spelled from the client's work
-    directory. Either is deleted off the loop, to completion even when cancelled.
+    directory, and a Codex session's is its rollout under the ``CODEX_HOME`` its
+    child ran with, the client's or runtime's ``extra_env`` over the gateway's
+    (``agent_sdk.codex_transcripts``). An OpenCode session's is its rows in
+    OpenCode's SQLite store, found the same way (``agent_sdk.opencode_transcripts``).
+    Each is deleted off the loop, to completion even when cancelled. A pi session's
+    record went before its process ended (``_delete_pi_session``).
     """
     if not session_id:
         return
     if self.is_claude_backend:
         work_dir = str(getattr(self._client, "_work_dir", "") or "")
         await drained_to_thread(delete_claude_session_files, session_id, work_dir)
+        return
+    if self.is_codex_backend:
+        await drained_to_thread(delete_codex_session_files, session_id, spawn_env_overrides(self))
+        return
+    if self.is_opencode_backend:
+        await drained_to_thread(delete_opencode_session_rows, session_id, spawn_env_overrides(self))
         return
     await drained_to_thread(_delete_kiro_session_files, session_id)
 

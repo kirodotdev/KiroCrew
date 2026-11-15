@@ -129,7 +129,7 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatSidebar from '../pages/ChatSidebar'
 import { crewRowOwnState } from '../pages/chat-sidebar/SessionRow'
 import type { RootState } from '../store'
-import { crewModePreviewOn } from './crewModePreview'
+import { turnOffCrewModeAsLts } from './crewModeOff'
 
 type TestSlot = Record<string, unknown>
 
@@ -232,7 +232,7 @@ afterEach(() => {
 })
 
 describe('chat sidebar — conductor lane', () => {
-  it('draws a Ultra Mode root as a plain row with an inline ghost, eyebrow, worker ghosts and what needs you', async () => {
+  it('draws a conductor mode root as a plain row with an inline ghost, eyebrow, worker ghosts and what needs you', async () => {
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
       { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
@@ -245,11 +245,11 @@ describe('chat sidebar — conductor lane', () => {
     // A plain session row: no tinted card frame.
     expect(card.className).not.toContain('crew-card')
     const eyebrow = within(card).getByTestId('crew-eyebrow')
-    expect(eyebrow).toHaveTextContent('Ultra Mode')
+    expect(eyebrow).toHaveTextContent('Conductor mode')
     // A whole-pixel tracking: an em fraction at this size renders "CRE W MODE".
     expect(eyebrow.className).toContain('tracking-[1px]')
     expect(eyebrow.className).not.toMatch(/tracking-\[[\d.]+em\]/)
-    // The Ultra Mode mark is a 12px lightning bolt inline on the eyebrow line, just
+    // The conductor mode mark is a 12px lightning bolt inline on the eyebrow line, just
     // before the eyebrow, not a badge before the title: the title keeps the row's width.
     expect(within(card).queryByTestId('crew-ghost-badge')).toBeNull()
     const bolt = eyebrow.previousElementSibling as SVGElement
@@ -273,7 +273,7 @@ describe('chat sidebar — conductor lane', () => {
     expect(eyebrow).toHaveAttribute('data-flowing', 'false')
   })
 
-  it('flows the Ultra Mode tag only while the crew root has live work', () => {
+  it('flows the conductor mode tag only while the crew root has live work', () => {
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: true, modified: 4000, crew_mode_root: true },
       { key: 'k-plain', title: 'Plain chat', agent: 'kirocrew', messages: 1, running: false, modified: 1000 },
@@ -283,7 +283,7 @@ describe('chat sidebar — conductor lane', () => {
     expect(within(card).getByTestId('crew-eyebrow')).toHaveAttribute('data-flowing', 'true')
   })
 
-  it('flows the Ultra Mode tag while a crew member runs, even with the root idle', () => {
+  it('flows the conductor mode tag while a crew member runs, even with the root idle', () => {
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
       { key: 'k-w1', title: 'W1', messages: 2, running: true, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
@@ -430,6 +430,34 @@ describe('chat sidebar — conductor lane', () => {
     expect(queryByTestId('crew-root-attention')).toBeNull()
   })
 
+  it("reads Done from the ledger's verdict, not from every crew member being done", async () => {
+    mocks.crewWorkersRows = [
+      { key: 'k-w1', title: 'W1', agent: '', status: 'idle', group: 'done', last_activity: '', ledger_item: 'it_1', created_by: 'k-root' },
+    ]
+    const run = { settled: 'stopped', open: 1, accepted: 1, not_done: 0, at_limit: false, patrol_on: false }
+    const stopped = [{ key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true,
+      last_message: 'Stopped: docs left.', crew_work: { open: 1, person: 0, conductor_looping: false, run, items: [] } }]
+    const first = renderSidebar(stopped, [], null, {}, [], stopped)
+    await waitFor(() => expect(first.qc.getQueryState(['crew-workers', 'k-root'])?.status).toBe('success'))
+    // A stopped run keeps the row's usual line: the conductor's final report.
+    expect(first.queryByTestId('crew-root-done')).toBeNull()
+    expect(first.getByText('Stopped: docs left.')).toBeInTheDocument()
+    first.unmount()
+    const done = [{ ...stopped[0], crew_work: { open: 0, person: 0, conductor_looping: false, run: { ...run, settled: 'done', open: 0 }, items: [] } }]
+    const second = renderSidebar(done, [], null, {}, [], done)
+    await waitFor(() => expect(second.getByTestId('crew-root-done')).toHaveTextContent(/^Done$/))
+  })
+
+  it('keeps the unread dot beside Done when the finished crew has an unread reply', async () => {
+    mocks.crewWorkersRows = [
+      { key: 'k-w1', title: 'W1', agent: '', status: 'idle', group: 'done', last_activity: '', ledger_item: '', created_by: 'k-root' },
+    ]
+    const slots = [{ key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 2, running: false, modified: 4000, crew_mode_root: true, last_message: 'All set.' }]
+    const { getByTestId } = renderSidebar(slots, [], null, {}, ['k-root'], slots)
+    await waitFor(() => expect(getByTestId('crew-root-done')).toHaveTextContent(/^Done$/))
+    expect(within(getByTestId('crew-root-summary')).getByRole('img', { name: 'Agent finished — your turn' })).toBeInTheDocument()
+  })
+
   it('never reads Done while the main chat itself is interrupted or still running', async () => {
     mocks.crewWorkersRows = [
       { key: 'k-w1', title: 'W1', agent: '', status: 'idle', group: 'done', last_activity: '', ledger_item: '', created_by: 'k-root' },
@@ -482,8 +510,8 @@ describe('chat sidebar — conductor lane', () => {
     expect(container.querySelectorAll('[data-crew-parent="true"]')).toHaveLength(1)
   })
 
-  it('marks no crew parent with the Ultra Mode preview off', async () => {
-    localStorage.removeItem('mc-preview-crew-mode')
+  it('marks no crew parent in a build without conductor mode (LTS)', async () => {
+    turnOffCrewModeAsLts()
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
       { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
@@ -567,7 +595,7 @@ describe('chat sidebar — conductor lane', () => {
     })
   })
 
-  it('keeps an Ultra Mode row compact before it has any crew member', async () => {
+  it('keeps a conductor mode row compact before it has any crew member', async () => {
     mocks.crewWorkersNotServed = true
     const slots = [{ key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, needs_input: true, modified: 4000, crew_mode_root: true }]
     renderSidebar(slots, [], null, {}, [], slots)
@@ -618,7 +646,7 @@ describe('chat sidebar — conductor lane', () => {
     })
   })
 
-  it("leaves a Ultra Mode root's workers out of the person's list and keeps the root", () => {
+  it("leaves a conductor mode root's workers out of the person's list and keeps the root", () => {
     const { queryByText } = renderSidebar([
       { key: 'k-root', title: 'Crew root', messages: 1, running: false, modified: 4000, crew_mode_root: true },
       { key: 'k-w1', title: 'Crew worker', messages: 1, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
@@ -763,7 +791,7 @@ describe('chat sidebar — conductor lane', () => {
     expect(getByTestId('conductor-running-k-conductor').textContent).toBe('1')
   })
 
-  it('a Ultra Mode worker raises no needs-your-answer count on its conductor (S3)', () => {
+  it('a conductor mode worker raises no needs-your-answer count on its conductor (S3)', () => {
     // Its question goes to the conductor; its unread reply is the conductor's to read.
     localStorage.setItem('mc-sidebar-lane', 'conductor')
     openAllBut('k-conductor')
@@ -1342,7 +1370,7 @@ describe('chat sidebar — conductor lane', () => {
     expect(queryByTestId('flat-view-toggle')).toBeNull()
   })
 
-  it("carries a Ultra Mode worker's tool approval on its conductor's own summary once the worker leaves the lane", async () => {
+  it("carries a conductor mode worker's tool approval on its conductor's own summary once the worker leaves the lane", async () => {
     // With the list rule on, a worker is no row in the lane, so the collapsed
     // root's needs-you badge cannot count it; the root's crew summary does
     // ("Approval needed · 1"), from the live rows this gateway stamps, so the ask
@@ -1772,6 +1800,3 @@ describe('chat sidebar — conductor lane', () => {
     })
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

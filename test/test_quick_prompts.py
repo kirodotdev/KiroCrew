@@ -41,6 +41,7 @@ from kiro_crew.quick_prompts import (
     _USER_PROMPT_MAX_BYTES,
     QUICK_PROMPTS,
     expand_quick_prompt,
+    reserved_user_prompts,
     user_quick_prompt_menu,
 )
 from kiro_crew.skills import SkillsLoader
@@ -306,6 +307,34 @@ class TestUserQuickPrompts:
         assert expand_quick_prompt("/review x") is None
         assert "Mine." not in (expand_quick_prompt("/plain") or "")
         assert user_quick_prompt_menu() == []
+
+    def test_reserved_user_prompts_names_only_opted_in_shadowed_files(self, prompts_dir):
+        (prompts_dir / "fork.md").write_text(_opted_in("Mine."), encoding="utf-8")
+        (prompts_dir / "help.md").write_text("---\ndescription: x\n---\nNot opted in.\n", "utf-8")
+        (prompts_dir / "cr.md").write_text(_opted_in("Review."), encoding="utf-8")
+
+        assert [p.name for p in reserved_user_prompts()] == ["fork.md"]
+
+    def test_doctor_names_a_shadowed_prompt_without_failing(self, prompts_dir, capsys):
+        from kiro_crew.doctor_checks import features
+
+        (prompts_dir / "fork.md").write_text(_opted_in("Mine."), encoding="utf-8")
+
+        features._doctor_saved_prompts()
+
+        out = capsys.readouterr().out
+        assert "Saved prompts" in out
+        assert "~/.kiro/prompts/fork.md never runs: /fork is a built-in command" in out
+        assert "rename the file, for example to fork-prompt.md" in out
+
+    def test_doctor_prints_nothing_when_no_prompt_is_shadowed(self, prompts_dir, capsys):
+        from kiro_crew.doctor_checks import features
+
+        (prompts_dir / "cr.md").write_text(_opted_in("Review."), encoding="utf-8")
+
+        features._doctor_saved_prompts()
+
+        assert capsys.readouterr().out == ""
 
     def test_menu_lists_each_prompt_with_its_description(self, prompts_dir):
         (prompts_dir / "cr.md").write_text(_opted_in("Body.", "Review a change"), "utf-8")

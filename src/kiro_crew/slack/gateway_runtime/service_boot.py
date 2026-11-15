@@ -49,6 +49,7 @@ if TYPE_CHECKING:
         MemoryStore,
         RealSlackClient,
         SessionManager,
+        SessionMap,
         SkillsLoader,
         Task,
         TaskRunner,
@@ -89,7 +90,6 @@ if TYPE_CHECKING:
         shutdown_event,
         start_dashboard,
         subprocess_executor,
-        supervisor_reentry,
         timezone,
         warm_backend,
         warn_unreadable_tracked_channels,
@@ -147,7 +147,10 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     CONSTRUCTION deliberately stays on the loop thread:
     ``SessionManager.__init__`` creates asyncio primitives (locks,
     semaphores, queues), so hopping the whole method into a worker thread
-    would trade a blocking bug for a thread-affinity one. (Other sync
+    would trade a blocking bug for a thread-affinity one. The session map,
+    which holds no asyncio primitives, is the exception: it is built in a
+    worker thread so its startup read can retry a Windows sharing violation.
+    (Other sync
     filesystem steps — e.g. agent-config install — remain on the loop;
     they are bounded small-file work, not usage-scaled. The builtin-skills
     sync verifies user-owned trees before replacing them, so it runs as a
@@ -347,7 +350,18 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     self.conv_log.init()
     self.ctx_builder.conversation_log = self.conv_log
 
-    self.sessions = SessionManager(self._cfg, provider_factory=factory)  # type: ignore[arg-type]
+    # The map's startup read runs in a worker thread, the one place
+    # ``read_bytes_with_retry`` rides out a Windows sharing violation; built on
+    # the loop, one contended read would refuse every session-map write.
+    session_map = await asyncio.to_thread(SessionMap)
+    self.sessions = SessionManager(  # type: ignore[arg-type]
+        self._cfg, provider_factory=factory, session_map=session_map
+    )
+    # A turn's build names the MCP servers its session cannot use yet, and
+    # records on the session that the turn is told.
+    from kiro_crew.agent_sdk.mcp_problems import TurnMcpStatesReader
+
+    self.ctx_builder.mcp_states_for_session = TurnMcpStatesReader(self.sessions)
 
     self.consolidator = HistoryConsolidator(
         log=self.conv_log,
@@ -491,9 +505,19 @@ def _schedule_session_start_sizing(self: GatewayOrchestrator) -> None:
     """Run :meth:`_log_session_start_sizing` as a tracked background task.
 
     Called after the dashboard/API socket binds, so the host probe never
-    delays READY (AUTOSDE ``no-new-work-on-gateway-boot-path``).
+    delays READY (AUTOSDE ``no-new-work-on-gateway-boot-path``). The same task
+    then re-reads the host on a slow interval and widens the ``auto`` gates, so
+    a gateway that boots while memory is short does not keep that moment's
+    widths for its whole life (``start_gate_widening``).
     """
-    task = asyncio.create_task(self._log_session_start_sizing())
+
+    async def _size_then_widen() -> None:
+        from kiro_crew.start_gate_widening import widen_start_gates_as_memory_frees
+
+        await self._log_session_start_sizing()
+        await widen_start_gates_as_memory_frees(self._cfg.agent, getattr(self, "sessions", None))
+
+    task = asyncio.create_task(_size_then_widen())
     self._background_tasks.add(task)
     task.add_done_callback(self._background_tasks.discard)
 
@@ -669,6 +693,15 @@ def _init_task_runner(self: GatewayOrchestrator) -> None:
     # deferred pass, where the nested def above drops the narrowing from the assignment.
     self.task_runner._on_approval = _task_approval  # type: ignore[union-attr]
 
+    # An app turn (``AgentTurnSDK.run``: a meeting's agents) passes this prompt as
+    # its approver, as a cron job does. Without it a call the hook gate neither
+    # denies nor grants is approved with nobody asked.
+    from kiro_crew.apps import agent_turn_sdk
+
+    agent_turn_sdk.set_turn_approver(
+        lambda app: self._interactive_approval("app", requester=f"app {app}")
+    )
+
 
 async def _init_dashboard(self: GatewayOrchestrator) -> None:
     """Start the dashboard web server."""
@@ -717,9 +750,12 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         self.dashboard_state.slack_client = self.slack
     if self.dashboard_state:
         self.dashboard_state.no_crons = self._no_crons  # dashboard mode
-        # ``kirocrew restart --when-idle`` asks this before it restarts.
-        self.dashboard_state._restart_idle_gate = self._restart_gate_when_idle
-        self.dashboard_state._restart_gate_held = self._restart_gate_held
+        # The dashboard restart takes the scheduler's pause, drain and fence, and
+        # ``kirocrew restart --when-idle`` and the restart confirm read the one
+        # quiescence census.
+        from kiro_crew import restart_admission
+
+        restart_admission.wire(self.dashboard_state, self)
     if self.dashboard_state and not self._test_mode:
         # Told once, after the KAS floor answers: a Kiro CLI pick now runs on KAS.
         from kiro_crew import kiro_on_kas_notice
@@ -859,6 +895,15 @@ async def run(self: GatewayOrchestrator) -> None:
         print(f"❌ Cannot run the signing key preflight: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
+    # An update a person armed applies HERE, at the start, before the listeners bind
+    # and before any session is restored: nothing is serving, so nothing is cut. A
+    # successful apply re-execs and does not return; a failure leaves the old
+    # version running and the error for the dashboard (``pending_apply_error``).
+    # Never at shutdown (decision entry "updates never restart a running gateway").
+    from kiro_crew.update_boot_apply import apply_armed_update_at_boot
+
+    await apply_armed_update_at_boot()
+
     # Clean up orphaned kiro-cli processes from previous runs
     from kiro_crew.session import cleanup_orphaned_sessions
 
@@ -875,6 +920,10 @@ async def run(self: GatewayOrchestrator) -> None:
     # wait for a later clean exit. That is the accepted cost of keeping this
     # path, and the force-exit handler, doing exactly their pre-existing work.
     await asyncio.to_thread(cleanup_orphaned_sessions, narrow_with_leaders=False)
+
+    # The previous run's sessions ended just above and none of this run exists yet:
+    # endorse each keystone file with no copy yet. Bound: four small reads and writes.
+    await asyncio.to_thread(loosening_provenance.adopt_unendorsed)
 
     # KAS MCP launch snapshots no session of this run references: the previous run's
     # agent processes, and the launchers they started, ended just above, and no
@@ -1165,6 +1214,17 @@ async def run(self: GatewayOrchestrator) -> None:
         self._background_tasks.add(_consent_task)
         _consent_task.add_done_callback(self._background_tasks.discard)
 
+        # The first session's skill read, made once for the gateway so that
+        # session's prompt build does not wait for it. Past KIROCREW_READY
+        # (no-new-work-on-gateway-boot-path), on a worker thread, never raises.
+        from kiro_crew.skill_first_read import first_read_after_ready
+
+        _skill_read_task = asyncio.create_task(
+            first_read_after_ready(self.ctx_builder, self._skills_sync_task)
+        )
+        self._background_tasks.add(_skill_read_task)
+        _skill_read_task.add_done_callback(self._background_tasks.discard)
+
     # The run directories a PREDECESSOR gateway of this data home left behind
     # (session_work_dir). Ordered after ``cleanup_orphaned_sessions`` above,
     # which reaped this home's pid ledger -- the ledger's remaining entries
@@ -1187,7 +1247,8 @@ async def run(self: GatewayOrchestrator) -> None:
     # runner lane now that both consumers exist (the WorkflowService is
     # built by the dashboard server). AFTER the READY print, not before it:
     # the coordinator's first build runs `rebuild()` over every waiting row,
-    # and `test_memory_startup` pins that no such work precedes readiness.
+    # and `test_memory_startup` pins that nothing is awaited between
+    # `_init_api_server` and the READY print.
     # Nothing dispatches in between -- the subagent pump is held closed
     # (``defer_queue_dispatch``) and the dashboard workers and cron start
     # further down, after the memory barrier.
@@ -1553,16 +1614,16 @@ async def run(self: GatewayOrchestrator) -> None:
     _bg_session_task.add_done_callback(self._background_tasks.discard)
 
     # Stale-asset watchdog: detects when an update prunes the running
-    # install's static assets and triggers graceful shutdown so the
-    # supervisor can restart a fresh process. It first drains in-flight
-    # backend turns (count_in_flight) so active work isn't killed
-    # mid-prompt by the restart, and stays up when its supervisor could
-    # not relaunch it (supervisor_reentry).
+    # install's static assets. It never exits the gateway: it keeps serving and
+    # records "update ready, restart to use it" for the dashboard to show.
     _watchdog = asyncio.create_task(
         run_stale_asset_watchdog(
             shutdown_event,
-            count_in_flight=self._count_in_flight_work,
-            reentry_check=supervisor_reentry,
+            on_change=lambda: (
+                self.dashboard_state.push_refresh("update_available")
+                if self.dashboard_state
+                else None
+            ),
         )
     )
     self._background_tasks.add(_watchdog)

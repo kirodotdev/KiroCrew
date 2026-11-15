@@ -597,11 +597,14 @@ class TestWatchdogLoop:
         self, _isolate: Path, fast_watchdog, monkeypatch: pytest.MonkeyPatch
     ):
         from kiro_crew.autonudge import AutoNudgeService
+        from kiro_crew.dashboard.chat_utils_slots import effective_session_key
 
         cid = _campaign()
         _running(cid)
-        slot = SimpleNamespace(_trust=False, running=True)
-        state = SimpleNamespace(_slots={f"research-{cid}": slot})
+        slot = SimpleNamespace(key=f"research-{cid}", _trust=False, running=True)
+        policies: dict[str, str] = {}
+        sessions = SimpleNamespace(set_approval_policy=policies.__setitem__)
+        state = SimpleNamespace(_slots={slot.key: slot}, sessions=sessions)
         svc = AutoNudgeService(base_dir=_isolate / "autonudge")
         await svc.start()
         try:
@@ -612,6 +615,9 @@ class TestWatchdogLoop:
             assert svc.get_by_slot(f"research-{cid}") is loop
             assert loop.active is True
             assert slot._trust is True
+            # The spawn gate reads the session policy, not the flag: the re-grant
+            # lands mid-turn on a running slot, so it must store it now.
+            assert policies == {effective_session_key(slot): "auto"}
         finally:
             svc.stop()
 
@@ -628,7 +634,7 @@ class TestWatchdogLoop:
         _running(cid)
         slot_key = f"research-{cid}"
         slot = SimpleNamespace(_trust=False, running=False)
-        agent_mode.grant_worker_trust(slot_key, slot)
+        agent_mode.grant_worker_trust(None, slot_key, slot)
         slot._trust = False  # the person's revoke
         state = SimpleNamespace(_slots={slot_key: slot})
         assert await _drive_watchdog(

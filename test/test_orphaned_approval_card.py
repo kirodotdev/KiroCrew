@@ -102,7 +102,7 @@ class TestRejectPendingApprovalsMarksMessage:
         assert slot._approval_stopped == {"ap-1", "ap-2"}
         source = inspect.getsource(_reject_pending_approvals)
         marked = source.index("_approval_stopped.add(aid)")
-        resolved = source.index('fut.set_result("rejected")')
+        resolved = source.index("_settle_approval_rejected(")
         assert marked < resolved, "the mark must precede the resolution that wakes the reader"
 
     @pytest.mark.asyncio

@@ -192,6 +192,58 @@ describe('markSendUnconfirmed — the deadline mark on a bubble whose receipt ne
   })
 })
 
+/* #34424: any number of rows can land between a send and its echo or receipt
+ * (a burst of tool rows), so the bubble is found by its sendId however far up
+ * it sits. Past a tail window it would stay optimistic and its echo would add
+ * a second bubble. */
+describe('a send reconciles past a long burst of newer rows', () => {
+  const initial = reducer(undefined, { type: '@@INIT' })
+  const withSlot = { ...initial, activeSlot: 'slot-1' }
+  const sentThenBurst = (sendId: string) => {
+    let state = reducer(withSlot, appendMessage({ role: 'user', content: 'scan every file', cls: '', ts: '2026-11-10T10:00:00.000Z', meta: { sendId } }))
+    for (let i = 0; i < 60; i++) {
+      state = reducer(state, appendMessage({ role: 'tool', content: `Read file_${i}.py`, cls: '', ts: '2026-11-10T10:00:01.000Z', meta: { mid: `t${i}` } }))
+    }
+    return state
+  }
+  const userRows = (msgs: ChatMessage[]) => msgs.filter(m => m.role === 'user')
+
+  it('the echo updates the bubble in place instead of adding a second one', () => {
+    let state = sentThenBurst('s-burst-echo')
+    state = reducer(state, sseChatMessage({
+      slot: 'slot-1', role: 'user', content: 'scan every file', cls: '', ts: '2026-11-10T10:00:05.000Z',
+      meta: { sendId: 's-burst-echo', mid: 'u-echo' },
+    }))
+    expect(userRows(state.messages)).toHaveLength(1)
+    expect(userRows(state.messages)[0].meta?.optimistic).toBeUndefined()
+    expect(userRows(state.messages)[0].meta?.mid).toBe('u-echo')
+  })
+
+  it('the receipt and the deadline mark still reach the bubble', () => {
+    let state = sentThenBurst('s-burst-receipt')
+    state = reducer(state, markSendUnconfirmed({ slot: 'slot-1', sendId: 's-burst-receipt' }))
+    expect(userRows(state.messages)[0].meta?.deliveryUnconfirmed).toBe(true)
+    state = reducer(state, confirmOptimisticSend({ slot: 'slot-1', sendId: 's-burst-receipt', mid: 'm-burst' }))
+    expect(userRows(state.messages)[0].meta).toMatchObject({ sendId: 's-burst-receipt', mid: 'm-burst' })
+    expect(userRows(state.messages)[0].meta?.optimistic).toBeUndefined()
+  })
+
+  it('a steer echo with its sendId updates the steer bubble in place', () => {
+    const steerRow = (meta: Record<string, unknown>) => appendSlotMessage({
+      slot: 'slot-1',
+      message: { role: 'user', content: 'also check tests', cls: '', ts: '2026-11-10T10:00:00.000Z', meta } as ChatMessage,
+    })
+    let state = reducer(withSlot, steerRow({ sendId: 's-burst-steer', steer: true, optimistic: true }))
+    for (let i = 0; i < 60; i++) {
+      state = reducer(state, appendMessage({ role: 'tool', content: `Read file_${i}.py`, cls: '', ts: '2026-11-10T10:00:01.000Z', meta: { mid: `t${i}` } }))
+    }
+    state = reducer(state, steerRow({ sendId: 's-burst-steer', steer: true, mid: 'u-steer' }))
+    expect(userRows(state.messages)).toHaveLength(1)
+    expect(userRows(state.messages)[0].meta?.optimistic).toBeUndefined()
+    expect(userRows(state.messages)[0].meta?.mid).toBe('u-steer')
+  })
+})
+
 /* The footer's running indicator reads this: while the newest send is still
  * unconfirmed the transcript already says "pending" on the bubble and in the
  * WARN notice under it, so "Thinking…" beneath both would claim the agent is

@@ -18,6 +18,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from redaction_structured_cases import github_classic
 
 import kiro_crew
 from kiro_crew.dashboard import handlers_instances as hi
@@ -928,7 +929,7 @@ class TestRunnerStdoutTail:
     def test_the_ssh_runner_appends_a_redacted_stdout_tail_only_when_asked(self, monkeypatch):
         from kiro_crew.instances import token_mint as tm
 
-        secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+        secret = github_classic()
 
         class _Proc:
             returncode = 1
@@ -955,7 +956,7 @@ class TestRunnerStdoutTail:
         from kiro_crew.cloud.ssm import CommandResult
         from kiro_crew.instances import ssm_token_mint as sm
 
-        secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+        secret = github_classic()
 
         async def _send(*_a, **_k):
             return CommandResult(
@@ -1133,11 +1134,11 @@ class TestUpdateRoutes:
         assert resp.status == 403
 
 
-def test_the_wait_ceiling_is_the_gateways_mandatory_deferral_ceiling():
+def test_the_wait_ceiling_is_the_clis_when_idle_default():
+    from kiro_crew import cli_restart_idle as cli
     from kiro_crew.instances.remote_update import REMOTE_UPDATE_IDLE_WAIT_SECS
-    from kiro_crew.slack.gateway import GatewayOrchestrator
 
-    assert REMOTE_UPDATE_IDLE_WAIT_SECS == GatewayOrchestrator._MANDATORY_UPDATE_MAX_DEFER_SECS
+    assert REMOTE_UPDATE_IDLE_WAIT_SECS == cli.DEFAULT_MAX_WAIT_SECS
 
 
 def test_the_gate_answers_match_what_the_cli_prints():

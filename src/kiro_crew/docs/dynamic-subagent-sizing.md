@@ -164,7 +164,11 @@ The MCP gateway's backend spawn gate (`mcp_gateway.spawn_concurrency_max`, how
 many MCP server processes fork and initialize at once) is raised to this ceiling
 when it is lower, so a fan-out the cap admits is not queued behind eight
 backend initializations. It still starts at `spawn_concurrency_initial` and
-grows only while backends keep initializing cleanly.
+grows only while backends keep initializing cleanly. Starts that wait at that
+gate are served in the gateway's start order: the MCP servers of a chat a
+person has just started go first, in arrival order within a priority, and after
+four of them in a row have gone ahead of a start no person is waiting on, the
+oldest such start goes next, so none is starved.
 
 ## Configuration
 
@@ -222,7 +226,10 @@ reap.
 The bound is tied to the session-start gate, not to the running cap:
 `2 × session_start_concurrency` (`_STARTUP_CAP_GATE_ROUNDS` rounds of the
 gate's width), clamped to `[1, cap]` (with the default `"auto"` width, the
-floor of 2 until the gateway has sized it from the host just after boot),
+floor of 2 until the gateway has sized it from the host just after boot; while
+memory, not the cores, sets that width the gateway reads the host again every
+60 seconds and widens the gate when more memory is available, never narrowing
+it, and the bound follows),
 because the gate is the one resource
 every start in startup contends for: `session/new` runs under `G` permits, so
 at most `G` starts make progress at any moment, and every other admitted start
@@ -254,7 +261,8 @@ Time spent WAITING FOR A PERMIT is not charged to the startup deadline, on
 either start path. A start can queue at three places: the session manager's
 cold-start semaphore, the gateway's spawn admission, and the ACP
 `SessionStartGate` (`agent.session_start_concurrency`, default `auto`: 2..16
-sized from the host) around `session/new`.
+sized from the host at boot and widened when memory frees later; an explicit
+number is fixed until a restart) around `session/new`.
 Each fires two callbacks around its wait: `on_gate_queued` immediately before
 the wait begins, and `on_gate_acquired` when the permit is granted, with the
 wait and the queue's name. The manager's `_gate_wait_mark` stamps

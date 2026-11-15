@@ -23,6 +23,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 from git_maintenance_helpers import git_maintenance_off_entries
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard import git_repo_touches as touches
 from kiro_crew.dashboard.chat_runner import _flush_file_changes
@@ -1091,8 +1092,8 @@ class TestReposRoute:
         """A masked path is not one the status and log routes accept, so its row
         would only ever show an error. It is left out, out of ``listed``, and the
         listing says it is incomplete."""
-        # Shaped like an access key id, so the credential redactor masks it.
-        credential_shaped = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+        # A GitHub token with a valid checksum, so the credential redactor masks it.
+        credential_shaped = github_classic(seed=23)
         plain = _init_repo(tmp_path / "plain")
         secretish = _init_repo(tmp_path / credential_shaped)
         if masked == "agent":

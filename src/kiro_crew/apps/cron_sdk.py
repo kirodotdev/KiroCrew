@@ -601,7 +601,11 @@ class CronSDK:
         # once per job, and never on the loop.
         script = await asyncio.to_thread(self._vet_command_script, name, command, script)
         job = await self._cron.add_job_if_absent_async(
-            lambda existing, n=name: existing.name == n,
+            # Owner-scoped, as list_jobs is: names are not unique in the store, so a
+            # user's or another app's job of the same name must not count as present.
+            lambda existing, n=name, o=self._owner_prefix: (
+                existing.name == n and getattr(existing, "created_by", "") == o
+            ),
             **self._add_job_kwargs(
                 name, message,
                 every_secs=every_secs, cron_expr=cron_expr, agent=agent,

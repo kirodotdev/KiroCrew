@@ -6,11 +6,15 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import mcp_core
 from kiro_crew.mcp_core import _call_tool, _call_tool_deferrable
 from kiro_crew.mcp_shared import DeferredTool, _DeferredEntry, drive_deferred
 from kiro_crew.mcp_tools.spawn import _SubAgentsStep, spawn_sub_agents
+
+# A GitHub token with a valid checksum, which the redactor masks.
+_TOKEN = github_classic(seed=40)
 
 
 def _call_after_submission(args, clock, poll_at):
@@ -119,8 +123,12 @@ class TestDeferredSubmission:
         members = 128
         manual_clock.install(monkeypatch, mcp_core)
         ids = iter(f"a{i}" for i in range(members))
+        beats = []
 
         def submit(path, body, **_kwargs):
+            if path == "/api/session-keepalive":
+                beats.append(body)
+                return {"ok": True}
             manual_clock.advance(8)
             return {"id": next(ids)}
 
@@ -135,9 +143,15 @@ class TestDeferredSubmission:
         started = manual_clock.monotonic()
         for index in range(members):
             assert step.step() is None
-            assert post.call_count == index + 1
+            assert post.call_count - len(beats) == index + 1
             assert entry.progressing(manual_clock.monotonic())
         assert manual_clock.monotonic() - started > PROGRESS_WEDGE_CEILING_SECS
+        # A submission that long is this call working: it beats all through it,
+        # naming no member, so the call's own silence timer never reads it as lost.
+        # A step starts every 8 s and a beat is due 30 s after the last one, so
+        # the beats land every 32 s until the last step starts.
+        assert len(beats) == (members - 1) * 8 // 32
+        assert all(b["phase"] == "submit" and b["subagent_ids"] == [] for b in beats)
         assert step.phase == "poll" and len(step.sa_ids) == members
         # The polling step retains no member prompts, and nothing reads as unsubmitted.
         assert step.agents_input == []
@@ -485,7 +499,7 @@ class TestSpawnSubAgents:
             mock_post.return_value = {"id": "a1"}
             mock_get.return_value = {
                 "done": True,
-                "agent": "agent AKIAIOSFODNN7EXAMPLE here",
+                "agent": f"agent {_TOKEN} here",
                 "result": "ok",
             }
 
@@ -494,7 +508,7 @@ class TestSpawnSubAgents:
                 "solo_reason": "bulk_data",
             })
 
-            assert "AKIAIOSFODNN7EXAMPLE" not in result
+            assert _TOKEN not in result
 
     def test_redacts_result_text(self):
         with patch("kiro_crew.mcp_core._post") as mock_post, \
@@ -505,7 +519,7 @@ class TestSpawnSubAgents:
             mock_get.return_value = {
                 "done": True,
                 "agent": "w",
-                "result": "key AKIAIOSFODNN7EXAMPLE found",
+                "result": f"key {_TOKEN} found",
             }
 
             result = _call_tool("spawn_sub_agents", {
@@ -513,7 +527,7 @@ class TestSpawnSubAgents:
                 "solo_reason": "bulk_data",
             })
 
-            assert "AKIAIOSFODNN7EXAMPLE" not in result
+            assert _TOKEN not in result
 
     def test_passes_cwd_to_spawn(self):
         with patch("kiro_crew.mcp_core._post") as mock_post, \
@@ -696,7 +710,7 @@ class TestSpawnSubAgentsSummarization:
             short_result = "brief answer"
             large_result = "detailed " * 600  # over 3K
 
-            def _get_side(url):
+            def _get_side(url, **_kw):
                 if "short1" in url:
                     return {
                         "done": True,
@@ -860,12 +874,12 @@ class TestSpawnSubAgentsFailedChildTranscript:
             "done": True,
             "agent": "w",
             "error": "crashed",
-            "result": "key AKIAIOSFODNN7EXAMPLE found",
+            "result": f"key {_TOKEN} found",
         })
 
         assert blocks[0]["status"] == "error"
         assert "found" in blocks[0]["text"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in blocks[0]["text"]
+        assert _TOKEN not in blocks[0]["text"]
 
     def test_large_transcript_of_a_failed_child_is_summarized_with_its_path(self):
         from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS

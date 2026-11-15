@@ -1,0 +1,135 @@
+[
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "default",
+        "description": "Session permission mode",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Always ask before making changes",
+            "name": "Manual",
+            "value": "default"
+          },
+          {
+            "description": "Automatically accept all file edits",
+            "name": "Accept edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Create a plan before making changes",
+            "name": "Plan",
+            "value": "plan"
+          },
+          {
+            "description": "Claude handles permission decisions",
+            "name": "Auto",
+            "value": "auto"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "default",
+      "ids": [
+        "default",
+        "acceptEdits",
+        "plan",
+        "auto"
+      ]
+    },
+    "session_id": "claude-session-notices"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "harness_notice": {
+      "description": "Its tools are unavailable in this session. Run /mcp for the error.",
+      "kind": "adapter",
+      "mode_id": "",
+      "mode_name": "",
+      "severity": "warning",
+      "title": "MCP server \"probe\" failed to start",
+      "transcript": "\n\n> **MCP server \"probe\" failed to start:** Its tools are unavailable in this session. Run /mcp for the error.\n\n"
+    },
+    "session_update": "notice"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "harness_notice": {
+      "description": "",
+      "kind": "adapter",
+      "mode_id": "",
+      "mode_name": "",
+      "severity": "warning",
+      "title": "Stop says: the test suite is still failing",
+      "transcript": "\n\n> **Stop says: the test suite is still failing**\n\n"
+    },
+    "session_update": "notice"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "current_mode_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "current_mode_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "harness_notice": {
+      "description": "build watcher.",
+      "kind": "adapter",
+      "mode_id": "",
+      "mode_name": "",
+      "severity": "info",
+      "title": "Task stopped by user",
+      "transcript": "\n\n> **Task stopped by user:** build watcher.\n\n"
+    },
+    "session_update": "notice"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "current_mode_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]

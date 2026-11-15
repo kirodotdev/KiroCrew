@@ -88,6 +88,8 @@ class TestActivation:
             mock_sel.return_value = MagicMock()
             result = override.activate("slack")
         callback.assert_called_once_with("slack", result.ttl)
+        # The callback announces a grant, so one must really be live after it fires.
+        assert result.active is True and override.is_active()
 
     def test_activation_count_increments(self, override: SafetyOverride) -> None:
         with patch("kiro_crew.safety_override.sel") as mock_sel:
@@ -387,7 +389,7 @@ class TestStatus:
         assert status.remaining_secs > 0
         assert status.activated_at_iso is not None
         assert status.expires_at_iso is not None
-        # Verify ISO 8601 format
+        # ISO 8601 date-time strings put a "T" between the date and the time.
         assert "T" in status.activated_at_iso
         assert "T" in status.expires_at_iso
 

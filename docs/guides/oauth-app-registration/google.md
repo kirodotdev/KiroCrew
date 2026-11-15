@@ -55,7 +55,7 @@ Google has no API for these. The script prints each link with your project alrea
 
 ### 3. Paste once
 
-In Kiro Crew open **Settings → OAuth Apps**, pick any Google card, paste the Client ID and Client secret, leave **Also save on Google Drive, …** on, and click **Save**. All six Google cards now show **Configured**. (Changing only the Client ID later saves on that card alone; enter the secret again to update all six.) Then click **Connect** on each card you want under **Customize → Connections**.
+In Kiro Crew open **Settings → Connections** and click the **Google** entry open. Paste the Client ID and Client secret, leave **Also save on Google Drive, …** on, and click **Save**. All six Google products now show **Configured**. (Changing only the Client ID later saves on that card alone; enter the secret again to update all six.) Then click **Connect** on each product you want, in the same entry.
 
 On **External / Testing** Google shows "Google hasn't verified this app" at sign-in; click **Continue**. That is expected for a private app.
 

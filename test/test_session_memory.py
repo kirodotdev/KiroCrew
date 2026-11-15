@@ -12,6 +12,7 @@ import pytest
 
 from kiro_crew import resource_status as sm_rs
 from kiro_crew.dashboard import session_memory as sm
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 class _FakeSlot:
@@ -89,10 +90,10 @@ def test_a_credential_in_a_title_is_redacted_at_the_output_boundary() -> None:
     client-supplied body["title"] to slot.title with no scan, so a title can reach
     this serializer unredacted. running_agents_for redacts task text in the same
     payload; titles must not be treated more loosely."""
-    leaky = "Debug AKIAIOSFODNN7EXAMPLE rotation"
+    leaky = f"Debug {SAMPLE_AWS_SECRET} rotation"
     out = sm.session_title("dashboard:chat-9", lambda k: _FakeSlot(leaky))
 
-    assert "AKIAIOSFODNN7EXAMPLE" not in str(out["title"])
+    assert SAMPLE_AWS_SECRET not in str(out["title"])
     assert out["title"] == "Debug [REDACTED: credential] rotation"
 
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp import _dispatch
 from kiro_crew.acp._dispatch import parse_metadata, parse_refusal
@@ -113,7 +114,7 @@ class TestParseRefusal:
         assert info == RefusalInfo()
 
     def test_explanation_is_redacted_and_capped(self):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=22)
         info = parse_refusal(
             {
                 "stopReason": "CONTENT_FILTERED",
@@ -273,7 +274,7 @@ class TestEveryFieldIsScrubbed:
     """Round-2 GPT finding: ``category`` / ``recommendedModel`` reach the same
     log line and card as ``explanation``, so all three pass the two redactors."""
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    SECRET = github_classic(seed=23)
 
     @pytest.mark.parametrize("field", ["category", "explanation", "recommendedModel"])
     def test_credential_in_any_field_is_redacted(self, field, caplog):

@@ -232,9 +232,7 @@ export default [
     files: [
       'src/apps/auto-improvement/AutoImprovementPage.tsx',
       'src/apps/design-tweak/DesignTweakPage.tsx',
-      'src/apps/meetings/MeetingView.tsx',
       'src/apps/meetings/MeetingsPage.tsx',
-      'src/apps/papyrus/PapyrusPage.tsx',
       'src/apps/papyrus/ProjectList.tsx',
       'src/components/themeEditor.tsx',
       'src/hooks/useSessionActions.ts',

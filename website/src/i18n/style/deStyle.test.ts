@@ -24,6 +24,7 @@ const bundle = (code: string) =>
   flatten((RUNTIME_CATALOGS as Record<string, { translation: unknown }>)[code].translation)
 
 const de = bundle('de')
+const en = bundle('en')
 
 function report(bad: string[], limit = 6): string {
   return `${bad.length} violation(s):\n  ${bad.slice(0, limit).join('\n  ')}`
@@ -108,6 +109,58 @@ describe('de register (style/de.md §4)', () => {
       .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
     expect(bad, `${report(bad)}\n\nThere is no ceiling to raise for these — the value is yours.`)
       .toEqual([])
+  })
+
+  /**
+   * Blocks already moved to du whole, so they are held to it catalog-wide: the
+   * first screens a new user meets (setup, onboarding, import, AWS consent) and
+   * the top bar. A block joins once its last Sie value is gone.
+   */
+  const DU_BLOCKS = [
+    'app.',
+    'apps.commandBar.',
+    'components.agentImportFlow.',
+    'components.awsConsentGate.',
+    'components.kiroPrerequisiteGate.',
+    'components.onboardingFlow.',
+  ]
+  // A possessive at a sentence start ("Ihre Rolle") is the formal "your" here.
+  // A sentence-start "Sie" is left alone: it is just as often "it" or "they".
+  const FORMAL_POSSESSIVE_AT_START = /(?:^|[.!?…:]\s+)(?:Ihnen|Ihr|Ihre|Ihren|Ihrem|Ihrer|Ihres)\b/
+
+  it('addresses the reader as du throughout the converted blocks', () => {
+    const bad = Object.entries(de)
+      .filter(([key]) => DU_BLOCKS.some(block => key.startsWith(block)))
+      .filter(([, value]) => FORMAL_ADDRESS.test(value) || FORMAL_POSSESSIVE_AT_START.test(value))
+      .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
+    expect(bad, report(bad)).toEqual([])
+  })
+})
+
+describe('de spelling (style/de.md §7)', () => {
+  it('writes umlauts, never ae / oe / ue', () => {
+    // A word whose ae/oe/ue spelling has an umlaut twin elsewhere in the catalog
+    // is a transliteration ("ausfuehren" beside "ausführen"). "neue", "Quelle"
+    // and "Issue" have no such twin, so they are never caught.
+    const UMLAUT: Record<string, string> = { ae: 'ä', oe: 'ö', ue: 'ü', Ae: 'Ä', Oe: 'Ö', Ue: 'Ü' }
+    const words = (value: string) => value.match(/\p{L}+/gu) ?? []
+    const vocabulary = new Set(Object.values(de).flatMap(words))
+    const bad = Object.entries(de)
+      .filter(([, value]) => words(value).some(word =>
+        /[aouAOU]e/.test(word) && vocabulary.has(word.replace(/[aouAOU]e/g, pair => UMLAUT[pair]))))
+      .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
+    expect(bad, report(bad)).toEqual([])
+  })
+})
+
+describe('de terminology (style/de.md §7)', () => {
+  it("renders 'turn' as Durchlauf, never Zug", () => {
+    // Judged only where the English says "turn", so the browser loop's "moves"
+    // keep their Zug.
+    const bad = Object.keys(de)
+      .filter(key => /\bturns?\b/i.test(en[key] ?? '')
+        && /(?<!\p{L})(?:Zug|Zugs|Zuges|Züge|Zügen)(?!\p{L})/u.test(de[key]))
+    expect(bad, report(bad)).toEqual([])
   })
 })
 

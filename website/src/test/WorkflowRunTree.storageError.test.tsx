@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
-import WorkflowRunTree from '../apps/workflows/WorkflowRunTree'
+import WorkflowRunTree from '../components/workflows/WorkflowRunTree'
 import { i18next, initI18n } from '../i18n/all'
 import { i18nT } from '../i18n/t'
 import { consumeChatHandoff, installSoftNavigate, __resetNavSeamForTests } from '../utils/errorReport'

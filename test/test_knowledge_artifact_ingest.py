@@ -2,14 +2,17 @@
 
 import asyncio
 import hashlib
+import json
+import logging
 import threading
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from llm_pool_helpers import FakeWorker, _make_pool_with_fake_workers
 
 from kiro_crew.artifacts import ArtifactNotFoundError, ArtifactStore
-from kiro_crew.knowledge import artifact_ingest
+from kiro_crew.knowledge import artifact_ingest, ingestion, llm_pool
 from kiro_crew.knowledge.artifact_ingest import (
     ARTIFACT_SOURCE_TYPE,
     ARTIFACT_SOURCE_URI,
@@ -20,10 +23,12 @@ from kiro_crew.knowledge.artifact_ingest import (
     refresh_artifact_name,
     remove_artifact,
 )
+from kiro_crew.knowledge.extractor import EntityExtractor
 from kiro_crew.knowledge.ingestion import DUPLICATE_JOB_STATUS, IngestionPipeline
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.on_loop_db import OnLoopStoreError
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 DEFAULT_KINDS = {"markdown", "text", "html", "json"}
 
@@ -77,6 +82,27 @@ def art_store(tmp_path):
 def _contents(kstore, source_id):
     return [r["content"] for r in kstore.db.execute(
         "SELECT content FROM items WHERE source_id = ?", (source_id,)).fetchall()]
+
+
+def _fail_ingest(pipeline, monkeypatch, oversized):
+    """Fail the next ingest: on the pipeline's own size check, with the cap
+    lowered to about 1 KB, or with a read error."""
+    if oversized:
+        monkeypatch.setattr(ingestion, "_max_ingest_file_mb", lambda: 0.001)
+    else:
+        monkeypatch.setattr(
+            pipeline, "ingest_file", AsyncMock(side_effect=RuntimeError("read failed")))
+
+
+def _logged(caplog):
+    """(an ERROR from artifact_ingest, the pipeline's oversized-file WARNING)."""
+    records = caplog.records
+    return (
+        any(r.name == artifact_ingest.logger.name and r.levelno >= logging.ERROR
+            for r in records),
+        any(r.name == ingestion.logger.name and "oversized" in r.getMessage()
+            for r in records),
+    )
 
 
 def _item_ids(kstore, source_id):
@@ -192,8 +218,8 @@ class TestIngestArtifact:
     @pytest.mark.asyncio
     async def test_credentials_and_name_redacted(self, pipeline, art_store, kstore):
         sid, _ = ensure_artifact_source(kstore)
-        secret = "AKIAIOSFODNN7EXAMPLE"
-        name_secret = "AKIAIOSFODNN7TITLE00"
+        secret = SAMPLE_AWS_SECRET
+        name_secret = "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" + "Jf1Lb5Gsq7RmW2nXsT"
         art = art_store.create(
             name=f"Leaky {name_secret}", content=f"config key {secret} here", kind="text")
         await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
@@ -510,6 +536,21 @@ class TestReconcile:
         assert (ingested, removed, deferred) == (0, 0, 0)
         assert any("original body" in c for c in _contents(kstore, sid)), (
             "a failed replacement must not leave the artifact unsearchable")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("oversized", [False, True], ids=["read_error", "oversized"])
+    async def test_a_failed_ingest_logs_an_error_unless_the_file_was_oversized(
+        self, pipeline, art_store, kstore, monkeypatch, caplog, oversized
+    ):
+        """The pipeline already warned about an oversized file, so the pass does
+        not log it a second time at ERROR."""
+        sid, _ = ensure_artifact_source(kstore)
+        art_store.create(name="Doc", content="x" * 4096, kind="markdown")
+        _fail_ingest(pipeline, monkeypatch, oversized)
+        with caplog.at_level(logging.WARNING):
+            counts = await reconcile_artifacts(pipeline, art_store, sid, DEFAULT_KINDS)
+        assert counts == (0, 0, 0)
+        assert _logged(caplog) == (not oversized, oversized)
 
     @pytest.mark.asyncio
     async def test_a_deduped_row_keeps_its_hash_so_its_claim_can_be_released(
@@ -954,7 +995,70 @@ class TestArtifactKnowledgeSyncStop:
             knowledge_lifecycle._shutdown_knowledge_pools)
 
 
+class TestPoolShutdownUnderTheIngestInHand:
+    """Gateway exit shuts the extraction pool down under the artifact in hand.
+
+    The extraction it cuts short must fail that ingest. Stored with no entities
+    under the current content hash, the artifact would read as converged, and
+    no later pass would extract it until its content changed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_next_pass_ingests_it_again_with_its_entities(
+        self, pipeline, art_store, kstore
+    ):
+        sid, _ = ensure_artifact_source(kstore)
+        art_store.create(name="A", content="alpha body", kind="markdown")
+        in_flight, killed = asyncio.Event(), asyncio.Event()
+
+        class _KilledMidReply(FakeWorker):
+            async def send_message(self, prompt, timeout=60.0):
+                in_flight.set()
+                await killed.wait()
+                raise RuntimeError("process exited during prompt")
+
+            async def shutdown(self):
+                killed.set()
+
+        pool = _make_pool_with_fake_workers(pool_size=1)
+        pool._workers[0] = _KilledMidReply()
+        pipeline.extractor = EntityExtractor(pool=pool)
+        task = asyncio.create_task(
+            reconcile_artifacts(pipeline, art_store, sid, DEFAULT_KINDS))
+        await asyncio.wait_for(in_flight.wait(), _STOP_DEADLINE_S)
+        await pool.shutdown()
+        assert await asyncio.wait_for(task, _STOP_DEADLINE_S) == (0, 0, 0)
+        assert artifact_ingest._known_kinds(kstore, sid) == {}, "recorded as converged"
+        with pytest.raises(llm_pool.LLMPoolClosed):
+            await pool.send("a later prompt")  # refused, never a respawn at exit
+
+        reply = json.dumps({"title": "t", "summary": "s", "category": "document",
+                            "entities": [{"name": "Alpha", "type": "concept"}]})
+        pipeline.extractor = EntityExtractor(
+            pool=_make_pool_with_fake_workers(pool_size=1, responses=[reply]))
+        assert await reconcile_artifacts(
+            pipeline, art_store, sid, DEFAULT_KINDS) == (1, 0, 0)
+        names = [r["name"] for r in kstore.db.execute("SELECT name FROM entities")]
+        assert names == ["Alpha"]
+
+
 class TestArtifactKnowledgeSync:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("oversized", [False, True], ids=["read_error", "oversized"])
+    async def test_a_failed_event_logs_an_error_unless_the_file_was_oversized(
+        self, pipeline, art_store, kstore, monkeypatch, caplog, oversized
+    ):
+        sync = ArtifactKnowledgeSync(
+            art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
+            loop=asyncio.get_running_loop())
+        art = art_store.create(name="Doc", content="x" * 4096, kind="markdown")
+        _fail_ingest(pipeline, monkeypatch, oversized)
+        with caplog.at_level(logging.WARNING):
+            sync._schedule("upsert", art.slug)
+            # The task's own done callbacks run before this await resumes.
+            await asyncio.gather(*sync._tasks, return_exceptions=True)
+        assert _logged(caplog) == (not oversized, oversized)
+
     @pytest.mark.asyncio
     async def test_handle_upsert_then_delete(self, pipeline, art_store, kstore):
         sync = ArtifactKnowledgeSync(
@@ -1471,3 +1575,37 @@ class TestPostIngestOwnershipSettle:
             "WHERE source_id = ? AND slug = ?", (sid, art.slug)).fetchone())
         assert (row["content_hash"], row["item_ids"], row["status"]) == (
             "sweep-verdict", "[]", "deduped")
+
+
+@pytest.mark.asyncio
+async def test_a_deduped_html_artifact_records_the_hash_its_claim_names(
+    pipeline, art_store, kstore, tmp_path
+):
+    """An html artifact is hashed as markup but its items as extracted text.
+
+    The deduped row has to carry the items' hash: removing the artifact detaches
+    its claim by that hash, so the markup hash would leave the claim behind.
+    """
+    html = "<h1>Spec</h1><p>shared <b>body</b></p>"
+    page = tmp_path / "spec.html"
+    page.write_text(html, encoding="utf-8")
+    folder = kstore.add_source(name="docs", source_type="local_folder",
+                               uri=str(tmp_path))
+    await pipeline.ingest_file(str(page), source_id=folder)
+    held = kstore.db.execute(
+        "SELECT id, content_hash FROM items WHERE source_id = ?", (folder,)).fetchone()
+    assert held is not None
+
+    sid, _ = ensure_artifact_source(kstore)
+    art = art_store.create(name="Spec", content=html, kind="html")
+    job_id = await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
+    assert (pipeline.get_job_status(job_id) or {}).get("status") == DUPLICATE_JOB_STATUS
+    assert sid in kstore.sources_holding_item(held["id"])
+    row = kstore.db.execute(
+        "SELECT content_hash, status FROM artifact_item_state "
+        "WHERE source_id = ? AND slug = ?", (sid, art.slug)).fetchone()
+    assert (row["content_hash"], row["status"]) == (held["content_hash"], "deduped")
+
+    remove_artifact(kstore, sid, art.slug)
+    assert sid not in kstore.sources_holding_item(held["id"]), (
+        "a removed html artifact must release its claim on the holder")

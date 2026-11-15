@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         _ANSI_ESCAPE_RE,
         _BONUS_COLON_RE,
         _BONUS_DASH_RE,
+        _BONUS_USED_RE,
         _MAX_BONUS_CREDITS,
         _MAX_BONUS_DAYS_LEFT,
         _MAX_BONUS_GRANTS,
@@ -55,10 +56,12 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.handlers.sessions_parts.history_reads import (  # noqa: F401
         _DASHBOARD_SLOT_STEM_RE,
+        _GUARDED_TAIL_MAX_MESSAGES,
         _MACHINE_NAMESPACES,
         _SHORT_SLOT_NAME_RE,
         _AppOwnedKeys,
         _app_search,
+        _guarded_tail_wanted,
         _has_user_content,
         _is_machine_only_session,
         _is_user_listed_row,
@@ -75,6 +78,7 @@ if TYPE_CHECKING:
         api_session_meta,
         api_sessions,
         api_sessions_search,
+        user_hidden_modes,
     )
     from kiro_crew.dashboard.handlers.sessions_parts.summaries import (  # noqa: F401
         _SUMMARIZE_MAX_SESSIONS,
@@ -140,9 +144,15 @@ if TYPE_CHECKING:
         api_sessions_clearable_count,
     )
     from kiro_crew.dashboard.handlers.sessions_parts.live_turn import (  # noqa: F401
+        _HEARTBEAT_ID_MAX_CHARS,
+        _HEARTBEAT_SUBAGENTS_MAX,
+        _MODEL_THINK_WINDOW_DEFAULT_SECS,
+        _model_think_window,
+        _note_tool_heartbeat,
         _provider_steer_stamp,
         _resolve_app_approval,
         _service_wait_ping,
+        _subagent_activity_at,
         _wait_end_reason,
         api_approval_resolve,
         api_approvals,
@@ -185,6 +195,7 @@ if TYPE_CHECKING:
     from kiro_crew.agent_discovery import plain_markdown_document  # noqa: F401
     from kiro_crew.agent_discovery import read_agent_spec_strict  # noqa: F401
     from kiro_crew.agent_discovery import spec_by_declared_name  # noqa: F401
+    from kiro_crew.agent_sdk.mcp_problems import mcp_server_state  # noqa: F401
     from kiro_crew.agent_sdk.mcp_refs import per_tool_grants  # noqa: F401
     from kiro_crew.agent_spec_format import agent_spec_candidates  # noqa: F401
     from kiro_crew.agent_spec_format import is_markdown_spec  # noqa: F401
@@ -193,6 +204,7 @@ if TYPE_CHECKING:
     from kiro_crew.channel_transcript_migration import _orphan_target_stem  # noqa: F401
     from kiro_crew.cloud.login_target import parse_whoami_output  # noqa: F401
     from kiro_crew.config.paths import kiro_agents_dir  # noqa: F401
+    from kiro_crew.context import RECALL_ROLES  # noqa: F401
     from kiro_crew.cron import CronStoreBusy  # noqa: F401
     from kiro_crew.cron import CronStoreUnreadable  # noqa: F401
     from kiro_crew.cron import cron_owner_matches  # noqa: F401
@@ -228,6 +240,10 @@ if TYPE_CHECKING:
     from kiro_crew.llm_helpers import run_bg_oneliner  # noqa: F401
     from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS  # noqa: F401
     from kiro_crew.mcp_discovery import sync_discovered_servers  # noqa: F401
+    from kiro_crew.mcp_listing_gateway import session_listing_body  # noqa: F401
+    from kiro_crew.mcp_listing_relay import CODE_PARAM  # noqa: F401
+    from kiro_crew.mcp_listing_relay import LISTING_PARAM  # noqa: F401
+    from kiro_crew.mcp_listing_relay import PLACE_PARAM  # noqa: F401
     from kiro_crew.messaging.link import _in_namespace  # noqa: F401
     from kiro_crew.messaging.link import canonical_key  # noqa: F401
     from kiro_crew.platform import redact_log_via_context  # noqa: F401
@@ -238,12 +254,13 @@ if TYPE_CHECKING:
     from kiro_crew.security import redact_credentials  # noqa: F401
     from kiro_crew.security import redact_exfiltration_urls  # noqa: F401
     from kiro_crew.validation import sanitize_string  # noqa: F401
+    from kiro_crew.validation_parts.core_agent_schemas import SPAWN_BATCH_MEMBERS_MAX  # noqa: F401
 
 from aiohttp import web
 
 from kiro_crew import _facade_mirror
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
-from kiro_crew.dashboard.handlers import kiro_usage_api
+from kiro_crew.dashboard.handlers import kiro_usage_api, plan_credit_alerts
 from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
 )
@@ -518,12 +535,22 @@ def _unavailable_reason(api_result: kiro_usage_api.UsageResult) -> str | None:
     return None
 
 
+def _credential_rejected(api_result: kiro_usage_api.UsageResult) -> bool:
+    """True when the API refused a credential it was shown, not when none was read.
+
+    Rides the ``signin_required`` marker as ``credential_rejected`` so the
+    dashboard can tell a failed sign-in from a missing one.
+    """
+    return api_result.auth_state == kiro_usage_api.AUTH_REJECTED
+
+
 def _cache_without_scrape(
     api_usage: object,
     identity: dict[str, object] | None,
     reason: str | None = None,
     *,
     user_id: str | None = None,
+    rejected: bool = False,
 ) -> None:
     """Cache the best available value when the parked scrape is not going to run.
 
@@ -549,6 +576,7 @@ def _cache_without_scrape(
     that is signed in now. ``None`` (kiro-cli never resolved) proves nothing, so
     nothing is preserved. ``user_id`` is this refresh's IdC userId
     (:attr:`kiro_usage_api.UsageResult.user_id`), compared with the cached one.
+    ``rejected`` is :func:`_credential_rejected`'s verdict for this refresh.
     """
     global _usage_cache, _usage_cache_ts, _usage_cache_user_id
     if (
@@ -570,6 +598,8 @@ def _cache_without_scrape(
         unavailable: dict[str, object] = {**partial, "available": False}
         if reason is not None:
             unavailable["reason"] = reason
+        if rejected:
+            unavailable["credential_rejected"] = True
         _usage_cache = unavailable
     _usage_cache_ts = time.time()
 
@@ -859,6 +889,9 @@ async def _refresh_from_vault() -> None:
             kiro_usage_api.fetch_usage_limits_with_credential,
             cred.access_token,
             cred.profile_arn,
+            token_type=(
+                kiro_usage_api.TOKEN_TYPE_EXTERNAL_IDP if cred.auth_method == "external_idp" else ""
+            ),
         ),
     )
     after, identity = await vault_identity_snapshot()
@@ -886,19 +919,23 @@ async def _refresh_from_vault() -> None:
     _cache_vault_failure(before, _unavailable_reason(result), stamp=stamp)
 
 
-def _publish_account_unproven(identity: dict[str, object], reason: str) -> None:
+def _publish_account_unproven(
+    identity: dict[str, object], reason: str, *, rejected: bool = False
+) -> None:
     """Publish the no-balance marker for an :func:`_account_type_only` sign-in.
 
     Carries ``identity``'s own public fields (the account type) and nothing of
     an earlier reading: no number this refresh read is published for that shape.
+    ``rejected`` is :func:`_credential_rejected`'s verdict for this refresh.
     """
-    _publish_usage(
-        {
-            **{k: _redact_strings(v) for k, v in identity.items() if not k.startswith("_")},
-            "available": False,
-            "reason": reason,
-        }
-    )
+    marker: dict[str, object] = {
+        **{k: _redact_strings(v) for k, v in identity.items() if not k.startswith("_")},
+        "available": False,
+        "reason": reason,
+    }
+    if rejected:
+        marker["credential_rejected"] = True
+    _publish_usage(marker)
 
 
 def _cache_transient_failure(
@@ -906,6 +943,7 @@ def _cache_transient_failure(
     reason: str | None = None,
     *,
     user_id: str | None = None,
+    rejected: bool = False,
 ) -> None:
     """Record a usage-fetch failure without blanking the pill for the same account.
 
@@ -933,7 +971,7 @@ def _cache_transient_failure(
     ended empty (the API's auth-class verdict, see :func:`_unavailable_reason`),
     so the pill can name the remedy instead of hiding. ``user_id`` is this
     refresh's IdC userId, compared with the cached one as in
-    :func:`_cache_without_scrape`.
+    :func:`_cache_without_scrape`, and ``rejected`` is passed on the same way.
     """
     global _usage_cache, _usage_cache_ts, _usage_cache_user_id
     if (
@@ -949,6 +987,8 @@ def _cache_transient_failure(
         _usage_cache = {"available": False}
         if reason is not None:
             _usage_cache["reason"] = reason
+        if rejected:
+            _usage_cache["credential_rejected"] = True
     _usage_cache_ts = time.time()
 
 
@@ -1197,6 +1237,7 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
         try:
             await kill_and_reap(child, timeout=5)
         except Exception:
+            # A failed reap must not stop the caller from recording the failure.
             pass
 
     async def _run_scrape(
@@ -1360,7 +1401,9 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
                 functools.partial(kiro_usage_api.fetch_usage_limits, expected_arn=None),
             )
             _publish_account_unproven(
-                identity, await _account_type_only_reason(type_only_result.auth_state, kiro_bin)
+                identity,
+                await _account_type_only_reason(type_only_result.auth_state, kiro_bin),
+                rejected=_credential_rejected(type_only_result),
             )
             logger.info(
                 "Kiro usage: the sign-in names a provider and no user; showing the "
@@ -1503,6 +1546,7 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
                 parked_identity,
                 reason=_unavailable_reason(api_result),
                 user_id=await _adjacent_user_id(),
+                rejected=_credential_rejected(api_result),
             )
             return _SKIPPED_SCRAPE_PARKED
         # The scrape reads whichever account kiro-cli has signed in WHEN IT
@@ -1530,6 +1574,7 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
                 no_scrape_identity,
                 reason=_unavailable_reason(api_result),
                 user_id=await _adjacent_user_id(),
+                rejected=_credential_rejected(api_result),
             )
             return None
         after = (await _adjacent_identity()) or {}
@@ -1636,7 +1681,10 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
         # marker names that remedy.
         _record_scrape_outcome(False)
         _cache_transient_failure(
-            after, reason=_unavailable_reason(api_result), user_id=after_user_id
+            after,
+            reason=_unavailable_reason(api_result),
+            user_id=after_user_id,
+            rejected=_credential_rejected(api_result),
         )
         return _parked_by_this_attempt()
 
@@ -1693,6 +1741,42 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
                 os.remove(sandbox_cleanup)
             except OSError:
                 pass
+
+
+async def _fetch_usage_then_alert(state: DashboardState, *, vault_owned: bool) -> str | None:
+    """One refresh (:func:`_fetch_usage_bg`), then the plan-credit alert check on its reading.
+
+    Only a refresh that runs is checked: :func:`_fetch_usage_bg` tests ``_usage_fetching``
+    before its first await, so the flag read here, with no await between, says whether the
+    call refreshes or returns at once because another refresh is running, which checks its
+    own reading. The check never raises, so the refresh's outcome is what the caller gets.
+    """
+    ran = not _usage_fetching
+    outcome = await _fetch_usage_bg(vault_owned=vault_owned)
+    if ran:
+        await _alert_on_cached_reading(state)
+    return outcome
+
+
+async def _alert_on_cached_reading(state: DashboardState) -> None:
+    """Run :func:`plan_credit_alerts.notify_if_crossed` on the reading the GET would serve.
+
+    The reading and the identity it was published under are taken in one step, as the GET
+    takes them, and judged by the GET's rule (:func:`_reading_not_servable`) on a fresh
+    :func:`_vault_owns_usage` verdict: a reading the GET would not serve is not checked.
+    That identity names the account the alert record is kept for. Off, with no identity
+    read, while ``telemetry.plan_alert_pcts`` is empty. Never raises.
+    """
+    usage, vault_fp, user_id = _usage_cache, _usage_cache_vault_fp, _usage_cache_user_id
+    try:
+        if not await plan_credit_alerts.enabled():
+            return
+        if await _reading_not_servable(await _vault_owns_usage(), usage, vault_fp):
+            return
+    except Exception:  # noqa: BLE001 - an alert miss must not break the usage refresh
+        logger.warning("Plan credit alert: could not check the reading's account", exc_info=True)
+        return
+    await plan_credit_alerts.notify_if_crossed(state, usage, vault_fp=vault_fp, user_id=user_id)
 
 
 async def api_sessions_usage(request: web.Request) -> web.Response:
@@ -1753,7 +1837,7 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
         # text scrape, a minute-scale kiro-cli subprocess. A faster readout is
         # not worth that churn; a profile switch is picked up on the next interval.
         state: DashboardState = request.app["state"]
-        task = asyncio.create_task(_fetch_usage_bg(vault_owned=vault_owned))
+        task = asyncio.create_task(_fetch_usage_then_alert(state, vault_owned=vault_owned))
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
     return web.json_response({"usage": served})
@@ -1800,7 +1884,7 @@ async def api_sessions_usage_refresh(request: web.Request) -> web.Response:
             {"error": "A refresh is already running", "code": "refresh_in_flight"},
             status=409,
         )
-    outcome = await _fetch_usage_bg(vault_owned=vault_owned)
+    outcome = await _fetch_usage_then_alert(request.app["state"], vault_owned=vault_owned)
     if outcome == _SKIPPED_SCRAPE_PARKED:
         parked_for = max(1, int(_usage_scrape_backoff_until - time.monotonic() + 0.999))
         return web.json_response(

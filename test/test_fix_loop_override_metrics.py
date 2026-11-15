@@ -192,8 +192,6 @@ class TestTheRecordShapeMatchesTheHandler:
 
     def test_the_class_pattern_is_the_contracts(self, mod) -> None:
         contract = load_skill_script("review_contract_for_metrics", CONTRACT)
-        if not hasattr(contract, "OVERRIDE_CLASS_RE"):
-            pytest.skip("the class record is not on this base yet (D1b-1 adds OVERRIDE_CLASS_RE)")
 
         assert mod.OVERRIDE_CLASS_RE.pattern == contract.OVERRIDE_CLASS_RE.pattern
 

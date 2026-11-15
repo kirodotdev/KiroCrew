@@ -86,8 +86,7 @@ def test_usage_limit_outranks_throttle_wording() -> None:
 
 def test_credential_propagation_is_retryable_despite_auth_token() -> None:
     text = "UnrecognizedClientException: The security token included in the request is invalid"
-    if not acp_client.is_credential_propagation_delay(text):
-        pytest.skip("the propagation detector does not match this wording on this revision")
+    assert acp_client.is_credential_propagation_delay(text)
     assert classify_provider_error(text).kind == PROVIDER_ERROR_CREDENTIAL_PROPAGATION
 
 

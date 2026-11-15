@@ -206,6 +206,18 @@ def test_non_git_project_shows_its_folder_without_a_worktree(tmp_path, audits):
     assert h.client.of("remove_view") == []
 
 
+def test_a_git_file_naming_a_missing_gitdir_records_and_audits_that_reason(tmp_path, audits):
+    folder = tmp_path / "linked"
+    folder.mkdir()
+    (folder / ".git").write_text(f"gitdir: {tmp_path / 'gone'}\n", newline="\n")
+    h = Harness(tmp_path)
+    rec = h.run(h.svc.ensure(FakeBinding("C1", project_dir=str(folder))))
+    assert rec.worktree_skipped == "broken_gitfile" and rec.worktree == ""
+    assert service.worktree_settled(rec)
+    rows = [a for a in audits if a[0] == "code_channel_worktree"]
+    assert rows[-1][1] == "denied" and rows[-1][3].startswith("broken_gitfile: fatal:")
+
+
 def test_git_project_gets_a_fresh_worktree_off_main_despite_a_dirty_checkout(
     tmp_path, repo, audits
 ):
@@ -1076,7 +1088,7 @@ def test_a_git_timeout_finding_the_repo_is_counted_too(tmp_path, repo, audits, m
         tries.append(1)
         raise subprocess.TimeoutExpired(["git", "rev-parse"], 30)
 
-    monkeypatch.setattr(git_ops, "toplevel", slow)
+    monkeypatch.setattr(git_ops, "toplevel_or_refusal", slow)
     for _ in range(5):
         rec = h.run(h.svc.ensure(binding))
         assert rec is not None and rec.worktree_skipped == "worktree_timeout"
@@ -1653,7 +1665,8 @@ def test_the_folder_reuse_scan_resolves_paths_off_the_event_loop(tmp_path, monke
 
 # ── outbound redaction ──────────────────────────────────────────────────────
 
-_FAKE_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+# A synthetic 40-character AWS secret, split so no source line spells one.
+_FAKE_KEY = "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" + "Jf1Lb5Gs0Ye9Ua2WkE"
 
 
 def test_a_credential_written_into_a_file_never_reaches_slack(tmp_path, repo, audits):

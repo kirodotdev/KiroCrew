@@ -23,6 +23,7 @@ helpers directly, the judge and transaction through the disconnect endpoint.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -31,8 +32,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from kiro_crew import agent as agent_mod
 from kiro_crew.agent import SharedAgentHomeRefused
+from kiro_crew.agent_files import AGENT_FILENAME, WORKER_AGENT_FILENAME
 from kiro_crew.agent_spec_format import (
+    NATIVE_SKILL_ALIAS_PREFIX,
     is_agent_spec_name,
     is_markdown_spec,
     opens_frontmatter_fence,
@@ -43,7 +47,58 @@ from kiro_crew.platform import PlatformCompositionError
 logger = logging.getLogger(__name__)
 
 _MIRROR_PREFIX = "mirror:"
-_RENDERED_AGENT_FILE = "kirocrew.json"
+_DEFAULT_AGENT = Path(AGENT_FILENAME).stem
+_WORKER_AGENT = Path(WORKER_AGENT_FILENAME).stem
+
+
+def _is_crew_worker_spec(path: Path) -> bool:
+    """Whether the worker spec at *path* is one its installer wrote and would rewrite."""
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    return isinstance(spec, dict) and agent_mod._foreign_worker_spec_reason(spec) is None
+
+
+def _is_mirror_spec(path: Path) -> bool:
+    """Whether the agent spec at *path* reflects only what this Disconnect clears.
+
+    A mirror is an entry the transaction removes or re-derives from the purged
+    default agent, so it can never keep a grant alive on its own:
+
+    * ``kirocrew.json``, which ``_purge_server_config`` strips and
+      ``rebuild_agent_config`` writes again;
+    * the worker spec, which that rebuild derives from the default agent again, and
+      only when its installer would accept it (``_foreign_worker_spec_reason``): a
+      file at the name that the installer did not write survives untouched;
+    * a ``kirocrew-skill-view-*.json`` view whose ownership record binds the file
+      as it is now and names the default agent, re-projected from it by the next
+      session. A record that outlived its file proves nothing about a spec someone
+      wrote at the same name later, so that spec is a sharer;
+    * such a view whose record names the worker, while the worker spec beside it is
+      one its installer wrote (the same ``_foreign_worker_spec_reason`` test): the
+      worker is re-derived from the default agent, and its view from the worker.
+
+    Every other spec is a sharer, the other ``OWNED_KIRO_AGENT_FILES`` included:
+    their installers keep an entry from an ``agent.json`` override or a customized
+    copy that the purge never edits. Anything that cannot be confirmed (an
+    unreadable file, no recorded source, a check that raises) is a sharer, the
+    census's fail-closed reading.
+    """
+    name = path.name
+    try:
+        if name == AGENT_FILENAME:
+            return True
+        if name == WORKER_AGENT_FILENAME:
+            return _is_crew_worker_spec(path)
+        if name.startswith(NATIVE_SKILL_ALIAS_PREFIX):
+            from kiro_crew.agent_sdk.drivers.acp_skill_views import skill_view_owned_source
+
+            source = skill_view_owned_source(path)
+            if source == _WORKER_AGENT:
+                return _is_crew_worker_spec(path.parent / WORKER_AGENT_FILENAME)
+            return source == _DEFAULT_AGENT
+    except Exception:
+        logger.debug("could not confirm %s is a Kiro Crew render", path, exc_info=True)
+    return False
+
 
 # Never a sha256 hexdigest and never None, so the comparisons that read it cannot
 # confuse it with either real answer of :func:`_module_artifact_key`.
@@ -233,7 +288,7 @@ def agent_spec_sources(project_dirs: tuple[Path, ...] = ()) -> list[tuple[str, P
     # Disconnect count its own reflection as a sharer and never revoke anything.
     sources.extend(
         (
-            f"{_MIRROR_PREFIX}{name}" if name == _RENDERED_AGENT_FILE else f"agent:{name}",
+            f"{_MIRROR_PREFIX}{name}" if _is_mirror_spec(agents_dir / name) else f"agent:{name}",
             agents_dir / name,
         )
         for name in names

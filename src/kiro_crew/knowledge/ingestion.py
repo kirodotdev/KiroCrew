@@ -32,7 +32,7 @@ from kiro_crew.sel import sel
 from .chunker import CHUNK_OVERLAP, CHUNK_TOKEN_SIZE, HeadingAwareChunker
 from .dedup import PERSISTENT_SOURCE_TYPES, dedup_document
 from .embedder import embedder_signature, floats_to_bytes
-from .entity_resolution import resolve_entity, sqlite_text
+from .entity_resolution import resolve_entity, resolve_or_add_entity, sqlite_text
 from .extractor import EntityExtractor, _is_harness_refusal, extraction_source
 from .ingestion_budget import ImportChunkBudget, _import_chunk_budget
 from .readers import FileReader
@@ -62,7 +62,8 @@ def handoff_gate_context() -> contextvars.Context:
     hold cannot block behind a maintenance window the holder is keeping open:
     the holder waits for the task's hold, the window waits for the holder, and
     the task waiting for the window would close the cycle until the window's
-    timeout.
+    timeout. A first hold taken once no hold is open waits for the window like
+    any other (``IngestionGate.ingestion_in_flight``).
     """
     ctx = contextvars.copy_context()
     ctx.run(_INGESTION_GATE_DEPTH.set, 0)
@@ -1130,8 +1131,7 @@ class IngestionPipeline:
                 # *One unit*, because the append must sit BETWEEN the two writes:
                 # a chunk whose location write raises has to already be in
                 # created_item_ids or the partial-failure rollback leaves the
-                # item orphaned. Inside the hop that ordering is preserved
-                # exactly as it was inline.
+                # item orphaned. The hop keeps that ordering.
                 def _write_chunk() -> str:
                     new_id = self.store.add_item(
                         title=item_title,
@@ -1326,6 +1326,9 @@ class IngestionPipeline:
         # off-loop gate hop below: it materializes the source's whole item-id
         # set, which is seconds of blocking SQLite on a large library.
         resolve_old_group = False
+        # A text dropped with no source of its own is keyed by its hash: the
+        # source's ``content_hash`` is what makes a repeat drop a no-op.
+        hash_keyed_source = source_id is None
         if source_id is None:
             uri = f"{source_type}://{content_hash[:16]}"
             existing = await asyncio.to_thread(self.store.get_source_by_uri, uri)
@@ -1470,8 +1473,15 @@ class IngestionPipeline:
             # write-lock contention.
             if processed == total:
                 self.store.delete_items_batch(_old_item_ids, owner_source_id=source_id)
-                self.store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
-                self.store.update_source(source_id, last_synced=now)
+                if hash_keyed_source:
+                    # Restore the hash a failed attempt forgot, or every repeat
+                    # drop re-ingests; a key delta, as in _ingest_file_body.
+                    self.store.merge_source_properties(
+                        source_id, set_keys={'content_hash': content_hash},
+                        sync_status='synced', last_synced=now)
+                else:
+                    self.store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
+                    self.store.update_source(source_id, last_synced=now)
             elif processed < total:
                 # Partial failure: remove only items created during THIS call so we
                 # never delete another item group sharing this source_id. Taken
@@ -1549,6 +1559,13 @@ class IngestionPipeline:
                 self.store, name, ent.get('type') or 'concept', aliases,
                 aliases_complete=aliases_complete,
             )
+            created = None
+            if not existing:
+                existing, resolution_tier, created = resolve_or_add_entity(
+                    self.store, name, ent.get('type') or 'concept', aliases,
+                    aliases_complete=aliases_complete,
+                    description=ent.get('description'),
+                )
 
             if existing:
                 eid = existing['id']
@@ -1586,12 +1603,7 @@ class IngestionPipeline:
                             exc,
                         )
             else:
-                eid = self.store.add_entity(
-                    name=name,
-                    entity_type=ent.get('type') or 'concept',
-                    description=ent.get('description'),
-                    aliases=aliases or None,
-                )
+                eid = created
 
             entity_map[name] = eid
             self.store.add_mention(item_id, eid, context=ent.get('description'))

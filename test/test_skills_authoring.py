@@ -9,6 +9,7 @@ family's other files.
 
 from __future__ import annotations
 
+import pytest
 from skills_helpers import (  # noqa: F401 -- the autouse fixtures register by import
     _close_skills_loaders,
     _create_skill,
@@ -258,6 +259,56 @@ class TestUpdateAutoSkill:
             )
             is False
         )
+
+    def test_a_refine_whose_write_fails_keeps_the_live_skill(self, tmp_path):
+        """A write that fails part way leaves the skill as it was, not truncated."""
+        loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        loader.create_auto_skill(
+            "keep-me",
+            description="original desc",
+            triggers="",
+            procedure_md="## Step 1\nrun X\n",
+            provenance=self._make_provenance(),
+        )
+        skill_file = tmp_path / "skills" / "auto" / "keep-me" / "SKILL.md"
+        before = skill_file.read_bytes()
+        # A lone surrogate cannot be encoded as UTF-8, so the write raises.
+        with pytest.raises(UnicodeEncodeError):
+            loader.update_auto_skill(
+                "auto/keep-me",
+                description="refined desc",
+                triggers="",
+                procedure_md="bad " + chr(0xD800),
+                provenance=self._make_provenance(refined_at="2026-05-06T09:00:00+00:00"),
+            )
+        assert skill_file.read_bytes() == before
+
+    def test_a_refine_keeps_the_skill_file_mode(self, tmp_path):
+        """The refine replaces SKILL.md through the same write a dashboard edit uses."""
+        import os
+        import stat
+
+        if os.name == "nt":
+            pytest.skip("POSIX permission bits")
+        loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        loader.create_auto_skill(
+            "private-me",
+            description="original desc",
+            triggers="",
+            procedure_md="## Step 1\nrun X\n",
+            provenance=self._make_provenance(),
+        )
+        skill_file = tmp_path / "skills" / "auto" / "private-me" / "SKILL.md"
+        skill_file.chmod(0o600)
+        assert loader.update_auto_skill(
+            "auto/private-me",
+            description="refined desc",
+            triggers="",
+            procedure_md="## Step 1\nrun Y\n",
+            provenance=self._make_provenance(refined_at="2026-05-06T09:00:00+00:00"),
+        )
+        assert "run Y" in skill_file.read_text(encoding="utf-8")
+        assert stat.S_IMODE(skill_file.stat().st_mode) == 0o600
 
 
 class TestListAutoSkills:

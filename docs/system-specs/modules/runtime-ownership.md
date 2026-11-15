@@ -70,15 +70,63 @@ reads the name. New work goes to the owner of its responsibility:
 `RuntimeOwnership.acquire(key, session_key, spawn, cap=...)` returns an
 `Acquisition`. Placement prefers the runtime this session key last landed on while
 it is alive and has room, then any compatible runtime with room, then `spawn()`.
-Room means fewer than `cap` leases. A runtime lives while at least one lease is
+Room means fewer than `cap` leases AND that no lease on that runtime is this
+session key's own (`_Entry.admits`). A runtime lives while at least one lease is
 outstanding; the **last** release hands it back for teardown and every earlier
 release only drops a reference.
 
-`cap` is `runtime_ownership.CHAT_RUNTIME_CAP`, and it is **1** today. At that cap
+**One session key per process.** The allocator starts one session twice at once on
+purpose — it carries a race budget, and a person's FOREGROUND claim deliberately
+does not join a BACKGROUND start but cold-starts at its own priority — and both
+starts resume the SAME persisted session id. On one process that id is a single
+slot: the two `session/load` calls share `_load_replay_frames[sid]` and
+`_session_queues[sid]`, so the load that reads the counter second finds no
+replayed turn, calls `evict_session(sid)`, and removes the winning start's live
+native session and its response routing while that start still holds its lease.
+So the second start founds its own process, which is also what every start does at
+`cap=1`. The exclusion is on the LEASE, not on the session: once the race loser
+releases, that chat rejoins the runtime its history is on. Each start still mints
+its own lease and is still releasable on its own.
+
+`cap` defaults to `runtime_ownership.CHAT_RUNTIME_CAP`, which is **1**. At that cap
 no entry holding a lease has room, so every acquisition spawns and every release
-is a last release — byte-for-byte the unpooled behaviour, with the claim recorded.
-Raising it is a behaviour change that needs the eligibility rules deciding which
-sessions may share a process, and those do not live here.
+is a last release — byte-for-byte the unshared behaviour, with the claim recorded.
+
+A chat start may pass a larger cap, and that is the one path that does: chat
+runtime sharing, behind the `chat_runtime_sharing` feature preview
+(`dashboard.feature_previews`), off by default. `acp.chat_runtime_sharing`
+supplies what this module deliberately does not decide. `chat_sharing_ineligible_reason`
+says WHICH sessions may share: the preview on, a backend in
+`ACP_BACKENDS_CHAT_RUNTIME_SHARING` (asked separately from the subagent
+`ACP_BACKENDS_SESSION_SHARING`, because it is the chat teardown this membership
+asserts is safe), on KAS an engine `kas_chat_sharing_ready` accepts, no session
+environment, persistent memory mode, a dashboard chat origin, and for a Bot (crew
+member) session a tree root that is the same member on the same memory store.
+`ChatRuntimeKey` is the compatibility key they share ON. It carries the session
+tree's root (`share_tree_root_of`, the top of the creator chain the slot list nests
+on, read once at the start) and the session's member and store, so sessions share
+only inside one tree and two Bots never share. On KAS it leaves out the agent, its
+spec generation, the model and the effort, which KAS takes per session. `chat_runtime_cap`
+reads `agent.chat_runtime_sharing_max_sessions`, forced back to `CHAT_RUNTIME_CAP`
+whenever the preview is off. With the preview off the paragraph above is the
+shipped behaviour exactly.
+
+An **eligible sharing** chat start takes its lease in
+`providers.chat_share.ChatSharePlacement.place`, before the provider exists,
+because there the placement decision and the spawn are one act — a decision taken
+after the spawn could only register a process that already exists. It hands the
+lease to `AcpSessionProvider` as `runtime_lease`, so `acquire_session_lease`
+finds one held and returns. Four inputs a running process cannot shed (the agent
+spec generation, the account era, the governed sandbox tier and the
+SSH_AUTH_SOCK-forwarding consent) are keyed before the acquisition and re-read
+after it; a mismatch releases and retries on the fresh key, and a joiner also
+passes the fork-governance admission the founder passed inside `spawn()`. A field
+the key cannot OBSERVE never compares equal to the same absence elsewhere: an
+empty era read becomes a token unique to that start, so it founds its own process.
+Such a provider carries `shared_runtime=True`, which selects a third teardown arm
+(`_shutdown_shared`): it releases, evicts its own session while keeping the resume
+record (KAS's `session/close` via
+`keep_record_on_teardown`), and kills only the runtime the release hands back.
 
 **A founding `spawn()` holds nothing.** The table's bookkeeping — entries, the
 lease index, the last-runtime map, foundings in flight — is only read or written
@@ -88,14 +136,29 @@ and what keeps a cancellation from landing mid-change; there is no registry lock
 subprocess, ACP handshake) never makes an unrelated `acquire` or any `release`
 wait, and founding starts on different keys overlap. A miss registers a per-key
 founding; a same-key arrival waits on it only while the launching runtime will
-still have room for it (founder plus waiters below `cap`), and otherwise founds
-concurrently, because waiting would just serialize two launches. At `cap=1` nobody
-ever waits. A waiter is shielded from the founder's fate: it wakes on success,
+still have room for it (founder plus waiters below `cap`) and only while its own
+session key is not already reserved on that launch, and otherwise founds
+concurrently, because waiting would just serialize two launches — or, for a
+session key already reserved, buy a launch the arrival may not join and then
+leave, which for a foreground claim racing a background start is the exact wait
+the allocator's priorities exist to avoid. At `cap=1` nobody ever waits. A waiter
+is shielded from the founder's fate: it wakes on success,
 failure or cancellation alike and re-picks, founding itself if it must, so a
 founder's error is never handed to another session. Every exit from the founder
 clears the marker and wakes its waiters; a runtime is published in the same
 synchronous stretch in which `spawn()` returns, so no cancellation point lies
 between a spawned runtime and its entry.
+
+**A founder may publish under another key than it matched on.** `acquire`'s
+optional `published_key` reads the key off the spawned runtime; matching still
+uses the caller's key. Chat sharing uses it for a restarted chat that founds its
+tree's first process: its key carries the scratch tree it was recorded in, and
+the process mounts that tree as its own `work_scratch_dir`, so it is published
+with the empty `shared_scratch` a fresh founder publishes, and a fresh chat of
+the same tree joins it. A runtime that does not expose the tree keeps the full
+key. The founding records the entry it published, and a woken waiter takes that
+entry (when it has room and is alive) before re-picking by its own key, so two
+restarts of one tree waiting on one launch still land on one process.
 
 On the **chat** registration path a lease means the same thing as registry
 membership, which is why it is taken there rather than at provider start:
@@ -108,10 +171,65 @@ That equivalence holds for chat and nowhere else, and the difference matters to
 anyone reading a lease count as a tenancy count. `acquire_session_lease` is reached
 from the chat registration path alone: `open_task_session` registers a session
 without one, the task-run path forces `_owns_runtime = False` on the provider it
-hands the runtime to, and a companion runtime is spawned bare. So **no shared
-runtime holds a lease**, `outstanding_leases` reads 0 for a perfectly healthy one,
-and what defends it is a tenancy. A mechanism keyed on lease absence would end a
-task run's runtime at the close of its first step.
+hands the runtime to, and a companion runtime is spawned bare. So a
+**sub-agent-shared** runtime holds no lease, `outstanding_leases` reads 0 for a
+perfectly healthy one, and what defends it is a tenancy. A mechanism keyed on
+lease absence would end a task run's runtime at the close of its first step.
+
+A **chat-shared** runtime is the other way round: each of its chat sessions holds
+its own lease, so `outstanding_leases` reads the number of chats resident on it,
+and a sub-agent mid-turn on that process adds a tenancy on top. Both are holders
+the gate refuses a kill for, which is why the reset path's "is this process still
+in use" question (`session_lifecycle_parts.teardown._pid_is_still_held`, asked only
+for a shared chat session) reads both tables, and why the RSS watchdog scales its
+ceiling by the leases on a pid (`session_cleanup_spare.rss_limit_for`).
+
+### Shared chats never wait for each other
+
+A chat must not wait for another chat's turn, so chat sharing is offered only
+where the engine itself runs the chats on one process in parallel, and Crew adds
+no turn lock of its own.
+
+**kiro-cli is not a chat-sharing backend.** kiro-cli emits some session-control
+frames without a `sessionId`: a compaction, a `/clear` and an agent switch are
+`session/update` frames for the ONE session whose turn triggered them, but the
+frame does not say which. The reader loop delivers such a frame to every session
+queue, marked `fanout_no_owner`. Chats sharing a kiro-cli process would have to
+take turns for each frame's producer to be unambiguous, so a kiro-cli chat keeps
+its own process with the preview on (`backend_not_chat_shareable`).
+
+**KAS** names the session on every `session/update` and keeps its own turn order:
+one turn per session (a second prompt to a busy session is steered into its
+running turn, since `@kiro/agent` 0.66.91). From 0.66.104 (kiro-agent#3741) turns
+of different sessions also run in parallel: only a spec-generation turn waits for
+the engine's single model slot. Older engines (0.66.91 in kiro-cli 3.1.0, 0.66.102
+in kiro-cli 3.2.1) make every Crew custom-agent turn wait in that slot, so shared
+chats there would answer one at a time. `kas_chat_sharing_ready` therefore admits a
+KAS start only when the engine its route will run is at or above
+`KAS_CHAT_SHARING_MIN_ENGINE` (0.66.104): on the bundle route the installed pinned
+bundle's install record, on the relay the `@kiro/agent` manifest in kiro-cli's
+own `kas/<version>-<sha256>` extract for the kiro-cli version Crew spawns. The
+kiro-cli version alone does not count, and an engine version that cannot be read
+(no extract yet, no installed bundle) keeps one process per chat
+(`kas_engine_not_shareable`).
+
+**Each harness has its own switch under the preview.** The table is
+`agent_sdk.backends_sessions.CHAT_RUNTIME_SHARING_HARNESSES`: one row per harness
+that may share chats, with the default of its switch (KAS: on). The switch is
+`agent.chat_runtime_sharing_harnesses.<harness>`, shown under the preview's row in
+Settings > Developer > Feature previews only while the preview is on. A chat may
+share only when the preview is on AND its harness's switch is on AND every rule
+above holds; a harness switched off keeps one process per chat
+(`harness_switched_off`, checked before the KAS engine is read). Letting another
+harness share chats is one row in that table.
+
+The preview also moves KAS onto Crew's own pinned engine by itself
+(`kas_route.REASON_SHARING_PREVIEW`), so it works from the Feature previews row
+alone, without `agent.kas_bundle`. A stored Kiro CLI pick and the operator's
+`KIROCREW_KIRO_BIN` keep their route. The first chat installs the engine and keeps
+its own process; later chats share it. An engine that cannot be installed or
+started is logged and the spawn continues on the default route, unshared. With the
+preview off routing is unchanged.
 
 ### Tenancies
 
@@ -120,7 +238,10 @@ party that is using a process it may NOT end: a session-sharing sub-agent mid-tu
 on its principal's runtime (`acp.session_provider.AcpSessionProvider._claim_shared_turn`
 / `_end_shared_turn`), and the OAuth mint child mid-exchange
 (`connections.mint`). At `cap=1` a tenancy is the only way such a party is
-represented at all, because an acquisition cannot join an occupied runtime.
+represented at all, because an acquisition cannot join an occupied runtime. Above
+that cap a chat co-tenant holds a LEASE instead (it may end the process once it is
+the last holder), while a sub-agent and the mint child keep their tenancy: neither
+may end the process at all.
 
 A claim records two things: `holder`, a label written for the refusal log, and
 `session_key`, the auth binding (`RuntimeTenancy.claim(target, holder=...,
@@ -730,9 +851,14 @@ recover.
   them: it takes the opaque `RuntimeAbortTarget` from `runtime_abort_target()`. The remaining members are the bulk of what the pid
   reader ratchet still counts; each needs classifying as a session-level question,
   a runtime handle, or a reading whose owner is the module that holds the pid.
-- **`cap` is not open.** Raising `CHAT_RUNTIME_CAP` needs eligibility rules that
-  decide which sessions may share a process, and a flag to stage it. Neither
-  exists, so every runtime serves one session.
+- **Chat sharing is a preview.** The `chat_runtime_sharing` feature preview is off
+  by default, so a default install still serves one chat per runtime. The members
+  are KAS (its switch on by default) and codex (off by default); kiro-cli is not,
+  because some of its session-control frames name no session. A shared codex
+  process takes no new chat once any chat leaves it and dies with its last chat
+  (`chat_closes_on_departure`, read by `RuntimeOwnership.release`): codex's
+  `session/close` leaves the departed session's MCP fleet running, so this bounds
+  the leftover fleets to cap-1 per process instead of one per chat turnover.
 - **Membership is narrower than the slice it is compared against.** The app
   backend table claims each spawned backend's root process, plus that root's direct
   children where the gateway's wrap inserted a forking sandbox launcher (so the

@@ -94,6 +94,7 @@ def _expand_header_placeholders(
         _ENV_VAR_PLACEHOLDER,
         _expand_env_placeholders,
         _placeholder_source_env,
+        _placeholder_value,
     )
 
     source = _placeholder_source_env()
@@ -105,7 +106,7 @@ def _expand_header_placeholders(
                 # The same lookup _expand_env_placeholders performs against the
                 # same source view; a miss stays literal and contributes no
                 # scrub entry (the literal is not a secret).
-                hit = source.get(match.group(1))
+                hit = _placeholder_value(source, match.group(1))
                 if hit is not None:
                     resolved.append(hit)
             expanded[name] = _expand_env_placeholders(value, source=source)

@@ -7,7 +7,9 @@ conductor holding for the person, or from a crew that has gone quiet. This is th
 ledger half of that answer, kept small: how many items are open, how many wait on a
 person (a ``blocked`` / ``question`` whose ``reason`` is ``approval`` or
 ``needs_human`` and that the conductor has not answered), and for every other open
-item its worker and the moment it goes stale if that worker stays idle.
+item its worker and the moment it goes stale if that worker stays idle. It also
+carries ``run``, the board's settled verdict (:mod:`kiro_crew.dashboard.conductor_mode_run`),
+which is why the closed items' counts are kept beside the open items.
 
 That moment is the ledger's own rule: :func:`kiro_crew.work_ledger.is_stale` with the
 worker's closed and looping liveness read the way the side board reads them
@@ -51,6 +53,9 @@ _FAR: Final[timedelta] = timedelta(days=3650)
 _lock = threading.Lock()
 #: Open items per board slot key, as the fold rendered them.
 _items: dict[str, list[dict[str, Any]]] = {}
+#: Closed items per board slot key as ``(accepted, not_done)``, the fold's forgotten
+#: closes included: the run's settled verdict (``conductor_mode_run``) needs them.
+_closed: dict[str, tuple[int, int]] = {}
 _primed: set[str] = set()
 #: The newest fold revision kept per board slot key: an older publish (a prime that
 #: read before a newer warm fold landed) never replaces what a newer one kept.
@@ -82,11 +87,12 @@ def summarize(
     *,
     closed: Callable[[str], bool],
     looping: Callable[[str], bool],
+    held: Callable[[str], bool] = lambda _key: False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """The ``crew_work`` field for a board's open *items*.
 
-    *closed* and *looping* answer for a worker's session key. Per listed item:
+    *closed*, *looping* and *held* answer for a worker's session key. Per listed item:
     ``worker`` (the bound session's slot key, ``""`` for a remote or unbound worker)
     and ``stale_at_ms`` (epoch ms it is stale from while its worker's turn is not
     running; ``0`` for never). Both answers come from ``is_stale``. ``person_workers``
@@ -127,12 +133,22 @@ def summarize(
         # reads as neither closed nor looping, so only the window can flag it.
         gone = bool(key) and not remote and closed(key)
         loops = bool(key) and not remote and looping(key)
+        stuck = bool(key) and not remote and held(key)
 
         def stale(
-            at: datetime, item: WorkItem = item, gone: bool = gone, loops: bool = loops
+            at: datetime,
+            item: WorkItem = item,
+            gone: bool = gone,
+            loops: bool = loops,
+            stuck: bool = stuck,
         ) -> bool:
             return is_stale(
-                item, worker_running=False, worker_closed=gone, worker_looping=loops, now=at
+                item,
+                worker_running=False,
+                worker_closed=gone,
+                worker_looping=loops,
+                worker_loop_held=stuck,
+                now=at,
             )
 
         if remote:
@@ -143,7 +159,7 @@ def summarize(
         elif stale(moment):
             stale_at = int(moment.timestamp() * 1000)
         elif stale(moment + _FAR):
-            since = parse_stamp(quiet_since(item))
+            since = parse_stamp(quiet_since(item, wake=not stuck))
             window = timedelta(seconds=DEFAULT_STALE_WINDOW_SECS)
             stale_at = int((since + window).timestamp() * 1000) if since is not None else 0
         else:
@@ -166,6 +182,7 @@ def summary_for_state(slot: str, state: Any) -> dict[str, Any] | None:
     """*slot*'s summary against *state*'s live slots, or ``None`` when not folded yet."""
     with _lock:
         items = _items.get(slot)
+        accepted, not_done = _closed.get(slot, (0, 0))
     if items is None:
         return None
     from kiro_crew import ledger_wake
@@ -180,6 +197,7 @@ def summary_for_state(slot: str, state: Any) -> dict[str, Any] | None:
         items,
         closed=lambda key: ledger_wake.worker_closed(state, key),
         looping=lambda key: ledger_wake.worker_looping(nudge, key),
+        held=lambda key: ledger_wake.worker_loop_held(nudge, key),
     )
     # The conductor's own live work-ledger patrol is what picks a stalled item up, so
     # the row keeps a stall out of sight while it holds one. Only that kind: a loop
@@ -194,6 +212,17 @@ def summary_for_state(slot: str, state: Any) -> dict[str, Any] | None:
         conductor_wake.work_ledger_loop_id(nudge, key) and ledger_wake.worker_looping(nudge, key)
         for key in dict.fromkeys(keys)
     )
+    from kiro_crew.dashboard import conductor_mode_run
+
+    # A board with no item yet (a root whose ledger was never opened folds empty)
+    # has no run to call done, so the row keeps its every-crew-member-done rule.
+    if summary["open"] + accepted + not_done:
+        summary["run"] = conductor_mode_run.run_facts(
+            open_items=summary["open"],
+            accepted=accepted,
+            not_done=not_done,
+            patrol=conductor_mode_run.patrol_of(nudge, keys),
+        )
     return summary
 
 
@@ -214,14 +243,21 @@ def remember(board: str, value: Any, revision: int = 0) -> str | None:
     items = _open_items(value)
     if not slot or items is None:
         return None
+    from kiro_crew.dashboard.conductor_mode_run import item_counts
+
+    raw_items = value.get("items") or []
+    _open, accepted, not_done = item_counts(
+        (raw.get("state") for raw in raw_items if isinstance(raw, dict)), value.get("forgotten")
+    )
     with _lock:
         if revision and revision < _revisions.get(slot, 0):
             return None
         if revision:
             _revisions[slot] = revision
-        if _items.get(slot) == items:
+        if _items.get(slot) == items and _closed.get(slot) == (accepted, not_done):
             return None
         _items[slot] = items
+        _closed[slot] = (accepted, not_done)
     return slot
 
 
@@ -332,6 +368,7 @@ def retain(live_roots: Iterable[str]) -> None:
         disposers = [d for slot in gone for d in _followed.pop(slot)]
         for slot in gone:
             _items.pop(slot, None)
+            _closed.pop(slot, None)
             _revisions.pop(slot, None)
             _primed.discard(slot)
         for board in [b for b, s in _slot_of_board.items() if s in gone]:
@@ -351,6 +388,7 @@ def forget_for_tests() -> None:
     set_listener(None)
     with _lock:
         _items.clear()
+        _closed.clear()
         _revisions.clear()
         _primed.clear()
         _slot_of_board.clear()

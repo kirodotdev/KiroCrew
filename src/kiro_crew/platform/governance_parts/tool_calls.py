@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, Mapping, Optional, Tuple
 
-from kiro_crew.platform.governance_parts.matching import _url_host
+from kiro_crew.platform.governance_parts.matching import _UnmatchableCommand, _url_host
 from kiro_crew.platform.guest_paths import (
     GuestPath,
     guest_also_local,
@@ -243,6 +243,16 @@ _GUEST_UNVERIFIABLE_ITEM = "\x00<governance:guest-target-unverifiable>"
 #: working directory, which would put a relative marker inside a workspace
 #: allow-prefix whenever the gateway runs there.
 _NO_TARGET_ITEM = "/\x00<governance:own-scope-target-absent-unverifiable>"
+
+#: Same never-permittable construction, for a shell call's recovered command that
+#: :func:`~kiro_crew.platform.allowed_commands.chain_commands` cannot split into
+#: plain commands (a quote in a chain, a redirect, a substitution, a newline, too
+#: long). ``gate_decision`` asks it beside the whole command, so an allow-mode
+#: ``commands`` set refuses a command it cannot check part by part, while a
+#: deny-mode or ungoverned scope permits it.
+_UNSPLITTABLE_COMMAND_ITEM = _UnmatchableCommand(
+    "\x00<governance:shell-command-unsplittable-unverifiable>"
+)
 
 
 def _governed_targets(

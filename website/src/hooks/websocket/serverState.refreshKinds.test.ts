@@ -153,4 +153,44 @@ describe('a turn-end history frame', () => {
     await settle()
     expect(fetches['cron-jobs']).toBe(1)
   })
+
+  it('re-reads the other caches once per window of steady turns, not once per frame', async () => {
+    const fetches = await observeAll()
+    vi.useFakeTimers()
+    const others = vi.fn()
+    // The gateway sends at most one turn-end frame per 1.5 s; two windows of them.
+    for (let t = 0; t < TURN_END_CRON_REFRESH_MS * 2; t += 1_500) {
+      invalidateRefreshQueries(qc, ['turn_end'], undefined, others)
+      vi.advanceTimersByTime(1_500)
+    }
+    vi.useRealTimers()
+    await settle()
+    // The first frame at once, then one re-read as each window ends.
+    for (const id of ['kirocrew-agents/members-roster', 'kirocrewConfig', 'agents-installed']) expect(fetches[id]).toBe(3)
+    expect(others).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not hold a frame that names what changed, and that frame pays the owed re-read', async () => {
+    const fetches = await observeAll()
+    vi.useFakeTimers()
+    const others = vi.fn()
+    invalidateRefreshQueries(qc, ['turn_end'], undefined, others)
+    invalidateRefreshQueries(qc, ['turn_end'], undefined, others)
+    invalidateRefreshQueries(qc, ['agents'], undefined, others)
+    vi.advanceTimersByTime(TURN_END_CRON_REFRESH_MS)
+    vi.useRealTimers()
+    await settle()
+    expect(fetches['kirocrew-agents/members-roster']).toBe(2)
+    expect(others).toHaveBeenCalledTimes(2)
+  })
+
+  it('still re-reads a held cache whose last read failed at once', async () => {
+    const fetches = await observeAll(['kirocrewConfig'])
+    invalidateRefreshQueries(qc, ['turn_end'])
+    await settle()
+    for (const id of Object.keys(fetches)) fetches[id] = 0
+    invalidateRefreshQueries(qc, ['turn_end'])
+    await settle()
+    expect(refetched(fetches)).toEqual(['kirocrewConfig'])
+  })
 })

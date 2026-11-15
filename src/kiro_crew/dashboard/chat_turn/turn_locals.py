@@ -89,7 +89,8 @@ class _ChatTurn:
     _directive_loop_id: "str"
     _directive_loop_gen: "int"
     # The loop whose own cycle this turn is, for its fault counts: the delivered
-    # wake's, or the one a recovery entry carried (``_recovered_wake``).
+    # wake's, the one a recovery or requeued wake entry carried
+    # (``_recovered_wake``), or a steered wake's this turn took (``steer_queue``).
     _wake_cycle: "tuple[str, int] | None"
     _skill_trigger_text: "str | None"
     _directive_channel_origin: "bool"
@@ -171,6 +172,11 @@ class _ChatTurn:
     _had_empty_response_verdict: "bool"
     _held_after_terminal: "list[Any]"
     _held_runs: "list[tuple[dict[str, Any], str, int | None, int]]"
+    # Harness notice rows ``(content, meta)`` held while a text segment is open,
+    # appended by ``_finish_harness_notices``. Set in __init__ so every exit can read it.
+    _held_harness_notices: "list[tuple[str, dict[str, Any] | None]]"
+    # Rows refused at ``session_events.MAX_HELD_HARNESS_NOTICES``, said at release.
+    _held_harness_notices_dropped: "int"
     _incoming_message: "str"
     _interrupted_turn_preamble: "str"
     _irreversible_consumption_reported: "bool"
@@ -279,6 +285,7 @@ class _ChatTurn:
     _ttft_t0: "float | None"
     _ttft_visible: "_FirstVisibleClock"
     _turn_billed: "bool"
+    _turn_cache_rewrite: "bool"
     _turn_boundary_set: "bool"
     _turn_cost_usd: "float"
     _turn_credits: "float"
@@ -436,6 +443,8 @@ class _ChatTurn:
         self._live_context_reading = None
         self._live_context_at = float("-inf")
         self._drained_subagent_notices = []
+        self._held_harness_notices = []
+        self._held_harness_notices_dropped = 0
 
     @property
     def assistant_text(self) -> str:

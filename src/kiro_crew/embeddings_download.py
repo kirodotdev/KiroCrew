@@ -178,7 +178,10 @@ class ModelDownloadManager:
             # not using, and would imply the custom one had been replaced.
             msg = "a custom embedding model is configured (memory.embed_model_path)"
             logger.info("Skipping default model download — %s", msg)
-            self.status = {"step": "custom_model", "error": "", "attempt": 0}
+            # A download already running holds the lock and owns ``status``
+            # until it ends: writing custom_model over it hides its progress.
+            if self._lock is None or not self._lock.locked():
+                self.status = {"step": "custom_model", "error": "", "attempt": 0}
             return False
         if os.environ.get(_SKIP_DOWNLOAD_ENV) == "1":
             logger.info("%s=1 — skipping embedding model download", _SKIP_DOWNLOAD_ENV)

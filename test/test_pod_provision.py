@@ -929,7 +929,7 @@ class TestProvisionProvenance:
         # A website change does not touch the venv's input.
         self._commit(co, "website/package.json", '{"v":1}')
         assert prov.has_venv(co) is True
-        # A setup.cfg dependency bump restales it (the GPT finding).
+        # A setup.cfg dependency bump restales it.
         self._commit(co, "setup.cfg", "[options]\ninstall_requires =\n    requests\n")
         assert prov.has_venv(co) is False
         # Re-stamp, then a pyproject change also restales it.
@@ -951,6 +951,23 @@ class TestProvisionProvenance:
         assert prov._read_provenance(co) == {}
         assert prov.has_venv(co) is False
         assert prov.has_venv(co, require_stamp=False) is True
+
+    def test_ensure_venv_never_rebuilds_the_venv_it_runs_from(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unstamped venv is rebuilt, except the one this interpreter runs
+        from: re-creating it over the running python.exe fails on Windows."""
+        co = self._repo(tmp_path)
+        self._mk_venv(co)
+        monkeypatch.setattr(prov, "_find_python", lambda version="3.12": "/usr/bin/python3.12")
+        monkeypatch.setattr(prov, "_find_uv", lambda: None)
+        monkeypatch.setattr(prov, "_run", lambda cmd, cwd, env=None: pytest.fail("rebuilt"))
+        monkeypatch.setattr(prov.sys, "prefix", str(co / ".venv"))
+        assert prov.ensure_venv(co) is True
+
+        monkeypatch.setattr(prov.sys, "prefix", str(tmp_path / "elsewhere"))
+        with pytest.raises(pytest.fail.Exception, match="rebuilt"):
+            prov.ensure_venv(co)
 
     def test_dist_reads_the_vite_build_id_fingerprint(self, tmp_path: Path) -> None:
         """has_dist compares the staged dist's build-id.json websiteTree (the

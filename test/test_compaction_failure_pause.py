@@ -390,6 +390,32 @@ async def test_a_successor_that_fails_to_start_keeps_the_old_session(slack_drain
     await mgr.close_all()
 
 
+@pytest.mark.parametrize("status, rearmed", [(None, True), ("failed", False)])
+@pytest.mark.asyncio
+async def test_a_kept_session_rearms_the_startup_context_only_without_a_status(status, rearmed):
+    """With no status the harness can still finish the ``/compact`` after the next
+    prompt is built, so that prompt carries the startup context; a reported
+    ``failed`` means the harness is done with it."""
+    from kiro_crew.acp.types import EVENT_COMPACTION_STATUS
+
+    mgr, key, runs, order, _notices = await _setup()
+    session = mgr._sessions[key]
+    if status is not None:
+
+        async def _reported(_command: str):
+            yield SimpleNamespace(kind=EVENT_COMPACTION_STATUS, text=status)
+
+        session.provider.stream_command = MagicMock(side_effect=_reported)
+
+    result = await _restart(mgr, key, runs, before_restart=lambda: order.append("fail-start"))
+
+    assert result == "failed"
+    assert mgr._sessions[key] is session
+    assert mgr.consume_needs_reinjection(key) is rearmed
+    order.remove("fail-start")
+    await mgr.close_all()
+
+
 @pytest.mark.parametrize("fail_start", [False, True])
 @pytest.mark.asyncio
 async def test_a_restart_records_one_recycled_end(monkeypatch, fail_start):

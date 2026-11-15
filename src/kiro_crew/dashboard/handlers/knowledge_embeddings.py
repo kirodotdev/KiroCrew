@@ -14,6 +14,7 @@ from datetime import datetime
 
 from aiohttp import web
 
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.handlers.knowledge_access import (
     _require_knowledge_owner,
@@ -260,8 +261,23 @@ async def batch_embed_items(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    rebuild = body.get("rebuild", False)
-    force = body.get("force", False)
+    # A JSON string such as "false" is truthy, so a plain truth test started a
+    # full re-embed for it. The shared reader maps the usual spellings and
+    # leaves every other value to the same truth test as before.
+    warnings: list[str] = []
+    flags = {}
+    for flag in ("rebuild", "force"):
+        raw = body.get(flag, False)
+        flags[flag] = _coerce_bool(raw, bool(raw))
+        if isinstance(raw, str):
+            warnings.append(
+                f"{flag} was the string {raw!r}; read as {flags[flag]}. "
+                "Send a JSON boolean (true/false)."
+            )
+    rebuild, force = flags["rebuild"], flags["force"]
+
+    def _reply(payload: dict) -> web.Response:
+        return web.json_response({**payload, "warnings": warnings} if warnings else payload)
 
     if rebuild:
         # Single-flight: atomically claim the slot (sweeps crashed leftovers, races
@@ -272,16 +288,14 @@ async def batch_embed_items(request: web.Request) -> web.Response:
         job_id = await asyncio.to_thread(start_rebuild_job, store)
         if job_id is None:
             active = await asyncio.to_thread(_active_rebuild_job, store)
-            return web.json_response(
-                {"job_id": active["id"] if active else None, "status": "processing"}
-            )
+            return _reply({"job_id": active["id"] if active else None, "status": "processing"})
         task = asyncio.create_task(
             _rebuild_embeddings_job(request.app, store, embedder, job_id, force=force)
         )
         app_tasks = _task_registry(request.app, "_bg_tasks")
         app_tasks.add(task)
         task.add_done_callback(app_tasks.discard)
-        return web.json_response({"job_id": job_id, "status": "processing"})
+        return _reply({"job_id": job_id, "status": "processing"})
 
     rows = await asyncio.to_thread(_unembedded_rows, store)
 
@@ -298,4 +312,4 @@ async def batch_embed_items(request: web.Request) -> web.Response:
 
     remaining = await asyncio.to_thread(_unembedded_count, store)
     _sel_log("batch_embed", count=embedded, rebuild=False)
-    return web.json_response({"embedded": embedded, "total": len(rows), "remaining": remaining})
+    return _reply({"embedded": embedded, "total": len(rows), "remaining": remaining})

@@ -691,8 +691,7 @@ def test_the_import_path_records_unpinned_staging_instead_of_removing_the_featur
     payload = tmp_path / "import.zip"
     with zipfile.ZipFile(payload, "w") as zf:
         # One top-level directory is the format's requirement -- a flat zip is rejected
-        # before staging is reached, which made an earlier version of this test fail for a
-        # reason that had nothing to do with what it was asserting.
+        # before staging is reached, so the test would fail for an unrelated reason.
         zf.writestr("kirocrew-export/crons.json", "[]\n")
         zf.writestr("kirocrew-export/workspace/note.md", "hi\n")
 

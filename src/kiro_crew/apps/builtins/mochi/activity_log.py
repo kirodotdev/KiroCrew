@@ -32,8 +32,8 @@ from pathlib import Path
 from typing import Any, Iterator, TypedDict
 
 from kiro_crew.atomic_write import replace_with_retry
-from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
-from kiro_crew.platform_compat import chmod_safe, file_lock
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE, restrict_file_to_owner_soft
+from kiro_crew.platform_compat import file_lock
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +117,7 @@ def _write_store(path: Path, store: ActivityStore) -> bool:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(json.dumps(store, indent=2, ensure_ascii=False), encoding="utf-8")
-        chmod_safe(tmp, 0o600)
+        restrict_file_to_owner_soft(tmp)
         replace_with_retry(tmp, path)
         return True
     except OSError:

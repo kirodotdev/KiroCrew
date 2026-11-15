@@ -1,17 +1,15 @@
 /**
  * Per-tab scroll containment in SidePanelLayout.
  *
- * A Settings tab is normally one long form and the page scrolls it. One tab —
- * Releases — puts a version rail beside the notes, and letting the page scroll
- * carried the tab header and that rail off the top while the reader was still
- * inside one release's notes. `SidePanelTab.fixedContent` bounds that pane
- * instead, so its own `overflow-y-auto` children do the scrolling.
+ * A Settings tab is normally one long form and the page scrolls it. A tab that
+ * puts a rail beside its content would lose that rail off the top if the page
+ * scrolled, so `SidePanelTab.fixedContent` bounds that pane instead, and its
+ * own `overflow-y-auto` children do the scrolling.
  *
  * The classes ARE the contract here: containment is expressed entirely in
  * layout CSS (`overflow-hidden` on the column, `flex-1 min-h-0 flex flex-col`
  * on the pane wrapper), and jsdom computes no geometry, so there is nothing
- * else to assert. Whether it actually pins the header under a real wheel
- * gesture is measured in website/scripts/capture-releases-scroll.mjs.
+ * else to assert.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'

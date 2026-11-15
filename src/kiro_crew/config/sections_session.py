@@ -13,6 +13,7 @@ from kiro_crew.config.fields import _meta
 from kiro_crew.config.sections_defaults import (
     DEFAULT_AUTOCOMPACT_PCT,
     DEFAULT_HARNESS_BACKGROUND_HOLD_SECS,
+    DEFAULT_MAX_PER_CREATOR,
     DEFAULT_POOL_SIZE,
     DEFAULT_RECONCILE_MAX_KILLS,
     DEFAULT_SEARCH_SCAN_WINDOW,
@@ -24,6 +25,16 @@ from kiro_crew.config.sections_defaults import (
 # Highest dock position a crew may hold. Far above any roster a person drags by
 # hand; it only bounds a hand-edited or hostile value.
 STAR_ORDER_MAX = 10_000
+
+# How many worker sessions one Bot may have open at once (``max_workers``). The
+# owner sets it on the Bot's settings page; no Bot tool writes it. 0, the
+# default, sets no limit of the Bot's own: the bound on parallel work comes from
+# the host's resources unless the owner chooses a number
+# (rfc-work-ledger-concurrency-cap.md section 7). The ceiling is the work
+# ledger's own open bound (``work_ledger_records.MAX_ITEMS_PER_CONDUCTOR``).
+BOT_MAX_WORKERS_DEFAULT = 0
+BOT_MAX_WORKERS_MIN = 0
+BOT_MAX_WORKERS_MAX = 32
 
 
 def _archive_retention_days(session_data: dict) -> int:
@@ -244,7 +255,11 @@ class SessionConfig:
             "Recycle a session when its process tree resident memory exceeds "
             "this many MiB (default 4096). 0 disables; the internal background "
             "runtime recycles at 1536 MiB, or at this value when it is lower. Busy sessions (turn in "
-            "flight) are never recycled.",
+            "flight) are never recycled. A process above the limit when the watchdog "
+            "takes its size, at its second reading of it, is left running and recycled "
+            "only once it doubles: so with many MCP servers or a long first turn. Not so "
+            "for a process read under the limit more than about twelve minutes before, or for a "
+            "chat recycled in the last 24 hours.",
         ),
     )
     watchdog_end_leftovers_mid_turn: bool = field(
@@ -282,6 +297,18 @@ class SessionConfig:
             "home, since a runtime owned by another install has no record here and "
             "reads as unowned. 0 makes the arm observe-only: it still publishes the "
             "leak reading and audits each candidate it would have signalled.",
+        ),
+    )
+    max_per_creator: int = field(
+        default=DEFAULT_MAX_PER_CREATOR,
+        metadata=_meta(
+            "Sessions per Creator",
+            "How many live sessions one creator may hold: a Bot's own chat, a "
+            "conductor, or any session that opens other sessions (10-450). A "
+            "creator that holds this many cannot open another until it closes "
+            "one. The chats you open yourself do not count. All sessions together "
+            "still stop at 500. Read at each session create, so a change needs no "
+            "restart.",
         ),
     )
 
@@ -353,6 +380,18 @@ class KiroCrewAgentConfig:
             "decides as usual (its own crew pin if it runs as a Bot, else "
             "agent.reasoning_effort, else the model default). Set, one of the five "
             "standard levels. An explicit effort on the call wins.",
+        ),
+    )
+    max_workers: int = field(
+        default=BOT_MAX_WORKERS_DEFAULT,
+        metadata=_meta(
+            "Workers at once",
+            "How many of this Bot's own worker sessions (on its worker template) "
+            "may be open at once. A session_create, session_revive or "
+            "session_fork past it is refused with bot_worker_cap_reached until "
+            "one of them is closed. Set by the owner on the Bot's settings page; "
+            "the Bot cannot change it. 0 (the default) sets no limit; otherwise "
+            "1 to 32.",
         ),
     )
     acp_backend: str = field(

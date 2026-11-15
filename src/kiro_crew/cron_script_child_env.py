@@ -121,7 +121,8 @@ def _record_cron_scratch_owner(scratch: Path | None, proc: subprocess.Popen) -> 
     unsandboxed write) and ``stale`` (the marker still names the gateway, which
     the sweep would read as a dead owner over a live child) both fail the run,
     as they fail an agent spawn. ``unwritable`` is fail-open: an unowned dir is
-    kept, never swept.
+    never deleted in place, only moved into the quarantine after a week with no
+    write.
     """
     if scratch is None:
         return True
@@ -164,7 +165,8 @@ def _default_temp_dir() -> str:
     file in it, so the dead ``TMPDIR`` is skipped and the platform default
     wins). It is never recreated: a bare ``makedirs`` under the managed scratch
     root would put back a directory with no owner record, which the sweep
-    never deletes on purpose -- a permanent leak in place of a skipped run.
+    leaves in place for a week and then moves into its quarantine -- a leak in
+    place of a skipped run.
     Nothing in this process can be using a directory that does not exist, so
     the re-resolution takes nothing from any other ``tempfile`` caller.
     """

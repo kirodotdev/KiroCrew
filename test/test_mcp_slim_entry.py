@@ -171,7 +171,7 @@ def test_valid_port_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def startup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, list]:
     """Isolate every side effect of ``slim_server`` and record the steps it ran."""
-    seen: dict[str, list] = {"boot": [], "log": [], "lock": []}
+    seen: dict[str, list] = {"boot": [], "log": [], "lock": [], "relay": [], "answer": []}
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("KIROCREW_HOME", str(home))
@@ -188,6 +188,12 @@ def startup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, list]:
     monkeypatch.setattr(mcp_entry, "_setup_logging", lambda d: seen["log"].append(Path(d)))
     monkeypatch.setattr(kc_platform, "boot_platform", lambda cfg: seen["boot"].append(cfg))
     monkeypatch.setattr(mcp_entry, "_stderr_is", lambda _p: False)
+    # The two steps that talk to a client: one dials the gateway this process's
+    # environment names and both read this process's stdin and keep its stdout.
+    monkeypatch.setattr(mcp_entry, "_relay_before_boot", lambda c: seen["relay"].append(c))
+    monkeypatch.setattr(
+        mcp_entry, "_answer_before_handlers", lambda c, relayed=None: seen["answer"].append(c)
+    )
     return seen
 
 
@@ -198,6 +204,7 @@ def test_slim_server_runs_the_cli_steps_and_returns_the_entry(startup: dict) -> 
     assert server is mcp_guide.run_mcp_server
     assert startup["lock"] == [True] and len(startup["boot"]) == 1
     assert startup["log"] and startup["log"][0].is_dir()
+    assert startup["relay"] == ["mcp-guide"] and startup["answer"] == ["mcp-guide"]
     assert "KIROCREW_SANDBOX_ACTIVE" not in os.environ
     assert "KIROCREW_SANDBOX_LEVEL" not in os.environ
     assert os.environ["OPENBLAS_NUM_THREADS"] == "1" and os.environ["OMP_NUM_THREADS"] == "1"
@@ -262,7 +269,7 @@ def test_a_refused_root_run_falls_back_before_the_data_home_is_touched(
     monkeypatch.setattr(kc_config, "ensure_data_home", touched)
     assert mcp_entry.slim_server(["mcp-core"]) is None
     assert seen == [("mcp-core", ["mcp-core"])]
-    assert startup["lock"] == [] and startup["log"] == []
+    assert startup["lock"] == [] and startup["log"] == [] and startup["relay"] == []
 
 
 def test_run_if_slim_calls_the_server(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -381,6 +388,11 @@ def _spy_steps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[str]:
     monkeypatch.setattr(kc_platform, "boot_platform", rec("boot"))
     monkeypatch.setattr(mcp_guide, "run_mcp_server", rec("server"))
     monkeypatch.setattr(mcp_entry, "_stderr_is", lambda _p: False)
+    # The two steps that talk to a client are the slim path's alone and are not
+    # start-up steps: one dials the gateway this process's environment names and
+    # both read this process's stdin and keep its stdout.
+    monkeypatch.setattr(mcp_entry, "_relay_before_boot", lambda _command: None)
+    monkeypatch.setattr(mcp_entry, "_answer_before_handlers", lambda _command, relayed=None: None)
     return steps
 
 

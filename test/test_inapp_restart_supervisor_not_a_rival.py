@@ -70,6 +70,14 @@ _NEW_GATEWAY = textwrap.dedent("""
         )
         run_marker.write_marker(port)
         print(os.getpid(), os.getppid(), token_matches, run_marker.read_pid(port))
+    elif check == "supervises":
+        # What a daemon whose --owner-pid is the old gateway asks about the
+        # gateway that sends it an owner-port announce.
+        from kiro_crew import platform_compat
+        print(
+            os.getpid(), os.getppid(), True,
+            platform_compat.is_exec_supervisor_of(old_pid, os.getpid()),
+        )
     else:
         from kiro_crew.mcp_gateway import manager as m
         g = m.GatewayManager(m.GatewaySpec(socket_path=Path(sock)))
@@ -183,6 +191,33 @@ class TestTheRunMarkerSurvivesASupervisingRestart:
 
 
 @posix_exec
+class TestTheDaemonKnowsTheSuccessorOfItsOwner:
+    """A daemon adopted after the restart still names the supervisor as its owner,
+    so it must accept an ``owner-port`` announce from the successor, asked through
+    ``platform_compat.is_exec_supervisor_of(owner, sender)``, and from no other
+    gateway."""
+
+    def test_the_exec_supervisor_supervises_its_successor(self, home: Path, tmp_path: Path) -> None:
+        old, _new, parent, verdict = _restart("exec", "supervises", home, tmp_path)
+        assert parent == old
+        assert verdict == "True"
+
+    def test_a_live_python_gateway_does_not_supervise_its_child(
+        self, home: Path, tmp_path: Path
+    ) -> None:
+        old, _new, parent, verdict = _restart("live", "supervises", home, tmp_path)
+        assert parent == old
+        assert verdict == "False"
+
+    def test_a_live_gateway_between_them_means_no_supervision(
+        self, home: Path, tmp_path: Path
+    ) -> None:
+        old, _new, parent, verdict = _restart("nested", "supervises", home, tmp_path)
+        assert parent != old
+        assert verdict == "False"
+
+
+@posix_exec
 class TestTheBrokerSurvivesASupervisingRestart:
     def test_the_exec_supervisor_is_not_a_rival(self, home: Path, tmp_path: Path) -> None:
         old, _new, parent, verdict = _restart("exec", "broker", home, tmp_path)
@@ -232,6 +267,20 @@ class TestTheSupervisorPredicate:
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(platform_compat, "process_executable_path", lambda pid: None)
             assert platform_compat.is_exec_supervisor_of_this_process(os.getppid()) is False
+
+    @pytest.mark.parametrize("descendant", [0, 1, -5, True])
+    def test_no_descendant_below_two_is_asked_about(self, descendant: Any) -> None:
+        # The image is pinned non-Python, so only the guard on the descendant can
+        # answer False; ``True`` is not a pid even though ``True == 1``.
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(platform_compat, "process_executable_path", lambda pid: "/bin/sh")
+            assert platform_compat.is_exec_supervisor_of(os.getppid(), descendant) is False
+
+    def test_a_descendant_whose_parent_cannot_be_read_is_not_supervised(self) -> None:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(platform_compat, "process_executable_path", lambda pid: "/bin/sh")
+            mp.setattr(platform_compat, "get_ppid", lambda pid: -1)
+            assert platform_compat.is_exec_supervisor_of(os.getppid(), os.getpid()) is False
 
     @pytest.mark.parametrize(
         "exe, is_python",

@@ -38,7 +38,7 @@ import posixpath
 import re
 import secrets
 import sys as _sys
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Iterator
 from typing import TYPE_CHECKING, NamedTuple
 
 from kiro_crew.credential_patterns import (  # noqa: F401
@@ -889,6 +889,7 @@ def redact_credentials_with_records(
     ``_ELB_TARGET_GROUP_ARN_RE``): a streamed segment's save passes the values
     its deltas removed, so a value a delta boundary cut, which its delta could
     not see whole, keeps that delta's verdict and every other one is kept.
+    A whole-text fail-closed placeholder's record carries an empty ``value``.
     """
     spans, warnings, rules = _credential_redaction_plan(
         text, defer_token_param=defer_token_param, judged_sri_values=judged_sri_values
@@ -901,7 +902,8 @@ def redact_credentials_with_records(
     for start, end, tag in spans:
         ordinal += sum(text.count(t, cursor, start) for t in CREDENTIAL_REDACTION_TAGS)
         rule, label = rules.get(start, ("credential_pattern", ""))
-        matches.append(CredentialMatch(ordinal, rule, label, text[start:end][len(label) :]))
+        value = "" if rule == REDACTION_UNAVAILABLE_RULE else text[start:end][len(label) :]
+        matches.append(CredentialMatch(ordinal, rule, label, value))
         ordinal += 1
         cursor = end
     return _splice(text, spans), warnings, matches
@@ -945,13 +947,59 @@ def _credential_redaction_plan(
     character is redacted twice and no character a pass flagged is left behind.
 
     Inside a ``redaction_switch.code_text()`` scope pass 3 alone stands down.
+    With the internal ``compat.use_rule_table()`` switch on (off, no user setting),
+    the structured detectors read the text first and these passes run on the
+    text with their Secret hits tagged
+    (:mod:`kiro_crew.security.redaction_structured.compat`).
     """
     if credential_pass_bypassed():
         return [], [], {}
 
+    # Lazy: the detectors' seam imports this module's tags.
+    from kiro_crew.security.redaction_structured import compat
+
+    if compat.use_rule_table():
+        return compat.credential_plan_via_table(
+            text, defer_token_param, judged_sri_values, token_param_prefixes
+        )
+    return _main_plan(text, defer_token_param, judged_sri_values, token_param_prefixes, False)
+
+
+def _pass1_matches(text: str, residual: bool | None = None) -> Iterator[re.Match[str]]:
+    """Pass 1's matches: all, or if ``residual`` (None: read the engine) those detectors leave."""
+    from kiro_crew.security.redaction_structured import compat
+
+    if compat.use_rule_table() if residual is None else residual:
+        return compat.residual_matches(text)
+    return _credential_matches(text)
+
+
+def _main_plan(
+    text: str,
+    defer_token_param: bool,
+    judged_sri_values: Collection[str],
+    token_param_prefixes: tuple[str, ...] | None,
+    residual: bool,
+) -> tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]]:
+    """Passes 1-4 over ``text``; ``residual``: the detectors ran and found nothing."""
     warnings: list[str] = []
     rules: dict[int, tuple[str, str]] = {}
+    taken = _pattern_pass(text, warnings, rules, residual)
+    return _later_passes(
+        text, taken, warnings, rules, defer_token_param, judged_sri_values, token_param_prefixes
+    )
 
+
+#: The ``(rule, label)`` and text of a whole-text placeholder: the detectors could not run.
+REDACTION_UNAVAILABLE_RECORD = ("redaction_unavailable", "")
+REDACTION_UNAVAILABLE_RULE = REDACTION_UNAVAILABLE_RECORD[0]
+REDACTION_UNAVAILABLE_TAG = "[REDACTED: redaction unavailable]"
+
+
+def _pattern_pass(
+    text: str, warnings: list[str], rules: dict[int, tuple[str, str]], residual: bool
+) -> list[_RedactionSpan]:
+    """Pass 1: the fixed patterns (``residual``: those the detectors leave). Fills both."""
     # 1. Plaintext credential patterns.
     #
     # Gated on the cheap superset pre-filter: when no branch of
@@ -964,7 +1012,7 @@ def _credential_redaction_plan(
     # disjoint; it is what the later passes subtract from.
     taken: list[_RedactionSpan] = []
     if _might_contain_credential(text):
-        for m in _credential_matches(text):
+        for m in _pass1_matches(text, residual):
             # Keep the Bearer branch's non-secret prefix (end() is -1 elsewhere).
             start = max(m.start(), m.end("bearer_prefix"))
             # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
@@ -978,7 +1026,19 @@ def _credential_redaction_plan(
             warnings.append(f"Redacted credential pattern ({m.end() - start} chars)")
             taken.append((start, m.end(), _REDACTED_CREDENTIAL_TAG))
             rules[start] = _pass1_rule(m.group())
+    return taken
 
+
+def _later_passes(
+    text: str,
+    taken: list[_RedactionSpan],
+    warnings: list[str],
+    rules: dict[int, tuple[str, str]],
+    defer_token_param: bool,
+    judged_sri_values: Collection[str],
+    token_param_prefixes: tuple[str, ...] | None = None,
+) -> tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]]:
+    """Passes 2-4 after ``taken`` (pass 1's or the table's spans); the whole plan."""
     # Passes 2 and 3 both scan the ORIGINAL `text` for runs of the base64
     # alphabet, and they select the SAME spans: `[A-Za-z0-9+/]{40,}` is greedy and
     # leftmost, so it yields exactly the maximal runs of length >= 40 — which is

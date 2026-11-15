@@ -1,16 +1,11 @@
-"""Every gateway restart-after-update path must exec ``respawn_executable()``.
+"""Every restart that follows an update must exec ``respawn_executable()``.
 
-``sys.executable`` is cached at process start. After an auto-update replaces a
+``sys.executable`` is cached at process start. After an update replaces a
 managed install, that path can point into the tree the update just pruned, so
 ``os.execv`` on it dies with ENOENT and the gateway never comes back. The
-dashboard's update handler already routes through
-``kiro_crew.platform.wheel_engine.respawn_executable``; these tests pin the
-three restart sites in ``GatewayOrchestrator`` to the same rule.
-
-Each test drives the REAL method to its exec line: the download / apply /
-breadcrumb steps ahead of it are stubbed, and only the two seams under test are
-replaced -- the interpreter lookup (returns a sentinel) and the exec itself
-(recorded instead of replacing the test process).
+dashboard restart and the boot-time apply of an armed update route through
+``kiro_crew.platform.wheel_engine.respawn_executable``; these tests pin every
+re-exec site to the same rule, and that the scheduler's staged build execs nothing.
 """
 
 from __future__ import annotations
@@ -19,13 +14,12 @@ import ast
 import inspect
 import sys
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from wheel_update_test_helpers import wire_wheel_apply
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, update_boot_apply
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers import updates as dashboard_updates
 from kiro_crew.slack import gateway as gw
@@ -76,7 +70,9 @@ def exec_seams(monkeypatch, tmp_path):
     reexec = MagicMock()
     monkeypatch.setattr("kiro_crew.platform_compat.reexec_python_module", reexec)
     # The breadcrumb drain hits the real safety-override store; not under test.
-    monkeypatch.setattr(gw, "flush_breadcrumb_writes", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.updates.flush_breadcrumb_writes", lambda *_a, **_k: None
+    )
     return respawn, reexec, str(interpreter)
 
 
@@ -98,159 +94,64 @@ def _assert_execs_the_respawn_interpreter(
     respawn.assert_called_once_with()
 
 
-class TestRestartAfterUpdate:
-    @pytest.mark.asyncio
-    async def test_execs_the_respawn_interpreter(self, exec_seams):
-        respawn, reexec, interpreter = exec_seams
-        orch = _make_orchestrator()
+class TestEveryReexecPassesAnExplicitExecutable:
+    """Discovered, not enumerated: this is what polices a NEW restart site.
 
-        await orch._restart_after_update(respawn)
-
-        _assert_execs_the_respawn_interpreter(respawn, reexec, interpreter)
-
-
-class TestResolverIsLoadedBeforeTheApply:
-    """The resolver must be in memory before the update rewrites the install.
-
-    The legacy-nested-venv migration ``respawn_executable`` exists for deletes
-    the venv this process imports from; a ``from ... import`` placed after the
-    apply would raise ``ModuleNotFoundError`` and leave a closed-session
-    gateway un-restarted. Pin the ORDER inside each restart path: the import
-    precedes the first apply/spawn, and the restart helper imports nothing
-    from wheel_engine at all.
+    A ``reexec_python_module`` call with no ``executable=`` re-execs the cached
+    ``sys.executable``, which an update may have pruned. Walk every such call in the
+    gateway (the facade and its composed owners), the dashboard restart and the
+    boot-time apply, instead of a list of known ones.
     """
 
     @staticmethod
-    def _method(name: str) -> ast.AsyncFunctionDef:
-        tree = ast.parse(_gateway_source())
-        for node in ast.walk(tree):
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == name:
-                return node
-        raise AssertionError(f"{name} not found in gateway.py")
-
-    @staticmethod
-    def _resolver_import_lines(fn: ast.AST) -> list[int]:
+    def _calls(source: str) -> list[ast.Call]:
         return [
-            node.lineno
-            for node in ast.walk(fn)
-            if isinstance(node, ast.ImportFrom)
-            and node.module == "kiro_crew.platform.wheel_engine"
-            and any(alias.name == "respawn_executable" for alias in node.names)
-        ]
-
-    @staticmethod
-    def _first_call_line(fn: ast.AST, attr_names: set[str]) -> int:
-        lines = [
-            node.lineno
-            for node in ast.walk(fn)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in attr_names
-        ]
-        assert lines, f"no apply/spawn call found among {sorted(attr_names)}"
-        return min(lines)
-
-    @pytest.mark.parametrize(
-        ("method", "apply_attrs"),
-        [
-            ("_check_for_updates_via_provider", {"apply"}),
-            ("_auto_apply_update", {"create_subprocess_exec"}),
-            ("_auto_apply_wheel_update", {"run_wheel_apply"}),
-        ],
-    )
-    def test_import_precedes_the_first_apply(self, method, apply_attrs):
-        fn = self._method(method)
-        imports = self._resolver_import_lines(fn)
-        assert len(imports) == 1, f"{method}: expected one resolver import, got {imports}"
-        first_apply = self._first_call_line(fn, apply_attrs)
-        assert imports[0] < first_apply, (
-            f"{method}: respawn_executable is imported at line {imports[0]}, after "
-            f"the apply at line {first_apply}; a post-apply import reads a venv "
-            "the update may have deleted"
-        )
-
-    def test_restart_helper_does_not_import_the_resolver(self):
-        # The decorated method in the facade runs its body, composed from
-        # gateway_runtime/update_schedule.py; neither half may import it.
-        for name in ("_restart_after_update", "_restart_after_update_body"):
-            fn = self._method(name)
-            assert self._resolver_import_lines(fn) == [], (
-                f"{name} must take the resolver from its caller, which "
-                "imported it before the apply"
-            )
-
-    def test_every_reexec_in_the_gateway_passes_an_explicit_executable(self):
-        """Discovered, not enumerated — this is what polices a FOURTH site.
-
-        The parametrized order check above names its three methods, so a new
-        restart path added later would not be examined by it. The defect this
-        PR fixes has a shape that can be found without knowing where it lives:
-        a ``reexec_python_module`` call with no ``executable=`` re-execs the
-        cached ``sys.executable``, which an update may have pruned. Walk every
-        such call in gateway.py instead of a list of known ones.
-        """
-        tree = ast.parse(_gateway_source())
-        calls = [
             node
-            for node in ast.walk(tree)
+            for node in ast.walk(ast.parse(source))
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "reexec_python_module"
         ]
-        assert calls, "expected at least one reexec_python_module call in gateway.py"
-        missing = [
-            node.lineno for node in calls if not any(kw.arg == "executable" for kw in node.keywords)
-        ]
-        assert not missing, (
-            f"reexec_python_module at line(s) {missing} in gateway.py passes no "
-            "executable=; it would re-exec sys.executable, which an update can "
-            "prune. Resolve the interpreter with wheel_engine.respawn_executable() "
-            "(imported before the apply step) and pass it as executable=."
-        )
 
-
-class TestDashboardResolverIsLoadedBeforeTheApply:
     @pytest.mark.parametrize(
-        ("method", "apply_names"),
+        "source",
         [
-            ("api_update_apply", {"apply_policy_update", "_venv_pip_install"}),
-            ("api_update_approve", {"run_wheel_apply"}),
+            pytest.param(_gateway_source, id="gateway"),
+            pytest.param(
+                lambda: "\n".join(
+                    inspect.getsource(sys.modules[name])
+                    for name in (dashboard_updates.__name__, *dashboard_updates._OWNERS)
+                ),
+                id="dashboard-restart",
+            ),
+            pytest.param(lambda: inspect.getsource(update_boot_apply), id="boot-apply"),
         ],
     )
-    def test_import_precedes_every_apply(self, method, apply_names):
-        tree = ast.parse(
-            "\n".join(
-                inspect.getsource(sys.modules[name])
-                for name in (dashboard_updates.__name__, *dashboard_updates._OWNERS)
-            )
-        )
-        fn = next(
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == method
-        )
-        imports = TestResolverIsLoadedBeforeTheApply._resolver_import_lines(fn)
-        assert len(imports) == 1, f"{method}: expected one resolver import, got {imports}"
-        applies = [
+    def test_no_reexec_falls_back_to_sys_executable(self, source):
+        missing = [
             node.lineno
-            for node in ast.walk(fn)
-            if (
-                isinstance(node, ast.Name)
-                and isinstance(node.ctx, ast.Load)
-                and node.id in apply_names
-            )
-            or (isinstance(node, ast.Attribute) and node.attr in apply_names)
+            for node in self._calls(source())
+            if not any(kw.arg == "executable" for kw in node.keywords)
         ]
-        assert applies, f"{method}: no apply reference found"
-        assert imports[0] < min(
-            applies
-        ), f"{method}: resolver import at line {imports[0]} follows apply at {min(applies)}"
+
+        assert not missing, (
+            f"reexec_python_module at line(s) {missing} passes no executable=; it would "
+            "re-exec sys.executable, which an update can prune. Resolve the interpreter "
+            "with wheel_engine.respawn_executable() and pass it as executable=."
+        )
+
+    def test_the_boot_apply_has_a_reexec_to_police(self):
+        assert self._calls(inspect.getsource(update_boot_apply))
+
+    def test_the_gateway_itself_no_longer_restarts_after_an_update(self):
+        assert self._calls(_gateway_source()) == []
 
 
 class TestAutoApplyWheelUpdate:
     @pytest.mark.asyncio
-    async def test_successful_install_execs_the_respawn_interpreter(self, exec_seams, monkeypatch):
-        respawn, reexec, interpreter = exec_seams
+    async def test_successful_install_stages_and_execs_nothing(self, exec_seams, monkeypatch):
+        """No unattended path restarts a running gateway: the promoted tree waits."""
+        respawn, reexec, _interpreter = exec_seams
         orch = _make_orchestrator()
         # The shadow engine is the apply; it promoted the new tree.
         apply = wire_wheel_apply(monkeypatch)
@@ -258,92 +159,5 @@ class TestAutoApplyWheelUpdate:
         await orch._auto_apply_wheel_update("stable", "9.9.9")
 
         apply.assert_called_once()
-        _assert_execs_the_respawn_interpreter(respawn, reexec, interpreter)
-
-
-class TestAutoApplyGitUpdate:
-    """The git-checkout path: fetch, reset, rebuild, reinstall, then exec."""
-
-    @staticmethod
-    def _scripted_git(monkeypatch) -> AsyncMock:
-        """A ``create_subprocess_exec`` that answers each git step as a clean,
-        behind-origin checkout would, and refuses any spawn it does not expect."""
-
-        def _proc(rc: int, stdout: bytes = b"") -> MagicMock:
-            proc = MagicMock()
-            proc.returncode = rc
-            proc.communicate = AsyncMock(return_value=(stdout, b""))
-            proc.wait = AsyncMock(return_value=rc)
-            return proc
-
-        async def _spawn(*argv, **_kwargs):
-            words = [str(a) for a in argv[1:]]
-            if words[:2] == ["rev-parse", "--abbrev-ref"]:
-                return _proc(0, b"main\n")
-            if words[:1] == ["fetch"]:
-                return _proc(0)
-            if words[:2] == ["rev-parse", "--verify"]:
-                return _proc(0, b"0123456789abcdef0123456789abcdef01234567\n")
-            if words[:1] == ["diff"] and "--quiet" in words:
-                return _proc(1)  # HEAD differs from origin: an update is pending
-            if words[:2] == ["status", "--porcelain"]:
-                return _proc(0)  # clean tracked tree
-            if words[:2] == ["diff", "--name-only"]:
-                return _proc(0)  # the target adds no colliding paths
-            if words[:2] == ["reset", "--hard"]:
-                return _proc(0)
-            raise AssertionError(f"unexpected spawn on the git update path: {argv!r}")
-
-        spawn = AsyncMock(side_effect=_spawn)
-        monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
-        return spawn
-
-    @pytest.mark.asyncio
-    async def test_successful_update_execs_the_respawn_interpreter(
-        self, exec_seams, monkeypatch, tmp_path
-    ):
-        respawn, reexec, interpreter = exec_seams
-        orch = _make_orchestrator()
-
-        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
-        monkeypatch.setattr("kiro_crew.platform_compat.trusted_git_bin", lambda: "/usr/bin/git")
-        # The pre-reset refusals, each answered the way a clean checkout on the
-        # primary branch answers them. Their own behaviour is pinned elsewhere.
-        monkeypatch.setattr(gw, "git_command_env", lambda: {})
-        monkeypatch.setattr(gw, "is_primary_branch", lambda _branch: True)
-        monkeypatch.setattr(gw, "repo_exec_config_reason", lambda _proj: "")
-        monkeypatch.setattr(gw, "tracks_upstream", lambda _proj, _branch: True)
-        monkeypatch.setattr(
-            gw, "resolve_remote_url", lambda _proj, remote, **_k: "https://example/r.git"
-        )
-        monkeypatch.setattr(
-            "kiro_crew.platform.update_governance.update_blocked_reason", lambda _url: None
-        )
-        monkeypatch.setattr(gw, "commits_ahead", lambda _proj, _target: 0)
-        monkeypatch.setattr(gw, "hidden_worktree_edits", lambda _proj: [])
-        # The floor gate reads the pinned commit with a real `git show`, which
-        # fails against this non-repo, and a failed read refuses.
-        monkeypatch.setattr(gw.dep_sync, "incoming_python_floor_breach", lambda *a, **k: None)
-        # The network fetch runs through the shared isolated helper; it returns
-        # the fetched commit the reset targets.
-        monkeypatch.setattr(
-            gw,
-            "fetch_and_pin_upstream",
-            AsyncMock(return_value="0123456789abcdef0123456789abcdef01234567"),
-        )
-        spawn = self._scripted_git(monkeypatch)
-        # Post-reset rebuild steps: no optional backend, frontend and deps sync
-        # come back clean, and the package reload is a no-op (reloading the real
-        # package inside the test process is not what is under test).
-        monkeypatch.setattr(gw, "_pinned_kiro_cli", AsyncMock(return_value=None))
-        monkeypatch.setattr(gw, "build_frontend_async", AsyncMock())
-        monkeypatch.setattr(gw.dep_sync, "sync_or_reinstall", lambda *_a, **_k: 0)
-        monkeypatch.setattr(gw, "importlib", SimpleNamespace(reload=lambda module: module))
-
-        await orch._auto_apply_update()
-
-        # The scripted git ran through to the reset: the exec below is the
-        # restart after a real apply, not an early return.
-        spawned = [[str(a) for a in call.args[1:3]] for call in spawn.await_args_list]
-        assert ["reset", "--hard"] in spawned
-        _assert_execs_the_respawn_interpreter(respawn, reexec, interpreter)
+        reexec.assert_not_called()
+        respawn.assert_not_called()

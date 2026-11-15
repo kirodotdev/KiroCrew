@@ -278,11 +278,12 @@ async def _remove_slot_for_history_key(
             )
 
 
-#: How long the delete funnel waits for the teardown entry to land before taking
-#: the lease. Short on purpose: the flush is what lets the emitter release this
-#: session's cached handle, and with it the write lease this removal must claim.
-#: A timeout is not a failure -- the entry stays owed, so the unit becomes
-#: collectable by the retention sweep even when this pass is refused.
+#: The bound on EACH of the delete funnel's two waits before it takes the lease: the
+#: teardown entry landing, then the eager folder settling (``eager.drain``). Short on
+#: purpose: the flush is what lets the emitter release this session's cached handle,
+#: and the folder seals the unit's savepoints under a shared hold of the same write
+#: lease this removal must claim. A timeout is not a failure -- the removal is refused
+#: as ``owned`` and the unit is left to the retention sweep.
 _CREW_LOG_TEARDOWN_FLUSH_SECONDS = 2.0
 
 
@@ -374,6 +375,7 @@ def _remove_session_crew_logs(
     from kiro_crew import session_ledger
 
     try:
+        from kiro_crew.crew_log import eager as crew_log_eager
         from kiro_crew.crew_log import emit as crew_log_emit
         from kiro_crew.crew_log import store as crew_log_store
         from kiro_crew.crew_log.schema import KIND_SESSION
@@ -382,6 +384,10 @@ def _remove_session_crew_logs(
         # handle, and the write lease that handle carries, only once its close lands.
         # A timeout is not a failure; the unit is then ``owned`` and left to retention.
         crew_log_emit.flush(timeout=_CREW_LOG_TEARDOWN_FLUSH_SECONDS)
+        # Then let the eager folder settle, which covers the fold that close woke: it
+        # seals the unit's savepoints under a shared hold of that same lease, and a sole
+        # claim made mid-seal answers ``owned``.
+        crew_log_eager.drain(timeout=_CREW_LOG_TEARDOWN_FLUSH_SECONDS)
         by_slot = crew_log_store.session_units_by_slot()
     except Exception:
         logger.warning(

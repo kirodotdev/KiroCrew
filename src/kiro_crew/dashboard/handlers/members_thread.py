@@ -29,6 +29,7 @@ from kiro_crew.dashboard.handlers.members_access import (
     _deny_app_caller,
     _member_names_for_slug,
     _sel,
+    _teammate_admitted,
 )
 from kiro_crew.dashboard.slot_approval_seed import seed_slot_approval
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
@@ -168,9 +169,12 @@ async def api_member_thread(request: web.Request) -> web.Response:
     # identity but a non-owner subject (the `!dashboard` Slack case), which
     # would otherwise bind a session slot to a crew member. Kept below the app
     # denial so app callers keep the 404 they get on every other member route.
-    owner_denied = await require_owner_dashboard_request(request, "members.thread")
-    if owner_denied is not None:
-        return owner_denied
+    # A team Crew teammate opens a person-created Bot's chat as they open a session.
+    admitted = await _teammate_admitted(request, "members.thread", slug=request.match_info["slug"])
+    if not admitted:
+        owner_denied = await require_owner_dashboard_request(request, "members.thread")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState | None = request.app.get("state")
     if state is None:
         return web.json_response(
@@ -395,21 +399,12 @@ async def api_member_thread(request: web.Request) -> web.Response:
 
     # The thread is named after its crewmate, as a final title no background
     # path rewrites (see chat_title.name_member_thread). The first crewmate with no
-    # display name reads "Mate", as it does in the sidebar.
-    from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME, is_assistant_member
+    # display name reads "Bot", as it does in the sidebar.
+    from kiro_crew.agent_files import member_label
     from kiro_crew.dashboard.chat_title import name_member_thread
 
     named_crew = cfg.agents[member_name]
-    name_member_thread(
-        state,
-        slot,
-        getattr(named_crew, "display_name", "")
-        or (
-            ASSISTANT_DEFAULT_DISPLAY_NAME
-            if is_assistant_member(member_name, named_crew)
-            else member_name
-        ),
-    )
+    name_member_thread(state, slot, member_label(member_name, named_crew))
 
     if not minted:
         # Live (restart-restored) and rehydrated threads alike: the fresh mint

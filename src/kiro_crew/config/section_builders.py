@@ -55,6 +55,7 @@ from kiro_crew.config.integration_sections import (
     McpGatewayConfig,
     PublishConfig,
     TunnelConfig,
+    _resolve_cwd_use,
     _resolve_stub_overrides,
     _resolve_stub_roster,
     _resolve_stub_servers,
@@ -68,8 +69,15 @@ from kiro_crew.config.memory_sections import (
     SkillsConfig,
     _coerce_embedding_provider,
     _read_auto_add_documents,
+    dream_mode_from,
+    extraction_instructions_from,
     kind_routing_mode_from,
+    lesson_fold_mode_from,
     lesson_origin_gate_mode_from,
+    lesson_tier_policy_mode_from,
+    member_lesson_dedup_mode_from,
+    relevance_rule_mode_from,
+    rule_authority_order_mode_from,
 )
 from kiro_crew.config.sections import (
     CODE_CHANNEL_APPROVAL_ASK,
@@ -153,6 +161,8 @@ def _build_taskrunner_config(taskrunner_data: dict) -> TaskRunnerConfig:
     section = SectionReader(TaskRunnerConfig, taskrunner_data)
     argv = section.get("test_command")
     return TaskRunnerConfig(
+        # Only a literal false turns it off: Task Runner shipped on.
+        enabled=section.get("enabled") is not False,
         max_parallel_steps=section.get("max_parallel_steps"),
         workspace_dir=str(section.get("workspace_dir")),
         # All or nothing: dropping one bad element would run a different command.
@@ -208,6 +218,10 @@ def _build_watchdog_config(watchdog_data: dict) -> WatchdogConfig:
         tool_stall_hard_cap_secs=section.read("tool_stall_hard_cap_secs", _safe_float),
         model_silent_probe_secs=section.read("model_silent_probe_secs", _safe_float),
         remote_flat_probe_secs=section.read("remote_flat_probe_secs", _safe_float),
+        builtin_tool_silence_secs=section.read("builtin_tool_silence_secs", _safe_float),
+        mcp_network_silence_secs=section.read("mcp_network_silence_secs", _safe_float),
+        mcp_stdio_silence_secs=section.read("mcp_stdio_silence_secs", _safe_float),
+        subagent_silence_secs=section.read("subagent_silence_secs", _safe_float),
         wellness_sample_secs=section.read("wellness_sample_secs", _safe_float),
     )
 
@@ -288,6 +302,19 @@ def _history_idle_hours(section: SectionReader) -> float:
     return hours
 
 
+def _embedding_idle_evict_secs(raw: object) -> int | str:
+    """``"auto"``, or a stored number of seconds the operator chose.
+
+    The same reading as ``embeddings_settings.embedding_idle_evict_secs``, which the
+    evictor uses: a non-negative number is kept (``0`` never unloads; capped at a
+    year), and anything else, ``"auto"`` included, is ``"auto"``, which picks by
+    machine size at run time.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw < 0:
+        return "auto"
+    return min(int(raw), 365 * 24 * 3600)
+
+
 def _build_memory_config(memory_data: dict) -> MemoryConfig:
     section = SectionReader(MemoryConfig, memory_data)
     return MemoryConfig(
@@ -302,15 +329,15 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         # deliberate opt-in to the interactive pool.
         embedding_bulk_threads=section.read("embedding_bulk_threads", _safe_int, 0, 256),
         embedding_bulk_duty=section.read("embedding_bulk_duty", _safe_float, 0.05, 1.0),
-        # 0 is the documented "never unload" sentinel, so the floor is 0.
-        embedding_idle_evict_secs=section.read(
-            "embedding_idle_evict_secs", _safe_int, 0, 365 * 24 * 3600
+        embedding_idle_evict_secs=_embedding_idle_evict_secs(
+            section.get("embedding_idle_evict_secs")
         ),
         embedding_weight_repack=section.read("embedding_weight_repack", _safe_bool),
         embedding_child_process=section.read("embedding_child_process", _safe_bool),
         consolidation_write_child_process=section.read(
             "consolidation_write_child_process", _safe_bool
         ),
+        repeated_failures_notice=section.read("repeated_failures_notice", _safe_bool),
         recall_pool_processes=section.read("recall_pool_processes", _safe_int, 0, 8),
         recall_pool_worker_max_mb=section.read(
             "recall_pool_worker_max_mb", _safe_int, 256, 1024 * 1024
@@ -348,7 +375,16 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         writes_enabled=section.read("writes_enabled", _safe_bool),
         lesson_extraction_enabled=section.read("lesson_extraction_enabled", _safe_bool),
         kind_routing=kind_routing_mode_from(section.get("kind_routing")),
+        extraction_instructions=extraction_instructions_from(
+            section.get("extraction_instructions")
+        ),
+        lesson_fold=lesson_fold_mode_from(section.get("lesson_fold")),
         lesson_origin_gate=lesson_origin_gate_mode_from(section.get("lesson_origin_gate")),
+        lesson_tier_policy=lesson_tier_policy_mode_from(section.get("lesson_tier_policy")),
+        rule_authority_order=rule_authority_order_mode_from(section.get("rule_authority_order")),
+        member_lesson_dedup=member_lesson_dedup_mode_from(section.get("member_lesson_dedup")),
+        relevance_rule=relevance_rule_mode_from(section.get("relevance_rule")),
+        dream=dream_mode_from(section.get("dream")),
         inject_memory=section.read("inject_memory", _safe_bool),
         inject_lessons=section.read("inject_lessons", _safe_bool),
         inject_lessons_per_turn=section.read("inject_lessons_per_turn", _safe_bool),
@@ -471,6 +507,8 @@ def _build_mcp_config(mcp_data: dict) -> McpConfig:
         # schema validator before this runs, so it reads as absent and the default
         # applies rather than a guess at what the text meant.
         honour_auto_approve=section.get("honour_auto_approve") is True,
+        # Opt-in, off by default: only a real ``true`` turns the write fence on.
+        protect_kiro_permission_rules=section.get("protect_kiro_permission_rules") is True,
     )
 
 
@@ -539,6 +577,7 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
         # from the roster. Shares the resolver with the runtime so a
         # non-bool value is dropped in exactly one place.
         stub_overrides=_resolve_stub_overrides(mcp_gateway_data),
+        cwd_use=_resolve_cwd_use(mcp_gateway_data),
         # The file's own roster, carried so ``save()`` can put it back
         # instead of flattening it to the effective set above. See the
         # field's own comment for why that flattening is a data loss.
@@ -655,9 +694,20 @@ def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
     domain = str(section.get("relay_viewer_relay_domain") or "").strip()
     if domain.isascii():
         domain = domain.lower()
+    prefix = str(section.get("relay_viewer_oidc_scope_prefix") or "").strip()
+    if prefix:
+        from kiro_crew.auth.login.endpoints import OIDC_SCOPE_PREFIX_RE
+
+        if OIDC_SCOPE_PREFIX_RE.fullmatch(prefix) is None:
+            logger.warning(
+                "tunnel.relay_viewer_oidc_scope_prefix ignored: it must be lower-case "
+                "letters and underscores"
+            )
+            prefix = ""
     return {
         "relay_viewer_cps_url": url,
         "relay_viewer_credential": ref,
+        "relay_viewer_oidc_scope_prefix": prefix,
         "relay_viewer_relay_domain": domain,
     }
 
@@ -732,9 +782,10 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         # Default False: a missing or unparseable value must mean "open no
         # thread", never the reverse.
         auto_link_sessions=section.read("auto_link_sessions", _safe_bool),
-        # Default False for both: an unparseable value must never declare the app
-        # an agent or open code channels.
+        # Default False for all three: an unparseable value must never declare the
+        # app an agent, open code channels or let a code channel dispatch work.
         agent_sessions=section.read("agent_sessions", _safe_bool),
+        code_channel_dispatch=section.read("code_channel_dispatch", _safe_bool),
         code_channels=section.read("code_channels", _safe_bool),
         code_channel_defaults=_build_code_channel_defaults(slack_data.get("code_channel_defaults")),
     )
@@ -970,6 +1021,7 @@ def _build_wakatime_config(wakatime_data: dict) -> WakaTimeConfig:
         enabled=bool(section.get("enabled")),
         api_base_url=str(section.get("api_base_url") or section.default("api_base_url")),
         send_heartbeats=section.read("send_heartbeats", _safe_bool),
+        oauth_client_id=str(section.get("oauth_client_id") or section.default("oauth_client_id")),
     )
 
 

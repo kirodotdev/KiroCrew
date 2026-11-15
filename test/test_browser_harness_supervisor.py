@@ -891,8 +891,9 @@ def test_a_key_chromium_wrapped_across_lines_withholds_its_stderr(short_home: Pa
     """A secret split over two stderr lines matches no pattern line by line, so the
     whole tail is withheld rather than published in two halves."""
     from kiro_crew.acp.stderr_tail import STDERR_WITHHELD
+    from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-    key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    key = SAMPLE_AWS_SECRET
     sup = HarnessSupervisor(short_home, base_env={}, config_reader=lambda: {})
     sup._chromium_stderr = bytearray(f"auth key={key[:18]}\n{key[18:]} rejected\n".encode())
     detail = sup._chromium_exit_detail(1)

@@ -1287,6 +1287,19 @@ class TestARefusalIsOneLineNotATraceback:
         assert err.startswith("Error: ") and "backup" in err
         assert err.count("\n") == 1 and "Traceback" not in err
 
+    def test_cancel_for_an_undeclared_store_logs_no_traceback(
+        self, seeded, caplog: pytest.LogCaptureFixture, capsys
+    ) -> None:
+        # The CLI's console handler shows WARNING records on stderr, so a logged
+        # resolution failure would print a traceback above the one-line refusal.
+        caplog.set_level("WARNING")
+        args = _ns(mem_action="restore", store="nosuch", from_backup=None, cancel_pending=True)
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(args)
+        assert exc.value.code == 1
+        assert "Cancel requires an available memory store" in capsys.readouterr().err
+        assert [r.getMessage() for r in caplog.records if r.exc_info] == []
+
 
 class TestAVerbThatDidNothingExitsOne:
     """``backups --store`` and ``retired --restore`` exit 1 when nothing they were
@@ -1300,6 +1313,16 @@ class TestAVerbThatDidNothingExitsOne:
             cc._memory_cmd(_ns(mem_action="backups", store="nosuch"))
         assert exc.value.code == 1
         assert capsys.readouterr().out == "nosuch: not a declared memory store\n"
+
+    def test_backups_for_an_unknown_store_logs_no_traceback(
+        self, seeded, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The CLI's console handler shows WARNING records on stderr, so a logged
+        # resolution failure would print a traceback above the one-line answer.
+        caplog.set_level("WARNING")
+        with pytest.raises(SystemExit):
+            cc._memory_cmd(_ns(mem_action="backups", store="nosuch"))
+        assert [r.getMessage() for r in caplog.records if r.exc_info] == []
 
     def test_backups_for_a_declared_store_exits_zero(
         self, seeded, capsys: pytest.CaptureFixture[str]

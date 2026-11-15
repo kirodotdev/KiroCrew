@@ -154,6 +154,31 @@ def step_session_name(opts: dict) -> Optional[str]:
     return f"{session}@{backend}" if session is not None and backend else session
 
 
+async def apply_step_effort(provider: Any, level: Optional[str]) -> None:
+    """Push ``level`` onto a live session through ``provider.change_effort``.
+
+    ``get_or_create`` applies ``reasoning_effort_override`` only when it starts a
+    session, so a session that is already live needs the step's effort pushed.
+    Nothing is pushed for an unset level or a provider without ``change_effort``.
+    A level the session does not advertise (``accepts_effort_level`` returns
+    False) is skipped, as a cold start drops it. A level the session's model
+    refuses (``command_refused``) leaves the session at the effort it runs, as a
+    cold start does; any other raise from ``change_effort`` propagates.
+    """
+    change_effort = getattr(provider, "change_effort", None)
+    if not level or change_effort is None:
+        return
+    accepts = getattr(provider, "accepts_effort_level", None)
+    if accepts is not None and not accepts(level):
+        return
+    try:
+        await change_effort(level)
+    except Exception as exc:
+        if getattr(exc, "command_refused", False) is not True:
+            raise
+        logger.warning("step effort %r refused; the session keeps its effort: %s", level, exc)
+
+
 async def vet_step_spawn(
     *, session_key: str, agent: Optional[str], cwd: Optional[str], app: str = ""
 ) -> Optional[str]:
@@ -348,10 +373,14 @@ def build_agent_fn(
                 # Nobody can reconnect a slow MCP server for a step, so its first
                 # prompt waits (bounded) for the agent spec's servers to report.
                 await wait_for_declared_mcp(provider, UNATTENDED_MCP_WAIT_SECS)
+            elif session is not None:
+                # A live named session keeps the effort it started with; push
+                # this step's effort onto it before the turn is sent.
+                await apply_step_effort(provider, effort_kwargs.get("reasoning_effort_override"))
             # Wall clock for THIS agent turn only (not the whole workflow run):
             # acp leaves TurnUsage.duration_ms at 0, so without this the row's
-            # duration_ms is a literal 0. Started after the session is ready so
-            # session setup is not charged to the turn.
+            # duration_ms is a literal 0. Started after the session is ready and
+            # the effort push so session setup is not charged to the turn.
             _turn_t0 = time.monotonic()
             from kiro_crew.messaging.identity import publish_turn_identity
 

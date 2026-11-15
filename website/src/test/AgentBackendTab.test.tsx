@@ -499,6 +499,46 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     expect(useButton(name)).toBeDisabled()
   })
 
+  it('names Node.js under an npm install command, and only under one', async () => {
+    // #36377: on a host without Node.js `npm i -g opencode-ai@1` fails with
+    // "npm: command not found" and the card never said npm comes with Node.js.
+    // goose installs through its own curl script, so its card says nothing about it.
+    schemaMock.mockReturnValue(schemaWith(['kiro', 'opencode', 'goose']))
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow('kiro', card()),
+        probeRow('opencode', {
+          installed: 'missing',
+          missing_components: ['opencode'],
+          install_command: 'npm i -g opencode-ai@1',
+          ...card(),
+        }),
+        probeRow('goose', {
+          installed: 'missing',
+          missing_components: ['goose'],
+          install_command:
+            'curl -fsSL https://raw.githubusercontent.com/block/goose/main/download_cli.sh | bash',
+          ...card(),
+        }),
+      ],
+    })
+    wrap()
+    const opencode = acpBackendName({ id: 'opencode', policy_id: 'opencode' })
+    await waitFor(() => expect(rowLabel(opencode).textContent).toContain('Not installed'))
+    highlight(opencode)
+    await waitFor(() => expect(detail().textContent).toContain('npm i -g opencode-ai@1'))
+    expect(detail().textContent).toContain('This command needs Node.js and npm on the gateway host.')
+    const link = panel().getByRole('link', { name: /Download Node\.js/ })
+    expect(link).toHaveAttribute('href', 'https://nodejs.org/en/download')
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+
+    highlight(acpBackendName({ id: 'goose', policy_id: 'goose' }))
+    await waitFor(() => expect(detail().textContent).toContain('download_cli.sh | bash'))
+    expect(detail().textContent).not.toContain('Node.js')
+    expect(panel().queryByRole('link', { name: /Download Node\.js/ })).toBeNull()
+  })
+
   it('says "In use" visibly on the row, not only to a screen reader', async () => {
     // The configured harness has no Use button, so the row is the one place a
     // sighted reader learns which agent is running. The word is on the row itself,
@@ -774,6 +814,7 @@ describe('AgentBackendTab switching', () => {
     )
     const { qc } = wrapWithClient()
     qc.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'old-backend-model' }])
+    qc.setQueryData(['kiro-usage'], { used: 1, limit: 10, bonusCredits: [], email: 'old-login@example.com' })
     const reset = vi.spyOn(qc, 'resetQueries')
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
     highlight('Claude Code')
@@ -783,6 +824,8 @@ describe('AgentBackendTab switching', () => {
     // The old rows are gone the moment the switch saves, not after a refetch.
     expect(qc.getQueryData(['available-models', 'acp'])).toBeUndefined()
     expect(localStorage.getItem('kc.acp.models.v1')).toBeNull()
+    // So is the usage reading, which names the old harness's login (#36156).
+    expect(qc.getQueryData(['kiro-usage'])).toBeUndefined()
   })
 
   it('leaves the model list alone when the save is rejected', async () => {

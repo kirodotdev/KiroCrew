@@ -135,6 +135,15 @@ def test_marker_with_a_relaunch_path_is_staged(tmp_path: Path, relaunch: str) ->
 
 
 @runs_the_step
+def test_marker_handing_the_update_prompts_to_the_edition_is_staged(tmp_path: Path) -> None:
+    src = tmp_path / "marker.json"
+    src.write_text(json.dumps({**VALID, "updatePrompts": "edition"}))
+    proc, dest = _run(tmp_path, str(src))
+    assert proc.returncode == 0, proc.stderr
+    assert _witness(dest).read_text() == src.read_text()
+
+
+@runs_the_step
 def test_unset_removes_a_stale_leftover(tmp_path: Path) -> None:
     # A previous local build with the variable set must not leak its
     # declaration into a build without it.
@@ -180,6 +189,11 @@ def test_empty_value_means_unset(tmp_path: Path) -> None:
             json.dumps({**VALID, "relaunchPath": "C:drive-relative.exe"}),
             "must be an absolute path",
         ),
+        # The reader honours only "edition"; any other value would ship the
+        # core update dialogs beside the edition widget meant to own them.
+        (json.dumps({**VALID, "updatePrompts": "core"}), 'must be "edition"'),
+        (json.dumps({**VALID, "updatePrompts": " edition"}), "leading/trailing whitespace"),
+        (json.dumps({**VALID, "updatePrompts": True}), "must be a string"),
     ],
     ids=[
         "not-json",
@@ -196,6 +210,9 @@ def test_empty_value_means_unset(tmp_path: Path) -> None:
         "relative-relaunchPath",
         "relaunchPath-over-1024",
         "drive-relative-relaunchPath",
+        "updatePrompts-not-edition",
+        "padded-updatePrompts",
+        "non-string-updatePrompts",
     ],
 )
 def test_malformed_marker_fails_the_build(tmp_path: Path, body: str, reason: str) -> None:

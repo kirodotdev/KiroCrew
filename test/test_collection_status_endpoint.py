@@ -44,9 +44,7 @@ def _write_config(home, telemetry: dict) -> None:
 
 
 def _write_overlay(home, telemetry: dict) -> None:
-    (home / "config.local.json").write_text(
-        json.dumps({"telemetry": telemetry}), encoding="utf-8"
-    )
+    (home / "config.local.json").write_text(json.dumps({"telemetry": telemetry}), encoding="utf-8")
 
 
 async def _get(client: TestClient) -> dict:
@@ -73,7 +71,15 @@ class TestCollectionStatusEndpoint:
         assert body["overlay_override"] is False
 
     @pytest.mark.asyncio
-    async def test_defaults_off(self, _home) -> None:
+    async def test_defaults_on(self, _home) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            body = await _get(c)
+        assert body["enabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_off_without_a_recording_choice_reads_off(self, _home) -> None:
+        # Its owner already said no to telemetry; the default does not override that.
+        _write_config(_home, {"beacon_enabled": False})
         async with TestClient(TestServer(_make_app())) as c:
             body = await _get(c)
         assert body["enabled"] is False
@@ -144,9 +150,7 @@ class TestCollectionStatusEndpoint:
     async def test_unreadable_config_reports_off_rather_than_raising(self, _home) -> None:
         # A diagnostic must never 500, and it must fail toward "off" so the UI
         # never claims collection is on when that cannot be proven.
-        with patch(
-            "kiro_crew.config.loader.KiroCrewConfig.load", side_effect=OSError("boom")
-        ):
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", side_effect=OSError("boom")):
             async with TestClient(TestServer(_make_app())) as c:
                 body = await _get(c)
         assert body["enabled"] is False
@@ -166,6 +170,23 @@ class TestCollectionStatusEndpoint:
         async with TestClient(TestServer(_make_app())) as c:
             body = await _get(c)
         assert body["otlp_configured"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_destination_waits_for_a_written_opt_in_before_export(self, _home) -> None:
+        # Recording on by default is not consent to export, so the panel must not
+        # say metrics are sent until telemetry.enabled: true is written.
+        _write_config(_home, {"otlp_endpoint": "http://otel:4318/v1/metrics"})
+        async with TestClient(TestServer(_make_app())) as c:
+            body = await _get(c)
+        assert (body["enabled"], body["otlp_configured"], body["export_permitted"]) == (
+            True,
+            True,
+            False,
+        )
+        _write_config(_home, {"enabled": True, "otlp_endpoint": "http://otel:4318/v1/metrics"})
+        async with TestClient(TestServer(_make_app())) as c:
+            body = await _get(c)
+        assert body["export_permitted"] is True
 
     @pytest.mark.asyncio
     async def test_never_returns_the_endpoint_itself(self, _home) -> None:

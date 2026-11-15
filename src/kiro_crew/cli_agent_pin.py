@@ -109,4 +109,16 @@ def agent_pin(args: argparse.Namespace) -> None:
             print(f"{safe_terminal_line(name)} had no spec pin.")
         return
     print(f"Pinned {safe_terminal_line(name)} to {safe_terminal_line(file_name or '')}.")
+    try:
+        contested = {row["agent"] for row in agent_spec_pin_ops.contested_agents(source="cli")}
+    except OSError:
+        contested = {name}  # unknown: keep the general wording
+    if name not in contested:
+        # The resolver ignores a pin on a name only one spec declares (the listing
+        # shows it as not contested), so "it applies" would be untrue.
+        print(
+            f"   Only one spec declares {safe_terminal_line(name)}, so the pin is ignored "
+            "until another spec declares it."
+        )
+        return
     print("   It applies to sessions started from now on; restart a running session to use it.")

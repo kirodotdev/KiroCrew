@@ -672,6 +672,29 @@ jobs:
             DEFAULT_BRANCH="$(gh_retry gh api "repos/$REPO" --jq '.default_branch')"
           fi
 
+          # A release branch runs CI / Fast Gate / Build / Internal Content Scan
+          # only when the ci.yml GitHub reads for this PR lists `release/**`.
+          # A pull_request run takes the workflow from the PR's merge with its
+          # base, so the trigger is there when either side carries it: the
+          # base (a release branch that already has this change) or the head
+          # (a PR that brings it, like the backport of this change). Both are
+          # read, and either one counts the lanes. Erring that way can only
+          # leave a lane pending, never wave a red one through. A branch cut
+          # before the trigger was added, with a PR that does not add it,
+          # starts none of them and keeps the carve-out. A failed read fails
+          # this step, so the verdict is never computed on a guess.
+          CI_ON_RELEASE=false
+          ci_base="${STACK_TRUNK:-$(jq -r '.baseRefName' <<<"$pr_json")}"
+          if [[ "$ci_base" == release/* ]]; then
+            for ci_ref in "$ci_base" "$SHA"; do
+              ci_yml="$(gh_retry gh api -H 'Accept: application/vnd.github.raw' \
+                "repos/$REPO/contents/.github/workflows/ci.yml?ref=$ci_ref")"
+              if grep -qxF '    branches: [main, "release/**"]' <<<"$ci_yml"; then
+                CI_ON_RELEASE=true
+              fi
+            done
+          fi
+
           {
             echo "pr=$PR"
             echo "sha=$SHA"
@@ -681,6 +704,7 @@ jobs:
             echo "url=$(jq -r '.url' <<<"$pr_json")"
             echo "base=$(jq -r '.baseRefName' <<<"$pr_json")"
             echo "stack_trunk=$STACK_TRUNK"
+            echo "ci_on_release=$CI_ON_RELEASE"
             echo "author=$PR_AUTHOR"
             echo "default_branch=$DEFAULT_BRANCH"
             # (head repository, head branch) is how a monitored workflow run is
@@ -1039,6 +1063,7 @@ jobs:
           FORK: ${{ steps.context.outputs.fork }}
           BASE_REF: ${{ steps.context.outputs.base }}
           STACK_TRUNK: ${{ steps.context.outputs.stack_trunk }}
+          CI_ON_RELEASE: ${{ steps.context.outputs.ci_on_release }}
           DEFAULT_BRANCH: ${{ steps.context.outputs.default_branch }}
           TRIGGER_EVENT: ${{ github.event_name }}
           TRIGGER_ACTION: ${{ github.event.action }}
@@ -1092,8 +1117,16 @@ jobs:
           # stack keeps the carve-out. CodeQL default-setup does not follow the
           # stack (no mid-stack PR carries a CodeQL run), so it alone is still
           # judged against the PR's own base.
+          #
+          # A release branch (`release/**`) runs those lanes too once its own
+          # ci.yml lists it (CI_ON_RELEASE, read from the base branch by the
+          # context step): a backport PR is then judged on them like a PR to
+          # the default branch. A release branch cut before that change keeps
+          # the carve-out, because no run can exist there.
           stacked=false
-          if [ -n "$DEFAULT_BRANCH" ] && [ "${STACK_TRUNK:-$BASE_REF}" != "$DEFAULT_BRANCH" ]; then
+          ci_base="${STACK_TRUNK:-$BASE_REF}"
+          if [ -n "$DEFAULT_BRANCH" ] && [ "$ci_base" != "$DEFAULT_BRANCH" ] \
+            && ! { [[ "$ci_base" == release/* ]] && [ "${CI_ON_RELEASE:-false}" = "true" ]; }; then
             stacked=true
           fi
           codeql_ineligible=false
@@ -1157,7 +1190,10 @@ jobs:
             # fork PR no lane keyed on it starts and the PR is held for a
             # maintainer (the hold below). The lanes stay listed so a verdict
             # one posted while the base was the default branch still counts.
-            if [ "$stacked" = "true" ]; then
+            # A fork PR into a release branch is held too: Fast Gate runs
+            # there now, but the Stage-2 fork lanes were only ever vetted
+            # against PRs to the default branch.
+            if [ "$stacked" = "true" ] || [[ "$ci_base" == release/* ]]; then
               fork_base_hold=true
             fi
             workflow_specs+=(
@@ -1683,11 +1719,14 @@ jobs:
             # when the default branch's workflows ran it. Off the default
             # branch (a release branch cut earlier) such a run came from a
             # code-review.yml that still rescans on a retarget, so it counts.
+            # Judged on the CI base, not on `stacked`: a release base now runs
+            # CI, but an older release branch's code-review.yml may still
+            # record no base.
             if [ "$file" = "code-review.yml" ]; then
               scanned_base="$(jq -r '(.display_title // "")
                 | (capture("^\\[base (?<b>[^ ]+)\\]$").b // "")' <<<"$run")"
               if [ "$scanned_base" != "$BASE_REF" ] \
-                && { [ -n "$scanned_base" ] || [ "$stacked" = false ]; }; then
+                && { [ -n "$scanned_base" ] || [ "$ci_base" = "$DEFAULT_BRANCH" ]; }; then
                 pending+=("$label (scanned ${scanned_base:-an unrecorded base}; push or reopen)")
                 continue
               fi

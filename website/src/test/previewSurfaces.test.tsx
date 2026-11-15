@@ -53,6 +53,8 @@ import {
   PREVIEW_DASHBOARD_STALE_FIELDS,
   PREVIEW_DASHBOARD_STALE_WAKE,
   PREVIEW_BRIDGE_APPROVALS,
+  PREVIEW_SECRETS_VAULT,
+  PREVIEW_WORKER_GRILL,
   readPreviewFlag,
   setPreviewFlag,
 } from '../utils/previewFlags'
@@ -425,10 +427,10 @@ describe('Settings > Developer > Feature Previews', () => {
     /**
      * The Decisions card is INCLUDED, subtree and all.
      *
-     * In the state this test renders — governance permitting, consent off, no stored
-     * credential — that card draws no buttons at all: its point rows are
-     * `role="tab"`, and the credential's reveal and replace controls exist only once a
-     * key is stored. So excluding its frame subtracted an empty set and left the census
+     * In the state this test renders (governance permitting, consent off, no stored
+     * credential) that card draws no ingress button: its point rows are
+     * `role="tab"`, and the hosted provider's key field lives in that provider's own
+     * picker entry. So excluding its frame subtracted an empty set and left the census
      * blind to the largest card on the tab for no benefit.
      *
      * Counting it is what makes this a ratchet rather than decoration: a button
@@ -448,9 +450,10 @@ describe('Settings > Developer > Feature Previews', () => {
      * tab would have done neither: it went unscoped, so the same name on another card
      * disappeared from the census too, and it bounded no count.
      *
-     * The two it draws once settled: the hand-off on its read-failure notice (this tab
-     * stubs no API, so the card's reads fail here) and the credential field's reveal.
-     * Neither navigates. A third belongs in the expected set with a reason, never behind
+     * What it draws once settled: the hand-off on its read-failure notice (this tab
+     * stubs no API, so the card's reads fail here) and the two info tips. None
+     * navigates. The hosted provider's key field is not among them: it is drawn inside
+     * that provider's picker entry, which this unstubbed tab never loads. A third belongs in the expected set with a reason, never behind
      * a blanket allowance -- and because the set is exact, a duplicate of one of these
      * fails too, which a name filter could not catch.
      */
@@ -459,7 +462,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // SettingsCard is borderless now (no `.card-glow`); its root carries
     // `animate-rise`, which is the enclosing card frame the switch sits in.
     const decisionsFrame = () =>
-      screen.queryByRole('switch', { name: 'Decisions (Jev)' })?.closest('.animate-rise') ?? null
+      screen.queryByRole('switch', { name: 'Decisions' })?.closest('.animate-rise') ?? null
     const decisionsButtons = () =>
       Array.from(
         decisionsFrame()?.querySelectorAll(
@@ -493,7 +496,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // an unexpected button lands in `ingress`, an extra or missing tip
     // changes `tips` -- while saying what each half protects.
     const INFO_TIP = 'More information'
-    const INFO_TIP_COUNT = 13 // one per Feature Previews row carrying a `hint`
+    const INFO_TIP_COUNT = 15 // one per Feature Previews row carrying a `hint`
     const partition = () => {
       const all = ingressButtons()
       return { tips: all.filter(n => n === INFO_TIP).length, ingress: all.filter(n => n !== INFO_TIP) }
@@ -506,7 +509,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // the hand-off on the read-failure notice after, so a bare expect reads whichever
     // moment it hit. A button this set does not name never converges, so it fails here.
     await waitFor(() => {
-      expect(decisionsButtons()).toEqual(['Ask the agent', 'More information', 'More information', 'Show'])
+      expect(decisionsButtons()).toEqual(['Ask the agent', 'More information', 'More information'])
     })
     await waitFor(() => {
       expect(kasButtons()).toEqual(['Ask the agent', 'Retry'])
@@ -518,17 +521,15 @@ describe('Settings > Developer > Feature Previews', () => {
     })
     expect(partition()).toEqual({ tips: INFO_TIP_COUNT, ingress: ['Open Webhooks'] })
     // And the card beside it still draws only its own two.
-    expect(decisionsButtons()).toEqual(['Ask the agent', 'More information', 'More information', 'Show'])
+    expect(decisionsButtons()).toEqual(['Ask the agent', 'More information', 'More information'])
   })
 
-  it('renders the section header and the section-wide caveat once, above the cards', () => {
-    // The caveat used to be the Developer-page tab's description, rendered by
-    // SidePanelLayout as the page header. Inside Settings the section has to
-    // carry it itself — once, not per card — or the toggles read as released
-    // features that merely happen to be off.
+  it('renders the section-wide caveat once, above the grouped cards', () => {
+    // The section carries the caveat itself — once, not per card — or the
+    // toggles read as released features that merely happen to be off.
     renderTab()
-    expect(screen.getByRole('heading', { name: /feature previews/i })).toBeTruthy()
-    expect(screen.getAllByText(/unpolished on purpose/i)).toHaveLength(1)
+    expect(screen.getAllByText('Unfinished features. Turn one on to try it.')).toHaveLength(1)
+    expect(screen.getByRole('heading', { name: 'Crew and bots' })).toBeTruthy()
   })
 
   it('carries the redirect anchor on ONE element that wraps the whole section', async () => {
@@ -540,12 +541,13 @@ describe('Settings > Developer > Feature Previews', () => {
     // Awaited: the Decisions card is not drawn until the governance read
     // (`decisions_enabled`) lands, so the last switch arrives a tick late.
     await waitFor(() => {
-      expect(screen.getAllByRole('switch')).toHaveLength(13)
+      expect(screen.getAllByRole('switch')).toHaveLength(17)
     })
     const anchors = container.querySelectorAll(`[data-setting-key="${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}"]`)
     expect(anchors).toHaveLength(1)
     const anchor = anchors[0]
-    expect(anchor.contains(screen.getByRole('heading', { name: /feature previews/i }))).toBe(true)
+    expect(anchor.contains(screen.getByText('Unfinished features. Turn one on to try it.'))).toBe(true)
+    for (const h of screen.getAllByRole('heading')) expect(anchor.contains(h)).toBe(true)
     // The count is here so a card added outside the anchor fails rather than
     // silently escaping the ring. The last is Decisions, whose switch is
     // backend config — a different write path, the same ring.
@@ -556,7 +558,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // The Dynamic Dashboard is on for every reader, so it has no preview card.
     // Automatic cards is a server setting with its own card on the Developer tab.
     renderTab()
-    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(13) })
+    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(17) })
     expect(screen.queryByRole('switch', { name: /^dynamic dashboard$/i })).toBeNull()
     expect(screen.queryByRole('switch', { name: /automatic cards for all sessions/i })).toBeNull()
   })
@@ -600,6 +602,22 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(approvals.getAttribute('aria-checked')).toBe('false')
     await act(async () => { approvals.click() })
     expect(localStorage.getItem(PREVIEW_BRIDGE_APPROVALS)).toBe('1')
+  })
+
+  it('offers the Secrets vault redesign switch, off by default', async () => {
+    renderTab()
+    const vault = screen.getByRole('switch', { name: /^secrets vault redesign$/i })
+    expect(vault.getAttribute('aria-checked')).toBe('false')
+    await act(async () => { vault.click() })
+    expect(localStorage.getItem(PREVIEW_SECRETS_VAULT)).toBe('1')
+  })
+
+  it('offers the worker grill switch, off by default', async () => {
+    renderTab()
+    const grill = screen.getByRole('switch', { name: /^quick worker check before a hard choice$/i })
+    expect(grill.getAttribute('aria-checked')).toBe('false')
+    await act(async () => { grill.click() })
+    expect(localStorage.getItem(PREVIEW_WORKER_GRILL)).toBe('1')
   })
 
   it('reads the retired instance-sessions key as on, and clears it when turned off', async () => {

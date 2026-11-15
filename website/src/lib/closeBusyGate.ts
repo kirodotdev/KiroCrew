@@ -7,7 +7,7 @@ import {
 } from '../store/chatSlice'
 import { isAutomationRunning } from '../monitoring/automation'
 import { hasLiveSessionWork } from '../pages/chat/sessionLane'
-import { normalizeRunSessionKey } from '../apps/workflows/runModel'
+import { normalizeRunSessionKey } from '../components/workflows/runModel'
 import { slotRowByKey } from '../store/slotIndex'
 
 /**

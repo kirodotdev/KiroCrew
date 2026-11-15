@@ -670,6 +670,20 @@ def test_create_pr_on_a_non_git_project_explains_and_does_not_run(env: Any) -> N
     assert env.routed == [] and "not a git repository" in replies[0]
 
 
+def test_create_pr_names_the_reason_git_refused_the_project(env: Any) -> None:
+    _bind(env)
+    WorkspaceStore().put(
+        WorkspaceRecord(team_id="T1", channel_id=CH, worktree_skipped="broken_gitfile")
+    )
+    replies: list[str] = []
+
+    async def respond(text: str) -> None:
+        replies.append(text)
+
+    assert asyncio.run(commands.handle_slash(env.orch, _slash("/create-pr"), respond))
+    assert env.routed == [] and "`.git` file" in replies[0]
+
+
 def test_create_pr_lets_an_orchestrating_agent_delegate_on_the_channels_branch(
     env: Any, monkeypatch: Any
 ) -> None:

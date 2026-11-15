@@ -84,6 +84,74 @@ test("without the opt-in, on Windows, or with no crew, nothing is spawned", () =
   }
 });
 
+test("a crew that did not opt in gets a forward once its port is found unanswered", () => {
+  const notOptedIn = { 5477: { ...OPTED_IN[5477], manageTunnel: false } };
+  const { keeper, spawned, timers } = harness({ remoteHosts: notOptedIn });
+  assert.equal(keeper.startForUnansweredPort(), true);
+  assert.equal(spawned.length, 1);
+  assert.deepEqual(spawned[0].args.slice(2), [
+    "--host", "devbox.example.com", "--local-port", "5477", "--remote-port", "5476",
+  ]);
+  // It lasts for the launch: a wake's restart and an edit's re-sync keep it.
+  keeper.restart();
+  assert.equal(keeper.start(), true);
+  assert.equal(spawned.length, 2);
+  // Until stop: the next start reads the stored choice again.
+  keeper.stop();
+  assert.equal(keeper.start(), false);
+  assert.equal(spawned.length, 2);
+  assert.equal(timers.length, 0);
+});
+
+test("an unanswered port with no crew, an unsafe host, or on Windows gets nothing", () => {
+  for (const setup of [
+    { remoteHosts: {} },
+    { remoteHosts: { 5477: { host: "-oProxyCommand=evil" } } },
+    { remoteHosts: OPTED_IN, isWindows: true },
+  ]) {
+    const { keeper, spawned } = harness(setup);
+    assert.equal(keeper.startForUnansweredPort(), false);
+    assert.equal(keeper.start(), false, "a refused fallback does not linger");
+    assert.equal(spawned.length, 0);
+  }
+});
+
+test("a save that leaves the option unticked ends a launch-time fallback", () => {
+  const notOptedIn = { 5477: { ...OPTED_IN[5477], manageTunnel: false } };
+  const { keeper, spawned, timers, store } = harness({ remoteHosts: notOptedIn });
+  assert.equal(keeper.startForUnansweredPort(), true);
+  const { child } = spawned[0];
+  assert.equal(keeper.applySavedChoice(), false, "the saved false is applied");
+  assert.deepEqual(child.signals, ["SIGTERM"]);
+  assert.equal(keeper.start(), false, "and the fallback does not come back on the next start");
+  assert.equal(spawned.length, 1);
+  assert.equal(timers.length, 0);
+  // A save that ticks the option keeps a forward, now as the user's own choice.
+  store.set("remoteHosts", OPTED_IN);
+  assert.equal(keeper.applySavedChoice(), true);
+  assert.equal(spawned.length, 2);
+});
+
+test("a save in this launch keeps the fallback from reopening a forward it left unticked", () => {
+  const notOptedIn = { 5477: { ...OPTED_IN[5477], manageTunnel: false } };
+  const { keeper, spawned } = harness({ remoteHosts: notOptedIn });
+  assert.equal(keeper.applySavedChoice(), false);
+  // Retry probes the port again and finds it unanswered.
+  assert.equal(keeper.startForUnansweredPort(), false);
+  assert.equal(keeper.start(), false);
+  assert.equal(spawned.length, 0);
+});
+
+test("a refused fallback leaves no flag behind for a crew stored later", () => {
+  // Refused because no crew is stored; the flag must reset with the refusal,
+  // or a crew saved unticked afterwards would get a forward it never asked for.
+  const { keeper, spawned, store } = harness({ remoteHosts: {} });
+  assert.equal(keeper.startForUnansweredPort(), false);
+  store.set("remoteHosts", { 5477: { ...OPTED_IN[5477], manageTunnel: false } });
+  assert.equal(keeper.start(), false);
+  assert.equal(spawned.length, 0);
+});
+
 test("an unsafe stored host is refused rather than handed to ssh", () => {
   const { keeper, spawned } = harness({
     remoteHosts: { 5477: { host: "-oProxyCommand=evil", manageTunnel: true } },

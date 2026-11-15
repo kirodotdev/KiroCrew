@@ -99,7 +99,7 @@ second form meeting a translated dashboard, not a stale registry.
   necessarily missing from the UI.
 - Everything outside Settings — Customize and the App Store each have their
   own routes and are not enumerated here (MCP Management is one of them: it
-  sits under Customize → Connections → MCP Servers). The developer views (logs,
+  sits under MCP Servers). The developer views (logs,
   system and the rest) are pages of Settings → Developer
   (`/settings/developer/<page>`), but only their controls that the generator
   indexes appear in the registry.

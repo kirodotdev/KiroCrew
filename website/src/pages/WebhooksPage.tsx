@@ -564,8 +564,11 @@ export default function WebhooksPage() {
     onError: (e: Error) => setTestResult({ ok: false, status: 0, error: e.message }),
   })
 
-  const mutationError = createToken.error || updateToken.error || revokeToken.error
-    || deleteContext.error || setSwitch.error
+  // The banner reports the most recently started action only: a later action
+  // that succeeds clears an older failure, and a newer failure replaces it.
+  const latestMutation = [createToken, updateToken, revokeToken, deleteContext, setSwitch]
+    .reduce((a, m) => (m.submittedAt > a.submittedAt ? m : a))
+  const mutationError = latestMutation.error
   const mutationMessage = mutationError instanceof Error ? mutationError.message : null
 
   /* filter applies to every group at once */

@@ -78,6 +78,7 @@ def register(app: web.Application) -> None:
     # MCP servers
     app.router.add_get("/api/mcp", handlers.api_mcp_servers)
     app.router.add_get("/api/mcp/scopes", handlers.api_mcp_global_scopes)
+    app.router.add_get("/api/mcp/unreadable", handlers.api_mcp_unreadable_files)
     app.router.add_get("/api/mcp/active", handlers.api_mcp_active)
     # Multi-provider MCP discovery (official registry + optional edition capability provider)
     app.router.add_get("/api/mcp/discover", api_mcp_discover)

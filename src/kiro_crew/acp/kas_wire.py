@@ -85,9 +85,13 @@ KIND_USER_MESSAGE_ID_ASSIGNED = "user_message_id_assigned"
 # The engine's own turn boundaries on a session. A turn the client prompted ends
 # on its ``session/prompt`` response; a turn the ENGINE started on its own (a
 # workflow run waking its parent chat) has no request to answer, so these frames
-# are the only start and end it has (``AcpSessionHandle.observe_turn``).
+# are the only start and end it has (parsed by :func:`turn_boundary`).
 KIND_TURN_START = "turn_start"
 KIND_TURN_END = "turn_end"
+# A prompt parked behind another session's turn, waiting for the engine's one
+# active model slot (``AgentExecutionWaitingForActiveSlot``; carries
+# ``activeSessionId``). From 0.66.104 only a spec-generation turn waits there.
+KIND_QUEUED = "queued"
 
 # Summarization maps to Crew's compaction status; steering to mid-turn steer.
 SUMMARIZATION_KINDS = frozenset(
@@ -406,10 +410,10 @@ def normalize_script_hook(hook: Any) -> NormalizedHook | None:
         command=command,
         matcher=matcher,
         timeout=timeout,
-        # The literal boolean, not truthiness. The store persists this field
-        # uncoerced -- ``ScriptHook.from_dict`` takes ``data.get("enabled", True)``
-        # as written -- so a hand-edited ``"enabled": "false"`` arrives as that
-        # string, and a truthiness test would read the operator's "off" as "on".
+        # The literal boolean, not truthiness. ``ScriptHook.from_dict`` coerces a
+        # hand-edited value on load (``"false"`` loads off, an unrecognised value
+        # loads on with a warning), so a loaded hook holds a real bool; the
+        # identity test stays as a guard for any hook object built another way.
         # Anything that is not ``True`` is treated as off, which is the direction
         # that cannot list a hook its owner switched off.
         enabled=getattr(hook, "enabled", True) is True,
@@ -874,7 +878,9 @@ async def hooks_execute(
     2. the id was listed for that session and still resolves to an enabled hook;
     3. the command clears the tool gate (:func:`_gate_hook_command`);
     4. ``capabilities.script_hooks`` permits it on that session's key, for the
-       stored hook's event (``hook_event_governance.event_refusal``).
+       stored hook's event (``hook_event_governance.event_refusal``) and, when
+       the policy names a ``hooks`` list, for the hook itself
+       (``hook_event_governance.hook_refusal``).
 
     The spawn itself is ``run_script_hook`` on the same snapshot the gates judged:
     the same sandbox, environment allowlist, output cap, redaction and timeout a
@@ -899,6 +905,11 @@ async def hooks_execute(
 
             # The policy's ``events`` list, asked for the stored hook's event.
             refusal = await asyncio.to_thread(event_refusal, session_key, hook.event)
+        if refusal is None:
+            from kiro_crew.hook_event_governance import hook_refusal
+
+            # The policy's ``hooks`` list, asked for the stored hook.
+            refusal = await asyncio.to_thread(hook_refusal, session_key, hook)
         if refusal is not None:
             raise HookExecuteRefused(refusal)
         prompt = sanitize_string(_str_param(params, "userPrompt"))

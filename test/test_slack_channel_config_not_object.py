@@ -6,9 +6,10 @@ config modal replaces ``slack.tracking_channels``. When an entry on that path
 holds the wrong JSON type, each writer must keep ``config.json`` byte for byte.
 ``_persist_channel_config`` and the list helpers raise ``ValueError`` naming
 the entry: ``!channel`` answers it in the thread and the channels-modal selects
-log it. The list buttons keep their order and let the error end the click, as an
-unreadable config does, so none reports a success it did not save. The config
-modal logs a warning and writes nothing.
+log it. On the approval and list buttons a refused add leaves the running set as
+it was, a refused remove stays applied, and the message says what is in force and
+that the change was not saved instead of reporting a success. The config modal
+logs a warning and writes nothing.
 
 Config writes land in the per-test ``KIROCREW_HOME`` that ``conftest.py`` pins.
 """
@@ -156,43 +157,85 @@ async def test_config_modal_keeps_file_and_runtime(
 
 
 @pytest.mark.parametrize(
-    "action_id,value",
+    "action_id,value,users,channels,lead",
     [
-        (ACTION_ALLOWLIST_APPROVE, "U9:Nine"),
-        (ACTION_ALLOWLIST_DENY, "Uold:Old"),
-        (ACTION_TRACK_APPROVE, "C9:general"),
-        (ACTION_TRACK_DENY, "Cold:old"),
+        (ACTION_ALLOWLIST_APPROVE, "U9:Nine", {"Uold"}, {"Cold"}, "❌ `Nine` not added"),
+        (
+            ACTION_ALLOWLIST_APPROVE,
+            "Uold:Old",
+            {"Uold"},
+            {"Cold"},
+            "⚠️ `Old` stays on the allowlist",
+        ),
+        (ACTION_ALLOWLIST_DENY, "Uold:Old", set(), {"Cold"}, "⚠️ `Old` is off the allowlist"),
+        (ACTION_ALLOWLIST_DENY, "U9:Nine", {"Uold"}, {"Cold"}, "⚠️ `Nine` is off the allowlist"),
+        (ACTION_TRACK_APPROVE, "C9:general", {"Uold"}, {"Cold"}, "❌ Not tracking `#general`"),
+        (ACTION_TRACK_APPROVE, "Cold:old", {"Uold"}, {"Cold"}, "⚠️ Still tracking `#old`"),
+        (ACTION_TRACK_DENY, "Cold:old", {"Uold"}, set(), "⚠️ Not tracking `#old`"),
+        (ACTION_TRACK_DENY, "C9:general", {"Uold"}, {"Cold"}, "⚠️ Not tracking `#general`"),
     ],
-    ids=["allow-approve", "allow-deny", "track-approve", "track-deny"],
+    ids=[
+        "allow-approve",
+        "allow-keep",
+        "allow-deny",
+        "allow-deny-new",
+        "track-approve",
+        "track-keep",
+        "track-deny",
+        "track-ignore",
+    ],
 )
 @pytest.mark.asyncio
-async def test_approval_buttons_fail_with_the_refusal(
-    action_id: str, value: str, orch: MagicMock, sel_log: MagicMock
+async def test_approval_buttons_report_the_refusal(
+    action_id: str,
+    value: str,
+    users: set[str],
+    channels: set[str],
+    lead: str,
+    orch: MagicMock,
+    sel_log: MagicMock,
 ) -> None:
     before = _write({"slack": "x"})
+    orch._allowed_users = {"Uold"}
+    orch._tracking_channels = {"Cold"}
+    sh.set_allowed_users(orch._allowed_users)
+    sh.set_tracking_channels(orch._tracking_channels)
     handler = ix._handle_allowlist if "allowlist" in action_id else ix._handle_track_channel
-    with pytest.raises(ValueError, match="'slack' is not an object"):
-        await handler(_payload(), {"value": value}, action_id, "C1", "m1", "U1")
+    await handler(_payload(), {"value": value}, action_id, "C1", "m1", "U1")
     assert config_path().read_bytes() == before
+    assert (orch._allowed_users, orch._tracking_channels) == (users, channels)
+    text = orch.slack.update_message.await_args.kwargs["text"]
+    assert text.startswith(lead) and "'slack' is not an object" in text
     sel_log.log_api_access.assert_not_called()
-    orch.slack.update_message.assert_not_awaited()
+    orch.slack.open_dm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_list_buttons_fail_with_the_refusal(orch: MagicMock, sel_log: MagicMock) -> None:
+async def test_list_buttons_report_the_refusal(orch: MagicMock, sel_log: MagicMock) -> None:
     before = _write({"slack": {"allowed_users": 7, "tracking_channels": 7}})
     orch._allowed_users = {"Uold"}
-    orch._tracking_channels = {"Cold"}
-    clicks = [
-        ix._handle_ch_add(_payload(), {"selected_conversation": "C9"}),
-        ix._handle_ch_remove(_payload(), {"value": "Cold"}),
-        ix._handle_allowlist_remove(_payload(), {"value": "Uold"}, "C1", "m1", "U1"),
-        ix._handle_channel_remove(_payload(), {"value": "Cold"}, "C1", "m1", "U1"),
-    ]
-    for click in clicks:
-        with pytest.raises(ValueError, match="is not a list"):
-            await click
+    orch._tracking_channels = {"Cold", "C2"}
+    modal = _payload(view={"id": "V1"})
+    await ix._handle_ch_add(modal, {"selected_conversation": "C9"})
+    await ix._handle_ch_remove(modal, {"value": "Cold"})
+    await ix._handle_allowlist_remove(_payload(), {"value": "Uold"}, "C1", "m1", "U1")
+    await ix._handle_channel_remove(_payload(), {"value": "C2"}, "C1", "m1", "U1")
     assert config_path().read_bytes() == before
+    assert (orch._allowed_users, orch._tracking_channels) == (set(), set())
     sel_log.log_api_access.assert_not_called()
-    orch.slack.update_message.assert_not_awaited()
-    orch.slack.views_update.assert_not_awaited()
+    assert sh._removes_in_flight == {}
+    shown = [
+        call.kwargs["view"]["blocks"][0]["elements"][0]["text"]
+        for call in orch.slack.views_update.await_args_list
+    ] + [
+        call.kwargs["blocks"][-1]["elements"][0]["text"]
+        for call in orch.slack.update_message.await_args_list
+    ]
+    leads = [
+        "❌ <#C9> not added:",
+        "⚠️ <#Cold> removed for now;",
+        "⚠️ Removed <@Uold> for now;",
+        "⚠️ Removed <#C2> for now;",
+    ]
+    assert [text[: len(lead)] for text, lead in zip(shown, leads)] == leads
+    assert len(shown) == len(leads) and all("is not a list" in text for text in shown)

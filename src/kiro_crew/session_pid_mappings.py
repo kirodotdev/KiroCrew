@@ -136,11 +136,21 @@ def _prune_session_pid_files_pass(narrow_with_leaders: bool, retract: bool) -> i
                 if retract and _retract_recycled_mapping(pid_file, pid):
                     stale_pid_files += 1
                 continue
-        pid_file.unlink(missing_ok=True)
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            # One entry that cannot be removed (a directory at that name, a
+            # locked file) must not stop the pass: boot and shutdown call it
+            # unguarded, so a raise here would stop the gateway from starting.
+            logger.debug("Could not remove stale pid file: %s", pid_file.name, exc_info=True)
+            continue
         # Remove the HMAC sidecar (session_pid_<pid>.sig) alongside its
         # .txt — a dangling sidecar is harmless (verification requires
         # both) but would accumulate forever.
-        pid_file.with_suffix(".sig").unlink(missing_ok=True)
+        try:
+            pid_file.with_suffix(".sig").unlink(missing_ok=True)
+        except OSError:
+            logger.debug("Could not remove stale pid sidecar for %s", pid_file.name, exc_info=True)
         stale_pid_files += 1
     if stale_pid_files:
         logger.info("Cleaned up %d stale session PID files", stale_pid_files)

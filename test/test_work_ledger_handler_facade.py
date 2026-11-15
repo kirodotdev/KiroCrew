@@ -83,6 +83,7 @@ _KNOWN_SEAMS = frozenset(
 _ROUTES = frozenset(
     {
         "api_work_brief",
+        "api_work_ledger_accept_eval",
         "api_work_ledger_get",
         "api_work_ledger_rebuild",
         "api_work_ledger_record",

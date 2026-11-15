@@ -1,20 +1,19 @@
-"""File readers for knowledge ingestion. Supports text, PDF, PPTX, DOCX, HTML."""
+"""File readers for knowledge ingestion. Supports text, PDF, PPTX, XLSX, DOCX, MSG, HTML."""
 
 import codecs
 import html as html_lib
 import os
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.pdf_extract import PDF_MAX_PAGES, extract_pdf_segments, pdfplumber_available
 from kiro_crew.pinned_fs import open_fenced_for_read
 from kiro_crew.security import is_sensitive_path
-
-try:
-    from pptx import Presentation  # type: ignore[import-untyped]
-except ImportError:
-    Presentation = None  # type: ignore[assignment,misc]
+from kiro_crew.workbook_rows import read_workbook_rows
+from kiro_crew.zip_vet import WORKBOOK_MAX_EXPANDED_BYTES, WORKBOOK_MAX_MEMBERS
 
 try:
     import html2text as _html2text_mod
@@ -224,7 +223,7 @@ class _AdocIncludes:
             with f:
                 if os.fstat(f.fileno()).st_size > _ADOC_MAX_INCLUDE_BYTES:
                     return None
-                raw = f.read(_ADOC_MAX_INCLUDE_BYTES + 1)
+                raw = bounded_read(f, _ADOC_MAX_INCLUDE_BYTES + 1)
         except OSError:
             return None
         if len(raw) > _ADOC_MAX_INCLUDE_BYTES:
@@ -235,18 +234,114 @@ class _AdocIncludes:
 def _missing_dep(fmt: str, package: str) -> tuple[str, dict]:
     """The reader result when an optional extraction dependency is absent.
 
-    Carries the same ``format: 'error'`` sentinel as :func:`_read_error`. ``.pptx``
-    has no declared dependency, so this is the normal path for that format rather
-    than an anomaly.
+    Carries the same ``format: 'error'`` sentinel as :func:`_read_error`.
     """
     message = f'{fmt} support requires {package}: pip install {package}'
     return message, {'format': 'error', 'error': f'{fmt} support requires {package}'}
 
 
+#: Characters of text one slide deck or workbook may contribute to the index.
+#: Same ceiling as a PDF: the caps are the whole bound on what a document costs.
+_PPTX_MAX_CHARS = 4_000_000
+_XLSX_MAX_CHARS = 4_000_000
+#: Wall-clock ceiling for one workbook, checked every ``_XLSX_DEADLINE_STRIDE``
+#: rows: a sparse sheet is one small member that yields millions of empty rows,
+#: which the character cap cannot see. Its archive ceilings are zip_vet's
+#: ``WORKBOOK_MAX_MEMBERS`` and ``WORKBOOK_MAX_EXPANDED_BYTES``.
+_XLSX_WALL_SECS = 120.0
+_XLSX_DEADLINE_STRIDE = 512
+
+
+#: The MAPI string properties a .msg indexes, each a top-level
+#: ``__substg1.0_<id><type>`` stream (type 001F UTF-16LE, 001E 8-bit).
+_MSG_PROPS = {
+    'subject': '0037', 'sender': '0C1A', 'smtp': '5D01', 'address': '0C1F',
+    'address_type': '0C1E', 'to': '0E04', 'cc': '0E03', 'body': '1000',
+}
+#: PR_CLIENT_SUBMIT_TIME, else PR_MESSAGE_DELIVERY_TIME, in ``__properties_version1.0``.
+_MSG_DATE_TAGS = (0x00390040, 0x0E060040)
+#: PR_MESSAGE_CODEPAGE, else PR_INTERNET_CPID: the code page of the 8-bit strings.
+_MSG_CODEPAGE_TAGS = (0x3FFD0003, 0x3FDE0003)
+_MSG_PROPERTIES = '__properties_version1.0'
+#: The OLE compound-file signature every Outlook .msg starts with.
+_OLE_MAGIC = b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'
+
+
+def _msg_ole(olefile, fh):
+    """``OleFileIO`` over *fh* that raises on every spec defect, minus its duplicate scan.
+
+    ``DEFECT_INCORRECT`` stops any stream at the FAT, which olefile trims to the
+    file's sectors; the skipped scan walks a list per directory entry, which is
+    quadratic in entries on a crafted file.
+    """
+    ole = olefile.OleFileIO(raise_defects=olefile.DEFECT_INCORRECT)
+    ole._check_duplicate_stream = lambda first_sect, minifat=False: None
+    ole.open(fh)
+    return ole
+
+
+def _msg_text(ole, size: int) -> str:
+    """Subject, From, Date, To and Cc lines, a blank line, then the plain-text body."""
+    names = {}
+    for key, prop in _MSG_PROPS.items():
+        for kind in ('001F', '001E'):
+            name = f'__substg1.0_{prop}{kind}'
+            if ole.exists(name) and ole.get_size(name) > 0:
+                names[key] = name
+                break
+    has_props = ole.exists(_MSG_PROPERTIES) and ole.get_size(_MSG_PROPERTIES) > 0
+    read = [*names.values(), *([_MSG_PROPERTIES] if has_props else [])]
+    # Streams occupy disjoint sectors, so more than the file means a looping FAT chain.
+    if sum(ole.get_size(name) for name in read) > size:
+        raise ValueError('malformed .msg: its streams are larger than the file')
+
+    props = {}
+    if has_props:
+        raw = ole.openstream(_MSG_PROPERTIES).read()
+        # A 32-byte header, then 16-byte entries: tag, flags, an 8-byte value.
+        props = {
+            int.from_bytes(raw[i:i + 4], 'little'): int.from_bytes(raw[i + 8:i + 16], 'little')
+            for i in range(32, len(raw) - 15, 16)
+        }
+    # PT_LONG: the code page is the value's low 4 bytes.
+    codepage = next((props[tag] for tag in _MSG_CODEPAGE_TAGS if props.get(tag)), 0) & 0xFFFFFFFF
+    try:
+        encoding = codecs.lookup(f'cp{codepage}').name if codepage else None
+    except LookupError:
+        encoding = None
+
+    def value(key: str) -> str:
+        name = names.get(key)
+        if name is None:
+            return ''
+        raw = ole.openstream(name).read()
+        if name.endswith('001F'):
+            text = raw.decode('utf-16-le', 'replace')
+        else:
+            text = raw.decode(encoding, 'replace') if encoding else _decode_text_bytes(raw)
+        return text.replace('\r\n', '\n').rstrip('\x00')
+
+    date = ''
+    filetime = next((props[tag] for tag in _MSG_DATE_TAGS if props.get(tag)), 0)
+    if filetime:
+        stamp = datetime(1601, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=filetime // 10)
+        date = stamp.strftime('%Y-%m-%d %H:%M:%S UTC')
+    sender = value('sender').strip()
+    address = value('smtp').strip()
+    if not address and value('address_type').strip().upper() == 'SMTP':
+        address = value('address').strip()
+    if address and address != sender:
+        sender = f'{sender} <{address}>' if sender else address
+    fields = (('Subject', value('subject').strip()), ('From', sender), ('Date', date),
+              ('To', value('to').strip()), ('Cc', value('cc').strip()))
+    header = '\n'.join(f'{label}: {text}' for label, text in fields if text)
+    return f'{header}\n\n{value("body")}'.strip()
+
+
 class FileReader:
-    # Binary formats need optional runtime deps: .pdf -> pdfplumber and .docx ->
-    # python-docx (both declared in setup.cfg). .pptx -> python-pptx is NOT declared,
-    # so .pptx is intentionally kept out of SUPPORTED even though _read_pptx exists.
+    # Binary formats need runtime deps, all declared in setup.cfg: .pdf ->
+    # pdfplumber, .docx -> python-docx, .msg -> olefile, .xlsx -> openpyxl and
+    # .pptx -> the hardened XML parser behind doc_parser (defusedxml).
     # Every source-code extension listed in ingestion.CODE_EXTS must appear here:
     # SUPPORTED is the folder-scan gate (folder_watcher._walk), and a source's
     # include_extensions can only narrow it, so an extension missing here is
@@ -254,7 +349,7 @@ class FileReader:
     # CODE_EXTS as a subset of this set.
     SUPPORTED = {
         '', '.md', '.txt', '.org', '.py', '.java', '.ts', '.js', '.rs', '.go',
-        '.html', '.htm', '.docx', '.pdf',
+        '.html', '.htm', '.docx', '.pdf', '.msg', '.pptx', '.xlsx',
         # AsciiDoc reads as text; .asc stays out because it also names PGP armor.
         '.adoc', '.asciidoc',
         '.csv', '.log', '.json', '.jsonl', '.ndjson', '.yaml', '.yml',
@@ -265,7 +360,9 @@ class FileReader:
     _DISPATCH = {
         '.pdf': '_read_pdf',
         '.pptx': '_read_pptx',
+        '.xlsx': '_read_xlsx',
         '.docx': '_read_docx',
+        '.msg': '_read_msg',
         '.html': '_read_html',
         '.htm': '_read_html',
         '.adoc': '_read_asciidoc',
@@ -367,31 +464,82 @@ class FileReader:
         return '\n'.join(text for _label, text in outcome.segments), meta
 
     def _read_pptx(self, path: str) -> tuple[str, dict]:
-        if Presentation is None:
-            return _missing_dep('PPTX', 'python-pptx')
+        """A slide deck, one ``## Slide N`` section per slide that carries text.
+
+        The slide walk is ``doc_parser``'s: stdlib ``zipfile`` and the hardened XML
+        parser, with the archive-inventory vet and per-entry size cap every OOXML
+        read shares. Its strict mode raises, so a file that is not a readable deck
+        is the same ``format: 'error'`` result a bad ``.docx`` is. Strict mode
+        also bounds the slide parts it inflates, together, and the walk's wall
+        time. A deck with no slide text (pictures only) reads as empty text.
+        """
+        # Imported here, not at module scope: this module is on the gateway's
+        # boot import chain and only a deck read needs the XML parser.
         try:
-            prs = Presentation(path)
-            parts = []
-            for i, slide in enumerate(prs.slides, 1):
-                title = ''
-                body_parts = []
-                for shape in slide.shapes:
-                    if shape.has_text_frame:
-                        text = shape.text_frame.text.strip()
-                        if shape == slide.shapes.title:
-                            title = text
-                        else:
-                            body_parts.append(text)
-                notes = ''
-                if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
-                    notes = slide.notes_slide.notes_text_frame.text.strip()
-                section = f'## Slide {i}: {title}\n{chr(10).join(body_parts)}'
-                if notes:
-                    section += f'\n{notes}'
-                parts.append(section)
-            return '\n\n'.join(parts), {'format': 'pptx', 'slide_count': len(prs.slides)}
+            import defusedxml  # noqa: F401
+        except ImportError:
+            return _missing_dep('PPTX', 'defusedxml')
+        from kiro_crew.doc_parser import extract_slides
+        try:
+            with open(path, 'rb') as fh:
+                slides = extract_slides(
+                    path, max_chars=_PPTX_MAX_CHARS, fileobj=fh, strict=True,
+                    filename='deck.pptx',
+                )
         except Exception as e:
             return _read_error(e)
+        # The walk stops after the slide that meets the budget, so that slide
+        # can carry the deck past it (one slide part may inflate to the per-entry
+        # cap). Spend the budget across the slides in order: the slide that does
+        # not fit is cut to what is left, and none after it is kept.
+        total = sum(len(body) for _number, body in slides)
+        budget = _PPTX_MAX_CHARS
+        kept: list[tuple[int, str]] = []
+        for number, body in slides:
+            if budget <= 0:
+                break
+            body = body[:budget]
+            budget -= len(body)
+            kept.append((number, body))
+        text = '\n\n'.join(f'## Slide {number}\n{body}' for number, body in kept)
+        meta: dict = {'format': 'pptx', 'slide_count': len(kept)}
+        if total >= _PPTX_MAX_CHARS:
+            meta['truncated'] = True
+        return text, meta
+
+    def _read_xlsx(self, path: str) -> tuple[str, dict]:
+        """A workbook as one line per non-empty row, ``<sheet> · row <n>: a | b | c``.
+
+        Every line names its sheet and row, so a chunk cut from the middle of a
+        sheet still says where it came from. Cells are the values the writing
+        application cached (a formula reads as its last result); newlines inside
+        a cell become spaces. The rows come from the walk file grep reads workbooks
+        with (:func:`kiro_crew.workbook_rows.read_workbook_rows`), which vets the
+        archive before openpyxl inflates it. The text stops at ``_XLSX_MAX_CHARS``
+        and the read at ``_XLSX_WALL_SECS``, and either stop marks the result
+        ``truncated``. A file that is refused, cannot be parsed or breaks mid-read
+        is the same ``format: 'error'`` result a bad ``.docx`` is.
+        """
+        try:
+            import openpyxl  # type: ignore[import-untyped]  # noqa: F401
+        except ImportError:
+            return _missing_dep('XLSX', 'openpyxl')
+        try:
+            with open(path, 'rb') as fh:
+                walk = read_workbook_rows(
+                    fh, deadline=time.monotonic() + _XLSX_WALL_SECS, max_chars=_XLSX_MAX_CHARS,
+                    separator=' | ', stride=_XLSX_DEADLINE_STRIDE, labels_count=True,
+                    collapse_whitespace=True, max_members=WORKBOOK_MAX_MEMBERS,
+                    max_expanded_bytes=WORKBOOK_MAX_EXPANDED_BYTES,
+                )
+        except Exception as e:
+            return _read_error(e)
+        if walk.failure is not None:
+            return _read_error(walk.failure)
+        meta: dict = {'format': 'xlsx', 'sheet_count': walk.sheets}
+        if walk.cut:
+            meta['truncated'] = True
+        return '\n'.join(f'{label}: {cells}' for label, cells in walk.rows), meta
 
     def _read_docx(self, path: str) -> tuple[str, dict]:
         # Imported here, not at module scope: this module is on the gateway's
@@ -438,6 +586,37 @@ class FileReader:
                 else:
                     lines.append(text)
             return '\n'.join(lines), {'format': 'docx', 'content_type': 'markdown', 'paragraph_count': len(doc.paragraphs)}
+        except Exception as e:
+            return _read_error(e)
+
+    def _read_msg(self, path: str) -> tuple[str, dict]:
+        """An Outlook .msg, an OLE compound file, parsed in this process by olefile.
+
+        A .msg without the OLE signature is text (ROS message definitions, Tcl
+        message catalogs) and reads as text. For the rest, work stays proportional
+        to the file: the header's FAT sector count is checked before olefile loops
+        over it, and :func:`_msg_ole` and :func:`_msg_text` bound the rest. One
+        open serves the check and the parse.
+        """
+        # Imported here for the same boot import chain reason as python-docx.
+        try:
+            import olefile  # type: ignore[import-untyped]
+        except ImportError:
+            return _missing_dep('MSG', 'olefile')
+        try:
+            with open(path, 'rb') as fh:
+                size = os.fstat(fh.fileno()).st_size
+                header = fh.read(512)
+                if not header.startswith(_OLE_MAGIC):
+                    return _decode_text_bytes(header + fh.read()), {'format': 'msg'}
+                fh.seek(0)
+                # One FAT sector maps sector_size / 4 sectors of sector_size bytes.
+                shift = int.from_bytes(header[0x1E:0x20], 'little')
+                fat_sectors = int.from_bytes(header[0x2C:0x30], 'little')
+                if shift not in (9, 12) or fat_sectors > size // (1 << (2 * shift - 2)) + 2:
+                    return _read_error(ValueError('malformed .msg header'))
+                with _msg_ole(olefile, fh) as ole:
+                    return _msg_text(ole, size), {'format': 'msg'}
         except Exception as e:
             return _read_error(e)
 

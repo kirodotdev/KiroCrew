@@ -93,7 +93,7 @@ Notes on what it does and does not do:
   the general prevention of it is the upstream read-tool cap
   (kirodotdev/Kiro#11663, out of this PR's scope). A second wedge whose
   sidecar already exists is refused with a distinct `image_repair_backup_exists`
-  code; the dashboard card states the limit up front ("Works once per chat") and,
+  code; the dashboard card states the limit up front ("You can repair a chat once; a failed attempt doesn't count.") and,
   on the refusal, offers a fresh session that keeps the chat on screen rather
   than leaving a dead end.
 - It also re-stats the transcript immediately before replacing it and refuses if

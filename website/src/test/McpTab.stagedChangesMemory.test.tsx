@@ -23,6 +23,7 @@ vi.mock('../components/McpBrowserModal', () => ({ default: () => null }))
 
 import McpTab from '../pages/overview/McpTab'
 import { MCP_STAGED_CHANGES_KEY } from '../hooks/useMcpStagedChangesMemory'
+import { McpStagedEditsProvider, useMcpHandoffWouldLoseEdits } from '../pages/connections/mcpStagedEditsContext'
 
 const server = (name: string) => ({
   name,
@@ -57,6 +58,24 @@ beforeEach(() => {
 })
 
 describe('McpTab — staged changes survive leaving the page (#25962)', () => {
+  it('clears the page\'s staged-edits flag when the list unmounts', async () => {
+    function Flag() {
+      return <div data-testid="staged-flag">{String(useMcpHandoffWouldLoseEdits())}</div>
+    }
+    function Page({ showList }: { showList: boolean }) {
+      return <McpStagedEditsProvider>{showList && <McpTab />}<Flag /></McpStagedEditsProvider>
+    }
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    const tree = (showList: boolean) => (
+      <MemoryRouter><QueryClientProvider client={qc}><Page showList={showList} /></QueryClientProvider></MemoryRouter>
+    )
+    const view = render(tree(true))
+    fireEvent.click(await within(await waitFor(() => row('alpha'))).findByRole('switch', { name: /Kiro:/ }))
+    await waitFor(() => expect(screen.getByTestId('staged-flag')).toHaveTextContent('true'))
+    view.rerender(tree(false))
+    await waitFor(() => expect(screen.getByTestId('staged-flag')).toHaveTextContent('false'))
+  })
+
   it('brings a staged scope toggle back after an unmount and applies it', async () => {
     const first = renderTab()
     fireEvent.click(await within(await waitFor(() => row('alpha'))).findByRole('switch', { name: /Kiro:/ }))

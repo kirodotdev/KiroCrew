@@ -109,11 +109,9 @@ _MAX_TOPIC_ID = 2**31 - 1
 # forum_gate_outcome authorizes on it. Declarations must match the code, not
 # the DM-only common case.
 # max_buttons=25: TOTAL interactive choices per prompt (the renderer packs 2
-# per row -> up to 13 scrollable rows), parity with discord's platform-
-# practical total. Enforced via apply_options_cap; overflow degrades to a
-# numbered text list. The genuinely unbounded keyboard was the defect this
-# closes (huge lists 400); 9-25 choice keyboards worked before and still do.
-# (The old declared 8 was a mislabeled per-row number, never a chosen total.)
+# per row -> up to 13 scrollable rows), matching discord's practical total.
+# Enforced via apply_options_cap; overflow degrades to a numbered text list,
+# because an unbounded keyboard gets a 400 from Telegram.
 TELEGRAM_CAPABILITIES = TransportCapabilities(
     streaming=True,
     edit=True,

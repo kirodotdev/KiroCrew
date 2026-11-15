@@ -66,9 +66,10 @@ DEFAULT_SKILL_ROOTS = ("skills", ".claude/skills", ".agents/skills")
 DEFAULT_MCP_FILES = (".mcp.json", "mcp.json")
 SPEC_VERSION = "1.0.0"
 
-#: Upper bounds on what one conversion copies.
+#: Upper bounds on what each copy step of one conversion copies (counted separately).
 MAX_TOTAL_BYTES = 200 * 1024 * 1024
 MAX_FILES = 20_000
+#: Upper bound on each JSON file read from the package (manifests, MCP files).
 MAX_JSON_BYTES = 256 * 1024
 
 _STRING_FIELDS = ("version", "description", "homepage", "repository", "license")
@@ -268,9 +269,11 @@ def normalize_name(value: object) -> str | None:
 
 
 def _copy_package(src: Path, dest: Path, report: ConversionReport) -> None:
-    """Copy every regular file of *src* into *dest*; links are never followed."""
-    total = 0
-    count = 0
+    """Copy the regular files of *src* into *dest*; links are never followed.
+
+    A ``.git`` or ``node_modules`` folder is skipped at any depth.
+    """
+    budget = _CopyBudget()
     for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
         rel_dir = os.path.relpath(dirpath, src)
         keep = []
@@ -292,11 +295,7 @@ def _copy_package(src: Path, dest: Path, report: ConversionReport) -> None:
                 continue
             if not os.path.isfile(path):
                 continue
-            count += 1
-            total += os.path.getsize(path)
-            if count > MAX_FILES or total > MAX_TOTAL_BYTES:
-                raise ConversionError("the package is too large to convert")
-            shutil.copy2(path, target_dir / f)
+            budget.copy(path, target_dir / f)
 
 
 class _CopyBudget:
@@ -517,7 +516,10 @@ def convert_server(entry: Any, root: Path) -> dict[str, Any]:
     root_real = os.path.realpath(root)
     kind = entry.get("type")
     if kind is None:
-        kind = "stdio" if "command" in entry else "streamable-http" if "url" in entry else None
+        if "command" in entry:
+            kind = "stdio"
+        elif "url" in entry:
+            kind = "streamable-http"
     elif kind == "http":
         kind = "streamable-http"
     if kind == "stdio":

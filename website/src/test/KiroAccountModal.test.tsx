@@ -44,6 +44,15 @@ vi.mock('../api/client', async importOriginal => {
 
 const refreshMock = vi.mocked(api.sessionsUsageRefresh)
 const kiroUsageMock = vi.mocked(api.kiroUsage)
+/** The next config read names the kiro-cli harness, whose sign-in-required state
+ *  sends the user to `kiro-cli login`. On KAS that state names Crew's own sign-in
+ *  instead (KiroAccountModal.signOutLink.test.tsx). */
+const onKiroCliHarness = () =>
+  vi.mocked(api.kirocrewConfig).mockResolvedValueOnce({ agent: { acp_backend: 'kiro' } } as never)
+// A queued answer a test left unread must not reach the next test: back to the KAS default.
+beforeEach(() => {
+  vi.mocked(api.kirocrewConfig).mockReset()
+})
 
 const BASE_USAGE: KiroCreditUsage = {
   used: 10,
@@ -264,7 +273,7 @@ describe('KiroAccountModal', () => {
 
     const email = await screen.findByText('owner@example.com')
     expect(email).toHaveClass('blur-[5px]')
-    expect(localStorage.getItem('kirocrew:account-email-hidden')).toBeNull()
+    expect(localStorage.getItem('kirocrew:account-email-hidden')).not.toBe('0')
     fireEvent.click(screen.getByRole('button', { name: 'Show email' }))
     expect(email).not.toHaveClass('blur-[5px]')
     expect(localStorage.getItem('kirocrew:account-email-hidden')).toBe('0')
@@ -424,7 +433,7 @@ describe('KiroAccountModal', () => {
     renderWithProviders(<KiroAccountModal open onClose={onClose} usage="failed" />)
 
     const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
-    const alert = within(dialog).getByRole('alert')
+    const alert = within(dialog).getByRole('status')
     expect(alert).toHaveTextContent('Could not read your balance.')
     expect(within(dialog).getByRole('button', { name: /^Refresh$/ })).toBeEnabled()
     const handoff = within(dialog).getByRole('button', { name: /Ask the agent/i })
@@ -442,6 +451,7 @@ describe('KiroAccountModal', () => {
   it('tells the user to sign in again and offers no Refresh for it', async () => {
     // 'signin-required' is terminal until the user re-authenticates. The /usage
     // read needs the same sign-in, so a Refresh here could only fail again.
+    onKiroCliHarness()
     renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage="signin-required" />)
 
     expect(await screen.findByText(/Sign in to Kiro again/)).toBeInTheDocument()
@@ -458,6 +468,7 @@ describe('KiroAccountModal', () => {
     // (AUTOSDE errors-use-error-notice). The hand-off opens the chat this modal
     // sits over, so the modal must close with it: a hand-off the user cannot see
     // reads as a dead button.
+    onKiroCliHarness()
     const onClose = vi.fn()
     renderWithProviders(
       <KiroAccountModal open onClose={onClose} usage="signin-required" />,
@@ -548,7 +559,7 @@ describe('KiroAccountModal refresh', () => {
     fireEvent.click(within(dialog).getByRole('button', REFRESH))
     await waitFor(() => expect(refreshMock).toHaveBeenCalledTimes(1))
     expect(await within(dialog).findByRole('button', REFRESH)).toBeEnabled()
-    expect(within(dialog).getAllByRole('alert')).toHaveLength(1)
+    expect(within(dialog).getAllByRole('status')).toHaveLength(1)
   })
 
   it('reports an unreadable gateway config through ErrorNotice and retries the config read', async () => {
@@ -567,7 +578,7 @@ describe('KiroAccountModal refresh', () => {
     rerender(<KiroAccountModal open onClose={onClose} usage="config-unreadable" />)
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['kirocrewConfig'] }))
     const dialog = screen.getByRole('dialog', { name: 'Kiro Account' })
-    const alert = within(dialog).getByRole('alert')
+    const alert = within(dialog).getByRole('status')
     expect(alert).toHaveTextContent('Could not load settings, so your balance can’t be shown.')
     expect(within(alert).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
     expect(within(dialog).queryByRole('progressbar')).not.toBeInTheDocument()
@@ -809,7 +820,7 @@ describe('KiroAccountModal refresh', () => {
     refreshMock.mockRejectedValue(REFUSAL(500, 'boom'))
     renderWithProviders(<QueryFedModal initial="failed" />)
     const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('Could not read your balance.')
+    expect(within(dialog).getByRole('status')).toHaveTextContent('Could not read your balance.')
 
     fireEvent.click(within(dialog).getByRole('button', REFRESH))
 
@@ -831,7 +842,7 @@ describe('KiroAccountModal refresh', () => {
     refreshMock.mockRejectedValue(REFUSAL(409, '{"code":"refresh_in_flight"}'))
     renderWithProviders(<QueryFedModal initial="failed" />)
     const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('Could not read your balance.')
+    expect(within(dialog).getByRole('status')).toHaveTextContent('Could not read your balance.')
 
     fireEvent.click(within(dialog).getByRole('button', REFRESH))
 
@@ -918,6 +929,7 @@ describe('KiroAccountModal refresh', () => {
     // signin_required. The pill's query must hold that state NOW -- not after
     // its next poll -- so neither the modal nor the pill keeps showing A.
     refreshMock.mockResolvedValue({ usage: { available: false, reason: 'signin_required' } })
+    onKiroCliHarness()
     const { queryClient } = renderWithProviders(<QueryFedModal initial={BASE_USAGE} />)
     expect(screen.getByText('owner@example.com')).toBeInTheDocument()
 

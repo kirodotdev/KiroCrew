@@ -15,14 +15,15 @@
  *   window's cover).
  * - `block` makes it one more banner in a column of notices, as tall as its
  *   text, so an optional part of a pane never takes the pane's height.
- * - `inline` makes it one line in a row of controls (the composer's chips):
- *   the title and the two buttons, with the raw error read out to assistive
- *   tech and shown on hover. It offers no agent hand-off, because that row
- *   sits beside the unsaved composer draft.
+ * - `inline` makes it one line in a row of controls (the composer's chips) or
+ *   under a message (the share dialog): the title and the two buttons, with
+ *   the raw error read out to assistive tech and shown on hover. It offers no
+ *   agent hand-off, because that line sits beside an unsaved draft.
  *
- * `page` and `block` offer the agent hand-off. A host drawn over the chat that
- * hand-off opens (the crew window's cover) passes `onHandoff` to close once the
- * hand-off has gone ahead, so the chat is not left under it.
+ * `page` and `block` offer the agent hand-off unless `askAgent` is `false`. A
+ * host drawn over the chat that hand-off opens (the crew window's cover) passes
+ * `onHandoff` to close once the hand-off has gone ahead, so the chat is not left
+ * under it.
  */
 import { lazy, useState, Suspense, type ComponentType, type ReactNode } from 'react'
 import ErrorBoundary from './ErrorBoundary'
@@ -36,6 +37,12 @@ export interface LazyRetryOptions {
   title: () => string
   /** Attributes a caught throw to its region in the error journal. */
   scope: string
+  /**
+   * `false` withholds the `page` and `block` hand-off, for a part beside a draft
+   * the hand-off would discard; the call site names that draft in a
+   * `No hand-off:` comment. On by default.
+   */
+  askAgent?: boolean
 }
 
 /** Props the host passes besides the loaded component's own. */
@@ -64,8 +71,8 @@ export interface LazyRetryHostProps {
 const FRAME_CLASS: Record<LazyRetryOptions['layout'], string> = {
   page: 'flex h-full items-center justify-center p-8',
   block: 'mx-4 mt-2 mb-0',
-  // Its own bordered group, so its two buttons never join the row's others,
-  // and the first to give up width, so the row's working chips keep theirs.
+  // Its own bordered group, so its two buttons never join a row's others, and
+  // the first to give up width, so the composer row's working chips keep theirs.
   // The notice's title truncates from here, so the notice's own root carries
   // no `truncate` (inlineNoticeTruncate.test.ts says why that spelling is out).
   inline: 'inline-flex min-w-0 max-w-full shrink-[1000] items-center gap-1.5 rounded-md border border-danger/40 bg-danger/10 px-1.5 py-0.5 [&_strong]:truncate',
@@ -82,7 +89,7 @@ function lazyComponent<P extends object>(load: () => Promise<{ default: Componen
 
 export function lazyRetry<P extends object>(
   load: () => Promise<{ default: ComponentType<P> }>,
-  { layout, title, scope }: LazyRetryOptions,
+  { layout, title, scope, askAgent = true }: LazyRetryOptions,
 ): ComponentType<P & LazyRetryHostProps> {
   // Shared by every mount, so a component whose chunk already loaded renders
   // on the next mount without suspending again. Replaced only by a retry.
@@ -114,7 +121,8 @@ export function lazyRetry<P extends object>(
             {keepOnFailure}
             {layout === 'inline' ? (
               <span className={FRAME_CLASS.inline} title={error.message}>
-                {/* No hand-off: the composer draft beside this row is unsaved. */}
+                {/* No hand-off: the unsent composer draft beside this line (the chat's,
+                    or a ChatEmbed's around a message) is unsaved. */}
                 {/* One line, never taller than the row: a raw chunk URL would
                     take the row's width, so it is read out and shown on hover,
                     and the title truncates when the row is narrow. */}
@@ -132,7 +140,7 @@ export function lazyRetry<P extends object>(
                 <ErrorNotice
                   title={title()}
                   message={error.message}
-                  askAgent
+                  askAgent={askAgent}
                   onHandoff={onHandoff}
                   footer={<div className="flex items-center gap-2">{retryButtons}</div>}
                 />

@@ -17,16 +17,18 @@ import { Btn, Card, CardTitle, EmptyState } from '../components/ui'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 import { fmtDateNumeric, fmtList, fmtNumber, fmtPercent, fmtTimeNumeric, fmtUnit } from '../i18n/format'
 import { i18nT } from '../i18n/t'
+import { formatCost } from '../utils/formatCost'
 import {
   type ContextSession,
   type Context,
   type CostRow,
   type CostConvo,
+  type CostOutcome,
   type Cost,
   PanelWindowCtx,
   usePersistedChoice,
 } from './telemetryPanelModel'
-import { type Col, DataTable, Sums, Histogram } from './TelemetryPanelBlocks'
+import { type Col, DataTable, Sums, Histogram, SpendAdvicePanel } from './TelemetryPanelBlocks'
 
 /**
  * A share that is real but rounds to zero must not read as zero.
@@ -46,6 +48,19 @@ const fmtSharePct = (credits: number, total: number): string => {
 
 const fmtDelta = (d?: number | null): string =>
   d == null ? i18nT('pages.telemetryPanel.cost_new') : (d > 0 ? '+' : '') + fmtPercent(d / 100)
+
+/** What the Spend tab's amounts are counted in; a gateway that sends no unit counts credits. */
+type SpendUnit = 'credits' | 'usd'
+
+const spendUnit = (c: Cost): SpendUnit => (c.unit === 'usd' ? 'usd' : 'credits')
+
+/** A spend amount in its unit: dollars as money, credits as the plain figure they are. */
+const fmtSpend = (v: number, unit: SpendUnit, opts?: Intl.NumberFormatOptions): string =>
+  unit === 'usd' ? formatCost(v) : fmtNumber(v, opts)
+
+/** The column and tile label for a spend amount. */
+const spendLabel = (unit: SpendUnit): string =>
+  unit === 'usd' ? i18nT('pages.telemetryPanel.cost_col') : i18nT('pages.telemetryPanel.credits_col')
 
 /**
  * Occupancy colour thresholds, applied ONLY to the aggregate percentiles.
@@ -110,7 +125,7 @@ const DRILL_HIDE_CONTEXT = 'max-[480px]:hidden'
  * "which session cost the most"; this answers "which TURNS did it" — a model
  * switch mid-session or one runaway turn is invisible in an average.
  */
-function SessionTurnsDrilldown({ slot }: { slot: string }) {
+function SessionTurnsDrilldown({ slot, unit }: { slot: string; unit: SpendUnit }) {
   const { range } = useContext(PanelWindowCtx)
   const q = useQuery<{ turns: TurnUsageRow[] }>({
     queryKey: ['usage-turns', slot, range],
@@ -150,7 +165,7 @@ function SessionTurnsDrilldown({ slot }: { slot: string }) {
           <th className={DRILL_TH}>{i18nT('pages.telemetryPanel.turn_col')}</th>
           <th className={`${DRILL_TH} ${DRILL_HIDE_TIME}`}>{i18nT('pages.telemetryPanel.time_col')}</th>
           <th className={DRILL_TH}>{i18nT('pages.telemetryPanel.model_col')}</th>
-          <th className={`${DRILL_TH} text-right`}>{i18nT('pages.telemetryPanel.credits_col')}</th>
+          <th className={`${DRILL_TH} text-right`}>{spendLabel(unit)}</th>
           <th className={`${DRILL_TH} text-right ${DRILL_HIDE_DURATION}`}>{i18nT('pages.telemetryPanel.duration_col')}</th>
           <th className={`${DRILL_TH} text-right ${DRILL_HIDE_CONTEXT}`}>{i18nT('pages.telemetryPanel.context_col')}</th>
         </tr>
@@ -174,7 +189,9 @@ function SessionTurnsDrilldown({ slot }: { slot: string }) {
               {t.model ? <TruncatedText full={t.model} className="block max-w-[160px]" /> : '—'}
             </td>
             <td className={`${DRILL_TD} text-right`}>
-              {t.credits !== undefined ? fmtNumber(t.credits, { maximumFractionDigits: 2 }) : '—'}
+              {unit === 'usd'
+                ? t.cost !== undefined ? formatCost(t.cost) : '—'
+                : t.credits !== undefined ? fmtNumber(t.credits, { maximumFractionDigits: 2 }) : '—'}
             </td>
             <td className={`${DRILL_TD} text-right text-muted ${DRILL_HIDE_DURATION}`}>
               {t.duration_ms !== undefined
@@ -198,7 +215,11 @@ function SessionTurnsDrilldown({ slot }: { slot: string }) {
  * whose empty rows — a model with a 0.4% share still drew a full-width rail —
  * made half the section blank.
  */
-function convoCols(navigable: string): Col<CostConvo>[] {
+function convoCols(
+  navigable: string,
+  unit: SpendUnit,
+  outcomeScan: number | null,
+): Col<CostConvo>[] {
   return [
     {
       key: 'name',
@@ -251,9 +272,9 @@ function convoCols(navigable: string): Col<CostConvo>[] {
     },
     {
       key: 'credits',
-      label: i18nT('pages.telemetryPanel.credits_col'),
+      label: spendLabel(unit),
       sort: v => v.credits,
-      render: v => fmtNumber(v.credits),
+      render: v => fmtSpend(v.credits, unit),
     },
     {
       key: 'turns',
@@ -269,8 +290,9 @@ function convoCols(navigable: string): Col<CostConvo>[] {
       // total below it do not quote the same quantity at two precisions.
       label: i18nT('pages.telemetryPanel.per_turn_col'),
       sort: v => (v.turns ? v.credits / v.turns : null),
-      render: v => (v.turns ? fmtNumber(v.credits / v.turns, { maximumFractionDigits: 1 }) : '—'),
+      render: v => (v.turns ? fmtSpend(v.credits / v.turns, unit, { maximumFractionDigits: 1 }) : '—'),
     },
+    ...(outcomeScan === null ? [] : outcomeCols(unit, outcomeScan)),
     {
       key: 'peak',
       label: i18nT('pages.telemetryPanel.peak_ctx_col'),
@@ -312,6 +334,73 @@ function convoCols(navigable: string): Col<CostConvo>[] {
 }
 
 /**
+ * The merged cell. A count after `≥` (at least) means more pull requests may be
+ * merged than the gateway has looked up; no count means it has looked up none of
+ * them, which is not the same as none being merged. Not a trailing `+`: the Lines
+ * cell beside it already uses `+` for lines added.
+ */
+function mergedCell(o: CostOutcome): string {
+  if (o.merged === undefined || (o.merged === 0 && (o.unchecked ?? 0) > 0)) return '—'
+  return (o.unchecked ?? 0) > 0 ? `≥${fmtNumber(o.merged)}` : fmtNumber(o.merged)
+}
+
+/**
+ * What each session delivered, beside what it cost. Only shown once the gateway
+ * has found a delivery in the window; a session with none reads `—` rather than
+ * 0, because the transcript proves a commit or a pull request and cannot prove
+ * their absence.
+ */
+function outcomeCols(unit: SpendUnit, scanned: number): Col<CostConvo>[] {
+  return [
+    {
+      key: 'commits',
+      label: i18nT('pages.telemetryPanel.commits_col'),
+      tip: i18nT('pages.telemetryPanel.outcome_tip', { n: scanned }),
+      sort: v => v.outcome?.commits ?? null,
+      render: v => (v.outcome ? fmtNumber(v.outcome.commits) : '—'),
+    },
+    {
+      key: 'lines',
+      label: i18nT('pages.telemetryPanel.lines_col'),
+      hide: 'max-[900px]:hidden',
+      sort: v => (v.outcome ? v.outcome.lines_added + v.outcome.lines_removed : null),
+      render: v =>
+        v.outcome ? (
+          <>
+            <span className="text-[var(--ok)]">{`+${fmtNumber(v.outcome.lines_added)}`}</span>{' '}
+            <span className="text-[var(--danger)]">{`−${fmtNumber(v.outcome.lines_removed)}`}</span>
+          </>
+        ) : (
+          '—'
+        ),
+    },
+    {
+      key: 'prs',
+      label: i18nT('pages.telemetryPanel.prs_col'),
+      hide: 'max-[900px]:hidden',
+      sort: v => v.outcome?.prs ?? null,
+      render: v => (v.outcome ? fmtNumber(v.outcome.prs) : '—'),
+    },
+    {
+      key: 'merged',
+      label: i18nT('pages.telemetryPanel.merged_col'),
+      tip: i18nT('pages.telemetryPanel.merged_tip'),
+      sort: v => v.outcome?.merged ?? null,
+      render: v => (v.outcome ? mergedCell(v.outcome) : '—'),
+    },
+    {
+      key: 'per_merged',
+      label: i18nT('pages.telemetryPanel.per_merged_col'),
+      sort: v => v.outcome?.per_merged ?? null,
+      render: v =>
+        v.outcome?.per_merged == null
+          ? '—'
+          : fmtSpend(v.outcome.per_merged, unit, { maximumFractionDigits: 1 }),
+    },
+  ]
+}
+
+/**
  * `bg` is a coined abbreviation with no external referent, so it gets a translated
  * label; a transport name (`dashboard`, `telegram`, `slack`) is a proper noun the
  * reader already knows and is shown as the backend sent it.
@@ -324,7 +413,7 @@ function categoryLabel(name: string): string {
   return name === 'bg' ? i18nT('pages.telemetryPanel.category_bg') : name
 }
 
-function shareCols(first: string, total: number, firstTip?: string): Col<CostRow>[] {
+function shareCols(first: string, total: number, unit: SpendUnit, firstTip?: string): Col<CostRow>[] {
   return [
     {
       key: 'name',
@@ -339,9 +428,9 @@ function shareCols(first: string, total: number, firstTip?: string): Col<CostRow
     },
     {
       key: 'credits',
-      label: i18nT('pages.telemetryPanel.credits_col'),
+      label: spendLabel(unit),
       sort: r => r.credits,
-      render: r => fmtNumber(r.credits),
+      render: r => fmtSpend(r.credits, unit),
     },
     {
       key: 'turns',
@@ -353,7 +442,7 @@ function shareCols(first: string, total: number, firstTip?: string): Col<CostRow
       key: 'per_turn',
       label: i18nT('pages.telemetryPanel.per_turn_col'),
       sort: r => r.per_turn,
-      render: r => fmtNumber(r.per_turn),
+      render: r => fmtSpend(r.per_turn, unit),
     },
     {
       key: 'share',
@@ -402,12 +491,14 @@ function SpendBlock({
   rows,
   labelClass,
   note,
+  formatValue,
 }: {
   title: string
   tip?: string
   rows: SpendBar[]
   labelClass: string
   note?: string
+  formatValue: (n: number) => string
 }) {
   return (
     <div className="min-w-0">
@@ -422,6 +513,7 @@ function SpendBlock({
             labelClass={labelClass}
             valueClass="w-14"
             barDecorative
+            formatValue={formatValue}
           />
           {note && <div className="text-[10px] text-muted mt-1.5">{note}</div>}
         </>
@@ -504,18 +596,24 @@ function sessionBars(convos: CostConvo[], navigable: string, limit: number): Spe
     }))
 }
 
-export function SpendTab({ c }: { c: Cost }) {
+export function SpendTab({ c, nested = false }: { c: Cost; nested?: boolean }) {
   const win = useContext(PanelWindowCtx)
+  // The nested dollar card of a mixed window keeps its own remembered state, so
+  // the two cards can be grouped, sorted and opened independently. A window
+  // billed in one unit keeps the keys it always had, whatever that unit is.
+  const keySuffix = nested ? ':usd' : ''
   const [group, setGroup] = usePersistedChoice<SpendGroup>(
-    'telemetry:spend-group',
+    `telemetry:spend-group${keySuffix}`,
     SPEND_GROUPS,
     'session',
   )
   // Closed on first paint. The table answers "which row exactly", which is a
   // second question: the blocks above it already say where the credits went, and
   // opening on 45 rows puts the answer below the fold.
-  const [tableOpen, setTableOpen] = usePersistedBool('telemetry:spend-table-open', false)
+  const [tableOpen, setTableOpen] = usePersistedBool(`telemetry:spend-table-open${keySuffix}`, false)
   const bands = c.context_bands
+  const unit = spendUnit(c)
+  const fmtAmount = (v: number) => fmtSpend(v, unit)
   // Shown as "8 / 252" when the payload clamps the list. With the count alone, a
   // reader who looks for a conversation outside the slice reads "no rows match"
   // as "it spent nothing"; the ratio states the truncation. The pair is equal on
@@ -525,9 +623,10 @@ export function SpendTab({ c }: { c: Cost }) {
       ? fmtNumber(c.conversation_count)
       : `${fmtNumber(c.conversations.length)} / ${fmtNumber(c.conversation_count)}`
   return (
+    <>
     <Card className="mb-4">
       <CardTitle>
-        {i18nT('pages.telemetryPanel.credits')}
+        {unit === 'usd' ? i18nT('pages.telemetryPanel.cost') : i18nT('pages.telemetryPanel.credits')}
         <InfoTip text={win.measured} />
         <span className="ml-auto text-[12px] text-muted font-mono tabular-nums font-normal">{win.period}</span>
       </CardTitle>
@@ -540,8 +639,8 @@ export function SpendTab({ c }: { c: Cost }) {
       <Sums
         items={[
           {
-            label: i18nT('pages.telemetryPanel.credits_col'),
-            value: fmtNumber(c.credits),
+            label: spendLabel(unit),
+            value: fmtAmount(c.credits),
             color: 'var(--accent)',
             // The change rides on the total it describes. A percentage standing
             // on its own cannot say whether it moved 12 credits or 1,200, and
@@ -560,18 +659,23 @@ export function SpendTab({ c }: { c: Cost }) {
                   <span className="text-text tabular-nums">{fmtDelta(c.delta_pct)}</span>
                 </div>
                 <div className="text-[10px] text-muted">
-                  {i18nT('pages.telemetryPanel.prior_credits_turns', {
-                    credits: fmtNumber(c.prior_credits),
-                    turns: fmtNumber(c.prior_turns),
-                  })}
+                  {unit === 'usd'
+                    ? i18nT('pages.telemetryPanel.prior_cost_turns', {
+                        cost: fmtAmount(c.prior_credits),
+                        turns: fmtNumber(c.prior_turns),
+                      })
+                    : i18nT('pages.telemetryPanel.prior_credits_turns', {
+                        credits: fmtNumber(c.prior_credits),
+                        turns: fmtNumber(c.prior_turns),
+                      })}
                 </div>
               </>
             ),
           },
           {
             label: i18nT('pages.telemetryPanel.per_turn_col'),
-            value: fmtNumber(c.per_turn),
-            sub: i18nT('pages.telemetryPanel.was_value', { value: fmtNumber(c.prior_per_turn) }),
+            value: fmtAmount(c.per_turn),
+            sub: i18nT('pages.telemetryPanel.was_value', { value: fmtAmount(c.prior_per_turn) }),
           },
           {
             label: i18nT('pages.telemetryPanel.turns_col'),
@@ -579,13 +683,14 @@ export function SpendTab({ c }: { c: Cost }) {
           },
           {
             label: i18nT('pages.telemetryPanel.priciest_turn'),
-            value: fmtNumber(c.priciest.credits),
+            value: fmtAmount(c.priciest.credits),
             // The unit, because a bare number under "Priciest turn" reads as a
             // turn's ordinal just as readily as its cost.
-            sub: i18nT('pages.telemetryPanel.credits_col'),
+            sub: spendLabel(unit),
           },
         ]}
       />
+      <SpendAdvicePanel advice={c.advice} />
       {/* Both groupings at once. As a group-by over one table they were mutually
           exclusive: seeing which origin spent the credits meant giving up the
           model split, so no single screen answered where the window went.
@@ -597,15 +702,25 @@ export function SpendTab({ c }: { c: Cost }) {
           still answer without a click and both keep their bars. */}
       <div className="grid gap-x-8 gap-y-4 mt-4 xl:grid-cols-2">
         <SpendBlock
-          title={i18nT('pages.telemetryPanel.credits_by_origin')}
+          title={
+            unit === 'usd'
+              ? i18nT('pages.telemetryPanel.cost_by_origin')
+              : i18nT('pages.telemetryPanel.credits_by_origin')
+          }
           tip={i18nT('pages.telemetryPanel.category_col_tip')}
           rows={groupBars(c.by_category, SPEND_GROUP_ROWS)}
           labelClass="w-32"
+          formatValue={fmtAmount}
         />
         <SpendBlock
-          title={i18nT('pages.telemetryPanel.credits_by_model')}
+          title={
+            unit === 'usd'
+              ? i18nT('pages.telemetryPanel.cost_by_model')
+              : i18nT('pages.telemetryPanel.credits_by_model')
+          }
           rows={groupBars(c.by_model, SPEND_GROUP_ROWS)}
           labelClass="w-32"
+          formatValue={fmtAmount}
         />
       </div>
       <div className="mt-4">
@@ -613,6 +728,7 @@ export function SpendTab({ c }: { c: Cost }) {
           title={i18nT('pages.telemetryPanel.top_sessions')}
           rows={sessionBars(c.conversations, c.navigable_category, SPEND_SESSION_ROWS)}
           labelClass="w-[46%]"
+          formatValue={fmtAmount}
         />
       </div>
       <div className="border-t border-border mt-4 pt-3">
@@ -657,24 +773,29 @@ export function SpendTab({ c }: { c: Cost }) {
             {group === 'session' ? (
               <DataTable<CostConvo>
                 rows={c.conversations}
-                key="telemetry-spend-conversation"
-                tableId="telemetry-spend-conversation"
-                cols={convoCols(c.navigable_category)}
+                key={`telemetry-spend-conversation${keySuffix}`}
+                tableId={`telemetry-spend-conversation${keySuffix}`}
+                cols={convoCols(
+                  c.navigable_category,
+                  unit,
+                  c.conversations.some(v => v.outcome) ? (c.outcome_scan ?? 0) : null,
+                )}
                 rowKey={v => v.slot}
                 defaultSort="credits"
                 emptyTitle={i18nT('pages.telemetryPanel.no_spend_recorded')}
-                renderExpanded={v => <SessionTurnsDrilldown slot={v.slot} />}
+                renderExpanded={v => <SessionTurnsDrilldown slot={v.slot} unit={unit} />}
               />
             ) : (
               <DataTable<CostRow>
                 rows={group === 'model' ? c.by_model : c.by_category}
-                key="telemetry-spend-share"
-                tableId="telemetry-spend-share"
+                key={`telemetry-spend-share${keySuffix}`}
+                tableId={`telemetry-spend-share${keySuffix}`}
                 cols={shareCols(
                   group === 'model'
                     ? i18nT('pages.telemetryPanel.model_col')
                     : i18nT('pages.telemetryPanel.category_col'),
                   c.credits,
+                  unit,
                   group === 'model' ? undefined : i18nT('pages.telemetryPanel.category_col_tip'),
                 )}
                 rowKey={r => r.name}
@@ -692,13 +813,15 @@ export function SpendTab({ c }: { c: Cost }) {
         // relationship, and that fits on one line.
         <div className="text-[10px] text-muted mt-3 leading-relaxed">
           <span className="uppercase tracking-wide">
-            {i18nT('pages.telemetryPanel.mean_credits_by_occupancy')}
+            {unit === 'usd'
+              ? i18nT('pages.telemetryPanel.mean_cost_by_occupancy')
+              : i18nT('pages.telemetryPanel.mean_credits_by_occupancy')}
           </span>{' '}
           {bands.map((b, i) => (
             <span key={b.label}>
               {i > 0 && ' · '}
               <span className="font-mono">{b.label}</span>{' '}
-              <span className="text-text tabular-nums">{fmtNumber(b.mean_credits)}</span>{' '}
+              <span className="text-text tabular-nums">{fmtAmount(b.mean_credits)}</span>{' '}
               <span className="tabular-nums">
                 ({i18nT('pages.telemetryPanel.sample_count', { count: fmtNumber(b.turns) })})
               </span>
@@ -707,6 +830,10 @@ export function SpendTab({ c }: { c: Cost }) {
         </div>
       )}
     </Card>
+    {/* A window with both credit-billed and dollar-billed turns: the same view
+        over the dollar turns, so neither unit's spend reads as zero. */}
+    {c.usd && <SpendTab c={c.usd} nested />}
+    </>
   )
 }
 

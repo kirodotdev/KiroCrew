@@ -63,14 +63,25 @@ PUBLISHED_LEAVES: tuple[str, ...] = ("config.json", "config.local.json")
 _NONCE = secrets.token_hex(16)
 
 _LOCK = threading.Lock()
-#: Per leaf, the LATEST save: the identity of the file it replaced, the identity it
-#: published, and the descriptors held on both. The launcher admits the new file only
-#: for a spawn whose pass saw the replaced one, so an older file put back at the name, or
-#: a save by another process in between, is not vouched for. The descriptors keep both
-#: inodes allocated, so neither number can be reused by a file the gateway did not write
-#: while the record lists it.
+#: How many consecutive saves of one leaf the record carries. The gateway's own saves can
+#: come several in a row on a fresh host (the boot meta stamp, a load-time migration, a
+#: default install's grant), so a spawn's pass can see a file a few saves older than the
+#: one its pin meets. A pass that saw a file more saves back than this refuses, which is
+#: the pin's answer to any change it holds no evidence for.
+_MAX_RUN = 8
+#: One save: the identity of the file it replaced, the identity it published, and the
+#: descriptors held on both. The descriptors keep both inodes allocated, so neither
+#: number can be reused by a file the gateway did not write while the record lists it.
 _Entry = tuple[tuple[int, int], tuple[int, int], tuple[int, ...]]
-_PUBLISHED: dict[str, _Entry] = {}
+#: Per leaf, the unbroken run of this process's own saves that ends at the latest one,
+#: oldest first: each save replaced the file the one before it published. The launcher
+#: admits the latest file for a spawn whose pass saw any file of that run, because every
+#: file between the two was replaced by the gateway's own rename and so left the name
+#: with no other. A save that replaced a file the gateway did not publish -- a save by
+#: another process, or any other rewrite, in between -- starts a new run, so nothing
+#: before it is vouched for. Only the latest file is ever admitted, so an older file put
+#: back at the name is not.
+_PUBLISHED: dict[str, list[_Entry]] = {}
 
 
 def record_path() -> Path:
@@ -92,12 +103,20 @@ def launcher_record() -> tuple[str, str, tuple[str, ...]]:
     )
 
 
-def _render(published: dict[str, _Entry]) -> str:
+def _render(published: dict[str, list[_Entry]]) -> str:
+    """The record text: one line per file of each run, each naming the run's latest file.
+
+    The launcher reads each line as "a spawn whose pass saw <replaced> may meet
+    <published>", so pointing every line of a run at its latest file is what admits a
+    pass that saw any earlier file of the run, and nothing else.
+    """
     lines = [_NONCE]
     for leaf in PUBLISHED_LEAVES:
-        if leaf in published:
-            (pdev, pino), (dev, ino), _held = published[leaf]
-            lines.append(f"{leaf} {pdev} {pino} {dev} {ino}")
+        run = published.get(leaf)
+        if run:
+            dev, ino = run[-1][1]
+            for (pdev, pino), _ident, _held in run:
+                lines.append(f"{leaf} {pdev} {pino} {dev} {ino}")
     return "\n".join(lines) + "\n"
 
 
@@ -137,8 +156,8 @@ def staging_hook(name: Path) -> Callable[[int], None] | None:
 def _note_staged(leaf: str, fd: int, prev: int | None) -> None:
     """Record the staged file open at *fd* as the one about to be published at *leaf*.
 
-    The record on disk never lists an older file once a newer one is about to take the
-    name: when the new record cannot be written, the record is removed before the save
+    The record on disk never vouches for an older file once a newer one is about to take
+    the name: when the new record cannot be written, the record is removed before the save
     goes ahead, which leaves the pin refusing exactly as it did before the record
     existed. When it cannot be removed either, this raises, and ``atomic_write`` then
     abandons the config save rather than publish a file the record does not describe.
@@ -157,8 +176,8 @@ def _record_staged(leaf: str, fd: int, prev: int | None) -> None:
     if not stat.S_ISREG(info.st_mode):
         raise ValueError("the staged config is not a regular file")
     ident = (info.st_dev, info.st_ino)
-    current = _PUBLISHED.get(leaf)
-    if current is not None and current[1] == ident:
+    current = _PUBLISHED.get(leaf, [])
+    if current and current[-1][1] == ident:
         return
     directory = config_dir() / RECORD_DIR_LEAF
     if prev is None:
@@ -167,6 +186,10 @@ def _record_staged(leaf: str, fd: int, prev: int | None) -> None:
         pinfo = os.fstat(prev)
         replaced = (pinfo.st_dev, pinfo.st_ino)
     held = (os.dup(fd),) if prev is None else (os.dup(fd), os.dup(prev))
+    entry_new = (replaced, ident, held)
+    # The run continues only when this save replaces the file the previous one published.
+    run = [*current, entry_new] if current and current[-1][1] == replaced else [entry_new]
+    run = run[-_MAX_RUN:]
     try:
         try:
             entry = os.lstat(directory)
@@ -178,17 +201,14 @@ def _record_staged(leaf: str, fd: int, prev: int | None) -> None:
             # opens the directory no-follow), and writing through a link would put the
             # record somewhere else entirely.
             raise NotADirectoryError(str(directory))
-        atomic_write(
-            directory / RECORD_FILE,
-            _render({**_PUBLISHED, leaf: (replaced, ident, held)}),
-            mode=0o600,
-        )
+        atomic_write(directory / RECORD_FILE, _render({**_PUBLISHED, leaf: run}), mode=0o600)
     except BaseException:
         _close(held)
         raise
-    _PUBLISHED[leaf] = (replaced, ident, held)
-    if current is not None:
-        _close(current[2])
+    _PUBLISHED[leaf] = run
+    for dropped in current:
+        if dropped not in run:
+            _close(dropped[2])
 
 
 def _close(fds: tuple[int, ...]) -> None:
@@ -208,6 +228,7 @@ def _withdraw() -> None:
             exc_info=True,
         )
         raise
-    for _replaced, _ident, held in _PUBLISHED.values():
-        _close(held)
+    for run in _PUBLISHED.values():
+        for _replaced, _ident, held in run:
+            _close(held)
     _PUBLISHED.clear()

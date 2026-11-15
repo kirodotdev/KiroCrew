@@ -650,6 +650,7 @@ class SessionManager:
     get_approval_policy = _claims.get_approval_policy
     approval_revocation = _claims.approval_revocation
     get_agent = _claims.get_agent
+    starting_agent = _claims.starting_agent
     get_agent_selection = _claims.get_agent_selection
     set_approval_policy = _claims.set_approval_policy
     # -- Background, warm-pool and companion runtimes (session_parts.runtimes).
@@ -718,6 +719,7 @@ class SessionManager:
     first_turn_history_owed_pending = _turn_context.first_turn_history_owed_pending
     unlanded_marker_pending = _turn_context.unlanded_marker_pending
     consume_first_turn_history_owed = _turn_context.consume_first_turn_history_owed
+    note_session_head = _turn_context.note_session_head
     consume_replay_suppression = _turn_context.consume_replay_suppression
     _consume_persisted_replay_suppression = _turn_context._consume_persisted_replay_suppression
     suppress_replay_persistently = _turn_context.suppress_replay_persistently
@@ -744,6 +746,7 @@ class SessionManager:
     mirror_accepts_inbound = _links.mirror_accepts_inbound
     has_mirror_row = _links.has_mirror_row
     mirror_link_nonce = _links.mirror_link_nonce
+    session_map_generation = _links.session_map_generation
     slack_link_nonce = _links.slack_link_nonce
     set_mirror_opt_out = _links.set_mirror_opt_out
     mirror_opt_out = _links.mirror_opt_out
@@ -806,6 +809,7 @@ class SessionManager:
     stop_generation = _teardown.stop_generation
     note_stop = _teardown.note_stop
     open_replay_gap = _teardown.open_replay_gap
+    has_open_replay_gap = _teardown.has_open_replay_gap
     close_replay_gap = _teardown.close_replay_gap
     await_replay_gap = _teardown.await_replay_gap
     _send_abort_for_session = _teardown._send_abort_for_session
@@ -855,6 +859,7 @@ class SessionManager:
         self,
         cfg: KiroCrewConfig,
         provider_factory: ProviderFactory | None = None,
+        session_map: SessionMap | None = None,
     ):
         self._cfg = cfg
         # Baseline for adopt-on-change (see _sync_autocompact_pct). Captured here
@@ -869,20 +874,20 @@ class SessionManager:
         self._subagent_probe: "Callable[[str], bool | Awaitable[bool]] | None" = None
         # Installed by the dashboard once the Kiro prerequisite service exists
         # (its ``read_spawn_identity``); None means "no identity store to stamp
-        # from" -- CLI entry points and tests -- and every spawn stays unstamped,
-        # which is the pre-stamping status quo. When wired, each kiro-backed
+        # from" -- CLI entry points and tests -- and every spawn stays unstamped.
+        # When wired, each kiro-backed
         # provider records the account the store held as its process started,
         # so the turn gate can retire a child that provably spawned under a
         # different account than the live one even when no read ever observed
         # the interim (see ``flag_identity_stamp_mismatches``).
         self.spawn_identity_reader: "Callable[[], Awaitable[str]] | None" = None
         # Installed by the dashboard next to ``spawn_identity_reader``: the Kiro
-        # account check (``chat_runner._retire_sessions_on_identity_change``, as
-        # its unattended caller) that ``get_or_create``, ``open_task_session`` and
-        # ``try_acquire`` await before they hand out a session, so no acquire path
-        # can skip it.
+        # account check (``account_identity._retire_sessions_on_identity_change``
+        # in ``dashboard/chat_turn``, as its unattended caller) that
+        # ``get_or_create``, ``open_task_session`` and ``try_acquire`` await before
+        # they hand out a session, so no acquire path can skip it.
         # None means no identity store to check against -- CLI entry points and
-        # tests -- and acquires run unchecked, as they did before it existed.
+        # tests -- and acquires run unchecked.
         self.identity_check_before_acquire: "Callable[[], Awaitable[None]] | None" = None
         # Installed by the gateway once it owns this manager (set_injection_probe);
         # None means "no gateway, so no completion injection can be in flight".
@@ -894,17 +899,25 @@ class SessionManager:
         # path and the event loop, so "auto" is sized from the cached host
         # reading only (the floors until it exists); widen_cold_start_queues
         # grows both once the gateway's post-bind sizing has read the host.
-        configure_runtime_spawn_width(getattr(cfg, "agent", None))
+        # Kept so a later widening sizes from the settings this manager was built
+        # with: a config change replaces ``_cfg`` before a restart applies them.
+        self._cold_start_agent = getattr(cfg, "agent", None)
+        configure_runtime_spawn_width(self._cold_start_agent)
         self._allocation_state = SessionRegistryState(
             start_sem=new_cold_start_semaphore(
-                cached_cold_start_concurrency(getattr(cfg, "agent", None))
+                cached_cold_start_concurrency(self._cold_start_agent)
             )
         )
         self._allocation_boundary()
         self._lifecycle_state = SessionLifecycleState()
         self._compaction_state = CompactionState()
         self._background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
-        self._session_map = SessionMap()
+        self._deferred_resets: dict[str, tuple[Any, asyncio.Task[Any]]] = {}
+        # A caller on the event loop builds the map in a worker thread and hands
+        # it in: its startup read retries a Windows sharing violation only off
+        # the loop (``read_bytes_with_retry``), and the map holds no asyncio
+        # primitives, so building it there is safe.
+        self._session_map = session_map if session_map is not None else SessionMap()
         # What each turn-permit holding owes at its release: whether its engine
         # noted that it landed, and the inline marks that release confirms or
         # revokes (``kiro_crew.parent_turns``).
@@ -1082,8 +1095,8 @@ class SessionManager:
 
         model = "auto"
         try:
-            # Use the SAME directory as the cache stamp and preserve the former
-            # native-order, first-match scan. The async caller hands this to a
+            # Use the SAME directory as the cache stamp and keep the native-order,
+            # first-match scan. The async caller hands this to a
             # thread (the walk and the reads are filesystem work), and a match
             # still stops all later spec reads rather than building a full map
             # on every cache miss / TTL expiry.
@@ -1104,6 +1117,7 @@ class SessionManager:
             if picked is not None:
                 model = spec_model(picked)
         except Exception:
+            # Any failure here leaves the "auto" default, cached like any other miss.
             pass
         cache[cache_key] = (model, dir_mtime, now)
         return model
@@ -1199,7 +1213,7 @@ class SessionManager:
         return True
 
 
-# The ``session_parts`` owners hold code that was this module's own. This module binds every
+# The ``session_parts`` owners hold ``SessionManager``'s code. This module binds every
 # name its own code reads and serves the other moved names from their owners; through
 # ``_facade_mirror`` a write of either reaches every owner binding the same object. No
 # owner imports this module. ``test/test_session_bindings.py`` pins the binding and reach.

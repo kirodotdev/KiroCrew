@@ -134,7 +134,7 @@ type a reply to the agent instead. Anything else denies.
 ## Browsing (`browser` MCP tool)
 
 Browsing is not a `kirocrew` subcommand. It is the **`browser` MCP tool**:
-`op=navigate|back|snapshot|click|drag|scroll|type|press_key|hover|select_option|wait_for|console|screenshot|tabs|reflex|ask`.
+`op=navigate|back|snapshot|click|drag|scroll|type|press_key|hover|select_option|wait_for|console|screenshot|tabs|dialog|reflex|ask`.
 It drives one browser the gateway owns (the user's own Chrome where there is
 one, Edge on Windows without Chrome, otherwise Kiro's headless Chromium), and the
 user watches the page live in the chat, where one click takes over. It opens
@@ -220,6 +220,7 @@ leftover prefix without touching it.
 | `kirocrew learn add "rule text"` | Save a lesson (category: knowledge) |
 | `kirocrew learn add "rule text" --category tool` | Save with category (tool/preference/knowledge) |
 | `kirocrew learn add "rule text" --negative "avoid X"` | Save with negative example |
+| `kirocrew learn add "rule text" --applies on_topic` | Save as a past finding loaded only when relevant (`always`: a standing rule for every session) |
 | `kirocrew learn remove "query"` | Remove lessons matching substring (add `--repo-scope FRAG` to remove only that scope, `--repo-scope ""` for global only) |
 | `kirocrew memory list` | Show semantic memory entries |
 | `kirocrew memory search "query"` | Search episodic memories |

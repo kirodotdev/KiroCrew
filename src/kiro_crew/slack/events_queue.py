@@ -533,6 +533,8 @@ def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
 
     Normalized to handle_message's auto/interactive contract; reads/yolo are
     gated separately (gateway approval-event path, global YOLO/trust).
+    A native turn started by a click or modal uses ``_configured_approval_mode``
+    instead, which leaves the YOLO fold below out.
     """
     # Runtime YOLO (owner-toggled via the `yolo` slash command, TTL-capped safety_override)
     # auto-approves all tools. The native loop checks is_yolo_mode() inline; the
@@ -541,6 +543,16 @@ def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
     # paths then honor the runtime toggle consistently.
     if is_yolo_mode():
         return APPROVAL_AUTO
+    return _configured_approval_mode(orch)
+
+
+def _configured_approval_mode(orch: "GatewayOrchestrator") -> str:
+    """The CLI --approval flag, else config, normalized; runtime YOLO is not folded in.
+
+    For a turn started on the native path by a click or modal: the permission
+    ladder checks live YOLO per request, so a timed YOLO that ends mid-turn
+    stops auto-approving there instead of riding a mode captured at turn start.
+    """
     mode = orch._approval_mode or orch._cfg.agent.approval_mode
     return APPROVAL_AUTO if mode == APPROVAL_AUTO else APPROVAL_INTERACTIVE
 
@@ -576,6 +588,7 @@ async def _dispatch_queued(
         try:
             await client.remove_reaction(channel, msg_ts, "hourglass_flowing_sand")
         except Exception:
+            # The ⏳ reaction is cosmetic; the message is dispatched either way.
             pass
     # Route the queued follow-up through the SAME gate as the initial message so
     # behavior is consistent mid-conversation: a thread that took the transport

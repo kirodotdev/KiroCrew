@@ -164,16 +164,15 @@ class TestLoadJsonOrEmptyUndecodable:
         assert data == {}
 
     def test_write_to_non_utf8_file_leaves_it_untouched(self, tmp_path, monkeypatch):
-        """Reading the file as empty must not let a writer replace it with
-        just the new entry: the JSONC check before every write still cannot
-        decode it, so the write is refused and the user's bytes stay."""
+        """A writer must not replace an undecodable store with just the new
+        entry: the toggle's read refuses it as corrupt, and the user's bytes
+        stay."""
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
         path = tmp_path / "mcp.json"
         path.write_bytes(_LATIN1_MCP_JSON)
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", path)
-        with pytest.raises(UnicodeDecodeError):
-            mcp_mod._set_kirocrew_entry("srv", enabled=True, spec={"command": "c"})
+        assert mcp_mod._set_kirocrew_entry("srv", enabled=True, spec={"command": "c"}) == "corrupt"
         assert path.read_bytes() == _LATIN1_MCP_JSON
 
 
@@ -907,10 +906,12 @@ def _make_stub_request(body: dict) -> MagicMock:
     ``state`` carries no ``_mcp_gateway_apply_stub`` so the handler persists the
     allowlist without attempting an in-process pool re-apply.
     """
+    from handlers_mcp_coverage_helpers import _with_cwd_answer
+
     state = SimpleNamespace(_mcp_gateway_apply_stub=None)
     request = MagicMock(spec=web.Request)
     request.app = {"state": state}
-    attach_body(request, body)
+    attach_body(request, _with_cwd_answer(body))
     # ``POST /api/mcp-gateway/servers/stub`` is owner-gated
     # (``handlers._shared.require_owner_dashboard_request``). ``state`` declares no
     # ``owner_id``, which the predicate reads as the standalone-local shape, so the

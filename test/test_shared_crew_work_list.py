@@ -127,6 +127,12 @@ def _work_app(state: object) -> web.Application:
     return app
 
 
+async def _is_running(svc: ag.AdmissionService, session_key: str) -> bool:
+    return [w.to_public_dict()["state"] for w in await svc.list_work(session_key=session_key)] == [
+        "running"
+    ]
+
+
 @pytest.mark.asyncio
 async def test_queued_chat_turn_is_listed_under_the_tab_key(service):
     """The chat asks with its slot key; the turn's work is stored as ``dashboard:<slot>``."""
@@ -138,7 +144,9 @@ async def test_queued_chat_turn_is_listed_under_the_tab_key(service):
     slot_a, slot_b = _Slot("tab-a"), _Slot("tab-b")
     with turn_gate.initiated_by(ALICE.id):
         first = asyncio.create_task(turn_gate.gate_turn(_STATE, slot_a, "one", {}, hold))
-    await async_wait_until(lambda: service.scheduler.usage(ALICE.id)[0].active == 1)
+    # Admission counts the turn active while its work is still ``admitted``; wait
+    # for the work itself to reach ``running`` before reading the list.
+    await async_wait_until(lambda: _is_running(service, "dashboard:tab-a"))
     with turn_gate.initiated_by(ALICE.id):
         second = asyncio.create_task(turn_gate.gate_turn(_STATE, slot_b, "two", {}, hold))
     await async_wait_until(lambda: service.scheduler.usage(ALICE.id)[0].queued == 1)

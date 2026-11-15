@@ -219,7 +219,8 @@ def _warn_cgroup_unavailable(reason: str) -> None:
     _CGROUP_WARNED = True
     logger.warning(
         "SECURITY: cgroup v2 scope enforcement unavailable (%s); %s See "
-        "docs/architecture/resource-protection.md.",
+        "https://github.com/kirodotdev/KiroCrew/blob/main/"
+        "docs/architecture/resource-protection.md",
         reason,
         _cgroup_unavailable_effect(),
     )
@@ -432,7 +433,9 @@ def _log_cgroup_scope_transition(result: tuple[bool, str]) -> None:
         "SECURITY: cgroup v2 scope enforcement became unavailable while the gateway "
         "was running (%s). New agent subprocesses start WITHOUT the fork-bomb / "
         "memory-DoS ceilings (RLIMIT_NOFILE still applies) instead of failing with "
-        "'Failed to connect to bus'. See docs/architecture/resource-protection.md.",
+        "'Failed to connect to bus'. See "
+        "https://github.com/kirodotdev/KiroCrew/blob/main/"
+        "docs/architecture/resource-protection.md",
         reason,
     )
 

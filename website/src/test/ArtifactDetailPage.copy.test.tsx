@@ -119,6 +119,20 @@ describe('ArtifactDetailPage copy content', () => {
     expect((iframe.parentElement as HTMLElement).style.maxWidth).toBe('')
   })
 
+  it('marks the reading-width wrapper as a CLI chat scope', async () => {
+    // cli-mode.css anchors its `.msg-content` code rules on `[data-chat-scope]`;
+    // the artifact body's reading-width wrapper is one of the anchors.
+    const { container } = renderRoute()
+    await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+    const wrapper = await waitFor(() => {
+      const node = [...container.querySelectorAll<HTMLElement>('div')]
+        .find(el => el.style.maxWidth.includes('--mc-content-width'))
+      expect(node).toBeDefined()
+      return node as HTMLElement
+    })
+    expect(wrapper.closest('[data-chat-scope]')).not.toBeNull()
+  })
+
   it('reports a failed copy through the page notice and closes the menu so it is seen', async () => {
     // Under the boolean contract `copyToClipboard` never rejects; a failed copy
     // resolves `false`. The failure UI must key off that, not off a rejection.

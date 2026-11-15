@@ -16,6 +16,8 @@ import {
   mergePreservedPastes,
   saveStoredPaste,
   readStoredPaste,
+  readStoredPasteForSend,
+  STORE_SEND_IDS_CAP,
   STORE_KEY,
   STORE_CAP,
   STORE_TTL_MS,
@@ -487,6 +489,79 @@ describe('pasteTokens', () => {
     it('returns incoming unchanged (same ref) when no message needs any collapse', () => {
       const incoming = [{ role: 'user', content: 'plain, no pastes' }]
       expect(mergePreservedPastes([], incoming)).toBe(incoming)
+    })
+  })
+
+  describe('mergePreservedPastes — side table claims only the rows its send saved', () => {
+    const b = block({ id: 'owned', seq: 1, content: 'l1\nl2\nl3' })
+    const display = formatToken(b)
+    const wire = 'l1\nl2\nl3'
+
+    it('leaves a row from another chat expanded when only its text matches a recorded paste', () => {
+      saveStoredPaste(wire, display, [b], undefined, 's-own')
+      const incoming = [{ role: 'user', content: wire, meta: { mid: 'm-injected' } }]
+      const out = mergePreservedPastes([], incoming)
+      expect(out[0].content).toBe(wire)
+      expect(out[0].meta).toEqual({ mid: 'm-injected' })
+    })
+
+    it('re-collapses after a reload the row whose sendId saved the entry, and no other row', () => {
+      saveStoredPaste(wire, display, [b], undefined, 's-own')
+      const reloaded = mergePreservedPastes([], [
+        { role: 'user', content: wire, meta: { mid: 'm-own', sendId: 's-own' } },
+        { role: 'user', content: wire, meta: { mid: 'm-other', sendId: 's-other' } },
+        { role: 'user', content: wire, meta: { mid: 'm-none' } },
+      ])
+      expect(reloaded[0].content).toBe(display)
+      expect((reloaded[0].meta as { pastes: PasteBlock[] }).pastes).toEqual([b])
+      expect(reloaded[1].content).toBe(wire)
+      expect(reloaded[2].content).toBe(wire)
+    })
+
+    it('leaves a row expanded when the entry was saved with no sendId', () => {
+      saveStoredPaste(wire, display, [b])
+      const out = mergePreservedPastes([], [{ role: 'user', content: wire, meta: { mid: 'm-1', sendId: 's-1' } }])
+      expect(out[0].content).toBe(wire)
+    })
+
+    it('keeps every send of the same text, newest last, up to the cap', () => {
+      for (let i = 0; i < STORE_SEND_IDS_CAP + 3; i++) saveStoredPaste(wire, display, [b], undefined, `s-${i}`)
+      saveStoredPaste(wire, display, [b], undefined, `s-${STORE_SEND_IDS_CAP + 2}`)
+      const ids = readStoredPaste(wire)?.sendIds ?? []
+      expect(ids).toHaveLength(STORE_SEND_IDS_CAP)
+      expect(ids[0]).toBe('s-3')
+      expect(ids[STORE_SEND_IDS_CAP - 1]).toBe(`s-${STORE_SEND_IDS_CAP + 2}`)
+      expect(readStoredPasteForSend(wire, 's-0')).toBeNull()
+      expect(readStoredPasteForSend(wire, 's-3')).not.toBeNull()
+    })
+
+    it('re-collapses both rows after a reload when two sends of the same text minted different block ids', () => {
+      const second = block({ id: 'second', seq: 2, content: wire })
+      saveStoredPaste(wire, display, [b], undefined, 's-first')
+      saveStoredPaste(wire, formatToken(second), [second], undefined, 's-second')
+      const reloaded = mergePreservedPastes([], [
+        { role: 'user', content: wire, meta: { mid: 'm-first', sendId: 's-first' } },
+        { role: 'user', content: wire, meta: { mid: 'm-second', sendId: 's-second' } },
+      ])
+      expect((reloaded[0].meta as { pastes?: PasteBlock[] }).pastes).toHaveLength(1)
+      expect((reloaded[1].meta as { pastes?: PasteBlock[] }).pastes).toHaveLength(1)
+      expect(reloaded[0].content).not.toBe(wire)
+      expect(reloaded[1].content).not.toBe(wire)
+    })
+
+    it('a sendId-matched row takes the side-table display only from its own send', () => {
+      saveStoredPaste(`${wire} [edited]`, display, [b], undefined, 's-other')
+      const resolved = [{ role: 'user', content: display, meta: { pastes: [b], sendId: 's-held' } }]
+      const served = [{ role: 'user', content: `${wire} [edited]`, meta: { sendId: 's-held' } }]
+      const out = mergePreservedPastes(resolved, served)
+      expect(out[0].content).toBe(`${display} [edited]`)
+    })
+
+    it('reads nothing for a missing or non-string sendId', () => {
+      saveStoredPaste(wire, display, [b], undefined, 's-own')
+      expect(readStoredPasteForSend(wire, undefined)).toBeNull()
+      expect(readStoredPasteForSend(wire, '')).toBeNull()
+      expect(readStoredPasteForSend(wire, 42)).toBeNull()
     })
   })
 

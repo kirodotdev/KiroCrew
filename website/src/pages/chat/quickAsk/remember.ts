@@ -8,12 +8,13 @@
  * Passwords and one-time codes are never stored: `RememberKey` has no slot
  * for them, so no caller can pass one.
  *
- * Password-manager seam (not built): a later version could offer a saved
- * credential from the person's own password manager instead of typing it.
- * The place is `QuickAskSheet`'s credentials body: it would ask the manager
- * for an entry matching `ask.origin` exactly, show it as one more chip, and
- * send the chosen secret in the same single answer POST, never through this
- * module and never into React state. The sheet's inputs opt OUT of the
+ * Saved logins come from the Secrets vault instead, under its preview: the
+ * gateway matches vault logins to the ask by base domain
+ * (`browser_harness/vault_fill.py`) and the card shows them by username, never
+ * through this module. On a credentials ask with that vault part the
+ * "Remember" box is hidden and nothing here is written; a username kept
+ * earlier is still offered as its chip when no vault login matches. The
+ * sheet's inputs opt OUT of the
  * browser's own manager (`autocomplete="off"` / `"new-password"`): the sheet
  * lives on the dashboard's origin, so the manager would file every site's
  * password under that one origin and offer site A's password on site B's ask.

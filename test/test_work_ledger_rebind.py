@@ -44,6 +44,9 @@ async def _create(conductor: str, title: str) -> str:
 
 
 async def _close(conductor: str, item_id: str, state: str = "accepted") -> dict[str, Any]:
+    if state == "accepted":
+        verdict = {"action": "verdict", "item_id": item_id, "verdict": "pass"}
+        assert (await _record(conductor, verdict))[0] == 200
     status, body = await _record(conductor, {"action": "close", "item_id": item_id, "state": state})
     assert status == 200, body
     return body

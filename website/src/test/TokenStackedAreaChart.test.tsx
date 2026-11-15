@@ -151,7 +151,7 @@ describe('TokenStackedAreaChart', () => {
 
     await screen.findByTestId('usage-series-chart')
 
-    expect(usageSeries).toHaveBeenCalledWith('channel')
+    expect(usageSeries).toHaveBeenCalledWith('channel', 'credits')
     expect(document.querySelectorAll('path[data-layer]')).toHaveLength(4)
     const legend = screen.getByTestId('usage-series-legend')
     expect(legend).toHaveTextContent('Dashboard')
@@ -239,7 +239,7 @@ describe('TokenStackedAreaChart', () => {
     expect(document.querySelector('.skeleton')).toBeNull()
     expect(screen.getByTestId('usage-series-chart')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByTestId('usage-series-body')).toHaveAttribute('aria-busy', 'true'))
-    expect(usageSeries).toHaveBeenLastCalledWith('agent')
+    expect(usageSeries).toHaveBeenLastCalledWith('agent', 'credits')
     expect(screen.getByTestId('usage-series-body')).toHaveClass('opacity-60')
     expect(screen.getByTestId('usage-series-legend')).toHaveTextContent('Dashboard')
     // The stale legend is labelled in words, not only by the dimming.
@@ -275,7 +275,7 @@ describe('TokenStackedAreaChart', () => {
     mount()
 
     await screen.findByTestId('usage-series-legend')
-    expect(usageSeries).toHaveBeenCalledWith('cohort')
+    expect(usageSeries).toHaveBeenCalledWith('cohort', 'credits')
     const legend = screen.getByTestId('usage-series-legend')
     expect(legend).toHaveTextContent('Started by Oct 4')
     expect(legend).toHaveTextContent('Week of Oct 5')

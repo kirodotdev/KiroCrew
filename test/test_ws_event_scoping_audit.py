@@ -311,7 +311,7 @@ class TestDirectSendGrantsAreAudited:
 
         fake_ws = self._fake_ws()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", MagicMock())
 
         with patch.object(dashboard_ws, "_audit_grant_quietly") as audit:
@@ -397,7 +397,7 @@ class TestDirectSendGrantsAreAudited:
 
         fake_ws = LoopWs()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", MagicMock())
 
         with patch.object(dashboard_ws, "_audit_grant_quietly") as audit:
@@ -626,7 +626,7 @@ class TestDashboardUserGrantsAreAudited:
         from kiro_crew.dashboard.handlers import source_providers
 
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", MagicMock())
         monkeypatch.setattr(source_providers, "schedule_visibility_refresh", MagicMock())
 

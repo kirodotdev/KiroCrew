@@ -520,7 +520,7 @@ def has_subscriber(
 
 #: Whether the eager folder may skip a slot fold no subscriber matches. OFF by default,
 #: so a process with no dashboard -- or a gateway before its exporter is installed --
-#: folds every slot fold exactly as before. Only the dashboard's WS exporter turns it
+#: folds every slot fold. Only the dashboard's WS exporter turns it
 #: on, and only while it holds keyed subscriptions instead of its wildcard one.
 _slot_folds_on_demand = False
 

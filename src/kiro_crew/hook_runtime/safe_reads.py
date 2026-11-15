@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         _opened_file_matches_validated_path,
         _opened_path_within_root,
         _screen_windows_links,
+        bounded_read,
         canonical_path_refusal,
         is_sensitive_canonical_path,
         is_sensitive_path,
@@ -241,6 +242,11 @@ def safe_read_file(path: str, *, canonical_gate: bool = False) -> str:
     def authorize(fd: int) -> None:
         if not _opened_file_matches_validated_path(fd, resolved, canonical_gate=canonical_gate):
             raise PermissionError(f"Blocked: opened file no longer matches safe path: {resolved!r}")
+        fd_real = _fd_real_path(fd)
+        # The gate the read chose: the canonical gate answers inline, off the pool.
+        gate = is_sensitive_canonical_path if canonical_gate else is_sensitive_path
+        if fd_real is not None and gate(fd_real):
+            raise PermissionError(f"Blocked: opened sensitive path: {fd_real!r}")
 
     try:
         with jsonl_util.open_regular_nofollow(
@@ -294,7 +300,7 @@ def safe_read_file_bytes(raw: str) -> bytes | None:
         if not _opened_file_matches_validated_path(fd, path):
             return None
         with os.fdopen(fd, "rb", closefd=False) as fh:
-            data = fh.read(MAX_FILE_BYTES + 1)
+            data = bounded_read(fh, MAX_FILE_BYTES + 1)
         if len(data) > MAX_FILE_BYTES:
             raise FileTooLargeError(f"File exceeds {MAX_FILE_BYTES // (1024 * 1024)} MB safety cap")
         return data
@@ -380,7 +386,7 @@ def safe_read_file_bytes_with_identity(
         if not _stat.S_ISREG(st.st_mode) or (st.st_dev, st.st_ino) not in allowed_identities:
             raise PermissionError("Blocked: file is not in the authorized set")
         with os.fdopen(fd, "rb", closefd=False) as fh:
-            data = fh.read(MAX_FILE_BYTES + 1)
+            data = bounded_read(fh, MAX_FILE_BYTES + 1)
         if len(data) > MAX_FILE_BYTES:
             raise FileTooLargeError(f"File exceeds {MAX_FILE_BYTES // (1024 * 1024)} MB safety cap")
         return data
@@ -519,7 +525,7 @@ def safe_read_file_bytes_nolink(
             if sensitive(fd_real):
                 return None
         with os.fdopen(fd, "rb") as fh:
-            data = fh.read(read_limit + 1)
+            data = bounded_read(fh, read_limit + 1)
         fd = -1  # consumed by fdopen
         if len(data) > read_limit:
             # ``allow_truncate`` is for callers whose contract is "show as much

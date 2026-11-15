@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from kiro_crew import security
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.paths import config_dir
 
 logger = logging.getLogger(__name__)
@@ -622,7 +623,7 @@ def _read_claim_body(path: str) -> bytes | None:
     parsed, and each caller answers it the way it answers any unusable claim.
     """
     with open(path, "rb") as handle:
-        raw = handle.read(_MAX_CLAIM_BYTES + 1)
+        raw = bounded_read(handle, _MAX_CLAIM_BYTES + 1)
     return None if len(raw) > _MAX_CLAIM_BYTES else raw
 
 

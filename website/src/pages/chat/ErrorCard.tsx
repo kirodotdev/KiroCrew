@@ -8,9 +8,11 @@ import ErrorNotice from '../../components/ErrorNotice'
 // update actions (shared components and the api client), not the Settings page.
 import { RestartGatewayButton } from '../settings/AboutPanelUpdateFlow'
 import { CopyCommandButton } from '../../components/settingRef/CopyCommandButton'
+import { fmtDateTime } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { chatErrorDisplayText } from '../../lib/chatErrorRecovery'
+import { LimitContinueRow } from './LimitContinueRow'
 import { isStopEvent } from '../../lib/stopEvent'
 import { isSystemNoticeKind } from '../../lib/systemNotice'
 import type { ChatMessage } from '../../types'
@@ -19,6 +21,8 @@ import { SessionTurnLimitButton } from '../../components/SessionTurnLimitMenu'
 import { AgentSpecChoiceCard, agentSpecAmbiguity } from './AgentSpecChoiceCard'
 import { injectOpensTurn } from './RecoveryCard'
 import { resumeProseFor } from './gatewayNotice'
+import { WorkConfirmDeclined } from '../../utils/workInFlight'
+import { useRestartRefusal } from '../../hooks/useRestartRefusal'
 
 /** Where a capability refusal's fix lives: the member's Approvals section in
  *  the crewmate editor, or the editor itself (its Built from field picks the
@@ -81,6 +85,38 @@ const USAGE_LIMIT_KIND = 'usage_limit'
 
 export const isUsageLimit = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
   m.kind === USAGE_LIMIT_KIND || (m.meta as { kind?: string } | undefined)?.kind === USAGE_LIMIT_KIND
+
+/** When a `usage_limit` row's limit opens again, as epoch milliseconds. The backend
+ *  stamps `meta.reset_at` (an ISO instant) only when it read the provider's reset
+ *  clause; absent or unparseable, there is nothing to show. The one reader of it. */
+export const limitResetAt = (meta: ChatMessage['meta']): number | undefined => {
+  if (!isUsageLimit({ meta })) return undefined
+  const raw = (meta as { reset_at?: unknown } | undefined)?.reset_at
+  const at = typeof raw === 'string' ? Date.parse(raw) : NaN
+  return Number.isFinite(at) ? at : undefined
+}
+
+/** That instant in the reader's locale and time zone. */
+export const limitResetTime = (meta: ChatMessage['meta']): string | undefined => {
+  const at = limitResetAt(meta)
+  return at === undefined ? undefined : fmtDateTime(at)
+}
+
+/** The row's own `reset_at` string, when `limitResetAt` reads it: the card sends it
+ *  back unchanged, since a `Date` keeps only milliseconds of it. */
+const limitResetIso = (meta: ChatMessage['meta']): string | undefined =>
+  limitResetAt(meta) === undefined ? undefined : String((meta as { reset_at?: unknown }).reset_at)
+
+/** The one read-only line a usage-limit card adds under the provider's sentence. */
+function LimitResetLine({ meta }: { meta: ChatMessage['meta'] }) {
+  const time = limitResetTime(meta)
+  if (!time) return null
+  return (
+    <div className="text-[12px] leading-5 text-muted mt-1" data-testid="error-card-limit-reset">
+      {i18nT('pages.chat.errorCard.limit_resets_at', { time })}
+    </div>
+  )
+}
 
 /** Row kind the backend stamps on the terminal error a SESSION START that never
  *  answered produces (`chat_utils.SESSION_START_FAILED_KIND`): `session/new`
@@ -319,6 +355,15 @@ export interface ErrorCardProps {
    */
   featureRequestFormUrl?: string
   /**
+   * The chat this card's usage-limit row belongs to, on the chat's newest error
+   * row. With a reset time ahead on a row that can be resumed, the card adds
+   * "Continue automatically after <time>" beside Resume (see `LimitContinueRow`).
+   * While the gateway holds such a wait the card keeps its Cancel, even once the
+   * reset has passed or the chat cannot be resumed right now. Omitted anywhere
+   * else, so no other card changes.
+   */
+  limitContinueSlot?: string
+  /**
    * Set beside `featureRequestFormUrl` when the row is a `kiro_cli_missing`
    * start failure rather than a spent allowance: the same form is offered, and
    * only the hint and the link label change, since the usage-limit copy (no
@@ -458,11 +503,19 @@ function RestartGatewayCard({ displayText, onRestartGateway }: {
   // broken launcher or interpreter), so pressing again fails the same way. Both drop
   // the button. `retry`: anything else, where a second press can work.
   const [failure, setFailure] = useState<{ title: string; detail: string; next: 'owner' | 'terminal' | 'retry' } | null>(null)
+  const restartRefusal = useRestartRefusal(detail => {
+    setRestarting(false)
+    setFailure({ title: i18nT('pages.chat.errorCard.restart_gateway_failed'), detail, next: 'retry' })
+  })
   const restart = useMutation({
     mutationFn: onRestartGateway,
-    onMutate: () => setFailure(null),
+    onMutate: () => { setFailure(null); restartRefusal.begin() },
     onSuccess: () => setRestarting(true),
     onError: (e: unknown) => {
+      restartRefusal.end()
+      // Declining the "work is running" confirmation (raised by the client's
+      // restart wrapper) is a quiet cancel: no failure card.
+      if (e instanceof WorkConfirmDeclined) return
       // The owner gate's 403 only. A lapsed dashboard cookie also answers 403
       // (`authRequired`), but the client refreshes that in the background, so
       // the next press can pass and the button must stay.
@@ -589,6 +642,7 @@ export const ErrorCard = memo(function ErrorCard({
   onOpenSignIn,
   unentitledElsewhere,
   featureRequestFormUrl,
+  limitContinueSlot,
   kiroCliMissing,
   sessionStartRepeat,
   onRestartGateway,
@@ -625,6 +679,7 @@ export const ErrorCard = memo(function ErrorCard({
       >
         <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
           {content}
+          <LimitResetLine meta={meta} />
         </div>
         <div className="text-[12px] leading-5 text-muted" data-testid="error-card-feature-request-hint">
           {i18nT(kiroCliMissing ? 'pages.chat.errorCard.feature_request_form_cli_missing_hint' : 'pages.chat.errorCard.feature_request_form_hint')}
@@ -1016,6 +1071,12 @@ export const ErrorCard = memo(function ErrorCard({
       />
     )
   }
+  const limitAt = limitContinueSlot ? limitResetAt(meta) : undefined
+  const limitIso = limitContinueSlot ? limitResetIso(meta) : undefined
+  // A wait the gateway still holds keeps its Cancel on a card that offers none.
+  const limitHeld = limitContinueSlot && limitAt !== undefined && limitIso !== undefined
+    ? <LimitContinueRow slot={limitContinueSlot} resetAt={limitIso} time={fmtDateTime(limitAt)} offer={false} />
+    : null
   if (!onContinue) {
     return (
       <div
@@ -1024,6 +1085,8 @@ export const ErrorCard = memo(function ErrorCard({
         style={{ overflowWrap: 'anywhere' }}
       >
         {withOriginLink(displayText)}
+        <LimitResetLine meta={meta} />
+        {limitHeld}
         {elsewhere && (
           <div className="text-[12px] leading-5 text-muted mt-1" data-testid="error-card-elsewhere-hint">
             {i18nT(elsewhereKey!)}
@@ -1044,6 +1107,23 @@ export const ErrorCard = memo(function ErrorCard({
       </div>
     )
   }
+  if (limitContinueSlot && limitAt !== undefined && limitIso !== undefined && limitAt > Date.now()) {
+    return (
+      <div
+        className="bg-danger-subtle ring-1 ring-inset forced-colors:border ring-danger/20 rounded-md self-center w-full max-w-full min-w-0 px-3 py-2 flex flex-col gap-2 animate-scale-in"
+        data-testid="error-card"
+        data-continuable="true"
+      >
+        <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
+          {withOriginLink(displayText)}
+          <LimitResetLine meta={meta} />
+        </div>
+        <LimitContinueRow slot={limitContinueSlot} resetAt={limitIso} time={fmtDateTime(limitAt)}>
+          {resumeButton}
+        </LimitContinueRow>
+      </div>
+    )
+  }
   return (
     <div
       className="bg-danger-subtle ring-1 ring-inset forced-colors:border ring-danger/20 rounded-md self-center w-full max-w-full min-w-0 px-3 py-2 flex items-center gap-3 animate-scale-in"
@@ -1052,6 +1132,8 @@ export const ErrorCard = memo(function ErrorCard({
     >
       <div className="text-danger text-[13px] leading-5 flex-1 min-w-0" style={{ overflowWrap: 'anywhere' }}>
         {withOriginLink(displayText)}
+        <LimitResetLine meta={meta} />
+        {limitHeld}
       </div>
       {resumeButton}
     </div>

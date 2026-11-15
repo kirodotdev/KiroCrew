@@ -8,6 +8,7 @@ for, and which messaging channels ``setup`` configures.
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -480,6 +481,22 @@ class TestEnsurePrerequisites:
 
         with patch("kiro_crew.cli_setup.shutil.which", return_value=None):
             assert _ensure_prerequisites() is True
+
+    @pytest.mark.parametrize("bundle_route", [True, False])
+    def test_node_advice_follows_the_kas_bundle_route(self, monkeypatch, capsys, bundle_route):
+        """On the bundle route the engine runs its bundle's own Node, as doctor says."""
+        from kiro_crew.agent_sdk import kas_bundle
+        from kiro_crew.cli_setup import _ensure_prerequisites
+
+        monkeypatch.setattr("kiro_crew.cli_setup.shutil.which", lambda name, **_kw: None)
+        monkeypatch.setattr(kas_bundle, "kas_bundle_route", lambda: bundle_route)
+        monkeypatch.setattr(
+            kas_bundle, "installed_bundle", lambda: SimpleNamespace(node_version="22.23.3")
+        )
+        _ensure_prerequisites()
+        out = capsys.readouterr().out
+        assert ("install Node.js" in out) is not bundle_route
+        assert ("not needed (KAS runs its engine bundle's own Node 22.23.3)" in out) is bundle_route
 
 
 class TestConfigDirOverride:

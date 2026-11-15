@@ -368,6 +368,58 @@ def test_a_rollover_folds_what_the_held_newest_unit_gained_meanwhile():
     assert [event["text"] for event in warm["events"]] == ["a", "late from the older unit", "b"]
 
 
+def _counted_copies(monkeypatch, read) -> tuple[Any, int]:
+    """Run *read*; return its value and how many times a fold copied its whole state."""
+    from kiro_crew.crew_log import projection_catalogue
+
+    copies = [0]
+    real = projection_catalogue._Fold.copied
+
+    def counted(self, state):
+        copies[0] += 1
+        return real(self, state)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(projection_catalogue._Fold, "copied", counted)
+        value = read()
+    return value, copies[0]
+
+
+TAIL = 40
+
+
+def test_a_warm_tail_copies_the_state_once_not_per_entry(monkeypatch):
+    """MUTATION-SENSITIVE: a warm read of N appended entries copies the state once.
+
+    Each entry stepped through ``apply`` copied the whole state, so a long tail was
+    O(tail x state) on one thread holding the slot lock.
+    """
+    _unit(FIRST)
+    _ledger(FIRST, goal="first", event="e0", event_kind="note")
+    assert _warm("ledger", (FIRST,)) == _cold("ledger", (FIRST,))
+    for step in range(1, TAIL + 1):
+        _ledger(FIRST, event=f"e{step}", event_kind="note")
+    warm, copies = _counted_copies(monkeypatch, lambda: _warm("ledger", (FIRST,)))
+    assert warm == _cold("ledger", (FIRST,))
+    assert copies == 1, copies
+
+
+def test_a_rollover_copies_the_state_once_per_stream_not_per_entry(monkeypatch):
+    """MUTATION-SENSITIVE: the held unit's tail and the new unit each cost one copy."""
+    _unit(FIRST)
+    _ledger(FIRST, goal="first", event="e0", event_kind="note")
+    assert _warm("ledger", (FIRST,)) == _cold("ledger", (FIRST,))
+    for step in range(1, TAIL + 1):
+        _ledger(FIRST, event=f"late {step}", event_kind="note")
+    _unit(SECOND)
+    for step in range(1, TAIL + 1):
+        _ledger(SECOND, event=f"new {step}", event_kind="note")
+    units = (FIRST, SECOND)
+    warm, copies = _counted_copies(monkeypatch, lambda: _warm("ledger", units))
+    assert warm == _cold("ledger", units)
+    assert copies == 2, copies
+
+
 def test_a_rollover_that_raises_mid_fold_drops_the_cell(monkeypatch):
     """A half-carried cell is not kept: the next read folds cold, never applies twice."""
     _unit(FIRST)

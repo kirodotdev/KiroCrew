@@ -161,8 +161,6 @@ export function VoicePanel() {
     onError: (_err, _vars, ctx) => {
       if (ctx?.prev) {
         qc.setQueryData(['voiceConfig'], ctx.prev)
-        setLocalProfile(ctx.prev.aws_profile || '')
-        setLocalRegion(ctx.prev.region || '')
         window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: ctx.prev }))
       }
       setSaveError(i18nT('pages.settings.voicePanel.failed_to_save_voice_config'))
@@ -186,11 +184,9 @@ export function VoicePanel() {
 
   return (
     <>
-      {/* askAgent ON: `onError` above has already reverted localProfile /
-          localRegion to the server value
-          by the time this banner shows, so the navigation cannot destroy an
-          unsaved edit — the fields hold exactly what is persisted. */}
-      <ErrorNotice message={saveError} onDismiss={() => setSaveError('')} className="mb-4 animate-rise" askAgent />
+      {/* No hand-off: a failed save leaves the profile or region draft in the
+          fields so it can be retried. */}
+      <ErrorNotice message={saveError} onDismiss={() => setSaveError('')} className="mb-4 animate-rise" />
 
       <SettingsSection title={i18nT('pages.settings.voicePanel.text_to_speech')}>
         <SettingsCard>

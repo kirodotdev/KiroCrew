@@ -10,6 +10,7 @@ import { APP_NAV_ORDER_KEY, buildReorderBaseline, mergeVisibleReorder, readAppNa
 import { useNavPinned } from '../../lib/navPinned'
 import { haptic } from '../../lib/haptic'
 import { surfacePreviewEnabled } from '../../surfaces/registry'
+import { surfaceSwitchedOn } from '../../surfaces/surfaceData'
 import { safeSetItem } from '../../utils/safeStorage'
 import { i18nT } from '../../i18n/t'
 import { NAV_ITEMS } from './navItems'
@@ -19,12 +20,34 @@ import { useNavTip } from './navTip'
 export interface AppNavRow { path: string; id: string; label: string; group: string; icon: React.ReactElement; appName?: string }
 
 /**
+ * The Apps group in its natural order, before any order the user saved: the
+ * group's own surfaces first, then the installed apps as `GET /api/apps` lists
+ * them (by name), with each surface that was a built-in app (`formerApp`) put
+ * back where that app's row stood among them.
+ */
+export function naturalAppGroupOrder<T extends { id: string; appName?: string; formerApp?: string }>(
+  surfaces: readonly T[], appRows: readonly T[],
+): T[] {
+  const merged = [...appRows]
+  for (const s of surfaces) {
+    if (!s.formerApp) continue
+    const at = merged.findIndex(row => !!row.appName && row.appName > s.formerApp!)
+    merged.splice(at < 0 ? merged.length : at, 0, s)
+  }
+  return [...surfaces.filter(s => !s.formerApp), ...merged]
+}
+
+/**
  * The rail's advertised destinations and the Apps group's order: which surfaces
  * the rail may show (preview flags, pinned sub-items), the Apps group merged with
  * the installed apps in the user's saved order minus the rows they unpinned, and
  * the drag-reorder that writes that order back.
  */
-export function useAppRailOrder(appNavItems: AppNavRow[]) {
+export function useAppRailOrder(
+  appNavItems: AppNavRow[],
+  /** The shared `['kirocrewConfig']` read a surface's `configSwitch` is judged by. */
+  kirocrewConfig?: unknown,
+) {
   const [appNavOrder, setAppNavOrder] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem(APP_NAV_ORDER_KEY) || '[]') } catch { return [] } })
   // Which app rows the user UNPINNED from the sidebar via the Library
   // launchpad grid (`mc-app-nav-hidden`, owned by `lib/appNavHidden.ts`).
@@ -49,7 +72,8 @@ export function useAppRailOrder(appNavItems: AppNavRow[]) {
   // for the same reason — a `pinnable` sub-item filtered in only one branch
   // would appear on the rail in the other without the user pinning it.
   const advertisedNavItems = useMemo(
-    () => NAV_ITEMS.filter(n => surfacePreviewEnabled(n) && (!n.pinnable || pinnedNavIds.has(n.id))),
+    () => NAV_ITEMS.filter(n => surfacePreviewEnabled(n) && surfaceSwitchedOn(n, kirocrewConfig)
+      && (!n.pinnable || pinnedNavIds.has(n.id))),
     // The revision is an invalidation token: what `surfacePreviewEnabled` reads
     // lives in localStorage, not in React state, so nothing else here can
     // express the dep. The directive stays on ONE line directly above the deps
@@ -57,7 +81,7 @@ export function useAppRailOrder(appNavItems: AppNavRow[]) {
     // rationale wrapped after it aims the directive at its own continuation and
     // suppresses nothing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [previewFlagRevision, pinnedNavIds],
+    [previewFlagRevision, pinnedNavIds, kirocrewConfig],
   )
   // Apps nav reorder is dnd-kit sortable (mirrors QueueStack): rows reflow to
   // open a gap as you drag, and a DragOverlay renders the floating ghost.
@@ -84,7 +108,8 @@ export function useAppRailOrder(appNavItems: AppNavRow[]) {
     // `mc-app-nav-order` is empty or has never listed it (its slot is then
     // implicit in this natural order, and persisting only the visible ids
     // would erase it).
-    const all = [...advertisedNavItems.filter(n => n.group === 'Apps'), ...appNavItems]
+    const all: AppNavRow[] = naturalAppGroupOrder<AppNavRow & { formerApp?: string }>(
+      advertisedNavItems.filter(n => n.group === 'Apps'), appNavItems)
     const orderMap = new Map(appNavOrder.map((id, i) => [id, i]))
     const sortedAll = appNavOrder.length === 0
       ? all

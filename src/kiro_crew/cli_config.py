@@ -6,6 +6,7 @@ import argparse
 import base64
 import errno
 import json
+import math
 import os
 import re
 import sys
@@ -183,6 +184,34 @@ def _warn_if_bot_name_altered(key: str, parsed: object) -> None:
 _ADDRESS_SPACE_KEY = "resource_limits.max_address_space_mb"
 
 
+def _non_finite_paths(key: str, parsed: object) -> list[str]:
+    """Each dotted path under *key* whose value is a NaN or infinite float."""
+    if isinstance(parsed, float) and not math.isfinite(parsed):
+        return [key]
+    if isinstance(parsed, dict):
+        return [p for k, v in parsed.items() for p in _non_finite_paths(f"{key}.{k}", v)]
+    if isinstance(parsed, list):
+        return [p for i, v in enumerate(parsed) for p in _non_finite_paths(f"{key}[{i}]", v)]
+    return []
+
+
+def _warn_if_not_finite(key: str, parsed: object) -> None:
+    """Warn when a write stores ``NaN`` or ``Infinity``, which the setting never uses.
+
+    ``nan``, ``inf`` and an overflowing ``1e999`` parse as floats, pass the declared
+    number type, and are written as the non-standard JSON tokens ``NaN`` and
+    ``Infinity``. The loader's number reader (``config.fields._safe_float`` / ``_safe_int``) then
+    replaces a non-finite value with the key's default, so the ``✅`` line names a
+    value that never takes effect. Advice only: the write itself already succeeded.
+    """
+    for path in _non_finite_paths(key, parsed):
+        print(
+            f"⚠️  {path} is not a finite number: it is saved, but a number setting "
+            "loads it as its default, so it will not take effect.",
+            file=sys.stderr,
+        )
+
+
 def _warn_if_address_space_capped(key: str, parsed: object) -> None:
     """Warn when a write turns on the ``RLIMIT_AS`` cap, ``max_address_space_mb``.
 
@@ -230,7 +259,7 @@ def _warn_unapproved_share_names(key: str, parsed: object) -> None:
     for name in unapproved_share_names(parsed):
         print(
             f"⚠️  {name} has no approved launch, so the gateway will not share it until "
-            "you approve it in Customize → Connections → MCP Servers.",
+            "you approve it in MCP Servers.",
             file=sys.stderr,
         )
 
@@ -281,7 +310,18 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
         if encoded is not None and file_path:
             print("❌ --value-base64 cannot be combined with --file", file=sys.stderr)
             sys.exit(1)
+        if file_path and args.key is not None:
+            # ``--file`` replaces the whole document, so a positional key/value
+            # alongside it has nothing well-defined to apply to. Keep the
+            # ``--file`` write (the behaviour today) and say the key/value was
+            # ignored, rather than silently dropping it.
+            print(
+                f"⚠️  ignoring the key/value ({args.key}) given with --file: "
+                "--file replaces the whole document",
+                file=sys.stderr,
+            )
         if file_path:
+            use_local = getattr(args, "local", False)
             fp = Path(file_path).expanduser().resolve()
 
             try:
@@ -303,17 +343,57 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 )
                 sys.exit(1)
 
+            local_warnings: list[str] = []
+
             def _mutate_from_file(cur: dict) -> dict:
-                _refuse_missing_workspace_dirs(data, cur)
+                local_warnings.clear()
+                # Every new or changed workspace dir must exist, as on a base write.
+                # The overlay wins over config.json, so for ``--local`` an entry is
+                # "unchanged" against what is in force now: the base with this
+                # overlay over it. An overlay entry with no ``dir`` keeps the base dir.
+                if not use_local:
+                    _refuse_missing_workspace_dirs(data, cur)
+                else:
+                    try:
+                        base = json.loads(read_endorsed_config_text(config_path()))
+                    except (OSError, ValueError):
+                        base = {}
+                    if not isinstance(base, dict):
+                        base = {}
+                    base_ws = base.get("workspaces")
+                    over_ws = cur.get("workspaces")
+                    current = {
+                        "workspaces": {
+                            **(base_ws if isinstance(base_ws, dict) else {}),
+                            **(over_ws if isinstance(over_ws, dict) else {}),
+                        }
+                    }
+                    # Per workspace: an entry the base already binds to this dir
+                    # passes the base-only check, so save it and warn rather than refuse.
+                    workspaces = data.get("workspaces")
+                    entries = workspaces.items() if isinstance(workspaces, dict) else ()
+                    for name, entry in entries:
+                        one = {"workspaces": {name: entry}}
+                        try:
+                            _refuse_missing_workspace_dirs(one, current)
+                        except ConfigWriteRefused as e:
+                            _refuse_missing_workspace_dirs(one, base)
+                            local_warnings.append(str(e))
                 for key, value in data.items():
                     _ack_explicit_config_write(key, value)
                 return data
 
+            # ``--local`` writes the overlay (config.local.json), whose values win
+            # over config.json, instead of replacing the base. The overlay is a
+            # partial document and is not meta-stamped, the same as the keyed
+            # ``config set --local`` path above.
+            target = config_local_path() if use_local else config_path()
             try:
                 update_config_locked(
-                    config_path(),
+                    target,
                     mutate=_mutate_from_file,
                     on_corrupt="reset",
+                    stamp_meta=not use_local,
                 )
             except ConfigWriteRefused as e:
                 # Third writer behind the publish floor, same report as the keyed
@@ -324,12 +404,18 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 sys.exit(1)
             sel().log_api_access(
                 caller="cli",
-                operation="config_set_file",
+                operation="config_set_local_file" if use_local else "config_set_file",
                 outcome="allowed",
                 source="cli",
                 resources=str(fp),
             )
-            print(f"✅ Config loaded from {file_path}")
+            dest = "config.local.json" if use_local else file_path
+            if use_local:
+                print(f"✅ Overlay loaded from {file_path} (saved to {dest})")
+                for warning in local_warnings:
+                    print(f"⚠  {warning}", file=sys.stderr)
+            else:
+                print(f"✅ Config loaded from {file_path}")
             gateway_section = data.get("mcp_gateway")
             if isinstance(gateway_section, dict):
                 _warn_unapproved_share_names(_SHARE_LIST_KEY, gateway_section.get("stub_servers"))
@@ -507,6 +593,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 _warn_if_bot_name_altered(key, parsed)
                 _warn_if_address_space_capped(key, parsed)
                 _warn_unapproved_share_names(key, parsed)
+                _warn_if_not_finite(key, parsed)
             else:
 
                 def _mutate_base(existing: dict) -> dict:
@@ -553,6 +640,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     _warn_if_bot_name_altered(key, parsed)
                 _warn_if_address_space_capped(key, parsed)
                 _warn_unapproved_share_names(key, parsed)
+                _warn_if_not_finite(key, parsed)
     elif action == "edit":
 
         p = config_path()
@@ -571,8 +659,12 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
         os.execvp(editor, [editor, str(p)])
     elif action == "defaults":
         _defaults_cmd(args)
+    elif action == "pending":
+        from kiro_crew.cli_config_pending import pending_cmd
+
+        pending_cmd(args)
     else:
-        print("Usage: kirocrew config {get,set,edit,defaults}", file=sys.stderr)
+        print("Usage: kirocrew config {get,set,edit,defaults,pending}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -663,7 +755,8 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         for centry, stored in coerced:
             print(
                 f"⚠️  {centry.dotted_key} ({stored!r}) cannot be kept — "
-                f"the loader replaces it. Use --adopt to drop it."
+                f"the loader replaces it. Use --adopt to drop it.",
+                file=sys.stderr if wanted else sys.stdout,
             )
         coerced = []
         if not drifted:

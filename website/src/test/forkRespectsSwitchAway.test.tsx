@@ -197,14 +197,17 @@ describe('transcript Fork from here', () => {
     const land = deferredFork()
     const { result, showActionError } = renderFork()
 
-    let forked!: Promise<void>
+    let forked!: Promise<boolean>
     act(() => { forked = result.current.handleFork(1) })
     await waitFor(() => expect(mocks.forkChatSlot).toHaveBeenCalled())
     act(() => { store.dispatch(setActiveSlot(OTHER)) })
-    await act(async () => { land(); await forked })
+    let opened: boolean | undefined
+    await act(async () => { land(); opened = await forked })
 
     expect(listed(CHILD)).toBe(true)
     expect(activeSlot()).toBe(OTHER)
+    // Not the open chat, so "Fork with another model" opens no picker over OTHER.
+    expect(opened).toBe(false)
     expect(showActionError).not.toHaveBeenCalled()
   })
 
@@ -242,17 +245,19 @@ describe('transcript Fork from here', () => {
     const land = deferredFork()
     const { result } = renderFork()
 
-    let forked!: Promise<void>
+    let forked!: Promise<boolean>
     act(() => { forked = result.current.handleFork(1) })
     await waitFor(() => expect(mocks.forkChatSlot).toHaveBeenCalled())
     // Read at the switch itself: its pending step makes the child active, and
     // what the mocked detail fetch does afterwards is not this test's subject.
     const seen: (string | null)[] = []
     const unsubscribe = store.subscribe(() => { seen.push(activeSlot()) })
-    await act(async () => { land(); await forked })
+    let opened: boolean | undefined
+    await act(async () => { land(); opened = await forked })
     unsubscribe()
 
     expect(listed(CHILD)).toBe(true)
     expect(seen).toContain(CHILD)
+    expect(opened).toBe(activeSlot() === CHILD)
   })
 })

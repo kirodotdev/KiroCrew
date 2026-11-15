@@ -377,6 +377,84 @@ def _qualified_model_refusal(
     return None
 
 
+async def _light_tier_pins(
+    cleaned: dict[str, Any],
+    model: str,
+    effort: str,
+    *,
+    named_elsewhere: bool,
+    execution: Any,
+    backend: str | None,
+) -> tuple[str, str, str, str]:
+    """Fill a ``light`` spawn's unset model and effort: ``(model, effort, note, warning)``.
+
+    Applies only to a run the call marked ``light`` while ``agent.subagent_light_tier``
+    is on, and fills only what the call left unset from the ``subagent_light`` role
+    pins, so a model or effort the call names wins. With the setting off the flag is
+    ignored silently, like the setting itself. Anything else that cannot apply keeps
+    the request exactly as it came, and *warning* says what was dropped; this never
+    refuses a spawn. *named_elsewhere* is a run that names an agent, a crew or a
+    backend of its own, which chose its model already. A model id belongs to one
+    backend's list, so the model pin is used only where the run starts on the gateway
+    default backend, the one the pin was written for. Where it starts is resolved
+    first, from the admitted *execution* and the run's own *backend* (``None`` for
+    none), by the resolver allocation uses (``subagent_start_backend``); a start
+    backend that cannot be resolved keeps no model pin.
+    """
+    from kiro_crew.mate_worker import subagent_start_backend
+    from kiro_crew.validation_parts.input_bounds import _MODEL_NAME_RE
+
+    if cleaned.get("light") is not True:
+        return model, effort, "", ""
+    try:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    except Exception:
+        return model, effort, "", "light ignored: the configuration could not be read"
+    agent_cfg = cfg.agent
+    if not agent_cfg.subagent_light_tier:
+        return model, effort, "", ""
+    if named_elsewhere:
+        return model, effort, "", "light ignored: the run names its own agent, crew or backend"
+    light_model = agent_cfg.role_models.get("subagent_light", "")
+    light_effort = agent_cfg.role_efforts.get("subagent_light", "")
+    pin_model = "" if model else light_model
+    pin_effort = "" if effort else light_effort
+    on_default_backend = False
+    if pin_model:
+        try:
+            starts_on = await asyncio.to_thread(subagent_start_backend, cfg, execution, backend)
+            on_default_backend = starts_on == agent_cfg.acp_backend
+        except Exception:
+            # Unknown, so not provably the default: the warning below says so.
+            on_default_backend = False
+    warning = ""
+    if pin_model and not (on_default_backend and _MODEL_NAME_RE.match(pin_model)):
+        pin_model = ""
+        warning = "light model dropped: agent.role_models.subagent_light is not usable here"
+    # Name only the pins this call needed and found empty.
+    unset = [
+        key
+        for key, needed, pin in (
+            ("agent.role_models.subagent_light", not model, light_model),
+            ("agent.role_efforts.subagent_light", not effort, light_effort),
+        )
+        if needed and not pin
+    ]
+    if not (pin_model or pin_effort) and unset and not warning:
+        warning = f"light ignored: {' and '.join(unset)} {'is' if len(unset) == 1 else 'are'} unset"
+    note = ""
+    if pin_model or pin_effort:
+        note = "light tier: " + ", ".join(
+            part
+            for part in (
+                f"model {pin_model}" if pin_model else "",
+                f"reasoning_effort {pin_effort}" if pin_effort else "",
+            )
+            if part
+        )
+    return pin_model or model, pin_effort or effort, note, warning
+
+
 async def api_spawn(request: web.Request) -> web.Response:
     """POST /api/spawn — spawn a subagent.
 
@@ -414,7 +492,7 @@ async def api_spawn(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
@@ -446,6 +524,7 @@ async def api_spawn(request: web.Request) -> web.Response:
                 "target_member": body.get("target_member", ""),
                 "backend": body.get("backend", ""),
                 "label": body.get("label", ""),
+                **({"light": body["light"]} if isinstance(body.get("light"), bool) else {}),
             },
             SPAWN_RUN_SCHEMA,
         )
@@ -554,6 +633,23 @@ async def api_spawn(request: web.Request) -> web.Response:
             if parent_execution is not None
             else ("", (), ())
         )
+        if parent_session.startswith("cron:"):
+            from dataclasses import replace
+
+            from kiro_crew.subagent import with_cron_dispatched_policy
+
+            parent_spawn_policy = await asyncio.to_thread(
+                with_cron_dispatched_policy,
+                parent_session,
+                parent_execution,
+                parent_spawn_policy,
+                parent_dirs,
+            )
+            dispatched = parent_spawn_policy[0]
+            if parent_execution is not None and dispatched != parent_execution.template_id:
+                # The child inherits the agent this fire runs, as the record path does;
+                # member, store and mode stay the scheduler's.
+                parent_execution = replace(parent_execution, template_id=dispatched)
         if parent_execution is None and parent_session and not agent:
             # A parent with no execution record yet (a channel conversation whose
             # first turn is not saved) hands its child its live selection, as
@@ -593,6 +689,16 @@ async def api_spawn(request: web.Request) -> web.Response:
     cwd = cleaned.get("cwd") or ""
     model = cleaned.get("model") or ""
     reasoning_effort = cleaned.get("reasoning_effort") or ""
+    model, reasoning_effort, light_note, light_warning = await _light_tier_pins(
+        cleaned,
+        model,
+        reasoning_effort,
+        named_elsewhere=bool(agent or crew or cleaned.get("backend")),
+        execution=admitted_execution,
+        backend=backend,
+    )
+    if "light" in body and not isinstance(body["light"], bool):
+        light_warning = "light ignored: it must be true or false"
     can_work = parent_work_supported(state, parent_session)
     # Batch/wave identity (transport-layer params from spawn_run MCP, like
     # approval_mode/silent above): validated inline, bounded, never LLM-schema.
@@ -773,7 +879,7 @@ async def api_spawn(request: web.Request) -> web.Response:
     # pin, else the session chain for the effective agent — a crew's pin, else
     # a non-sentinel global). Additive, optional key — reporting only, never
     # changes whether the spawn happened.
-    if reasoning_effort:
+    if cleaned.get("reasoning_effort"):
         # Read the allocation-owned namespace on the loop. A reporting failure
         # cannot undo the submission or turn an unknown selection into "auto".
         selection: tuple[str, str] | None
@@ -859,6 +965,12 @@ async def api_spawn(request: web.Request) -> web.Response:
     runtime_note = await asyncio.to_thread(_runtime_note)
     if runtime_note:
         resp["runtime_note"] = runtime_note
+    if light_note:
+        resp["light"] = _redact(light_note)
+    if light_warning:
+        # The receipt's one key for a dropped argument: a writer appends to it.
+        prior = str(resp.get("warning") or "")
+        resp["warning"] = "; ".join(w for w in (prior, _redact(light_warning)) if w)
     if keep:
         # The conversation id is the FIRST run's id: spawn_continue targets it.
         resp["conversation"] = info.id

@@ -137,6 +137,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _NETLINK_ADDRS_PUBLISHED,
         _NETLINK_MISS_WARN_AT,
         _NETLINK_MISSES,
+        _NO_SUCH_NAME_ERRNOS,
         _OWN_HOST_NAMES_CACHE,
         _OWN_HOST_REFRESH_SECS,
         _OWN_HOST_RESOLVE_BACKOFF_SECS,
@@ -195,8 +196,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _kill_prefix_keeps_anchor,
         _matches_self_subcommand,
         _operands_lead_with,
+        _quoted_assignment_scripts,
         _self_cli_operands,
         _self_floor_can_fire,
+        _self_frames,
         _self_kill_span,
         _self_module_flag_scan,
         _self_module_name_index,
@@ -237,12 +240,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _brace_alternatives,
         _brace_expansions,
         _command_value_names_self_endpoint,
+        _double_quoted_substitution_bodies,
         _function_call_binds_self,
         _glob_can_name_ssh_verb,
         _is_ssh_to_self,
         _mask_quoted_separators,
         _operand_targets_self,
         _proxyjump_value_targets_self,
+        _reaches_self_over_ssh,
         _remote_forward_value_targets_self,
         _resolve_line_assignments,
         _routing_option_key_value_targets_self,
@@ -250,6 +255,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ssh_family_verb,
         _ssh_verb_basename,
         _unmask_separators,
+        _without_quoted_heredoc_text,
     )
 if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.atomic_write import on_event_loop as _event_loop_running  # noqa: F401
@@ -275,6 +281,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _decoded_b64_literal_sources,
         _has_self_importing_inline_program,
     )
+    from kiro_crew.security.shell_commands import read_commands  # noqa: F401
     from kiro_crew.security.shell_normalizer import (  # noqa: F401
         _AMBIGUOUS_EXPANSION_RE,
         _PROCESS_SUBSTITUTION_OPENERS,
@@ -298,6 +305,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _iter_shell_chars,
         _matching_close_paren,
         _nested_shell_payloads,
+        _only_single_quoted_openers,
         _program_basename,
         _push_option_matches,
         _push_token_redirection,

@@ -26,6 +26,14 @@ export const ACP_BACKEND_KAS = 'kas'
 /** kiro-cli and its KAS relay: the harnesses backed by the Kiro service. */
 export const KIRO_HARNESS_BACKENDS: readonly string[] = [ACP_BACKEND_KIRO, ACP_BACKEND_KAS]
 
+/** Claude Code's id (`ACP_BACKEND_CLAUDE` on the gateway). */
+export const ACP_BACKEND_CLAUDE = 'claude'
+
+/** The harnesses whose turns record a dollar cost (`TurnUsage.cost_usd`).
+ *  shortcut: Claude Code only, the one harness a live capture shows reporting
+ *  cost; add another once its capture shows the same. */
+export const DOLLAR_HARNESS_BACKENDS: readonly string[] = [ACP_BACKEND_CLAUDE]
+
 /** The harness an install runs when it holds no choice (absent or `''`). */
 export const DEFAULT_ACP_BACKEND = ACP_BACKEND_KAS
 
@@ -80,6 +88,17 @@ export function reportsCredits(cfg: AcpBackendConfig | undefined): boolean {
 }
 
 /**
+ * True only when a LOADED config names a harness in `DOLLAR_HARNESS_BACKENDS`,
+ * whose turns record tokens and a dollar cost. Named positively, like
+ * `reportsCredits`: a harness that reports neither (codex, pi) shows no token
+ * or dollar figures rather than zeros. `undefined` (not loaded, or failed) is
+ * neither, so nothing renders on a guess.
+ */
+export function reportsDollars(cfg: AcpBackendConfig | undefined): boolean {
+  return cfg !== undefined && DOLLAR_HARNESS_BACKENDS.includes(configuredAcpBackend(cfg))
+}
+
+/**
  * True only when a LOADED config runs one of the Kiro harnesses: the Kiro
  * account is behind the turn, so its credit balance is the one the top bar
  * shows, and the user's app.kiro.dev model fallbacks apply inside the turn
@@ -103,6 +122,7 @@ export function acpBackendName(backend: { id: string; policy_id?: string }): str
     case 'copilot': return i18nT('pages.developer.agentBackendTab.copilot')
     case 'deepseek': return i18nT('pages.developer.agentBackendTab.deepseek')
     case 'goose': return i18nT('pages.developer.agentBackendTab.goose')
+    case 'mimocode': return i18nT('pages.developer.agentBackendTab.mimocode')
     case 'opencode': return i18nT('pages.developer.agentBackendTab.opencode')
     case 'pi': return i18nT('pages.developer.agentBackendTab.pi')
     case 'strands': return i18nT('pages.developer.agentBackendTab.strands')

@@ -12,7 +12,7 @@ const assert = require("node:assert");
 const path = require("path");
 const Module = require("module");
 
-function loadPreload(argv) {
+function loadPreload(argv, invokeAnswer = () => true) {
   const exposed = {};
   const sent = [];
   const listeners = {};
@@ -20,6 +20,10 @@ function loadPreload(argv) {
     contextBridge: { exposeInMainWorld: (key, api) => { exposed[key] = api; } },
     ipcRenderer: {
       send: (channel, ...args) => sent.push([channel, ...args]),
+      invoke: (channel, ...args) => {
+        sent.push(["invoke", channel, ...args]);
+        return Promise.resolve(invokeAnswer(channel));
+      },
       on: (channel, fn) => { (listeners[channel] = listeners[channel] || []).push(fn); },
       removeListener: (channel, fn) => {
         listeners[channel] = (listeners[channel] || []).filter((f) => f !== fn);
@@ -45,17 +49,82 @@ function loadPreload(argv) {
 }
 
 test("the bridge exposes exactly the host calls, under one global", () => {
-  const { exposed } = loadPreload(["electron", "--kc-app-window=pets/pet/overlay/1"]);
+  const { exposed } = loadPreload(["electron", "--kc-app-window=pets/pet/overlay/2"]);
   assert.deepStrictEqual(Object.keys(exposed), ["kirocrewDesktopWindow"]);
   const bridge = exposed.kirocrewDesktopWindow;
   assert.ok(Object.isFrozen(bridge));
   assert.deepStrictEqual(Object.keys(bridge).sort(), [
-    "app", "close", "kind", "level", "onShortcut", "open", "ready", "setFocusable", "setHitRegions", "window",
+    "app", "beginDrag", "broadcast", "capabilities", "chooseGateway", "close", "closeAll", "endDrag",
+    "kind", "level", "listGateways", "onActive", "onDrag", "onMessage", "onPlaced", "onShortcut",
+    "onWindowChange", "open", "openExternal", "openImage", "ready", "revealFile", "send",
+    "setFocusable", "setHitRegions", "setShortcut", "shortcuts", "showSession", "window",
   ]);
   assert.deepStrictEqual(
     { app: bridge.app, window: bridge.window, kind: bridge.kind, level: bridge.level },
-    { app: "pets", window: "pet", kind: "overlay", level: 1 },
+    { app: "pets", window: "pet", kind: "overlay", level: 2 },
   );
+  assert.deepStrictEqual(bridge.capabilities, []);
+});
+
+test("the capabilities a window was opened with are reported, known names only", () => {
+  const { exposed } = loadPreload(["--kc-app-window=pets/pet/overlay/2/gatewayChoice,anything,localFiles"]);
+  const bridge = exposed.kirocrewDesktopWindow;
+  assert.strictEqual(bridge.level, 2);
+  assert.deepStrictEqual(bridge.capabilities, ["localFiles", "gatewayChoice"]);
+  assert.ok(Object.isFrozen(bridge.capabilities));
+});
+
+test("each capability call reaches only its own channel, with coerced arguments", async () => {
+  const answers = {
+    "app-window:open-image": "yes",
+    "app-window:list-gateways": { state: "ready", gateways: [] },
+    "app-window:choose-gateway": { ok: true, chosen: "crew", showing: "crew" },
+  };
+  const { exposed, sent } = loadPreload(["--kc-app-window=pets/panel/panel/2/localFiles"], (c) => answers[c]);
+  const bridge = exposed.kirocrewDesktopWindow;
+  bridge.revealFile({ toString: () => "/tmp/a.txt" });
+  assert.strictEqual(await bridge.openImage("/tmp/a.png"), false, "only a literal true reads as opened");
+  assert.deepStrictEqual(await bridge.listGateways(), { state: "ready", gateways: [] });
+  assert.deepStrictEqual(await bridge.chooseGateway(7), { ok: true, chosen: "crew", showing: "crew" });
+  assert.deepStrictEqual(sent, [
+    ["app-window:reveal-file", "/tmp/a.txt"],
+    ["invoke", "app-window:open-image", "/tmp/a.png"],
+    ["invoke", "app-window:list-gateways"],
+    ["invoke", "app-window:choose-gateway", "7"],
+  ]);
+});
+
+test("a refused capability call resolves to its empty answer instead of throwing", async () => {
+  const { exposed } = loadPreload(["--kc-app-window=pets/panel/panel/2/"], () => Promise.reject(new Error("no handler")));
+  const bridge = exposed.kirocrewDesktopWindow;
+  assert.strictEqual(await bridge.openImage("/tmp/a.png"), false);
+  assert.strictEqual(await bridge.listGateways(), null);
+  assert.deepStrictEqual(await bridge.chooseGateway("crew"), { ok: false });
+});
+
+test("the level 3 shortcut calls reach only their own channels, coerced", async () => {
+  const answers = {
+    "app-window:shortcuts": [{ id: "toggle" }],
+    "app-window:set-shortcut": { ok: true },
+  };
+  const { exposed, sent } = loadPreload(["--kc-app-window=pets/panel/panel/3/"], (c) => answers[c]);
+  const bridge = exposed.kirocrewDesktopWindow;
+  assert.strictEqual(bridge.level, 3);
+  assert.deepStrictEqual(await bridge.shortcuts(), [{ id: "toggle" }]);
+  await bridge.setShortcut({ toString: () => "toggle" }, { toString: () => "Alt+Shift+J" });
+  await bridge.setShortcut("toggle", undefined);
+  assert.deepStrictEqual(sent, [
+    ["invoke", "app-window:shortcuts"],
+    ["invoke", "app-window:set-shortcut", "toggle", "Alt+Shift+J"],
+    ["invoke", "app-window:set-shortcut", "toggle", null],
+  ]);
+});
+
+test("a refused level 3 call resolves to its empty answer instead of throwing", async () => {
+  const { exposed } = loadPreload(["--kc-app-window=pets/panel/panel/3/"], () => Promise.reject(new Error("no")));
+  const bridge = exposed.kirocrewDesktopWindow;
+  assert.strictEqual(await bridge.shortcuts(), null);
+  assert.deepStrictEqual(await bridge.setShortcut("toggle", ""), { ok: false });
 });
 
 test("each call sends its own channel with coerced arguments", () => {
@@ -67,6 +136,15 @@ test("each call sends its own channel with coerced arguments", () => {
   bridge.setFocusable("yes");
   bridge.setHitRegions([{ x: "1", y: 2, width: 3, height: 4, secret: "x" }]);
   bridge.setHitRegions("everything");
+  bridge.close("panel");
+  bridge.closeAll();
+  bridge.open("panel", { anchor: { x: "5", y: 6, width: 7, height: 8, extra: 1 } });
+  bridge.send("brain", { hello: 1 });
+  bridge.broadcast({ all: true });
+  bridge.beginDrag({ offsetX: "3", offsetY: 4, width: 128, height: 128, more: 1 });
+  bridge.endDrag();
+  bridge.showSession(undefined);
+  bridge.openExternal({ toString: () => "https://example.com" });
   assert.deepStrictEqual(sent, [
     ["app-window:ready"],
     ["app-window:close"],
@@ -74,7 +152,49 @@ test("each call sends its own channel with coerced arguments", () => {
     ["app-window:set-focusable", false],
     ["app-window:set-hit-regions", [{ x: 1, y: 2, width: 3, height: 4 }]],
     ["app-window:set-hit-regions", []],
+    ["app-window:close", "panel"],
+    ["app-window:close-all"],
+    ["app-window:open", "panel", { anchor: { x: 5, y: 6, width: 7, height: 8 } }],
+    ["app-window:send", "brain", { hello: 1 }],
+    ["app-window:broadcast", { all: true }],
+    ["app-window:begin-drag", { offsetX: 3, offsetY: 4, width: 128, height: 128 }],
+    ["app-window:end-drag"],
+    ["invoke", "app-window:show-session", ""],
+    ["app-window:open-external", "https://example.com"],
   ]);
+});
+
+test("each event delivers only well-formed arguments and unsubscribes", () => {
+  const { exposed, listeners } = loadPreload(["--kc-app-window=pets/pet/overlay/2"]);
+  const bridge = exposed.kirocrewDesktopWindow;
+  const got = [];
+  const offs = [
+    bridge.onMessage((from, message) => got.push(["message", from, message])),
+    bridge.onWindowChange((id, open) => got.push(["window", id, open])),
+    bridge.onPlaced((placement) => got.push(["placed", placement])),
+    bridge.onActive((state) => got.push(["active", state])),
+    bridge.onDrag((phase, x, y) => got.push(["drag", phase, x, y])),
+  ];
+  const fire = (channel, ...args) => listeners[channel][0]({}, ...args);
+  fire("app-window:message", "brain", { a: 1 });
+  fire("app-window:message", 7, { a: 1 });
+  fire("app-window:window-change", "panel", 1);
+  fire("app-window:placed", { side: "sideways" });
+  fire("app-window:placed", null);
+  fire("app-window:active", { active: "yes", x: 1 });
+  fire("app-window:drag", "move", 3, 4);
+  fire("app-window:drag", null);
+  for (const off of offs) off();
+  assert.deepStrictEqual(got, [
+    ["message", "brain", { a: 1 }],
+    ["window", "panel", false],
+    ["placed", { side: "right" }],
+    ["active", { active: false, x: 1 }],
+    ["drag", "move", 3, 4],
+  ]);
+  for (const channel of ["message", "window-change", "placed", "active", "drag"]) {
+    assert.deepStrictEqual(listeners[`app-window:${channel}`], []);
+  }
 });
 
 test("onShortcut delivers ids and unsubscribes", () => {

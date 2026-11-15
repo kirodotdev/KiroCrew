@@ -1,9 +1,11 @@
 /**
  * #11820: the session row's hover action forks the whole chat. It used to be
  * labelled "Duplicate" with the clipboard `Copy` glyph, which read as "copy
- * text". It is now named "Fork chat" with the same `GitFork` glyph the
+ * text". It is now named "Fork chat" with the same `Split` glyph the
  * message-level "Fork conversation from here" uses, and still calls the
  * existing whole-session fork (api.forkChatSlot) -- no new behaviour.
+ * Its row buttons carry no native `title`, so each shows its name in the
+ * instant tip.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
@@ -80,10 +82,14 @@ describe('session row "Fork chat" action', () => {
     expect(row).toBeTruthy()
     const btn = Array.from(row.querySelectorAll('button')).find(b => b.getAttribute('aria-label') === 'Fork chat')
     expect(btn, 'row carries a "Fork chat" button').toBeTruthy()
-    expect(btn!.getAttribute('title')).toBe('Fork chat')
+    // No native title: hovering shows the name in the instant tip instead.
+    expect(btn!.hasAttribute('title')).toBe(false)
+    fireEvent.mouseEnter(btn!)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Fork chat')
+    fireEvent.mouseLeave(btn!)
     // The old clipboard-looking label and glyph are gone from the row.
     expect(screen.queryByRole('button', { name: 'Duplicate' })).toBeNull()
-    expect(btn!.querySelector('svg.lucide-git-fork')).toBeTruthy()
+    expect(btn!.querySelector('svg.lucide-split')).toBeTruthy()
     expect(btn!.querySelector('svg.lucide-copy')).toBeNull()
     fireEvent.click(btn!)
     await waitFor(() => expect(mocks.forkChatSlot).toHaveBeenCalledWith(SLOT_KEY))

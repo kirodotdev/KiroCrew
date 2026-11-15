@@ -17,6 +17,9 @@ import subprocess
 import sys
 import tempfile
 
+from git_maintenance_helpers import git_global_config_text
+from refusing_git_hook_helpers import refusing_hooks_config
+
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SCRIPT_PATH = os.path.join(_REPO_ROOT, "scripts", "check_focus_cue.py")
 
@@ -68,6 +71,24 @@ class TestSelfTest:
         # that raced git's background repack would surface here as an OSError
         # rather than a return code.
         assert gate.self_test() == 0
+
+    def test_self_test_ignores_a_host_hook_that_refuses_commits(self, tmp_path) -> None:
+        """The probe repo's commits must not run the caller's global hooks, which CI never has."""
+        config = tmp_path / "host.gitconfig"
+        config.write_text(
+            git_global_config_text() + refusing_hooks_config(tmp_path), encoding="utf-8"
+        )
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": str(config)}
+        result = subprocess.run(
+            [sys.executable, _SCRIPT_PATH, "--test"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=tmp_path,
+            env=env,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
 
 
 class TestProbeRepoCleanup:

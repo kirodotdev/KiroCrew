@@ -150,7 +150,37 @@ def _listeners_on_port(port: int) -> list[int] | None:
 
 
 async def _probe_gateway_healthy(port: int, timeout: float) -> bool:
-    """Return ``True`` iff ``127.0.0.1:port`` answers an HTTP request in time.
+    """Return ``True`` iff ``127.0.0.1:port`` answers an HTTP request in time."""
+    return await _probe_host("127.0.0.1", port, timeout)
+
+
+async def _probe_v6_loopback_healthy(port: int, timeout: float) -> bool:
+    """Return ``True`` iff ``[::1]:port`` answers an HTTP request in time."""
+    return await _probe_host("::1", port, timeout)
+
+
+def _holder_reaches_v6_loopback(port: int, pids: list[int]) -> bool | None:
+    """True when one of *pids*' own LISTEN sockets on *port* takes ``::1``.
+
+    A gateway bound to ``::`` sets ``IPV6_V6ONLY`` and has no IPv4 secondary,
+    so it answers on ``::1`` only. Probing ``::1`` is credited to *pids* only
+    when their own socket is the one that probe lands on, so a different
+    program listening there cannot vouch for a stale holder. ``None`` when the
+    listener lookup did not complete, so the answer is unknown.
+    """
+    from kiro_crew.gateway_lock import _listener_reaches
+
+    listeners, completed = platform_compat.probe_port_listeners(port)
+    if not completed:
+        return None
+    wanted = set(pids)
+    return any(
+        _listener_reaches(listener, "::1") for listener in listeners if listener.pid in wanted
+    )
+
+
+async def _probe_host(host: str, port: int, timeout: float) -> bool:
+    """Return ``True`` iff ``host:port`` answers an HTTP request in time.
 
     A plain TCP connect is insufficient: a wedged gateway's kernel still
     ``accept()``s the connection even though the (blocked) loop never replies,
@@ -161,12 +191,9 @@ async def _probe_gateway_healthy(port: int, timeout: float) -> bool:
     the loop watchdog exists to catch).
     """
     try:
-        # Probe loopback deliberately: whether the gateway bound 127.0.0.1
-        # (local-only) or 0.0.0.0 (all interfaces), it is reachable here, and we
-        # only ever want to check the *local* instance — never an external NIC.
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection("127.0.0.1", port), timeout
-        )
+        # Probe loopback deliberately: we only ever want to check the *local*
+        # instance — never an external NIC.
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
     except (OSError, asyncio.TimeoutError):
         return False
     try:
@@ -281,6 +308,8 @@ async def reclaim_stale_gateway_port(
     list_listeners: Callable[[int], list[int] | None] = _listeners_on_port,
     is_kirocrew: Callable[[int], bool] | None = None,
     probe_healthy: Callable[[int, float], Awaitable[bool]] = _probe_gateway_healthy,
+    probe_v6_healthy: Callable[[int, float], Awaitable[bool]] = _probe_v6_loopback_healthy,
+    holder_reaches_v6: Callable[[int, list[int]], bool | None] | None = None,
     terminate: Callable[[list[int]], Awaitable[bool]] | None = None,
     holder_age: Callable[[int], float | None] | None = None,
     thread_count: Callable[[int], int | None] | None = None,
@@ -363,7 +392,27 @@ async def reclaim_stale_gateway_port(
         )
         return FOREIGN_HOLDER
 
-    if await probe_healthy(port, probe_timeout):
+    healthy = await probe_healthy(port, probe_timeout)
+    if not healthy:
+        reaches_v6 = holder_reaches_v6 or _holder_reaches_v6_loopback
+        try:
+            on_v6 = await asyncio.wait_for(
+                asyncio.to_thread(reaches_v6, port, kiro_pids), timeout=identity_timeout
+            )
+        except asyncio.TimeoutError:
+            on_v6 = None
+        if on_v6 is None:
+            # Unknown is not "not on ::1": a healthy v6-only holder would be
+            # killed on a guess, so fall back to wait/retry instead.
+            log.warning(
+                "Cannot read which addresses the holder of port %d listens on — "
+                "not reclaiming.",
+                port,
+            )
+            return UNAVAILABLE
+        if on_v6:
+            healthy = await probe_v6_healthy(port, probe_timeout)
+    if healthy:
         log.error(
             "Port %d is owned by a live, responsive KiroCrew gateway (pid %s) — "
             "not reclaiming. Stop it with `kirocrew stop` or use a different port.",
@@ -437,11 +486,15 @@ async def reclaim_stale_gateway_port(
     if ok:
         log.warning("Reclaimed port %d from stale gateway (pid %s).", port, kiro_pids)
         return RECLAIMED
+    # Deferred like the cli_server imports above: the CLI modules import the
+    # dashboard, so a top-level import here would be circular.
+    from kiro_crew.cli_server_stop import _force_stop_command
+
     log.error(
         "Failed to terminate stale gateway (pid %s) on port %d — you may need to "
-        "kill it manually: kill -9 %s",
+        "kill it manually: %s",
         _describe_holders(kiro_pids),
         port,
-        " ".join(str(p) for p in kiro_pids),
+        _force_stop_command(kiro_pids),
     )
     return RECLAIM_FAILED

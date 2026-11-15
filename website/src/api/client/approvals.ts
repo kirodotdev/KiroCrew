@@ -25,6 +25,16 @@ export type PendingQuestions = PendingQuestion[] & {
   resolved?: Record<string, string>
 }
 
+/** The route that decides the one request *target* names, without its query: a
+ *  coordinator request's decide route (its slot and instance ride the query), or
+ *  a native request's slot approve route. The path a permission check reads
+ *  before the decide is sent (`app-sdk/hostSessions.ts`). */
+export function decideApprovalPath(target: ApprovalTarget, action: 'approve' | 'reject' | 'reject_once'): string {
+  return target.origin === 'coordinator'
+    ? '/api/approvals/' + encodeURIComponent(target.id) + '/' + action
+    : '/api/chat/slots/' + encodeURIComponent(target.slot) + '/approve'
+}
+
 export function createApprovalsEndpoints({ post, j, jfetch: fetch }: ClientTransport) {
   const requests = {
     approvals: (): Promise<{ id: string; instance?: string; source?: string; tool?: string; tool_input?: string; tool_purpose?: string; tool_call_id?: string; slot?: string; ts?: number; run_task_id?: string; task_index?: number }[]> => fetch('/api/approvals').then(j),
@@ -39,9 +49,9 @@ export function createApprovalsEndpoints({ post, j, jfetch: fetch }: ClientTrans
      *  (minted here when the caller passes none) names one click, so the server replays a retry of it and answers a
      *  different collaborator's later click with the winner (409). */
     decideApproval: (target: ApprovalTarget, action: 'approve' | 'reject' | 'reject_once', responseId: string = mintResponseId()) => target.origin === 'coordinator'
-      ? post('/api/approvals/' + encodeURIComponent(target.id) + '/' + action + '?'
+      ? post(decideApprovalPath(target, action) + '?'
         + new URLSearchParams({ origin: 'coordinator', slot: target.slot, instance: target.instance }), { response_id: responseId }).then(j)
-      : post('/api/chat/slots/' + encodeURIComponent(target.slot) + '/approve', {
+      : post(decideApprovalPath(target, action), {
         action: action === 'approve' ? 'approved' : action === 'reject_once' ? 'rejected_once' : 'rejected',
         origin: 'native', request_id: target.id, request_mid: target.mid,
         response_id: responseId,

@@ -53,7 +53,9 @@ class Origin:
     """The sender of a delivery and what its row names.
 
     ``label`` is the cron job or app label the row shows; ``nudge`` is the
-    ``meta.nudge`` (``{"cycle", "loop_id"}``) an automation wake's row carries.
+    ``meta.nudge`` (``{"cycle", "loop_id"}``) an automation wake's row carries,
+    plus, for a steered wake, the loop's config generation under
+    :data:`WAKE_GENERATION`, which no row carries.
     Build one with :func:`cron`, :func:`app` or :func:`automation`.
     """
 
@@ -61,28 +63,40 @@ class Origin:
     label: str = ""
     nudge: dict | None = None
     steer: bool = False
+    #: A peer's own Crew session key, for the trace link its delivery carries.
+    sender: str = ""
 
 
 def cron(label: str) -> Origin:
     return Origin(ORIGIN_CRON, label=label)
 
 
-def peer(*, steer: bool) -> Origin:
+def peer(*, steer: bool, sender: str = "") -> Origin:
     """A peer session's text.
 
     ``steer=True`` is the steer arm only: it never queues or starts a turn, so a
     caller whose turn ended before the steer ran gets :data:`NOT_DELIVERED` and
-    makes the one queue-or-run delivery itself (``steer=False``).
+    makes the one queue-or-run delivery itself (``steer=False``). *sender* is the
+    peer's session key, read only to link the turn the text starts to the sender's.
     """
-    return Origin(ORIGIN_PEER, steer=steer)
+    return Origin(ORIGIN_PEER, steer=steer, sender=sender)
 
 
 def app(label: str) -> Origin:
     return Origin(ORIGIN_APP, label=label)
 
 
-def automation(cycle: int, loop_id: str) -> Origin:
-    return Origin(ORIGIN_AUTOMATION, nudge={"cycle": cycle, "loop_id": loop_id})
+#: The key a steered wake's ``nudge`` holds its loop's config generation under. The
+#: steer keeps it so the turn that carries the wake can charge that loop's cycle
+#: (``steer_queue``); the steer's row and a requeued entry's meta drop it.
+WAKE_GENERATION = "generation"
+
+
+def automation(cycle: int, loop_id: str, *, generation: int | None = None) -> Origin:
+    nudge: dict[str, Any] = {"cycle": cycle, "loop_id": loop_id}
+    if generation is not None:
+        nudge[WAKE_GENERATION] = generation
+    return Origin(ORIGIN_AUTOMATION, nudge=nudge)
 
 
 def origin_row(origin: Origin) -> tuple[str, str, dict[str, Any]]:
@@ -385,8 +399,15 @@ async def _deliver_peer(
             return DELIVERED_REQUEUED
         return NOT_DELIVERED
     from kiro_crew.dashboard.chat_runner import _run_chat
+    from kiro_crew.tracing import steps as trace_steps
 
-    started = slot.enqueue_or_run_prompt(
-        text, _run_chat, state, extra_meta=queue_meta, relay_meta=relay_meta
-    )
+    # The turn this starts, now or at its drain, links to the sender's (tracing/steps.py).
+    with trace_steps.sending(origin.sender) as sender_meta:
+        started = slot.enqueue_or_run_prompt(
+            text,
+            _run_chat,
+            state,
+            extra_meta={**(queue_meta or {}), **sender_meta} or queue_meta,
+            relay_meta=relay_meta,
+        )
     return DELIVERED_TURN if started else DELIVERED_QUEUED

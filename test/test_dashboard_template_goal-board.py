@@ -207,3 +207,39 @@ def test_the_whole_board_numbers_count_forgotten_items() -> None:
     assert "counts[state] / total" in states
     assert "counts[closing[c]] += gone[closing[c]];" in states
     assert "String(list.length + forgotten().items)" in _script()
+
+
+def test_a_hosted_discussion_reads_as_discussing_but_never_hides_a_question() -> None:
+    """An open item whose last report carried ``discussion`` is a discussing row; one
+    that waits on the reader stays needs-you, and one whose chat is gone is not shown
+    as a live discussion."""
+    body = _function("view")
+    asked = body.index("return 'needs_you'")
+    talking = body.index("return 'discussing'")
+    assert asked < talking < body.index("it.worker === 'running'")
+    assert "it.worker !== 'closed' && it.orphaned !== true && it.stale !== true" in body
+    assert "['discussing', 'discussing', 'var(--info, #6aa9ff)']" in _script()
+    assert "text(it.state) === 'open'" in _function("discussionOf")
+    # Every open item lands in one of the summary's counts, a discussion in "in progress".
+    assert "if (v === 'working' || v === 'discussing') run += 1;" in _function("drawLoop")
+
+
+def test_the_discussion_panel_is_a_keyboard_toggle_and_its_thread_opens_through_the_host() -> None:
+    body = _function("drawTalk")
+    # A native button, so Enter and Space work; its state is announced.
+    assert "button('', 'tg', null)" in body
+    assert "toggle.setAttribute('aria-expanded'" in body
+    assert "toggle.setAttribute('aria-controls', panel.id)" in body
+    assert "panel.hidden = !open" in body
+    # The thread link takes the page's one open path, under the same LINKABLE rule.
+    assert "LINKABLE.test(thread)" in body and "openLink(thread)" in body
+
+
+def test_every_language_table_names_the_discussion_rows_words() -> None:
+    """The row's words are in each UI language; any other key falls back to English."""
+    script = _script()
+    keys = re.findall(r"\b(state_discussing|talk_\w+|phase_\w+):", script)
+    per_key = {key: keys.count(key) for key in keys}
+    tables = re.findall(r"^        (?:'[\w-]+'|en): \{", script, re.MULTILINE)
+    assert len(tables) == 12
+    assert set(per_key.values()) == {len(tables)}, per_key

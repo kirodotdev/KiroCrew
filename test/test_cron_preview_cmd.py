@@ -20,6 +20,7 @@ from test_cron_call_tool_scan import (
 
 from conftest import forget_env_at_teardown
 from kiro_crew.cli_commands import _cron_preview
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 @pytest.fixture(autouse=True)
@@ -146,6 +147,29 @@ class TestCronPreviewValidation:
         assert out.out == ""
         assert out.err == "Error: blocked by policy\n"
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            RuntimeError("Symlink loop from '/home/u/.kiro/crew/crons/loop.py'"),
+            OSError(36, "File name too long"),
+        ],
+        ids=["symlink-loop", "name-too-long"],
+    )
+    def test_a_script_path_the_resolver_cannot_follow_is_refused(self, capsys, error):
+        """The errors cron add already refuses with one line end preview the same way."""
+        outcome: object = None
+        with patch("kiro_crew.cron_script.resolve_script_path", side_effect=error):
+            try:
+                _cron_preview(_make_args("~/.kiro/crew/crons/loop.py:run"))
+            except SystemExit as exc:
+                outcome = exc.code
+            except (RuntimeError, OSError) as exc:
+                outcome = f"escaped as {type(exc).__name__}"
+        assert outcome == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert out.err == f"Error: {error}\n"
+
     def test_unloadable_script_refused_on_stderr(self, tmp_path: Path, capsys):
         # Not named s.py: the bytecode fixture expects s.py to be imported,
         # and this script never is.
@@ -159,6 +183,32 @@ class TestCronPreviewValidation:
         out = capsys.readouterr()
         assert out.out == ""
         assert out.err.startswith("Error: cannot load ")
+
+    def test_script_that_fails_to_import_is_reported_and_audited(self, tmp_path: Path, capsys):
+        # Not named s.py: the bytecode fixture checks only s.py.
+        _write_script(
+            tmp_path, "broken.py", "import kirocrew_no_such_module_xyz\ndef run(ctx): pass\n"
+        )
+        with _patch_resolve(tmp_path, name="broken.py"), patch(
+            "kiro_crew.cli_commands.sel"
+        ) as sel:
+            try:
+                _cron_preview(_make_args(f"{tmp_path / 'broken.py'}:run"))
+            except SystemExit as exc:
+                code = exc.code
+            except Exception as exc:
+                pytest.fail(f"the load error escaped the CLI as a traceback: {exc!r}")
+            else:
+                pytest.fail("a script that fails to import must exit 1")
+        assert code == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert out.err.startswith(
+            f"Error: cannot load {tmp_path / 'broken.py'}: ModuleNotFoundError: "
+        )
+        sel.return_value.log_api_access.assert_called_once()
+        assert sel.return_value.log_api_access.call_args.kwargs["outcome"] == "error"
+        assert "_cron_preview_module" not in sys.modules
 
     def test_missing_function(self, tmp_path: Path, capsys):
         _write_script(tmp_path, "s.py", "def other(ctx): pass\n")
@@ -388,16 +438,16 @@ class TestCronPreviewNotifyParity:
             "s.py",
             "from kiro_crew.cron_script import Report\n"
             "def run(ctx):\n"
-            "    ctx.notify('leak aws_secret_access_key=AKIAIOSFODNN7EXAMPLE',\n"
-            "               detail='aws_secret_access_key=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY')\n"
+            "    ctx.notify('leak aws_secret_access_key=" "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" "Jf1Lb5Gs0Ye9Ua2WkE',\n"
+            "               detail='aws_secret_access_key=" "Qh4Tm2Vx9KpRcZ8Nw3Hd" "Jf1Lb5Gs0Ye9Ua2WkEQ2')\n"
             "    raise Report('done')\n",
         )
         with _patch_resolve(tmp_path):
             _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
         out = capsys.readouterr().out
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert SAMPLE_AWS_SECRET not in out
         # The kwarg value is redacted too, not just the text.
-        assert "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY" not in out
+        assert "Qh4Tm2Vx9KpRcZ8Nw3Hd" "Jf1Lb5Gs0Ye9Ua2WkEQ2" not in out
         assert "REDACTED" in out
 
 
@@ -434,7 +484,7 @@ class TestCronPreviewMatchesScriptContext:
             "    folders = ctx.list_session_folders()\n"
             "    folder = ctx.create_session_folder('Reports')\n"
             "    slot = ctx.open_session('Daily', folder_id=folder['id'])\n"
-            "    key = 'aws_secret_access_key=' + 'wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY'\n"
+            "    key = 'aws_secret_access_key=' + 'Qh4Tm2Vx9KpRc/Z8Nw3Hd/' 'Jf1Lb5Gs0Ye9Ua2WkE'\n"
             "    sent = ctx.send_to_session(slot, key)['ok']\n"
             "    mode = ctx.set_session_mode(slot, 'trust_reads')['mode']\n"
             "    logged = ctx.crew_log_append('note', {'text': key}, max_age_s=120)\n"
@@ -453,6 +503,6 @@ class TestCronPreviewMatchesScriptContext:
             "crew_log_append",
         ):
             assert f"[{method} suppressed]" in out, out
-        assert "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY" not in out
+        assert SAMPLE_AWS_SECRET not in out
         assert "REDACTED" in out
         assert "0 preview-dry-run-slot True trust_reads note" in out, out

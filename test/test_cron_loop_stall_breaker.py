@@ -145,6 +145,22 @@ class TestBreaker:
         finally:
             await svc.stop()
 
+    async def test_a_host_wide_pause_pauses_nothing(
+        self, tmp_path: Path, dead_pids: set[int]
+    ) -> None:
+        """The alarm fired 65 s after it was due: the host stopped, not the job."""
+        seed = CronService(base_dir=tmp_path)
+        job = seed.add_job(name="hourly", message="m", every_secs=3600)
+        fired = 1_762_540_000  # any instant: the breaker does not age dumps
+        write_dump(tmp_path / "dumps", 4_100_009, CRON_STACK, mtime=fired, alarm_due=fired - 65)
+        _abandoned_marker(tmp_path, job.id, job.name, 4_100_009, fired - 60)
+        svc = await _started_service(tmp_path, tmp_path / "dumps")
+        try:
+            j = svc.get_job(job.id)
+            assert j is not None and j.auto_paused is False and j.enabled is True
+        finally:
+            await svc.stop()
+
     async def test_two_candidates_pause_nothing(self, tmp_path: Path, dead_pids: set[int]) -> None:
         seed = CronService(base_dir=tmp_path)
         a = seed.add_job(name="a", message="m", every_secs=3600)

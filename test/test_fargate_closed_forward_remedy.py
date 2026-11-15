@@ -185,8 +185,9 @@ class TestStdoutCaptureHygiene:
         the reason text back to nobody, so there is no return value to observe
         it through.
         """
-        raw = f"SessionId: {SESSION_ID} : closed AKIAIOSFODNN7EXAMPLE\n"
-        assert "AKIAIOSFODNN7EXAMPLE" not in _sanitize_ssm_stdout(raw)
+        secret = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
+        raw = f"SessionId: {SESSION_ID} : closed {secret}\n"
+        assert secret not in _sanitize_ssm_stdout(raw)
         # The notice is still classifiable with the credential gone.
         assert _ssm_close_reason(raw) == "closed"
 

@@ -10,7 +10,6 @@ import { APPROVAL_MODE_ADJUSTED_LS_KEY } from '../components/ApprovalModePicker'
 import { api } from '../api/client'
 import { sseChatMessage } from '../store/chatSlice'
 import type { RootState } from '../store'
-import { crewModePreviewOn } from './crewModePreview'
 
 vi.mock('../api/client', () => {
   class MockApiError extends Error {
@@ -190,6 +189,3 @@ describe('review-round fixes (hint retirement + coexistence)', () => {
     expect(screen.queryByText('Tired of confirming every step?')).not.toBeInTheDocument()
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

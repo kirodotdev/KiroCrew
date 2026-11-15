@@ -123,6 +123,22 @@ async def test_a_one_word_chinese_query_keeps_the_title_fallback() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_excluded_content_match_does_not_return_through_title_fallback() -> None:
+    log = _OutsideTheWindowLog(
+        [{"key": "dashboard_chat-0", "title": "Deploy plan", "memory_mode": "persistent"}],
+        {"dashboard:chat-0": [{"role": "user", "content": "Vinod deployment notes"}]},
+    )
+
+    choices, total, _note = await resume_core.resolve_session_choices(
+        log, "deploy plan -vinod", lambda text, _limit: text
+    )
+
+    assert choices == []
+    assert total == 0
+    assert log.list_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_the_resume_parse_runs_off_the_event_loop(monkeypatch) -> None:
     """The parse may load the Chinese dictionary on first use; the loop must not pay for it."""
     seen: list[bool] = []

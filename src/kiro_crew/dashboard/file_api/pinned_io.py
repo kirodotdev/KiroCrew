@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         _run_path_probe,
         _sel,
         atomic_write,
+        bounded_read,
         config_dir,
         is_sensitive_path,
         logger,
@@ -454,7 +455,7 @@ def _open_checked(
     path = checked.path
     try:
         with checked.file as f:
-            data = f.read(max_bytes + 1)
+            data = bounded_read(f, max_bytes + 1)
     except OSError:
         # Keep the traceback for a failed read: this 500 is the only signal,
         # and SEL records outcome, not cause.

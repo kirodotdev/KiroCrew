@@ -273,6 +273,7 @@ from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
     api_mcp_toggle,
     api_mcp_toggle_all,
     api_mcp_toggle_tool,
+    api_mcp_unreadable_files,
 )
 
 # ── Crew Members (handlers/members.py) ──
@@ -673,6 +674,10 @@ from kiro_crew.dashboard.handlers.usage import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.usage_series import api_usage_series  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.wakatime import (  # noqa: E402, F401
     api_wakatime_export,
+    api_wakatime_oauth_authorize,
+    api_wakatime_oauth_callback,
+    api_wakatime_oauth_disconnect,
+    api_wakatime_oauth_status,
     api_wakatime_stats,
 )
 
@@ -1116,6 +1121,14 @@ from kiro_crew.dashboard.handlers.decisions import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.decisions_sagemaker import (  # noqa: E402, F401
     api_decisions_provider_sagemaker_test,
 )
+
+# MCP message-body fields — owner-gated, and the ONLY writer of
+# ``mcp_body_fields.json`` (see ``security.mcp_body_fields``).
+from kiro_crew.dashboard.handlers.mcp_body_fields import (  # noqa: E402, F401
+    api_mcp_body_fields_add,
+    api_mcp_body_fields_get,
+    api_mcp_body_fields_remove,
+)
 from kiro_crew.dashboard.handlers.notifications_push import (  # noqa: E402, F401
     api_own_notification_ack,
     api_own_notifications,
@@ -1140,10 +1153,23 @@ from kiro_crew.dashboard.handlers.portability import (  # noqa: E402, F401
     api_portability_preview,
 )
 
+# The per-folder project-hooks choice (see ``kiro_crew.project_hooks_consent``).
+from kiro_crew.dashboard.handlers.project_hooks_consent import (  # noqa: E402, F401
+    api_project_hooks_consent_get,
+    api_project_hooks_consent_put,
+)
+
 # Owner reveal of a removed credential -- the ONE reader of the in-memory
 # ``security.reveal_store``; refuses every agent, app and non-owner caller.
 from kiro_crew.dashboard.handlers.redacted_reveal import (  # noqa: E402, F401
     api_owner_value_reveal,
+)
+
+# MCP safety switches — owner-gated, the one dashboard writer of
+# ``mcp.protect_kiro_permission_rules`` and ``mcp.honour_auto_approve``.
+from kiro_crew.dashboard.handlers.safety_switches import (  # noqa: E402, F401
+    api_safety_switches_get,
+    api_safety_switches_put,
 )
 from kiro_crew.dashboard.handlers.security import (  # noqa: E402, F401
     api_denied_command_builtin_toggle,
@@ -1160,4 +1186,9 @@ from kiro_crew.dashboard.handlers.security import (  # noqa: E402, F401
     api_trusted_registries_list,
     api_trusted_registry_grant,
     api_trusted_registry_revoke,
+)
+from kiro_crew.dashboard.handlers.tool_grants import (  # noqa: E402, F401
+    api_tool_grant_add,
+    api_tool_grant_remove,
+    api_tool_grants_list,
 )

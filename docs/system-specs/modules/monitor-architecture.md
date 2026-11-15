@@ -191,23 +191,25 @@ replacement starts its own cycle count. As a backstop, `work_ledger_read` flags 
 read included -- a loop watching something else reads no ledger, so it does not
 count. The Crew page board does not show the flag yet.
 
-A `work-ledger` watch waits longer for its quiet floor while no worker has
-reported. Every gated loop is delivered anyway after `_MAX_QUIET_STREAK` (10)
-quiet ticks, and for this kind that turn re-read a long conductor chat to find
-the board as the conductor left it. The probe publishes `WorkLedgerProbe.revision`,
+A `work-ledger` watch has its own quiet floor while no worker has reported.
+Every gated loop is delivered anyway after `_MAX_QUIET_STREAK` (10) quiet
+ticks. For this kind that turn is the goal-conductor skill's active check of
+each open item ("A wake with no news is a check"), so the idle floor equals the
+shipped one. The probe publishes `WorkLedgerProbe.revision`,
 a digest of each item's worker-owned report fields (`last_report_at`,
 `status`, `summary`; `no-reports` for a board read with none yet). The conductor's own writes -- a verdict, a new item -- do not
 move it, though they still move the kernel epoch. The gate keeps it on the
 monitor as `ledger_revision`, and every delivered turn copies it to
 `ledger_delivered_revision`. While the two match, the floor is
-`_IDLE_LEDGER_QUIET_FLOOR` (40) ticks instead of 10, and it still delivers
-there, which also bounds a stall the probe's rate limit folded forward without
-waking. A new worker report puts the floor back to 10 at once. Report and stall
+`_IDLE_LEDGER_QUIET_FLOOR` (10) ticks, about hourly at the 300 s patrol
+interval, and it still delivers there, which also bounds a stall the probe's
+rate limit folded forward without waking. A new worker report keeps the
+shipped floor. Report and stall
 wakes are untouched: they are `WAKE` verdicts and never reach the floor branch.
-The longer floor never applies while the loop's recent turns failed to start or
+The idle floor never applies while the loop's recent turns failed to start or
 errored (`consecutive_start_failures`, `consecutive_failed_cycles`), or when the
-revision is unknown (empty, or unreadable on load). A `gh-pr` watch gets the
-same 40-tick floor while its whole reading only waits on a reviewer: open, not a
+revision is unknown (empty, or unreadable on load). A `gh-pr` watch waits
+`_REVIEW_WAIT_QUIET_FLOOR` (40) ticks while its whole reading only waits on a reviewer: open, not a
 draft, `MERGEABLE`, every check finished with none failed, and
 `REVIEW_REQUIRED` (`gate._pr_waits_only_on_review`). An unchanged reading then
 still skips the judge, because `_unchanged_reading_skips_judge` compares the
@@ -231,8 +233,10 @@ gate's terminal recheck cannot spend the loop's own wake), bounded by
 `_MAX_REMEMBERED_TOKENS` and `_MAX_WATCHERS_PER_ITEM`, and dropped when the item
 closes. A newer stall token replaces older ones, since only the newest can recur.
 A token is marked seen when the probe emits it, not when the turn lands. A woken
-turn that fails, or a recovery it queued for itself that fails, is charged to the
-loop (see [learn-cron-dashboard](learn-cron-dashboard.md)), so
+turn that fails, a recovery it queued for itself that fails, or the turn that
+carries a steered wake (the running turn that took it, or the steer's own requeued
+turn) that fails, is charged to the loop (see
+[learn-cron-dashboard](learn-cron-dashboard.md)), so
 `gate._spend_ledger_wake_retry` buys one plain patrol turn on the next tick that
 reads the board, not the wake's text again.
 
@@ -371,6 +375,19 @@ to the ceiling and bound-checks only a budget the caller supplied.
 Explicit stops remain available.
 Quarantine remains inspectable even below the ordinary four-hour default.
 
+`_timer` stops a prompt loop on a spent runtime budget only when it wakes, so
+`_arm_from_deadline` wakes it just after (`_BUDGET_WAKE_SLACK_SECS`) a budget that
+runs out before the next deadline, not an interval later; the slack keeps a timer
+that asyncio runs a clock tick early from firing a turn. A work-ledger watch with
+open items is extended at that wake (below) rather than stopped, as at a deadline.
+Three arms keep the deadline. A structured monitor's budget is enforced by its controller after a
+probe, not by `_timer`. A person-wait hold is stopped by no bound while it holds.
+A budget already spent at the arm is left to the deadline because an app
+reconciler revives a stopped loop every few seconds without restarting its budget,
+and an immediate wake would stop it, and notify, on every pass; so a budget that
+runs out during a user turn in the slot, or while the gateway is down, still waits
+for the deadline.
+
 A prompt-path work-ledger watch is the one loop whose own bounds do not end it
 while its subject is live. When `_timer` finds the cycle cap or the runtime
 budget spent on a running loop that observes a work ledger
@@ -431,8 +448,11 @@ never holds.
 An unanswered tool approval HOLDS a prompt loop rather than stopping it: it
 stays active, fires nothing and spends neither bound, and it resumes on its own
 once a person answers an approval, types into the dashboard session or presses
-fire (`release_approval_hold`); a Slack or Discord message alone does not
-release it. `monitor_inspect` reports the hold as
+fire, or a new dashboard turn starts in the session, whoever sent it
+(`_turn_open`, unarmed: that turn's end re-arms the loop)
+(`release_approval_hold`). A Slack or Discord message on a channel-bound
+slot does not release it; one sent into a dashboard slot linked to that
+channel runs through `_run_chat`, so its turn does. `monitor_inspect` reports the hold as
 `paused_for_approval` on the loop reading. A held gated loop is not blind: when
 it names one pull request, each held tick reads it (`subject_reads.hold_tick`,
 one `gh pr view`, no model turn) and re-arms one read interval out, so the

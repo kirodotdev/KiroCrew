@@ -34,6 +34,8 @@ from kiro_crew.dashboard.handlers.members_access import (
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.external_text import redact_external_text
 from kiro_crew.members import MemberSlugError
+from kiro_crew.shared_crew.participants import dropped as participants_dropped
+from kiro_crew.shared_crew.participants import ordered as ordered_participants
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.members")
 
@@ -439,6 +441,9 @@ async def api_members(request: web.Request) -> web.Response:
                 # crewmate's own model; the effort is load-time coerced.
                 "worker_model": _roster_mask(agent_cfg.worker_model),
                 "worker_reasoning_effort": agent_cfg.worker_reasoning_effort,
+                # How many workers this Bot may have open at once; the owner's
+                # limit, enforced by `session_create`.
+                "max_workers": agent_cfg.max_workers,
                 # The per-crewmate Dynamic capabilities preview, the profile
                 # card's switch (``kiro_crew.crewmate_dynamic_capabilities``).
                 "dynamic_capabilities": bool(getattr(agent_cfg, "dynamic_capabilities", False)),
@@ -510,6 +515,12 @@ async def api_members(request: web.Request) -> web.Response:
         row["slot_key"] = slot_key
         slot = state._slots.get(slot_key) if (state and slot_key) else None
         row["running"] = bool(slot.running) if slot is not None else False
+        # Who has written in the DM thread (``shared_crew.participants``), read
+        # from the live slot only so the roster never opens a transcript for it.
+        # The teammate roster (``_teammate_roster``) does not carry it: the DM
+        # thread is the owner's, which that roster masks.
+        row["participants"] = ordered_participants(slot) if slot is not None else []
+        row["participants_dropped"] = participants_dropped(slot) if slot is not None else 0
         # Read BEFORE the roster observation and the transcript read below: a
         # slot with unflushed rows has speech on the member log the disk does
         # not hold yet, so its speech-only read must not become a correction.

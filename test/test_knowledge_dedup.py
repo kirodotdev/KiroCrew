@@ -105,6 +105,12 @@ class TestFilenameMatch:
             "Report 2025-13-01.docx", "Report 2025-25-01.docx"
         )
 
+    def test_a_zero_padded_counter_read_as_year_zero_does_not_crash(self):
+        # "00000105" reads as ISO year 0000, month 01, day 05; `date()` refuses
+        # year 0, and that ValueError must not fail the whole dedup sweep.
+        assert filename_near_match("Scan_00000105.pdf", "Scan_00000106.pdf")
+        assert not filename_near_match("Scan_00000105.pdf", "Scan_00001205.pdf")
+
     def test_iso_date_ranges_keep_their_explicit_years(self):
         # A numeric date (04-01-2024) whose span only partly overlaps an
         # over-matched ISO span (2024_04-30) must keep its explicit year, so two

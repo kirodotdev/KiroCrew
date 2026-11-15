@@ -64,6 +64,7 @@ def _advertised_evidence_provider(
         try:
             ids = advertised_model_ids(getter()) or _kas_select_ids(request, pb)
         except Exception:
+            # A provider whose list fails gives no evidence; ask the next one.
             continue
         if ids:
             return provider, ids

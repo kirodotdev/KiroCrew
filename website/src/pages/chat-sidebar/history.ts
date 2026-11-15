@@ -2,7 +2,7 @@
  *  its persisted height and its resize drag. */
 import { useState, useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from 'react'
 import { fetchHistory } from '../../store/chatSlice'
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import type { AppDispatch } from '../../store'
 import { HISTORY_HEIGHT_LS_KEY } from './persistence'
@@ -52,7 +52,7 @@ export function useHistoryPane({ setHistoryFilter, slotFilter, dispatch }: {
   const HISTORY_MIN_HEIGHT = 120
   const HISTORY_MAX_HEIGHT = 800
   const [historyHeight, setHistoryHeight] = useState<number>(() => {
-    const saved = parseInt(localStorage.getItem(HISTORY_HEIGHT_LS_KEY) || '', 10)
+    const saved = parseInt(safeGetItem(HISTORY_HEIGHT_LS_KEY) || '', 10)
     return Number.isFinite(saved) && saved >= HISTORY_MIN_HEIGHT && saved <= HISTORY_MAX_HEIGHT ? saved : 240
   })
   useEffect(() => { safeSetItem(HISTORY_HEIGHT_LS_KEY, String(historyHeight)) }, [historyHeight])

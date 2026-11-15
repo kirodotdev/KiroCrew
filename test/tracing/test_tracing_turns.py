@@ -86,7 +86,7 @@ def test_off_by_default_hands_the_stream_back_untouched():
 def test_off_imports_no_sdk_and_starts_no_thread(tmp_path):
     program = textwrap.dedent("""
         import asyncio, sys, threading
-        from kiro_crew.tracing import provider, turns
+        from kiro_crew.tracing import provider, steps, turns
         from kiro_crew.metrics import tool_calls
 
         async def events():
@@ -100,6 +100,16 @@ def test_off_imports_no_sdk_and_starts_no_thread(tmp_path):
                 pass
             tool_calls.note_tool_call_started("t1", kind="read", scope="a")
             tool_calls.record_tool_call_finished("t1", status="completed", scope="a")
+            # The steps a call site reports are no-ops too.
+            assert steps.approval_opened("r1", session_key="k") is None
+            steps.approval_closed(None, approved=True, by="person")
+            steps.steered(steps.STEER_INTERRUPT, source=S())
+            steps.note_queued("q1")
+            with steps.sending("k") as meta:
+                assert meta == {}
+            with steps.drained([{"id": "q1", "meta": {}}]):
+                assert steps.take_queued() == ((), {})
+            assert not steps._queued_at
 
         asyncio.run(main())
         assert provider.current() is None
@@ -228,7 +238,7 @@ def test_turning_tracing_off_during_a_slow_first_build_still_turns_it_off(tmp_pa
     monkeypatch.setattr(provider, "_build_live", slow_build)
     provider.reset_for_testing()
     try:
-        resolver = threading.Thread(target=provider.current)  # what traced() awaits
+        resolver = threading.Thread(target=provider.current)  # what watch_config() starts
         resolver.start()
         assert building.wait(default_timeout())
         config.write_text(json.dumps({"telemetry": {"traces_enabled": False}}), encoding="utf-8")
@@ -322,7 +332,7 @@ async def test_turning_tracing_off_mid_turn_keeps_that_turns_spans(spans, tmp_pa
 @pytest.mark.asyncio
 async def test_a_settings_write_mid_turn_keeps_that_turns_later_tool_spans(spans):
     async def stream():
-        provider._apply_config_change()  # a write: new turns re-read the switch
+        provider._apply_config_change()  # a write: the applier re-reads the switch
         assert provider.peek() is None
         tool_calls.note_tool_call_started("t1", kind="read", scope="acp-1", tool_name="read")
         tool_calls.record_tool_call_finished("t1", status="completed", scope="acp-1")
@@ -345,7 +355,7 @@ async def test_the_exit_flush_writes_queued_spans(tmp_path, monkeypatch):
         await provider.flush_for_exit()
         assert provider.resolved() is False
         shards = list((tmp_path / "traces").glob("spans-*.jsonl"))
-        assert shards and shards[0].read_text(encoding="utf-8").count("\n") == 4
+        assert shards and shards[0].read_text(encoding="utf-8").count("\n") == 5
     finally:
         provider.reset_for_testing()
 
@@ -388,6 +398,7 @@ def test_a_traced_turn_lands_in_the_local_sink_under_its_bound_id(tmp_path, monk
         "invoke_agent kirocrew-default",
         "user.prompt",
         "chat",
+        "kirocrew.step",
         "turn.complete",
     }
     assert {line["context"]["trace_id"] for line in lines} == {"0x" + TURN_ID}
@@ -417,6 +428,9 @@ async def test_a_bound_turn_id_is_the_trace_id_and_the_tree_has_its_shape(spans)
         child = by_name[name]
         assert child.parent.span_id == turn.context.span_id
         assert _hex(child.context.span_id, 16) == ids.span_id(NS, kind, TURN_ID, 1)
+    step = by_name["kirocrew.step"]
+    assert step.parent.span_id == turn.context.span_id
+    assert _hex(step.context.span_id, 16) == ids.span_id(NS, "step", TURN_ID, 1, 1)
     assert by_name["turn.complete"].attributes["kirocrew.stop_reason"] == "end_turn"
     attrs = turn.attributes
     assert attrs["kirocrew.turn_id"] == TURN_ID

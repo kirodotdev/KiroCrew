@@ -46,6 +46,7 @@ def test_toolless_kas_spawn_switches_mcp_off() -> None:
     rt, sent = _runtime(dict(LITE))
     asyncio.run(launch._switch_off_mcp_for_toolless_spawn(rt))
     assert sent == [("_kiro/mcp/toggle", {"enabled": False})]
+    assert rt._mcp_switched_off is True
 
 
 @pytest.mark.parametrize(
@@ -61,8 +62,10 @@ def test_toolless_kas_spawn_switches_mcp_off() -> None:
 )
 def test_an_agent_that_can_use_mcp_keeps_it(spec: Any) -> None:
     rt, sent = _runtime(spec)
+    rt._mcp_switched_off = True  # an earlier spawn's process switched it off
     asyncio.run(launch._switch_off_mcp_for_toolless_spawn(rt))
     assert sent == []
+    assert rt._mcp_switched_off is False
 
 
 def test_other_backends_are_untouched() -> None:
@@ -71,9 +74,24 @@ def test_other_backends_are_untouched() -> None:
     assert sent == []
 
 
+def test_the_spec_the_handshake_judged_is_not_read_again() -> None:
+    rt, sent = _runtime(AssertionError("the handshake's read is the one judged"))
+    rt._spawn_spec = dict(LITE)
+    asyncio.run(launch._switch_off_mcp_for_toolless_spawn(rt))
+    assert sent == [("_kiro/mcp/toggle", {"enabled": False})]
+
+
+def test_a_handshake_that_read_no_spec_leaves_the_read_here() -> None:
+    rt, sent = _runtime(dict(LITE))
+    rt._spawn_spec = None
+    asyncio.run(launch._switch_off_mcp_for_toolless_spawn(rt))
+    assert sent == [("_kiro/mcp/toggle", {"enabled": False})]
+
+
 def test_unreadable_spec_or_failed_send_does_not_raise() -> None:
     rt, sent = _runtime(OSError("unreadable"))
     asyncio.run(launch._switch_off_mcp_for_toolless_spawn(rt))
     assert sent == []
     rt, _ = _runtime(dict(LITE), send_fails=True)
     asyncio.run(launch._switch_off_mcp_for_toolless_spawn(rt))
+    assert rt._mcp_switched_off is False

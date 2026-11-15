@@ -16,6 +16,7 @@ import re
 import token
 import tokenize
 
+from .call_views import once_per_call
 from .shell_normalizer import (
     _NESTED_SHELL_PROGRAMS,
     _PYTHON_INLINE_PROGRAM_FLAGS,
@@ -120,7 +121,14 @@ _PY_LINE_CONTINUATION_RE = re.compile(r"\\\r?\n[ \t]*")
 _SHELL_QUOTE_LEVELS = 2
 
 
-def _lex(view: str):
+@once_per_call()
+def _lex(view: str) -> "tuple[tuple[tokenize.TokenInfo, int, int], ...]":
+    """:func:`_lex_stream` read to its end. Every caller walks the whole stream, so one
+    read of a view serves each of them inside a gate call."""
+    return tuple(_lex_stream(view))
+
+
+def _lex_stream(view: str):  # type: ignore[no-untyped-def]
     """Yield Python tokens with absolute offsets, retaining a malformed prefix.
 
     Python's lexer owns escapes, triple quotes and comments; a shell quote walk

@@ -119,7 +119,11 @@ class TestOssReleaseIsUnchanged:
             (tmp_path / name).write_text(
                 (ROOT / name).read_text(encoding="utf-8"), encoding="utf-8"
             )
-        subprocess.run(["bash", "-eo", "pipefail", "-c", rename["run"]], cwd=tmp_path, check=True)
+        # The step runs on Linux with GNU sed. BSD sed (macOS) reads the word after
+        # a bare `-i` as the backup suffix, so `-E` would turn into a suffix and the
+        # pattern into a basic regex; `-i.bak` is the form both seds read the same.
+        script = rename["run"].replace("sed -i ", "sed -i.bak ")
+        subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=tmp_path, check=True)
         assert 'name = "kirocrew-lts"' in (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
         cfg = (tmp_path / "setup.cfg").read_text(encoding="utf-8")
         assert "    kirocrew-lts[voice-aws]" in cfg

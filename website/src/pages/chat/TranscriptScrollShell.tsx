@@ -139,7 +139,11 @@ function useSlideAnchor(scrollerRef: React.RefObject<HTMLDivElement | null>): vo
     // The reader's own input (a wheel the page's swipe did not claim, a
     // scrollbar press, a scrolling key, a touch) ends the hold at once: the
     // next correction would undo their scroll.
-    const detachIntent = attachUserScrollIntent(el, () => { if (anchor || bottom) drop() })
+    // A downward input (a trackpad's momentum tail) agrees with the bottom pin, so it keeps it.
+    const detachIntent = attachUserScrollIntent(el, (dir) => {
+      if (bottom && dir === 'down') return
+      if (anchor || bottom) drop()
+    })
     const unwatch = watchPanelSlide((sliding, retired) => {
       if (sliding) {
         drop()

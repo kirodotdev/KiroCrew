@@ -34,7 +34,10 @@ from kiro_crew.agent_sdk import tool_gate as gate
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_COPILOT,
     ACP_BACKEND_FORBIDDEN_MODES,
+    ACP_BACKEND_PREFERRED_PERMISSION_CONFIG,
     ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST,
+    permission_config_for,
+    permission_value_for,
     prompt_command_issue,
     session_config_drift_issue,
 )
@@ -249,6 +252,25 @@ def test_every_forbidden_mode_backend_is_session_config_routed() -> None:
     """The tripwire reads the routing table's option, so a row elsewhere would be inert."""
     for backend in ACP_BACKEND_FORBIDDEN_MODES:
         assert gate.routing_for(backend) is gate.Routing.SESSION_CONFIG
+
+
+def test_every_value_crew_writes_reads_back_as_no_drift() -> None:
+    """The read-back after Crew's own write must accept whatever that write chose."""
+    for backend in ACP_BACKEND_FORBIDDEN_MODES:
+        option_id, _ = permission_config_for(backend)
+        _, preferred = ACP_BACKEND_PREFERRED_PERMISSION_CONFIG.get(backend, ("", ""))
+        offered = [{"id": option_id, "options": [{"value": preferred}]}]
+        for advertised in ([], offered):
+            written = permission_value_for(backend, advertised)
+            update = {
+                "sessionUpdate": "config_option_update",
+                "configOptions": [{"id": option_id, "currentValue": written}],
+            }
+            assert session_config_drift_issue(backend, update) == "", (
+                f"{backend}: Crew writes {option_id}={written!r} and its own drift check calls "
+                "that drift; accept the required value or the same-option preferred value, "
+                "and keep a forbidden mode drifting"
+            )
 
 
 def _tripwire_client(backend: str = COPILOT) -> tuple[AcpClient, list]:
@@ -495,6 +517,9 @@ def test_a_symlinked_ancestor_is_checked_on_both_chains(tmp_path) -> None:
 
 @pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="POSIX modes")
 def test_an_ancestor_crew_cannot_list_is_not_a_finding(tmp_path) -> None:
+    # ``tmp_path`` is its own repo, so the Copilot config walk stops there, not in the
+    # host's home, where a real ``.mcp.json`` would refuse the spawn.
+    (tmp_path / ".git").mkdir()
     locked = tmp_path / "locked"
     work = locked / "sub" / "work"
     work.mkdir(parents=True)
@@ -551,6 +576,9 @@ async def test_a_config_write_failure_is_worded_for_the_person(tmp_path, monkeyp
     from kiro_crew.acp.harness.base import SpawnContext
 
     monkeypatch.setattr(copilot_mod, "config_dir", lambda: tmp_path / "home")
+    # ``tmp_path`` is its own repo, so the Copilot config walk stops there, not in the
+    # host's home, where a real ``.mcp.json`` would refuse the spawn.
+    (tmp_path / ".git").mkdir()
     client = AcpClient(work_dir=tmp_path, acp_backend=COPILOT)
 
     async def _resolve(_backend):
@@ -843,6 +871,9 @@ async def test_the_spawn_hands_the_config_back_to_this_child_alone(tmp_path, mon
     from kiro_crew.acp.harness.base import SpawnContext
 
     monkeypatch.setattr(copilot_mod, "config_dir", lambda: tmp_path / "home")
+    # ``tmp_path`` is its own repo, so the Copilot config walk stops there, not in the
+    # host's home, where a real ``.mcp.json`` would refuse the spawn.
+    (tmp_path / ".git").mkdir()
     client = AcpClient(work_dir=tmp_path, acp_backend=COPILOT)
 
     async def _resolve(_backend):

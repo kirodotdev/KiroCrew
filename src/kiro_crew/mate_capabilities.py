@@ -135,6 +135,25 @@ def _drop_listed_skills(spec: dict, operations: list[dict]) -> dict:
     return spec
 
 
+def _gateway_settings(section: str, key: str, value: Any, stored: dict) -> Any:
+    """The gateway's live entry for a server the file lacks, shown masked as *value*.
+
+    Never a value from the request; ``409 entry_changed`` if it differs from *value*.
+    """
+    from kiro_crew.agent_capabilities import CapabilityError
+    from kiro_crew.dashboard.handlers.member_capability_catalog import (
+        gateway_transport_behind,
+        masks_settings,
+    )
+
+    if section != "mcpServers" or key in stored or not masks_settings(value):
+        raise CapabilityError("redacted_value_not_writable", 400)
+    live = gateway_transport_behind(key, value)
+    if live is None:
+        raise CapabilityError("entry_changed")
+    return live
+
+
 def _apply_operations(
     rows: dict[str, dict], operations: list[dict], catalog: dict[str, str]
 ) -> None:
@@ -177,7 +196,7 @@ def _apply_operations(
                 value, op["retain_paths"], original if isinstance(original, dict) else {}
             )
         elif "value" in op and _contains_mask(value):
-            raise CapabilityError("redacted_value_not_writable", 400)
+            value = _gateway_settings(section, key, value, stored)
         if section == "mcpServers":
             if not isinstance(value, dict) or not value or "autoApprove" in value:
                 raise CapabilityError("invalid_transport", 400)

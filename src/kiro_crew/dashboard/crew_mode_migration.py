@@ -287,7 +287,7 @@ async def migrate(
             names = ", ".join(f"{k} ({c})" for k, c in sorted(newly_failed.items()))
             _notify(
                 state,
-                "An Ultra Mode chat did not move",
+                "A conductor mode chat did not move",
                 f"These chats stay on their own agent instead of {target}: {names}. "
                 "Kiro Crew tries again after the next config change or restart.",
             )
@@ -440,6 +440,7 @@ def _closed_roots(log: Any) -> list[str]:
         try:
             meta = log.get_metadata(key)
         except Exception:
+            # A row whose metadata cannot be read is left out; one bad row must not stop the rest.
             continue
         if isinstance(meta, dict) and crew_mode.saved_row_is_root(meta):
             found.append(history_slot_key(key))
@@ -524,7 +525,7 @@ async def run(state: Any, *, start_delay: float = 2.0) -> None:
     """The dashboard's background task, started once its restore has rebuilt the slot
     set: the start pass, then retry busy roots. A headless gateway never starts it.
 
-    It first reads the Ultra Mode pause file off-loop, so the sidebar and the sends
+    It first reads the conductor mode pause file off-loop, so the sidebar and the sends
     that consult it find it in memory.
     """
     from kiro_crew import crew_pause

@@ -17,6 +17,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.chat_persistence import (
     _rehydrate_slot_from_history,
@@ -72,7 +73,7 @@ def _app(state, *, app_name: str = "") -> web.Application:
 def ready(monkeypatch):
     """Readiness is orthogonal to the archive guard; stub it so a 503 cannot mask it."""
 
-    async def _ok(_request):
+    async def _ok(_request, **_kwargs):
         return None
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_regenerate.reject_if_kiro_unverified", _ok)
@@ -217,8 +218,8 @@ def test_an_old_relay_slot_loads_as_a_read_only_archive(tmp_path):
 
 
 def test_peer_text_is_redacted_and_clean_text_passes_unchanged():
-    secret = "key AKIAIOSFODNN7EXAMPLE here"
-    assert "AKIAIOSFODNN7EXAMPLE" not in redact_peer_text(secret)
+    key = github_classic(seed=7)
+    assert key not in redact_peer_text(f"key {key} here")
     assert redact_peer_text("plain words") == "plain words"
 
 

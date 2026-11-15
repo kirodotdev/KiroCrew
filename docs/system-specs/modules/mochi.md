@@ -8,7 +8,24 @@ browser-visible status/watch/plan surface.
 
 `defaultEnabled: false` and `platform.requiresDesktopApp: true` — it appears in
 the App Store, is opt-in, and its window surfaces need the Electron shell.
-`permissions`: `api`, `storage`, `events`, `cron`, `spawn`.
+`permissions`: `api`, `storage`, `events`, `cron`, `spawn`, and `desktopCapabilities`
+(`screenCapture`, `localFiles`, `gatewayChoice`): the shell features its windows use
+today (the snip surface, reveal-file and open-image, the instance switcher), declared so
+they are disclosed and approved like any app's (app-kit-platform §35). Its own
+main-process windows do not read that grant; they are the §9 exception until Mochi moves
+onto the window host. The reveal-file and open-image handlers run the shell's shared
+`website/electron/app-local-files.js`.
+
+Its global shortcuts (toggle the panel, hide all, screen capture; defaults
+`CommandOrControl+Shift+M/H/X` on macOS, `Alt+Shift+M/H/X` elsewhere, rebindable in
+Settings > Shortcuts) and the crew the pet shows live in the shell's
+`mochi-machine.json` (`machineStore.js`). At every start `mochi/hostHandOff.js` copies the crew and
+the rebinds into the host's gateway choice and bindings for `mochi`, never over a choice
+the user made through the host; an adopted Mochi declares the defaults above as each
+shortcut's `platformAccelerators` (app-kit-platform §35, "What still runs in the shell").
+`shortcuts.js` reserves the configured chords as a plain shell owner, so the host refuses
+them to any app, an adopted Mochi included, until the built-in steps aside for it
+(#37454) and can hand them over with `{ app: true }`.
 
 The desktop pet keeps polling the gateway while disabled so enabling Mochi in
 the App Store takes effect without restarting the shell. Probe diagnostics are

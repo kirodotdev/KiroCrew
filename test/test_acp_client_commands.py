@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F401 - fixture
 from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401 - fixture
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.client import AcpClient, format_command_result, parse_slash_command
 
@@ -27,6 +28,26 @@ class TestSendCommand:
 
         result = await client.send_command("/usage")
         assert "42%" in result
+
+    @pytest.mark.asyncio
+    async def test_send_command_raises_when_kiro_cli_refuses(self, tmp_path):
+        # kiro-cli 2.34.0 refuses an /effort level with success: false and no
+        # JSON-RPC error; the effort senders warn and roll back only on a raise.
+        from kiro_crew.acp.client import AcpError
+
+        client = AcpClient(work_dir=tmp_path)
+        client._session_id = "s1"
+        client._process = MagicMock()
+        client._process.returncode = None
+        client.ensure_ready = AsyncMock()
+        client._send_request = AsyncMock(return_value=10)
+        client._wait_for_response = AsyncMock(
+            return_value={"success": False, "message": "invalid effort level 'bogus'"}
+        )
+
+        with pytest.raises(AcpError, match="invalid effort level 'bogus'") as refused:
+            await client.send_command("/effort", args={"level": "bogus"})
+        assert refused.value.command_refused is True
 
     @pytest.mark.asyncio
     async def test_send_command_timeout_returns_empty(self, tmp_path):
@@ -225,18 +246,19 @@ class TestWaitForCompaction:
         client = AcpClient(work_dir=tmp_path)
         from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
 
+        secret = github_classic(seed=14)
         msg = JsonRpcMessage(
             method=METHOD_COMPACTION_STATUS,
             params={
                 "status": {"type": "failed"},
-                "summary": "backend error: key AKIAIOSFODNN7EXAMPLE rejected",
+                "summary": f"backend error: key {secret} rejected",
             },
         )
         client._read_message = AsyncMock(return_value=msg)
 
         result = await client.wait_for_compaction(timeout=5.0)
         assert result["type"] == "failed"
-        assert "AKIAIOSFODNN7EXAMPLE" not in result["summary"]
+        assert secret not in result["summary"]
         assert "[REDACTED: credential]" in result["summary"]
 
     @pytest.mark.asyncio

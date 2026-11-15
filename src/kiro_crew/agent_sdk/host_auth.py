@@ -71,6 +71,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -593,7 +594,8 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
             "checked here: the harness reads them."
         ),
         signed_out_message=(
-            "OpenCode is not signed in. Run `opencode auth login` in a terminal on "
+            "OpenCode has no model provider it can use: none is signed in, or its "
+            "key was refused. Run `opencode auth login` in a terminal on "
             "the gateway host and complete its sign-in, or name a locally served "
             "model in the project's opencode.json, then start a new chat. "
             f"{HOST_TERMINAL_NOTE}"
@@ -603,6 +605,15 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # is still authenticated.
         host_logout_retires_children=False,
         entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
+        # opencode 1.19.1, driven live against a provider that answers 401, drops
+        # the status and answers ``session/prompt`` with -32603 ``Internal error:
+        # Incorrect API key provided.`` (data ``errorName: "APIError"``, which it
+        # also uses for other provider faults). The phrase is the OpenAI-style
+        # provider's own, relayed verbatim; a provider worded otherwise keeps the
+        # raw text. A signed-out host gives no error at all: opencode starts on its
+        # own hosted model instead, which the start-time model check refuses
+        # (``acp/no_model_provider.py``).
+        signed_out_signature="Incorrect API key provided",
     ),
     AgentAuthDeclaration(
         backend=ACP_BACKEND_GOOSE,
@@ -852,6 +863,46 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # GitHub CLI to fall back to), answers ``session/new`` with -32000
         # ``Authentication required`` and creates no session.
         signed_out_signature="Authentication required",
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_MIMOCODE,
+        # Verified on disk rather than read off documentation: a
+        # ``mimo providers login --provider xiaomi`` run against a scratch home wrote
+        # this file (mode 600) holding a platform API key, and nothing under
+        # ``.config``, ``.cache`` or ``.local/state``.
+        credential_leaves=(".local/share/mimocode/auth.json",),
+        # ``XDG_DATA_HOME`` is the one override declared. The harness's other
+        # relocation, ``MIMOCODE_HOME``, moves the file to
+        # ``$MIMOCODE_HOME/data/auth.json`` -- a spelling no single override suffix
+        # can share with this one -- so the launch refuses a session whose
+        # environment sets it (``acp.harness.mimocode``) instead of leaving the relocated
+        # token outside the floor.
+        home_override_env_vars=("XDG_DATA_HOME",),
+        # ``XDG_DATA_HOME`` replaces ``.local/share``, so the file keeps two segments.
+        override_relative_leaves=("mimocode/auth.json",),
+        # The harness authenticates ITSELF from this file, so the mask spares it to
+        # its own child, as for opencode. A vault-fed key (the DeepSeek shape) is
+        # reachable through ``MIMOCODE_AUTH_CONTENT``, which the harness withholds
+        # from the children it spawns; until that is wired, the carve-out stands.
+        adapter_own_leaves=(".local/share/mimocode/auth.json",),
+        # Action only, no state: a provider configured in the project's
+        # mimocode.json may need no sign-in at all.
+        sign_in_remedy=(
+            "MiMo Code signs in on its own — run mimo providers login in a terminal "
+            "on the gateway host to reach a hosted model, or name a provider in the "
+            f"project's mimocode.json. {HOST_TERMINAL_NOTE} Neither is checked here: "
+            "the harness reads them."
+        ),
+        signed_out_message=(
+            "MiMo Code is not signed in. Run `mimo providers login` in a terminal on "
+            "the gateway host and complete its sign-in, or name a provider in the "
+            f"project's mimocode.json, then start a new chat. {HOST_TERMINAL_NOTE}"
+        ),
+        # Excluded deliberately: it signs in through its own credential file, so a
+        # ``kiro-cli logout`` says nothing about whether a running mimocode session is
+        # still authenticated.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
     ),
 )
 

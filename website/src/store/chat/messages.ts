@@ -11,7 +11,7 @@ import { permissionRowTarget, sameApprovalTarget } from '../../types/approvalTar
 import { SEND_ATTEMPTS_PER_SLOT_MAX, type ChatState, type SendAttempt } from './state'
 import { isUnsafeKey, normalizeQueueEntries, safeKey } from './wire'
 import { hydrateQueuedBubbles } from './queue'
-import { RECONCILE_WINDOW, ensureMsgId, finalizeTrailingStreaming, floorForGen, mintMsgId, raiseChunkSeq, rowIdentities, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
+import { ensureMsgId, finalizeTrailingStreaming, floorForGen, mintMsgId, raiseChunkSeq, rowIdentities, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
 import { isOutOfBandRow, isTurnBoundaryUser, mergePreservedThinking, reinsertThinkingOrphans } from './thinking'
 import { retainServerTotal, setPagingCursor, writeSlotPage } from './slotCache'
 import { evictMcpApps } from './mcpApps'
@@ -84,7 +84,11 @@ export const messageReducers = {
     // isn't guaranteed).
     if (message.role === 'user' && message.meta?.steer && !message.meta?.optimistic) {
       const echoSid = typeof message.meta?.sendId === 'string' && message.meta.sendId ? message.meta.sendId : ''
-      const floor = Math.max(0, msgs.length - 50)
+      // An id-bearing echo scans the whole transcript, like every sendId
+      // reconcile: any number of rows can land before it. Only the id-less
+      // text/fallback guess stays on the recent tail, so it cannot consume a
+      // stale bubble from far back.
+      const floor = echoSid ? 0 : Math.max(0, msgs.length - 50)
       let target: ChatMessage | undefined
       let fallback: ChatMessage | undefined
       for (let i = msgs.length - 1; i >= floor; i--) {
@@ -172,8 +176,7 @@ export const messageReducers = {
     if (isUnsafeKey(slot)) return
     const confirm = (msgs: ChatMessage[] | undefined): boolean => {
       if (!msgs) return false
-      const floor = Math.max(0, msgs.length - RECONCILE_WINDOW)
-      for (let i = msgs.length - 1; i >= floor; i--) {
+      for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i]
         if (m.role !== 'user' || m.meta?.sendId !== sendId) continue
         const meta = { ...(m.meta || {}) }
@@ -216,8 +219,7 @@ export const messageReducers = {
     if (isUnsafeKey(slot)) return
     const mark = (msgs: ChatMessage[] | undefined): boolean => {
       if (!msgs) return false
-      const floor = Math.max(0, msgs.length - RECONCILE_WINDOW)
-      for (let i = msgs.length - 1; i >= floor; i--) {
+      for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i]
         if (m.role !== 'user' || m.meta?.sendId !== sendId) continue
         if (m.meta?.optimistic) m.meta = { ...m.meta, deliveryUnconfirmed: true }
@@ -276,8 +278,7 @@ export const messageReducers = {
     if (isUnsafeKey(slot)) return
     const resolve = (msgs: ChatMessage[] | undefined): boolean => {
       if (!msgs) return false
-      const floor = Math.max(0, msgs.length - RECONCILE_WINDOW)
-      for (let i = msgs.length - 1; i >= floor; i--) {
+      for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i]
         if (m.role !== 'user' || m.meta?.sendId !== sendId) continue
         if (!m.meta?.optimistic) return true

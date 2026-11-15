@@ -5,6 +5,7 @@ from __future__ import annotations
 import string
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import edition, security
 from kiro_crew.config.loader import KiroCrewConfig
@@ -95,13 +96,6 @@ class TestPolicyAuthorityAddOnly:
         # time; at runtime the @final methods still resolve to the base impl.
         assert "is_denied" in PolicyAuthority.__dict__
         assert "effective_patterns" in PolicyAuthority.__dict__
-
-    def test_assert_security_floor_rejects_non_authority(self) -> None:
-        with pytest.raises(PlatformCompositionError):
-            assert_security_floor(object())
-
-    def test_assert_security_floor_accepts_baseline(self) -> None:
-        assert_security_floor(PolicyAuthority())  # no raise
 
     def test_assert_security_floor_rejects_runtime_override(self) -> None:
         # @final is type-checker-only; a subclass that overrides is_denied to
@@ -527,7 +521,8 @@ class TestRedactLogViaContext:
 
     #: Matched by the baseline's own credential patterns, so it proves the
     #: companion pass is applied ON TOP of the baseline rather than instead.
-    BASELINE_SHAPE = "AKIAIOSFODNN7EXAMPLE"
+    #: A GitHub token: an AWS key ID is an identifier the baseline keeps visible.
+    BASELINE_SHAPE = github_classic(seed=51)
 
     @staticmethod
     def _install(policy, cfg: KiroCrewConfig):

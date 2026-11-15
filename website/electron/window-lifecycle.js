@@ -33,6 +33,7 @@ const { attachContextMenu } = require("./context-menu");
 const {
   TUNNEL_OPTION_LABEL,
   parseRemoteCrewFields,
+  remoteCrewDraft,
   saveRemoteCrewConfig,
   tunnelOptionHint,
 } = require("./remote-crew-setup");
@@ -302,23 +303,31 @@ function createWindowLifecycle(options) {
   function setupWindowContents(win, windowBackendUrl) {
     const windowPort = defaultedPort(windowBackendUrl);
     let customName = null;
-    // isGatewayLocalForWindow reads this, and the preload argument below needs
-    // it. The argument is fixed for the view's life.
+    // isGatewayLocalForWindow reads this.
     win._mcBackendUrl = windowBackendUrl;
-    const remoteGateway = !isGatewayLocalForWindow(win);
 
     const view = new WebContentsView({
       webPreferences: {
         preload: path.join(__dirname, "preload.js"),
         contextIsolation: true,
         nodeIntegration: false,
-        // Launch-time decisions the preload reads: frameless Linux reserves
-        // caption-control space; a remote gateway withholds local-only bridges.
-        additionalArguments: [
-          ...(LINUX_FRAMELESS ? ["--kc-linux-frameless"] : []),
-          ...(remoteGateway ? ["--kc-remote-gateway"] : []),
-        ],
+        // Frameless Linux is a launch-time decision, not a platform constant.
+        // The preload reads this argument to reserve caption-control space.
+        additionalArguments: LINUX_FRAMELESS ? ["--kc-linux-frameless"] : [],
       },
+    });
+    // The preload asks this on every load, so a crew configured or cleared for
+    // the port applies from the next load. The ask is synchronous: the listener
+    // is on this view's own WebContents before anything loads, and every path
+    // answers, so the renderer never waits on a reply that does not come.
+    view.webContents.ipc.on("dashboard:is-remote-gateway", (event) => {
+      let remote = true;
+      try {
+        remote = !isGatewayLocalForWindow(win);
+      } catch (err) {
+        glog(`dashboard:is-remote-gateway: ${err && err.message}`);
+      }
+      event.returnValue = remote;
     });
     view.setBackgroundColor("#00000000");
     win.contentView.addChildView(view);
@@ -1123,12 +1132,12 @@ function createWindowLifecycle(options) {
     const currentBin = config?.binPath || DEFAULT_REMOTE_BIN;
     const currentRemotePort = config?.remotePort || "";
     const currentRemotePath = config?.remotePath || "";
-    const currentManageTunnel = config?.manageTunnel === true;
     // The app keeps a tunnel only for the port it launched on, so this form
     // offers the option there alone; for any other tab it carries the stored
     // choice over unchanged.
     const isLaunchPort = String(focusedPort) === String(port);
     const offerTunnel = isLaunchPort && !IS_WINDOWS;
+    const currentManageTunnel = remoteCrewDraft(config || {}, { tunnelByDefault: offerTunnel }).manageTunnel;
 
     const css = await getModalCSS();
     const esc = (value) => value
@@ -1530,28 +1539,46 @@ function createWindowLifecycle(options) {
     return appMenu;
   }
 
-  function menuItems(sender, id) {
+  // senderIsLocal is threaded down from the ipc-registrar boundary the same
+  // way it reaches `executeMenu` — computed once via `assertLocalDashboard`
+  // and cached per WebContents, then handed here. `serializeMenuItems`
+  // marks LOCAL_ONLY leaves `enabled: false` for a remote sender so a
+  // connection window paints a greyed row rather than an enabled one that
+  // silently no-ops when clicked. Strict `=== true` matches the fail-closed
+  // rule executeMenuItem uses.
+  function menuItems(sender, id, senderIsLocal) {
     if (!IS_WINDOWS || !WINDOWS_TITLEBAR_MENU_IDS.has(id)) return [];
     const menu = appMenu || Menu.getApplicationMenu();
     const item = menu && menu.getMenuItemById(id);
     const win = windowForWebContents(sender);
     if (!item || !item.submenu || !win || win.isDestroyed()) return [];
-    return serializeMenuItems(item.submenu);
+    return serializeMenuItems(item, senderIsLocal === true);
   }
 
-  function executeMenu(sender, id, index) {
+  // Returns whether the click DISPATCHED. `app-menu:execute` answers the
+  // renderer with it, and the renderer refetches its rows on a `false` — so a
+  // bare `return` here (reporting `undefined` for a guard refusal) would
+  // silently become "dispatched" at the strict check on the IPC boundary. Every
+  // exit says so explicitly.
+  function executeMenu(sender, id, index, senderIsLocal) {
     if (
       !IS_WINDOWS
       || !WINDOWS_TITLEBAR_MENU_IDS.has(id)
       || !Number.isInteger(index)
-    ) return;
+    ) return false;
     const menu = appMenu || Menu.getApplicationMenu();
     const topLevelItem = menu && menu.getMenuItemById(id);
     const win = windowForWebContents(sender);
-    if (!win || win.isDestroyed()) return;
+    if (!win || win.isDestroyed()) return false;
     // sender is the focused dashboard WebContents: titlebar menu interaction
     // itself gives it focus, which is what Electron role items expect.
-    executeMenuItem(topLevelItem, index, win, sender);
+    //
+    // `senderIsLocal` is computed once at the IPC boundary in
+    // ipc-registrar.js via `assertLocalDashboard` (origin + local-gateway +
+    // primary-port-owner). Forwarded here with strict `=== true` so any
+    // non-boolean (undefined from a caller that forgot the arg, a truthy
+    // proxy, a stringy value) drops to the LOCAL_ONLY refusal branch.
+    return executeMenuItem(topLevelItem, index, win, sender, senderIsLocal === true);
   }
 
   function setDevMode(enabled) {

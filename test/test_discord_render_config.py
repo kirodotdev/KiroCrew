@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.config import loader as loader_mod
 from kiro_crew.config.loader import DiscordConfig, KiroCrewConfig, SlackConfig
@@ -30,6 +31,10 @@ from kiro_crew.discord.client import (
 from kiro_crew.discord.renderer import DiscordRenderer
 from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 from kiro_crew.messaging.status_reactions import LadderTimings, PhaseReactionLadder
+
+# A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
+# stays visible as an identifier, so it cannot show that a value is redacted.
+_SECRET_TOKEN = github_classic(seed=31)
 
 _CHANNEL = "chan1"
 _MSG = "msg1"
@@ -447,7 +452,7 @@ class TestShowThinkingToggle:
 
     @pytest.mark.asyncio
     async def test_reasoning_is_redacted_before_it_is_posted(self) -> None:
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET_TOKEN
         renderer, client, _ = _renderer(show_thinking=True)
         await renderer.on_turn_start()
         await renderer.on_thinking(f"the key is {secret}")

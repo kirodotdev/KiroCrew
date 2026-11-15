@@ -50,6 +50,7 @@ export function renderMcpOAuthMessage(m: ChatMessage, hideCardOwned = false, han
   const failed = !!m.meta?.failed
   const superseded = !!m.meta?.superseded
   const expired = !!m.meta?.expired
+  const timedOut = expired && m.meta?.expired_reason === 'attempt_ended'
   const error = (m.meta?.error as string) || ''
   // `superseded` and `expired` carry no `oauth_url` (the backend pops it), so both
   // have to be named here or the banner would silently vanish instead of telling
@@ -65,6 +66,7 @@ export function renderMcpOAuthMessage(m: ChatMessage, hideCardOwned = false, han
       failed={failed}
       superseded={superseded}
       expired={expired}
+      timedOut={timedOut}
       error={error}
       askAgent={handOff}
     />
@@ -89,6 +91,7 @@ export default function McpOAuthBanner({
   failed,
   superseded,
   expired,
+  timedOut,
   error,
   askAgent = true,
 }: {
@@ -98,6 +101,8 @@ export default function McpOAuthBanner({
   failed?: boolean
   superseded?: boolean
   expired?: boolean
+  /** With `expired`: the sign-in attempt ended unconnected, not the process. */
+  timedOut?: boolean
   error?: string
   /** Offer the "Ask the agent" hand-off on the failed state. */
   askAgent?: boolean
@@ -166,6 +171,13 @@ export default function McpOAuthBanner({
   // the fresh link that appears. Rendered rather than hidden for the reason given
   // in renderMcpOAuthMessage: a banner that vanishes reads as success.
   if (expired) {
+    // `timedOut` is a failed sign-in, not status: the engine closed the
+    // attempt's callback listener. It takes the shared notice with the same
+    // `askAgent` decision as `failed` above, and no footer, because the
+    // sentence already says how to get a fresh link.
+    if (timedOut) {
+      return <ErrorNotice title={label} message={i18nT('pages.chat.mcpOAuthBanner.timed_out')} askAgent={askAgent} />
+    }
     return (
       <div className="flex items-center gap-2 px-4 py-3 rounded-lg ring-1 ring-inset forced-colors:border ring-border bg-muted/10 text-sm leading-5">
         <History className="shrink-0 text-text/50 lucide-inline" />

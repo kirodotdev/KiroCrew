@@ -183,6 +183,7 @@ def _build_context(state: DashboardState) -> str:
                         # would have dropped it had the line been restricted then.
                         continue
                     except Exception:
+                        # Unreadable messages: the session is listed by its title or key alone.
                         pass
                     session_parts.append(line)
                 if session_parts:

@@ -636,6 +636,8 @@ class TestRouteMessageSlackDown:
         hm.assert_awaited_once()
         assert hm.await_args[0][0] is new_client
         assert str(img) in hm.await_args[0][3]
+        # The handled turn's attachment is removed once the turn is done.
+        assert not img.exists()
 
     @pytest.mark.parametrize("caption", ["look", ""])
     @pytest.mark.asyncio
@@ -965,13 +967,16 @@ class TestRouteMessageTempCleanup:
     async def test_missing_temp_image_does_not_raise_on_cleanup(self, tmp_path):
         orch = _make_orch()
         ghost = tmp_path / "already-gone.png"
+        # The cleanup walks past the missing file and still removes the one on disk.
+        present = tmp_path / "still-here.png"
+        present.write_bytes(b"\x89PNG")
         files = [{"mimetype": "image/png", "url_private": "https://x.invalid/a.png"}]
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.stt_available", return_value=False):
                 with patch(
                     "kiro_crew.slack.events.process_slack_files",
                     new_callable=AsyncMock,
-                    return_value=([str(ghost)], []),
+                    return_value=([str(ghost), str(present)], []),
                 ):
                     with patch(
                         "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
@@ -982,6 +987,7 @@ class TestRouteMessageTempCleanup:
                         await _drain(orch)
         hm.assert_awaited_once()
         assert str(ghost) in hm.await_args[0][3]
+        assert not present.exists()
 
 
 class TestDispatchQueued:
@@ -1022,11 +1028,18 @@ class TestDispatchQueued:
     @pytest.mark.asyncio
     async def test_missing_temp_path_is_tolerated(self, tmp_path):
         orch = _make_orch()
-        kwargs = {"channel": "D1", "image_temp_paths": [str(tmp_path / "nope.png")]}
+        # A missing path must not stop the cleanup of the ones still on disk.
+        present = tmp_path / "still-here.png"
+        present.write_bytes(b"\x89PNG")
+        kwargs = {
+            "channel": "D1",
+            "image_temp_paths": [str(tmp_path / "nope.png"), str(present)],
+        }
         with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
             await ev._dispatch_queued(orch, "100.0", "101.0", "queued text", kwargs)
         hm.assert_awaited_once()
         assert hm.await_args[0][3] == "queued text"
+        assert not present.exists()
         orch.slack.remove_reaction.assert_awaited_once_with("D1", "101.0", "hourglass_flowing_sand")
 
 

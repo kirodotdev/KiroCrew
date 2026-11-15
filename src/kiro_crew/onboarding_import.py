@@ -318,7 +318,8 @@ def _write_memory(
         # 2000-char chunk on CPU), and import writes hundreds of chunks, so an
         # inline embed makes the user watch a spinner for minutes. The row is
         # keyword-searchable immediately and the caller schedules the backfill
-        # sweep that fills the vector in (see ``schedule_embedding_backfill``).
+        # sweep that fills the vector in (see the import handler's
+        # ``_backfill_embeddings``).
         # Batching is NOT the alternative: measured on real import text,
         # ``embed_batch`` is ~25% SLOWER than looping ``embed``. That workload
         # result is independent of the bounded physical micro-batch used by
@@ -350,7 +351,12 @@ def _same_schedule(job: Any, payload: dict[str, Any]) -> bool:
     if schedule is None:
         return False
     if "cron_expr" in payload:
-        return getattr(schedule, "cron_expr", None) == payload["cron_expr"]
+        from kiro_crew.cron_service.schedule import pin_random_cron_fields
+
+        # The store keeps a random (``R``) field as this job's pick of it.
+        return getattr(schedule, "cron_expr", None) == pin_random_cron_fields(
+            payload["cron_expr"], str(getattr(job, "id", ""))
+        )
     if "every_secs" in payload:
         return getattr(schedule, "every_secs", None) == payload["every_secs"]
     return getattr(schedule, "at_ts", None) == payload.get("at_ts")

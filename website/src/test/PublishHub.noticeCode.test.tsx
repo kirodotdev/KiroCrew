@@ -15,7 +15,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, it, expect } from 'vitest'
-import { publishNoticeKey } from '../components/PublishHub'
+import { publishNoticeKey } from '../lib/publishHelpers'
 import en from '../i18n/locales/en.manual.json'
 
 const KEYS = {

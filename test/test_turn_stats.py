@@ -115,7 +115,7 @@ class TestAttachTurnStats:
         assert "model" not in slot.messages[-1]["meta"]["turn_stats"]
 
     def test_error_only_turn_does_not_overwrite_previous_turn(self):
-        # Regression (Codex HIGH): turn 1 completes with an assistant message
+        # Turn 1 completes with an assistant message
         # and stats; turn 2 fails producing only an error message. Without the
         # boundary, the reverse scan would walk into turn 1's assistant message
         # and overwrite its stats with turn 2's numbers.
@@ -148,7 +148,7 @@ class TestAttachTurnStats:
         assert slot.messages[1]["meta"]["turn_stats"]["credits"] == 0.5
 
     def test_boundary_reset_after_clear_attaches_to_confirmation(self):
-        # Regression (Codex MEDIUM): a clear-conversation turn empties
+        # A clear-conversation turn empties
         # slot.messages then appends a "Conversation cleared" confirmation.
         # The clear handler resets the turn boundary to 0; simulate that here
         # and confirm the completed turn's stats still land on the
@@ -350,6 +350,48 @@ async def test_steer_cut_of_a_withheld_first_chunk_still_records_ttft(tmp_path, 
     ]
     assert stats, "the turn attached no stats"
     assert stats[-1].get("ttft_ms", 0) >= 80
+
+
+@pytest.mark.asyncio
+async def test_elapsed_counts_the_wait_before_the_prompt_goes_out(tmp_path, monkeypatch):
+    """A cold start claims its session and builds the prompt before dispatch. The
+    person waits through that too, so the footer's elapsed must include it, not
+    restart its clock once the prompt is about to go out."""
+    from test_dashboard_chat import TestRunChatTransientRetry as _Suite
+
+    from kiro_crew.acp.types import TurnUsage
+    from kiro_crew.dashboard import chat_runner
+    from kiro_crew.dashboard.chat import _run_chat
+    from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+    state = _Suite._make_state(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("s1")
+    slot._titled = True
+    real_build = chat_runner._turn_build_prompt
+
+    async def _slow_build(turn):
+        # Stands in for a session claim / prompt build the person sits through:
+        # move the turn's start 0.3 s back instead of sleeping, so a clock that
+        # restarts at dispatch drops it and one that keeps its start counts it.
+        turn._turn_t0 -= 0.3
+        return await real_build(turn)
+
+    monkeypatch.setattr(chat_runner, "_turn_build_prompt", _slow_build)
+
+    async def _stream(msg):
+        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="done. ")
+        # duration_ms=0, as kiro (acp) reports it: the footer uses the wall clock.
+        yield LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(duration_ms=0, credits=0.5))
+
+    _Suite._wire_sessions(state, _Suite._client(_stream))
+    await _run_chat(state, slot, "hi")
+    await _Suite._drain_bg(state)
+
+    stats = [
+        m["meta"]["turn_stats"] for m in slot.messages if (m.get("meta") or {}).get("turn_stats")
+    ]
+    assert stats, "the turn attached no stats"
+    assert stats[-1]["elapsed_ms"] >= 300
 
 
 @pytest.mark.asyncio

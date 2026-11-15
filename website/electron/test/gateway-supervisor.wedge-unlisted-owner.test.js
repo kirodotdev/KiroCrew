@@ -4,7 +4,7 @@
 // held. Recovery shows the loading screen and waits for the port to free: a
 // port that frees in time is respawned into, and one still held when the wait
 // runs out gets the restart-required dialog with no respawn. The bind check
-// runs for real against a real socket; only netstat and the clock are scripted.
+// runs for real against a real socket; only netstat, the stack dump and the clock are scripted.
 
 const net = require("node:net");
 const { test } = require("node:test");
@@ -109,7 +109,7 @@ async function spawnsDuringRecovery({ supervisor, mainWindow, spawnCalls, timers
   return { spawned: spawnCalls.length - before, elapsed };
 }
 
-const { WINDOWS_LOCAL_GATEWAY_WAIT_MS } = require("../gateway-wait");
+const { LOCAL_GATEWAY_WAIT_MS } = require("../gateway-wait");
 
 const loadedSplash = (mainWindow) => mainWindow.loadedFiles.some((f) => f.endsWith("loading.html"));
 
@@ -121,7 +121,7 @@ test("wedge recovery on a port netstat does not list and that never frees shows 
     const { spawned, elapsed } = await spawnsDuringRecovery(built);
 
     assert.strictEqual(spawned, 0, "no gateway is started into the held port");
-    assert.ok(elapsed >= WINDOWS_LOCAL_GATEWAY_WAIT_MS, `the refusal is waited out first (${elapsed}ms)`);
+    assert.ok(elapsed >= LOCAL_GATEWAY_WAIT_MS, `the refusal is waited out first (${elapsed}ms)`);
     assert.ok(loadedSplash(built.mainWindow), "the loading screen shows while it waits");
     assert.ok(
       built.logs.some((l) => l.includes("port not confirmed free after force-stop (held by an unlisted owner)")),
@@ -170,7 +170,7 @@ test("wedge recovery on a port that refuses a bind at first and frees shortly af
 
     assert.strictEqual(held, null, "the port was released during the wait");
     assert.strictEqual(spawned, 1, `the gateway is respawned once:\n${built.logs.join("\n")}`);
-    assert.ok(elapsed < WINDOWS_LOCAL_GATEWAY_WAIT_MS, `respawned before the wait ran out (${elapsed}ms)`);
+    assert.ok(elapsed < LOCAL_GATEWAY_WAIT_MS, `respawned before the wait ran out (${elapsed}ms)`);
     assert.ok(loadedSplash(built.mainWindow), "the loading screen shows while it waits");
     assert.strictEqual(built.dialogs.windows.length, 0, "no restart-required dialog");
     assert.ok(built.logs.some((l) => l.includes(`:${port} became bindable after`)), built.logs.join("\n"));
@@ -324,7 +324,7 @@ test("an install dispatched during the port wait ends that wait without the dial
 
     assert.ok(dispatched);
     assert.strictEqual(spawned, 0);
-    assert.ok(elapsed < WINDOWS_LOCAL_GATEWAY_WAIT_MS, `the stale wait stops early (${elapsed}ms)`);
+    assert.ok(elapsed < LOCAL_GATEWAY_WAIT_MS, `the stale wait stops early (${elapsed}ms)`);
     assert.strictEqual(built.dialogs.windows.length, 0, "no restart-required dialog");
     assert.ok(built.logs.some((l) => l.includes("bind wait on :") && l.includes("abandoned")), built.logs.join("\n"));
   } finally {

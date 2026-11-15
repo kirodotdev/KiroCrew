@@ -536,7 +536,9 @@ Then **claim atomically** — the lock label and the assignee in ONE call, never
 two. The forge is the cross-operator lock and your ledger is only a cache of
 it; a claim written as two calls is a window another operator dispatches into.
 Only after the claim lands: `session_create` (titled `{id}: {item}`), seed it with the work-order brief, record
-`{state: dispatched, session, ts}` in the ledger.
+`{state: dispatched, session, ts}` in the ledger. The seed is a `session_send`
+when your prompt carries this line: "`session_create`'s `message` is refused
+for this agent (`message_needs_send_approval`): create, then `session_send`."
 
 **The claim is only valid while a worker holds it.** If ANY post-claim step
 fails — session create refused, create rate limit hit, seed rejected, trust grant

@@ -416,6 +416,7 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
     whether a per-session rotating credential is declared, never what it is.
     """
     # Imported here, not at module top, so the facade does not serve them.
+    from kiro_crew.mcp_cleanup import mcp_entry_is_remote
     from kiro_crew.mcp_gateway.launch_approval import env_fingerprint
     from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
 
@@ -442,7 +443,12 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
             if row is None:
                 row = {
                     "agents": set(),
-                    "transport": "stdio" if "command" in entry else "http",
+                    # Asked of the same predicate the rewriter wraps by, so a
+                    # remote entry carrying a placeholder ``command`` is never
+                    # offered for a share that resolves no launch.
+                    "transport": (
+                        "stdio" if "command" in entry and not mcp_entry_is_remote(entry) else "http"
+                    ),
                     "entry_poolable": False,
                     "env_names": set(),
                     # One hash per DISTINCT launch seen under this name. A
@@ -623,6 +629,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     global switch (``mcp_gateway.enabled``), reported by the status endpoint.
     """
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
+    from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
     from kiro_crew.mcp_gateway.rewriter import (
         UNPOOLABLE_SERVERS,
         pool_identity_env_keys,
@@ -715,6 +722,10 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                 # on page-wide never re-enables it (it only enables servers
                 # nobody chose for).
                 "declined": (getattr(gw_cfg, "stub_overrides", None) or {}).get(name) is False,
+                # The operator's answer to "does it work on the project's
+                # files?" (null when unanswered), and whether it is never asked.
+                "cwd_use": (getattr(gw_cfg, "cwd_use", None) or {}).get(name),
+                "cwd_proven": name in KIROCREW_BIN_MCP_SERVERS,
                 "entry_poolable": row["entry_poolable"],
                 "pooling_blocked_by_env": pooling_blocked,
                 "pooling_blocked_by_env_when_shared": nothing_shared,

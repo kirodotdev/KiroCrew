@@ -390,14 +390,27 @@ class TestApplyWindowsResourceCeiling:
         def _fake_limits() -> tuple[int, int, int, int]:
             return (7, 321, 100, 0)  # max_procs, max_mem_mb, cpu_weight, max_cpu_pct
 
-        def _fake_apply(pid: int, *, max_procs: int, max_memory_bytes: int) -> bool:
-            seen.update(pid=pid, max_procs=max_procs, max_memory_bytes=max_memory_bytes)
+        def _fake_apply(
+            pid: int, *, max_procs: int, max_memory_bytes: int, cpu_weight: int = 0
+        ) -> bool:
+            seen.update(
+                pid=pid,
+                max_procs=max_procs,
+                max_memory_bytes=max_memory_bytes,
+                cpu_weight=cpu_weight,
+            )
             return True
 
         monkeypatch.setattr(sandbox, "_cgroup_limits_from_config", _fake_limits)
         monkeypatch.setattr(sandbox.platform_compat, "apply_job_limits", _fake_apply)
         assert sandbox.apply_windows_resource_ceiling(4242) is True
-        assert seen == {"pid": 4242, "max_procs": 7, "max_memory_bytes": 321 * 1024 * 1024}
+        # A foreground spawn sets no Job CPU weight (windows_background_qos).
+        assert seen == {
+            "pid": 4242,
+            "max_procs": 7,
+            "max_memory_bytes": 321 * 1024 * 1024,
+            "cpu_weight": 0,
+        }
 
 
 class TestPosixIsUnaffected:

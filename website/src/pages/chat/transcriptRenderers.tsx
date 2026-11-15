@@ -47,6 +47,7 @@ import NoticeCard from './NoticeCard'
 import { kasSignedOutBesideButton, resolveGatewayNotice } from './gatewayNotice'
 import CrewDispatchNoticeCard from './CrewDispatchNoticeCard'
 import CrewPausedNoticeCard from './CrewPausedNoticeCard'
+import McpSignInNeededNotice, { isMcpSignInNeededNotice } from './McpSignInNeededNotice'
 import TrustResetNoticeCard, { type LostMode } from './TrustResetNoticeCard'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
@@ -58,6 +59,7 @@ import { FileCard } from '../../components/FileCard'
 import { parseFileRecord } from '../../lib/fileRecord'
 import { isModelUnavailable } from '../../lib/modelUnavailable'
 import UserMessage from './UserMessage'
+import { continuesAuthorRun } from '../../api/sharedCrewUi'
 import SessionMessageCard from './SessionMessageCard'
 import { isSessionSendTool, parseSessionSend } from './sessionRelay'
 import { i18nT } from '../../i18n/t'
@@ -446,7 +448,15 @@ export function createTranscriptRenderers(
       ),
     },
     {
-      // The main chat's one "You paused the crew" row (Ultra Mode Pause all).
+      // The row a chat shows once when its MCP servers wait for a sign-in; its
+      // sentence names the chat message that signs in.
+      id: 'mcp_sign_in_needed',
+      roles: ['notice'],
+      match: isMcpSignInNeededNotice,
+      render: (m, ctx) => ctx.row(<McpSignInNeededNotice key={ctx.key} content={m.content} meta={m.meta} />),
+    },
+    {
+      // The main chat's one "You paused the crew" row (conductor mode Pause all).
       id: 'crew_paused_notice',
       roles: ['notice'],
       match: m => m.meta?.kind === 'crew_paused_notice',
@@ -857,6 +867,11 @@ export function createTranscriptRenderers(
             onOpenSignIn={authRequired ? o.onOpenSignIn : undefined}
             unentitledElsewhere={pickModelFix}
             featureRequestFormUrl={featureRequestFormUrl}
+            // The newest row only, where the gateway's wait lives (it ends once the
+            // chat no longer ends on that row). The card offers a new wait only
+            // where Resume itself could run, so never on a relay archive
+            // (`continuable` is false there), and keeps Cancel while one is held.
+            limitContinueSlot={isUsageLimit(m) && newest ? o.slot : undefined}
             kiroCliMissing={featureRequestFormUrl ? isKiroCliMissing(m) : undefined}
             onOpenCapabilities={openCapabilities}
             onOpenTurnLimit={isTurnTimeout(m) ? o.onOpenTurnLimit : undefined}
@@ -917,6 +932,7 @@ export function createTranscriptRenderers(
                 // (#17839); a host that hides the steer badge without a
                 // crewmate keeps the neutral surface.
                 tone={crewmate ? 'accent' : 'default'}
+                continuesRun={continuesAuthorRun(ctx.messages, ctx.index)}
                 onReplyInThread={replyInThreadFor(m, ctx)}
                 onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
               />
@@ -933,7 +949,7 @@ export function createTranscriptRenderers(
           id: 'assistant',
           roles: ['assistant', 'streaming'],
           render: (m: ChatMessage, ctx: MessageRenderContext) => {
-            const bubble = renderAssistantBubble(m, ctx, undefined, { redactionSlot: o.revealSlot })
+            const bubble = renderAssistantBubble(m, ctx, undefined, { redactionSlot: o.revealSlot, messageTs: m.ts })
             return bubble === null ? null : ctx.wrapper(bubble)
           },
         } satisfies MessageRenderer]

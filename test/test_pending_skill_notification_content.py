@@ -3,19 +3,17 @@
 ``_pending_skill_notification`` is the payload builder behind the
 ``set_pending_staged_hook`` registration in the dashboard server. Its output is
 user-facing (feed row, detail panel, action buttons), so the shape is pinned
-here: the review deep-link must target the exact candidate, and the
-auto-approve shortcut must land on the ``skills.approval_required`` setting —
-surfacing the opt-out at the moment of friction.
+here: the review deep-link must target the exact candidate, and it is the
+notification's only action. The ``skills.approval_required`` setting is not
+offered from here: updates and script-bearing candidates stage whatever it says,
+so a shortcut to it on every staged candidate misled and nagged.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from kiro_crew.dashboard.server import (
-    _SKILL_APPROVAL_SETTING_URL,
-    _pending_skill_notification,
-)
+from kiro_crew.dashboard.server import _pending_skill_notification
 from kiro_crew.notifications.bus import payload_from_legacy
 
 
@@ -54,27 +52,29 @@ def test_update_candidate_uses_target_and_update_label():
     assert actions[0]["label"] == "Review update"
 
 
-def test_auto_approve_action_targets_the_approval_setting():
-    """The opt-out shortcut: second action deep-links at skills.approval_required."""
-    _, _, _, actions = _pending_skill_notification(_info())
-    assert actions[1] == {
-        "id": "auto-approve-skills",
-        "label": "Stop requiring skill approval…",
-        "url": _SKILL_APPROVAL_SETTING_URL,
-    }
-    # The URL uses the same highlight=key:<configKey> format <SettingRef> builds,
-    # so useSettingHighlight can scroll to the toggle.
-    assert _SKILL_APPROVAL_SETTING_URL == (
-        "/settings/skills?highlight=key:skills.approval_required"
+@pytest.mark.parametrize("has_scripts", [False, True])
+@pytest.mark.parametrize("kind", ["new", "update"])
+def test_review_link_is_the_only_action(kind: str, has_scripts: bool):
+    """New prose-only, new with scripts, and updates (with or without scripts)
+    all carry exactly one action: the review deep-link. No variant offers a
+    shortcut to the approval setting."""
+    is_update = kind == "update"
+    _, _, review_url, actions = _pending_skill_notification(
+        _info(kind=kind, target="existing-skill" if is_update else "",
+              has_scripts=has_scripts)
     )
+    assert actions == [
+        {
+            "id": "review-skill",
+            "label": "Review update" if is_update else "Review skill",
+            "url": review_url,
+        }
+    ]
 
 
-def test_auto_approve_action_present_for_script_candidates_too():
-    """Scripts always stage, but the setting still governs FUTURE prose-only
-    skills, so the shortcut stays offered alongside the scripts warning."""
-    _, body, _, actions = _pending_skill_notification(_info(has_scripts=True))
+def test_script_candidate_keeps_the_scripts_warning():
+    _, body, _, _ = _pending_skill_notification(_info(has_scripts=True))
     assert "Bundles executable scripts" in body
-    assert [a["id"] for a in actions] == ["review-skill", "auto-approve-skills"]
 
 
 def test_slug_is_percent_encoded_in_review_url():
@@ -91,7 +91,7 @@ def test_triggers_line_included_when_present():
 @pytest.mark.parametrize("has_scripts", [False, True])
 @pytest.mark.parametrize("kind", ["new", "update"])
 def test_payload_passes_notification_validation(kind: str, has_scripts: bool):
-    """Both actions must clear NotificationPayload.validate — the same gate
+    """The action must clear NotificationPayload.validate — the same gate
     state.notify() applies via payload_from_legacy — including the
     internal-URL check on every actions[].url."""
     title, body, review_url, actions = _pending_skill_notification(

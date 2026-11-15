@@ -219,6 +219,51 @@ def _full_scan_last_seq(path: Path) -> int:
     return highest
 
 
+#: The span a seq bisect stops narrowing at; the walk then reads at most this much
+#: below the wanted seq: about 36 records at the busy host's mean of 450 bytes, and
+#: under ``read_budget.K`` for records down to 64 bytes.
+_SEEK_SPAN = 16 * 1024
+
+
+def _offset_below(path: Path, seq: int, end: int) -> int:
+    """A record start in *path* below its first entry at or above *seq*, or 0.
+
+    Bisects the bytes: a probe skips to the next newline and decodes that one record,
+    so a seek costs about log2(size / ``_SEEK_SPAN``) decodes instead of every record
+    below *seq*. Only a COMPLETE record whose seq is below *seq* moves the low end, so
+    a damaged, torn or over-cap probe only makes the walk start earlier. 0 means "read
+    from the top", which is also the answer to any read error.
+
+    shortcut: assumes seq rises through the file, which the append-only writer
+    guarantees; a file damaged out of order can lose an entry to a seek. Only the
+    rendering reads (``strict_seq=False``, ``get``, ``page``) use it.
+    """
+    try:
+        with open(path, "rb") as source:
+            if not source.readline(MAX_ENTRY_BYTES + 1).endswith(b"\n"):
+                return 0  # an over-cap or torn header: no boundary to start from
+            first = low = source.tell()
+            high = end
+            while high - low > _SEEK_SPAN:
+                mid = (low + high) // 2
+                source.seek(mid)
+                # The record *mid* falls inside. A capped read that stops short of its
+                # newline is inside an over-cap line, so ``at`` is no record start.
+                skipped = source.readline(MAX_ENTRY_BYTES + 1)
+                at = source.tell()
+                raw = source.readline(MAX_ENTRY_BYTES + 1)
+                found = None
+                if skipped.endswith(b"\n") and raw.endswith(b"\n") and at + len(raw) <= high:
+                    found = _seq_of(raw.strip())
+                if found is not None and found < seq:
+                    low = at
+                else:
+                    high = mid
+    except OSError:
+        return 0
+    return 0 if low == first else low
+
+
 def _has_content(path: Path) -> bool:
     """Whether *path* holds any bytes. A zero-byte file reads as absent.
 

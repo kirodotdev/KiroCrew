@@ -9,6 +9,7 @@ import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
 import { TAB_ID_ATTR, useRevealActiveTab } from '../hooks/useRevealActiveTab'
 import { useKeyboardLift } from '../hooks/useKeyboardLift'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { beginPanelSlide } from '../utils/panelSlide'
 import { isTerminalFullscreenAllowed, findKeycap, fullscreenKeycap } from '../utils/terminalFullscreen'
 import { TerminalSquare, Plus, X, ChevronDown, ChevronRight, PictureInPicture2, MoreHorizontal, PanelRight, PanelBottom, Loader2, Maximize2, Minimize2, Search } from 'lucide-react'
 import {
@@ -899,6 +900,7 @@ export default function BottomTerminalPanel() {
   // extent did, and it tracks the wrapper on resize with no listener. The grip
   // size is untouched, so exiting restores it.
   const dimension = isRight ? width : height
+  const axis = isRight ? 'width' : 'height'
   const motionProp = isRight ? { width: dimension } : { height: dimension }
   const motionKey = isRight ? 'right-terminal' : 'bottom-terminal'
   // A bottom-docked terminal being typed into rises above the on-screen
@@ -924,7 +926,20 @@ export default function BottomTerminalPanel() {
   // IN may let a held terminal open.
   const openRef = useRef(open)
   openRef.current = open
-  const onSlideComplete = useCallback(() => { if (openRef.current) setSettled(true) }, [])
+  // Announce the bottom slide (panelSlide) so the transcript keeps its place each frame.
+  const [sliding, setSliding] = useState(false)
+  const [prevOpen, setPrevOpen] = useState(open)
+  if (open !== prevOpen) {
+    setPrevOpen(open)
+    setSliding(!isRight && !fullscreen)
+  }
+  useLayoutEffect(() => (sliding ? beginPanelSlide() : undefined), [sliding])
+  useEffect(() => {
+    if (!sliding) return
+    const cap = window.setTimeout(() => setSliding(false), SETTLE_CEILING_MS)
+    return () => window.clearTimeout(cap)
+  }, [sliding])
+  const onSlideComplete = useCallback(() => { setSliding(false); if (openRef.current) setSettled(true) }, [])
 
   return (
     <>
@@ -942,35 +957,36 @@ export default function BottomTerminalPanel() {
         className={isRight ? 'shrink-0 flex' : 'flex flex-col min-h-0'}
         style={keyboardLift > 0 ? { paddingBottom: keyboardLift } : undefined}
       >
-      <AnimatePresence initial={false}>
+      <AnimatePresence initial={false} onExitComplete={() => setSliding(false)}>
       {open && (
         <motion.div
           key={motionKey}
           ref={panelRef}
           data-testid="bottom-terminal-panel"
           className={`overflow-hidden bg-bg ${fullscreen ? 'absolute inset-0 z-[51]' : isRight ? 'shrink-0' : 'min-h-0'} ${isRight ? 'border-l border-border' : 'border-t border-border'}`}
-          /* Docked, the bottom dock takes its full height at once and slides in
-             with a transform: animating `height` re-laid out the whole shell and
-             refit xterm on every frame; the right dock slides its width. In
-             fullscreen the element starts AND stays at the full axis extent
-             (100%, no slide): framer-motion animates a key that is dropped from
-             `animate` back to `initial`, and a 0 or grip-sized inline
-             width/height would override the `absolute inset-0` sizing (also on a
-             position change, which remounts a fresh element via motionKey). */
-          initial={isRight
-            ? (fullscreen ? { width: '100%' } : { width: 0 })
-            : (fullscreen ? { y: 0 } : { y: dimension })}
-          animate={isRight
-            ? (fullscreen ? { width: '100%' } : motionProp)
-            : { y: 0 }}
-          exit={isRight ? { width: 0 } : { y: dimension }}
+          /* Both docks animate their outer extent so the content beside them
+             reflows with the slide, while the inner column keeps a fixed size
+             so xterm never refits mid-slide. In fullscreen the element starts
+             AND stays at the full axis extent (100%, no slide): framer-motion
+             animates a key that is dropped from `animate` back to `initial`,
+             and a 0 or grip-sized inline width/height would override the
+             `absolute inset-0` sizing (also on a position change, which
+             remounts a fresh element via motionKey). */
+          initial={fullscreen ? { [axis]: '100%' } : { [axis]: 0 }}
+          animate={fullscreen ? { [axis]: '100%' } : motionProp}
+          // A fullscreen bottom dock is pinned at both edges, so a height collapse would shrink it upward.
+          variants={{ gone: isRight || !fullscreen ? { [axis]: 0 } : { y: dimension } }}
+          exit="gone"
           transition={{ duration: dragging ? 0 : 0.22, ease: 'easeOut' }}
           onAnimationComplete={onSlideComplete}
-          style={isRight
-            ? { willChange: 'width' }
-            : { height: fullscreen ? '100%' : dimension, willChange: 'transform' }}
+          style={{ willChange: axis }}
         >
-          <div className={isRight ? 'flex flex-row h-full' : 'flex flex-col h-full'} style={fullscreen ? { height: '100%', width: '100%' } : isRight ? motionProp : undefined}>
+          <motion.div
+            className={isRight ? 'flex flex-row h-full' : 'flex flex-col h-full'}
+            // Bottom: fixed height while sliding, then 100% so the column (a keyboard band) can still shrink it.
+            style={fullscreen ? { height: '100%', width: '100%' } : isRight ? motionProp : { height: settled ? '100%' : dimension }}
+            variants={!isRight && !fullscreen ? { gone: { height: dimension, transition: { duration: 0 } } } : undefined}
+          >
             {!fullscreen && (
             <div
               {...grip}
@@ -991,7 +1007,7 @@ export default function BottomTerminalPanel() {
             <div className={isRight ? 'flex-1 min-w-0 min-h-0' : 'flex-1 min-h-0'}>
               <TerminalTabsView variant="dock" deferOpen={!settled} />
             </div>
-          </div>
+          </motion.div>
         </motion.div>
       )}
       </AnimatePresence>

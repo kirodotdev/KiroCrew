@@ -114,8 +114,12 @@ name: CI Runner Watchdog
 # names. That outcome is a FAILURE and the tick exits nonzero whatever it managed
 # to classify first, because the same abort skips the cancelled-orphan recovery
 # pass and a cancelled run in the last tick-interval of its 90-minute window ages
-# out before any later tick reaches it. Every other status (401, 404, 5xx) and
-# every malformed payload still raises.
+# out before any later tick reaches it. The exception is a refusal whose
+# `X-RateLimit-Remaining` header is `0`: the shared installation quota is drained,
+# so a red tick would name no run to act on. It ends `aborted-quota-exhausted`, a
+# `::warning::` naming the remaining quota and reset time, not a failure; a run it
+# classified first keeps its own outcome, so a stuck orphan still reds the tick.
+# Every other status (401, 404, 5xx) and every malformed payload still raises.
 #
 # Slow is not dead. A `codebuild-` job queued past the threshold is also what
 # CodeBuild account-concurrency saturation looks like, and re-running saturated

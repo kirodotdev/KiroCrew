@@ -12,7 +12,7 @@
  * be reached. Every failure keeps the plain line after them.
  */
 import { i18nT } from '../../i18n/t'
-import { fmtList } from '../../i18n/format'
+import { fmtList, joinSentences } from '../../i18n/format'
 
 export interface RegistryRefreshResult {
   ok?: boolean
@@ -89,11 +89,11 @@ export function registryRefreshFailureMessage(res: RegistryRefreshResult | undef
   )
   const missing = new Set((res.results ?? []).filter(r => !r.ok && r.cached === false).map(r => r.name))
   const stale = res.failed.filter(name => !missing.has(name))
-  return [
+  return joinSentences([
     ...remedies,
     missing.size > 0 ? i18nT('components.registryManager.registry_apps_missing', { names: nameList([...missing]) }) : '',
     stale.length > 0 ? i18nT('components.registryManager.could_not_refresh_still_showing_last_synced', { names: nameList(stale) }) : '',
-  ].filter(Boolean).join(' ')
+  ])
 }
 
 /**

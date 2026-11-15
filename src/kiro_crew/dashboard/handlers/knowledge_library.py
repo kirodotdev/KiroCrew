@@ -512,6 +512,21 @@ async def update_item(request: web.Request) -> web.Response:
             del fields[column]
     if not fields:
         return web.json_response({"error": "no valid fields"}, status=400)
+    # JSON allows escaped lone surrogates; UTF-8 does not, and SQLite binds a
+    # string as UTF-8. A list or dict is stored as ASCII-escaped JSON, so only
+    # a plain string can fail here.
+    for column, value in fields.items():
+        if isinstance(value, str):
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                return web.json_response(
+                    {
+                        "error": f"{column} contains characters that cannot be encoded",
+                        "code": "text_not_encodable",
+                    },
+                    status=400,
+                )
     await _audited_write(
         partial(store.update_item, item_id, **fields),
         event="item.update",

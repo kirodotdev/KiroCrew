@@ -165,6 +165,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _VALID_VISIBILITY,
         _sharing_model_dict,
         _sync_error_response,
+        _validate_expiry_body,
         _validate_sharing_body,
         api_artifact_overwrite_remote,
         api_artifact_publish,
@@ -282,6 +283,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.dashboard.handlers._shared import bounded_json_error_code  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import read_bounded_json  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request  # noqa: F401
+    from kiro_crew.dashboard.handlers._shared import string_field_error  # noqa: F401
     from kiro_crew.dashboard.state import _normalize_slot_key  # noqa: F401
     from kiro_crew.executors import discovery_executor  # noqa: F401
     from kiro_crew.executors import subprocess_executor  # noqa: F401
@@ -293,8 +295,10 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.publish_governance import bind_egress_session  # noqa: F401
     from kiro_crew.publish_governance import publish_denied_reason  # noqa: F401
     from kiro_crew.publish_provider import DEFAULT_PROVIDER  # noqa: F401
+    from kiro_crew.publish_provider import PROVIDER_DEFAULT_EXPIRY  # noqa: F401
     from kiro_crew.publish_provider import Capability  # noqa: F401
     from kiro_crew.publish_provider import CommentAnchor  # noqa: F401
+    from kiro_crew.publish_provider import ExpiryRequest  # noqa: F401
     from kiro_crew.publish_provider import KindSupport  # noqa: F401
     from kiro_crew.publish_provider import NotPublishedError  # noqa: F401
     from kiro_crew.publish_provider import PublishConflictError  # noqa: F401

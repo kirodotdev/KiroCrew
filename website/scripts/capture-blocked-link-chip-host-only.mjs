@@ -82,6 +82,7 @@ async function capture(browser, base, theme, name) {
   await stubDashboardApi(page, {
     slots,
     theme,
+    localStorageEntries: { 'mc-active-slot': SLOT },
     extra: async (path, route) => {
       if (path.startsWith('/api/chat/slots/')) { json(route, detail); return true }
       if (path === '/api/recent-projects') { json(route, { dirs: [PROJECT] }); return true }
@@ -91,12 +92,6 @@ async function capture(browser, base, theme, name) {
   })
   logPageProblems(page)
 
-  await page.addInitScript((t, slot) => {
-    localStorage.clear()
-    localStorage.setItem('mc-theme', t)
-    localStorage.setItem('mc-onboarded', '1')
-    localStorage.setItem('mc-active-slot', slot)
-  }, theme, SLOT)
   await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
 
   await page.waitForSelector('[data-testid="blocked-link-chip"]', { timeout: 15000 })

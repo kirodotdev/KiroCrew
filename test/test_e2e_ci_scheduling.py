@@ -178,7 +178,9 @@ class TestE2eScheduling(unittest.TestCase):
     def test_lane_timeout_is_failure_and_sibling_still_finishes(self):
         proc = self.start(
             {
-                "a": self.drive({"a": self.command("a", gated=True, descendant=True)}, timeout=5),
+                "a": self.drive(
+                    {"a": self.command("a", gated=True, descendant=True)}, timeout=3, grace=0.5
+                ),
                 "b": self.command("b", gated=True),
             }
         )

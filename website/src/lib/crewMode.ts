@@ -11,29 +11,33 @@
  *  `useAgents`), which records them here. Until a catalog lands, and on a gateway
  *  whose catalog carries no Crew Mode fields, no template is a conductor.
  *
- *  Crew Mode is a feature preview (`PREVIEW_CREW_MODE`, default off).
- *  `crewModeEnabled()` is the one read of it: every helper here consults it, and
- *  every surface that reads a row's Crew Mode stamps reads them through
+ *  Conductor mode is on in every build but LTS, which keeps it off as it did while
+ *  conductor mode was a Feature Preview (RFC rfc-crew-lts-edition D12).
+ *  `crewModeEnabled()` is the one read of that: every helper here consults it, and
+ *  every surface that reads a row's conductor mode stamps reads them through
  *  `crewModeRoot` / `crewRootOf`. Off, this module answers as it does for a
- *  gateway without Crew Mode, and the stamps read as absent.
+ *  gateway without conductor mode, and the stamps read as absent.
  */
-import { PREVIEW_CREW_MODE, PREVIEW_MATE_SESSIONS, readPreviewFlag } from '../utils/previewFlags'
+import { PREVIEW_MATE_SESSIONS, previewFlagsLocked, readPreviewFlag } from '../utils/previewFlags'
+import { featurePreviewLockKnown } from '../utils/editionLocks'
 import { tabStatus } from './sessionTabs'
 
-/** Whether the Crew Mode preview is on for this device. The one read of the flag:
- *  `useCrewMode` subscribes to the same key for a re-render. */
+/** Whether this build offers conductor mode: every build but LTS, the one that
+ *  turns every Feature Preview off. Off until the gateway's lock is known (a cached
+ *  list or the first schema read), so an LTS dashboard opened with no cache never
+ *  shows it. `useCrewMode` re-renders on the same lock. */
 export function crewModeEnabled(): boolean {
-  return readPreviewFlag(PREVIEW_CREW_MODE)
+  return featurePreviewLockKnown() && !previewFlagsLocked()
 }
 
-/** Whether `row` is a Crew Mode root, read through the flag: the server's
- *  `crew_mode_root` stamp, or `false` while the preview is off. */
+/** Whether `row` is a conductor mode root: the server's `crew_mode_root`
+ *  stamp, or `false` in a build without conductor mode (LTS). */
 export function crewModeRoot(row: { crew_mode_root?: boolean } | null | undefined): boolean {
   return !!row?.crew_mode_root && crewModeEnabled()
 }
 
-/** The Crew Mode root `row` is a crew member of, read through the flag: the
- *  server's `crew_root` stamp, or `''` while the preview is off, so a crew member
+/** The conductor mode root `row` is a crew member of: the server's `crew_root`
+ *  stamp, or `''` in a build without conductor mode (LTS), so a crew member
  *  lists, opens and alerts as an ordinary chat. */
 export function crewRootOf(row: { crew_root?: string | null } | null | undefined): string {
   return (row?.crew_root && crewModeEnabled()) ? row.crew_root : ''
@@ -98,8 +102,8 @@ export function busySlotKeys(
  *  (`mate_root`) that waits on the person marks its mate too, as a Crew Mode crew
  *  member's prompt badges its conductor: the mate chat is where it is answered.
  *  Keyed by the mate thread whether or not that tab is live, because the server
- *  keeps stamping a closed mate thread's sessions. The Mates page rows and the
- *  dock's mate rows both read this one map. */
+ *  keeps stamping a closed mate thread's sessions. The Mates page rows read
+ *  this map. */
 export function mateNeedsYouByKey(
   rows: readonly { key: string; mode?: string; mate_root?: string | null; running?: boolean; pending_approval?: boolean; needs_input?: boolean }[],
 ): Readonly<Record<string, boolean>> {
@@ -227,7 +231,7 @@ export function memoryModeAllowsCrewMode(memoryMode: string | undefined): boolea
 
 /** The conductor a just-created chat is switched to when the
  *  `dashboard.new_chat_crew_mode` setting is on, or `null` to leave it plain.
- *  Only a chat the composer would offer the Ultra Mode chip on
+ *  Only a chat the composer would offer the conductor mode chip on
  *  (`useCrewModeSwitch`'s `crewModeEligible`): a gateway that runs Crew Mode, no
  *  chat mode, a local non-app Persistent chat, still on the default agent (so no
  *  pick and no folder pin chose another one), and a default agent that is not
@@ -327,7 +331,7 @@ export function autoOpenRows<T extends { crew_root?: string; mate_root?: string 
 
 /** The agent the keyboard cycle lands on from `current`, `step` places along
  *  (`1` next, `-1` previous). The cycle skips every gateway conductor template
- *  whatever the preview flag says (the gateway does not read it), so a chord can
+ *  in every build, LTS included (the gateway runs them either way), so a chord can
  *  never move a normal chat onto a conductor and turn Crew Mode on by accident;
  *  the picker is the way onto one. `null` when there is nothing to
  *  cycle: an empty list, a chat in Crew Mode (`runsCrewMode`), which has no agent
@@ -338,7 +342,7 @@ export function agentCycleTarget<T extends { name: string; selection_kind?: stri
   agents: T[], current: string, currentKind: string | undefined, step: 1 | -1, crewStamp?: string, locked = false,
 ): string | null {
   // The raw `crew_mode_root` stamp is the gateway's own lock (`crew_mode_locked`),
-  // preview on or off; with the preview on, every Crew Mode chat has no picker.
+  // in every build; where conductor mode is offered, every such chat has no picker.
   if (locked || runsCrewMode(current, currentKind, crewStamp)) return null
   const rows = agents.filter(a => a.selection_kind === 'member' || !conductors.has(a.name))
   if (rows.length === 0) return null

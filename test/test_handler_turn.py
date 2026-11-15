@@ -780,8 +780,8 @@ def _module_level_imports(tree: ast.Module) -> dict[str, int]:
 #: later is read by the facade or an owner, or it is dead, and this test says which.
 _SURFACE_ONLY_REEXPORTS = frozenset("""
     OUTCOME_REJECTED_TRANSPORT_FLOOR
-    _get_agent_for_session _review_drafts_get _review_drafts_pop adopt_default_agent
-    adopt_slack_config cancel_background_tasks enable_yolo_with_ttl get_orch_cfg
+    _get_agent_for_session _review_drafts_get _review_drafts_pop adopt_dashboard_thread_agent
+    adopt_default_agent adopt_slack_config cancel_background_tasks enable_yolo_with_ttl get_orch_cfg
     handle_interaction is_open_channel is_slack_session_trusted is_tracked_channel
     link_agent_mismatch post_linked_approval read_config_text read_link_record
     refresh_phase_emojis resolve_linked_approval set_allowed_users
@@ -890,7 +890,7 @@ def test_the_slack_messages_sink_redacts_what_its_render_let_through(
     from conftest import MockSlackClient
     from kiro_crew.providers.base import LLMEvent
 
-    key = "AKIAIOSFODNN7EXAMPLE"
+    key = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
     monkeypatch.setattr(
         handler,
         "render_one_for_slack",

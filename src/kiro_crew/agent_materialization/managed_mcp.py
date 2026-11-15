@@ -46,15 +46,90 @@ def _managed_mcp_env() -> dict[str, str]:
     not propagated to children that would then disagree with the gateway in the
     other direction.
 
-    Returns ``{}`` on a default install, which keeps the emitted spec
-    byte-for-byte what it is today (``_prune_empty`` drops an empty ``env``).
-    That is safe only because a default-install child DERIVES the same home the
-    gateway did, from an inherited ``HOME``. Preserving a user's ``env`` puts
-    that inheritance in reach of a config, so the companion control lives in
-    ``_enforce_managed_mcp_ownership``: see ``_HOME_DERIVING_ENV_KEYS``.
+    Centrally governed children also receive cache-only policy markers, never
+    the source URL or request headers. Those markers let a managed server boot
+    its own platform context from the gateway's verified cache even when its
+    harness does not inherit the gateway environment. A default install with
+    no central ceiling still returns ``{}`` unless it needs the data-home pin;
+    that keeps the emitted spec free of an empty ``env`` block. Preserving a
+    user's ``env`` puts home inheritance in reach of a config, so the companion
+    control lives in ``_enforce_managed_mcp_ownership``: see
+    ``_HOME_DERIVING_ENV_KEYS``.
     """
     override = agent_mod._valid_override_home()
-    return {"KIROCREW_HOME": str(override)} if override else {}
+    env = {"KIROCREW_HOME": str(override)} if override else {}
+    env.update(policy_cache_only_env())
+    return env
+
+
+#: The env keys :func:`policy_cache_only_env` derives. A managed spec's own copies
+#: are never trusted: every reader replaces them from gateway state.
+POLICY_MARKER_KEYS = frozenset(
+    {
+        "KIROCREW_POLICY_CACHE_ONLY",
+        "KIROCREW_POLICY_MAX_CACHE_AGE_SECS",
+        "KIROCREW_POLICY_PROFILE_PIN",
+    }
+)
+
+
+def policy_cache_only_env() -> dict[str, str]:
+    """The cache-only policy markers for a child of a centrally governed gateway.
+
+    ``{}`` unless this process installed its ceiling from central distribution.
+    Never the source URL or its request headers: the child adopts the gateway's
+    verified cache and starts no fetch of its own. The gateway's profile pin is
+    forwarded when set: a cache-only child reads its profile only from that
+    variable, and an LTS cache recorded for a pinned profile is refused without it.
+    """
+    import os
+
+    from kiro_crew.platform.enterprise_policy_fetch import PROFILE_PIN_ENV
+    from kiro_crew.platform.policy_distribution import (
+        POLICY_CACHE_ONLY_ENV,
+        POLICY_MAX_AGE_ENV,
+        central_ceiling_installed,
+        effective_max_cache_age,
+    )
+
+    if not central_ceiling_installed():
+        return {}
+    env = {POLICY_CACHE_ONLY_ENV: "1"}
+    profile_pin = os.environ.get(PROFILE_PIN_ENV)
+    if profile_pin:
+        env[PROFILE_PIN_ENV] = profile_pin
+    max_cache_age = effective_max_cache_age()
+    if max_cache_age:
+        env[POLICY_MAX_AGE_ENV] = str(max_cache_age)
+    return env
+
+
+def drop_policy_markers(entry: dict[str, Any]) -> None:
+    """Remove a managed entry's own copies of the policy markers, in place.
+
+    Those copies come from a user-editable spec; :func:`add_policy_markers`
+    supplies the gateway's values instead. An ``env`` left empty is removed.
+    """
+    env = entry.get("env")
+    if not isinstance(env, dict):
+        return
+    kept = {k: v for k, v in env.items() if k not in POLICY_MARKER_KEYS}
+    if kept:
+        entry["env"] = kept
+    else:
+        entry.pop("env")
+
+
+def add_policy_markers(entry: dict[str, Any]) -> None:
+    """Put :func:`policy_cache_only_env` on a managed stdio entry's ``env``, in place.
+
+    A harness that starts the child with a minimal environment (KAS) gives it
+    only what the entry declares, so a centrally governed child needs the
+    markers here to adopt the gateway's verified cache.
+    """
+    policy_env = policy_cache_only_env()
+    if policy_env:
+        entry.setdefault("env", {}).update(policy_env)
 
 
 # Declaration discriminator kiro-cli reads for enterprise MCP governance. It is
@@ -86,12 +161,11 @@ def _registry_marker_for(name: str, registry_mode: bool) -> bool:
 # reviewed against an external source instead of against someone's memory:
 # docs/reference/kiro-cli/mcp/configuration.md lists command, args, env,
 # disabled, autoApprove and disabledTools for a local (stdio) server, and
-# url/headers for a REMOTE one. The remote pair is deliberately absent -- these
-# servers are stdio-only, a leftover ``url`` would shadow the command, and older
-# builds left both behind -- so they are dropped by the rule below rather than by
-# name. ``timeout`` is the one addition: not in that table, but emitted by base
-# and one of the customizations this rule preserves, so dropping it would
-# re-introduce the very bug this filter exists to prevent.
+# url/headers for a REMOTE one. The remote pair is deliberately absent: these
+# servers are stdio-only and a leftover ``url`` would shadow the command, so both
+# are dropped by the rule below rather than by name. ``timeout`` is the one
+# addition: not in that table, but emitted by base and one of the user
+# customizations this rule preserves.
 #
 # ``type`` is here, and only the ``registry`` VALUE is ours. A transport hint the
 # user wrote (``"type": "stdio"``) is theirs and kiro-cli tolerates it, which
@@ -100,8 +174,8 @@ def _registry_marker_for(name: str, registry_mode: bool) -> bool:
 # below, rather than the whole key being treated as ours.
 #
 # Of the rest, three are OURS and are set on each pass (``command``, ``args``,
-# ``autoApprove``); the other four are the customizations a user may declare and
-# this fix exists to preserve. ``disabledTools`` is a user GUARD, not a
+# ``autoApprove``); the other four are customizations a user may declare, and
+# they are preserved. ``disabledTools`` is a user GUARD, not a
 # preference: dropping it would silently re-expose tools the user turned off,
 # which is why it is carried rather than re-derived (the custom-server PUT
 # endpoint round-trips it for the same reason).
@@ -233,7 +307,7 @@ def _mcp_registry_mode() -> bool:
     change exists to prevent.
     """
     try:
-        # Function-local like the model resolver a few frames up: importing the
+        # Function-local like spec_build._background_agent_model's: importing the
         # loader at module scope closes an import cycle through the config plane.
         from kiro_crew.config.loader import KiroCrewConfig
 
@@ -425,9 +499,9 @@ def managed_mcp_spec_entry(name: str, *, include_opt_in: bool = False) -> dict[s
     company there. It grants nothing on its own: neither host spec writer passes it,
     and the app-agent copier passes it only for a server the agent already names.
 
-    ``autoApprove`` is deliberately NOT carried, unlike the emit loop in
-    :func:`build_agent_config`. The flag is kiro-cli's local approval, and the
-    one caller here (the claude MCP translation, :mod:`kiro_crew.acp.session_mcp`)
+    ``autoApprove`` is deliberately NOT carried, unlike :func:`emit_managed_servers`
+    (the emit loop :func:`build_agent_config` runs). The flag is kiro-cli's local
+    approval, and one caller (the claude MCP translation, :mod:`kiro_crew.acp.session_mcp`)
     targets a backend whose nearest equivalent — a ``permissions.allow`` entry —
     means Claude never asks, so the call never reaches Crew's gate. Emitting the
     entry un-approved keeps every call gated.
@@ -722,12 +796,13 @@ def emit_managed_servers(mcp: dict, *, gated_off: frozenset[str], registry_mode:
         else:
             cmd = spec.get("command") or spec["command_fn"]()
             args = list(spec["args"])
-        # The deep merge above may have supplied user-owned options such as a
-        # timeout or extra environment variables. Keep those on a clean build,
-        # while replacing the invocation and transport fields that define our
-        # trusted managed server. Ownership of every other field is enforced
-        # by the same helper the refresh path uses (_enforce_managed_mcp_ownership),
-        # so the two loops cannot silently diverge on what counts as "ours".
+        # The user override file merged into the base may have supplied user-owned
+        # options such as a timeout or extra environment variables. Keep those on a
+        # clean build, while replacing the invocation and transport fields that
+        # define our trusted managed server. Ownership of every other field is
+        # enforced by the same helper the refresh path uses
+        # (_enforce_managed_mcp_ownership), so the two loops cannot silently diverge
+        # on what counts as "ours".
         existing = mcp.get(name)
         entry = dict(existing) if isinstance(existing, dict) else {}
         entry["command"] = cmd
@@ -832,7 +907,8 @@ def register_managed_refs(
         added_refs: list[str] = []
         # Managed servers + edition-contributed servers both get their @ref
         # registered so their tools are callable. Edition servers are injected
-        # into config['mcpServers'] via _extra_mcp_servers() above; their @ref
+        # into config['mcpServers'] by build_agent_config's _extra_mcp_servers()
+        # loop, which builds every fresh install's config; their @ref
         # must also be added to config['tools'], otherwise kiro-cli exposes the
         # server but not its tools. The public edition contributes none, so this
         # is a no-op there.

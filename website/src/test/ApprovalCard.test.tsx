@@ -220,12 +220,14 @@ describe('ApprovalCard', () => {
     expect(screen.getByText('Reject')).toBeInTheDocument()
   })
 
-  it('renders a terminal state without buttons when the approval is gone (400 no pending approval)', async () => {
+  it('renders a gone approval (400 no pending approval) as status, not an error, without buttons (#18203)', async () => {
     const onApprove = vi.fn(() => Promise.reject(new ApiError(400, 'no pending approval')))
-    render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
+    const { container } = render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
     fireEvent.click(screen.getByText('Approve'))
-    const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toContain('no longer waiting')
+    const status = await screen.findByRole('status')
+    expect(status.textContent).toContain('no longer waiting')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(container.firstChild).not.toHaveClass('border-l-danger')
     expect(screen.queryByText('Approve')).not.toBeInTheDocument()
     expect(screen.queryByText('Reject')).not.toBeInTheDocument()
   })
@@ -234,8 +236,8 @@ describe('ApprovalCard', () => {
     const onApprove = vi.fn(() => Promise.reject(new ApiError(404, 'not found')))
     render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
     fireEvent.click(screen.getByText('Approve'))
-    const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toContain('no longer waiting')
+    const status = await screen.findByRole('status')
+    expect(status.textContent).toContain('no longer waiting')
     expect(screen.queryByText('Approve')).not.toBeInTheDocument()
   })
 
@@ -289,7 +291,7 @@ describe('ApprovalCard', () => {
     fireEvent.click(screen.getByText('Trust'))
     fireEvent.click(screen.getByText('Trust all tools for this session'))
     await waitFor(() => expect(screen.queryByText(/auto-approving future calls/)).not.toBeInTheDocument())
-    expect(screen.getByRole('alert').textContent).toContain('no longer waiting')
+    expect(screen.getByRole('status').textContent).toContain('no longer waiting')
   })
 
   it('shows a generic failure message when the rejection carries no message', async () => {

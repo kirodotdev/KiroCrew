@@ -75,5 +75,5 @@ def test_no_except_tuple_pairs_jsondecodeerror_with_bare_valueerror() -> None:
     assert not offenders, (
         "except tuples pairing json.JSONDecodeError with a bare ValueError "
         "(the member is redundant -- JSONDecodeError subclasses ValueError, "
-        f"drop it; see #5287): {offenders}"
+        f"drop it): {offenders}"
     )

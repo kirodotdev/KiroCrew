@@ -269,7 +269,7 @@ class TestSharedSwitchCannotArmThisStore:
         )
         assert STORE_STRICT_ENV not in ci and STORE_STRICT_ENV not in setup_py, (
             "CI now exports the store switch -- the knowledge store's on-loop "
-            "callers must be offloaded (#7019) before that can hold"
+            "callers must be offloaded before that can hold"
         )
 
 
@@ -391,7 +391,7 @@ class TestConstructionOnLoopIsSanctioned:
         assert "_load_graph" not in calls, (
             "the graph load is back inside the sanctioned block -- that returns a "
             "data-scaled two-table scan to the pre-bind boot path and un-arms the "
-            "guard for it. It belongs behind ensure_graph_loaded (#8329)."
+            "guard for it. It belongs behind ensure_graph_loaded."
         )
         assert calls == ["_init_schema", "_migrate"], (
             "the sanctioned block's body changed -- a call moved out (re-arming "

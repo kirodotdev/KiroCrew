@@ -234,7 +234,7 @@ async def test_an_oidc_sign_in_records_its_start_url_on_the_stored_token(
 ):
     from kiro_crew.auth.service import KasLoginService
 
-    async def _fake_register(region, *, session):
+    async def _fake_register(region, *, session, **_k):
         return builder_id.RegisteredClient(client_id="cid-1", client_secret="csec-1")
 
     async def _fake_start(client, *, region, start_url, session):
@@ -252,10 +252,11 @@ async def test_an_oidc_sign_in_records_its_start_url_on_the_stored_token(
             client_secret=client.client_secret,
         )
 
-    async def _fake_profiles(access_token, *, region, session):
-        return [
-            control_plane.KiroProfile(arn="arn:aws:kiro:eu-west-1:1:profile/p1", profile_name="P1")
-        ]
+    async def _fake_profiles(access_token, *, region, session, viewer_cps_url=""):
+        profile = control_plane.KiroProfile(
+            arn="arn:aws:kiro:eu-west-1:1:profile/p1", profile_name="P1"
+        )
+        return control_plane.ProfileListing(profiles=[profile], url="https://cps.test/", pages=1)
 
     monkeypatch.setattr(builder_id, "register_client", _fake_register)
     monkeypatch.setattr(builder_id, "start_device_authorization", _fake_start)

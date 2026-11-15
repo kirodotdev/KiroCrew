@@ -272,6 +272,13 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Transcription partials and finals are redacted before they leave the process.",
     ),
     (
+        "Dashboard live log stream",
+        "dashboard/handlers/updates_streams.py",
+        "The live log stream and its ring replay reach every dashboard-user socket and "
+        "`log`-scoped apps, not only the owner; with the owner's prompt-and-logs switch "
+        "off, each line is redacted here before it is buffered or sent.",
+    ),
+    (
         "Agent channels",
         "channel.py",
         "Tool names and tool inputs shared between agents on a persistent channel.",
@@ -320,6 +327,53 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "ZWSP insertion is itself a post-scan transformation. Enforced at this sink "
         "rather than per renderer for the same reason the max_buttons cap lives in "
         "shared code: a channel cannot forget what it does not call.",
+    ),
+    (
+        "iMessage session title",
+        "imessage/transport_dispatch.py",
+        "The session title this channel derives from a new conversation's first inbound "
+        "message, stored in transcript metadata and served to dashboard readers. Scrubbed "
+        "before the 40-character cut, so a credential straddling it is not halved past the "
+        "scan; the row itself is scrubbed at `_redact_at_write_boundary`. This module's "
+        "`redact_handle` is gate-side log hygiene, which is why its siblings "
+        "`imessage/client.py` and `imessage/transport.py` are non-egress.",
+    ),
+    (
+        "Webex session title",
+        "webex/transport_dispatch.py",
+        "Same session-title egress as the iMessage entry.",
+    ),
+    (
+        "Feishu session title",
+        "feishu/transport_dispatch.py",
+        "Same session-title egress as the iMessage entry.",
+    ),
+    (
+        "Teams session title",
+        "teams/transport_dispatch.py",
+        "Same session-title egress as the iMessage entry.",
+    ),
+    (
+        "WeCom session title",
+        "wecom/transport_dispatch.py",
+        "Same session-title egress as the iMessage entry.",
+    ),
+    (
+        "Weixin session title",
+        "weixin/transport_dispatch.py",
+        "Same session-title egress as the iMessage entry.",
+    ),
+    (
+        "WhatsApp session title",
+        "whatsapp/transport_dispatch.py",
+        "Same session-title egress as the iMessage entry.",
+    ),
+    (
+        "Telegram live dashboard projection",
+        "telegram/dispatch/turn_engine.py",
+        "Both halves of a turn, scrubbed before `project_channel_turn_live` broadcasts "
+        "them to the linked dashboard slot, which does not route through the write "
+        "boundary. The scrubbed body also feeds the persisted rows.",
     ),
     (
         "Webex delivery",

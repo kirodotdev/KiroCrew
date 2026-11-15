@@ -11,8 +11,10 @@ object. ``_ChatSlot.project`` reads and writes it through a property, so every
 ``slot.project = x`` already writes the shared cell and every ``slot.project is token``
 rollback check reads it. A rollback therefore skips a peer's newer write (the identity
 differs) and restores the whole group otherwise, with no per-peer rollback contract.
-``_ChatSlot.autocompact_pct`` (the session's compaction threshold) is held the same
-way, so a threshold set through one alias is the value every alias saves.
+``_ChatSlot.autocompact_pct`` (the session's compaction threshold) and
+``_ChatSlot.turn_timeout_secs`` (its own turn time limit, with whether that limit has
+been read back yet) are held the same way, so a value set through one alias is the
+value every alias saves.
 
 :func:`bind_transcript` is the one place a slot's binding is chosen. Call it after
 anything that can change the slot's history key.
@@ -29,7 +31,15 @@ if TYPE_CHECKING:
 class TranscriptBinding:
     """The cells a slot shares with every live alias on its transcript."""
 
-    __slots__ = ("project", "assigned", "_commit", "autocompact_pct", "autocompact_set")
+    __slots__ = (
+        "project",
+        "assigned",
+        "_commit",
+        "autocompact_pct",
+        "autocompact_set",
+        "turn_timeout_secs",
+        "turn_timeout_hydrated",
+    )
 
     def __init__(
         self,
@@ -37,6 +47,8 @@ class TranscriptBinding:
         assigned: bool = False,
         autocompact_pct: float | None = None,
         autocompact_set: bool = False,
+        turn_timeout_secs: int | None = None,
+        turn_timeout_hydrated: bool = False,
     ) -> None:
         self.project = project
         # Whether the group has chosen its directory: it held one, or cleared one it
@@ -51,6 +63,12 @@ class TranscriptBinding:
         # Whether anything wrote the threshold, a clear included, the way
         # ``assigned`` records a directory choice.
         self.autocompact_set = autocompact_set
+        # The session's own turn time limit (seconds); None follows the global
+        # ``agent.chat_turn_timeout_secs``.
+        self.turn_timeout_secs = turn_timeout_secs
+        # Whether anything read the limit from the transcript or set it, a clear
+        # included. Until then every save carries the on-disk value forward.
+        self.turn_timeout_hydrated = turn_timeout_hydrated
 
 
 def write_project(binding: TranscriptBinding, value: str) -> None:
@@ -95,7 +113,8 @@ def bind_transcript(state: Any, slot: _ChatSlot) -> None:
 
     * Another live slot on the same history key: adopt that slot's binding. The live
       peer wins, because it holds the value the shared session runs with, except
-      where it holds nothing yet: the joiner's directory or threshold then fills it.
+      where it holds nothing yet: the joiner's directory, threshold or turn time
+      limit then fills it.
     * No live peer, but the slot's binding is still held by a slot on another key (it
       just left an alias group): give it a private copy. It keeps its value and stops
       affecting the group it left.
@@ -130,6 +149,11 @@ def bind_transcript(state: Any, slot: _ChatSlot) -> None:
                 # The same rule for the threshold: a peer nothing wrote takes the joiner's.
                 shared.autocompact_pct = own.autocompact_pct
                 shared.autocompact_set = True
+            if own.turn_timeout_hydrated and not shared.turn_timeout_hydrated:
+                # And for the turn time limit: a peer that never read or set one
+                # takes the joiner's.
+                shared.turn_timeout_secs = own.turn_timeout_secs
+                shared.turn_timeout_hydrated = True
             slot._binding = shared
             if seeded:
                 _reset_if_running(state, slot)
@@ -150,6 +174,8 @@ def bind_transcript(state: Any, slot: _ChatSlot) -> None:
             assigned=slot._binding.assigned,
             autocompact_pct=slot._binding.autocompact_pct,
             autocompact_set=slot._binding.autocompact_set,
+            turn_timeout_secs=slot._binding.turn_timeout_secs,
+            turn_timeout_hydrated=slot._binding.turn_timeout_hydrated,
         )
 
 
@@ -241,3 +267,31 @@ def seed_autocompact_from_disk(state: Any, slot: Any, value: float | None) -> No
     if value is None or (_peers(state, slot) and slot._binding.autocompact_set):
         return
     slot.autocompact_pct = value
+
+
+def seed_turn_timeout_from_disk(state: Any, slot: Any, value: int | None) -> bool:
+    """Write a stored turn time limit onto *slot* unless a live alias's outranks it.
+
+    The disk-seed entry for the limit, as :func:`seed_autocompact_from_disk` is for
+    the threshold: a live alias that holds the limit, read or set, may be newer than
+    the line, so the line only fills a binding nothing holds yet. ``None`` is a
+    value here (follow the global). Returns whether the line was applied.
+    """
+    if _peers(state, slot) and slot._turn_timeout_hydrated:
+        return False
+    slot.turn_timeout_secs = value
+    slot._turn_timeout_hydrated = True
+    return True
+
+
+def mark_turn_timeout_unread(state: Any, slot: Any) -> None:
+    """Mark a just-bound tab's limit as still on disk, unless a live alias holds it.
+
+    Until the read lands, the tab's saves carry the on-disk value forward instead of
+    writing "follow the global limit" over it. A live alias's limit is the
+    transcript's, so the tab already holds it.
+    """
+    if _peers(state, slot):
+        return
+    slot.turn_timeout_secs = None
+    slot._turn_timeout_hydrated = False

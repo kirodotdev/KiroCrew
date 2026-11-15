@@ -68,7 +68,7 @@ describe('McpTab: a server the agent rebuild dropped', () => {
       "The program 'example-mcp-program' wasn't found on this computer, so your agent can't use this server's tools.",
     )
     expect(note).toHaveTextContent('set the full path to the program')
-    expect(note).toHaveTextContent('Customize → Connections → MCP Servers')
+    expect(note).toHaveTextContent('in MCP Servers.')
     expect(note).toHaveTextContent('Settings → About → Restart gateway')
     expect(within(rowOf('example-server')).getByTestId('mcp-agent-dropped')).toBe(note)
   })

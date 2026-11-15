@@ -9,6 +9,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import type { ReactNode } from 'react'
 import { i18nT } from '../i18n/t'
 
@@ -32,7 +34,7 @@ import { i18next } from '../i18n/all'
 
 const wrap = (ui: ReactNode) => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
+  return render(<Provider store={createConnectedTestStore()}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider>)
 }
 
 const pathInput = () => screen.getByPlaceholderText(i18nT('components.appstore.sourcesPopover.path_to_app_directory'))

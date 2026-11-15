@@ -15,6 +15,22 @@ export function matchFileToken(before: string): string | null {
   return m ? m[2] : null
 }
 
+/** The project-relative folder Kiro keeps specs in, one subfolder per spec. */
+export const SPEC_DIR = '.kiro/specs/'
+
+/**
+ * The spec-name prefix an `@` query is typing, or null when the query is not
+ * a spec pick.
+ *
+ * `@.kiro/specs/` and `@.kiro/specs/<partial>` (no further `/`) ask for a spec
+ * folder, so the `@` picker lists the spec folders themselves instead of a
+ * fuzzy search, where every `tasks.md` would outrank them.
+ */
+export function matchSpecQuery(query: string): string | null {
+  const m = /^\.kiro[/\\]specs[/\\]([^/\\]*)$/.exec(query)
+  return m ? m[1] : null
+}
+
 /**
  * $-mention (skill picker) query at the caret, or null.
  *

@@ -12,6 +12,7 @@ JSON is composed), see
 | [getting-started.md](getting-started.md) | Build your first app: scaffold, run, and iterate. |
 | [manifest-reference.md](manifest-reference.md) | Every `app.json` field. |
 | [api-reference.md](api-reference.md) | The App SDK surface: hooks, storage, chat embedding, and the event bus. |
+| [issues-guide.md](issues-guide.md) | Show GitHub, GitLab, Jira and Linear issues with `IssueList`, `IssueCard` and `useIssues`. |
 | [publishing-guide.md](publishing-guide.md) | Publishing to the App Store, including the review guidelines an app must meet. |
 | [migration-guide.md](migration-guide.md) | Moving an app across a breaking platform version. |
 

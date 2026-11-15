@@ -45,6 +45,8 @@ import threading
 from pathlib import Path
 from typing import Any, Final
 
+from kiro_crew.bounded_read import bounded_read
+
 logger = logging.getLogger(__name__)
 
 #: The dot-directory under the skills dir. The skill walk skips dot directories.
@@ -264,7 +266,7 @@ def _put(dir_fd: int | None, where: Path, name: str, data: bytes) -> None:
             raise OSError(f"{where / name} is not a regular file")
         fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
         with os.fdopen(fd, "rb") as fh:
-            if fh.read(len(data) + 1) == data:
+            if bounded_read(fh, len(data) + 1) == data:
                 return
     atomic_write_at(dir_fd, name, data.decode("utf-8"))
 

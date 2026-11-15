@@ -71,9 +71,6 @@ _STRIPPED = (
     ("__init__", "_auto_migrate_task", '"asyncio.Task[None] | None"'),
     ("__init__", "_update_check_task", '"asyncio.Task[None] | None"'),
     ("__init__", "_profile_watch_task", '"asyncio.Task[None] | None"'),
-    ("__init__", "_pending_update_respawn", "Callable[[], str] | None"),
-    ("__init__", "_mandatory_update_deferred_at", "float | None"),
-    ("__init__", "_mandatory_update_deferred_key", "str | None"),
     ("__init__", "_wheel_update_noticed", "set[str]"),
     ("__init__", "_mcp_gateway_manager", "GatewayManager | None"),
     ("__init__", "_mcp_resolve_prefetch", "asyncio.Task[None] | None"),
@@ -190,8 +187,8 @@ def _assigned_fields(functions: list[ast.FunctionDef]) -> set[str]:
 def test_every_inline_annotation_became_a_class_declaration_with_its_text() -> None:
     declared = _class_declarations()
 
-    assert len(_STRIPPED) == 75
-    assert len({field for _fn, field, _ann in _STRIPPED}) == 75
+    assert len(_STRIPPED) == 72
+    assert len({field for _fn, field, _ann in _STRIPPED}) == 72
     for function, field, annotation in _STRIPPED:
         assert declared.get(field) == annotation, (function, field)
 

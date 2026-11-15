@@ -151,6 +151,8 @@ async def _on_text_chunk(turn: _ChatTurn, event, *, released: bool = False) -> N
     if not turn.has_assistant_text:
         _compaction_text_offset = 0
         turn._compaction_text_offset = _compaction_text_offset
+    if not event.control_notice and safe_chunk.strip():
+        slot._turn_wrote_text = True
     turn.append_assistant_text(safe_chunk)
     if event.control_notice:
         # A backend control notice that arrived as assistant text
@@ -167,8 +169,9 @@ async def _on_text_chunk(turn: _ChatTurn, event, *, released: bool = False) -> N
         # notice-only row must not replace the previous reply.
         note_regenerate_notice(slot, safe_chunk)
     # Set BEFORE the `_turn_emitted` flip: the consumption report
-    # below must stay adjacent to that flip (pinned by
-    # test_subagent_delivery_ttl_anchor), so a diagnostic flag goes
+    # below must stay adjacent to that flip
+    # (test_subagent_delivery_ttl_anchor pins that consumption is reported at the
+    # first text or tool event), so a diagnostic flag goes
     # above it rather than between the two.
     _saw_text_chunk = True
     turn._saw_text_chunk = _saw_text_chunk
@@ -183,7 +186,9 @@ async def _on_text_chunk(turn: _ChatTurn, event, *, released: bool = False) -> N
     # accumulates the full text for the authoritative final redaction.
     # The first output after a tool call or approval prompt also
     # settles the run held there (see _cut_segment).
-    wire = _wsred.feed(event.text)
+    # A run left withheld that is one plain word ending a sentence goes out with
+    # this chunk: nothing after it can make it part of a credential.
+    wire = _wsred.feed(event.text) + _wsred.release_sentence_end()
     if wire:
         wire = _settle_held(turn, wire, continued=True)
     if wire:

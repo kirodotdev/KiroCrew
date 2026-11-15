@@ -7,6 +7,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
+import { Provider } from 'react-redux'
+import { createTestStore } from '../../test/helpers'
+import { setUpdateProgress } from '../../store/dashboardSlice'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import type { SharedCrewPreviewSetting } from '../../api/sharedCrew'
@@ -194,6 +197,26 @@ describe('Shared Crew preview card', () => {
     mount()
     const button = await screen.findByTestId('shared-crew-preview-restart-button')
     fireEvent.click(button)
+    expect(await screen.findByTestId('shared-crew-preview-restart-error')).toHaveAttribute('role', 'alert')
+    expect(button).not.toBeDisabled()
+  })
+
+  it('a restart refused after its 200 reports failure without waiting out verification (#35351)', async () => {
+    read.mockResolvedValue(setting({ enabled: true, restart_required: true }))
+    restart.mockResolvedValue({ ok: true, status: 'restarting' })
+    const store = createTestStore()
+    render(
+      <Provider store={store}>
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <MemoryRouter><FeaturePreviewsSection /></MemoryRouter>
+        </QueryClientProvider>
+      </Provider>,
+    )
+    const button = await screen.findByTestId('shared-crew-preview-restart-button')
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toBeDisabled())
+    act(() => { store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' })) })
+    act(() => { store.dispatch(setUpdateProgress({ step: 'error', detail: 'Sessions did not drain in time.' })) })
     expect(await screen.findByTestId('shared-crew-preview-restart-error')).toHaveAttribute('role', 'alert')
     expect(button).not.toBeDisabled()
   })

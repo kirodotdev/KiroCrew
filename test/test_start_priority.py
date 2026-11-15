@@ -1037,8 +1037,10 @@ def test_every_other_reload_arms_a_background_respawn(path, function):
 
 
 def test_the_channel_pipeline_starts_the_session_at_the_askers_priority():
-    # Both claims: a monitor wake's non-waiting one and an inbound turn's.
-    assert _priority_args("messaging/dispatch.py", "_run", "get_or_create") == [
+    # Every claim goes through the token-minting acquire: a monitor wake's
+    # non-waiting one, an inbound turn's, and the re-claim after a stale KAS batch.
+    assert _priority_args("messaging/dispatch.py", "_run", "acquire_with_token") == [
+        "asker.start_priority",
         "asker.start_priority",
         "asker.start_priority",
     ]
@@ -1086,7 +1088,8 @@ def test_every_transport_marks_what_it_receives_as_a_persons(transport):
         ("wecom/transport_dispatch.py", "ChannelTurn", 1),
         ("whatsapp/transport_dispatch.py", "ChannelTurn", 1),
         ("discord/transport_dispatch.py", "Asker", 1),
-        ("telegram/dispatch/turn_engine.py", "get_or_create", 1),
+        # The claim and the re-claim, both through the token-minting acquire.
+        ("telegram/dispatch/turn_engine.py", "acquire_with_token", 2),
     ],
 )
 def test_a_channel_dispatcher_starts_a_turn_at_the_inbounds_origin(path, callee, count):

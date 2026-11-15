@@ -39,8 +39,10 @@
  * purely-local user looking for another machine.
  *
  * @param {object} [facts]
- * @param {"kirocrew"|"foreign"|"none"|"unknown"} [facts.localOwner="unknown"]
- *        who owns the port's LISTEN socket locally
+ * @param {"kirocrew"|"service"|"foreign"|"none"|"unknown"|"unidentified"} [facts.localOwner="unknown"]
+ *        who owns the port's LISTEN socket locally, as classifyPortOwner
+ *        reports it. "unidentified" lands on "foreign" below, deliberately —
+ *        see the comment on that branch.
  * @param {string} [facts.remoteHost=""] a remote host configured for this port
  * @returns {"local"|"foreign"|"unknown"}
  *   "local"   — confirmed OUR gateway: act on THIS machine
@@ -55,6 +57,13 @@ function classifyAuthBlock({ localOwner = "unknown", remoteHost = "" } = {}) {
   if (typeof remoteHost === "string" && remoteHost !== "") return "foreign";
   if (localOwner === "kirocrew") return "local";
   if (localOwner === "foreign") return "foreign";
+  // A holder netstat NAMED whose command line could not be read. Not "could
+  // not determine": something demonstrably holds the port, only its identity
+  // is missing. It must land here and not below, because this verdict is what
+  // `shouldRetryLocalTokenMint` reads — anything other than "foreign" retries
+  // the LOCAL mint, which posts this machine's `.local_secret` to whatever
+  // holds the socket.
+  if (localOwner === "unidentified") return "foreign";
   // "none" (nothing listening locally, yet something answered) and "unknown"
   // (the probe could not run) both mean unconfirmed. Do not guess.
   return "unknown";

@@ -129,15 +129,16 @@ def cron_job_revision(job: Any) -> str:
     return _cron_job_revision(job)
 
 
-def next_run_at(cron_expr: str, timezone: str | None) -> float | None:
+def next_run_at(cron_expr: str, timezone: str | None, job_id: str = "card-preview") -> float | None:
     from kiro_crew.cron_service.model import CronJob, CronSchedule
-    from kiro_crew.cron_service.schedule import compute_next_run_ts
+    from kiro_crew.cron_service.schedule import compute_next_run_ts, pin_random_cron_fields
 
+    # A random (``R``) field is pinned per job id, as the job it previews is.
     job = CronJob(
-        id="card-preview",
+        id=job_id,
         name="preview",
         message="",
-        schedule=CronSchedule(kind="cron", cron_expr=cron_expr),
+        schedule=CronSchedule(kind="cron", cron_expr=pin_random_cron_fields(cron_expr, job_id)),
     )
     job.timezone = timezone or ""
     try:
@@ -1175,18 +1176,17 @@ async def _mcp_detail(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _crewmate_label(key: str) -> str:
-    """The name the user knows a crewmate by: its display name, else its key.
+    """The name the user knows a crewmate by: its display name, else its default.
 
     A card raised in the crewmate's own chat is read under that display name, so
     a title or scope line naming the key would name a crewmate the user has never
     seen. Display-only, so it rides in the context rather than the compared
     snapshot: a rename between propose and apply is not a conflict.
     """
+    from kiro_crew.agent_files import member_label
     from kiro_crew.config.loader import KiroCrewConfig
 
-    agent = KiroCrewConfig.load().agents.get(key)
-    label = getattr(agent, "display_name", "") if agent is not None else ""
-    return label.strip() if isinstance(label, str) and label.strip() else key
+    return member_label(key, KiroCrewConfig.load().agents.get(key))
 
 
 async def read_context(
@@ -1238,23 +1238,34 @@ async def read_context(
         from kiro_crew.cron_service.schedule import (
             get_local_tz,
             is_valid_timezone,
+            pin_random_cron_fields,
             resolve_timezone_name,
         )
 
         tz = source.get("timezone") or ""
         if tz and not is_valid_timezone(tz):
             raise catalog.CardCatalogError("invalid_timezone", f"unknown timezone '{tz[:64]}'")
-        when = next_run_at(expr, tz)
+        target_id = str(p.get("id") or "") if kind == catalog.KIND_SCHEDULE_UPDATE else ""
+        when = next_run_at(expr, tz, target_id or "card-preview")
         if when is None:
             raise catalog.CardCatalogError("invalid_cron", "that cron expression never runs")
         # The IANA zone the scheduler runs it in now: a card with no zone takes
         # the default one, and "local" is the host's. The browser formats the
         # next run in this zone, and it cannot read "local".
         zone = (resolve_timezone_name(tz) or "UTC") if tz else get_local_tz()[0]
+        if not target_id and pin_random_cron_fields(expr, "card-preview") != expr:
+            # A new job's random pick depends on the id it is created with, which
+            # does not exist yet, so no next run is shown rather than a wrong one.
+            return {"timezone": zone}
         return {"next_run_at": when, "timezone": zone}
     if kind == catalog.KIND_CREWMATE_CAPABILITIES:
         from kiro_crew.agent_capabilities import CapabilityError
+        from kiro_crew.dashboard.handlers.member_capability_catalog import masks_unresolved
 
+        if masks_unresolved(p):
+            raise catalog.CardCatalogError(
+                "redacted_value_not_writable", "capabilities refused: redacted_value_not_writable"
+            )
         body = {"revision": before.get("revision"), **p["draft"]}
 
         def _preview() -> dict[str, Any]:
@@ -1298,6 +1309,9 @@ async def read_context(
             "impact": impact,
             "label": await asyncio.to_thread(_crewmate_label, p["member"]),
             "gateway": sorted(await asyncio.to_thread(gateway_matches, p)),
+            # A crewmate on its own file: the edit reaches its worker only, never
+            # the conductor its chat runs on (``mate_worker``).
+            "worker_kit": result.get("mode") == "mate",
         }
     if kind == catalog.KIND_TEMPLATE_UPDATE:
         from kiro_crew.config.loader import KiroCrewConfig
@@ -1503,8 +1517,8 @@ async def _workflow_context(
     from kiro_crew.workflows.validate import validate
 
     result = await asyncio.to_thread(validate, params["source"])
-    if not result.ok:
-        errors = "; ".join(str(e) for e in result.errors)
+    if result.save_errors:  # a compile-stage error still saves, with a warning
+        errors = "; ".join(str(e) for e in result.save_errors)
         raise catalog.CardCatalogError(
             "invalid_workflow", f"the script is not valid: {errors[:400]}"
         )

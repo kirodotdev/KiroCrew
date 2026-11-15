@@ -39,6 +39,8 @@ interface ChatEventBridgesOptions {
   terminalCfgUnsettledRef: MutableRefObject<boolean>
   terminalCfgReadFailedRef: MutableRefObject<boolean>
   inputRef: MutableRefObject<string>
+  /** A reply card's send (the `[GRILL:]` discussion card): sends or stages `text` for `slot` per Quick Send; null when this page does not serve `slot`. Stable. */
+  composeSend: (text: string, slot: string) => 'sent' | 'staged' | null
 }
 
 /**
@@ -68,6 +70,7 @@ export function useChatEventBridges({
   terminalCfgUnsettledRef,
   terminalCfgReadFailedRef,
   inputRef,
+  composeSend,
 }: ChatEventBridgesOptions) {
   // Feed the Web Preview tab from chat, by signal type (previewFeedDecision).
   // Neither path ever navigates the iframe: both hand the URL to the panel as a
@@ -174,6 +177,18 @@ export function useChatEventBridges({
     window.addEventListener('mc:prefill-composer', handler)
     return () => window.removeEventListener('mc:prefill-composer', handler)
   }, [dispatch, inputRef])
+  // A reply card's Start / No thanks (GrillCard): sent the way a follow-up chip
+  // is, so Quick Send decides between sending and staging. `result` tells the
+  // card this page took it for the card's own chat; otherwise the card stays open.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { text?: unknown; slot?: unknown; result?: unknown } | undefined
+      if (!detail || detail.result || typeof detail.text !== 'string' || !detail.text || typeof detail.slot !== 'string') return
+      detail.result = composeSend(detail.text, detail.slot)
+    }
+    window.addEventListener('mc:compose-send', handler)
+    return () => window.removeEventListener('mc:compose-send', handler)
+  }, [composeSend])
   // A redaction card's "Allow for this host" (or its Undo): the reply was saved
   // with the link removed, and the server shows allowed hosts' links again when
   // it serves the slot, so reload it to show the link in place of the chip.

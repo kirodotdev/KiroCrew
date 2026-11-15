@@ -141,10 +141,12 @@ async def test_a_job_name_cannot_inject_slack_markup_or_leak_a_secret() -> None:
 @pytest.mark.asyncio
 async def test_a_key_split_by_slack_emphasis_is_still_redacted() -> None:
     """Slack renders ``*...*`` away, so a key a literal scan sees as split shows intact."""
-    gw = _gateway()
-    suffix = "Q7R8S9T0U1V2W3X4"
+    from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
-    await _ask(gw, requester=f"cron job AKIA*{suffix}* (j1)")
+    gw = _gateway()
+    head, suffix = SAMPLE_SLACK_BOT_TOKEN[:5], SAMPLE_SLACK_BOT_TOKEN[5:]
+
+    await _ask(gw, requester=f"cron job {head}*{suffix}* (j1)")
 
     _channel, blocks, fallback, _thread = gw.slack.post_blocks.await_args.args
     for sink in (_texts(blocks)[-1], fallback, gw.slack.update_message.await_args.kwargs["text"]):

@@ -8,6 +8,7 @@ import { renderWithProviders, createTestStore } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { api, ApiError } from '../api/client'
 import { i18nT } from '../i18n/t'
+import { queryPendingApprovalAction } from '../pages/chat/composerFocus'
 import { sseSubagentPending, sseSubagentSpawn, sseSubagentTool } from '../store/chatSlice'
 import type { RootState } from '../store'
 import { reconcileGoneSubagent, sseChatMessage } from '../store/chatSlice'
@@ -62,6 +63,18 @@ function rejectVia(label: 'Reject once' | 'Reject all') {
   const item = screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith(label))!
   expect(item).toBeTruthy()
   fireEvent.click(item)
+}
+
+/** The approval row's controls in order, by visible label. */
+function barControls(): string[] {
+  const row = document.querySelector('[data-approval-actions]')!
+  return Array.from(row.querySelectorAll('button')).map(b => b.textContent || '')
+}
+
+/** The bar's Trust control holds its slot, disabled, and grants nothing. */
+function expectTrustHeldDisabled() {
+  expect(screen.getByRole('button', { name: 'Trust' })).toBeDisabled()
+  expect(barControls()).toEqual(['Allow once', 'Trust', 'Reject'])
 }
 
 function stateWithApproval(meta: Record<string, unknown> = {}): Partial<RootState> {
@@ -130,7 +143,7 @@ describe('ChatInput approval flow', () => {
   it('shows Trust dropdown button', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    expect(screen.getByText('Trust')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Trust' })).toBeEnabled()
     // A card that can take Trust needs no line explaining its absence.
   })
 
@@ -156,7 +169,7 @@ describe('ChatInput approval flow', () => {
     const target = { origin: 'coordinator', id: 'ap-123', slot: 'slot-1', instance: 'inst-123' }
     row.meta = { ...row.meta, mid: undefined, registry: 'coordinator', approval_target: target }
     renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(state) })
-    expect(screen.queryByText('Trust')).not.toBeInTheDocument()
+    expectTrustHeldDisabled()
     // Withheld as for any unattended source on the base: no extra line.
     expect(screen.queryByTestId('approval-trust-unavailable')).not.toBeInTheDocument()
     fireEvent.click(screen.getByText('Allow once'))
@@ -164,6 +177,25 @@ describe('ChatInput approval flow', () => {
       expect(api.decideApproval).toHaveBeenCalledWith(target, 'approve', expect.stringMatching(/^r_/))
     })
     expect(api.approveChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('keeps Allow once, Trust and Reject in one order on a sub-agent request (#34971)', () => {
+    // A sub-agent's request is a coordinator card, which takes no standing
+    // grant. The row is right-aligned, so without the held slot Allow once
+    // would sit where Trust sits on every other bar.
+    const { unmount } = renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
+    const mainBar = barControls()
+    unmount()
+    const state = stateWithApproval()
+    const row = (state.chat!.messages as unknown as { meta: Record<string, unknown> }[])[1]
+    row.meta = { ...row.meta, mid: undefined, registry: 'coordinator', approval_target: { origin: 'coordinator', id: 'ap-123', slot: 'slot-1', instance: 'inst-123' } }
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(state) })
+    expect(barControls()).toEqual(mainBar)
+    const trust = screen.getByRole('button', { name: 'Trust' })
+    expect(trust).toBeDisabled()
+    expect(trust).toHaveAccessibleDescription('Trust is not available for this request. Allow it once or reject it.')
+    // The approve chord's probe still lands on Allow once.
+    expect(queryPendingApprovalAction()).toBe(screen.getByRole('button', { name: 'Allow once' }))
   })
 
   it('after a takeover, Allow once settles the replacement and leaves the replaced row stale', async () => {
@@ -449,7 +481,7 @@ describe('ChatInput approval flow', () => {
     state.chat!.activeSlot = null
     const store = createTestStore(state)
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    expect(screen.queryByText('Trust')).not.toBeInTheDocument()
+    expectTrustHeldDisabled()
     // Withholding the trust tier must not take the approval bar with it: the
     // decisions the one-shot endpoint CAN honor are still offered.
     expect(screen.getByText('Allow once')).toBeInTheDocument()
@@ -601,7 +633,7 @@ describe('ChatInput approval flow', () => {
     expect(screen.queryByRole('menuitem')).not.toBeInTheDocument()
   })
 
-  it('hides trust entirely when the card carries no grant proof at all', () => {
+  it('offers no Trust grant when the card carries no grant proof at all', () => {
     const state = stateWithApproval()
     const meta = state.chat!.messages[1].meta!
     delete meta.trust_command_grantable
@@ -610,7 +642,7 @@ describe('ChatInput approval flow', () => {
     meta.is_read_only = ''
     const store = createTestStore(state)
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    expect(screen.queryByRole('button', { name: 'Trust' })).not.toBeInTheDocument()
+    expectTrustHeldDisabled()
     expect(screen.getByRole('button', { name: 'Allow once' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument()
   })
@@ -970,9 +1002,10 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     expect(api.decideApproval).not.toHaveBeenCalled()
     expect(store.getState().chat.subagents.a1.approvalGone).toBe('spawn:a1')
     await waitFor(() => expect(screen.queryByText(/awaiting your approval to run/)).not.toBeInTheDocument())
-    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
-      i18nT('components.approvalCard.approval_no_longer_pending'),
-    )
+    // Gone is status, not an error (#18203): the composer's status strip.
+    const gone = i18nT('components.approvalCard.approval_no_longer_pending')
+    expect(screen.queryByTestId('approval-decision-error')).not.toBeInTheDocument()
+    expect(screen.queryAllByRole('status').filter(el => el.textContent?.includes(gone))).toHaveLength(1)
   })
 
   it('a refusal on request A does not hold back a replacement B under the same approval id', async () => {
@@ -1065,15 +1098,12 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     await waitFor(() => {
       expect(screen.queryByText(/awaiting your approval to run/)).not.toBeInTheDocument()
     })
-    // A rejected request is an error (AUTOSDE errors-use-error-notice), so it is
-    // an ErrorNotice, not the status strip. This banner sent it, so it is the
-    // one surface that reports it; the panel shows only neutral liveness.
-    expect(screen.getByTestId('approval-decision-error')).toHaveAttribute('role', 'alert')
-    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
-      i18nT('components.approvalCard.approval_no_longer_pending'),
-    )
+    // A gone approval is status, not an error (#18203): the status strip, as the
+    // tool path's 404. This banner sent it, so it is the one surface that
+    // reports it; the panel shows only neutral liveness.
     const gone = i18nT('components.approvalCard.approval_no_longer_pending')
-    expect(screen.queryAllByRole('status').filter(el => el.textContent?.includes(gone))).toEqual([])
+    expect(screen.queryByTestId('approval-decision-error')).not.toBeInTheDocument()
+    expect(screen.queryAllByRole('status').filter(el => el.textContent?.includes(gone))).toHaveLength(1)
     expect(api.decideApproval).toHaveBeenCalledTimes(1)
     // The empty authoritative process inventory retires the card after the
     // controls disappear; it does not survive reconnect as pending.
@@ -1098,10 +1128,10 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     // Beside the refusal, not over it: the failed read lands a microtask after
     // the refusal is shown, and one shared notice would leave no surface
     // reporting the refusal this banner sent.
-    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
-      i18nT('components.approvalCard.approval_no_longer_pending'),
-    )
-    expect(screen.getByTestId('approval-decision-error')).not.toHaveTextContent(
+    const gone = i18nT('components.approvalCard.approval_no_longer_pending')
+    const goneRows = screen.getAllByRole('status').filter(el => el.textContent?.includes(gone))
+    expect(goneRows).toHaveLength(1)
+    expect(goneRows[0]).not.toHaveTextContent(
       i18nT('pages.chat.subagentProgressBar.liveness_check_failed'),
     )
     expect(api.spawnList).toHaveBeenCalledTimes(1)
@@ -1126,9 +1156,8 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     await store.dispatch(reconcileGoneSubagent({ slot: 'slot-1', id: 'a1', approval_id: 'spawn:a1' }))
     await waitFor(() => expect(screen.queryByTestId('spawn-liveness-error')).not.toBeInTheDocument())
     expect(store.getState().chat.subagents.a1.status).toBe('stopped')
-    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
-      i18nT('components.approvalCard.approval_no_longer_pending'),
-    )
+    const gone = i18nT('components.approvalCard.approval_no_longer_pending')
+    expect(screen.getAllByRole('status').filter(el => el.textContent?.includes(gone))).toHaveLength(1)
   })
 
   it('dismisses the liveness notice on its own, leaving the refusal and the unresolved card', async () => {
@@ -1141,9 +1170,8 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
 
     fireEvent.click(within(notice).getByRole('button'))
     expect(screen.queryByTestId('spawn-liveness-error')).not.toBeInTheDocument()
-    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
-      i18nT('components.approvalCard.approval_no_longer_pending'),
-    )
+    const gone = i18nT('components.approvalCard.approval_no_longer_pending')
+    expect(screen.getAllByRole('status').filter(el => el.textContent?.includes(gone))).toHaveLength(1)
     // Dismissing the notice settles nothing: the chip's poll still owns that.
     expect(store.getState().chat.subagents.a1.approvalGone).toBe('spawn:a1')
   })
@@ -1210,7 +1238,7 @@ describe('ChatInput unattended-source approvals', () => {
   it.each(['cron', 'heartbeat', 'taskrunner'])('withholds Trust for %s', (source) => {
     const store = createTestStore(withSource(source))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    expect(screen.queryByText('Trust')).not.toBeInTheDocument()
+    expectTrustHeldDisabled()
     expect(screen.queryByText('Trust read-only commands')).not.toBeInTheDocument()
     // The actionable controls remain — the card is still answerable.
     expect(screen.getByText('Allow once')).toBeInTheDocument()
@@ -1220,19 +1248,19 @@ describe('ChatInput unattended-source approvals', () => {
   it('keeps Trust for autonudge, which does run in this session', () => {
     const store = createTestStore(withSource('autonudge'))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    expect(screen.getByText('Trust')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Trust' })).toBeEnabled()
   })
 
   it('keeps Trust for an ordinary in-session approval', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    expect(screen.getByText('Trust')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Trust' })).toBeEnabled()
   })
 
   it('withholds Trust when the source survives only in the card label', () => {
     const store = createTestStore(withSource('cron', { viaLabel: true }))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    expect(screen.queryByText('Trust')).not.toBeInTheDocument()
+    expectTrustHeldDisabled()
   })
 
   it.each([

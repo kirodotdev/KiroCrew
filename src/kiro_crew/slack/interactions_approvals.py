@@ -26,8 +26,8 @@ from kiro_crew.messaging.renderer import count_redaction_tags, redaction_notice
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.slack.channel_policy import channel_refusal
+from kiro_crew.slack.events_queue import _configured_approval_mode
 from kiro_crew.slack.handler import (
-    APPROVAL_INTERACTIVE,
     handle_interaction,
     handle_message,
     is_owner,
@@ -559,7 +559,7 @@ async def _handle_review_revise_submit(payload: dict) -> None:
                 thread_ts,
                 thread_ts,  # msg_ts = thread_ts for revision
                 caller,
-                approval_mode=APPROVAL_INTERACTIVE,
+                approval_mode=_configured_approval_mode(_orch),
                 context_builder=_orch.ctx_builder,
                 cron_service=_orch.cron_svc,
                 conversation_log=_orch.conv_log,

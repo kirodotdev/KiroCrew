@@ -34,14 +34,15 @@ from kiro_crew.acp._dispatch import (
     classify_tool_call,
     derive_edit_diff,
     extract_tool_purpose,
-    harness_tool_name,
     is_rendered_edit_diff,
     log_unrenderable_content,
     make_unified_diff,
+    qualified_harness_tool_id,
     redact_text,
 )
 from kiro_crew.acp._dispatch import select_tool_title as _select_tool_title
 from kiro_crew.acp._dispatch import (
+    stated_harness_tool_name,
     tool_call_content_text,
 )
 from kiro_crew.acp.client_timeouts import _SEL_AUDIT_TIMEOUT_SECONDS
@@ -53,8 +54,9 @@ from kiro_crew.acp.harness.copilot import (
     note_copilot_identity_record,
 )
 from kiro_crew.acp.native_child_stamp import parent_tool_use
+from kiro_crew.acp.read_path_arg import read_path_arg
 from kiro_crew.acp.types import (
-    ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_CODEX,
     CC_PERMISSION_MODE_AUTO,
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
@@ -224,7 +226,7 @@ async def _maybe_audit_unasked_tool_call(self: AcpClient, tool_result_event: "Ac
         return
     # A session that left a foreign settings file out runs pinned to ``default``
     # whatever it requested, so no classifier approved its unasked calls.
-    if self._claude_session_excludes_local():
+    if self._session_excludes_local_settings():
         return
     if getattr(self, "_audit_source", None):
         return
@@ -618,13 +620,13 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             # getattr for the same reason as _tool_call_unclassified.
             _harness_names = getattr(self, "_tool_call_harness_tool_name", None)
             if _harness_names is not None:
-                _harness_name = harness_tool_name(update)
+                _harness_name = stated_harness_tool_name(self.backend, update)
                 # dsh forwards the provider's tool-call id verbatim, and its
                 # permission frame names only that id. Two calls under one id
                 # in a turn leave the name unknown, so neither is read as the
                 # read tool the other one is.
                 if (
-                    self.backend == ACP_BACKEND_DEEPSEEK
+                    self._tool_call_ids_repeat_in_turn
                     and _harness_names.get(tool_call_id, _harness_name) != _harness_name
                 ):
                     _harness_name = ""
@@ -648,6 +650,16 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
                     event_mcp_server = recovered_server
                     event_tool_name = self._tool_call_tool_name.get(tool_call_id, "")
                     event_tool_trusted = event_mcp_trusted = True
+        # codex runs most calls without a permission request, so the event that
+        # starts the call names it too, for its PostToolUse spec hooks. The
+        # other backends are named by their permission request alone.
+        _event_tool_id = (
+            qualified_harness_tool_id(
+                ACP_BACKEND_CODEX, stated_harness_tool_name(self.backend, update)
+            )
+            if self.backend == ACP_BACKEND_CODEX
+            else ""
+        )
         title = _select_tool_title(title, raw_input, kind, is_shell=is_shell) or ""
         if title:
             from kiro_crew.security import redact
@@ -684,6 +696,10 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             tool_identity_trusted=event_tool_trusted,
             mcp_identity_trusted=event_mcp_trusted,
             diff_path=_diff_path,
+            harness_tool_id=_event_tool_id,
+            # Off the RAW kind: the argument naming the file this call reads, for the
+            # row's thumbnail strip (``acp.read_path_arg``).
+            read_path_arg=read_path_arg(self.backend, update.get("kind")),
         )
         # getattr: a client built without ``__init__`` keeps no window. A native
         # sub-agent's call is not in this turn's parallel batch: the parent's open

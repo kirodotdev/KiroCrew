@@ -29,6 +29,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew.agent_discovery import (
     SCOPE_PROJECT,
@@ -369,7 +370,7 @@ class TestSurfaceAgentWelcome:
         other foreign string on that path."""
         from kiro_crew.dashboard.chat_runner import _surface_agent_welcome
 
-        secret = "AKIA" + "I" * 16
+        secret = github_classic(seed=22)  # a checksummed GitHub token, redacted
         state, slot, _ = self._slot(monkeypatch, tmp_path, f"use {secret} to start")
         await _surface_agent_welcome(state, slot, "helper")
 
@@ -1126,7 +1127,7 @@ class TestTheWelcomePageShowsTheGreeting:
         from kiro_crew.dashboard.agent_welcome import refresh_welcome_preview
         from kiro_crew.dashboard.chat_runner import _surface_agent_welcome
 
-        secret = "AKIA" + "I" * 16
+        secret = github_classic(seed=92)  # a checksummed GitHub token, redacted
         state, slot, _ = TestSurfaceAgentWelcome._slot(monkeypatch, tmp_path, f"use {secret} now")
         state.push_slots_update = MagicMock()
         await refresh_welcome_preview(state, slot)

@@ -290,6 +290,10 @@
           ' of ' + BOOT_RELOAD_DELAYS_MS.length + ')');
       } catch (err) {}
       window.setTimeout(function () {
+        // The entry ran after all, so the page is starting: forget the count
+        // and stay. Seen in Safari as an installed home-screen app, which
+        // reports a module-script error on a load that then boots.
+        if (bootEntryRan()) { window.__kcBootReloadForget(); return; }
         try { window.location.reload(); } catch (err) {}
       }, wait);
       return true;
@@ -299,9 +303,13 @@
     window.__kcBootReloadForget = function () {
       try { window.sessionStorage.removeItem(BOOT_RELOAD_KEY); } catch (err) {}
     };
+    // Set by the entry module once it and its static imports have run.
+    function bootEntryRan() {
+      try { return window.__kcBootEntryRan === true; } catch (err) { return false; }
+    }
     window.addEventListener('DOMContentLoaded', function () {
       bootStarted = true;
-      if (!bootModuleFailed) window.__kcBootReloadForget();
+      if (!bootModuleFailed || bootEntryRan()) window.__kcBootReloadForget();
     });
     window.addEventListener('error', function (e) {
       var t = e && e.target;
@@ -386,6 +394,13 @@
   </script>
 </head>
 <body>
+  <!-- Keeps #root from being <body>'s first child. A layer that opens (a Radix
+       menu, popover or dialog) inserts a focus guard at the start of <body>.
+       The element that stops being :first-child then has its whole subtree
+       restyled, because a stylesheet rule continues past :first-child
+       (frontend-conventions.md, Styling). With #root first that subtree is the
+       whole app; here it is this empty element. -->
+  <div hidden></div>
   <div id="root"></div>
   <!-- Shell-owned failure panel, hidden until revealBootFailure decides the
        bundle never ran. Every style here is inline on purpose: if a boot-critical

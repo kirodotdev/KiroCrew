@@ -11,7 +11,7 @@ tests patch on :mod:`kiro_crew.cron`, or one that module defines, is read throug
 it on each call (``seams``).
 
 Instance fields written: ``_admission_deferring``, ``_admission_last_log``,
-``_on_timer_running``, ``_timer_task``.
+``_last_tick_ts``, ``_on_timer_running``, ``_timer_task``.
 
 Instance fields read: ``_jobs``, ``_loop``, ``_pending_removals``, ``_running``.
 """
@@ -174,8 +174,12 @@ async def _on_timer(self: CronService) -> None:
     try:
         snapshot = await asyncio.to_thread(self._tick_scan_locked)
         now = seams.time.time()
+        # A cron minute between the previous tick and this one is due late (is_due).
+        since, self._last_tick_ts = self._last_tick_ts, now
         due = [
-            j for j in snapshot if j.enabled and j.id not in self._claims and self._is_due(j, now)
+            j
+            for j in snapshot
+            if j.enabled and j.id not in self._claims and self._is_due(j, now, since)
         ]
 
         # An empty due-scan can only end the tick when no deferral episode is
@@ -205,7 +209,7 @@ async def _on_timer(self: CronService) -> None:
             if j.id in live_by_id
             and j.id not in self._claims
             and j.id not in self._pending_removals
-            and self._is_due(live_by_id[j.id], now)
+            and self._is_due(live_by_id[j.id], now, since)
         ]
 
         if not decision.admitted:

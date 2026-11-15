@@ -13,12 +13,13 @@ import random
 import pytest
 
 from kiro_crew import security
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 # A URL to an unknown host whose query carries a credential-shaped value. The
 # composed pass removes the whole URL.
 _URL = (
     "https://collector.example/c?d=AKIAIOSFODNN7EXAMPLE"
-    "&s=wJalrXUtnFEMI%2FK7MDENG%2FbPxRfiCYEXAMPLEKEY&pad=" + "x" * 40
+    "&s=Qh4Tm2Vx9KpRc%2FZ8Nw3Hd%2FJf1Lb5Gs0Ye9Ua2WkE&pad=" + "x" * 40
 )
 _TEXT = f"see {_URL} now"
 _EXPECTED = "see [REDACTED: suspicious URL to collector.example] now"
@@ -32,16 +33,16 @@ def test_composed_pass_removes_the_url_whole() -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "see https://AKIAIOSFODNN7EXAMPLE.wJalrXUtnFEMI1K7MDENGbPxRfiCYEXAMPLEKEYzz x",
-        "see https://10.0.0.1wJalrXUtnFEMI1K7MDENGbPxRfiCYEXAMPLEKEYzz x",
-        "see https://host.example:443wJalrXUtnFEMI1K7MDENGbPxRfiCYEXAMPLEKEYzz x",
+        "see https://AKIAIOSFODNN7EXAMPLE.Qh4Tm2Vx9KpRc1Z8Nw3Hd" "Jf1Lb5Gs0Ye9Ua2WkEzz x",
+        "see https://10.0.0.1Qh4Tm2Vx9KpRc1Z8Nw3Hd" "Jf1Lb5Gs0Ye9Ua2WkEzz x",
+        "see https://host.example:443Qh4Tm2Vx9KpRc1Z8Nw3Hd" "Jf1Lb5Gs0Ye9Ua2WkEzz x",
     ],
 )
 def test_url_match_never_ends_inside_a_word(text: str) -> None:
     """A URL host or port is matched whole, so the credential pass sees whole words."""
     out = security.redact(text)
-    assert "wJalrXUtnFEMI" not in out
-    assert "K7MDENGbPxRfiCY" not in out
+    assert "Qh4Tm2Vx9KpRc" not in out
+    assert "Z8Nw3HdJf1Lb5Gs" not in out
 
 
 # Enough query to make the URL pass flag the address. ``x`` and not a hex
@@ -56,10 +57,12 @@ _PAD = "x" * 40
         (f"https://collector.example/?pad={_PAD}&token=)opaque-value-xyz", "opaque-value", ""),
         # The same, with nothing after the label.
         (f"https://collector.example/?pad={_PAD}&token=", "collector.example/?", ""),
-        # A flagged URL followed by a labelled secret.
+        # A flagged URL followed by a labelled secret. The value has the AWS
+        # secret's shape (40 characters of its alphabet), which the label needs.
         (
-            f"https://collector.example/?pad={_PAD} aws_secret_access_key=not-a-real-value end",
-            "not-a-real-value",
+            f"https://collector.example/?pad={_PAD}"
+            f" aws_secret_access_key={SAMPLE_AWS_SECRET} end",
+            "Qh4Tm2Vx9KpRc",
             " end",
         ),
         # Two flagged URLs around plain text.
@@ -78,14 +81,14 @@ def test_composed_pass_removes_what_either_pass_finds(text: str, gone: str, kept
 
 
 def test_composed_pass_does_not_repeat_a_host_a_credential_runs_through() -> None:
-    text = "see https://AKIAIOSFODNN7EXAMPLE.wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY end"
+    text = f"see https://AKIAIOSFODNN7EXAMPLE.{SAMPLE_AWS_SECRET} end"
     out = security.redact(text)
-    assert "wJalrXUtnFEMI" not in out
+    assert SAMPLE_AWS_SECRET[:13] not in out
     assert out.endswith(" end")
 
 
 _VALUES = (
-    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    SAMPLE_AWS_SECRET,
     "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
     "AKIA" + "Z" * 16,
     "opaque-value-" + "q" * 20,

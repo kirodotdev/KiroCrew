@@ -1,13 +1,14 @@
 // MCP Management: the top of the page.
 //
 // Contract under test:
-// - the hero's numbers come from the footprint read, and the row is hidden
-//   when either figure is missing
+// - the hero's numbers come from the footprint read: the row is hidden when
+//   the reading now is missing, and "with sharing" shows only when it was read
+//   too
 // - the banner shows only while sharing is on AND open chats still run their
 //   own copies; its Reload asks first, then reloads each chat through the
 //   dashboard's own per-chat reload, skipping (never forcing) a busy one
 // - the approval card counts the servers that wait for an OK and can get it;
-//   its button opens Advanced on those rows, one approval at a time
+//   its button opens those rows for approval, one at a time
 // - turning sharing on also enables shareable servers nobody chose for, never
 //   one turned off by hand, a credential vendor, a non-eligible one or one
 //   waiting for approval, and the confirm names exactly what it shares
@@ -108,13 +109,10 @@ describe('the hero numbers', () => {
     expect(screen.getByText(M('with_sharing'))).toBeTruthy()
   })
 
-  it.each([
-    ['the reading now', { using_now_bytes: null }],
-    ['the reading with sharing', { with_sharing_bytes: null }],
-  ])('hides the number row when %s is missing', async (_label, over) => {
+  it('hides the number row when the reading now is missing', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server()] } as never)
-    const read = vi.spyOn(api, 'mcpGatewayFootprint').mockResolvedValue(footprint(over) as never)
+    const read = vi.spyOn(api, 'mcpGatewayFootprint').mockResolvedValue(footprint({ using_now_bytes: null }) as never)
 
     mount()
     await findSharing()
@@ -122,6 +120,19 @@ describe('the hero numbers', () => {
     await footprintSettled()
     expect(screen.queryByText(M('using_now'))).toBeNull()
     expect(screen.queryByText(M('with_sharing'))).toBeNull()
+  })
+
+  it('shows the reading now on its own when nothing measured the one with sharing', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server()] } as never)
+    vi.spyOn(api, 'mcpGatewayFootprint').mockResolvedValue(footprint({ with_sharing_bytes: null }) as never)
+
+    mount()
+    expect(await screen.findByText(M('gb_value', { value: '5.4' }), undefined, { timeout: 5000 })).toBeTruthy()
+    expect(screen.getByText(M('using_now'))).toBeTruthy()
+    // No placeholder figure, no arrow pointing at nothing.
+    expect(screen.queryByText(M('with_sharing'))).toBeNull()
+    expect(screen.queryByText('→')).toBeNull()
   })
 
   it('hides the number row and says so when the footprint request fails', async () => {
@@ -156,14 +167,13 @@ describe('the hero numbers', () => {
     expect(read).toHaveBeenCalledTimes(1)
   })
 
-  it('says the server list failed while Advanced is still closed', async () => {
+  it('says the server list failed beside the switch it disables', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
     vi.spyOn(api, 'mcpGatewayServers').mockRejectedValue(new Error('down'))
 
     mount()
-    // The failed list disables the switch; the reason must not hide in Advanced.
+    // The failed list disables the switch; the reason shows on the page itself.
     expect(await screen.findByText(M('servers_failed'), undefined, { timeout: 8000 })).toBeTruthy()
-    expect(screen.getByRole('button', { name: M('advanced') }).getAttribute('aria-expanded')).toBe('false')
   })
 })
 
@@ -211,7 +221,6 @@ describe('the Learn more link', () => {
     expect(section).not.toBeNull()
     for (const key of [
       'hero_title',
-      'advanced',
       'share_toggle',
       'state_no_stub',
       'state_needs_reapproval',
@@ -337,13 +346,11 @@ describe('the approval card', () => {
     expect(screen.queryByRole('button', { name: M('review_approve') })).toBeNull()
   })
 
-  it('leaves Advanced collapsed by default', async () => {
+  it('shows the per-server table without a toggle to open it', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server()] } as never)
     mount()
-    const advanced = await screen.findByRole('button', { name: M('advanced') }, { timeout: 5000 })
-    expect(advanced.getAttribute('aria-expanded')).toBe('false')
-    expect(screen.queryByRole('table')).toBeNull()
+    expect(await screen.findByRole('table', undefined, { timeout: 5000 })).toBeTruthy()
   })
 })
 

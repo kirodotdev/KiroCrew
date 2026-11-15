@@ -23,8 +23,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from chat_test_helpers import _make_state
 from dashboard_chat_helpers import _provider_mock
+from redaction_structured_cases import github_classic
 
 from kiro_crew.testing.wait import await_until, until_parked
+
+# A GitHub token with a valid checksum, which the plan redacts (AWS key IDs
+# are kept visible as identifiers).
+_PARTIAL_SECRET = github_classic(seed=12)
 
 # ── Tests: AcpProcessDied handler in _run_chat ──
 
@@ -78,7 +83,7 @@ class TestAcpProcessDiedRecovery:
 
         async def _stream_then_die(msg):
             yield LLMEvent(
-                kind=EVENT_TEXT_CHUNK, text="partial output with AKIA1234567890ABCDEF secret"
+                kind=EVENT_TEXT_CHUNK, text=f"partial output with {_PARTIAL_SECRET} secret"
             )
             raise AcpProcessDied("pipe broken")
 
@@ -95,7 +100,7 @@ class TestAcpProcessDiedRecovery:
         assistant_msgs = [m for m in slot.messages if m.get("role") == "assistant"]
         assert assistant_msgs, "Expected at least one assistant message with redacted content"
         for m in assistant_msgs:
-            assert "AKIA1234567890ABCDEF" not in m.get("content", "")
+            assert _PARTIAL_SECRET not in m.get("content", "")
         assert slot._queue == [
             {
                 "id": slot._queue[0]["id"],
@@ -118,7 +123,7 @@ class TestAcpProcessDiedRecovery:
         state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
 
         async def _stream_then_cancel(msg):
-            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial with AKIA1234567890ABCDEF key")
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=f"partial with {_PARTIAL_SECRET} key")
             raise asyncio.CancelledError()
 
         client.stream = _stream_then_cancel
@@ -129,7 +134,7 @@ class TestAcpProcessDiedRecovery:
         assistant_msgs = [m for m in slot.messages if m.get("role") == "assistant"]
         assert assistant_msgs, "Expected at least one assistant message with redacted content"
         for m in assistant_msgs:
-            assert "AKIA1234567890ABCDEF" not in m.get("content", "")
+            assert _PARTIAL_SECRET not in m.get("content", "")
 
 
 # ── Transient backend 5xx retry on the interactive chat path ──
@@ -270,7 +275,12 @@ class TestRunChatTransientRetry:
             call_count += 1
             # Reasoning streams on BOTH attempts (cosmetic re-stream is the
             # accepted cost of retrying a thinking-only turn).
-            yield LLMEvent(kind=EVENT_THINKING_CHUNK, text="let me think...")
+            # Longer than the stream redactor's fixed tail hold, so part of each
+            # attempt's reasoning reaches the wire before the 5xx drops the rest.
+            yield LLMEvent(
+                kind=EVENT_THINKING_CHUNK,
+                text="let me think about this step by step before writing the answer...",
+            )
             if call_count == 1:
                 # Transient 5xx after thinking, before any answer token.
                 raise AcpError(self._TRANSIENT)

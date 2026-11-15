@@ -12,6 +12,7 @@ from kiro_crew.acp.kas_steering import kas_steering_resources, with_kas_steering
 from kiro_crew.testing.links import make_dir_link
 
 GLOB = "file://.kiro/steering/**/*.md"
+STEERING = "file://.kiro/steering"
 
 
 def _write(root, name, front=None):
@@ -39,15 +40,52 @@ class TestSteeringResources:
         "front",
         ["inclusion: auto", "inclusion: auto\ndescription: on demand", '{"inclusion":"AUTO"}'],
     )
-    def test_a_tree_that_may_hold_an_auto_file_keeps_the_entry(self, covered, front):
+    def test_a_file_that_may_be_auto_is_sent_by_its_own_path(self, covered, front):
         _write(covered, "sub/maybe.md", front)
-        assert kas_steering_resources([GLOB], str(covered)) == [GLOB]
+        out = kas_steering_resources(["skill://x", GLOB, "file://AGENTS.md"], str(covered))
+        assert out == ["skill://x", f"{STEERING}/sub/maybe.md", "file://AGENTS.md"]
 
     @pytest.mark.parametrize("front", ['inclusion: "\\x61uto"', '{"\\u0069nclusion":"\\u0061uto"}'])
-    def test_an_escaped_auto_keeps_the_entry(self, covered, front):
+    def test_an_escaped_auto_is_sent_by_its_own_path(self, covered, front):
         # KAS's YAML and JSON readers decode these to `inclusion: auto`; with no
-        # description KAS skips the file, so only the entry still loads it.
+        # description KAS skips the file, so only Crew's entry still loads it.
         _write(covered, "sub/escaped.md", front)
+        assert kas_steering_resources([GLOB], str(covered)) == [f"{STEERING}/sub/escaped.md"]
+
+    def test_a_dot_named_auto_file_is_left_to_the_native_load(self, covered):
+        # The entry's glob never matched a dot-named part, so it never sent these.
+        _write(covered, ".hidden.md", "inclusion: auto")
+        _write(covered, ".drafts/a.md", "inclusion: auto")
+        assert kas_steering_resources([GLOB], str(covered)) == []
+
+    @pytest.mark.parametrize(
+        "resources",
+        [
+            ["file://AGENTS.md", GLOB],
+            [GLOB, "file://.kiro/steering/sub/*.md"],
+            ["file://./.kiro/steering/**/*.md"],
+        ],
+    )
+    def test_another_file_entry_before_or_beside_keeps_every_entry(self, covered, resources):
+        # A file read before the glob, or another steering entry, takes KAS's
+        # resource budget in an order Crew does not see.
+        _write(covered, "sub/maybe.md", "inclusion: auto")
+        assert kas_steering_resources(resources, str(covered)) == resources
+
+    @pytest.mark.skipif(os.name == "nt", reason="'*' and '?' cannot be in a Windows file name")
+    def test_a_glob_character_in_a_name_keeps_the_entry(self, covered):
+        _write(covered, "what?.md", "inclusion: auto")
+        assert kas_steering_resources([GLOB], str(covered)) == [GLOB]
+
+    def test_files_past_the_resource_budget_keep_the_entry(self, covered):
+        for i in range(kas_steering._MAX_RESOURCE_FILES + 1):
+            _write(covered, f"auto/{i}.md", "inclusion: auto")
+        assert kas_steering_resources([GLOB], str(covered)) == [GLOB]
+
+    def test_characters_past_the_resource_budget_keep_the_entry(self, covered):
+        big = "x" * (kas_steering._MAX_RESOURCE_CHARS // 2)
+        _write(covered, "a.md", f"inclusion: auto\n# {big}")
+        _write(covered, "b.md", f"inclusion: auto\n# {big}")
         assert kas_steering_resources([GLOB], str(covered)) == [GLOB]
 
     def test_a_backslash_in_the_body_only_still_drops_the_entry(self, covered):

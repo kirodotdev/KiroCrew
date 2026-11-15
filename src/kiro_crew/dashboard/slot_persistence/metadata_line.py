@@ -503,7 +503,7 @@ def merge_empty_window(
     transcript the merge targets, so it runs under the same lock after every
     commit, and for a line-less tab, whose slot then holds the only copy.
     ``routed_binding`` is the binding the save read with its routing
-    (:func:`autocompact_fold`).
+    (:func:`autocompact_fold`, :func:`turn_timeout_fold`).
 
     Raises ``OSError`` when the record is unreadable, so a close or an
     acknowledged edit is never reported durable on a merge that did not happen.
@@ -611,7 +611,9 @@ def merge_empty_window(
             mutes_opened=mutes_opened_override,
             muted=muted_override,
             # The turn-time-limit and threshold endpoints' staged values, the same way.
-            turn_timeout_secs=_turn_timeout_fold(slot, turn_timeout_override, meta),
+            turn_timeout_secs=turn_timeout_fold(
+                slot, turn_timeout_override, meta, routed_binding, history_key
+            ),
             autocompact_pct=autocompact_fold(
                 slot, autocompact_override, routed_binding, history_key
             ),
@@ -707,19 +709,37 @@ def _full_dismissed_line(slot: _ChatSlot, existing_meta: dict) -> list[str] | No
     return None
 
 
-def _turn_timeout_fold(
-    slot: _ChatSlot, override: tuple[int | None] | None, on_disk: dict
-) -> tuple[int | None] | None:
-    """The staged ``turn_timeout_secs`` a save writes, or ``None`` to read the slot.
+# Turn time limits the turn-time-limit endpoint committed to a transcript (by history
+# key) and has not yet published to its live slots; it drops each once published.
+turn_timeout_commits: dict[str, tuple[int | None]] = {}
 
-    A slot bound to a transcript whose own turn time limit has not been read
-    back yet (``_turn_timeout_hydrated is False``, a reopened cron tab before
-    its off-loop metadata read) holds ``None``, which would write "follow the
-    global limit" over the saved one. Until that read lands the on-disk value
-    is carried forward instead. The endpoint's staged value always wins.
+
+def turn_timeout_fold(
+    slot: _ChatSlot,
+    override: tuple[int | None] | None,
+    on_disk: dict,
+    routed: TranscriptBinding,
+    history_key: str,
+) -> tuple[int | None]:
+    """The ``turn_timeout_secs`` a save writes to *history_key*, under its lock.
+
+    The endpoint's staged value wins, then one it committed and has not yet
+    published (``turn_timeout_commits``). Otherwise the limit is the binding's, read
+    the way :func:`autocompact_fold` reads the threshold. A binding whose limit
+    nothing has read or set yet (a tab linked without reading its transcript's
+    line, or a reopened cron tab before its off-loop metadata read) holds ``None``,
+    which would write "follow the global limit" over the saved one, so until then
+    the on-disk value is carried forward instead.
     """
-    if override is not None or getattr(slot, "_turn_timeout_hydrated", True):
+    if override is not None:
         return override
+    committed = turn_timeout_commits.get(history_key)
+    if committed is not None:
+        return committed
+    live = slot._binding  # read before the key, so a rebind between them reads as moved
+    binding = live if slot_history_key(slot) == history_key else routed
+    if binding.turn_timeout_hydrated:
+        return (binding.turn_timeout_secs,)
     from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
 
     return (cp._validate_turn_timeout_secs(on_disk.get("turn_timeout_secs")),)
@@ -978,7 +998,7 @@ def build_full_line(
             # session has a window or not.
             mutes_opened=mutes_opened_override,
             muted=muted_override,
-            turn_timeout_secs=_turn_timeout_fold(slot, turn_timeout_override, existing_meta),
+            turn_timeout_secs=turn_timeout_override,
             autocompact_pct=autocompact_override,
         ),
     )

@@ -17,6 +17,8 @@ import { TAB_ID } from '../tabId'
 import { takeSessionFolderNotice } from '../../lib/sessionFolderNotice'
 import { clearCrewSteerNotice, noteCrewSteerReceipt } from '../../lib/crewSteerNotice'
 import { activeLocale } from '../../i18n/format'
+import { ApiError } from '../apiError'
+import { isEmbedCursor, mergeEmbedRead } from '../../app-sdk/embedIncrementalRead'
 import type { ClientTransport } from './transport'
 
 /** Shared Crew first-submit-wins fields of one send (see `api/sendRace.ts`). */
@@ -47,6 +49,69 @@ function themeConsentSha(colorTheme?: string): string | null {
   const stored = getStoredConsent(colorTheme.slice('custom-'.length))
   if (stored === null || stored === '' || stored === '1') return null
   return stored
+}
+
+type CrewWorkersAnswer = { root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string; root_kind?: 'mate'; paused?: CrewPause }
+/** The last answer and ETag of each root's worker list, for If-None-Match. */
+const crewWorkersEtags = new Map<string, { etag: string; data: CrewWorkersAnswer }>()
+
+/** The newest slot-detail page last read per slot, the limit it was read with,
+ *  the cursor the server issued for it, and that response's ETag. The next read
+ *  of that slot echoes the cursor and gets back only the rows from `since` on
+ *  while the rows before it still render the same, and a 304 when even those are
+ *  unchanged, so a turn-end or reconnect refresh that missed nothing costs no
+ *  body instead of a whole page. Capped so the pages held stay a few MB. */
+const HELD_PAGES_MAX = 6
+const heldPages = new Map<string, { page: ChatSlotDetailResponse; limit: number; etag: string | null }>()
+
+type SlotDetailRead = (query: Record<string, string>, etag: string | null) => Promise<{ page: ChatSlotDetailResponse | null; etag: string | null }>
+
+/** Read the newest page of `slot`, echoing the held cursor when there is one.
+ *
+ *  Every read asks for the caller's own `limit`, so a held cursor never changes
+ *  how many rows come back. The server owns every decision about whether the
+ *  held rows are still current (see `slot_detail_delta`): an edit, rewind,
+ *  rotation, redaction change, a different slot behind the same key, or a window
+ *  reaching older than the held span is answered with a whole page, which
+ *  replaces what is held. This side only drops the cursor and reads whole when
+ *  the server refuses it (400) or a delta does not fit the held rows
+ *  (`mergeEmbedRead` returns null), so a rejected cursor never shows a partial
+ *  page. The page returned is always a whole one, so no caller sees a delta.
+ *
+ *  A read narrower than the held one (a one-row probe, a hover preview) is a
+ *  plain read and leaves the held page alone, so it cannot turn the next
+ *  refresh into a whole read. */
+async function readNewestPage(slot: string, limit: number, read: SlotDetailRead): Promise<ChatSlotDetailResponse> {
+  const held = heldPages.get(slot)
+  const sent = held && isEmbedCursor(held.page.cursor) ? held.page.cursor : null
+  if (held && sent && limit < held.limit) {
+    const plain = await read({ limit: String(limit) }, null)
+    return plain.page as ChatSlotDetailResponse
+  }
+  let page: ChatSlotDetailResponse | null = null
+  let etag: string | null = null
+  if (held && sent) {
+    try {
+      const res = await read({ limit: String(limit), from: String(sent.from), since: String(sent.since), digest: sent.digest }, limit === held.limit ? held.etag : null)
+      // A 304 answers the same query with the same body as last time: the held page.
+      page = res.page === null ? held.page : mergeEmbedRead(held.page, sent, res.page)
+      etag = res.etag
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.status !== 400) throw e
+    }
+  }
+  heldPages.delete(slot)
+  if (page === null) {
+    const res = await read({ limit: String(limit), cursor: '1' }, null)
+    page = res.page as ChatSlotDetailResponse
+    etag = res.etag
+  }
+  if (page.delta !== undefined) page = { ...page, delta: undefined }
+  if (isEmbedCursor(page.cursor)) {
+    heldPages.set(slot, { page, limit, etag })
+    if (heldPages.size > HELD_PAGES_MAX) heldPages.delete(heldPages.keys().next().value as string)
+  }
+  return page
 }
 
 export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetch: fetch, sessionKeyHeader: _sk, sendResponseAuthRecovery }: ClientTransport) {
@@ -85,8 +150,18 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
      *  through another worker (`GET /api/chat/slots/{root}/crew-workers`). */
     /** A closed root (its tab gone) still answers, from saved data:
      *  `root_closed: true` and its saved `root_title`. */
-    crewWorkers: (root: string): Promise<{ root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string; root_kind?: 'mate'; paused?: CrewPause }> =>
-      fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers').then(j),
+    crewWorkers: async (root: string): Promise<CrewWorkersAnswer> => {
+      // Revalidate with the last ETag (sent as received, weak `W/` prefix included:
+      // If-None-Match compares weakly). A 304 means unchanged: keep the cached list.
+      const hit = crewWorkersEtags.get(root)
+      const r = await fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers', hit ? { headers: { 'If-None-Match': hit.etag } } : undefined)
+      if (r.status === 304 && hit) return hit.data
+      const data: CrewWorkersAnswer = await j(r)
+      const etag = r.headers?.get('etag')
+      if (etag) crewWorkersEtags.set(root, { etag, data })
+      else crewWorkersEtags.delete(root)
+      return data
+    },
     /** One session's recap under its root, from the ledger and its crew log only
      *  (`GET .../crew-workers/{worker}/recap`). No model call. */
     crewWorkerRecap: (root: string, worker: string): Promise<CrewWorkerRecap> =>
@@ -173,16 +248,33 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     unlinkSourceLink: (slot: string, identity: string, expect: string): Promise<{ ok?: boolean; dismissed?: boolean; source_links_total?: number; error?: string; code?: string }> =>
       del('/api/chat/slots/' + encodeURIComponent(slot) + '/source-links/' + encodeURIComponent(identity)
         + '?expect=' + encodeURIComponent(expect)).then(j),
-    chatSlotDetail: (slot: string, limit?: number, before?: number, signal?: AbortSignal): Promise<ChatSlotDetailResponse> => {
-      if (isLookPreviewFrame()) return Promise.resolve({ key: slot, ...lookPreviewSlotDetail() })
-      const p = new URLSearchParams()
-      if (limit) p.set('limit', String(limit))
-      if (before !== undefined) p.set('before', String(before))
-      return fetch(chatSlotDetailPath(slot) + '?' + p, { signal }).then(j)
+    chatSlotDetail: async (slot: string, limit?: number, before?: number, signal?: AbortSignal): Promise<ChatSlotDetailResponse> => {
+      if (isLookPreviewFrame()) return { key: slot, ...lookPreviewSlotDetail() }
+      // Only the newest bounded page is incremental: an older page (`before`) or
+      // the whole-history read has no cursor to echo.
+      if (before !== undefined || !limit) {
+        const p = new URLSearchParams()
+        if (limit) p.set('limit', String(limit))
+        if (before !== undefined) p.set('before', String(before))
+        return fetch(chatSlotDetailPath(slot) + '?' + p, { signal }).then(j)
+      }
+      return readNewestPage(slot, limit, async (query, etag) => {
+        // `page_bytes=1`: a cursor page is cut by the server's byte budget like a
+        // plain one. Safe here because this store pages older with
+        // `before=next_before`; the app-sdk embed does not, so it never sends it.
+        const q = new URLSearchParams(query)
+        if (q.has('cursor') || q.has('digest')) q.set('page_bytes', '1')
+        const r = await fetch(chatSlotDetailPath(slot) + '?' + q, {
+          signal, ...(etag ? { headers: { 'If-None-Match': etag } } : {}),
+        })
+        if (r.status === 304 && etag) return { page: null, etag }
+        const page: ChatSlotDetailResponse = await j(r)
+        return { page, etag: r.headers?.get('etag') ?? null }
+      })
     },
     /** Create a chat slot on this machine. A session on a connected crew is
      *  created on that crew and opened through its window, never here. */
-    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean) => {
+    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean, project_from_slot?: string) => {
       const resolvedMemoryMode = memory_mode ?? await resolveDefaultMemoryMode(
         () => fetch('/api/dashboard/config').then(j),
       )
@@ -207,6 +299,9 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
         // The server decides whether one is set and still exists; an explicit
         // folder_id always wins there.
         ...(default_folder && !folder_id ? { default_folder: true } : {}),
+        // The chat this one replaces: the server resolves the agent in that
+        // chat's project, where a project-folder agent lives.
+        ...(project_from_slot ? { project_from_slot } : {}),
       }).then(j).then(takeSessionFolderNotice) as Promise<ChatSlot>
     },
     /** Inject silent background context into a slot — consumed on the next user
@@ -266,8 +361,12 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     regenerateSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/regenerate').then(j),
     /** Pick an interrupted turn back up. NOT `/resume` — that path opens a history session into a tab. */
     continueSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/continue').then(j),
+    /** Continue this chat once, just after the usage limit it stopped on resets (`resetAt`: the ISO instant on the limit row). The gateway holds the wait and answers `continue_at`, the instant it will resume; `ok: false` carries a `warning` and means nothing was armed. */
+    armLimitContinue: (slot: string, resetAt: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/limit-continue', { reset_at: resetAt }).then(j) as Promise<{ ok: boolean; warning?: string; continue_at?: string }>,
+    /** Cancel the wait `armLimitContinue` armed for this chat. `started: true` means the continue was already queued, so nothing was cancelled. */
+    cancelLimitContinue: (slot: string) => del('/api/chat/slots/' + encodeURIComponent(slot) + '/limit-continue').then(j) as Promise<{ ok: boolean; cancelled: boolean; started?: boolean }>,
     /** The bulk form of `continueSlot`: Resume every idle session whose last turn ended without a reply (only those among `slots` when given). Owner-only. Starts a background run and answers at once (409 `resume_all_running` with that run's id and total while one is in flight); the outcome arrives as a `resume_all_done` frame. */
-    /** `crewMode`: this tab's Crew Mode preview is on, so its count left out the workers of listed roots and the run leaves them out too. */
+    /** `crewMode`: this build offers conductor mode, so its count left out the workers of listed roots and the run leaves them out too. */
     chatSlotsResumeAll: (crewMode = false, slots?: string[]) => post('/api/chat/slots/resume-all', {
       ...(crewMode ? { crew_mode: true } : {}), ...(slots ? { slots } : {}),
     }).then(j) as Promise<{ ok: boolean; total: number; run_id: string }>,
@@ -278,7 +377,8 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     switchVariant: (slot: string, index: number) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/switch-variant', { index }).then(j),
     editResend: (slot: string, ts: string, content: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/edit-resend', { ts, content }).then(j),
     rewind: (slot: string, ts: string, content: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/rewind', { ts, content }).then(j),
-    slackLink: (slot: string, channel?: string, threadTs?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/slack-link', (channel || threadTs) ? { ...(channel ? { channel } : {}), ...(threadTs ? { thread_ts: threadTs } : {}) } : undefined).then(j),
+    /** `msgTs` is the Slack message that sent the user here; when it is a reply inside `threadTs`, the server reads the thread's first message for the session's first turn. */
+    slackLink: (slot: string, channel?: string, threadTs?: string, msgTs?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/slack-link', (channel || threadTs) ? { ...(channel ? { channel } : {}), ...(threadTs ? { thread_ts: threadTs } : {}), ...(threadTs && msgTs ? { msg_ts: msgTs } : {}) } : undefined).then(j),
     unlinkSlack: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/slack-unlink').then(j),
     // Sets whether turns reach the linked Slack thread. One call for both
     // directions: a session born in its thread has no binding to re-establish, so

@@ -76,7 +76,7 @@ from kiro_crew.shared_crew.admission_runtime import systemd_reap as _systemd_rea
 from kiro_crew.shared_crew.admission_runtime import systemd_unit_liveness as _systemd_unit_liveness
 from kiro_crew.shared_crew.codec import ContractError
 from kiro_crew.shared_crew.contracts import EnforcementLevel, Principal, Transport
-from kiro_crew.shared_crew.identity import actor_of
+from kiro_crew.shared_crew.identity import actor_of, budget_id
 from kiro_crew.shared_crew.internal_caller import (  # noqa: F401 -- public import path
     ATTESTED_SESSION_KEY,
     CALLER_SESSION_HEADER,
@@ -1934,7 +1934,7 @@ def internal_initiator(request: Any) -> str | None:
 
 
 def actor_budget(request: Any, *, automation: bool = False) -> str:
-    """The budget key for *request*: its actor's principal, its initiator's, or Unknown.
+    """The budget key for *request*: its actor's :func:`budget_id`, its initiator's, or Unknown.
 
     An internal request (work an agent starts from inside a turn) is charged
     to the person whose turn runs in its proven calling session, so automation
@@ -1946,7 +1946,7 @@ def actor_budget(request: Any, *, automation: bool = False) -> str:
     if actor is not None and not actor.principal.is_unknown:
         if automation and actor.transport is Transport.INTERNAL:
             return internal_initiator(request) or Principal.unknown().id
-        return actor.principal.id
+        return budget_id(actor.principal.id)
     if automation:
         return AUTOMATION_PRINCIPAL.id
     return Principal.unknown().id

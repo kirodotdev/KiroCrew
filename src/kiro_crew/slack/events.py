@@ -313,6 +313,7 @@ async def init_socket_mode(
             orch.sessions,
             channel_type="slack",
             route=None,
+            human_input=False,
         ):
             logger.info("slack envelope left unacknowledged during update restart")
             return
@@ -1115,7 +1116,7 @@ async def _route_message(
         attachment_paths, text_blocks = await process_slack_files(orch, files, slack=_ingest_slack)
         _attachment_temp_paths = attachment_paths
 
-        # Image paths are inlined by ACP; opaque paths remain available to agent tools.
+        # Image paths are inlined by ACP; opaque and whole-text paths stay for agent tools.
         if attachment_paths:
             paths_text = "\n".join(attachment_paths)
             # Same layout as append_attachment_context: a fence the user left
@@ -1848,6 +1849,7 @@ from kiro_crew.slack.events_inbound import _maybe_prompt_owner  # noqa: E402
 from kiro_crew.slack.events_inbound import _thread_follow_admits  # noqa: E402
 from kiro_crew.slack.events_inbound import _trusted_bot_turns  # noqa: E402
 from kiro_crew.slack.events_queue import _CHANNEL  # noqa: E402
+from kiro_crew.slack.events_queue import _configured_approval_mode  # noqa: E402
 from kiro_crew.slack.events_queue import _dispatch_queued  # noqa: E402
 from kiro_crew.slack.events_queue import _drain_slack_queue  # noqa: E402
 from kiro_crew.slack.events_queue import _entry_owner  # noqa: E402

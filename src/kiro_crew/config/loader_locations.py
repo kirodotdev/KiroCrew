@@ -478,6 +478,20 @@ def ssh_auth_sock_consent_path() -> Path:
     return config_dir() / "ssh_auth_sock_consent.json"
 
 
+def project_hooks_consent_path() -> Path:
+    """Return path to project_hooks_consent.json -- the per-folder project-hooks choice.
+
+    Same KEYSTONE reasoning as :func:`ssh_auth_sock_consent_path`: the record
+    decides whether the hooks in a checkout's own agent spec run as commands, so
+    it is an authorization, not a preference, and lives on
+    ``security._CREW_SECRET_LEAVES`` where neither the agent's file tools nor its
+    sandboxed shell can write it. The only writers are the OWNER-gated dashboard
+    handler and the gateway's own once-per-folder notice mark
+    (``project_hooks_consent``). Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "project_hooks_consent.json"
+
+
 def read_local_secret(port: int, dial_host: str | None = None) -> str:
     """Read the internal-API credential for the gateway on *port*.
 

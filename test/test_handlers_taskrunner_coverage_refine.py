@@ -21,6 +21,7 @@ from handlers_taskrunner_coverage_helpers import (  # noqa: F401 -- the autouse 
     _request,
     _stub_sel,
 )
+from taskrunner_switch_helpers import turn_task_runner_off
 
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
@@ -81,14 +82,11 @@ class TestRefineStart:
         assert state._background_tasks == set()
 
     @pytest.mark.asyncio
-    async def test_disabled_task_runner_app_refuses_refine(self) -> None:
-        # A refine is a model session the disabled page could not show or stop.
+    async def test_task_runner_turned_off_refuses_refine(self) -> None:
+        # A refine is a model session Task Runner, turned off, must not start.
         state = _refine_state()
-        with patch(
-            "kiro_crew.apps.manager._read_installed",
-            return_value=SimpleNamespace(enabled=False),
-        ):
-            resp = await api_taskrunner_refine(_request(state, json_body={"input": "build it"}))
+        turn_task_runner_off()
+        resp = await api_taskrunner_refine(_request(state, json_body={"input": "build it"}))
         assert resp.status == 409
         assert _body(resp)["code"] == "app_disabled"
         assert state._refine_task is None

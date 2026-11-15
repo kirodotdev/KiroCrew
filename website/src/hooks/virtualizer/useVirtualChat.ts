@@ -342,7 +342,7 @@ export function useVirtualChat<T>(
   })
   useScrollListener({ scrollerEl, bottomThreshold, setIsAtBottom, itemsRef, getKeyRef, follow, pinning, reading, measurement, ops })
   useCoverageWatchdog({ scrollerEl, leadingOffset, itemsRef, heightIndexRef, windowRangeRef, ops, follow, pinning })
-  useResizeObserver({ scrollerRef, scrollerEl, elIndexRef, trailingRef, resizeObserverRef, measurement, compensation, sync, pinning, ops })
+  useResizeObserver({ scrollerRef, scrollerEl, elIndexRef, trailingRef, resizeObserverRef, measurement, compensation, sync, pinning, reading, ops })
   useWindowEdgeTriggers({
     windowRange, itemCount, overscan, prefetchStartIndex, sessionId, scrollerRef, scrollerEl,
     topSentinelRef, bottomSentinelRef, onTopReachedRef, itemsRef, setWindowRange, ops,

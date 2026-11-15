@@ -48,6 +48,8 @@ from kiro_crew.work_vocab import (
     WORK_MAX_DEPTH_MAX,
     WORK_MAX_DEPTH_MIN,
     WORK_MAX_DEPTH_SETTING,
+    coerce_discussion,
+    discussion_problem,
 )
 
 # Validation. Every bound is checked BEFORE the first write, so a refusal leaves
@@ -94,7 +96,11 @@ def _require_acceptance(value: Any) -> dict[str, Any]:
             "acceptance must be an object", code=CODE_INVALID_VALUE, field="acceptance"
         )
     try:
-        serialized = json.dumps(value, ensure_ascii=False)
+        # allow_nan=False: NaN/Infinity would serialise to bare `NaN`/`Infinity`
+        # tokens that no strict JSON reader (the browser's JSON.parse on the Crew
+        # board) accepts, so they are not storable, not an interpretation of the
+        # contents.
+        serialized = json.dumps(value, ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise WorkLedgerError(
             f"acceptance must be JSON-serialisable: {exc}",
@@ -200,6 +206,23 @@ def _require_wake_at(value: Any, status: str) -> str | None:
             field="wake_at",
         )
     return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def _require_discussion(value: Any) -> dict[str, Any] | None:
+    """A report's ``discussion``, complete, or ``None`` when the report names none.
+
+    Refused whole when any part is over its cap or malformed, with ``field`` naming
+    that part (``discussion.agreed[3]``): a cut discussion would show the Board a
+    consensus nobody wrote.
+    """
+    if value is None:
+        return None
+    problem = discussion_problem(value)
+    if problem is not None:
+        kind, where, message = problem
+        code = CODE_FIELD_TOO_LONG if kind == "too_long" else CODE_INVALID_VALUE
+        raise WorkLedgerError(message, code=code, field=where)
+    return coerce_discussion(value)
 
 
 def _require_count(value: Any, name: str) -> int:
@@ -331,6 +354,7 @@ def is_stale(
     worker_running: bool,
     worker_closed: bool = False,
     worker_looping: bool = False,
+    worker_loop_held: bool = False,
     now: datetime | None = None,
     window_secs: float = DEFAULT_STALE_WINDOW_SECS,
 ) -> bool:
@@ -364,8 +388,11 @@ def is_stale(
 
     An item with no report is measured from ``created_at``, and one whose ``progress``
     report named a ``wake_at`` from that time (:func:`quiet_since`), so a declared wait
-    is not flagged before it ends. An unparseable timestamp reads as stale, or the item
-    could never be flagged.
+    is not flagged before it ends. ``worker_loop_held`` says the worker's session holds
+    an active loop that cannot fire (held on an approval, or past its bound): the wait
+    that report declared leans on a loop that wakes nobody, so ``wake_at`` is ignored
+    and the normal window runs. ``False`` means "unknown". An unparseable timestamp
+    reads as stale, or the item could never be flagged.
     """
     if item.is_terminal or worker_running:
         return False
@@ -385,7 +412,7 @@ def is_stale(
         # still rehydrating). A report proves the worker existed; without one the
         # window decides.
         return True
-    reference = quiet_since(item)
+    reference = quiet_since(item, wake=not worker_loop_held)
     if not reference:
         return True
     # Through ``parse_stamp``, whose UTC fallback covers a stamp at either end of
@@ -400,19 +427,20 @@ def is_stale(
     return moment - stamped > timedelta(seconds=max(window_secs, 0.0))
 
 
-def quiet_since(item: WorkItem) -> str:
+def quiet_since(item: WorkItem, *, wake: bool = True) -> str:
     """The stamp :func:`is_stale` measures *item*'s quiet window from, ``""`` for none.
 
     The conductor's ``decide`` when it answered a ``blocked`` / ``question`` report,
     else the last report, else the item's creation. A ``wake_at`` later than that
     stamp wins: the worker said it is idle until then, so its silence starts there.
+    *wake* False skips ``wake_at`` (the worker's loop is held; see :func:`is_stale`).
     """
     handed_back = _decided_after_report(item) if item.status in WAITING_STATUSES else None
     since = handed_back or item.last_report_at or item.created_at or ""
-    if item.wake_at:
-        wake = parse_stamp(item.wake_at)
+    if wake and item.wake_at:
+        due = parse_stamp(item.wake_at)
         start = parse_stamp(since) if since else None
-        if wake is not None and start is not None and wake > start:
+        if due is not None and start is not None and due > start:
             return item.wake_at
     return since
 

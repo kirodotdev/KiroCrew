@@ -65,12 +65,13 @@ vi.mock('../api/client', async () => ({
 
 import CrewChatWindow from '../pages/chat/crew-window/CrewChatWindow'
 import { createCrewWindowRenderers, PEER_SAFE_ROWS } from '../pages/chat/crew-window/crewWindowRenderers'
+import { mergeRenderers, resolveRenderer } from '../app-sdk/messageRenderers'
+import type { ChatMessage } from '../types'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import {
   openCrewWindow, closeCrewWindow, useCrewWindow, reloadCrewWindowForTest, writeCrewDraft,
   capsRetryInterval,
 } from '../pages/chat/crew-window/crewWindowStore'
-import { crewModePreviewOn } from './crewModePreview'
 import { crewWindowSlot } from '../pages/chat/crew-window/crewWindowRenderers'
 import { DICTATION_NOTE, _resetDictationProvenance, isDictated, markDictated } from '../chat-core/composer/dictationProvenance'
 import { queryClient as globalQueryClient } from '../api/queryClient'
@@ -110,21 +111,16 @@ function renderWindow() {
 
 const posted = () => mocks.crewPeerPost.mock.calls.map(c => [c[1], c[2]])
 
-/** The user bubble's More menu (Quote holds the row seat, as locally). */
-async function openMore(row = 0) {
-  await waitFor(() => expect(screen.getAllByTestId('user-more-actions').length).toBeGreaterThan(row), PEER_ROW_WAIT)
-  fireEvent.pointerDown(screen.getAllByTestId('user-more-actions')[row], { button: 0, ctrlKey: false, pointerType: 'mouse' })
-}
+/** Edit & Resend follows Copy on the user row while the row can be edited. */
+const editButtons = () => screen.queryAllByRole('button', { name: 'Edit & Resend' })
 async function openEdit(row = 0) {
-  await openMore(row)
-  fireEvent.click(await screen.findByRole('menuitem', { name: 'Edit & Resend' }))
+  await waitFor(() => expect(editButtons().length).toBeGreaterThan(row), PEER_ROW_WAIT)
+  fireEvent.click(editButtons()[row])
 }
 /** Whether the first user row offers Edit & Resend. */
 async function editOffered() {
-  await openMore()
-  const offered = !!screen.queryByRole('menuitem', { name: 'Edit & Resend' })
-  fireEvent.keyDown(document.activeElement || document.body, { key: 'Escape' })
-  return offered
+  await waitFor(() => expect(screen.getAllByLabelText('Copy').length).toBeGreaterThan(0), PEER_ROW_WAIT)
+  return editButtons().length > 0
 }
 
 /** Edit & Resend on the user bubble, the way the local chat rewinds: the
@@ -1090,6 +1086,18 @@ describe('CrewChatWindow', () => {
     expect(await screen.findByTestId('crew-window-approval-hint', undefined, PEER_ROW_WAIT)).toHaveTextContent('Approve runs this one command.')
   })
 
+  it("draws a peer's project-hooks notice read-only, with no link that writes this hub's choice", () => {
+    const row = {
+      role: 'notice',
+      content: 'ℹ Project hooks are off for this folder.',
+      meta: { kind: 'spec_hooks', project_hooks: 'off', project_hooks_folder: '/work/repo' },
+    } as unknown as ChatMessage
+    const crew = createCrewWindowRenderers({ instanceId: 'cd-1', key: 'k1', name: 'devbox', canRewind: () => false, onRewind: () => {}, rewindDisabled: false })
+    const picked = resolveRenderer(row, mergeRenderers(crew))
+    expect(picked?.id).toBe('project_hooks')
+    expect(crew).toContain(picked)
+  })
+
   it('lets in only shared rows decided safe for a peer (a new row falls back)', () => {
     // A new shared row must be added to PEER_SAFE_ROWS on purpose, or it draws
     // through the store-free default instead of reading this hub's own state.
@@ -1101,7 +1109,8 @@ describe('CrewChatWindow', () => {
     // THIS hub's session roster, where a peer's session keys mean nothing: a
     // peer's window draws that row through the store-free default too.
     // A restart's Trust reset row picks a mode through THIS hub's route, never the peer's.
-    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'subagent_run_tool', 'file', 'conversation_card', 'elicitation', 'session_send_tool', 'trust_reset_notice'])
+    // The sign-in notice links to THIS hub's MCP Servers page, where a peer's servers are not listed.
+    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'subagent_run_tool', 'file', 'conversation_card', 'elicitation', 'session_send_tool', 'trust_reset_notice', 'mcp_sign_in_needed'])
     expect(ids.filter(id => !decided.has(id))).toEqual([])
     const crew = createCrewWindowRenderers({ instanceId: 'cd-1', key: 'k1', name: 'devbox', canRewind: () => false, onRewind: () => {}, rewindDisabled: false }).map(r => r.id)
     expect(crew).not.toContain('workflow_run_tool')
@@ -1502,6 +1511,3 @@ describe('CrewChatWindow', () => {
     expect(FakeEventSource.all[0].close).toHaveBeenCalled()
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

@@ -21,6 +21,7 @@ from urllib.parse import urlencode
 import pytest
 from aiohttp import streams, web
 from aiohttp.test_utils import make_mocked_request
+from redaction_structured_cases import github_classic
 
 from kiro_crew import memory_backup, memory_stores
 from kiro_crew.config import loader as loader_mod
@@ -32,6 +33,8 @@ from kiro_crew.vector_memory import VectorMemoryStore
 
 pytestmark = pytest.mark.xdist_group("memory_admin_handlers_coverage")
 
+# A GitHub token with a valid checksum: redacted wherever it appears in an error.
+_LEAKED = github_classic(seed=31)
 _FINANCE = "finance"
 _SESSION_KEY = "dashboard:chat-1"
 _OWNER_SUBJECT = "local-app"
@@ -220,7 +223,7 @@ class TestProbeStoreBlocking:
         env.declare(_FINANCE)
 
         def _refuse(_name: str) -> None:
-            raise MemoryStartupUnavailable("boom AKIAIOSFODNN7EXAMPLE")
+            raise MemoryStartupUnavailable(f"boom {_LEAKED}")
 
         # ``require_memory_ready`` is imported inside ``_probe_store_blocking`` from
         # ``kiro_crew.memory_startup``, so patching a name on ``memory_admin`` itself
@@ -230,7 +233,7 @@ class TestProbeStoreBlocking:
         monkeypatch.setattr(memory_startup, "require_memory_ready", _refuse)
         row = memory_admin._probe_store_blocking(_FINANCE)
         assert "unavailable_reason" in row
-        assert "AKIAIOSFODNN7EXAMPLE" not in row["unavailable_reason"]
+        assert _LEAKED not in row["unavailable_reason"]
         assert row["exists"] is False
 
     def test_nonexistent_file_stops_before_opening_sqlite(self, env) -> None:
@@ -384,7 +387,7 @@ class TestApiMemoryBackups:
         env.tier(_FINANCE).close()
 
         def _boom(_db_path: Path) -> dict:
-            raise ValueError("boom AKIAIOSFODNN7EXAMPLE")
+            raise ValueError(f"boom {_LEAKED}")
 
         monkeypatch.setattr(memory_backup, "pending_restore_status", _boom)
         resp = await memory_admin.api_memory_backups(
@@ -392,7 +395,7 @@ class TestApiMemoryBackups:
         )
         assert resp.status == 503
         assert _body(resp)["code"] == "restore_status_unavailable"
-        assert "AKIAIOSFODNN7EXAMPLE" not in resp.text
+        assert _LEAKED not in resp.text
 
     @pytest.mark.asyncio
     async def test_undeclared_store_is_a_404_before_any_listing(self, env) -> None:
@@ -437,7 +440,7 @@ class TestApiMemoryRestoreCancel:
         env.tier(_FINANCE).close()
 
         def _boom(_db_path: Path) -> bool:
-            raise ValueError("refused AKIAIOSFODNN7EXAMPLE")
+            raise ValueError(f"refused {_LEAKED}")
 
         monkeypatch.setattr(memory_backup, "cancel_pending_restore", _boom)
         resp = await memory_admin.api_memory_restore_cancel(
@@ -445,7 +448,7 @@ class TestApiMemoryRestoreCancel:
         )
         assert resp.status == 409
         assert _body(resp)["code"] == "restore_refused"
-        assert "AKIAIOSFODNN7EXAMPLE" not in resp.text
+        assert _LEAKED not in resp.text
 
     @pytest.mark.asyncio
     async def test_unchanged_cancel_still_reports_ok_with_no_pending(self, env) -> None:
@@ -579,7 +582,7 @@ class TestApiMemoryRestore:
         assert backup is not None
 
         def _boom(_db_path: Path, _backup: Path, _store: str) -> None:
-            raise MemoryStartupUnavailable("boom AKIAIOSFODNN7EXAMPLE")
+            raise MemoryStartupUnavailable(f"boom {_LEAKED}")
 
         monkeypatch.setattr(memory_admin, "_restore_blocking", _boom)
         resp = await memory_admin.api_memory_restore(
@@ -592,7 +595,7 @@ class TestApiMemoryRestore:
         )
         assert resp.status == 503
         assert _body(resp)["code"] == "store_unavailable"
-        assert "AKIAIOSFODNN7EXAMPLE" not in resp.text
+        assert _LEAKED not in resp.text
 
     @pytest.mark.asyncio
     async def test_a_backup_that_is_not_a_database_answers_409(self, env) -> None:
@@ -626,7 +629,7 @@ class TestApiMemoryRestore:
         assert backup is not None
 
         def _boom(_db_path: Path, _backup: Path, _store: str) -> None:
-            raise ValueError("corrupt AKIAIOSFODNN7EXAMPLE")
+            raise ValueError(f"corrupt {_LEAKED}")
 
         monkeypatch.setattr(memory_admin, "_restore_blocking", _boom)
         resp = await memory_admin.api_memory_restore(
@@ -639,7 +642,7 @@ class TestApiMemoryRestore:
         )
         assert resp.status == 409
         assert _body(resp)["code"] == "restore_refused"
-        assert "AKIAIOSFODNN7EXAMPLE" not in resp.text
+        assert _LEAKED not in resp.text
 
     @pytest.mark.asyncio
     async def test_unexpected_exception_during_restore_answers_500_and_audits(

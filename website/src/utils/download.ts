@@ -11,6 +11,18 @@ function announceDownload(filename: string): void {
   }
 }
 
+/** *filename* as Chromium saves it, so the announced name is the one the desktop
+ *  app's will-download handler sees. Chromium replaces control and format
+ *  characters and `"*\/:<>?\\|` with `_`; an announced `notes 10:30.md` would
+ *  otherwise never match the saved `notes 10_30.md`, and the download would
+ *  open a Save dialog instead of saving.
+ *  shortcut: Chromium's edge rewrites (leading or trailing dots and spaces, a
+ *  reserved name such as `CON`) are not mirrored; such a name falls back to the
+ *  Save dialog. Mirror them if a caller starts producing such names. */
+export function chromiumSavedName(filename: string): string {
+  return filename.replace(/[\u0000-\u001f\u007f-\u009f"*/:<>?\\|\p{Cf}]/gu, '_')
+}
+
 function clickDownload(href: string, filename: string): void {
   const a = document.createElement('a')
   a.href = href
@@ -22,17 +34,19 @@ function clickDownload(href: string, filename: string): void {
 
 /** Object-URL download; revoke deferred a tick so the click can consume it. */
 export function downloadBlob(blob: Blob, filename: string): void {
-  announceDownload(filename)
+  const name = chromiumSavedName(filename)
+  announceDownload(name)
   const url = URL.createObjectURL(blob)
-  clickDownload(url, filename)
+  clickDownload(url, name)
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 /** Download a same-origin URL straight to disk, so the browser streams the
  *  response instead of holding it in page memory the way `downloadBlob` must. */
 export function downloadUrl(url: string, filename: string): void {
-  announceDownload(filename)
-  clickDownload(url, filename)
+  const name = chromiumSavedName(filename)
+  announceDownload(name)
+  clickDownload(url, name)
 }
 
 /** Save a file the page built, in any browser. Outside an Android in-app

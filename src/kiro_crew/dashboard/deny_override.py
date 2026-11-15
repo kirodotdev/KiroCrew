@@ -22,7 +22,8 @@ self-protection or credential-exfiltration rule, see
 channel-linked or Slack-linked slot, on a backend whose sub-agent calls its
 transport cannot tell apart (codex and any backend not proven, see
 ``security.deny_waiver``), for a backend subagent's request, or for a command
-whose bytes are not verified. Design:
+whose bytes are not verified. With ``agent.deny_override`` off nothing is offered,
+no session override applies, and a card already showing cannot grant. Design:
 ``docs/request-for-change/rfc-deny-session-override.md``.
 """
 
@@ -35,6 +36,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.dashboard.source_providers.adf import _md_inline_code
 from kiro_crew.security.denied_rules import _rule_id_for_pattern
 from kiro_crew.security.deny_waiver import (
@@ -249,7 +252,25 @@ def slot_may_override(slot: Any, event: Any) -> bool:
     if not getattr(event, "is_shell", False) or getattr(event, "tool_input_redacted", False):
         return False
     tool_input = getattr(event, "tool_input", "") or ""
-    return bool(tool_input and extract_bash_command(tool_input))
+    return bool(tool_input and extract_bash_command(tool_input)) and deny_override_enabled()
+
+
+def deny_override_enabled() -> bool:
+    """``agent.deny_override``, read on each call.
+
+    ``False`` when the read raises, or when the load discarded the ``agent``
+    section or a whole config file: ``load()`` then returns the default ``true``
+    in place of an operator's ``false``, so trusting it would fail open.
+    """
+    try:
+        cfg = KiroCrewConfig.load()
+    except Exception:
+        logger.warning("config unreadable; no deny override offered", exc_info=True)
+        return False
+    if cfg.degraded_sections & {DEGRADED_WHOLE_CONFIG, "agent"}:
+        logger.warning("agent config section degraded; no deny override offered")
+        return False
+    return cfg.agent.deny_override
 
 
 def slot_deny_waivers(slot: Any, event: Any) -> frozenset[str]:

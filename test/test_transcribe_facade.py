@@ -70,6 +70,7 @@ _BASE_PROJECT_IMPORTS = {
     "install_hint": "kiro_crew.extras",
     "pinned_fs": "kiro_crew",
     "platform_compat": "kiro_crew",
+    "soffice_discovery": "kiro_crew",
     "stt": "kiro_crew",
 }
 

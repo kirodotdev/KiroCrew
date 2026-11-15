@@ -23,6 +23,7 @@ tested against a fake — no AWS calls in tests.
 
 from __future__ import annotations
 
+import functools
 import inspect
 import json
 import logging
@@ -33,7 +34,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Mapping, Optional, Protocol
+from typing import Callable, List, Mapping, Optional, Protocol
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
@@ -692,10 +693,19 @@ def _begin_signin_with_target(engine: "LaunchEngine", job: "LaunchJob") -> Signi
 
 
 def _engine_accepts_login_target(engine: "LaunchEngine") -> bool:
+    return _accepts_keyword(engine.begin_signin, "login_target")
+
+
+def _accepts_keyword(method: Callable[..., object], name: str) -> bool:
     try:
-        return "login_target" in inspect.signature(engine.begin_signin).parameters
+        return name in inspect.signature(method).parameters
     except (TypeError, ValueError):
         return False
+
+
+def _show_detail(job: "LaunchJob", store: "LaunchJobStore", step: LaunchStep, text: str) -> None:
+    step.detail = text
+    store.save(job)
 
 
 def _target_unsupported_message(engine: "LaunchEngine", job: "LaunchJob") -> str:
@@ -906,6 +916,23 @@ def _rollback_cancelled_stack(
     logger.warning("Rollback of %s did not confirm deletion", job.tag)
 
 
+def _engine_resource_exists(engine: "LaunchEngine", job: "LaunchJob") -> bool:
+    """Whether the engine's resource for ``job.tag`` exists; ``True`` when it cannot say.
+
+    An engine that can tell declares an optional ``resource_exists(tag, profile,
+    region)``, so a rollback after a failure that created nothing does not report a
+    removal. Absent or raising, the rollback keeps its "was removed" wording.
+    """
+    probe = getattr(engine, "resource_exists", None)
+    if probe is None:
+        return True
+    try:
+        return bool(probe(tag=job.tag, profile=job.profile, region=job.region))
+    except Exception:  # noqa: BLE001 - a failed lookup keeps the default wording
+        logger.info("resource_exists probe failed; keeping the removed wording", exc_info=True)
+        return True
+
+
 def _rollback_failed_provision(
     job: "LaunchJob", store: "LaunchJobStore", engine: "LaunchEngine"
 ) -> None:
@@ -922,9 +949,12 @@ def _rollback_failed_provision(
 
     Best-effort and never raises; it augments the recorded failure message rather
     than replacing it, so the original error stays visible. Safe when no stack was
-    created — deleting an absent stack is a no-op.
+    created — deleting an absent stack is a no-op. When :func:`_engine_resource_exists`
+    says absent, a confirmed delete is reported as "never created". The delete still
+    runs: a lookup that reads an unrelated error as absent must not skip it.
     """
     base = job.error or "Setup failed."
+    existed = _engine_resource_exists(engine, job)
     try:
         confirmed = engine.teardown(tag=job.tag, profile=job.profile, region=job.region)
     except Exception as exc:  # noqa: BLE001 - reported on the job, never propagated
@@ -936,7 +966,12 @@ def _rollback_failed_provision(
         logger.warning("Could not roll back stack %s after provision failure: %s", job.tag, exc)
         return
     if confirmed:
-        job.error = f"{base} The {_resource_noun(job)} {job.tag} was removed so it stops billing."
+        outcome = (
+            "was removed so it stops billing"
+            if existed
+            else "was never created, so it is not billing"
+        )
+        job.error = f"{base} The {_resource_noun(job)} {job.tag} {outcome}."
         return
     job.error = (
         f"{base} The delete of {_resource_noun(job)} {job.tag} was requested but did NOT confirm "
@@ -1029,9 +1064,13 @@ def run_launch(
         _check_cancel()
         s = _activate(STEP_PROVISION)
         # Only the built-in EC2 engine takes a subnet; the handler refuses it elsewhere.
-        subnet = {"subnet_id": job.subnet_id} if job.subnet_id else {}
+        extra: dict = {"subnet_id": job.subnet_id} if job.subnet_id else {}
+        if _accepts_keyword(engine.provision, "on_network_fallback"):
+            # A network the engine picked for the user is named on this step
+            # before the stack is created, not after.
+            extra["on_network_fallback"] = functools.partial(_show_detail, job, store, s)
         job.instance_id = engine.provision(
-            tag=job.tag, size_key=job.size_key, profile=job.profile, region=job.region, **subnet
+            tag=job.tag, size_key=job.size_key, profile=job.profile, region=job.region, **extra
         )
         s.detail = job.instance_id
         s.state = STEP_DONE

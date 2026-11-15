@@ -156,9 +156,10 @@ def queued_work(entries: Iterable[Mapping[str, Any]]) -> Iterator[None]:
 
 
 def queued_initiator(entries: Iterable[Mapping[str, Any]]) -> str:
-    """The one person every live queue entry names as its author, else ``""``."""
+    """The budget of the one person every live queue entry names as its author, else ``""``."""
     from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
     from kiro_crew.shared_crew.attribution import is_person, message_author
+    from kiro_crew.shared_crew.identity import budget_id
 
     authors: set[str] = set()
     for entry in entries:
@@ -168,7 +169,7 @@ def queued_initiator(entries: Iterable[Mapping[str, Any]]) -> str:
         author = message_author(meta if isinstance(meta, Mapping) else None)
         if not is_person(author):
             return ""
-        authors.add(author.id)
+        authors.add(budget_id(author.id))
     return authors.pop() if len(authors) == 1 else ""
 
 

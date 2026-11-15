@@ -254,6 +254,12 @@ def _slot_is_trusted(slot: Any) -> bool:
     scope = str(getattr(slot, "_trust_scope", "") or "")
     if not scope:
         return False
+    from kiro_crew.dashboard.approval_posture import remote_scope_denied
+
+    if remote_scope_denied(scope):
+        # A hub conductor's Trust carried to this worker stands in for Trust, so the
+        # ceiling's ``trust`` verdict masks it on every approval, as at arming.
+        return False
     return bool(safety_override().is_scope_active(scope))
 
 
@@ -320,10 +326,11 @@ def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
     auto-approve — regardless of the ``auto_approve_subagent_tools`` hook,
     the slot's trust, or yolo. Only when a crew is active do those signals grant
     approval; with all three false the tool still falls through to the normal
-    interactive/trust gate rather than being silently approved here.
+    interactive/trust gate rather than being silently approved here. A background
+    card (a Claude Code Workflow agent, which runs no crew tool) is never a crew.
     """
     has_active_crew = bool(native_tracker) and any(
-        not info.get("done") for info in native_tracker.values()
+        not info.get("done") and not info.get("background") for info in native_tracker.values()
     )
     if not has_active_crew:
         return False
@@ -445,7 +452,7 @@ def _conductor_own_child_call(state: Any, slot: Any, event: Any) -> bool:
     vouched-creator fence as the read exemption (:func:`_targets_own_child`), and
     ``agent.conductor_own_child_verbs`` must be on. Unlike the read exemption it does
     not wait for ``crew_mode.APPROVAL_ROUTING_LIVE``: it is keyed on the agent, so
-    it serves a Bot conductor in an ordinary tab and the Ultra Mode team lead alike.
+    it serves a Bot conductor in an ordinary tab and the conductor mode team lead alike.
     Deny rules and PreToolUse hooks have already run by the time it is consulted.
     """
     if (getattr(slot, "agent", "") or "") not in _CONDUCTOR_OWN_CHILD_AGENTS:
@@ -1574,6 +1581,8 @@ _OVERRIDE_WITHHELD_FIELDS = (
     "trust_base_grantable",
     "base_command",
     "is_read_only",
+    "always_allow_tool_grantable",
+    "always_allow_tool_ref",
 )
 
 

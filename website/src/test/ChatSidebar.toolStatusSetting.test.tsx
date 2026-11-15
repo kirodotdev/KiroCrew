@@ -79,6 +79,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import { sseChatMessage } from '../store/chatSlice'
 import type { RootState } from '../store'
 import type { ChatSlot } from '../types'
 import { expectLoopIcon } from './GoalLoopIconTestUtils'
@@ -129,7 +130,7 @@ async function renderSidebar(slots: ChatSlot[], chat: Record<string, unknown>) {
   )
   // ThemeProvider's catalog fetch and the sidebar's mount-time reads answer after render returns.
   await waitFor(() => expect(qc.isFetching()).toBe(0), namedCeiling('SIDEBAR_READS_SETTLED', 5000))
-  return view
+  return { ...view, store }
 }
 
 beforeEach(() => {
@@ -191,6 +192,23 @@ describe('chat sidebar — tool status honors simplifiedToolNames', () => {
     })
     expect(getByText(/Compacting…/)).toBeTruthy()
     expect(queryByText(i18next.t('pages.chatSidebar.thinking'))).toBeNull()
+  })
+
+  it('says Compacting… while the slot compacts, as the footer does, then its status again', async () => {
+    // The status detail still holds the pre-compaction thinking phase; only the
+    // slot's run state says a compaction is running.
+    const { getByText, queryByText, store } = await renderSidebar(slots, {
+      slotStatusDetail: { k: { kind: 'thinking', ts: 1 } },
+      slotRun: {}, slotMessages: {},
+    })
+    expect(getByText(/Thinking…/)).toBeTruthy()
+    act(() => { store.dispatch(sseChatMessage({ slot: 'k', role: 'compacting', content: '' })) })
+    expect(getByText(i18next.t('pages.chat.chatFooter.compacting'))).toBeTruthy()
+    expect(queryByText(/Thinking…/)).toBeNull()
+    // An unwatched slot receives no chunk after its compaction; the result notice ends it.
+    act(() => { store.dispatch(sseChatMessage({ slot: 'k', role: 'assistant', content: '✅ Conversation compacted.', kind: 'compaction', meta: { kind: 'compaction' } })) })
+    expect(getByText(/Thinking…/)).toBeTruthy()
+    expect(queryByText(i18next.t('pages.chat.chatFooter.compacting'))).toBeNull()
   })
 
   it('composes the goal-loop detail from the same setting-aware label', async () => {

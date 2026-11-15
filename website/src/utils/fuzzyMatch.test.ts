@@ -1,10 +1,11 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, onTestFinished } from 'vitest'
 import {
   fuzzyMatch,
   compareByScoreThenName,
   makeScoreThenNameComparator,
   type FuzzyMatchResult,
 } from './fuzzyMatch'
+import { i18next } from '../i18n/all'
 
 // Helper: assert a match happened and narrow the type from `… | null`.
 function expectMatch(result: FuzzyMatchResult | null): FuzzyMatchResult {
@@ -156,5 +157,15 @@ describe('makeScoreThenNameComparator — generic accessors', () => {
       { relevance: 10, title: 'alpha' },
     ].sort(cmp)
     expect(sorted.map((r) => r.title)).toEqual(['gamma', 'alpha', 'beta'])
+  })
+})
+
+describe('name tie-break follows the app language, not the host locale', () => {
+  it('orders Chinese names by pinyin when the app runs in Chinese', async () => {
+    // Restored even when the test times out, which skips a `finally`.
+    onTestFinished(async () => { await i18next.changeLanguage('en') })
+    await i18next.changeLanguage('zh-CN')
+    const names = ['上海', '北京', '广州'].map(name => ({ name, score: 1 }))
+    expect(names.sort(compareByScoreThenName).map(n => n.name)).toEqual(['北京', '广州', '上海'])
   })
 })

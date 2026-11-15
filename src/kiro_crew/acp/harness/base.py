@@ -41,6 +41,7 @@ from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 __all__ = [
     "HarnessAdapter",
+    "HarnessReadBack",
     "LaunchAdapter",
     "NotificationAliases",
     "ProcessAdapter",
@@ -122,14 +123,50 @@ class SpawnContext:
     gate nonce, a resolved adapter version)."""
 
 
+@dataclass
+class HarnessReadBack:
+    """What a host's read-back of its own resolved config found, for one spawn.
+
+    A :class:`ProcessAdapter` owns one, and the session reads it through
+    :meth:`ProcessSession._harness_read_back` for as long as it keeps that adapter.
+    Every default is "nothing known", which is also the answer for a session that
+    keeps no adapter.
+    """
+
+    denies_in_force: frozenset[str] | None = None
+    """Crew's deny rules the read-back found in force, handed to every later
+    projection so it withholds a server whose rule is not. ``None`` until this spawn
+    has seeded any."""
+
+    denies_unenforced: frozenset[str] = frozenset()
+    """The seeded deny rules the read-back found outranked by another rule."""
+
+    native_mounts: frozenset[str] = frozenset()
+    """Servers the host mounts from its own config."""
+
+    config_mcp_servers: tuple[str, ...] = ()
+    """MCP server names in the host's own config that it rewrites, so a fused tool
+    title from one of them splits back exactly."""
+
+    disabled_servers: frozenset[str] = frozenset()
+    """Servers switched off in Crew, recorded by the projection, which the read-back
+    refuses when the host mounts one itself."""
+
+    config_model: str = ""
+    """The ``model`` the host's own resolved config names, or ``""`` when it names
+    none. The start-time model check reads it to tell a model the operator chose
+    from one the host fell back to."""
+
+
 class ProcessSession(Protocol):
     """What a :class:`ProcessAdapter` may read, write and ask of the session it launches.
 
     ``AcpClient`` is the production implementation; a test hands in a plain object
     carrying these members. The attributes are the session's own state, named as the
     session names them, because the session's turn-time code reads them after the
-    launch: the gate tripwires read the nonces, the settings writer reads the
-    adapter version, the routing check reads the config's MCP server names.
+    launch: the gate tripwires read the nonces. A harness whose session carries more
+    declares a protocol of its own over this one (``harness.claude.ClaudeProcessSession``). A config read-back is the adapter's own
+    (:class:`HarnessReadBack`), reached through :meth:`_harness_read_back`.
     """
 
     _spawn_work_dir: str
@@ -137,20 +174,15 @@ class ProcessSession(Protocol):
     _session_key: str | None
     _model: str
     _agent_version_read: bool
-    _claude_adapter_disk_version: str
-    _opencode_config_mcp_servers: tuple[str, ...]
     _session_harness_deny_rules: tuple[str, ...]
     _session_mcp_unhonoured: frozenset[str]
-    _opencode_denies_in_force: frozenset[str] | None
-    _opencode_denies_unenforced: frozenset[str]
-    _opencode_native_mounts: frozenset[str]
+    _mimocode_governed_stop: tuple[str, str] | None
     _session_mcp_cache: list[dict[str, Any]] | None
     _pi_gate_nonce: str
     _pi_mcp_handoff: tuple[str, bytes]
     _pi_mcp_server_names: tuple[str, ...]
     _pi_steer_channel: Any
-    _deepseek_gate_nonce: str
-    _deepseek_read_only_issue: str
+    _unasked_shell_tripwire: bool
     _copilot_mcp_config_path: str
     _launch_mcp_servers: list[Any] | None
     _mcp_relaunch_pending: bool
@@ -176,17 +208,26 @@ class ProcessSession(Protocol):
     def _session_mcp_servers(self) -> list[dict[str, Any]]:
         """The warmed array, in memory: empty for a harness outside the array set."""
 
+    def _harness_read_back(self) -> HarnessReadBack:
+        """The kept adapter's :class:`HarnessReadBack`, or an empty one when none is kept.
+
+        The session keeps its adapter before :meth:`ProcessAdapter.resolve_spawn`
+        runs, so what the launch records here is what the session reads after it."""
+
+    def _mimocode_session_mcp_servers(self) -> list[dict[str, Any]]:
+        """The MiMo Code session's ``mcpServers`` entries."""
+
+    def _copilot_session_mcp_servers(self) -> list[dict[str, Any]]:
+        """The Copilot CLI session's ``mcpServers`` entries."""
+
+    def _pi_session_mcp_servers(self) -> list[dict[str, Any]]:
+        """The pi session's ``mcpServers`` entries."""
+
     def _pooled_mcp_servers(self) -> list[dict[str, Any]]:
         """The pooled broker stubs the session/new array appends (blocking)."""
 
     async def _discard_copilot_mcp_config(self) -> None:
         """Remove this session's Copilot CLI launch MCP config, if one was written."""
-
-    async def _seed_session_settings(self) -> None:
-        """Seed the session's own settings file, best-effort."""
-
-    async def _prepare_claude_side_read_denies(self) -> None:
-        """Build a Side Chat session's sensitive-path deny rules off the loop, fail closed."""
 
     def _install_idle_reader(self) -> None:
         """Have the session read stdout between turns (idempotent)."""
@@ -214,6 +255,14 @@ class SpawnPlan:
 
     native_context_documents: tuple[tuple[str, str], ...] = field(default=(), kw_only=True)
     """Admitted sources owned by this exact native launch configuration."""
+
+    engine_bundle: bool = field(default=False, kw_only=True)
+    """This spawn runs Crew's own installed KAS engine bundle, with no kiro-cli.
+
+    Set only by the KAS harness's bundle route. A gate that asks whether a LIVE
+    session's next turn needs kiro-cli reads this from the process that is
+    running, not from the configuration, which may have changed since the spawn.
+    """
 
     kiro_cli_internal_sandbox: bool = field(default=False, kw_only=True)
     """kiro-cli's internal sandbox confines this spawn.
@@ -421,6 +470,17 @@ class TeardownPolicy:
     local_only: bool = False
     """Unregister without the destructive verb unless privacy requires deletion."""
 
+    delete_disposable_record: Callable[[str, Mapping[str, str] | None], bool] | None = None
+    """Crew's own delete of a disposable session's record, for a host whose verb keeps it.
+
+    ``None`` means the verb, or the kiro-cli transcript sweep the shared runtime
+    already runs, answers for the record. codex evicts and keeps the rollout under
+    ``CODEX_HOME``, so its harness names the rollout delete here. The shared
+    runtime calls it for an incognito or temporary session with the session id
+    and the runtime's ``extra_env``, which can move the store the child wrote.
+    Returns whether the cleanup completed.
+    """
+
 
 # ── Unroutable permission answer ──
 
@@ -496,7 +556,23 @@ class ProcessAdapter(LaunchAdapter):
     so the two halves cannot disagree about which spawn they describe. Every host
     error is an ``AcpError`` -- the type ``AcpClient.ensure_ready`` ladders on -- and
     a missing component's carries the command that installs it.
+
+    The session keeps the instance for the life of its process and asks it the
+    questions below; ``AcpClient._reset_state`` drops it with the process.
     """
+
+    def __init__(self) -> None:
+        #: What this spawn's read-back of the host's own config found. Empty for a
+        #: host that reads nothing back.
+        self.read_back = HarnessReadBack()
+
+    def session_mcp_servers(self, session: ProcessSession) -> list[dict[str, Any]]:
+        """This host's entries in the session's ``session/new`` / ``session/load`` array.
+
+        In-memory reads of what the spawn warmed, never an executor hop: the call
+        site is shared with kiro-cli. The default adds no server.
+        """
+        return []
 
     async def prepare_spawn_env(
         self,
@@ -705,14 +781,90 @@ class HarnessAdapter(LaunchAdapter):
         default sends what the runtime built and activates the agent the caller asked
         for, so it returns BOTH of the caller's objects unchanged, and the request
         stays byte-identical to one built without this seam. KAS
-        (:class:`~kiro_crew.acp.harness.kas.KasHarness`) also names its injected
-        agent as the mode a ``session/new`` starts in, and still activates the
+        (:class:`~kiro_crew.acp.harness.kas.KasHarness`) also names the mode a
+        ``session/new`` starts in, its injected agent or the start agent it adds
+        beside one that declares MCP servers, and still activates the
         caller's agent. A host that places the session where Kiro Crew's agent does
         not exist (:class:`~kiro_crew.acp.harness.kas_cloud.KasCloudSandboxHarness`)
         reshapes the request and activates nothing. Raising ``AcpRuntimeError`` here
         refuses the start before anything is sent.
         """
         return params, agent
+
+    # ── Seam 3b: per-session state (a host whose sessions carry their own setup) ──
+
+    #: True on a host that prepares each session on its own before ``session/new`` /
+    #: ``session/load`` and checks it after (:meth:`prepare_session` and the seams
+    #: below). The runtime reads this before awaiting any of them, so a host that
+    #: answers False -- kiro-cli, KAS, codex -- makes no extra call at all
+    #: (harness-parity H13).
+    per_session_state: bool = False
+
+    async def prepare_session(
+        self,
+        *,
+        work_dir: str | Path,
+        agent: str | None,
+        model: str,
+        session_key: str,
+        channel_id: str,
+        memory_mode: str,
+    ) -> Any:
+        """Prepare one session before its ``session/new`` or ``session/load`` goes out.
+
+        Returns the session's state, handed back to every seam below, or None.
+        Off-loop work (a settings file this host reads per session) belongs here.
+        Raising refuses the start before anything is sent. Reached only where
+        :attr:`per_session_state` is True.
+        """
+        return None
+
+    def permission_surface_owned(self, state: Any) -> bool:
+        """Whether Crew governs this session's native permission surface, for the
+        mirror's array: False unless the host's own state says it does."""
+        return False
+
+    def session_meta(
+        self, state: Any, mcp_servers: list[dict[str, Any]], *, zero_tools: bool = False
+    ) -> dict[str, Any] | None:
+        """The ``_meta`` entries this session's request carries, built after its array, or None."""
+        return None
+
+    async def after_session_start(
+        self,
+        state: Any,
+        session_id: str,
+        resp: dict[str, Any],
+        *,
+        send_request: Callable[[str, dict[str, Any]], Awaitable[Any]],
+        close_session: Callable[[], Awaitable[None]],
+        agent_version: str = "",
+    ) -> None:
+        """Check the session that just started, before its first prompt.
+
+        *agent_version* is the ``agentInfo.version`` the process reported at its
+        handshake.
+
+        *send_request* sends a request on the shared connection and awaits its
+        answer; *close_session* ends THIS session only. A host that refuses the
+        session closes it through *close_session* and raises; it never ends the
+        process, which other sessions share.
+        """
+
+    async def end_session(self, state: Any) -> None:
+        """Release what :meth:`prepare_session` set up, once the session is over or
+        never started. Must not raise."""
+
+    def take_session_frame(self, state: Any, msg: Any) -> bool:
+        """Whether the host reads the notification *msg* of a session into its *state*.
+
+        Read by the runtime's reader for a notification that names a registered
+        session, with what :meth:`prepare_session` returned for it (``None`` when
+        nothing). A frame taken here is put on no queue: no turn, waiting request or
+        idle reader of the session sees it. Every host answers ``False`` unless it
+        reads such frames itself. Must not raise.
+        """
+        return False
 
     def holds_replayed_permission(self, session_id: str) -> bool:
         """Whether a permission request for *session_id* arrived inside a resume hold.
@@ -752,6 +904,20 @@ class HarnessAdapter(LaunchAdapter):
         returned is the user-facing refusal, ready to raise as-is.
         """
         return None
+
+    def start_mode_ran_servers(self, mode_id: str) -> bool:
+        """Whether the mode a session started in may have started MCP servers of its own.
+
+        Asked after ``set_mode`` switched a new session away from *mode_id*, as a
+        seam rather than a backend test (harness-parity H13). Reports staged
+        before the switch describe that mode's servers, so the start skips them
+        unless the mode had none. This base answer is ``True``: a mode a host
+        chose may run any server. A host that starts a session in an agent it
+        registered without servers answers ``False`` for that agent, and the
+        reports staged under it, which can only name session-level servers,
+        still count.
+        """
+        return True
 
     # ── Seam 4: inbound requests the host answers ──
 

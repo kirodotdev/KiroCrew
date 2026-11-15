@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -26,15 +27,20 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, NamedTuple, Sequence
 
 from kiro_crew import member_records
-from kiro_crew.apps import credential_masks, protected_app_state
+from kiro_crew.apps import agent_readonly_dirs, credential_masks, protected_app_state
 from kiro_crew.apps.execution import APP_NAME_RE
 from kiro_crew.apps.host_exec_grants import revoke_host_exec
 from kiro_crew.apps.manifest import AppManifest, Permissions
-from kiro_crew.apps.point_grants import explicit_only_grant_families, point_grant_families
+from kiro_crew.apps.point_grants import (
+    explicit_only_grant_families,
+    grant_source,
+    point_grant_families,
+)
 from kiro_crew.apps.worker_auto_approve import WORKER_AUTO_APPROVE_GRANT_FAMILIES
 from kiro_crew.apps.worker_auto_approve import revoke_app as revoke_worker_auto_approve
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.jsonl_util import open_regular_nofollow
 from kiro_crew.owner_only_files import ensure_directory
 
 logger = logging.getLogger("kiro_crew.apps.manager")
@@ -149,6 +155,29 @@ def _read_schema_version(data: dict[str, Any]) -> int:
         return 1
 
 
+def _read_not_before(data: dict[str, Any]) -> float:
+    """``appTokensNotBefore`` as a float; a missing or unusable value is 0."""
+    value = data.get("appTokensNotBefore", 0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    # NaN compares false with everything, so it would admit every token; a
+    # non-finite cutoff refuses them all instead.
+    try:
+        cutoff = float(value)
+    except OverflowError:  # an int too large for a float
+        return math.inf
+    return cutoff if math.isfinite(cutoff) else math.inf
+
+
+class InstalledRecordShapeError(ValueError):
+    """``installed.json`` parsed as JSON, but not as the object a record is.
+
+    Raised rather than read as "not installed": an absent record lets install and
+    cleanup paths treat the app's tree as a leftover, so a damaged one must stay
+    visible as damaged.
+    """
+
+
 @dataclass
 class InstalledApp:
     """Metadata persisted in ``installed.json`` for each installed app.
@@ -224,6 +253,12 @@ class InstalledApp:
     # sandbox. The one-time import reads it to keep a record from before sets
     # were stored approving what its manifest declares.
     approvedGrantsStored: bool = False  # noqa: N815
+    # Epoch seconds before which this app's tokens are refused. ``_write_installed``
+    # moves it forward on every write that leaves the app disabled and on the
+    # write that creates the record, so a token minted before a disable or before
+    # an uninstall stays dead after the app is enabled or installed again. 0 on a
+    # record from before the field existed: no cutoff.
+    appTokensNotBefore: float = 0.0  # noqa: N815
 
     def validate_fields(self) -> list[str]:
         """Validate classification field values. Returns error list (empty = valid)."""
@@ -239,8 +274,18 @@ class InstalledApp:
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v or isinstance(v, (bool, int))}
 
+    def to_row_dict(self) -> dict[str, Any]:
+        """``to_dict`` for an API row: without the gateway-internal token cutoff."""
+        row = self.to_dict()
+        row.pop("appTokensNotBefore", None)
+        return row
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> InstalledApp:
+        if not isinstance(data, dict):
+            raise InstalledRecordShapeError(
+                f"installed record is a JSON {type(data).__name__}, not an object"
+            )
         inst = cls(
             name=str(data.get("name", "")),
             version=str(data.get("version", "")),
@@ -263,6 +308,7 @@ class InstalledApp:
             sessionApprovalConsentPending=bool(data.get("sessionApprovalConsentPending", False)),
             memberThreadsConsented=data.get(MEMBER_THREADS_CONSENT_KEY) is True,
             approvedGrantsStored=data.get("approvedGrantsStored") is True,
+            appTokensNotBefore=_read_not_before(data),
         )
         # Migrate old "managed" field to new classification fields
         if inst.schemaVersion < 2 and "origin" not in data:
@@ -276,7 +322,9 @@ class InstalledApp:
                 inst.resources = "gateway"
                 inst.lifecycle = "locked"
             elif old_managed in ("kirocrew", ""):
-                source = data.get("source", "")
+                # The coerced field, as read above: a non-string source must
+                # classify, not crash the read.
+                source = inst.source
                 if source.startswith("registry:"):
                     inst.origin = "registry"
                 elif source and not source.startswith("builtin"):
@@ -523,6 +571,63 @@ def _enabled_on_disk(meta_path: Path) -> bool:
     return not isinstance(data, dict) or _read_enabled(data)
 
 
+#: Largest ``installed.json`` the token checks read; a real record is a few KB.
+_RECORD_READ_CAP = 256 * 1024
+
+
+def _read_record_bytes(path: Path) -> bytes:
+    """*path*'s bytes through :func:`open_regular_nofollow`, capped at :data:`_RECORD_READ_CAP`.
+
+    The app can replace its own record with a link, a FIFO or a huge file; each raises
+    ``OSError`` here, and absence raises ``FileNotFoundError``.
+    """
+    with open_regular_nofollow(path, max_bytes=_RECORD_READ_CAP) as fh:
+        return fh.read()
+
+
+def _next_token_cutoff(name: str, meta: InstalledApp) -> float:
+    """The ``appTokensNotBefore`` a write of *meta* stores.
+
+    Never earlier than what is on disk, so a writer holding a record read before a
+    disable cannot reopen tokens the disable closed. A write that leaves the app
+    disabled, or that creates the record, moves it to now.
+    """
+    meta_path = app_dir(name) / INSTALLED_META_FILENAME
+    try:
+        on_disk = _read_not_before(json.loads(_read_record_bytes(meta_path).decode("utf-8")))
+        exists = True
+    except FileNotFoundError:
+        on_disk, exists = 0.0, False
+    except (OSError, ValueError, TypeError, AttributeError, RecursionError):
+        on_disk, exists = 0.0, True
+    cutoff = max(meta.appTokensNotBefore, on_disk)
+    if not meta.enabled or not exists:
+        cutoff = max(cutoff, time.time())
+    return cutoff
+
+
+def app_token_cutoff(name: str) -> float | None:
+    """When *name*'s app tokens start being accepted, or None to refuse them all.
+
+    None when the app is not installed, is disabled (its record says so, or the
+    owner's disable stands in ``protected_app_state``), or its record cannot be
+    read: an app token is honoured only while the app is on.
+    Reads ``installed.json`` alone (no manifest), because the auth middleware
+    calls it on every app-token request.
+    """
+    meta_path = app_dir(name) / INSTALLED_META_FILENAME
+    try:
+        data = json.loads(_read_record_bytes(meta_path).decode("utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    if not isinstance(data, dict) or not _read_enabled(data):
+        return None
+    # The owner's disable stands outside the app's tree, which the app can rewrite.
+    if protected_app_state.owner_disabled(name):
+        return None
+    return _read_not_before(data)
+
+
 def _write_installed(
     name: str, meta: InstalledApp, *, session_approval_consent: bool = False
 ) -> None:
@@ -559,6 +664,7 @@ def _write_installed(
         )
         credential_free_meta = replace(
             meta,
+            appTokensNotBefore=_next_token_cutoff(name, meta),
             approvedGrantsStored=meta.approvedGrantsStored or _approved_grants_stored(name),
             sessionApprovalConsentPending=meta.sessionApprovalConsentPending or rule == "pending",
             source=_credential_free_source_metadata(str(meta.source or "")),
@@ -582,6 +688,10 @@ def _write_installed(
             credential_masks.remember_declaration(name)
         except OSError:
             logger.warning("could not record %s's credential masks", name, exc_info=True)
+        try:
+            agent_readonly_dirs.remember_declaration(name)
+        except OSError:
+            logger.warning("could not record %s's agent read-only dirs", name, exc_info=True)
         # REVOKE-ONLY: drop any host-exec grant whenever a write leaves the app
         # disabled, so no disable path (disable, widen-until-consent, update) can leave
         # a stale grant that still starts a pod. Deliberately never GRANTS here: this
@@ -595,6 +705,11 @@ def _write_installed(
             # Same revoke-only rule for the app's worker auto-approve grants: one
             # minted while a disable was in flight ends once the record says so.
             revoke_worker_auto_approve(name)
+        # An enable, disable or manifest change decides whether the app may still
+        # hide its open chats.
+        from kiro_crew.apps.hidden_sessions import request_hiding_refresh
+
+        request_hiding_refresh()
 
 
 # Grant families held back on a widening update. ``sessionApproval`` is a flag
@@ -649,9 +764,15 @@ def _approved_grants_stored(name: str) -> bool:
 
 
 #: The stored form of "approves what the manifest declares": an install from before
-#: approved sets existed, or an external registration that declared nothing yet.
+#: approved sets existed, or an external registration from before
+#: :data:`_AWAITING_MANIFEST_KEY`. The first read fixes it (:func:`_freeze_declared`).
 _APPROVE_DECLARED_KEY = "approveDeclared"
 _APPROVE_DECLARED_TEXT = json.dumps({_APPROVE_DECLARED_KEY: True}) + "\n"
+#: An external registration that sent no manifest: nothing is approved until the
+#: owner's registration route sends the first one, which approves what it declares.
+#: Never fixed from the app's own ``app.json``, which an agent can write.
+_AWAITING_MANIFEST_KEY = "awaitingManifest"
+_AWAITING_MANIFEST_TEXT = json.dumps({_AWAITING_MANIFEST_KEY: True}) + "\n"
 
 
 def _import_app_tree_grants() -> None:
@@ -679,7 +800,8 @@ def _disabled_before_upgrade(name: str, meta_path: Path) -> bool:
 
     True for a record reading ``enabled: false``, and for one that cannot be read
     (fail closed: the owner enables it again). A built-in still owed its default-on
-    promotion is left to ``backfill_default_on_builtins``, which turns it on.
+    promotion is left to ``backfill_default_on_builtins``, which turns it on, or, for
+    a folded one, to the carry that reads it as on.
     """
     try:
         raw = member_records._read_regular_no_follow(meta_path)
@@ -691,10 +813,14 @@ def _disabled_before_upgrade(name: str, meta_path: Path) -> bool:
     if _read_enabled(data):
         return False
     # Deferred: manager_builtins imports this module.
+    from kiro_crew.apps.builtins import _FOLDED_PROMOTED_BUILTINS
     from kiro_crew.apps.manager_builtins import _DEFAULT_ON_BACKFILL
 
+    # A folded built-in's record still owed the promotion is read as on when its
+    # switch is carried over (``manager_builtins.folded_switch_state``), so it is
+    # not recorded as the owner's disable here either.
     owed_promotion = (
-        name in _DEFAULT_ON_BACKFILL
+        (name in _DEFAULT_ON_BACKFILL or name in _FOLDED_PROMOTED_BUILTINS)
         and data.get("source") == "builtin"
         and data.get("defaultOnBackfilled") is not True
     )
@@ -745,18 +871,21 @@ def _import_app_tree_grants_locked() -> None:
             except (OSError, ValueError, AttributeError, RecursionError):
                 stored = True
             if stored is not True:
-                protected_app_state.write_grants_text(name, _APPROVE_DECLARED_TEXT)
+                protected_app_state.write_grants_text_locked(name, _APPROVE_DECLARED_TEXT)
                 continue
             grants = nothing
-        protected_app_state.write_grants_text(name, _approved_grants_text(grants))
+        protected_app_state.write_grants_text_locked(name, _approved_grants_text(grants))
     protected_app_state.mark_grants_imported()
 
 
 def _read_approved_grants(name: str) -> dict[str, list[str]] | None:
     """Read *name*'s approved set from the protected store, failing closed.
 
-    ``None`` means the stored set approves what the manifest declares. A missing,
-    unreadable or unparsable set approves nothing.
+    Always a set with every family. A missing, unreadable or unparsable set approves
+    nothing. A set stored as "approve what is declared", or one written before a
+    family existed, is fixed once to what the manifest declares at this first read
+    (:func:`_freeze_declared`), so a later write to the agent-writable manifest
+    widens nothing.
     """
     nothing: dict[str, list[str]] = {family: [] for family in STAGED_GRANT_FAMILIES}
     try:
@@ -774,9 +903,64 @@ def _read_approved_grants(name: str) -> dict[str, list[str]] | None:
         raw = json.loads(text)
     except json.JSONDecodeError:
         return nothing
-    if isinstance(raw, dict) and raw.get(_APPROVE_DECLARED_KEY) is True:
-        return None
-    return _parse_approved_grants(raw)
+    if isinstance(raw, dict) and raw.get(_AWAITING_MANIFEST_KEY) is True:
+        return nothing
+    parsed = (
+        None
+        if isinstance(raw, dict) and raw.get(_APPROVE_DECLARED_KEY) is True
+        else _parse_approved_grants(raw)
+    )
+    if parsed is not None and all(family in parsed for family in STAGED_GRANT_FAMILIES):
+        return parsed
+    return _freeze_declared(name, text, parsed)
+
+
+def _freeze_declared(
+    name: str, text: str, parsed: dict[str, list[str]] | None
+) -> dict[str, list[str]]:
+    """Store, once, what a set that defers to the manifest approves right now.
+
+    *parsed* is ``None`` for "approve what is declared" (an install from before
+    approved sets, carried over by the import); otherwise it lacks the families it
+    was written before. Each such family takes what the manifest declares at this
+    read, which is what it granted until now, and the result is stored, so a later
+    write to the agent-writable ``app.json`` is held back like any other widening.
+    An explicit-only family takes nothing even then: no owner saw it in a prompt
+    before approved sets existed, so it waits for the owner's approval.
+    Built-ins never get here: they store their shipped set at every start.
+
+    Nothing is stored inside a sandbox, during an update's tree swap, without a
+    readable manifest, or when the stored set changed since *text* was read; each
+    of those reads approves only what the set itself records.
+    """
+    base = dict(parsed or {})
+    recorded = {family: list(base.get(family, ())) for family in STAGED_GRANT_FAMILIES}
+    if member_records._inside_sandbox() or _tree_swap_state(name)[0]:
+        return recorded
+    manifest = get_app_manifest(name)
+    if manifest is None:
+        return recorded
+    declared = _declared_grant_entries(grant_source(manifest))
+    frozen = {
+        family: (
+            base[family]
+            if family in base
+            else [] if family in _EXPLICIT_ONLY_FAMILIES else declared[family]
+        )
+        for family in STAGED_GRANT_FAMILIES
+    }
+    try:
+        # The app's write lock, which every write of its set holds (``write_grants_text``),
+        # in any thread or process: nothing an owner stores, and no uninstall's
+        # removal, can land between this comparison and this write.
+        with protected_app_state.grants_write_lock(name):
+            if protected_app_state.read_grants_text(name) != text:
+                return recorded
+            protected_app_state.write_grants_text_locked(name, _approved_grants_text(frozen))
+    except (OSError, ValueError):
+        logger.warning("Could not store an app's approved set; it approves what it records")
+        return recorded
+    return frozen
 
 
 def _effective_approved_grants(name: str, meta: InstalledApp | None) -> dict[str, list[str]] | None:
@@ -814,9 +998,15 @@ def _write_approved_grants(name: str, grants: dict[str, list[str]] | None) -> No
 
 
 def _write_approve_declared(name: str) -> None:
-    """Store "approves what the manifest declares" for *name*."""
+    """Store "approves what the manifest declares" for *name* (the pre-set form)."""
     _import_app_tree_grants()
     protected_app_state.write_grants_text(name, _APPROVE_DECLARED_TEXT)
+
+
+def _write_awaiting_manifest(name: str) -> None:
+    """Store that *name* was registered without a manifest (:data:`_AWAITING_MANIFEST_KEY`)."""
+    _import_app_tree_grants()
+    protected_app_state.write_grants_text(name, _AWAITING_MANIFEST_TEXT)
 
 
 def _approved_grants_snapshot(name: str) -> str | None:

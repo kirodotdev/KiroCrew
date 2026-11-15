@@ -205,6 +205,10 @@ def permission_refusal(name: str, manifest: Any) -> str | None:
         old_manifest and old_manifest.permissions.sessionApproval
     ):
         return "permission_widening"
+    # Declared at the trust prompt, so an adopted copy declares it only where the
+    # wheel copy the owner already runs does.
+    if manifest.permissions.chatSlots and not (old_manifest and old_manifest.permissions.chatSlots):
+        return "permission_widening"
     approved = _approved_grants_after_manifest_change(
         existing_approved=_effective_approved_grants(name, existing),
         old_permissions=grant_source(old_manifest),

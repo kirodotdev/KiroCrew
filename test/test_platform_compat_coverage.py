@@ -149,17 +149,7 @@ class TestTccWalkPruning:
         self._as_macos(monkeypatch, str(tmp_path))
         root = str(tmp_path)
         kept = pc.tcc_prune_walk_dirs(root, root, ["Downloads", "Desktop", "Library", "code"])
-        # Library survives so the walk can descend to the cloud mounts below it.
-        assert kept == ["Library", "code"]
-
-    def test_library_position_keeps_only_the_cloud_mounts(self, monkeypatch, tmp_path):
-        self._as_macos(monkeypatch, str(tmp_path))
-        root = str(tmp_path)
-        library = os.path.join(root, "Library")
-        kept = pc.tcc_prune_walk_dirs(
-            root, library, ["Mail", "Safari", "CloudStorage", "Mobile Documents"]
-        )
-        assert sorted(kept) == ["CloudStorage", "Mobile Documents"]
+        assert kept == ["code"]
 
     def test_deeper_positions_are_untouched(self, monkeypatch, tmp_path):
         # A project's own Documents/ deeper in the tree is not TCC-gated.

@@ -4,10 +4,10 @@ When the cloud launcher provisions an EC2 box for you, it also registers that bo
 in the **Instances** registry so the dashboard's **Settings → Remote Crew** page can
 manage it — open a tunnel, mint a short-lived dashboard token, keep it warm, and
 self-heal a dropped connection. This page explains **how** that managed connection
-is made, and why the launcher now uses the **native SSM transport** instead of the
+is made, and why the launcher uses the **native SSM transport** instead of the
 older SSH-over-`ProxyCommand` workaround.
 
-> TL;DR — a launched box is now reachable through Instances with **no SSH key, no
+> TL;DR — a launched box is reachable through Instances with **no SSH key, no
 > inbound port, and no `~/.ssh/config` edits**. Reachability is an IAM decision
 > (grant/revoke `ssm:StartSession`, CloudTrail-audited), not a networking decision
 > gated by a key someone holds.
@@ -20,7 +20,7 @@ for ECS task targets and is outside this comparison. Both EC2 methods end at the
 same place — a loopback-bound gateway on the remote — but they get there very
 differently.
 
-### Native SSM (`connection_method="ssm"`) — the new default for launched boxes
+### Native SSM (`connection_method="ssm"`) — the default for launched boxes
 
 The gateway builds an `aws ssm start-session` port-forward directly
 (`AWS-StartPortForwardingSession`) and mints the dashboard token over
@@ -64,7 +64,7 @@ connect at all.
 
 ## Side-by-side
 
-| | **Native SSM** (new) | **Legacy SSH-over-ProxyCommand** |
+| | **Native SSM** (default) | **Legacy SSH-over-ProxyCommand** |
 |---|---|---|
 | `connection_method` | `ssm` | `ssh` |
 | Registry field for the target | `ssm_target` (`i-…`/`mi-…`) | `ssh_host` (instance id, resolved by ssh config) |
@@ -106,12 +106,13 @@ here, and opens the dashboard — all from your laptop.
    letters, digits and `. _ + -`, at most 256 characters in total), and
    `--ami ami-xxxx` launches from your own image instead of the latest Amazon
    Linux 2023 one (it must match the size tier's architecture and be
-   AL2023-compatible, since the bootstrap still runs `dnf`). The launcher does
-   not inspect the image first: an image of the wrong architecture fails the
-   stack at instance creation (EC2 reports the architecture mismatch, and
-   `launch` prints it as the root cause), while an image without `dnf` or
-   `cfn-signal` fails or times out during the bootstrap. Both are fixed
-   when the instance is created: with an existing saved box, use `--new`.
+   AL2023-compatible, since the bootstrap still runs `dnf`). Before it asks to
+   create the stack, `launch` reads the image's architecture and refuses one
+   that does not match the size, naming the sizes that fit it (when that read
+   fails, the stack still fails at instance creation instead); an image without
+   `dnf` or `cfn-signal` still fails or times out during the bootstrap. Both
+   are fixed when the instance is created: with an existing saved box, use
+   `--new`.
 3. **Reach it — and the ports.** Launch ends by opening an SSM port-forward and
    your browser at `http://localhost:<local>/?token=…`. You never choose the
    **remote** port: the gateway always listens on loopback `:5476` on the box. The

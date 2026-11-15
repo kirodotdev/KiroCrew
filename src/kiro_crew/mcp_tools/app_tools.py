@@ -23,8 +23,6 @@ domain already has: a core tool always keeps its name, its handler and its schem
 
 from __future__ import annotations
 
-import functools
-import importlib
 import json
 import re
 from collections.abc import Iterator, Mapping
@@ -32,10 +30,17 @@ from typing import Any
 
 from kiro_crew import mcp_core
 from kiro_crew.apps import app_agent_tools
-from kiro_crew.apps.manager import app_enabled_state
+from kiro_crew.mcp_tools.catalog.app_tools import (  # noqa: F401
+    _DOMAIN,
+    _core_tool_names,
+    _tools,
+    _universe,
+    advertised,
+    app_enabled_state,
+    schemas,
+)
 from kiro_crew.platform import redact_via_context as redact
 
-_DOMAIN = "app_tools"
 #: The gateway route every forwarded call reaches: strict internal, so only a process
 #: holding the internal secret may call it (``dashboard/handlers/app_agent_tools.py``).
 _CALL_PATH = "/api/app-tools/call"
@@ -49,64 +54,11 @@ _MAX_CREDENTIAL_PIECES = 8
 _CODE_RE = re.compile(r"[a-z0-9_.-]{1,64}")
 
 
-@functools.lru_cache(maxsize=1)
-def _core_tool_names() -> frozenset[str]:
-    """Every name the other domains declare. Names are static; descriptions are not read."""
-    from kiro_crew.mcp_tools import DOMAIN_MODULES, _schemas_accepts_names_only
-
-    names: set[str] = set()
-    for domain in DOMAIN_MODULES:
-        if domain == _DOMAIN:
-            continue
-        schemas = importlib.import_module(f"kiro_crew.mcp_tools.{domain}").schemas
-        for spec in schemas(names_only=True) if _schemas_accepts_names_only(schemas) else schemas():
-            names.add(str(spec.get("name", "")))
-    return frozenset(names)
-
-
-def _tools() -> list[app_agent_tools.DeclaredTool]:
-    core = _core_tool_names()
-    return [t for t in app_agent_tools.declared_tools() if t.name not in core]
-
-
-def _universe() -> list[app_agent_tools.DeclaredTool]:
-    core = _core_tool_names()
-    return [t for t in app_agent_tools.shipped_tools() if t.name not in core]
-
-
 def declared(name: str) -> app_agent_tools.DeclaredTool | None:
     """The app tool called *name*, or ``None`` when no app owns that name."""
     if name in _core_tool_names():
         return None
     return app_agent_tools.declared_tool(name)
-
-
-def schemas() -> list[dict[str, Any]]:
-    """Every tool a shipped first-party app declares, whether or not it is installed or enabled.
-
-    An app agent's ``managedToolPolicy.exclude`` is built from these names once, when the
-    agent is materialized, so a tool must be named before its app is installed.
-    """
-    return [t.decl.descriptor() for t in _universe()]
-
-
-def advertised() -> list[dict[str, Any]]:
-    """The installed first-party apps' tools, minus those of an app readably switched off.
-
-    Hidden only on a readable ``False``, and listed on a read that fails: the gateway
-    refuses a call to a disabled app either way, while hiding on a transient fault
-    would last the session's whole life.
-    """
-    hidden: set[str] = set()
-    tools = _tools()
-    for app in sorted({t.app for t in tools}):
-        try:
-            state = app_enabled_state(app)
-        except Exception:
-            continue
-        if state is False:
-            hidden.update(t.name for t in tools if t.app == app)
-    return [t.decl.descriptor() for t in tools if t.name not in hidden]
 
 
 def tool_schema(name: str) -> Any:

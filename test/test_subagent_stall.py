@@ -178,3 +178,19 @@ async def test_touch_activity_clears_stalled_and_notifies():
     etype, _info_arg, extra = mgr._fire_event.await_args.args
     assert etype == "subagent_stalled"
     assert extra["stalled"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("etype", ["subagent_retrying", "subagent_recovering"])
+async def test_retry_event_ends_a_stall_so_a_replay_cannot_restore_it(etype):
+    """A retry is the newer health state: firing it clears ``info.stalled``
+    (which a reconnect snapshot replays) and restarts the two-sweep
+    suspicion, while the frame itself still goes out."""
+    mgr = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+    seen = []
+    mgr._on_event = AsyncMock(side_effect=lambda e, i, x: seen.append((e, i.stalled)))
+    info = _info(stalled=True, _stall_suspect_at=5.0)
+    await mgr._fire_event(etype, info, {"attempt": 1})
+    assert info.stalled is False
+    assert info._stall_suspect_at == 0.0
+    assert seen == [(etype, False)]

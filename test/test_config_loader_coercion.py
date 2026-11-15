@@ -28,7 +28,6 @@ from hypothesis import strategies as st
 
 import kiro_crew.config.loader as loader_module
 from kiro_crew.config.loader import (
-    _HAS_JSONSCHEMA,
     AgentConfig,
     DashboardConfig,
     KiroCrewConfig,
@@ -50,12 +49,6 @@ _ENUM_FIELDS: list[tuple[str, str, list[str]]] = [
 # Top-level keys recognised by the schema. Keep the property strategy aligned
 # with the loader's emitted config sections as new sections are added.
 _KNOWN_TOP_KEYS = set(loader_module._KNOWN_CONFIG_SECTIONS)
-
-# Skip marker for tests that require jsonschema validation
-_requires_jsonschema = pytest.mark.skipif(
-    not _HAS_JSONSCHEMA,
-    reason="jsonschema not available — validation tests require it",
-)
 
 
 def _load_absent_config() -> KiroCrewConfig:
@@ -369,7 +362,6 @@ class TestConfigLoaderProperties:
             assert loaded.workspaces["default"].dir == "workspace"
 
     # Feature: config-schema, Property 9: Type mismatch falls back to default
-    @_requires_jsonschema
     @given(
         field_idx=st.integers(min_value=0, max_value=4),
         wrong_idx=st.integers(min_value=0, max_value=3),
@@ -423,7 +415,6 @@ class TestConfigLoaderProperties:
         ), f"Expected default for {section}.{key} after type mismatch"
 
     # Feature: config-schema, Property 10: Enum violation falls back to default
-    @_requires_jsonschema
     @given(
         field_idx=st.integers(min_value=0, max_value=3),
         bad_value=st.text(min_size=1, max_size=20),
@@ -454,7 +445,6 @@ class TestConfigLoaderProperties:
         )
 
     # Feature: config-schema, Property 11: Unrecognized keys are detected
-    @_requires_jsonschema
     @given(
         extra_keys=st.lists(
             st.text(
@@ -524,7 +514,6 @@ class TestConfigLoaderProperties:
         assert isinstance(result.auto_update, bool)
 
     # Feature: config-schema, Property 14: Deprecated fields are accepted during loading
-    @_requires_jsonschema
     @given(
         command_val=st.text(min_size=1, max_size=20),
     )
@@ -649,8 +638,6 @@ class TestArchiveRetentionDays:
         """When jsonschema runs, ``null`` must survive validation (not be stripped)."""
         from kiro_crew.config import validation
 
-        if not validation._HAS_JSONSCHEMA:
-            pytest.skip("jsonschema not installed on this interpreter")
         data = {"session": {"archive_retention_days": None}}
         validated = validation.validate_config_data(data)
         assert validated["session"]["archive_retention_days"] is None

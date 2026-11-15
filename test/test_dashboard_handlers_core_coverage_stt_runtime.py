@@ -19,6 +19,7 @@ from aiohttp import web
 from dashboard_handlers_core_coverage_helpers import fake_sel_fixture  # noqa: F401
 from dashboard_handlers_core_coverage_helpers import seeded_config_fixture  # noqa: F401
 from dashboard_handlers_core_coverage_helpers import _json_req, _req, _seed_stt
+from redaction_structured_cases import github_classic
 
 from kiro_crew import transcribe as transcribe_mod
 from kiro_crew.dashboard.handlers import core as core_mod
@@ -731,6 +732,23 @@ class TestSttTranscribe:
         assert body["error"] == "STT not available"
 
     @pytest.mark.asyncio
+    async def test_a_body_that_is_not_multipart_is_400(self) -> None:
+        req = _req()
+        req.content_type = "application/json"
+        resp = await core_mod.api_stt_transcribe(req)
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "not_multipart"
+
+    @pytest.mark.asyncio
+    async def test_a_multipart_type_with_no_boundary_is_400(self) -> None:
+        req = _req()
+        req.content_type = "multipart/form-data"
+        req.multipart = AsyncMock(side_effect=ValueError("boundary missing"))
+        resp = await core_mod.api_stt_transcribe(req)
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "not_multipart"
+
+    @pytest.mark.asyncio
     async def test_missing_audio_field_is_400(self) -> None:
         resp = await core_mod.api_stt_transcribe(_multipart_req(None))
         assert resp.status == 400
@@ -802,9 +820,11 @@ class TestSttTranscribe:
         """A dictated credential must not come back in the response body: speech
         reaches this endpoint from a microphone, so nothing upstream of it has had
         a chance to screen what was said."""
+        # An AWS key ID is an Identifier with the structured detectors on.
+        secret = github_classic(seed=27)
         monkeypatch.setattr(
             "kiro_crew.transcribe.transcribe_audio",
-            AsyncMock(return_value="the key is AKIAIOSFODNN7EXAMPLE thanks"),
+            AsyncMock(return_value=f"the key is {secret} thanks"),
         )
         field = SimpleNamespace(
             name="audio",
@@ -814,7 +834,7 @@ class TestSttTranscribe:
         resp = await core_mod.api_stt_transcribe(_multipart_req(field))
         assert resp.status == 200
         text = json.loads(resp.body)["text"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in text
+        assert secret not in text
         # The surrounding speech survives: redaction replaces the secret, it does
         # not discard the transcript the user is waiting for.
         assert text.startswith("the key is ")

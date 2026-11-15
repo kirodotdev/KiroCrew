@@ -54,8 +54,8 @@ def test_pairing_a_phone_points_at_the_rail_button_and_names_its_blocker() -> No
             None,
         ),
         ("怎么扫码连接设备？", "shell.connect-phone", None),
-        ("怎么卸载 Command Bar 这个应用？", "apps.library.tile-uninstall", "Command Bar"),
-        ("How do I uninstall the Command Bar app?", "apps.library.tile-uninstall", "Command Bar"),
+        ("怎么卸载 Papyrus 这个应用？", "apps.library.tile-uninstall", "Papyrus"),
+        ("How do I uninstall the Papyrus app?", "apps.library.tile-uninstall", "Papyrus"),
     ],
 )
 def test_the_question_gets_the_planned_guide(
@@ -154,7 +154,8 @@ def test_a_crewmate_control_is_not_the_pick_while_its_preview_is_off() -> None:
 
 
 def test_a_tie_with_no_pick_forbids_claiming_a_guide() -> None:
-    d = find_ui("add mcp server")
+    # Three "New folder" controls on three pages: nothing settles which.
+    d = find_ui("new folder")
     assert d.get("ambiguous") is True
     nxt = _find_ui_next(d) or ""
     assert "guide_ref" not in nxt and "never write that a guide" in nxt

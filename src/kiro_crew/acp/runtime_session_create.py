@@ -9,17 +9,19 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe_result``,
-``_entitlement_probe_result_at``, ``_first_session_ready``, ``_saw_delegate_launch_failure``,
-``_saw_kas_engine_refusal``, ``_saw_sandbox_init_failure``,
-``_session_cwds``, ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``, ``_stderr_lines``,
+``_entitlement_probe_result_at``, ``_first_session_ready``,
+``_saw_delegate_launch_failure``, ``_saw_kas_engine_refusal``,
+``_saw_sandbox_init_failure``, ``_session_cwds``, ``_session_harness_states``,
+``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``, ``_stderr_lines``,
 ``recording_allowed``.
 
-Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_dead``,
-``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``, ``_kas_telemetry_sent``,
-``_mcp_gateway_overlay``, ``_member_context``, ``_pending_init_notifications``, ``_pid``,
-``_pool_lookup``, ``_process``, ``_refuse_over_ceiling_start``, ``_remote_session_servers``,
-``_remote_workspace_agents``, ``_session_label_elements``, ``_start_collect_timeout``,
-``_wire_mode_id``, ``_work_dir``,
+Instance fields read: ``_agent``, ``_agent_capabilities``, ``_agent_version``,
+``_crew_agent``, ``_dead``, ``_entitlement_probe_lock``, ``_expect_mcp_reports``,
+``_fold_mcp_frame``, ``_initialized``, ``_kas_telemetry_sent``, ``_mcp_gateway_overlay``,
+``_member_context``, ``_model``, ``_open_mcp_report``, ``_pending_init_notifications``,
+``_pid``, ``_pool_lookup``, ``_process``, ``_record_tree_in_background``,
+``_refuse_over_ceiling_start``, ``_remote_session_servers``, ``_remote_workspace_agents``,
+``_session_label_elements``, ``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``,
 ``_write_remote_token``.
 """
 
@@ -31,6 +33,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from kiro_crew import session_head
 from kiro_crew.acp import kas_cli_settings, kas_env_launch, runtime_start
 from kiro_crew.acp._dispatch import (
     attach_kas_custom_agents,
@@ -63,6 +66,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.config import live
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
+from kiro_crew.mcp_gateway.session_servers import attach_stub_start_priority
 from kiro_crew.providers.mirrors.registry import has_mirror
 from kiro_crew.start_priority import START_QUEUE_SESSION_NEW, StartPriority, notify_start_queue
 
@@ -126,11 +130,18 @@ async def create_session(
     on_gate_queued: Callable[..., None] | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     bg_runtime_start: bool = False,
+    member_context: bool | None = None,
+    harness_state: Any = None,
 ) -> AcpSessionHandle:
     """Create a new ACP session on this runtime. Returns a session handle.
 
     ``crew_agent`` is the canonical Kiro Crew identity for THIS session;
     None falls back to the runtime's own (spawn-time or rekeyed) identity.
+
+    ``member_context`` is whether THIS session runs as a Bot (crew member), which
+    decides whether its member resource documents are projected. None falls back
+    to the runtime's own value. Per session because a shared chat runtime's own
+    value is the founding session's, not this one's.
 
     ``session_key`` is the Kiro Crew session that will OWN this ACP session.
     It is what makes the session's broker stubs resolvable as this session
@@ -171,6 +182,25 @@ async def create_session(
     """
     if memory_mode not in {"persistent", "incognito", "temporary"}:
         raise ValueError("Invalid session memory mode")
+    if self._harness.per_session_state and harness_state is None:
+        # A host whose sessions each carry their own setup (``harness_state`` is
+        # how this call, made again below, carries it). Every other host reads
+        # the flag and goes on (harness-parity H13).
+        return await self._create_session_with_harness_state(
+            cwd=cwd,
+            agent=agent,
+            mcp_servers=mcp_servers,
+            crew_agent=crew_agent,
+            member_session_key=member_session_key,
+            session_key=session_key,
+            channel_id=channel_id,
+            memory_mode=memory_mode,
+            on_gate_acquired=on_gate_acquired,
+            late_adopter=late_adopter,
+            on_gate_queued=on_gate_queued,
+            start_priority=start_priority,
+            bg_runtime_start=bg_runtime_start,
+        )
     agent = await self._source_agent(agent)
     if memory_mode != "persistent":
         # A mixed runtime cannot attribute every raw diagnostic frame to a
@@ -194,6 +224,7 @@ async def create_session(
     # spec declared. One call either way -- no path resolves it twice.
     session_work_dir = await self._session_work_dir(cwd)
     denied_tools: frozenset[tuple[str, str]] = frozenset()
+    zero_tools = False
     # Defined for every path, not just the array-building one: a caller that
     # supplied its own array never enters the block below, and the member
     # confirmation asks whether a MIRROR built this session's array.
@@ -220,6 +251,10 @@ async def create_session(
                 work_dir=session_work_dir,
                 session_key=session_key,
                 channel_id=channel_id,
+                permission_surface_owned=(
+                    harness_state is not None
+                    and self._harness.permission_surface_owned(harness_state)
+                ),
             )
         if mirrored is not None:
             mcp_servers = mirrored.servers
@@ -227,6 +262,7 @@ async def create_session(
             crew_bridged = list(mirrored.crew_bridged)
             stub_token = mirrored.stub_token
             denied_tools = mirrored.denied_tools
+            zero_tools = mirrored.zero_tools
             mirrored_snapshot = mirrored.derived_spec_snapshot
             consumed_spec = mirrored.agent_spec
             ref_spec = mirrored.ref_spec
@@ -241,6 +277,13 @@ async def create_session(
                 launch_spec,
                 session_key or "",
             )
+            # A start a person is waiting on: its stubs' server spawns go first
+            # at the gateway daemon's spawn gate (``kiro_crew.start_priority``).
+            # shortcut: a mirrored host's stubs are not stamped and stay background
+            # there, because a mirror admits a Kiro Crew stub only with an ``env``
+            # of exactly the session token; stamp them when the priority can
+            # reach the stub without a second env pair.
+            pooled = attach_stub_start_priority(pooled, start_priority)
             mcp_servers = await self._unpooled_control_planes(
                 pooled, agent or self._agent, session_work_dir
             )
@@ -415,9 +458,14 @@ async def create_session(
     params, agent = self._harness.session_request(
         METHOD_SESSION_NEW, params, agent, agent_capabilities=self._agent_capabilities
     )
+    if harness_state is not None:
+        # This session's own envelope, built after the array it travels with.
+        meta = self._harness.session_meta(harness_state, wire_servers, zero_tools=zero_tools)
+        if meta is not None:
+            params["_meta"] = {**(params.get("_meta") or {}), **meta}
 
     projected_sources: dict[str, str] = {}
-    if self._member_context:
+    if self._member_context if member_context is None else member_context:
         from kiro_crew.member_essential_context import projected_resource_documents
 
         for definition in kas_agents or ():
@@ -499,6 +547,7 @@ async def create_session(
             budget=budget,
             stub_token=stub_token,
             denied_tools=denied_tools,
+            zero_tools=zero_tools,
             mirrored_snapshot=mirrored_snapshot,
             consumed_spec=consumed_spec,
             mirror_used=mirrored is not None,
@@ -508,7 +557,10 @@ async def create_session(
             session_work_dir=session_work_dir,
             projected_sources=projected_sources,
             payload_snapshot=payload_snapshot,
-            late_adopter=late_adopter,
+            # A late session would start without its own pin or seed (both end
+            # with this failed start), so a host with per-session state has it
+            # torn down rather than adopted.
+            late_adopter=None if harness_state is not None else late_adopter,
             memory_mode=memory_mode,
             session_key=session_key,
             member_dispatch_mounted=member_mounted,
@@ -533,6 +585,21 @@ async def create_session(
     # id, so an arm inside that already tore it down is not repeated. Shielded
     # so a second cancel cannot skip the host-side teardown.
     try:
+        if harness_state is not None:
+            self._session_harness_states[session_id] = harness_state
+            # Unclaimed from here, not only once the handle is built: a failed or
+            # cancelled pin below must still reach the shielded close.
+            self._unclaimed_new_sessions.add(session_id)
+            # Before the handle exists, so a session the host refuses never
+            # reaches a caller. Its own refusal ends only this session.
+            await self._harness.after_session_start(
+                harness_state,
+                session_id,
+                resp,
+                send_request=lambda method, req: self._send_and_await(method, req, timeout=budget),
+                close_session=lambda: self.terminate_session(session_id),
+                agent_version=self._agent_version,
+            )
         return await self._finish_create_session(
             session_id,
             resp,
@@ -545,6 +612,7 @@ async def create_session(
             budget=budget,
             stub_token=stub_token,
             denied_tools=denied_tools,
+            zero_tools=zero_tools,
             mirrored_snapshot=mirrored_snapshot,
             consumed_spec=consumed_spec,
             mirror_used=mirrored is not None,
@@ -560,10 +628,42 @@ async def create_session(
             request_identity=request_identity,
             launch_snapshots=launch_snapshots,
             withheld_notice=withheld_notice,
+            start_priority=start_priority,
         )
     except BaseException:
         if session_id in self._unclaimed_new_sessions:
             await asyncio.shield(self.terminate_session(session_id))
+        if (
+            harness_state is not None
+            and self._session_harness_states.pop(session_id, None) is not None
+        ):
+            await self._harness.end_session(harness_state)
+        raise
+
+
+async def _create_session_with_harness_state(self: AcpRuntime, **kwargs: Any) -> AcpSessionHandle:
+    """:meth:`create_session` on a host that prepares each session itself.
+
+    The host's :meth:`~HarnessAdapter.prepare_session` runs first, in the
+    session's own working directory, and the start then runs with that state.
+    A start that fails at any step before the session is recorded releases the
+    state here; once recorded, the session's teardown releases it.
+    """
+    agent = await self._source_agent(kwargs["agent"])
+    work_dir = await self._session_work_dir(kwargs["cwd"])
+    state = await self._harness.prepare_session(
+        work_dir=work_dir,
+        agent=agent or self._agent,
+        model=self._model or "",
+        session_key=kwargs["session_key"],
+        channel_id=kwargs["channel_id"],
+        memory_mode=kwargs["memory_mode"],
+    )
+    try:
+        return await self.create_session(**kwargs, harness_state=state)
+    except BaseException:
+        if state not in self._session_harness_states.values():
+            await self._harness.end_session(state)
         raise
 
 
@@ -579,6 +679,7 @@ def _collect_late_start(
     budget: float,
     stub_token: str,
     denied_tools: frozenset[tuple[str, str]],
+    zero_tools: bool = False,
     mirrored_snapshot: Any,
     consumed_spec: Any = None,
     mirror_used: bool = False,
@@ -671,6 +772,7 @@ def _collect_late_start(
                 budget=budget,
                 stub_token=stub_token,
                 denied_tools=denied_tools,
+                zero_tools=zero_tools,
                 mirrored_snapshot=mirrored_snapshot,
                 consumed_spec=consumed_spec,
                 mirror_used=mirror_used,
@@ -739,6 +841,7 @@ async def _finish_create_session(
     budget: float,
     stub_token: str,
     denied_tools: frozenset[tuple[str, str]],
+    zero_tools: bool = False,
     mirrored_snapshot: Any,
     consumed_spec: Any = None,
     mirror_used: bool = False,
@@ -755,6 +858,7 @@ async def _finish_create_session(
     request_identity: str = "",
     launch_snapshots: list[str] | None = None,
     withheld_notice: str = "",
+    start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> AcpSessionHandle:
     """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -763,12 +867,15 @@ async def _finish_create_session(
     staged the frames while this id was unknown: the runtime's in-flight
     scope on the direct path, the collector on an adoption.
     """
-    # Register session queue
+    # Register the session's queue, and its MCP report with it: no await in
+    # between, so a frame that reaches the queue has reached the report.
+    report = self._open_mcp_report(session_id, mcp_servers)
     queue: asyncio.Queue[JsonRpcMessage | None] = asyncio.Queue()
     self._session_queues[session_id] = queue
     self._session_cwds[session_id] = str(session_work_dir)
     for msg in buffered_init:
         queue.put_nowait(msg)
+        self._fold_mcp_frame(session_id, msg)
     # Unclaimed until the handle is returned: every refusal arm below tears
     # the session down, and with no handle out nothing could reopen it.
     self._unclaimed_new_sessions.add(session_id)
@@ -788,6 +895,7 @@ async def _finish_create_session(
         crew_agent=_crew,
         session_key=session_key,
         bound_cwd=str(session_work_dir),
+        mcp_report=report,
     )
     handle.memory_mode = memory_mode
     # The token this session's stubs carry, so a later claim (warm-pool
@@ -798,6 +906,9 @@ async def _finish_create_session(
     # session's permission requests. Empty for a host with no mirror and for a
     # caller-supplied array, and the handle's check is a no-op on empty.
     handle.spec_denied_tools = denied_tools
+    # The same parse's ``"tools": []`` answer: the handle then refuses every
+    # permission request this session raises.
+    handle.spec_zero_tools = zero_tools
     # The spec the array was built from, for a member session's loaded-check.
     handle.consumed_agent_spec = consumed_spec
     handle.mirror_used = mirror_used
@@ -853,10 +964,6 @@ async def _finish_create_session(
     except Exception:
         await self.terminate_session(session_id)
         raise
-    # The roster this session put on the wire. Set BEFORE drain_init so the
-    # report can be read as "of the N we sent, these reported" rather than
-    # as a bare list of names.
-    handle.mcp_session_report().begin_session(mcp_servers)
     self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, mcp_servers, mcp_json)
     # How the session's stdio servers were launched, from the spec and array
     # already in hand: the watchdog's remote_flat scan finds the in-flight
@@ -928,6 +1035,7 @@ async def _finish_create_session(
         # then consumed without being recorded, leaving the panel at a false
         # "no report" for the rest of the session.
         staged_before_switch = handle.queued_frame_count()
+        reported_before_switch = handle.mcp_session_report().fold_mark()
         # Only the frame THIS activation sends may be judged afterwards.
         self._switched_model_record().pop(session_id, None)
         activated_alias = await self._activate_mode_bracketed(
@@ -946,11 +1054,18 @@ async def _finish_create_session(
         # started the session on. If the requested agent differs, those
         # staged registration frames describe the pre-switch roster and
         # must not arm the drain's idle shortcut while the switched-to
-        # agent's own servers may still be booting.
+        # agent's own servers may still be booting. A start mode the host
+        # registered without servers has no roster of its own to go stale
+        # (start_mode_ran_servers), so its staged frames still count.
         _ids, _current, _adv = parse_session_modes(resp)
-        mode_switched = mode_wire != _current and (
-            bool(_current) or self._harness.notification_aliases.mcp_readiness
+        mode_switched = (
+            mode_wire != _current
+            and (bool(_current) or self._harness.notification_aliases.mcp_readiness)
+            and self._harness.start_mode_ran_servers(_current or "")
         )
+        if mode_switched:
+            # What reported before the switch was the previous agent's roster.
+            handle.mcp_session_report().forget_reported(reported_before_switch)
     elif mode_agent:
         _ids, _current, _adv = parse_session_modes(resp)
         await self.terminate_session(session_id)
@@ -978,6 +1093,7 @@ async def _finish_create_session(
             active_agent,
             budget,
             staged_before_switch if mode_switched else 0,
+            start_priority,
         )
     elif self._expect_mcp_reports:
         await handle.drain_init(stale_report_frames=staged_before_switch if mode_switched else 0)
@@ -1001,16 +1117,13 @@ async def _finish_create_session(
             handle.native_context_documents[f"template://{active_agent}#prompt"] = definition[
                 "prompt"
             ]
+            session_head.record(handle.native_context_documents, active_agent, definition["prompt"])
 
     # Each session start forks another agent process under the root, and
     # its MCP servers have just reported, so scan again: the spawn snapshot
-    # predates all of them. Safe to repeat -- see _snapshot_descendants.
-    #
-    # Guarded like every other post-session/new step here: session/new has
-    # already succeeded, so a cancellation inside the scan would leave the
-    # session live in the shared process with no handle returned to anyone.
-    # Only a cancellation can reach this arm; the scan swallows its own
-    # failures.
+    # predates all of them. The pass runs beside the session rather than in
+    # front of the first prompt; every kill waits for it, so nothing signals
+    # by a record it has not written (_record_tree_in_background).
     #
     # Startup is over by this point: session/new has succeeded, which is the
     # proof no sandbox refusal on the way here was fatal. So the startup latch
@@ -1025,11 +1138,7 @@ async def _finish_create_session(
     self._saw_sandbox_init_failure = False
     self._saw_delegate_launch_failure = False
     self._saw_kas_engine_refusal = False
-    try:
-        await self._snapshot_descendants()
-    except BaseException:
-        await self.terminate_session(session_id)
-        raise
+    self._record_tree_in_background()
 
     self._unclaimed_new_sessions.discard(session_id)
     logger.info("Created session %s on runtime PID %d", session_id, self._pid or 0)

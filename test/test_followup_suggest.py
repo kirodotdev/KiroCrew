@@ -15,6 +15,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.chat import api_chat_slot_followup
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 from kiro_crew.validation import (
     MAX_FOLLOWUP_PROMPT,
     MAX_FOLLOWUP_TITLE,
@@ -371,7 +372,7 @@ class TestFollowupEndpoint:
     async def test_credentials_are_redacted_before_broadcast(self):
         slot = _ChatSlot("test")
         state = _mock_state(slot)
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SAMPLE_SLACK_BOT_TOKEN
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
                 "/api/chat/slots/test/followup",
@@ -394,7 +395,7 @@ class TestFollowupEndpoint:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
                 "/api/chat/slots/test/followup",
-                json={"items": [_item(branch="AKIAIOSFODNN7EXAMPLE")]},
+                json={"items": [_item(branch=SAMPLE_SLACK_BOT_TOKEN)]},
             )
             assert resp.status == 200
         payload = state.deliver_ws_owners.call_args[0][1]

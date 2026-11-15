@@ -46,14 +46,21 @@ before the backend that will append is spawned; on such an install the live
 file overshoots the cap by at most one chat session's shell activity. A kiro-cli
 started by hand with the agent spec writes the file too; the next gateway tick
 or chat start on that data home bounds it.
+
+Windows runs spec hooks through ``cmd.exe``, which cannot parse the POSIX
+command, so :func:`platform_spec_hooks` swaps it, when the agent spec is built
+on Windows, for a form that calls the gateway's Python directly and appends the
+same record. POSIX installs keep the shipped command byte for byte.
 """
 
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.jsonl_util import rotate_jsonl_at
 
 logger = logging.getLogger(__name__)
@@ -87,6 +94,61 @@ _warned_at: dict[Path, float] = {}
 def shell_audit_log_path(data_home: Path) -> Path:
     """The audit log's path under *data_home*: the file the hook command names."""
     return data_home / SHELL_AUDIT_LOG_NAME
+
+
+#: How the bundled POSIX hook in ``config/defaults.json`` starts. A command that
+#: starts this way is the shipped one, never a hook a user wrote.
+_POSIX_AUDIT_HOOK_PREFIX = 'f="${KIROCREW_HOME:-$HOME/.kiro/crew}/' + SHELL_AUDIT_LOG_NAME + '"'
+
+#: The same append as the POSIX hook's ``python3`` branch, as Python source for
+#: ``cmd /c``. Windows runs hooks through ``cmd.exe``, which has none of the
+#: POSIX hook's shell syntax, so this form calls Python directly. The source has
+#: no double quote (cmd would end the ``-c`` argument there) and no ``%`` (cmd
+#: would try to expand it), which is why the stamp is built with ``str.format``
+#: instead of ``strftime``. It resolves the data home itself, as the POSIX
+#: ``${KIROCREW_HOME:-$HOME/.kiro/crew}`` does, and keeps the one ``O_APPEND``
+#: write so concurrent calls never interleave a record.
+_WINDOWS_AUDIT_HOOK_SOURCE = (
+    "import os,sys,time;"
+    "h=os.environ.get('KIROCREW_HOME') or os.path.join(os.path.expanduser('~'),'.kiro','crew');"
+    "d=sys.stdin.buffer.read().replace(b'\\r',b'').replace(b'\\n',b'');"
+    "r='{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}Z BASH: '.format(*time.gmtime()[:6]).encode()"
+    "+d+b'\\n';"
+    "fd=os.open(os.path.join(h,'" + SHELL_AUDIT_LOG_NAME + "'),"
+    "os.O_WRONLY|os.O_APPEND|os.O_CREAT|getattr(os,'O_BINARY',0),0o600);"
+    "os.write(fd,r);os.close(fd)"
+)
+
+
+def windows_audit_hook_command(python: str) -> str:
+    """The bundled audit hook as a ``cmd /c`` command line that runs *python*."""
+    return f'"{python}" -I -S -c "{_WINDOWS_AUDIT_HOOK_SOURCE}"'
+
+
+def platform_spec_hooks(hooks: dict) -> dict:
+    """*hooks* with the bundled audit hook in the form this platform's hook shell runs.
+
+    On POSIX *hooks* comes back unchanged, so the shipped command stays byte for
+    byte what ``config/defaults.json`` holds. On Windows each bundled POSIX
+    audit hook is replaced by :func:`windows_audit_hook_command` on the
+    gateway's own interpreter; every other entry is kept as it is.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return hooks
+    out: dict = {}
+    for event, entries in hooks.items():
+        if isinstance(entries, list):
+            entries = [
+                (
+                    {**entry, "command": windows_audit_hook_command(sys.executable)}
+                    if isinstance(entry, dict)
+                    and str(entry.get("command", "")).startswith(_POSIX_AUDIT_HOOK_PREFIX)
+                    else entry
+                )
+                for entry in entries
+            ]
+        out[event] = entries
+    return out
 
 
 def rotate_shell_audit_log(data_home: Path) -> bool:

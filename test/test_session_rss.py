@@ -294,6 +294,7 @@ class TestWindowsRssPrimitives:
             assert "_windows_process_parent_map" not in inspect.getsource(function)
 
 
+@pytest.mark.usefixtures("rss_runtimes_read_under_ceiling")
 class TestRssThresholdCheck:
     @pytest.fixture(autouse=True)
     def _on_the_proc_route(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -893,6 +894,343 @@ class TestRssThresholdCheck:
         assert [hold.recycles for _key, hold in held] == [3]
 
 
+class TestRssFootprint:
+    """A runtime the watchdog finds already over the ceiling is held, not recycled.
+
+    Each test drives ``_rss_threshold_check`` over a list of readings, one tick
+    per reading on an installed clock, and counts the resets.
+    """
+
+    CEILING = 4096
+    PID = 4242
+    #: Seconds between two ticks: the watchdog's interval, to the second.
+    TICK_SECS = 300.0
+
+    @pytest.fixture(autouse=True)
+    def _on_the_proc_route(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
+        _floor_monkeypatch.setattr(session.platform_compat, "IS_WINDOWS", False)
+
+    def _watched(self, keys: tuple[str, ...] = ("dashboard:x",)):
+        """A manager with idle sessions on one runtime, a clock and the notice seams."""
+        manager = _make_manager(rss_max_mb=self.CEILING)
+        for key in keys:
+            manager._sessions[key] = _session_stub(busy=False)
+        manager.get_pid = MagicMock(return_value=self.PID)
+        manager.reset = AsyncMock(return_value=True)
+        self.clock = [5000.0]
+        self.cleanup = TestRssThresholdCheck._clocked(manager, self.clock)
+        self.recycled = AsyncMock()
+        manager.set_recycle_callback(self.recycled)
+        self.held: list = []
+        manager.on_rss_hold = lambda key, hold: self.held.append((key, hold))
+        return manager
+
+    async def _ticks(self, manager, readings: list[int]) -> None:
+        """Run one tick per reading, ``TICK_SECS`` apart, the tree reading *readings* in turn."""
+        rss = [0]
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", side_effect=lambda *_: rss[0]),
+        ):
+            for reading in readings:
+                rss[0] = reading
+                await manager._rss_threshold_check()
+                self.clock[0] += self.TICK_SECS
+
+    async def _two_readings(self, manager, first: int, gap: float, second: int) -> None:
+        """Read the runtime at *first*, then *gap* seconds later at *second*."""
+        await self._ticks(manager, [first])
+        self.clock[0] += gap - self.TICK_SECS  # ``_ticks`` already moved it one tick on
+        await self._ticks(manager, [second])
+
+    def _footprint(self, pid: int = PID):
+        return self.cleanup.state.rss_footprints.get(pid)
+
+    @pytest.mark.asyncio
+    async def test_a_runtime_found_over_the_ceiling_is_held_without_a_recycle(self, caplog) -> None:
+        """A 64-server chat reads about 7 GB from its first tick. That is its size,
+        so no tick recycles it, the chat gets no notice, and the log names the
+        figure it is recycled past once."""
+        from kiro_crew.session_rss_rebound import RssFootprint
+
+        manager = self._watched()
+        with caplog.at_level("INFO"):
+            await self._ticks(manager, [7000] * 6)
+        manager.reset.assert_not_awaited()
+        assert self.held == []
+        self.recycled.assert_not_awaited()
+        assert self._footprint() == RssFootprint(5000.0, seen_mb=7000, held_mb=7000, settled=True)
+        footprint_lines = [
+            r.getMessage() for r in caplog.records if r.getMessage().startswith("RSS footprint")
+        ]
+        assert footprint_lines == [
+            "RSS footprint: session dashboard:x runtime 4242 tree rss=7000MB is above "
+            "4096MB on its first reading; its footprint is taken on the next tick",
+            "RSS footprint: session dashboard:x runtime 4242 tree rss=7000MB settled "
+            "above 4096MB without having been read under it; that is this workload's "
+            "own size, so it is left running unless it passes 14000MB",
+        ]
+
+    @pytest.mark.parametrize(
+        ("readings", "held_mb"),
+        [
+            # Read while its servers were still starting: 5.8 GB, then the steady 10.6.
+            ([5772, 10600, 11423, 11423], 10600),
+            # Read under the ceiling before its servers were up, then at its size.
+            ([3000, 7000, 7600, 7000], 7000),
+            # A start-up peak that settles lower is held at the lower figure.
+            ([7600, 7000, 7000], 7000),
+        ],
+        ids=["mid-start-over", "mid-start-under", "start-peak"],
+    )
+    @pytest.mark.asyncio
+    async def test_the_footprint_is_the_second_reading(self, readings, held_mb) -> None:
+        manager = self._watched()
+        await self._ticks(manager, readings)
+        manager.reset.assert_not_awaited()
+        footprint = self._footprint()
+        assert (footprint.held_mb, footprint.settled) == (held_mb, True)
+
+    @pytest.mark.asyncio
+    async def test_a_held_runtime_is_recycled_once_it_passes_twice_its_footprint(self) -> None:
+        manager = self._watched()
+        await self._ticks(manager, [7000, 7000, 14000])  # exactly twice: still held
+        manager.reset.assert_not_awaited()
+        await self._ticks(manager, [14001])
+        manager.reset.assert_awaited_once()
+        assert self.recycled.await_args.kwargs["reason"] == "memory limit (14001MB)"
+        assert self.held == []
+
+    @pytest.mark.asyncio
+    async def test_an_outgrown_hold_does_not_come_back_when_the_recycle_is_declined(self) -> None:
+        """A guard declining the recycle leaves the process running. The next tick
+        must try again at the ceiling, not re-hold it at its grown size."""
+        manager = self._watched()
+        manager.reset = AsyncMock(side_effect=[False, True])
+        await self._ticks(manager, [7000, 7000, 14001, 9000])
+        assert manager.reset.await_count == 2
+        assert self._footprint().held_mb == 0
+
+    @pytest.mark.parametrize(
+        "readings",
+        [[1500, 1500, 4097], [4500, 3300, 4097]],
+        ids=["read-under-twice", "start-peak-then-under"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_runtime_that_settled_under_the_ceiling_is_recycled_on_its_first_crossing(
+        self, readings
+    ) -> None:
+        manager = self._watched()
+        await self._ticks(manager, readings[:-1])
+        manager.reset.assert_not_awaited()
+        await self._ticks(manager, readings[-1:])
+        manager.reset.assert_awaited_once()
+        assert self.recycled.await_args.kwargs["reason"] == "memory limit (4097MB)"
+
+    @pytest.mark.asyncio
+    async def test_exactly_the_ceiling_on_the_second_reading_is_not_a_hold(self) -> None:
+        manager = self._watched()
+        await self._ticks(manager, [4096, 4096])
+        assert self._footprint().held_mb == 0
+        await self._ticks(manager, [4097])
+        manager.reset.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        ("readings", "settled_after"),
+        [([0, 0, 7000, 7000], 4), ([1500, 0, 7000], 3)],
+        ids=["unreadable-first", "unreadable-second"],
+    )
+    @pytest.mark.asyncio
+    async def test_an_unreadable_tree_settles_nothing(self, readings, settled_after) -> None:
+        """A tree that reads 0 was not read. Counting it as a reading under the
+        ceiling would make the 7 GB that follows look like growth."""
+        manager = self._watched()
+        await self._ticks(manager, readings[: settled_after - 1])
+        footprint = self._footprint()
+        assert footprint is None or not footprint.settled
+        await self._ticks(manager, readings[settled_after - 1 :])
+        manager.reset.assert_not_awaited()
+        assert self._footprint().held_mb == 7000
+
+    @pytest.mark.asyncio
+    async def test_sessions_sharing_a_runtime_move_its_footprint_once_per_tick(self) -> None:
+        """Two sessions on one runtime are judged in one tick on one reading. The
+        second must not count as the runtime's second reading."""
+        manager = self._watched(keys=("dashboard:a", "dashboard:b"))
+        await self._ticks(manager, [5772])
+        assert self._footprint().settled is False
+        await self._ticks(manager, [10600, 11423])
+        manager.reset.assert_not_awaited()
+        assert self._footprint().held_mb == 10600
+
+    @pytest.mark.parametrize(
+        ("first", "idle_again_after", "second", "recycles", "held_at_mb"),
+        [
+            # Read under the ceiling, then busy for an hour: the next idle reading is
+            # growth the watchdog could not see, not the runtime's start-up size.
+            (1500, 3600.0, 20000, 1, 0),
+            # The gaps the loop really leaves: a tick starts one interval after the
+            # last one ended, so readings come 302 s apart, not 300. The next tick.
+            (3000, 302.0, 7000, 0, 7000),
+            # Busy at one tick only: the reading after it is still start-up.
+            (3000, 604.0, 7000, 0, 7000),
+            # Busy at two ticks: read under the ceiling too long ago.
+            (3000, 906.0, 7000, 1, 0),
+            # Already over the ceiling when first read: held at the second reading
+            # however late it comes. No reading tells its size by design from growth.
+            (5000, 3600.0, 9000, 0, 9000),
+        ],
+        ids=[
+            "under-then-an-hour",
+            "under-then-the-next-tick",
+            "under-then-one-busy-tick",
+            "under-then-two-busy-ticks",
+            "over-late",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_first_reading_under_the_ceiling_is_start_up_only_while_recent(
+        self, first, idle_again_after, second, recycles, held_at_mb
+    ) -> None:
+        manager = self._watched()
+        await self._two_readings(manager, first, idle_again_after, second)
+        assert manager.reset.await_count == recycles
+        assert self._footprint().held_mb == held_at_mb
+        assert self.held == []
+
+    @pytest.mark.parametrize("interval", [300.0, 100.0], ids=["as-shipped", "a-shorter-tick"])
+    @pytest.mark.asyncio
+    async def test_the_start_up_window_is_counted_in_the_watchdogs_own_ticks(
+        self, interval
+    ) -> None:
+        """The bound is two and a half of the loop's longest tick, read from the
+        loop's own constant, so it moves when that interval does."""
+        from kiro_crew.session_cleanup import SessionCleanup
+        from kiro_crew.session_rss_rebound import RSS_FOOTPRINT_SETTLE_TICKS
+
+        window = RSS_FOOTPRINT_SETTLE_TICKS * interval
+        with patch.object(SessionCleanup, "MAX_TICK_INTERVAL_SECS", interval):
+            for gap, recycles in ((2 * interval, 0), (window, 0), (window + 1.0, 1)):
+                manager = self._watched()
+                await self._two_readings(manager, 3000, gap, 7000)
+                assert manager.reset.await_count == recycles, gap
+
+    @pytest.mark.asyncio
+    async def test_the_hold_line_names_a_first_reading_under_the_ceiling(self, caplog) -> None:
+        """A runtime first read under the ceiling WAS read under it, so its hold
+        line says when and at what size instead."""
+        manager = self._watched()
+        with caplog.at_level("WARNING"):
+            await self._two_readings(manager, 3000, 604.0, 7000)
+        assert [r.getMessage() for r in caplog.records if "RSS footprint" in r.getMessage()] == [
+            "RSS footprint: session dashboard:x runtime 4242 tree rss=7000MB settled "
+            "above 4096MB 604s after a first reading of 3000MB, which counts as its "
+            "start-up; that is this workload's own size, so it is left running unless "
+            "it passes 14000MB"
+        ]
+
+    def _fresh_pid_after_each_recycle(self, manager) -> None:
+        """Give *manager* what a recycle does: the session's next process is a new pid."""
+        pids = [self.PID]
+
+        async def reset(*_args, **_kwargs) -> bool:
+            pids[0] += 1
+            return True
+
+        manager.reset = AsyncMock(side_effect=reset)
+        manager.get_pid = MagicMock(side_effect=lambda _key: pids[0])
+
+    @pytest.mark.asyncio
+    async def test_the_fresh_process_after_a_recycle_takes_no_footprint(self) -> None:
+        """A recycled session's next process has a new pid. Found straight back
+        over the ceiling it is a rebound and is recycled, not held in silence."""
+        manager = self._watched()
+        self._fresh_pid_after_each_recycle(manager)
+        await self._ticks(manager, [1500, 1500, 5000])
+        manager.reset.assert_awaited_once()
+        await self._ticks(manager, [5000])
+        assert manager.reset.await_count == 2
+        assert self.recycled.await_args.kwargs["reason"] == (
+            "memory limit (5000MB), over session.watchdog_rss_max_mb of 4096MB "
+            "again since its last recycle"
+        )
+        # Recorded as a runtime the ceiling judges, never as one held at its size.
+        assert [f.held_mb for f in self.cleanup.state.rss_footprints.values()] == [0]
+        assert self.held == []
+
+    @pytest.mark.parametrize(
+        ("readings", "recycles", "hold_notices", "held_at_mb"),
+        [
+            # A many-server chat the watchdog never recycled: held at its size, no notice.
+            ([7000] * 6, 0, [], [7000]),
+            # The same chat once it passed twice its size: recycled, and each fresh
+            # process is then a rebound, so two more recycles and a hold with its notice.
+            ([7000, 7000, 14001, 7000, 7000, 7000, 7000], 3, [3], []),
+            # A small chat that grew over the ceiling and comes straight back over it.
+            ([1500, 1500, 5000, 5000, 5000, 5000, 5000], 3, [3], []),
+            # A first turn made the chat large: over the ceiling on both readings and
+            # never recycled, so it is held at that size, with no notice.
+            ([5000, 5000, 9000, 10000], 0, [], [5000]),
+            # And stopped once it passes twice that size.
+            ([5000, 5000, 10001], 1, [], []),
+        ],
+        ids=[
+            "many-servers",
+            "many-servers-after-a-recycle",
+            "grew-and-came-back",
+            "large-first-turn",
+            "large-first-turn-past-twice",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_which_chats_are_held_and_which_are_recycled(
+        self, readings, recycles, hold_notices, held_at_mb
+    ) -> None:
+        """One tick per reading; a recycle starts a fresh process on the next tick.
+
+        ``hold_notices`` is the recycle count each chat notice names: the footprint
+        hold tells the chat nothing, the hold after three recycles in a row does.
+        """
+        manager = self._watched()
+        self._fresh_pid_after_each_recycle(manager)
+        await self._ticks(manager, readings)
+        assert manager.reset.await_count == recycles
+        assert [hold.recycles for _key, hold in self.held] == hold_notices
+        footprints = self.cleanup.state.rss_footprints.values()
+        assert [f.held_mb for f in footprints if f.held_mb] == held_at_mb
+
+    @pytest.mark.asyncio
+    async def test_a_runtime_first_read_under_a_recycle_record_never_takes_a_footprint(
+        self,
+    ) -> None:
+        """Three recycles, then the hold with its notice. A day later the record
+        ends and the same process is still over the ceiling: it is recycled, as it
+        was before footprints existed, not held in silence at its grown size."""
+        from kiro_crew.session_rss_rebound import RSS_REBOUND_WINDOW_SECS
+
+        manager = self._watched()
+        self._fresh_pid_after_each_recycle(manager)
+        await self._ticks(manager, [1500, 1500, 5000, 5000, 5000, 5000, 9000])
+        assert manager.reset.await_count == 3
+        assert [hold.recycles for _key, hold in self.held] == [3]
+        self.clock[0] += RSS_REBOUND_WINDOW_SECS
+        await self._ticks(manager, [9000])
+        assert manager.reset.await_count == 4
+        assert self.recycled.await_args.kwargs["reason"] == "memory limit (9000MB)"
+        assert [hold.recycles for _key, hold in self.held] == [3]
+
+
+class TestRssFootprintAtTheRealTickSpacing(TestRssFootprint):
+    """Every footprint case again with the clock stepped as the loop steps it.
+
+    A tick starts one interval after the last one ended, so two readings are the
+    interval plus the tick's own run time apart: 302 s measured on Linux. A bound
+    that is a whole number of intervals passes at 300.0 and fails in the loop.
+    """
+
+    TICK_SECS = 302.0
+
+
 class TestRssThresholdSpareRuntime:
     """The RSS tick measures the warm-pool spare runtime no session owns.
 
@@ -1034,6 +1372,7 @@ class TestRssThresholdSpareRuntime:
         assert rt.call_count == 1
         manager._discard_pool_provider.assert_awaited_once()
 
+    @pytest.mark.usefixtures("rss_runtimes_read_under_ceiling")
     @pytest.mark.asyncio
     async def test_sessions_and_spare_both_recycle_in_one_tick(self) -> None:
         # The two passes are independent: an over-ceiling session resets and an

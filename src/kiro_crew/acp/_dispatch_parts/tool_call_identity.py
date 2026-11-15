@@ -15,7 +15,11 @@ import re
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
-from kiro_crew.acp.harness_tool_names import MAX_HARNESS_TOOL_NAME_LEN
+from kiro_crew.acp.harness_tool_names import (
+    CODEX_TOOL_IDS_BY_KIRO_TOOL,
+    MAX_HARNESS_TOOL_NAME_LEN,
+)
+from kiro_crew.acp_backends import ACP_BACKEND_CODEX
 from kiro_crew.mcp_gateway.tool_surface import mcp_identity_name, mcp_identity_unreadable
 
 _ACP_SHELL_KIND = "execute"
@@ -241,6 +245,59 @@ def harness_tool_name(update: dict[str, Any]) -> str:
     ):
         return ""
     return name
+
+
+#: codex-acp's ``rawInput.type`` on a hosted web search (``WebSearchReporter``).
+_CODEX_WEB_SEARCH_INPUT_TYPE = "webSearch"
+
+
+def codex_tool_name(update: dict[str, Any]) -> str:
+    """The codex model tool a codex-acp ``tool_call`` frame is, or "".
+
+    Read only from fields codex-acp writes, never from the title, which is a
+    command (``make``) or prose (``Editing files``). Measured on codex-acp 2.3.0:
+
+    * an MCP call (``_meta.is_mcp_tool_call``) is "": its ``@server/tool``
+      identity already names it;
+    * a top-level ``name`` codex's table knows (``exec_command``, ``write_stdin``)
+      is that name;
+    * kind ``edit`` is ``apply_patch``: only codex's file-change reporter sends it;
+    * kind ``search`` whose ``rawInput.type`` is ``webSearch`` is ``web_search``;
+    * kind ``read`` or ``search`` with no ``rawInput`` is ``exec_command``: codex
+      has no read or search tool, so this is a shell command it parsed
+      (``cat``, ``grep``, ``ls``);
+    * kind ``execute`` is ``exec_command``.
+
+    Any other frame is "".
+    """
+    meta = update.get("_meta")
+    if isinstance(meta, dict) and _CODEX_MCP_TOOL_CALL_MARKER in meta:
+        return ""
+    name = update.get("name")
+    if isinstance(name, str) and any(name in ids for ids in CODEX_TOOL_IDS_BY_KIRO_TOOL.values()):
+        return name
+    kind = update.get("kind")
+    raw = update.get("rawInput")
+    if kind == "edit":
+        return "apply_patch"
+    if kind == "search" and isinstance(raw, dict):
+        return "web_search" if raw.get("type") == _CODEX_WEB_SEARCH_INPUT_TYPE else ""
+    if kind in ("read", "search") and raw is None:
+        return "exec_command"
+    if kind == _ACP_SHELL_KIND:
+        return "exec_command"
+    return ""
+
+
+def stated_harness_tool_name(backend: str, update: dict[str, Any]) -> str:
+    """The tool name *backend*'s ``tool_call`` frame states, for its name cache.
+
+    codex is read by :func:`codex_tool_name`, which never reads the title; every
+    other backend by :func:`harness_tool_name`.
+    """
+    if backend == ACP_BACKEND_CODEX:
+        return codex_tool_name(update)
+    return harness_tool_name(update)
 
 
 class _MetaIdentityChannel(NamedTuple):

@@ -66,9 +66,57 @@ class TestOtherStacksKeepTheCarveOut:
             assert f"{lane} (only runs on PRs to main)" in skipped
 
     def test_a_native_stack_on_a_release_trunk_keeps_the_carve_out(self, runner: Runner):
+        # A release branch cut before its ci.yml listed `release/**`.
         _mid_stack(runner, "release/1.2")
         proc, outputs = runner.evaluate()
         assert proc.returncode == 0, proc.stderr
         skipped = _bucket(_lane_log(proc), "skipped")
         for lane in BRANCH_FILTERED:
             assert f"{lane} (only runs on PRs to main)" in skipped
+
+
+class TestAReleaseBaseWhoseCiListsIt:
+    """A release branch whose own ci.yml lists `release/**` runs the lanes."""
+
+    def _into_release(self, runner: Runner) -> None:
+        runner.env["BASE_REF"] = "release/1.2"
+        runner.env["CI_ON_RELEASE"] = "true"
+
+    def test_red_ci_on_a_backport_pr_blocks(self, runner: Runner):
+        self._into_release(runner)
+        _red_ci(runner)
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "failure"
+        assert outputs["label"] == "readiness: action required"
+
+    def test_the_branch_filtered_lanes_are_evaluated(self, runner: Runner):
+        self._into_release(runner)
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "success"
+        log = _lane_log(proc)
+        for lane in BRANCH_FILTERED:
+            assert lane in _bucket(log, "passed")
+        # CodeQL default-setup still scans only PRs to the default branch.
+        assert "CodeQL (only runs on PRs to main)" in _bucket(log, "skipped")
+
+    def test_the_flag_counts_only_for_a_release_base(self, runner: Runner):
+        # A stray flag must not pull a hand-made stack back into the lanes.
+        _mid_stack(runner, "")
+        runner.env["CI_ON_RELEASE"] = "true"
+        _red_ci(runner)
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "success"
+
+
+def test_readiness_reads_the_exact_trigger_line_ci_yml_carries() -> None:
+    # The context step greps the base branch's ci.yml for this literal line, so
+    # a reformatted trigger in ci.yml would silently turn the lanes off again.
+    root = Path(__file__).resolve().parents[1]
+    line = '    branches: [main, "release/**"]'
+    ci = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    readiness = (root / ".github" / "workflows" / "pr-readiness.yml").read_text(encoding="utf-8")
+    assert ci.splitlines().count(line) == 2
+    assert f"grep -qxF '{line}'" in readiness

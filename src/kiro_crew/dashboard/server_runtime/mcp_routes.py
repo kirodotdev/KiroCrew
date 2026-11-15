@@ -142,11 +142,14 @@ def _deferred_instances(handler_name: str) -> Callable:
 
 def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
-    # Both entrypoints register this table, so both start reading the Ultra Mode
+    # Both entrypoints register this table, so both start reading the conductor mode
     # pause file off-loop at startup; the hook returns at once.
-    from kiro_crew import crew_pause
+    from kiro_crew import crew_pause, mcp_listing_gateway
 
     app.on_startup.append(crew_pause.startup_preload)
+    # The same shape: the listing relay's code stamp is read off-loop at startup, and
+    # until it is in, a server that asks builds its own list.
+    app.on_startup.append(mcp_listing_gateway.startup_stamp)
     app.router.add_post("/api/spawn", handlers.api_spawn)
     app.router.add_post("/api/spawn/lost", handlers.api_spawn_lost)
     app.router.add_post("/api/spawn/mark-collected", handlers.api_spawn_mark_collected)
@@ -180,6 +183,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/work-ledger", _deferred_work_ledger("api_work_ledger_get"))
     app.router.add_post("/api/work-ledger/record", _deferred_work_ledger("api_work_ledger_record"))
     app.router.add_get("/api/work-ledger/brief", _deferred_work_ledger("api_work_brief"))
+    app.router.add_get(
+        "/api/work-ledger/accept-eval", _deferred_work_ledger("api_work_ledger_accept_eval")
+    )
     app.router.add_post("/api/work-ledger/report", _deferred_work_ledger("api_work_report"))
     app.router.add_post(
         "/api/work-ledger/rebuild", _deferred_work_ledger("api_work_ledger_rebuild")
@@ -466,7 +472,7 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/chat/slots/{slot}/crew-workers/{worker}/recap",
         _deferred("crew_worker_recap", "api_crew_worker_recap"),
     )
-    # Ultra Mode "Pause all" / "Resume all": the Stop and Continue mechanisms over
+    # Conductor mode "Pause all" / "Resume all": the Stop and Continue mechanisms over
     # the root's whole crew, under the same owner-only, no-app gate.
     app.router.add_post(
         "/api/chat/slots/{slot}/crew-workers/pause", _deferred("crew_pause", "api_crew_pause")
@@ -512,8 +518,8 @@ def _register_mcp_routes(app: web.Application) -> None:
     # prefix covers it.
     app.router.add_post("/api/notifications/agent/dismiss", handlers.api_notification_agent_dismiss)
     # Session control. Registered here so the headless --slack-only server
-    # serves the same MCP surface as the dashboard; all three are on
-    # _STRICT_INTERNAL_API_PATHS, which test_session_control_routes_are_strict
+    # serves the same MCP surface as the dashboard; every one is on
+    # _STRICT_INTERNAL_API_PATHS, which test_session_control_routes_are_strict_internal
     # pins by deriving the route set from the router rather than a hand-copied list.
     app.router.add_post(
         "/api/session-control/create", _deferred("session_control", "api_session_control_create")
@@ -542,6 +548,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/session-control/set-color",
         _deferred("session_control", "api_session_control_set_color"),
+    )
+    app.router.add_post(
+        "/api/session-control/set-note",
+        _deferred("session_control", "api_session_control_set_note"),
     )
     app.router.add_post(
         "/api/session-control/reload",
@@ -604,6 +614,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/crew-sessions/search", _deferred_instances("api_crew_sessions_search"))
     app.router.add_get("/api/crew-sessions/list", _deferred_instances("api_crew_sessions_list"))
     app.router.add_get("/api/crew-sessions/read", _deferred_instances("api_crew_sessions_read"))
+    app.router.add_post(
+        "/api/session-control/queue", _deferred("session_control", "api_session_control_queue")
+    )
     # Settings -> Browser on Browser Harness (handlers/browser_harness_status.py):
     # the engine's install state and connection, the install job, a bounded
     # connect test and a disconnect. Owner cookie/token only; every one of them

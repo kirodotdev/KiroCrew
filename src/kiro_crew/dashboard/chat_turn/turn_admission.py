@@ -42,6 +42,7 @@ if TYPE_CHECKING:
         invalidate_stale_kas_session,
         logger,
         publish_turn_identity,
+        read_beside_claim,
         record_activity,
         record_agent_selection,
         refresh_materialized_agents,
@@ -83,6 +84,7 @@ if TYPE_CHECKING:
         _drain_session_init_oauth_requests,
         _notice_unresolved_control_plane,
         _publish_session_mcp_report,
+        _watch_session_mcp_report,
     )
     from kiro_crew.dashboard.chat_turn.model_fallback import (
         _app_allocation_kwargs,
@@ -328,11 +330,14 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # restore/open/rebuild work after READY. Wait at the one dashboard turn
     # admission seam before expiring controls, resolving bindings,
     # allocating a provider or writing metadata. The turn's grace period
-    # is bounded; timeout and Stop leave the shared worker alive and
-    # retain queued intent until a later admitted turn.
+    # is unbounded: the turn runs once preparation finishes, and is refused only
+    # when preparation failed or stopped. Stop leaves the shared worker alive and
+    # retains queued intent until a later admitted turn.
     from kiro_crew.memory_startup import wait_for_memory_preparation
 
-    await wait_for_memory_preparation(lambda: getattr(state, "memory_startup_task", None))
+    await wait_for_memory_preparation(
+        lambda: getattr(state, "memory_startup_task", None), bounded=False
+    )
     turn_timing.mark("memory_ready")
     _memory_preparation_admitted = True
     turn._memory_preparation_admitted = _memory_preparation_admitted
@@ -375,7 +380,10 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # inside it still reaches _run_chat's finally with something to retire.
     _local_turn_marker_generation = _local_turn_generation_for(slot)
     turn._local_turn_marker_generation = _local_turn_marker_generation
-    await _begin_local_turn_marker(state, slot, _local_turn_marker_generation)
+    # The row the dispatcher started this turn from, when it handed one over.
+    await _begin_local_turn_marker(
+        state, slot, _local_turn_marker_generation, getattr(turn, "_current_message", None)
+    )
 
     # Resolve agent bindings early so we pass the correct kiro-cli
     # agent name (e.g. "kirocrew") instead of the Kiro Crew slot name
@@ -867,30 +875,33 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             state, slot, force=True, expected_history_key=_pick_history_key
         ):
             slot._dirty = True
-    # An inheriting slot (no slot pin, no crew pin: only then is
-    # ``default_model`` non-empty) follows a change to the inherited default.
-    # A settings write rebuilds the factory but leaves live sessions alone, so
-    # the session this slot already holds can still be on the previous
-    # default. Its allocation stamp says which model it was started on; when
-    # that differs from what the slot inherits now, queue the same reset a
-    # model pick queues. The consume below runs it with ``skip_if_busy``, so a
-    # turn another surface is streaming on the session is never cut: the flag
-    # stays armed and lands at a later consume. An empty stamp is unknown, not
-    # stale, and is left alone.
-    if default_model:
+    # A slot with no pick of its own follows a change to what it inherits: the
+    # Bot's model when its Bot pins one, else the default (``default_model``,
+    # non-empty only then). A settings write rebuilds the factory but leaves
+    # live sessions alone, so the session this slot already holds can still be
+    # on the previous model. Its allocation stamp says which model it was
+    # started on; when that differs from what the slot inherits now, queue the
+    # same reset a model pick queues. The consume below runs it with
+    # ``skip_if_busy``, so a turn another surface is streaming on the session is
+    # never cut: the flag stays armed and lands at a later consume. An empty
+    # stamp is unknown, not stale, and is left alone. An engine fallback moves
+    # the live session without moving its stamp, so it triggers nothing here:
+    # the session stays on the engine's model until its next fresh start.
+    _inherited = default_model or ("" if slot.model else agent_model)
+    if _inherited:
         _live_key = effective_session_key(slot)
         _stamped = state.sessions.allocation_requested_model(_live_key)
         if (
             isinstance(_stamped, str)
             and _stamped
-            and _stamped != default_model
+            and _stamped != _inherited
             and state.sessions.get_provider(_live_key) is not None
         ):
             logger.info(
                 "Slot %s inherits %s but its live session started on %s; "
-                "resetting it onto the new default",
+                "resetting it onto the new model",
                 slot.key,
-                default_model,
+                _inherited,
                 _stamped,
             )
             arm_model_switch_reset(state, slot)
@@ -1021,6 +1032,11 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             execution_context=execution_context,
             prefetch_memory=True,
         )
+    if _starts_fresh and not is_slash:
+        # This turn builds a session-start context once its claim ends. A re-walk
+        # of the chat's skill scope that is due starts now, beside the claim, and
+        # not beside that build, when the session's MCP servers are starting too.
+        read_beside_claim(state, selected_binding[1] or "")
     # The crew log this slot was last writing to, read BEFORE allocation
     # publishes the successor's id over it. A slot outlives its ACP session, so
     # when the session below cold-starts under a NEW id the crew log gains a new
@@ -1462,7 +1478,6 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         resumed=resumed,
         _is_refusal_retry_turn=_is_refusal_retry_turn,
         _synthetic_recovery_turn=_synthetic_recovery_turn,
-        crew_model=agent_model,
     )
     # Append-only the session's log (flag-gated, fail-soft). Written HERE rather
     # than at session acquisition, because `model` has to name what the session
@@ -1621,6 +1636,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # a failed session init, so it is best-effort.
     try:
         _publish_session_mcp_report(state, slot, client)
+        _watch_session_mcp_report(state, slot, client)
     except Exception:  # pragma: no cover
         logger.warning("Failed to publish the session MCP report", exc_info=True)
 

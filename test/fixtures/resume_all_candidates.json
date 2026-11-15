@@ -17,7 +17,7 @@
     "hands the same rows to the chat page's surface filter and the sidebar, and",
     "checks `expected` against the count it renders.",
     "",
-    "Facts: transcript (interrupted / start_failed / finished / empty), running",
+    "Facts: transcript (interrupted / interrupted_long_ago / start_failed / finished / empty), running",
     "(the slot's own turn task is live), reserved (a turn admission is held but",
     "no turn has started), linked_turn_running (a channel-path turn holds the",
     "linked session), subagents_running, under_construction, executor, mode,",
@@ -36,42 +36,47 @@
         {
           "key": "cut-short",
           "facts": {"transcript": "interrupted"},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "local"}
+        },
+        {
+          "key": "cut-short-long-ago",
+          "facts": {"transcript": "interrupted_long_ago"},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": true, "subagents_running": false, "executor": "local"}
         },
         {
           "key": "start-failed",
           "facts": {"transcript": "start_failed"},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "local"}
         },
         {
           "key": "finished",
           "facts": {"transcript": "finished"},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": false, "subagents_running": false, "executor": "local"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": false, "interrupted_stale": false, "subagents_running": false, "executor": "local"}
         },
         {
           "key": "empty",
           "facts": {"transcript": "empty"},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": false, "subagents_running": false, "executor": "local"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": false, "interrupted_stale": false, "subagents_running": false, "executor": "local"}
         },
         {
           "key": "busy",
           "facts": {"transcript": "interrupted", "running": true},
-          "row": {"mode": "", "surface": "", "running": true, "interrupted": false, "subagents_running": false, "executor": "local"}
+          "row": {"mode": "", "surface": "", "running": true, "interrupted": false, "interrupted_stale": false, "subagents_running": false, "executor": "local"}
         },
         {
           "key": "reserved",
           "facts": {"transcript": "interrupted", "reserved": true},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "local"}
         },
         {
           "key": "channel-turn",
           "facts": {"transcript": "interrupted", "linked_turn_running": true},
-          "row": {"mode": "", "surface": "", "running": true, "interrupted": false, "subagents_running": false, "executor": "local"}
+          "row": {"mode": "", "surface": "", "running": true, "interrupted": false, "interrupted_stale": false, "subagents_running": false, "executor": "local"}
         },
         {
           "key": "children",
           "facts": {"transcript": "interrupted", "subagents_running": true},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": true, "executor": "local"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": true, "executor": "local"}
         },
         {
           "key": "building",
@@ -81,17 +86,17 @@
         {
           "key": "archive",
           "facts": {"transcript": "interrupted", "executor": "remote"},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "remote"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "remote"}
         },
         {
           "key": "dm",
           "facts": {"transcript": "interrupted", "mode": "member"},
-          "row": {"mode": "member", "surface": "member", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+          "row": {"mode": "member", "surface": "member", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "local"}
         },
         {
           "key": "autopilot",
           "facts": {"transcript": "interrupted", "mode": "orchestrator"},
-          "row": {"mode": "orchestrator", "surface": "orchestrator", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+          "row": {"mode": "orchestrator", "surface": "orchestrator", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "local"}
         }
       ],
       "expected": ["cut-short", "start-failed", "reserved", "autopilot"]
@@ -103,22 +108,22 @@
         {
           "key": "conductor",
           "facts": {"transcript": "interrupted", "agent": "kirocrew-conductor"},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "local"}
         },
         {
           "key": "worker",
           "facts": {"transcript": "interrupted", "created_by": "conductor"},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local", "crew_root": "conductor"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "local", "crew_root": "conductor"}
         },
         {
           "key": "grandchild",
           "facts": {"transcript": "interrupted", "created_by": "worker"},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local", "crew_root": "conductor"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "local", "crew_root": "conductor"}
         },
         {
           "key": "plain",
           "facts": {"transcript": "interrupted"},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "local"}
         }
       ],
       "expected": ["conductor", "plain"]
@@ -130,22 +135,22 @@
         {
           "key": "conductor",
           "facts": {"transcript": "interrupted", "agent": "kirocrew-conductor"},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "local"}
         },
         {
           "key": "worker",
           "facts": {"transcript": "interrupted", "created_by": "conductor"},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local", "crew_root": "conductor"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "local", "crew_root": "conductor"}
         },
         {
           "key": "grandchild",
           "facts": {"transcript": "interrupted", "created_by": "worker"},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local", "crew_root": "conductor"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "local", "crew_root": "conductor"}
         },
         {
           "key": "plain",
           "facts": {"transcript": "interrupted"},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "local"}
         }
       ],
       "expected": ["conductor", "worker", "grandchild", "plain"]
@@ -162,7 +167,7 @@
         {
           "key": "worker",
           "facts": {"transcript": "interrupted", "created_by": "conductor"},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local", "crew_root": "conductor"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "local", "crew_root": "conductor"}
         }
       ],
       "expected": ["worker"]
@@ -173,22 +178,22 @@
         {
           "key": "busy",
           "facts": {"transcript": "interrupted", "running": true},
-          "row": {"mode": "", "surface": "", "running": true, "interrupted": false, "subagents_running": false, "executor": "local"}
+          "row": {"mode": "", "surface": "", "running": true, "interrupted": false, "interrupted_stale": false, "subagents_running": false, "executor": "local"}
         },
         {
           "key": "children",
           "facts": {"transcript": "interrupted", "subagents_running": true},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": true, "executor": "local"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": true, "executor": "local"}
         },
         {
           "key": "dm",
           "facts": {"transcript": "interrupted", "mode": "member"},
-          "row": {"mode": "member", "surface": "member", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+          "row": {"mode": "member", "surface": "member", "running": false, "interrupted": true, "interrupted_stale": false, "subagents_running": false, "executor": "local"}
         },
         {
           "key": "finished",
           "facts": {"transcript": "finished"},
-          "row": {"mode": "", "surface": "", "running": false, "interrupted": false, "subagents_running": false, "executor": "local"}
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": false, "interrupted_stale": false, "subagents_running": false, "executor": "local"}
         }
       ],
       "expected": []

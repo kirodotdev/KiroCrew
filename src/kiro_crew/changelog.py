@@ -1,8 +1,8 @@
-"""Parse ``CHANGELOG.md`` into per-version entries for the Releases archive.
+"""Parse ``CHANGELOG.md`` into per-version entries for the release notes in Settings > About.
 
 ## Why this is a module and not a handler helper
 
-The dashboard's Releases archive needs the changelog as *data* (one entry per
+The release notes in Settings > About need the changelog as *data* (one entry per
 version, each independently selectable) rather than as one markdown blob. The
 parsing is a pure string function with no I/O, so it lives here and is tested
 directly — the handler in ``dashboard/handlers/updates_channel.py`` only reads the file

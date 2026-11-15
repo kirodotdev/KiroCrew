@@ -142,6 +142,7 @@ export function stubErrorKey(error: unknown): string {
   if (code === 'launch_unresolved') return 'pages.mcpManagement.stub_error_launch_unresolved'
   if (code === 'launch_over_cap') return 'pages.mcpManagement.stub_error_launch_over_cap'
   if (code === 'approval_write_failed') return 'pages.mcpManagement.stub_error_approval_write_failed'
+  if (code === 'cwd_unconfirmed') return 'pages.mcpManagement.stub_error_cwd_unanswered'
   return 'pages.mcpManagement.stub_failed'
 }
 
@@ -163,8 +164,20 @@ export function changedHintKey(refusal?: LaunchRefusal): string {
   const same = (a?: string[][], b?: string[][]) => JSON.stringify(a ?? []) === JSON.stringify(b ?? [])
   if (refusal?.approved_commands === undefined) return keys.any
   if (refusalOnlyAddsLaunches(refusal)) return keys.newLaunch
-  if (!same(refusal.commands, refusal.approved_commands)) return keys.command
-  if (!same(refusal.envs, refusal.approved_envs)) return keys.settings
+  // One command line is drawn per launch, and two launches of one program differ
+  // only in their env. So when the lists differ, the lines are compared as a set:
+  // the same program listed twice before and three times after is not a changed
+  // command. A redaction tag stands for any value, so lines carrying one never
+  // prove the program is the same: a differing list keeps the command wording,
+  // and an equal one gets the general line instead of the env line's claim.
+  const lines = (commands?: string[][]) => new Set((commands ?? []).map(c => JSON.stringify(c)))
+  const before = lines(refusal.approved_commands)
+  const after = lines(refusal.commands)
+  const redacted = [...before, ...after].some(line => line.includes('[REDACTED'))
+  const sameList = same(refusal.commands, refusal.approved_commands)
+  const sameSet = before.size === after.size && [...before].every(line => after.has(line))
+  if (!sameList && (!sameSet || redacted)) return keys.command
+  if (!same(refusal.envs, refusal.approved_envs)) return redacted ? keys.any : keys.settings
   return keys.any
 }
 
@@ -397,8 +410,19 @@ export function autoShareCandidates(
       !s.stub &&
       s.declined !== true &&
       s.pooling_blocked_by_env !== true &&
+      !needsCwdAnswer(s) &&
       !refused?.[s.name],
   )
+}
+
+/**
+ * Whether sharing this server first needs the operator to say it does not work
+ * on the project's files. Kiro Crew's own servers are never asked. A row from a
+ * gateway that sends no answer field at all reads as not needing one, since that
+ * gateway does not ask.
+ */
+export function needsCwdAnswer(s: McpManagedServer): boolean {
+  return s.cwd_proven !== true && s.cwd_use !== undefined && s.cwd_use !== 'not_used'
 }
 
 /** Marked servers whose launch waits for the operator's OK, and can get it here. */

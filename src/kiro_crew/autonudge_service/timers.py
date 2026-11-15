@@ -39,11 +39,13 @@ from kiro_crew.autonudge_service.model import (
     NudgeAdmissionRefused,
     NudgeLoop,
     _MutationAdmission,
+    _positive_number,
     _TransactionSubmissions,
     credit_held_runtime,
     hold_span,
     is_structured_monitor_loop,
     note_hold_start,
+    runtime_elapsed,
 )
 from kiro_crew.autonudge_service.subject import loop_subject
 from kiro_crew.monitoring.models import MONITOR_STATE_VERSION, MonitorDispatchResult
@@ -72,6 +74,11 @@ _MONITOR_RETRY_MAX_BACKOFF_SECS = 300
 # race their follow-up message; a short beat leaves room for notify_user_input
 # to cancel the pending fire again if they are still actively conversing.
 _OVERDUE_REARM_SECS = 10
+
+# How long after its runtime budget runs out a loop's timer wakes. asyncio may run
+# a timer up to its clock's resolution early (about 16 ms on Windows), and a wake
+# just short of the budget would fire a turn instead of stopping the loop.
+_BUDGET_WAKE_SLACK_SECS = 1.0
 
 
 # Gap between the loops that are overdue when the service starts. After a
@@ -499,12 +506,13 @@ async def release_approval_hold(
     arm: bool = True,
     admission: _MutationAdmission | None = None,
 ) -> bool:
-    """End *slot_key*'s approval hold, because a person is back. True if one ended.
+    """End *slot_key*'s approval hold, because the slot moved past it. True if one ended.
 
-    Reached only where a person is proven present: an approval answered in the slot
+    Reached where a person is proven present -- an approval answered in the slot
     (via ``autonudge.release_approval_hold_for``), a typed dashboard message
-    (``notify_user_input(human=True)``), or the popover's manual fire. An agent's or
-    app's turn does not count: it proves the session runs, not that anyone can answer.
+    (``notify_user_input(human=True)``), the popover's manual fire -- and where a
+    new dashboard turn starts in the slot for any sender (``_turn_open``): that
+    turn proves no prompt is still open, and one that stalls again re-holds.
 
     The held time is added to ``created_ts`` so the hold spends no runtime budget.
     ``arm`` re-arms toward the (usually passed) deadline, so the next cycle runs within
@@ -757,7 +765,8 @@ async def notify_cycle_failed(
     rejections and session-start failures. A spent, failed turn is what tells a loop
     making no progress from a quiet one. Only the loop's OWN cycle counts (the runner
     applies the self-wake guard, as for ``notify_cycle_start_failed``), so an erroring
-    human turn cannot spend the stand-down budget.
+    human turn cannot spend the stand-down budget unless it took the loop's steered
+    wake, which makes it that cycle.
 
     Fenced by id AND ``config_generation`` captured at fire time (``_directive_loop_id``,
     ``_directive_loop_gen``), matched under ``_lock``. The id catches a replaced loop
@@ -1084,6 +1093,10 @@ def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
     ``_OVERDUE_REARM_SECS``, so a user mid-conversation keeps deferring it. The delay
     is capped at ``idle_secs`` so a clock jump cannot park the timer past one interval.
 
+    ``_timer`` stops a prompt loop on a spent runtime budget only when it wakes, so a
+    budget that runs out before the deadline wakes it then; which arms keep the
+    deadline, and why, is in the monitor-architecture spec ("Runtime bounds").
+
     A monitor arms on the same deadline (one user-set clock); the probe gate in
     :meth:`_timer` decides whether its tick spends a turn. A monitor whose
     ``version`` this gateway does not implement (a newer gateway's record) gets no
@@ -1127,6 +1140,13 @@ def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
         delay = float(seams._OVERDUE_REARM_SECS)
     else:
         delay = min(remaining, float(loop.idle_secs))
+    budget = _positive_number(loop.max_runtime_secs)
+    anchor = _positive_number(loop.created_ts)
+    prompt_loop = not is_structured_monitor_loop(loop)
+    if budget and anchor and prompt_loop and not loop.waiting_on_person:
+        left = budget - runtime_elapsed(loop, anchor)
+        if left > 0:
+            delay = min(delay, left + _BUDGET_WAKE_SLACK_SECS)
     self._arm_timer(loop, delay=delay)
 
 

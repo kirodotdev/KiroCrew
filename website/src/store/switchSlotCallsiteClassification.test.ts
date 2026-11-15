@@ -37,8 +37,8 @@ type Counts = { gesture: number; announced: number; keepTarget: number; plain: n
 const PINNED: Record<string, Counts> = {
   'src/shell/appShell.tsx': { gesture: 0, announced: 2, keepTarget: 0, plain: 0, reason: 'popout nav-intent suppliers announce; a forwarded intent or native deep link is not a gesture in this window, so neither marks one' },
   'src/apps/auto-improvement/lib/agentSession.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 2, reason: 'awaited unwrap() flows with their own catch/recovery' },
-  'src/apps/command-bar/CommandBarOverlayRootRows.tsx': { gesture: 2, announced: 2, keepTarget: 0, plain: 0, reason: 'attention row and recent row announce' },
-  'src/apps/command-bar/useCommandBarOverlayActivation.ts': { gesture: 0, announced: 0, keepTarget: 1, plain: 0, reason: 'create path keeps target on the create/fetch race' },
+  'src/components/commandBar/CommandBarOverlayRootRows.tsx': { gesture: 2, announced: 2, keepTarget: 0, plain: 0, reason: 'attention row and recent row announce' },
+  'src/components/commandBar/useCommandBarOverlayActivation.ts': { gesture: 0, announced: 0, keepTarget: 1, plain: 0, reason: 'create path keeps target on the create/fetch race' },
   'src/apps/issue-radar/lib/agentSession.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 2, reason: 'awaited unwrap() flows with their own catch/recovery' },
   'src/apps/issue-radar/views/CrewPageView.tsx': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'awaited unwrap() with page-level error handling' },
   'src/apps/papyrus/CoAuthorPanel.tsx': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'panel binds to a slot supplied programmatically' },
@@ -63,6 +63,7 @@ const PINNED: Record<string, Counts> = {
   'src/pages/chat/command-center/CrewWorkerList.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'opening a Crew Mode worker, or going back to its root, from the side panel is a click on a listed session: it announces and is a gesture' },
   'src/pages/chat/memoryModeSwitch.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'switches to the just-created memory-mode replacement, awaited with in-page error UI' },
   'src/pages/chat/startFromInitialPrompt.ts': { gesture: 0, announced: 0, keepTarget: 1, plain: 0, reason: 'opens the session "Draft a new session from this prompt" just created (only when forkMayOpen allows), so a 404 is a create/fetch race' },
+  'src/pages/chat/useChatPageResourcesController.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'a folder chip clicked in a split pane whose chat the side panel is not showing switches the panel to that chat: a click on a listed session, so it announces and is a gesture' },
   'src/pages/chat/useChatPageSessionController.ts': { gesture: 3, announced: 4, keepTarget: 0, plain: 7, reason: 'tab-strip select + foreground open-in-tab + late-frame deep-link recovery + a short-name notice row announce, and all but the late-frame recovery are gestures; the plain sites are close-tab successor selection, URL deep-link restore (x2), the short-name deep link opening a slot it just found in the live roster, mount re-sync, tab fallback and app-launch activation with its own sidError notice' },
   'src/pages/chat/usePromoteSlot.ts': { gesture: 0, announced: 1, keepTarget: 0, plain: 0, reason: 'opening the kept copy announces; the copy is a slot the keep just created, not a session the user picked, so it is not a gesture' },
   'src/pages/overview/PromptsTab.tsx': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'switches to a just-created slot' },

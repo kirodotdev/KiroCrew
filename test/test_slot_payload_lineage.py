@@ -823,7 +823,7 @@ def test_a_failed_seed_is_re_requested_from_the_slots_path(monkeypatch):
     monkeypatch.setattr(type(proj), "seed_retry_due", property(lambda self: True))
 
     asked: list = []
-    monkeypatch.setattr(st, "_request_lineage_seed", lambda: asked.append(1))
+    monkeypatch.setattr(st, "_request_lineage_seed", lambda *_a: asked.append(1))
 
     rows = _rows("chat-1", "chat-2")
     _attach_slot_parents(rows)
@@ -841,7 +841,7 @@ def test_an_established_seed_asks_for_nothing(monkeypatch):
     _seeded()
 
     asked: list = []
-    monkeypatch.setattr(st, "_request_lineage_seed", lambda: asked.append(1))
+    monkeypatch.setattr(st, "_request_lineage_seed", lambda *_a: asked.append(1))
 
     rows = _rows("chat-1", "chat-2")
     _attach_slot_parents(rows)
@@ -938,7 +938,7 @@ def test_an_unseeded_projection_ships_nulls_instead_of_seeding_inline(monkeypatc
     _unit("s-2", "chat-2", parent="chat-1")
 
     submitted: list = []
-    monkeypatch.setattr(st, "_request_lineage_seed", lambda: submitted.append(1))
+    monkeypatch.setattr(st, "_request_lineage_seed", lambda *_a: submitted.append(1))
 
     rows = _rows("chat-1", "chat-2")
     _attach_slot_parents(rows)
@@ -1002,7 +1002,7 @@ def test_binding_the_serving_loop_does_not_seed(monkeypatch):
     import asyncio
 
     started: list = []
-    monkeypatch.setattr(st, "_request_lineage_seed", lambda: started.append(1))
+    monkeypatch.setattr(st, "_request_lineage_seed", lambda *_a: started.append(1))
 
     state = st.DashboardState.__new__(st.DashboardState)
     loop = asyncio.new_event_loop()
@@ -1012,3 +1012,38 @@ def test_binding_the_serving_loop_does_not_seed(monkeypatch):
         loop.close()
 
     assert started == []
+
+
+def test_a_cold_seed_is_asked_for_with_a_roster_of_the_live_session_ids(monkeypatch):
+    """The slot rows carry no session id, so the roster comes from the owner of the
+    alias callable and is answered from the in-memory session map."""
+    from types import SimpleNamespace
+
+    _unit("s-1", "chat-1")
+    asked: list = []
+    monkeypatch.setattr(st, "_request_lineage_seed", lambda *a: asked.append(a))
+
+    class _Owner:
+        sessions = SimpleNamespace(mapped_sid=lambda key: {"k1": "s-1"}.get(key, ""))
+
+        def spend_slot_by_session(self):
+            return {"k1": "chat-1", "k2": "chat-2"}
+
+    owner = _Owner()
+
+    _attach_slot_parents(_rows("chat-1"), owner.spend_slot_by_session)
+
+    assert len(asked) == 1 and asked[0][0]() == ("s-1",)
+
+
+def test_the_live_session_ids_use_the_in_memory_map_and_skip_unmapped_slots():
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard.state_parts.slots_frame import live_acp_sids
+
+    state = SimpleNamespace(
+        spend_slot_by_session=lambda: {"dashboard:chat-1": "chat-1", "dashboard:chat-2": "chat-2"},
+        sessions=SimpleNamespace(mapped_sid=lambda key: {"dashboard:chat-1": "s-1"}.get(key, "")),
+    )
+
+    assert live_acp_sids(state) == ("s-1",)

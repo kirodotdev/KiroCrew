@@ -15,7 +15,8 @@ import asyncio
 import logging
 import os
 import shutil
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
@@ -105,6 +106,12 @@ _TURN_AUTH_MAX_AGE_SECS = 30.0
 # What ``kiro-cli whoami`` prints when there is no sign-in (measured on kiro-cli
 # 2.31.0: "Not logged in", exit 1). The launcher's refusal says the same words.
 _WHOAMI_SIGNED_OUT_MARKER = "not logged in"
+# How often, at most, a set too-old latch asks which route KAS resolves to
+# (``_drop_too_old_off_relay``). The answer can read kiro-cli's SEL-audited
+# sign-in store, and the blocking gate polls every few seconds, so asking per
+# poll would write an audit event per poll. A minute is how long the card can
+# outlive a kiro-cli that was removed or signed out.
+_RESOLVED_ROUTE_RECHECK_SECS = 60.0
 
 
 _KIRO_AUTH_SANDBOX_MODE = "standard"
@@ -297,6 +304,80 @@ def _latch_login_only(
     )
     self._probe_identity = probe_identity
     return self._status
+
+
+def _binary_stamp(binary: str | None) -> tuple[object, ...]:
+    """Which file *binary* is: its resolved path, inode, size and mtime.
+
+    Compared across probes to notice a kiro-cli replaced in place. An unreadable
+    binary stamps as its path alone.
+    """
+    if not binary:
+        return ()
+    path = os.path.realpath(binary)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return (path,)
+    return (path, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _relay_route_configured() -> bool:
+    """Whether config still sends KAS sessions through the kiro-cli relay.
+
+    True while ``agent.acp_backend`` is KAS and ``agent.kas_bundle`` is off: the
+    only route that passes ``--auth-method``. Blocking (reads config); an
+    unreadable config reads as the relay, the default.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+    from kiro_crew.config import KiroCrewConfig
+
+    try:
+        agent = KiroCrewConfig.load().agent
+    except Exception:  # noqa: BLE001 - the default route is the relay
+        return True
+    return agent.acp_backend == ACP_BACKEND_KAS and not agent.kas_bundle
+
+
+def _relay_route_resolved(environ: Mapping[str, str], home: Path) -> bool:
+    """Whether the next KAS spawn still takes the relay, config unchanged.
+
+    False once KAS moves to the bundled engine on its own (no kiro-cli, or
+    kiro-cli signed out). Blocking; the signed-out read is SEL-audited, which is
+    why callers bound how often they ask.
+    """
+    from kiro_crew.agent_sdk import kas_bundle
+
+    return not kas_bundle.kas_route(environ=environ, home=home).bundle
+
+
+async def _drop_too_old_off_relay(self: KiroPrerequisiteService) -> bool:
+    """Clear the too-old latch when KAS does not take the relay; True when cleared.
+
+    The latch records that the relay's ``--auth-method`` was rejected. After a
+    switch to the Kiro CLI harness or the bundled engine, with no restart, the
+    card it raises would hide a harness that runs; the next session on the relay
+    latches it again if the CLI is still too old. Config is read on every call;
+    the resolved route, which KAS changes on its own, at most once per
+    :data:`_RESOLVED_ROUTE_RECHECK_SECS`, because every status poll lands here.
+    """
+    if not self._cli_too_old:
+        return False
+    why = "the configured route does not use the relay"
+    if await asyncio.to_thread(_relay_route_configured):
+        now = self._clock()
+        checked = self._cli_too_old_route_checked_at
+        if checked is not None and now - checked < _RESOLVED_ROUTE_RECHECK_SECS:
+            return False
+        self._cli_too_old_route_checked_at = now
+        if await asyncio.to_thread(_relay_route_resolved, self._environ, self._home):
+            return False
+        why = "KAS moved to the bundled engine on its own"
+    self._cli_too_old = False
+    self._cli_too_old_stamp = None
+    self._last_probe_at = 0.0
+    logger.info("Kiro CLI-too-old latch cleared: %s", why)
+    return True
 
 
 async def _probe(
@@ -570,7 +651,20 @@ async def _probe(
             rejected, rejection_detail = await self._probe_kas_spec_loading()
         # KAS needs ACP support but not a kiro-cli login, so the probe must
         # check for a too-old relay binary even when signed out.
-        acp_supported = await self._probe_acp_support(self._viable_binary)
+        # A spawn-proven too-old verdict (``mark_cli_too_old``) stays until an
+        # update, a human Check again, or a different binary clears it:
+        # ``acp --help`` cannot see it.
+        await _drop_too_old_off_relay(self)
+        if self._cli_too_old:
+            stamp = await asyncio.to_thread(_binary_stamp, self._viable_binary)
+            if self._cli_too_old_stamp is None:
+                self._cli_too_old_stamp = stamp
+            elif stamp != self._cli_too_old_stamp:
+                # Replaced since the latch (``kiro-cli update`` in a terminal):
+                # the next session spawn re-latches it if it is still too old.
+                self._cli_too_old = False
+                self._cli_too_old_stamp = None
+        acp_supported = await self._probe_acp_support(self._viable_binary) and not self._cli_too_old
         login_cmd, sso_cmd, bundled = login_commands_for(self._viable_binary, self._environ)
         self._status = PrerequisiteStatus(
             platform=_platform_label(self._platform),
@@ -746,6 +840,8 @@ async def update_cli(self: KiroPrerequisiteService, caller: str = "") -> dict[st
     if not error:
         # Re-probe so a successful update flips ``acp_supported`` / ``ready``
         # and the card clears. Explicit-action half of the probe budget.
+        self._cli_too_old = False
+        self._cli_too_old_stamp = None
         try:
             await self._probe(force=True)
         except Exception:  # noqa: BLE001 — stale state beats a 500

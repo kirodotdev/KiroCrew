@@ -15,7 +15,7 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_git_repo_touch_overflow``, ``_git_repo_touch_pending``, ``_git_repo_touch_terminal``,
 ``_git_repo_walk_pending``, ``_git_repo_walk_task``, ``_git_repos``, ``_git_repos_evicted``,
 ``_git_repos_evicted_overflow``, ``_git_repos_incomplete``, ``_git_repos_seeded``,
-``_has_reader_flag``,
+``_handoff_generation``, ``_handoff_mark``, ``_has_reader_flag``,
 ``_hook_continuation_depth``, ``_last_enqueue_ts``, ``_last_turn_auth_required``,
 ``_last_turn_awaiting_permission``, ``_last_turn_children_announced``,
 ``_linked_session_busy``, ``_lock``,
@@ -25,12 +25,14 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_question_pending``, ``_queue``, ``_queue_persist_inflight``, ``_queue_persist_owed``,
 ``_queue_persisted_sig``, ``_queue_repository``, ``_regenerate_target``,
 ``_rejection_reasons``, ``_responsive``, ``_side``,
+``_restored_turn_marker``, ``_run_started_at``, ``_run_started_turns``,
 ``_stop_declined_at``, ``_stop_escalated_card_id``, ``_stop_event_id``,
 ``_stop_generation``, ``_stop_state_raw``, ``_subagent_delivery_pending``, ``_swap_in_flight``,
-``_synthesis_recheck``, ``_task``, ``_trust``, ``_trust_reads``, ``_trust_scope``,
+``_synthesis_recheck``, ``_task``, ``_task_started_at``, ``_trust``, ``_trust_reads``, ``_trust_scope``,
 ``_trusted_pattern_deadlines``, ``_trusted_patterns``, ``_turn_admission_reserved``,
-``_turn_generation``, ``_turn_in_flight_generation``, ``_turn_in_flight_prompt``,
-``_turn_reply_mids``, ``_turns_started``, ``_unstarted_generation``, ``_wake_starting_task``,
+``_turn_generation``, ``_turn_in_flight_generation``, ``_turn_in_flight_prompt``, ``_turn_lineage``,
+``_turn_reply_mids``, ``_turns_started``, ``_unsent_resends``, ``_unstarted_generation``,
+``_wake_starting_task``,
 ``_window_swap_applying``, ``_window_swap_epoch``, ``credential_evidence``,
 ``event``,
 ``linked_session_key``, ``segment_message_id``, ``segment_raw_text``,
@@ -212,6 +214,10 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # put it back before the interruption is judged. None when no turn is
     # in flight.
     self._turn_in_flight_prompt = None
+    # The generation and opening-row identity a restore read from a marker that
+    # outlived its process (the dispatcher's own evidence that the restart cut
+    # that turn), kept for readers that run after the restore clears the marker.
+    self._restored_turn_marker = None
     self._buffers = SlotBufferCoordinator()
     self._queue_repository = SlotQueueRepository(
         id_provider=lambda: uuid.uuid4().hex[:12],
@@ -233,14 +239,14 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # The current segment's text as the model wrote it, before any
     # redaction. The run loop redacts each streamed delta on its own, which
     # can leave pieces of a value a delta boundary cut; the flush saves THIS
-    # copy redacted as one text instead (``chat_runner._redact_segment``).
+    # copy redacted as one text instead (``chat_turn.segment_flush._redact_segment``).
     # Memory only, never persisted, dropped at each flush.
     self.segment_raw_text = ""
     # The hash of the same segment as it streamed (each delta after its own
     # redaction), and each value that redaction replaced, with its tag. The
     # flush saves the raw copy redacted as one text only when the hash
     # proves it is the copy of the streamed text, and withholds it when it
-    # still holds one of these values (``chat_runner._redact_segment``). Memory only,
+    # still holds one of these values (``chat_turn.segment_flush._redact_segment``). Memory only,
     # dropped with the raw copy.
     self.segment_shown_sha = hashlib.sha256()
     self.segment_removed = {}
@@ -255,15 +261,35 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # None after teardown, so consumers that span awaits cannot distinguish
     # "stayed idle" from "ran and finished" by comparing task references.
     self._turn_generation = 0
+    # When the running run's first turn started (``run_clock.now()``); None
+    # between runs. Stamped by the ``task`` setter, cleared by the run's final
+    # ``chat_done``.
+    self._run_started_at = None
+    # ``_turns_started`` at that stamp; -1 (never equal to it) while unstamped.
+    self._run_started_turns = -1
+    # When the task holding the slot was set (``run_clock.now()``); None while
+    # none is. A person's message restamps the run from it at the dispatch gates.
+    self._task_started_at = None
+    # ``(generation, first generation)`` of the latest dispatch that was a turn's
+    # own retry (``queue_drain``), so it counts as that turn, not a new one.
+    self._turn_lineage = (0, 0)
     # The ``_turn_generation`` of a dispatch that ended without starting its
     # turn (``turn_dispatch.mark_turn_unstarted``), so no tail hands off the
     # queue a send built behind it; its done callback does
     # (``chat_turn.queue_cycle._hand_off_unstarted_turn``). -1: none, since a
     # published ``task`` is generation 1 or later.
     self._unstarted_generation = -1
+    # The ``_turn_generation`` of the turn that last opened its stream to the
+    # engine (-1: none has, for the same reason as above), and the future the
+    # session's background helpers wait on until the running turn does
+    # (``dashboard/prompt_handoff.py``); None while nothing waits.
+    self._handoff_generation = -1
+    self._handoff_mark = None
     # How many turns have passed every dispatch gate (``_turn_dispatch_gates``),
     # so a reader can tell whether one ran since it looked (Resume all).
     self._turns_started = 0
+    # Memory only, never saved or hydrated, so a transcript row cannot claim a resend.
+    self._unsent_resends = None
     # The turn a structured monitor wake started, until the runner accepts it
     # and the wake's ``nudge`` row is written. Until then the transcript cannot
     # say who opened the running turn, so the projection's ``wake_starting``

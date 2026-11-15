@@ -1,9 +1,11 @@
-import { Fragment, useCallback, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Check, ChevronRight, ExternalLink, ListChecks, RefreshCw, Server as ServerIcon } from 'lucide-react'
+import { AlertTriangle, Check, ExternalLink, ListChecks, RefreshCw, Server as ServerIcon, Share2 } from 'lucide-react'
 import {
   api,
   ApiError,
+  type McpCwdUse,
   type McpGatewayFootprint,
   type McpManagedServer,
   type McpMeasureProgress,
@@ -17,6 +19,8 @@ import {
   type TabItem,
 } from '../../components/ui/tabs'
 import { TABS_RAIL_ROW_CLASS } from '../../components/ui/tabsPill'
+import { uiLocation } from '../../uiLocations/uiLocation'
+import { guideAnchor } from '../../uiLocations/targetRegistry'
 import { Btn } from '../../components/ui'
 import {
   Dialog,
@@ -45,6 +49,7 @@ import {
   sharedWithoutSupport,
   waitForMeasurePass,
   autoShareCandidates,
+  needsCwdAnswer,
   reloadChats,
   settleSkipped,
   staleDisplayLaunch,
@@ -61,6 +66,7 @@ import {
   ShareAction,
 } from './McpManagementLaunchReview'
 import { AssessmentView } from './McpManagementAssessment'
+import { CwdQuestionDialog } from './McpManagementCwdQuestion'
 import {
   ApprovalCard,
   ConfirmReload,
@@ -72,12 +78,16 @@ import {
 import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
 import { isPermanentRefusal } from '../overview/McpShareRefusedNotice'
 import { retryPolicy } from '../../api/queryClient'
+import { reportForError } from '../../utils/errorReport'
+
+/** The query param that asks the Sharing view to open its Review dialog. */
+export const REVIEW_PARAM = 'review'
 
 /**
  * MCP Management, top to bottom: the hero (title, Learn more, the page-wide
  * sharing switch, the measured numbers, the open-chats banner), the approval
- * card, and a collapsed "Advanced" holding the per-server table, npm
- * pre-install and the Sharing assessment.
+ * card, then (on the MCP Servers page) the Servers and Sharing views. Sharing
+ * holds the per-server table, npm pre-install and the Sharing assessment.
  *
  * Turning sharing ON asks first, naming every server it shares: the ones
  * enabled by hand and the shareable ones nobody chose for, which it enables,
@@ -109,11 +119,19 @@ import { retryPolicy } from '../../api/queryClient'
 /** The pre-install row's one-line explanation, which also describes its button. */
 const RESOLVE_DESC_ID = 'mcp-resolve-desc'
 
+/** The MCP Servers page's two views under the sharing hero. */
+export type McpPageView = 'servers' | 'sharing'
+
 export function McpManagement({
-  initialAdvancedOpen = false,
+  serversList,
+  pageView = 'servers',
+  onPageViewChange,
 }: {
-  /** Advanced starts collapsed; a test of what lives inside it opens it. */
-  initialAdvancedOpen?: boolean
+  /** The server list, shown as the page's Servers view. Without it the
+   *  sharing body renders on its own, with no view strip. */
+  serversList?: ReactNode
+  pageView?: McpPageView
+  onPageViewChange?: (view: McpPageView) => void
 } = {}) {
   const qc = useQueryClient()
   // While the sibling MCP Servers list holds unapplied edits, an ErrorNotice
@@ -157,13 +175,19 @@ export function McpManagement({
   const [resolveNotice, setResolveNotice] = useState<string | null>(null)
   const [resolveError, setResolveError] = useState<string | null>(null)
 
+  // `?review=1` is the paused-share bell note's link. The cached status may
+  // predate the restart that paused a server, so that link reads both again.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const reviewAsked = searchParams.get(REVIEW_PARAM) === '1'
   const statusQ = useQuery<GatewayStatus>({
     queryKey: ['mcpGatewayStatus'],
     queryFn: () => api.mcpGatewayStatus(),
+    ...(reviewAsked ? { refetchOnMount: 'always' as const } : {}),
   })
   const serversQ = useQuery<{ servers: McpManagedServer[] }>({
     queryKey: ['mcpGatewayServers'],
     queryFn: () => api.mcpGatewayServers(),
+    ...(reviewAsked ? { refetchOnMount: 'always' as const } : {}),
   })
 
   const status = statusQ.data
@@ -243,8 +267,8 @@ export function McpManagement({
 
   const setStub = useMutation({
     // `refused` is the stored refusal's own `expected_launch` behind the press.
-    mutationFn: ({ name, stub, expectedLaunch }: { name: string; stub: boolean; expectedLaunch?: string; refused?: string }) =>
-      api.mcpGatewaySetStub(name, stub, expectedLaunch),
+    mutationFn: ({ name, stub, expectedLaunch, cwdUse }: { name: string; stub: boolean; expectedLaunch?: string; refused?: string; cwdUse?: McpCwdUse }) =>
+      cwdUse ? api.mcpGatewaySetStub(name, stub, expectedLaunch, false, cwdUse) : api.mcpGatewaySetStub(name, stub, expectedLaunch),
     onSuccess: async (res, vars) => {
       invalidate()
       dropCurrentLaunch(vars.name)
@@ -279,6 +303,39 @@ export function McpManagement({
     },
     onError: (err, name) => {
       setError(i18nT(launchPreviewErrorKey(err), { name }))
+    },
+  })
+
+  // The working-folder question, asked before a server that is not Kiro Crew's
+  // own is shared, and once for a server shared before the question existed.
+  // "No" on an unshared row goes on to share it; "Yes" or "Not sure" on a
+  // shared row takes it off sharing, since it would act on the wrong project.
+  // An approval asked from a shared row carries `approve`: its "No" sends that
+  // approval with the answer in one request.
+  const [cwdAsk, setCwdAsk] = useState<{
+    name: string
+    routed: boolean
+    approve?: { expectedLaunch: string; refused?: string }
+  } | null>(null)
+  const answerCwd = useMutation({
+    mutationFn: ({ name, answer, routed }: { name: string; answer: McpCwdUse; routed: boolean }) =>
+      answer === 'uses_cwd' && routed
+        ? api.mcpGatewaySetStub(name, false, undefined, false, answer)
+        : api.mcpGatewaySetCwdUse(name, answer),
+    onSuccess: (res, vars) => {
+      setCwdAsk(null)
+      invalidate()
+      if (vars.answer === 'not_used') {
+        if (!vars.routed) previewLaunch.mutate(vars.name)
+      } else {
+        setNotice(i18nT('pages.mcpManagement.cwd_kept_per_chat', { name: vars.name }))
+        if (vars.routed && res?.restart_required) setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
+      }
+    },
+    onError: (err, vars) => {
+      setCwdAsk(null)
+      invalidate()
+      setError(i18nT(stubErrorKey(err), { name: vars.name }))
     },
   })
 
@@ -341,7 +398,6 @@ export function McpManagement({
     () => waitingForApproval(servers, status?.launch_refused),
     [servers, status?.launch_refused],
   )
-  const [advancedOpen, setAdvancedOpen] = useState(initialAdvancedOpen)
 
   // The hero's numbers and the stale-chat banner: one reading of this host.
   // The reading is owner-only, and this panel also renders for non-owner
@@ -437,7 +493,8 @@ export function McpManagement({
     },
   })
 
-  const busy = setStub.isPending || setSharing.isPending || previewLaunch.isPending || turnOn.isPending
+  const busy =
+    setStub.isPending || setSharing.isPending || previewLaunch.isPending || turnOn.isPending || answerCwd.isPending
 
   // "Reload <m> chats": the dashboard's own per-chat reload, one chat at a
   // time, after a confirm. A busy chat is refused by the gateway and skipped.
@@ -480,7 +537,7 @@ export function McpManagement({
   // stubbable-and-not-yet-stubbed keeps the control honest either way, because a
   // press that finds nothing qualifying reports exactly that.
   const stubbableNames = useMemo(
-    () => servers.filter(s => s.can_stub && !s.stub).map(s => s.name),
+    () => servers.filter(s => s.can_stub && !s.stub && !needsCwdAnswer(s)).map(s => s.name),
     [servers],
   )
 
@@ -505,8 +562,10 @@ export function McpManagement({
       qc.setQueryData(['mcpGatewayServers'], fresh)
       // Not an eligibility test: each write sends `resolve_eligibility`, and the
       // server's `_stub_eligibility` decides and reports what it skipped.
+      // A server waiting for the working-folder answer is asked one at a time
+      // from its own row, never shared in bulk.
       const candidates = (fresh?.servers ?? [])
-        .filter(s => s.can_stub && !s.stub)
+        .filter(s => s.can_stub && !s.stub && !needsCwdAnswer(s))
         .map(s => s.name)
       const plan: Array<{ name: string; expected: string }> = []
       const unreadable: string[] = []
@@ -624,12 +683,36 @@ export function McpManagement({
     setReviewItems(waiting.map(server => ({ server, refusal: refused[server.name] })))
   }
   const closeReview = useCallback(() => setReviewItems(null), [])
+  // `?review=1`: once the servers and their status are read on this mount, open
+  // the dialog if any wait, then drop the param so neither a reload nor a later
+  // pause opens it unasked. A failed read opens nothing and still drops it.
+  const waitingCount = waiting.length
+  const reviewReady = statusQ.isFetchedAfterMount && serversQ.isFetchedAfterMount
+  const reviewReadFailed = statusQ.isError || serversQ.isError
+  useEffect(() => {
+    if (!reviewAsked || !reviewReady) return
+    if (waitingCount > 0 && !reviewReadFailed) openReview()
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.delete(REVIEW_PARAM)
+      return next
+    }, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- openReview reads the same render's `waiting`
+  }, [reviewAsked, reviewReady, reviewReadFailed, waitingCount])
   // The table button's own write and checks: one stub POST pinned to the
   // shown `expected_launch`. A launch that moved is refused by the endpoint,
   // and the refusal comes back as the error line the dialog shows in that
   // block; a moved-past refusal instead brings the launch the block then
   // shows, with an error above it asking for its approval.
   const approveFromReview = async (name: string, expectedLaunch: string, refused?: string): Promise<ReviewAnswer> => {
+    const server = servers.find(s => s.name === name)
+    if (server && needsCwdAnswer(server)) {
+      // The approval needs the working-folder answer first: ask it, and send
+      // the approval with a "No".
+      closeReview()
+      setCwdAsk({ name, routed: true, approve: { expectedLaunch, refused } })
+      return null
+    }
     try {
       const res = await api.mcpGatewaySetStub(name, true, expectedLaunch)
       dropCurrentLaunch(name)
@@ -646,91 +729,8 @@ export function McpManagement({
     }
   }
 
-  return (
-    <div className="min-w-0 space-y-4">
-      <ErrorNotice
-        message={statusQ.isError ? i18nT('pages.mcpManagement.status_failed') : null}
-        askAgent={!handoffWouldLoseEdits}
-        handoffHint={handoffHint}
-      />
-      {/* Page-wide, not inside Advanced: a failed server list disables the
-          hero switch, so its reason must show while Advanced is closed. */}
-      <ErrorNotice
-        message={serversQ.isError ? i18nT('pages.mcpManagement.servers_failed') : null}
-        askAgent={!handoffWouldLoseEdits}
-        handoffHint={handoffHint}
-      />
-      <ErrorNotice message={error} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} onDismiss={() => setError(null)} />
-      {restartNotice && (
-        <div
-          role="status"
-          className="flex items-start gap-2 rounded-lg border border-[var(--accent)] bg-[var(--accent-subtle,transparent)] px-3.5 py-2.5 text-[13px] text-[var(--text)]"
-        >
-          <RefreshCw size={14} className="mt-0.5 shrink-0 text-[var(--accent)]" aria-hidden="true" />
-          <span>{restartNotice}</span>
-        </div>
-      )}
-      {/* The endpoint's compare-and-set rejected the write and handed back the
-          newer launch, which that row's Details shows. A rejected request, so
-          an ErrorNotice; it stands while that server still waits. */}
-      <ErrorNotice
-        message={
-          launchMovedFor !== null && waiting.some(s => s.name === launchMovedFor)
-            ? i18nT('pages.mcpManagement.launch_moved_row_notice', { name: launchMovedFor })
-            : null
-        }
-        askAgent={!handoffWouldLoseEdits}
-        handoffHint={handoffHint}
-        onDismiss={() => setLaunchMovedFor(null)}
-      />
-
-      <SharingHero
-        on={!!status?.enabled}
-        switchDisabled={
-          busy || prepareSharing.isPending || turnOn.isPending || statusQ.isLoading
-          || (!status?.enabled && !canEnableSharing)
-        }
-        switchNote={!supported ? i18nT('pages.mcpManagement.unsupported_platform') : null}
-        onToggle={() => {
-          setError(null)
-          setNotice(null)
-          // Turning sharing ON moves servers out of the chat sandboxes, so it
-          // asks first, naming every server it shares. Turning it OFF only ever
-          // narrows, and keeps every per-server choice for the next ON.
-          if (!status?.enabled) prepareSharing.mutate()
-          else setSharing.mutate(false)
-        }}
-        footprint={footprintQ.data}
-        footprintFailed={footprintQ.isError}
-        footprintRefused={footprintRefused}
-        staleCount={staleChats.length}
-        reloadBusy={reload.isPending}
-        reloadNote={reloadNote}
-        reloadError={reloadError}
-        onReload={() => setConfirmReload(true)}
-      />
-
-      <ApprovalCard waiting={waiting} onReview={openReview} />
-
-      <section className="min-w-0 rounded-xl border border-[var(--border)] bg-[var(--card)]">
-        <h2 className="m-0">
-          <button
-            type="button"
-            aria-expanded={advancedOpen}
-            aria-controls="mcp-advanced"
-            onClick={() => setAdvancedOpen(o => !o)}
-            className="flex w-full items-center gap-2 rounded-xl px-4 py-3 text-left text-[14px] font-medium text-[var(--text)] hover:bg-[var(--hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
-          >
-            <ChevronRight
-              size={15}
-              aria-hidden="true"
-              className={['shrink-0 text-[var(--muted)] transition-transform', advancedOpen ? 'rotate-90' : ''].join(' ')}
-            />
-            {i18nT('pages.mcpManagement.advanced')}
-          </button>
-        </h2>
-        {advancedOpen && (
-          <div id="mcp-advanced" className="min-w-0 border-t border-[var(--border)] p-3 md:p-4">
+  // The per-server Share table, npm pre-install and the Sharing assessment.
+  const sharingBody = (
     <Tabs
       value={view}
       onValueChange={v => setView(v as McpView)}
@@ -886,7 +886,14 @@ export function McpManagement({
                 refusal && !launchIsApprovable(refusal)
                   ? i18nT('pages.mcpManagement.approval_not_approvable_here')
                   : null
+              // A paused, approvable row draws two buttons. Below md they get a
+              // full-width line under the name: in the `auto` track their width
+              // would leave the name no room. `refusal` is set only on a marked
+              // row (rowState), so this is ShareAction's two-button branch.
+              const pausedControls = refusal !== undefined && launchIsApprovable(refusal)
               const hintId = `mcp-share-hint-${s.name}`
+              // Shared before the working-folder question existed: asked once here.
+              const cwdUnanswered = s.stub && needsCwdAnswer(s)
               const detailsOpen = openDetails.has(s.name)
               const describedBy = hint ? hintId : detailsOpen ? detailsWhyId(s.name) : undefined
               return (
@@ -940,7 +947,13 @@ export function McpManagement({
                         {i18nT(stateLabelKey(state, refusal))}
                       </span>
                     </td>
-                    <td className="col-start-2 row-start-1 p-0 text-right align-top md:table-cell md:px-4 md:py-2.5">
+                    <td
+                      className={
+                        pausedControls
+                          ? 'col-span-2 col-start-1 row-start-4 min-w-0 p-0 text-left align-top md:table-cell md:px-4 md:py-2.5 md:text-right'
+                          : 'col-start-2 row-start-1 p-0 text-right align-top md:table-cell md:px-4 md:py-2.5'
+                      }
+                    >
                       <ShareAction
                         server={s}
                         refusal={refusal}
@@ -952,13 +965,18 @@ export function McpManagement({
                           setError(null)
                           setRestartNotice(null)
                           setLaunchMovedFor(null)
-                          previewLaunch.mutate(s.name)
+                          if (needsCwdAnswer(s)) setCwdAsk({ name: s.name, routed: false })
+                          else previewLaunch.mutate(s.name)
                         }}
                         onConfirm={expectedLaunch => {
                           setError(null)
                           setRestartNotice(null)
                           setLaunchMovedFor(null)
-                          setStub.mutate({ name: s.name, stub: true, expectedLaunch, refused: stored?.expected_launch })
+                          if (needsCwdAnswer(s)) {
+                            setCwdAsk({ name: s.name, routed: true, approve: { expectedLaunch, refused: stored?.expected_launch } })
+                          } else {
+                            setStub.mutate({ name: s.name, stub: true, expectedLaunch, refused: stored?.expected_launch })
+                          }
                         }}
                         onStop={() => {
                           setError(null)
@@ -977,6 +995,29 @@ export function McpManagement({
                         className="block px-3 pb-3 pt-0 text-[12.5px] text-[var(--muted)] md:table-cell md:px-4"
                       >
                         {hint}
+                      </td>
+                    </tr>
+                  )}
+                  {cwdUnanswered && (
+                    <tr className="block md:table-row">
+                      <td
+                        colSpan={4}
+                        className="block px-3 pb-3 pt-0 text-[12.5px] text-[var(--muted)] md:table-cell md:px-4"
+                      >
+                        <span>{i18nT('pages.mcpManagement.cwd_unanswered_hint')}</span>{' '}
+                        <button
+                          type="button"
+                          disabled={busy}
+                          aria-labelledby={`mcp-cwd-answer-${s.name} ${serverNameId(s.name)}`}
+                          onClick={() => {
+                            setError(null)
+                            setRestartNotice(null)
+                            setCwdAsk({ name: s.name, routed: true })
+                          }}
+                          className="text-[var(--accent)] hover:underline disabled:opacity-60"
+                        >
+                          <span id={`mcp-cwd-answer-${s.name}`}>{i18nT('pages.mcpManagement.cwd_unanswered_answer')}</span>
+                        </button>
                       </td>
                     </tr>
                   )}
@@ -1038,9 +1079,112 @@ export function McpManagement({
       </section>
       </TabsContent>
     </Tabs>
+  )
+
+  return (
+    <div className="min-w-0 space-y-4">
+      <ErrorNotice
+        message={statusQ.isError ? i18nT('pages.mcpManagement.status_failed') : null}
+        report={statusQ.isError ? reportForError(statusQ.error) : undefined}
+        askAgent={!handoffWouldLoseEdits}
+        handoffHint={handoffHint}
+      />
+      {/* Page-wide, above the hero: a failed server list disables the hero
+          switch, so its reason shows on every view. */}
+      <ErrorNotice
+        message={serversQ.isError ? i18nT('pages.mcpManagement.servers_failed') : null}
+        report={serversQ.isError ? reportForError(serversQ.error) : undefined}
+        askAgent={!handoffWouldLoseEdits}
+        handoffHint={handoffHint}
+      />
+      <ErrorNotice message={error} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} onDismiss={() => setError(null)} />
+      {restartNotice && (
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-lg border border-[var(--accent)] bg-[var(--accent-subtle,transparent)] px-3.5 py-2.5 text-[13px] text-[var(--text)]"
+        >
+          <RefreshCw size={14} className="mt-0.5 shrink-0 text-[var(--accent)]" aria-hidden="true" />
+          <span>{restartNotice}</span>
+        </div>
+      )}
+      {/* The endpoint's compare-and-set rejected the write and handed back the
+          newer launch, which that row's Details shows. A rejected request, so
+          an ErrorNotice; it stands while that server still waits. */}
+      <ErrorNotice
+        message={
+          launchMovedFor !== null && waiting.some(s => s.name === launchMovedFor)
+            ? i18nT('pages.mcpManagement.launch_moved_row_notice', { name: launchMovedFor })
+            : null
+        }
+        askAgent={!handoffWouldLoseEdits}
+        handoffHint={handoffHint}
+        onDismiss={() => setLaunchMovedFor(null)}
+      />
+
+      <SharingHero
+        on={!!status?.enabled}
+        switchDisabled={
+          busy || prepareSharing.isPending || turnOn.isPending || statusQ.isLoading
+          || (!status?.enabled && !canEnableSharing)
+        }
+        switchNote={!supported ? i18nT('pages.mcpManagement.unsupported_platform') : null}
+        onToggle={() => {
+          setError(null)
+          setNotice(null)
+          // Turning sharing ON moves servers out of the chat sandboxes, so it
+          // asks first, naming every server it shares. Turning it OFF only ever
+          // narrows, and keeps every per-server choice for the next ON.
+          if (!status?.enabled) prepareSharing.mutate()
+          else setSharing.mutate(false)
+        }}
+        footprint={footprintQ.data}
+        footprintFailed={footprintQ.isError}
+        footprintRefused={footprintRefused}
+        staleCount={staleChats.length}
+        reloadBusy={reload.isPending}
+        reloadNote={reloadNote}
+        reloadError={reloadError}
+        onReload={() => setConfirmReload(true)}
+      />
+
+      <ApprovalCard waiting={waiting} onReview={openReview} />
+
+      {serversList === undefined ? sharingBody : (
+        // Servers | Sharing sit under the hero and the approval card, so the
+        // page-wide switch stays in view however many servers are installed.
+        <Tabs
+          value={pageView}
+          onValueChange={v => onPageViewChange?.(v as McpPageView)}
+          layoutId="mcp-page-view"
+          className="min-w-0"
+        >
+          <div className={`${TABS_RAIL_ROW_CLASS} mb-4`}>
+            <TabsList aria-label={i18nT('pages.mcpPage.title')}>
+              <TabsTrigger value="servers">
+                <ServerIcon size={14} />
+                {/* On the label: the index and the guide need an element that
+                    takes the markers as-is. One spread: the anchor's
+                    registering ref rides in as the location's own. */}
+                <span {...uiLocation('mcp.servers-view', guideAnchor('mcp.servers-tab').ref)} data-guide-anchor="mcp.servers-tab">
+                  {i18nT('pages.mcpPage.view_servers')}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger value="sharing">
+                <Share2 size={14} />
+                <span>{i18nT('pages.mcpPage.view_sharing')}</span>
+              </TabsTrigger>
+            </TabsList>
           </div>
-        )}
-      </section>
+          {/* Mounted on the Sharing view too (hidden): the server list holds staged,
+              unapplied scope and tool edits in its own state. */}
+          <TabsContent value="servers" guideScope="open:mcp.servers-view" className="min-w-0" forceMount hidden={pageView !== 'servers'}>
+            {serversList}
+          </TabsContent>
+          <TabsContent value="sharing" className="min-w-0">
+            {sharingBody}
+          </TabsContent>
+        </Tabs>
+      )}
 
       <ConfirmSharing
         open={confirmSharing}
@@ -1069,6 +1213,20 @@ export function McpManagement({
         currentLaunches={currentLaunches}
         onApprove={approveFromReview}
         onClose={closeReview}
+      />
+      <CwdQuestionDialog
+        name={cwdAsk?.name ?? null}
+        busy={answerCwd.isPending}
+        onCancel={() => setCwdAsk(null)}
+        onAnswer={answer => {
+          if (!cwdAsk) return
+          if (answer === 'not_used' && cwdAsk.approve) {
+            setCwdAsk(null)
+            setStub.mutate({ name: cwdAsk.name, stub: true, ...cwdAsk.approve, cwdUse: answer })
+          } else {
+            answerCwd.mutate({ name: cwdAsk.name, routed: cwdAsk.routed, answer })
+          }
+        }}
       />
       <ConfirmReload
         open={confirmReload}

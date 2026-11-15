@@ -1892,7 +1892,7 @@ class TestRewindChainedHistory:
 
 @pytest.mark.asyncio
 async def test_a_paused_crew_session_is_not_rewound(tmp_path, monkeypatch):
-    """Ultra Mode "Pause all" holds the session: the rewind's replacement turn could
+    """Conductor mode "Pause all" holds the session: the rewind's replacement turn could
     not run, so nothing is truncated and the refusal names the pause."""
     from aiohttp.test_utils import make_mocked_request
 

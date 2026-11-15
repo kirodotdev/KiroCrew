@@ -576,6 +576,25 @@ describe('ChatInput + menu trigger shortcuts', () => {
     expect(screen.queryByText('Use a skill')).toBeNull()
   })
 
+  it.each([
+    ['Use a skill', {}],
+    ['Reference a file', { onFileSelect: vi.fn() }],
+    ['Slash commands', {}],
+  ])('reopening + after "%s" closes that picker instead of stacking over it', (item, extra) => {
+    function Harness() {
+      const [value, setValue] = React.useState('')
+      return <ChatInput {...base} {...extra} value={value} onChange={setValue} />
+    }
+    renderWithProviders(<Harness />)
+    openPlusMenu()
+    const pick = screen.queryByTitle(item) ?? screen.getByText(item)
+    fireEvent.click(pick)
+    expect(screen.getByRole('listbox')).toBeInTheDocument()
+    openPlusMenu()
+    expect(screen.getByText('Use a skill')).toBeInTheDocument()
+    expect(screen.queryByRole('listbox')).toBeNull()
+  })
+
   it('a mousedown outside the portaled menu closes it', () => {
     renderWithProviders(<ChatInput {...base} onChange={vi.fn()} />)
     openPlusMenu()
@@ -797,6 +816,29 @@ describe('ChatInput context-usage popover', () => {
     expect(await screen.findByText('Following global (70%)')).toBeInTheDocument()
     expect(screen.getByText('70%')).toBeInTheDocument()
     expect(screen.queryByText(/Reset to global/)).toBeNull()
+  })
+
+  it('on KAS following the global, says KAS compacts on its own instead of claiming the global threshold', async () => {
+    // KAS ignores the global session.autocompact_pct (#33224): the popover must
+    // not say the chat follows it.
+    vi.spyOn(api, 'chatSlotAutocompact').mockResolvedValue({ pct: null, global_pct: 70, agent_pct: null, agent: null, harness_managed: 'kas', min: 5, max: 90 })
+    renderWithSlot(<ChatInput {...base} contextPct={42} contextWindowTokens={200_000} />)
+    fireEvent.click(screen.getByLabelText('Context usage'))
+    expect(await screen.findByText('Auto-compact at')).toBeInTheDocument()
+    expect(screen.queryByText(/Following global/)).toBeNull()
+    expect(screen.getByText('Set by KAS')).toBeInTheDocument()
+    expect(screen.getByTestId('autocompact-harness-managed-note').textContent)
+      .toBe('This chat runs on KAS, which compacts on its own. Set a threshold here to compact sooner.')
+  })
+
+  it('on KAS with an explicit threshold, shows that threshold and the reset link as today', async () => {
+    vi.spyOn(api, 'chatSlotAutocompact').mockResolvedValue({ pct: 50, global_pct: 70, harness_managed: 'kas', min: 5, max: 90 })
+    renderWithSlot(<ChatInput {...base} contextPct={42} contextWindowTokens={200_000} />)
+    fireEvent.click(screen.getByLabelText('Context usage'))
+    expect(await screen.findByText('Reset to global (70%)')).toBeInTheDocument()
+    expect(screen.getAllByText('50%').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Set by KAS')).toBeNull()
+    expect(screen.queryByTestId('autocompact-harness-managed-note')).toBeNull()
   })
 
   it('shows the agent default and a note naming the agent when it declares one', async () => {

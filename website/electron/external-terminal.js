@@ -42,6 +42,9 @@ const { spawn } = require("child_process");
 // the internal secret, the same channel the native browser panel drains on.
 const GRANT_REDEEM_PATH = "/api/terminal/external-grant";
 
+/** How long a grant redemption may take before the click falls back. */
+const REDEEM_TIMEOUT_MS = 10_000;
+
 // A grant is the gateway's `secrets.token_urlsafe(32)`: 43 URL-safe characters.
 // Anything else is refused before a request is made.
 const GRANT_RE = /^[A-Za-z0-9_-]{32,128}$/;
@@ -191,9 +194,11 @@ function detectTerminals(deps = {}) {
  * @param {string} deps.backendUrl - this shell's own local gateway URL
  * @param {() => string} deps.getSecret - the internal secret, re-read per call
  * @param {(url: string, init: object) => Promise<{status: number, json: () => Promise<any>}>} deps.fetchFn
+ * @param {number} [deps.timeoutMs] - bound on the request and its body, so a
+ *   gateway that accepts but never answers cannot leave the click unanswered
  * @returns {Promise<{app: string, cwd: string}|null>}
  */
-async function redeemGrant(grant, { backendUrl, getSecret, fetchFn }) {
+async function redeemGrant(grant, { backendUrl, getSecret, fetchFn, timeoutMs = REDEEM_TIMEOUT_MS }) {
   if (typeof grant !== "string" || !GRANT_RE.test(grant)) return null;
   const secret = typeof getSecret === "function" ? getSecret() : "";
   if (!secret) return null;
@@ -203,6 +208,7 @@ async function redeemGrant(grant, { backendUrl, getSecret, fetchFn }) {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Internal-Secret": secret },
       body: JSON.stringify({ grant }),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     return null;

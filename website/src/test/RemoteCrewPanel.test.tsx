@@ -300,12 +300,12 @@ describe('RemoteCrewPanel', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     // The stamped caption agrees with the EC2 badge hint on the same row —
-    // it was launched by the EC2 launcher — not the hedging "cannot verify" copy.
+    // it was launched by the EC2 launcher — not the hedging "cannot tell" copy.
     expect(
       await screen.findByText(/Launched by the EC2 launcher\. Its instance may still be running and billing/i),
     ).toBeInTheDocument()
     expect(
-      screen.queryByText(/cannot verify whether this crew has AWS resources/i),
+      screen.queryByText(/cannot tell from here whether it launched this crew/i),
     ).not.toBeInTheDocument()
     expect(screen.queryByText(/Added by you/i)).not.toBeInTheDocument()
 
@@ -363,7 +363,7 @@ describe('RemoteCrewPanel', () => {
     // A fargate row IS an AWS resource, so its caption states that plainly and
     // never hedges the way an unidentified SSM row does.
     expect(within(row).getByText(/An AWS Fargate task\./)).toBeInTheDocument()
-    expect(within(row).queryByText(/cannot verify whether this crew has AWS resources/)).not.toBeInTheDocument()
+    expect(within(row).queryByText(/cannot tell from here whether it launched this crew/)).not.toBeInTheDocument()
   })
 
   it('shows a failed turn URL copy and clears it after a successful retry', async () => {
@@ -446,7 +446,7 @@ describe('RemoteCrewPanel', () => {
     const row = name.closest('[data-crew-id="f3"]') as HTMLElement
     expect(row).not.toBeNull()
     expect(within(row).getByText(/An AWS Fargate task\./)).toBeInTheDocument()
-    expect(within(row).queryByText(/cannot verify whether this crew has AWS resources/)).not.toBeInTheDocument()
+    expect(within(row).queryByText(/cannot tell from here whether it launched this crew/)).not.toBeInTheDocument()
   })
 
   it('still lists the crews when the gateway cannot do cloud provisioning at all', async () => {

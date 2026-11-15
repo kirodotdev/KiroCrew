@@ -216,6 +216,23 @@ class TestIngestTextPartialFailureRollback:
         ).fetchone()
         assert row["sync_status"] == "error"
 
+    @pytest.mark.asyncio
+    async def test_a_retry_after_a_failure_keeps_the_next_identical_drop_a_no_op(
+        self, pipeline, kstore
+    ):
+        # A failed drop forgets the source's content_hash so the same text can
+        # be retried; the successful retry must record it again, or every later
+        # identical drop re-runs extraction and replaces the items.
+        text = "body text long enough to split into two chunks"
+        real_embed = pipeline._embed_item
+        _fail_second_embed(pipeline)
+        assert await pipeline.ingest_text(text, "Note") is not None
+        pipeline._embed_item = real_embed
+        assert await pipeline.ingest_text(text, "Note") is not None
+
+        assert await pipeline.ingest_text(text, "Note") is None
+        assert pipeline.extractor.extract_batch.await_count == 2
+
 
 class TestArtifactIngestRecordsPipelineIds:
     """Site 3: _set_state records the ids the pipeline reported, non-empty."""
@@ -382,7 +399,7 @@ class TestSnapshotQueryRatchet:
         assert hits == [], (
             f"ingest_text contains '{_SNAPSHOT_QUERY}' literals at lines "
             f"{hits}; it must contain none. Both the created-ids snapshot "
-            "(#4431) and the inline _old_item_ids resolution (#4441) are "
+            " and the inline _old_item_ids resolution are "
             "retired here: the old-group read lives in _resolve_old_item_ids "
             "and runs inside the off-loop duplicate-gate hop."
         )
@@ -395,7 +412,7 @@ class TestSnapshotQueryRatchet:
         assert hits == [], (
             f"ingest_file contains '{_SNAPSHOT_QUERY}' literals at lines "
             f"{hits}; it must contain none. The _old_item_ids resolution "
-            "(#4441) lives in _resolve_old_item_ids and runs inside the "
+            " lives in _resolve_old_item_ids and runs inside the "
             "off-loop duplicate-gate hop -- an inline read here lands on the "
             "asyncio event loop (~20k rows per read on a large source)."
         )

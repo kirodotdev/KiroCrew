@@ -1,10 +1,10 @@
 ---
 title: A loop the model arms picks no cycle cap; it ends itself with one final report
-status: accepted
+status: implemented
 author: kirocrew agent session, directed by iamwhatever
 created: 2026-11-08
-last-audited: 2026-11-08
-audited-at: 664feb41be
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: 33382
 implementation-prs: [33385]
 tracking-issues: [33381]
@@ -14,7 +14,8 @@ superseded-by: []
 
 # RFC: A loop the model arms picks no cycle cap; it ends itself with one final report
 
-Status: accepted. The repository owner (iamwhatever) made this decision on
+Status: implemented in [#33385](https://github.com/kirodotdev/KiroCrew/pull/33385)
+(`57a1996a63`); verified at `1d08e941b3`. The repository owner (iamwhatever) made this decision on
 2026-11-08 in the conductor chat that dispatched the work, in four rulings
 listed in section 10. It takes effect when this document merges. The
 implementation is [#33385](https://github.com/kirodotdev/KiroCrew/pull/33385),
@@ -84,7 +85,7 @@ A model that arms a loop today also picks when the loop dies.
 - When a conductor binds a worker and holds no active loop,
   `conductor_patrol.py` `ensure_patrol`, called from the bind route in
   `dashboard/handlers/work_ledger_conductor.py`, arms a gated
-  `watch="work-ledger"` patrol every 600 s (`PATROL_INTERVAL_SECS`,
+  `watch="work-ledger"` patrol every 300 s (`PATROL_INTERVAL_SECS`,
   `PATROL_WATCH`).
 - Restart survival: on `AutoNudgeService.start` (`autonudge.py`), active loops
   are reloaded (`autonudge_service/store_loader.py` `_load`) and their timers
@@ -120,8 +121,8 @@ A model that arms a loop today also picks when the loop dies.
 
 - A gated loop's quiet tick costs no turn. Silence is still bounded: one forced
   delivery after `_MAX_QUIET_STREAK = 10` quiet ticks, or after
-  `_IDLE_LEDGER_QUIET_FLOOR = 40` on an idle work ledger or on a pull request
-  that only waits on a reviewer (`autonudge_service/gate.py`, chosen by
+  `_REVIEW_WAIT_QUIET_FLOOR = 40` on a pull request that only waits on a
+  reviewer (`autonudge_service/gate.py`, chosen by
   `_quiet_floor`; the PR case is `_pr_waits_only_on_review`: open, not a
   draft, mergeable, every check finished with none failed, and
   `REVIEW_REQUIRED`).
@@ -142,9 +143,10 @@ A model that arms a loop today also picks when the loop dies.
 3. **The runtime defaults to the operator ceiling**, `monitoring.max_runtime_secs`
    (7 days as shipped): the one runaway backstop, kept on purpose.
 4. **Explicit values are honoured**, except on a `watch="work-ledger"` patrol,
-   which takes no bound from the model: no cycle cap and the ceiling runtime, on
-   `monitor_start`, on a `monitor_update` that adds the watch or touches a
-   bound, and on the gateway's default patrol.
+   which takes no bound from the model: the 300 s patrol interval, no cycle cap
+   and the ceiling runtime, on `monitor_start`, on a `monitor_update` that adds
+   the watch or touches a bound or the interval, and on the gateway's default
+   patrol.
 5. **The model ends the loop itself.** It checks live state (for example
    `gh pr view` for a PR watch). When the exit condition holds, it sends the user
    ONE final report (what landed, what is left, links), then, in a later step,
@@ -226,8 +228,8 @@ still ends at the 7-day ceiling, and a loop that wakes every interval keeps the
 24-cycle cap.
 
 - A model that never stops a finished patrol leaves it running until the 7-day
-  backstop. On an idle ledger that costs one floor turn every 40 quiet ticks
-  (about 6.7 hours at the 600 s default interval).
+  backstop. On an idle ledger that costs one floor turn every 10 quiet ticks
+  (about 50 minutes at the 300 s patrol interval).
 - The tool's directive replay reads no session log, so it cannot resolve a bare
   `PR <n>`. The implementation marks such a default cap and the applier decides
   it again with the log, so the cap follows the gate the loop actually gets.

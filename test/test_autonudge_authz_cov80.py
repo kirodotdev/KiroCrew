@@ -44,6 +44,7 @@ from kiro_crew.monitoring.models import (
     MonitorOutcome,
     MonitorState,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 from kiro_crew.testing.wait import async_wait_until
 
 
@@ -1904,15 +1905,16 @@ class TestNormalizeBannerTruncate:
     sliced into a raw prefix that defeats full-token detection."""
 
     def test_a_credential_straddling_the_cap_is_masked_not_sliced(self) -> None:
-        # 20-char key starts 10 chars before the cap and runs past it: a
+        # A 40-char AWS secret (an AWS key ID is kept visible, so it cannot stand
+        # in) starts 10 chars before the cap and runs past it: a
         # slice-before-redact (the old ``objective[:cap]``) would keep the raw
-        # 10-char prefix ``AKIAIOSFOD`` because the truncated token does not
-        # match the scanner.
-        straddling = "x" * (MAX_BANNER_CHARS - 10) + "AKIAIOSFODNN7EXAMPLE" + " tail"
+        # 10-char prefix because the truncated token does not match the scanner.
+        secret = SAMPLE_AWS_SECRET
+        straddling = "x" * (MAX_BANNER_CHARS - 11) + " " + secret + " tail"
         value, error = normalize_banner(straddling, absent_ok=True, truncate=True)
         assert error is None
         assert len(value) <= MAX_BANNER_CHARS
-        assert "AKIA" not in value, "a raw credential prefix survived the cap cut"
+        assert secret[:10] not in value, "a raw credential prefix survived the cap cut"
 
     def test_a_long_credential_free_objective_truncates_instead_of_dropping(self) -> None:
         value, error = normalize_banner(

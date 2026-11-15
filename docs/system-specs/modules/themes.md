@@ -13,6 +13,14 @@ The frontend pack-author contract (the CSS-var surface and the
 [`website/docs/theming-contract.md`](../../../website/docs/theming-contract.md);
 where the two overlap, this spec governs.
 
+## Browser toolbar colour
+
+`useTheme` updates the existing `theme-color` meta tag from the resolved `--bg`
+token after theme changes, including installed-palette refreshes. It reads the
+target token rather than the body's in-progress colour transition. Before CSS
+supplies a token, the HTML boot colour remains in place. Browsers decide whether
+and where to use this hint; it does not change the page's colours.
+
 ## Capability Tiers
 
 `theme.json` MUST declare `"formatVersion": 1` (required integer major,
@@ -82,7 +90,9 @@ and rendered like the loader art through `PackLoaderImage`, so an animated image
 plays in place and holds its first frame under `prefers-reduced-motion: reduce`).
 Precedence: compiled `registerThemeBranding()` `logo` → pack welcome image →
 pack `logo` → the stock ghost. So a pack that ships only a logo shows it there
-too, matching the left rail.
+too, matching the left rail. The left rail and the narrow-screen header draw the
+logo through `PackLoaderImage` as well, so an animated logo holds its first frame
+under reduced motion.
 
 The desktop app's boot splash (`website/electron/loading.html`, the "waiting for
 gateway" screen) paints before any gateway can serve a pack, so a Level-1 pack's
@@ -100,8 +110,8 @@ or one over 512 KB, which clears the stored art. `splashQuery` passes the file a
 place of the ghosts and of the closing wordmark, over the theme accent the splash
 already follows; with no art, or art that fails to load, the stock ghosts play.
 Under `prefers-reduced-motion: reduce` the art's `<img>` stays hidden and only
-decodes it, and one frame is painted onto a canvas that never repaints, as the
-dashboard's `PackLoaderImage` does, so an animated SVG holds still.
+decodes it, and one frame is painted onto a canvas, as the dashboard's
+`PackLoaderImage` does, so an animated SVG holds still.
 Like the accent, it is the last value any dashboard window reported, so it shows
 from the launch after the theme is picked.
 

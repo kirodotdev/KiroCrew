@@ -16,6 +16,7 @@ from kiro_crew.skills import _BUILTIN_SKILLS_DIR
 
 GOAL_SKILL = Path(_BUILTIN_SKILLS_DIR) / "goal-conductor" / "SKILL.md"
 TEAM_LEAD_SKILL = Path(_BUILTIN_SKILLS_DIR) / "team-lead" / "SKILL.md"
+REMOTE_REF = Path(_BUILTIN_SKILLS_DIR) / "goal-conductor" / "references" / "remote-dispatch.md"
 
 
 def _flat(text: str) -> str:
@@ -33,7 +34,7 @@ def _goal() -> str:
 
 
 def test_goal_conductor_steers_a_working_fleet_like_one_worker():
-    section = _section(_goal(), "### Goal changes mid-flight", "## Remote dispatch (preview)")
+    section = _section(_goal(), "### Goal changes mid-flight", "## When a conductor dispatched you")
     # The fleet case points at the existing rule rather than restating it.
     assert "**Steer corrections, queue everything else.**" in section
     assert (
@@ -67,9 +68,36 @@ def test_goal_conductor_handles_routine_incidents_itself():
 
 
 def test_goal_conductor_dispatches_remote_workers_as_visible_sessions():
-    which = _section(_goal(), "#### Which agent", "### Patrol")
-    assert "**Remote workers are visible sessions.**" in which
-    assert "never as hidden subagents" in which
+    ref = _flat(REMOTE_REF.read_text(encoding="utf-8"))
+    assert "**Remote workers are visible sessions.**" in ref
+    assert "never as hidden subagents" in ref
+
+
+def _crew_descriptions(monkeypatch, enabled: bool) -> list[str]:
+    from kiro_crew import mcp_dashboard, remote_dispatch
+
+    monkeypatch.setattr(remote_dispatch, "remote_dispatch_enabled", lambda: enabled)
+    out = []
+    for tool in mcp_dashboard._list_tools():
+        props = tool.get("inputSchema", {}).get("properties", {})
+        out += [props[k]["description"] for k in ("crew", "work_item") if k in props]
+    return out
+
+
+def test_remote_dispatch_text_is_reachable_only_while_the_preview_is_on(monkeypatch):
+    # Off: SKILL.md says nothing about crew=, and no tool names the reference file.
+    assert "crew=" not in _goal() and "remote-dispatch.md" not in _goal()
+    assert "Remote dispatch" not in _goal()
+    off = _crew_descriptions(monkeypatch, False)
+    assert not any("remote-dispatch.md" in d for d in off)
+    # On: every crew / work_item description points at the file, which exists and
+    # keeps the owner-turn-only rule and its refusal codes.
+    on = _crew_descriptions(monkeypatch, True)
+    assert len(on) == 6 and all("references/remote-dispatch.md" in d for d in on)
+    ref = _flat(REMOTE_REF.read_text(encoding="utf-8"))
+    assert "**Conductor mode owner turns only.**" in ref
+    for code in ("not_user_turn", "conductor_mode_only", "crew_owner_unverifiable"):
+        assert code in ref, code
 
 
 def test_goal_conductor_reads_the_woken_item_alone():

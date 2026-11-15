@@ -16,6 +16,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.session_handle import AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import (
@@ -175,7 +176,7 @@ async def test_result_text_is_credential_redacted():
     """Command output is backend-echoed text that reaches the dashboard —
     the two-pass redaction (URLs + credentials) must run on it, matching
     send_command's auditable control at the same surface."""
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = github_classic(seed=81)
     handle, _ = _make(response_result={"message": f"key {secret} leaked"})
     events = await _collect(handle, "/env")
     text_events = [ev for ev in events if ev.kind == EVENT_TEXT_CHUNK]
@@ -213,6 +214,47 @@ async def test_agent_switch_not_duplicated_when_notification_arrived():
     events = await _collect(handle, "/agent kirocrew")
     switches = [ev for ev in events if ev.kind == EVENT_AGENT_SWITCHED]
     assert len(switches) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_command_turn_switch_is_owned_even_when_the_notification_fans_out():
+    """The issuer's own ``/agent`` switch must be emitted OWNED (not
+    ``runtime_global``) even when the runtime fanned its ``session/update`` out
+    ownerless because a second queue is registered.
+
+    ``fanout_no_owner`` means "nobody can tell", not "a peer's". On a
+    ``commands/execute`` turn THIS handle is provably the issuer, so the switch
+    is taken from the OWNED command result and the ownerless notification is not
+    surfaced -- otherwise the consumer, which gates its persistence/reset/spec-
+    hooks bookkeeping on ``not runtime_global``, would strand the issuer's own
+    switch on the old agent (GPT 6.1 W14 F1).
+    """
+    notification = JsonRpcMessage(
+        method=METHOD_AGENT_SWITCHED,
+        params={"agentName": "kirocrew"},  # no sessionId -> fanned out
+    )
+    notification.fanout_no_owner = True
+    handle, _ = _make(
+        response_result={"data": {"agent": {"name": "kirocrew"}}},
+        updates=[notification],
+    )
+    handle.chat_shared = True
+    events = await _collect(handle, "/agent kirocrew")
+    switches = [ev for ev in events if ev.kind == EVENT_AGENT_SWITCHED]
+    assert [ev.text for ev in switches] == ["kirocrew"]
+    assert switches[0].runtime_global is False, "the issuer's own switch must be owned"
+
+
+@pytest.mark.asyncio
+async def test_an_unshared_handle_still_surfaces_the_fanned_switch_notification():
+    """Off a shared chat runtime the fanned notification is surfaced as before."""
+    notification = JsonRpcMessage(method=METHOD_AGENT_SWITCHED, params={"agentName": "kirocrew"})
+    notification.fanout_no_owner = True
+    handle, _ = _make(response_result={}, updates=[notification])
+    events = await _collect(handle, "/agent kirocrew")
+    switches = [ev for ev in events if ev.kind == EVENT_AGENT_SWITCHED]
+    assert [ev.text for ev in switches] == ["kirocrew"]
+    assert switches[0].runtime_global is True
 
 
 # ── Event draining ───────────────────────────────────────────────────────────
@@ -371,17 +413,22 @@ async def test_a_tool_in_flight_suspends_the_post_failure_budget(monkeypatch):
     The tool-stall watchdog owns that case on its own longer, liveness-gated
     budget."""
     from kiro_crew.acp import session_handle as sh
+    from kiro_crew.acp import session_handle_dispatch
 
     monkeypatch.setattr(sh, "_COMPACTION_FAILED_TURN_BUDGET", 0.05)
+    monkeypatch.setattr(
+        session_handle_dispatch, "QUEUE_POLL_SECS", 0.2  # flake-ok: more budget ticks per turn
+    )
 
     handle, _rt = _make(respond=False, updates=[_failed_compaction()])
 
-    # The turn ceiling must outlast one queue tick (the loop parks on the
-    # session queue for up to 5s, and the budget is checked at the loop top), or
-    # the unsuspended budget could not fire either and the test would be vacuous.
+    # The turn ceiling must outlast several queue ticks (the loop parks on the
+    # session queue for up to QUEUE_POLL_SECS, and the budget is checked at the
+    # loop top), or the unsuspended budget could not fire either and the test
+    # would be vacuous.
     start = time.monotonic()
     events = []
-    async for ev in handle.prompt("hello", timeout=8.0):
+    async for ev in handle.prompt("hello", timeout=1.5):
         events.append(ev)
         if ev.kind == EVENT_COMPACTION_STATUS and ev.text == "failed":
             # The turn recovers and dispatches a tool. Set from the consumer
@@ -392,7 +439,7 @@ async def test_a_tool_in_flight_suspends_the_post_failure_budget(monkeypatch):
     # The turn ran to its own deadline instead of being reaped at the budget,
     # so the terminal event is the ordinary timeout, not the compaction reason.
     assert events[-1].stop_reason != STOP_REASON_COMPACTION_FAILED
-    assert elapsed >= 7.0, f"turn ended at {elapsed:.2f}s — the budget reaped a live tool"
+    assert elapsed >= 1.4, f"turn ended at {elapsed:.2f}s — the budget reaped a live tool"
     # Still armed: the budget re-fires once the tool resolves.
     assert handle._compaction_failed_at is not None
 
@@ -461,24 +508,28 @@ async def test_ownerless_failure_does_not_arm_a_co_tenant_budget(monkeypatch):
     at the budget — and every consumer resets the session on that terminal, so
     the peer's failure destroys unrelated work."""
     from kiro_crew.acp import session_handle as sh
+    from kiro_crew.acp import session_handle_dispatch
 
     monkeypatch.setattr(sh, "_COMPACTION_FAILED_TURN_BUDGET", 0.2)
+    monkeypatch.setattr(
+        session_handle_dispatch, "QUEUE_POLL_SECS", 0.2  # flake-ok: more budget ticks per turn
+    )
 
     frame = _failed_compaction()
     frame.fanout_no_owner = True
     handle, _rt = _make(respond=False, updates=[frame])
 
-    # The deadline must sit past the dispatch loop's queue park (up to 5s) or
-    # the budget never gets a tick to fire on and the test cannot fail.
+    # The deadline must sit several queue parks (QUEUE_POLL_SECS) past the
+    # budget, or the budget never gets a tick to fire on and the test cannot fail.
     start = time.monotonic()
-    events = [ev async for ev in handle.prompt("hello", timeout=7.0)]
+    events = [ev async for ev in handle.prompt("hello", timeout=1.5)]
     elapsed = time.monotonic() - start
 
     assert handle._compaction_failed_at is None, "a peer's failure armed this session"
     assert events[-1].kind == EVENT_COMPLETE
     assert events[-1].stop_reason != STOP_REASON_COMPACTION_FAILED
     assert (
-        elapsed >= 5.5
+        elapsed >= 1.4
     ), f"turn ended after {elapsed:.2f}s — a co-tenant's failure reaped this turn"
 
 

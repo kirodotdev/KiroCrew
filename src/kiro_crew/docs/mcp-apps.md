@@ -8,11 +8,11 @@ other servers ship PDF viewers, forms, and dashboards the same way. This is the
 [SEP-1865](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx)
 `ui` extension — Kiro Crew targets the **Stable 2026-01-26** revision — and it works with any conforming command-based stdio server: nothing is hardcoded per vendor.
 
-If you just want it working: **Customize → Connections → MCP Servers → MCP Management → Advanced → the server's Share switch (Enable MCP sharing) → on**. That switch is what this page calls routing: it adds the server to `mcp_gateway.stub_servers`. The rest of this page explains what that changes and what to check when a render does not appear.
+If you just want it working: **MCP Servers → Sharing → the server's Share switch (Enable MCP sharing) → on**. That switch is what this page calls routing: it adds the server to `mcp_gateway.stub_servers`. The rest of this page explains what that changes and what to check when a render does not appear.
 
 ## Adding a server
 
-Open **Customize > Connections > MCP Servers** and click **Add Server**.
+Open **MCP Servers** and click **Add Server**.
 Search for a server, select it, and review its install plan before installing.
 Every official-registry install lands disabled: installation alone does not
 start it. In the MCP Servers list, review the installed server's spec, set any
@@ -34,9 +34,9 @@ Routing is the required gate: the gateway daemon intercepts a routed server's to
 
 ### From the dashboard
 
-Both live in **MCP Management**, under the servers list on **Customize → Connections → MCP Servers**:
+Both live in **MCP Management**, on the **Sharing** view of **MCP Servers**:
 
-1. **Route the server through the gateway**: under **Advanced**, turn on the server's **Share** switch (**Enable MCP sharing**). Turning it on approves the exact command, arguments and environment the server launches with; the row's **Details** shows them. This adds the server to `mcp_gateway.stub_servers`; applying the routing change rebuilds affected agent MCP toolsets, so do it between tasks.
+1. **Route the server through the gateway**: turn on the server's **Share** switch (**Enable MCP sharing**). Turning it on approves the exact command, arguments and environment the server launches with; the row's **Details** shows them. This adds the server to `mcp_gateway.stub_servers`; applying the routing change rebuilds affected agent MCP toolsets, so do it between tasks.
 2. **Share MCP servers across chats**, the switch at the top, is optional. `mcp_gateway.enabled` controls whether already routed stdio servers share backends across sessions; it is independent of whether their `ui://` resources render.
 
 What each row's state and the **Pre-install npm servers** control mean: [Sharing MCP servers across chats](connections.md#sharing-mcp-servers-across-chats).
@@ -47,9 +47,9 @@ Routing needs that approval. The approval is tied to the server's launch
 since you approved it, is refused: it is left unwrapped, runs directly inside each
 session, and its results render as plain text. MCP Management lists it as needing
 approval (`added_outside_dashboard`) or re-approval (`changed_needs_reapproval`).
-The MCP Servers list under Connections names each refused server with a link to
-MCP Management (`/capabilities?tab=mcp&view=mcp-servers#mcp-management`, in
-Customize → Connections → MCP Servers → MCP Management), and `kirocrew doctor` reports it
+The MCP Servers list names each refused server with a link to
+MCP Management (`/mcp?view=sharing`, in
+MCP Servers → Sharing), and `kirocrew doctor` reports it
 as an issue. An approval takes effect for new
 chats after the gateway restarts.
 

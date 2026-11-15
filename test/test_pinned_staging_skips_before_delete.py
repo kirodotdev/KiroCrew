@@ -28,7 +28,7 @@ from pinned_staging_helpers import (
     pinned_only,
 )
 
-from kiro_crew import pinned_fs, snapshot
+from kiro_crew import pinned_fs, snapshot, snapshot_restore
 
 #: Windows implements only the read-only bit, so an exact permission-bit assertion is a
 #: POSIX statement. Everything else in these tests (content, mtime, which file exists)
@@ -87,9 +87,9 @@ def test_the_replace_path_refuses_a_root_recreated_after_its_own_rmtree(
     green, so the flag could be removed and nothing would notice -- the same untested-wiring
     gap that lets a fix silently rot. This drives the real `_do_replace`.
 
-    The race is reproduced at its outcome rather than by timing: `rmtree` is replaced with
-    one that removes the tree and immediately recreates the bare root, which is exactly the
-    state a gateway recreating its workspace leaves behind.
+    The race is reproduced at its outcome rather than by timing: the tree removal is replaced
+    with one that removes the tree and immediately recreates the bare root, which is exactly
+    the state a gateway recreating its workspace leaves behind.
     """
     mc = tmp_path / "home"
     live = mc / "workspace"
@@ -100,19 +100,19 @@ def test_the_replace_path_refuses_a_root_recreated_after_its_own_rmtree(
     (snap / "workspace").mkdir(parents=True)
     (snap / "workspace" / "from-archive.txt").write_text("new\n", encoding="utf-8")
 
-    real_rmtree = snapshot.shutil.rmtree
+    real_remove = snapshot_restore._rmtree_or_raise
 
-    def _rmtree_then_recreate(path, *a, **k):
-        real_rmtree(path, *a, **k)
+    def _remove_then_recreate(path):
+        real_remove(path)
         os.mkdir(path)  # the gateway comes back before the copy starts
 
-    monkeypatch.setattr(snapshot.shutil, "rmtree", _rmtree_then_recreate)
+    monkeypatch.setattr(snapshot_restore, "_rmtree_or_raise", _remove_then_recreate)
 
     # The refusal must SURFACE with its message intact -- that message is what proves
     # `must_create=True` reached the call site, which is this test's whole point.
     #
     # It may arrive wrapped. A refusal mid-mutation now triggers the phase-two rollback, and
-    # this test's own `rmtree` patch sabotages the recovery leg too (it recreates the root the
+    # this test's own removal patch sabotages the recovery leg too (it recreates the root the
     # recovery is about to refill), so recovery legitimately cannot complete and the refusal
     # is re-raised as its `cause`. Accepting either form keeps the wiring assertion exactly as
     # strong -- the message is still required -- without asserting that a mid-mutation refusal
@@ -504,10 +504,10 @@ def test_a_root_created_between_the_check_and_the_mkdir_is_not_restamped(
 
     def _recreate_the_root_first(*a, **k):
         fd = real_pin(*a, **k)
-        # Only in the DESTINATION's window. An earlier version fired on the SOURCE root's
-        # pin, which happens first, so the root already existed by the time the old
-        # name-based check sampled it -- and the mutation that restored the bug passed.
-        # A fixture that fires outside the window under test proves nothing.
+        # Only in the DESTINATION's window. Firing on the SOURCE root's pin, which
+        # happens first, would let the root exist before a name-based check samples
+        # it, so a mutation that restores the bug would pass. A fixture that fires
+        # outside the window under test proves nothing.
         if "destination" in str(k.get("what", "")) and not dst.exists():
             dst.mkdir()  # the gateway, in the window a name check leaves open
             # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
@@ -555,8 +555,8 @@ def test_no_name_based_filesystem_question_where_a_descriptor_is_held() -> None:
     #
     # `chmod`/`utime`/`unlink` are deliberately NOT here: those have legitimate by-name
     # fallbacks for platforms without `os.fchmod`, and separating them needs the helper-split
-    # refactor applied to the metadata appliers. Measured, that is 5 sites -- worth doing, and
-    # not worth dragging into this change. They stay outside the ratchet, stated rather than
+    # refactor applied to the metadata appliers. Measured, that is 5 sites -- worth doing
+    # separately. They stay outside the ratchet, stated rather than
     # silently omitted.
     banned_attrs = {
         "is_file",

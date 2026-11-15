@@ -82,6 +82,25 @@ class TestSlotFocusedFrame:
         with pytest.raises(asyncio.CancelledError):
             await task
 
+    def test_the_focus_prefetch_is_the_owners_return_to_the_chat(self):
+        """It is the one eager start that says a person is about to wait on a re-open."""
+        from kiro_crew.dashboard.ws import _handle_slot_focused
+
+        slot = _ChatSlot("t1")
+        state = self._state(slot)
+        with patch.object(chat_runner, "schedule_eager_spawn") as schedule:
+            _handle_slot_focused(state, "t1", None, owner=True)
+        schedule.assert_called_once_with(state, slot, allow_resume=True, focus_resume=True)
+
+    def test_a_focus_frame_from_anyone_else_arms_nothing(self):
+        from kiro_crew.dashboard.ws import _handle_slot_focused
+
+        slot = _ChatSlot("t1")
+        state = self._state(slot)
+        with patch.object(chat_runner, "schedule_eager_spawn") as schedule:
+            assert _handle_slot_focused(state, "t1", None, owner=False) is None
+        schedule.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_focus_change_cancels_previous_prefetch(self):
         from kiro_crew.dashboard.ws import _handle_slot_focused

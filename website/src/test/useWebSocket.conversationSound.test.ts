@@ -5,7 +5,6 @@ import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { store as globalStore } from '../store'
-import { api } from '../api/client'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { MC_NOTIFICATION_EVENT, type McNotificationDetail } from '../hooks/notificationEvent'
 
@@ -224,17 +223,14 @@ describe('conversation attention sounds', () => {
     expect(kinds).toEqual(['approval', 'cron'])
   })
 
-  it('keeps completion and question replay silent until reconnect catch-up settles', async () => {
+  it('keeps completion and question replay silent until the reconnect connect snapshot', async () => {
     const ws = await connect()
-    let finishSync!: () => void
-    vi.mocked(api.chatSlots).mockImplementationOnce(() => new Promise(resolve => {
-      finishSync = () => resolve([])
-    }))
     act(() => ws.open())
     ws.frame('chat_done', { slot: SLOT, continuing: false })
     ws.frame('question_card', { slot: SLOT, card_id: 'replayed', questions: QUESTIONS })
     expect(kinds).toEqual([])
-    await act(async () => finishSync())
+    // The connect snapshot ends the catch-up window.
+    ws.frame('slots', [{ key: SLOT, messages: 1, running: false }])
     ws.frame('question_card_resolved', { slot: SLOT, card_id: 'replayed' })
     ws.frame('chat_done', { slot: SLOT, continuing: false })
     expect(kinds).toEqual(['turn'])

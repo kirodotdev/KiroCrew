@@ -17,6 +17,7 @@ import asyncio
 import inspect
 import json
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -55,6 +56,12 @@ def dispatched(monkeypatch):
 def _interrupted(slot) -> None:
     """A user row with no reply: the shape a gateway restart mid-turn leaves."""
     slot.append("user", "refactor the parser", "msg msg-u")
+
+
+def _interrupted_long_ago(slot) -> None:
+    """The same unanswered user row, left a month ago."""
+    _interrupted(slot)
+    slot.messages[-1]["ts"] = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
 
 
 def _start_failed(slot) -> None:
@@ -556,10 +563,19 @@ _COUNT_FIXTURE = Path(__file__).parent / "fixtures" / "resume_all_candidates.jso
 #: The slots-payload fields the browser's count reads (``interruptedIdleSlots``
 #: plus the chat page's ``isChatPageSurface`` filter).
 _COUNT_ROW_FIELDS = frozenset(
-    {"mode", "surface", "running", "interrupted", "subagents_running", "executor"}
+    {
+        "mode",
+        "surface",
+        "running",
+        "interrupted",
+        "interrupted_stale",
+        "subagents_running",
+        "executor",
+    }
 )
 _TRANSCRIPTS = {
     "interrupted": _interrupted,
+    "interrupted_long_ago": _interrupted_long_ago,
     "start_failed": _start_failed,
     "finished": _finished,
     "empty": lambda _slot: None,

@@ -17,3 +17,17 @@ export function memoryAccessLabel(value: boolean | string): string {
     ? i18nT(MEMORY_ACCESS_KEYS[text as keyof typeof MEMORY_ACCESS_KEYS])
     : i18nT('pages.appDetailPage.memory_value', { value: text })
 }
+
+/**
+ * Whether a `permissions.memory` value asks for memory access at all. The
+ * manifest parser stores the field with `str()`, so a JSON `false` or `null` in
+ * app.json arrives as the text "False" or "None". The stored text stays as it
+ * is, because the app's signature covers it; only the page reads it as no
+ * request.
+ */
+export function memoryRequested(value: unknown): boolean {
+  if (value === true) return true
+  if (typeof value !== 'string') return false
+  const text = value.trim().toLowerCase()
+  return text !== '' && text !== 'false' && text !== 'none'
+}

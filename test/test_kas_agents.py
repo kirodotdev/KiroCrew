@@ -355,7 +355,8 @@ class TestTheSpecIsSpelledInKasToolIds:
             asked.append(ref)
             return ref != "use_subagent"
 
-        monkeypatch.setattr(kas_agents, "may_skip_gate_now", ceiling)
+        # The sub-agent ref is judged by the session's predicate (_authored_allow_gate).
+        monkeypatch.setattr(kas_agents, "may_skip_gate_for_session", lambda *_a: ceiling)
         out = to_client_custom_agent("a", _spec(tools=["*"], allowedTools=["subagent"]), "p")
         assert asked == ["use_subagent"]
         rules = (out.get("permissions") or {}).get("rules", [])
@@ -821,6 +822,14 @@ class TestPromptResolution:
             resolve_prompt({"prompt": f"file://{p}"}, agent_id="a", agents_dir=tmp_path)
             == "from disk"
         )
+
+    def test_a_file_uri_spelled_prompt_is_inlined(self, tmp_path):
+        """``file:///C:/...``, what ``Path.as_uri()`` writes on Windows, is an absolute path."""
+        p = tmp_path / "prompt.md"
+        p.write_text("from disk", encoding="utf-8")
+        ref = "file:///" + p.as_posix().lstrip("/")
+        agents_dir = tmp_path / "agents"
+        assert resolve_prompt({"prompt": ref}, agent_id="a", agents_dir=agents_dir) == "from disk"
 
     def test_missing_file_is_an_error_not_a_silent_empty_prompt(self, tmp_path):
         with pytest.raises(KasAgentTranslationError):

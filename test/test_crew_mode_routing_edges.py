@@ -20,6 +20,7 @@ from chat_test_helpers import _make_state
 from kiro_crew import crew_mode
 from kiro_crew.dashboard.chat_handlers import api_chat_mode, api_chat_slot_approve
 from kiro_crew.dashboard.state import SlotOrigin
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 @pytest.fixture(autouse=True)
@@ -445,7 +446,8 @@ async def test_B_an_app_token_is_refused(state):
 def test_B_the_card_shows_the_request_redacted_and_cut():
     from kiro_crew.dashboard.handlers import crew_workers
 
-    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    # A 40-char AWS secret; an AWS key ID is kept visible, so it cannot stand in.
+    secret = SAMPLE_AWS_SECRET
     row = {
         "pending_approval": True,
         "pending_approval_info": {

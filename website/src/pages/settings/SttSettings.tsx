@@ -7,7 +7,7 @@ import { Badge, Btn, FormSkeleton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import { CopyCommand } from '../../components/agentHarness/CopyCommand'
 import { api, ApiError, type AwsConsentStatus } from '../../api/client'
-import { RestartGatewayButton } from './AboutPanel'
+import { RestartGatewayButton } from './AboutPanelUpdateFlow'
 import { listMicrophones, selectableMicrophones, getPreferredMicId, setPreferredMicId, acquireMicStream, reportIfMicDenied, defaultMicName, DEFAULT_PSEUDO_DEVICE_ID } from '../../hooks/mic'
 import { MicTestStrip } from '../../components/MicTestStrip'
 import { fmtBytes, fmtLanguageName, fmtList, fmtNumber, fmtUnit } from '../../i18n/format'
@@ -55,6 +55,8 @@ import {
 } from '../../lib/pushToTalk'
 
 import { i18nT } from '../../i18n/t'
+import { WorkConfirmDeclined } from '../../utils/workInFlight'
+import { useRestartRefusal } from '../../hooks/useRestartRefusal'
 import ErrorNotice from '../../components/ErrorNotice'
 import { errMessage } from '../../utils/thunkError'
 
@@ -994,14 +996,23 @@ export default function SttSettings({ cardIndex }: {
     onSettled: () => qc.invalidateQueries({ queryKey: ['sttStatus'] }),
     onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.download_failed')),
   })
+  const restartRefusal = useRestartRefusal(detail => {
+    setRestarting(false)
+    setErr(detail || i18nT('pages.settings.aboutPanel.restart_failed'))
+  })
   const restartMut = useMutation({
     mutationFn: () => api.restartGateway(),
+    onMutate: () => restartRefusal.begin(),
     onSuccess: () => setRestarting(true),
     onError: (e: unknown) => {
       // Restarting normally resets the connection before a response arrives.
-      // Only a structured server rejection is a real failure.
-      if (e instanceof ApiError) setErr(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
-      else setRestarting(true)
+      // Only a structured server rejection is a real failure. A declined
+      // "work is running" confirmation is a quiet cancel, not one.
+      if (e instanceof WorkConfirmDeclined) return restartRefusal.end()
+      if (e instanceof ApiError) {
+        restartRefusal.end()
+        setErr(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
+      } else setRestarting(true)
     },
   })
 

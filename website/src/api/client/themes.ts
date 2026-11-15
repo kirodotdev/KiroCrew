@@ -57,6 +57,8 @@ export function createThemesEndpoints({ post, put, del, j, jfetch: fetch, sessio
       privacy_acked?: boolean
       /** Which Privacy chapter notice text the user acknowledged. */
       privacy_ack_version?: number
+      /** That notice version, when the text shown named the Kiro telemetry destination. */
+      kiro_telemetry_ack_version?: number
     }) =>
       put('/api/config/theme', body).then(j),
   }

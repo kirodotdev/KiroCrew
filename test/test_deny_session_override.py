@@ -38,12 +38,14 @@ from dashboard_approval_helpers import (
     _set_stream,
 )
 
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import session_control, session_deliver
 from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.dashboard.deny_override import (
     DENY_OVERRIDE_META_KEY,
     deny_key_family,
     deny_key_note_label,
+    deny_override_enabled,
     override_decision,
     override_offer_key,
     slot_deny_waivers,
@@ -1257,6 +1259,115 @@ class TestSessionScope:
         client.approve_tool.assert_not_called()
         assert _permission_rows(slot) == []
         assert "deny_waivers" not in cb.hooks.on_tool_call.call_args.kwargs
+
+
+def _set_deny_override(monkeypatch, enabled: bool) -> KiroCrewConfig:
+    """Make every ``KiroCrewConfig.load()`` return a config with ``agent.deny_override`` *enabled*."""
+    cfg = KiroCrewConfig()
+    cfg.agent.deny_override = enabled
+    monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(lambda *a, **k: cfg))
+    return cfg
+
+
+class TestOperatorOptOut:
+    """``agent.deny_override`` off: every deny-rules refusal is final, as before the card."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["normal", "trust", "yolo"])
+    async def test_off_refuses_at_once_with_no_card(self, tmp_path, monkeypatch, mode):
+        _no_pins(monkeypatch)
+        _set_deny_override(monkeypatch, False)
+        state, client = _make_state(tmp_path, context_builder=_scripted_gate([_RM_ROOT]))
+        slot = _make_slot(trust=(mode == "trust"))
+        if mode == "yolo":
+            state.enable_yolo()
+        _set_stream(client, _stream())
+
+        with _patch_stats():
+            await finished(
+                _run_chat(
+                    state,
+                    slot,
+                    "hello",
+                    _directive_user_origin=True,
+                    _directive_owner_origin=True,
+                ),
+                "the chat turn completing",
+            )
+
+        assert _permission_rows(slot) == []
+        client.approve_tool.assert_not_called()
+        client.reject_tool.assert_called_once()
+        assert any(_RM_ROOT in (m.get("content") or "") for m in slot.messages)
+
+    def test_off_hides_session_overrides_and_on_brings_them_back(self, monkeypatch):
+        slot = _make_slot()
+        slot._deny_waivers.add(_RM_ROOT)
+        cfg = _set_deny_override(monkeypatch, False)
+        assert slot_may_override(slot, _shell_event()) is False
+        assert slot_deny_waivers(slot, _shell_event()) == frozenset()
+
+        cfg.agent.deny_override = True
+        assert slot_deny_waivers(slot, _shell_event()) == frozenset({_RM_ROOT})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("answer", ["deny_override_once", "deny_override_session"])
+    async def test_a_card_showing_when_turned_off_cannot_grant(self, tmp_path, monkeypatch, answer):
+        import asyncio
+
+        _no_pins(monkeypatch)
+        cfg = _set_deny_override(monkeypatch, True)
+        state, client = _make_state(tmp_path, context_builder=_scripted_gate([_RM_ROOT]))
+        slot = _make_slot()
+        _set_stream(client, _stream())
+
+        def _turn_off():
+            cfg.agent.deny_override = False
+
+        task = asyncio.create_task(_answer_approval(slot, "req-1", answer, before_answer=_turn_off))
+        try:
+            with _patch_stats():
+                await finished(
+                    _run_chat(
+                        state,
+                        slot,
+                        "hello",
+                        _directive_user_origin=True,
+                        _directive_owner_origin=True,
+                    ),
+                    "the chat turn completing",
+                )
+            await await_until(task, what="the override card being answered")
+        finally:
+            await _drain(task)
+
+        assert len(_permission_rows(slot)) == 1
+        client.approve_tool.assert_not_called()
+        client.reject_tool.assert_called_once()
+        assert slot._deny_waivers == set()
+
+    def test_unreadable_config_offers_nothing(self, monkeypatch):
+        def _boom(*_a, **_k):
+            raise OSError("config unreadable")
+
+        monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(_boom))
+        assert deny_override_enabled() is False
+        assert slot_may_override(_make_slot(), _shell_event()) is False
+
+    @pytest.mark.parametrize(
+        "degraded",
+        [{"agent"}, {"*", "*config.json"}, {"*", "*config.local.json"}],
+        ids=["agent_section", "base_file", "overlay_file"],
+    )
+    def test_a_degraded_load_offers_nothing(self, monkeypatch, degraded):
+        # A discarded section loads the default true in place of the operator's false.
+        cfg = KiroCrewConfig(_degraded_sections=frozenset(degraded))
+        assert cfg.agent.deny_override is True
+        monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(lambda *a, **k: cfg))
+        slot = _make_slot()
+        slot._deny_waivers.add(_RM_ROOT)
+        assert deny_override_enabled() is False
+        assert slot_deny_waivers(slot, _shell_event()) == frozenset()
 
 
 # ── The approve route ──

@@ -15,6 +15,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 from slack_options_lifecycle_helpers import (
     _recs,
     _set_recs,
@@ -27,7 +28,7 @@ from kiro_crew.dashboard.chat_utils import remember_slack_options
 from kiro_crew.slack.format import build_options_blocks
 from kiro_crew.slack.outbound import PostedOptions
 
-AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+CREDENTIAL = github_classic(seed=56)
 
 
 def _mirror_slack() -> MagicMock:
@@ -365,7 +366,7 @@ class TestControlPostedAfterTheWindowIsSpent:
         from kiro_crew.dashboard import chat_slack
         from kiro_crew.dashboard.chat_backfill import BackfillSelection
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = CREDENTIAL
         reply = {"role": "assistant", "content": f"which key? [OPTIONS: {secret} | cancel]"}
 
         state = _make_state(tmp_path)
@@ -496,8 +497,8 @@ class TestControlPostedAfterTheWindowIsSpent:
         """
         from kiro_crew.slack.format import strip_ansi
 
-        # An AWS key broken up by a colour escape mid-token.
-        secret = "AKIA\x1b[0mIOSFODNN7EXAMPLE"
+        # A GitHub token broken up by a colour escape mid-token.
+        secret = f"{CREDENTIAL[:8]}\x1b[0m{CREDENTIAL[8:]}"
         blocks = build_options_blocks([secret, "cancel"])
 
         rendered = strip_ansi(json.dumps(blocks))
@@ -506,7 +507,7 @@ class TestControlPostedAfterTheWindowIsSpent:
         # sees the key whole. Asserting on the raw bytes would pass vacuously --
         # the escape splits the token, so the contiguous secret is absent either
         # way.
-        assert AWS_KEY not in rendered
+        assert CREDENTIAL not in rendered
 
     @pytest.mark.asyncio
     async def test_expiry_marks_the_control_terminal(self, tmp_path):

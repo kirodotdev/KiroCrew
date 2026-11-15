@@ -89,6 +89,8 @@ class _WaitsMixin(ManagerComponent):
         self._manager._running_count -= 1
         record.slot_released = True
         info._wait_record = record.to_dict()
+        # A new wait counts only the rowless children that end during it.
+        info._rowless_ended.clear()
         store = self.taskq_store() if persist else None
         if store is not None:
             # POSTED, not inline, and that is an ORDERING requirement rather
@@ -548,8 +550,10 @@ class _WaitsMixin(ManagerComponent):
         tells the gateway. The ids the parent's children wait awaits join the
         run's released set, which this resume check, :meth:`_child_terminal_apply`
         and every later wait leave out; the wait record itself is not edited.
-        The resume is requested once every other awaited child has ended. A
-        store that cannot be read answers retry.
+        The resume is requested once every other awaited child has ended, by its
+        store row or by what this process recorded (:meth:`_ended_in_memory`),
+        so a child with no store row counts too. A store that cannot be read
+        answers retry.
         """
         from kiro_crew import taskq as _taskq
 
@@ -572,8 +576,9 @@ class _WaitsMixin(ManagerComponent):
         latest = _taskq.WaitRecord.from_dict(parent._wait_record)
         if latest is None or latest.state != _taskq.WAITING_CHILDREN:
             return {"released": released, "resumed": False}  # that wait already ended
-        awaited = [i for i in latest.resume_condition.ids if i not in parent._deferred_released]
-        if not set(awaited) <= ended:
+        if not all(
+            i in ended or self._ended_in_memory(parent, i) for i in latest.resume_condition.ids
+        ):
             return {"released": released, "resumed": False}
         resumed = self.request_resume(parent, reason="awaited children released as deferred")
         return {"released": released, "resumed": resumed}
@@ -761,6 +766,41 @@ class _WaitsMixin(ManagerComponent):
         ):
             # Every child still awaited was released as deferred: the tool waits for none.
             self.request_resume(parent, reason=f"last awaited child {child.id} {state}")
+        elif outcome.parent_id is None and self._rowless_wait_is_over(parent, child):
+            # The child has no store row (a run that is not persistent writes
+            # none), so the ledger could not count it against the parent's wait.
+            self.request_resume(parent, reason=f"last awaited child {child.id} {state}")
+
+    def _rowless_wait_is_over(self, parent: Any, child: SubagentInfo) -> bool:
+        """Whether *child* was the last run *parent*'s children wait awaits.
+
+        Read from the parent's in-memory wait record, for a child the store
+        holds no row for. *child* joins the parent's ``_rowless_ended`` set
+        first, so its ending still counts after its run record leaves this
+        manager (completed-run eviction, a dismissed card). An awaited id counts
+        as ended when it is in that set, was released as deferred, or has a done
+        record here; any other id (still queued, still running) keeps the
+        parent waiting.
+        """
+        from kiro_crew import taskq as _taskq
+
+        if parent is None or parent.done or not parent._slot_released:
+            return False
+        record = _taskq.WaitRecord.from_dict(parent._wait_record)
+        if record is None or record.state != _taskq.WAITING_CHILDREN:
+            return False
+        parent._rowless_ended.add(child.id)
+        return all(self._ended_in_memory(parent, i) for i in record.resume_condition.ids)
+
+    def _ended_in_memory(self, parent: Any, awaited: str) -> bool:
+        """Whether the awaited id *awaited* has stopped holding *parent*'s wait, by
+        what this process knows: it ended during the wait (``_rowless_ended``),
+        was released as deferred, or has a done record here. A run that is
+        still queued or running, or that this manager does not hold, does not."""
+        if awaited in parent._rowless_ended or awaited in parent._deferred_released:
+            return True
+        run = self._manager._agents.get(awaited)
+        return run is not None and run.done
 
     def _cancel_live_or_row(self, agent_id: str, *, reason: str) -> None:
         """Cancel a row this process runs through ``cancel``, any other through

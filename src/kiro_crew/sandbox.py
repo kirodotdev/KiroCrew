@@ -69,7 +69,7 @@ from kiro_crew import (  # noqa: F401
     sandbox_plan,
     sandbox_seatbelt,
 )
-from kiro_crew.apps import credential_masks  # noqa: F401
+from kiro_crew.apps import agent_readonly_dirs, credential_masks  # noqa: F401
 from kiro_crew.atomic_write import fsync_dir, refuse_linked_parent  # noqa: F401
 from kiro_crew.config.paths import config_dir, kiro_agents_dir  # noqa: F401
 from kiro_crew.config.write_provenance import (  # noqa: F401
@@ -267,7 +267,10 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _CREW_ALIAS_TOLERATED_LEAVES,
         _CREW_HARDLINK_REFUSED_LEAVES,
         _AliasMask,
+        _app_data_dir_settled,
         _app_declared_leaves,
+        _app_declared_readonly_leaves,
+        _establish_app_readonly_dirs,
         _first_linked_component_below,
         _hardlink_refused_leaves,
         _hidden_leaves,
@@ -391,6 +394,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _POLICY_CACHE_LEAF,
         _RELOCATED_CREW_HIDDEN_LEAVES,
         _SECRET_REQUEST_POLICY_LEAF,
+        _UPDATE_STAGING_LEAF,
         _VOICE_RUNTIME_LEAF,
         MD_NOTEBOOK_APP_NAME,
         _crew_home_entries,
@@ -667,6 +671,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _live_target_irregular_detail,
         _live_target_multilink_detail,
         _live_target_symlink_detail,
+        _materialize_declared_mask_dirs,
         _materialize_env_mask_target,
         _materialize_live_target_mask_target,
         _materialize_maskable_dirs,
@@ -718,6 +723,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _governance_sandbox_floor,
         _install_root_targets_cached,
         _install_root_targets_with,
+        _liftable_declared_dir,
         _liftable_declared_file,
         _mode_to_level,
         _pod_os_home_targets,
@@ -731,6 +737,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _sandbox_policy,
         app_backend_visible_targets,
         app_declared_mask_targets,
+        app_declared_readonly_targets,
         carveout_chain_has_planted_link,
         carveout_shadowed_by_foreign_mask,
         configured_readonly_layer,

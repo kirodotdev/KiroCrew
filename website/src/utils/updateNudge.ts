@@ -20,17 +20,36 @@ export type UpdateNudgeRecord = {
   snoozed_until?: number
   /** True = never proactively pop for `version` again. */
   skipped?: boolean
+  /**
+   * Every version the user skipped, newest last. The gateway owns it: a
+   * verdict below never sends it, and the config PATCH keeps the saved skips
+   * and adds this one, so snoozing one release (even from a window holding a
+   * stale record) cannot forget the skip of another.
+   */
+  skipped_versions?: string[]
 }
+
+/** What one popup verdict writes; the gateway fills in `skipped_versions`. */
+export type UpdateNudgeVerdict = Required<Omit<UpdateNudgeRecord, 'skipped_versions'>>
 
 /** How long "Remind me tomorrow" stays quiet, in seconds. */
 export const SNOOZE_SECS = 24 * 60 * 60
 
+/** The skips `record` holds, including a skip stored before the list existed. */
+function skipsOf(record: UpdateNudgeRecord | undefined): string[] {
+  const list = Array.isArray(record?.skipped_versions)
+    ? record.skipped_versions.filter((v): v is string => typeof v === 'string' && v !== '')
+    : []
+  if (record?.skipped && record.version && !list.includes(record.version)) list.push(record.version)
+  return list
+}
+
 /**
  * Should the popup interrupt for `version` right now?
  *
- * A record for a DIFFERENT version never suppresses: a snooze or skip is a
- * verdict on one specific release, and the next release must get its one
- * proactive prompt regardless.
+ * A snooze for a DIFFERENT version never suppresses: the next release must get
+ * its one proactive prompt regardless. A skip holds for its own version only,
+ * whatever later verdict the record carries.
  */
 export function shouldNudge(
   version: string | undefined,
@@ -38,17 +57,17 @@ export function shouldNudge(
   nowSecs: number,
 ): boolean {
   if (!version) return false
+  if (skipsOf(record).includes(version)) return false
   if (!record || record.version !== version) return true
-  if (record.skipped) return false
   return (record.snoozed_until ?? 0) <= nowSecs
 }
 
 /** The record "Remind me tomorrow" (and a plain dismissal) writes. */
-export function snoozeRecord(version: string, nowSecs: number): Required<UpdateNudgeRecord> {
+export function snoozeRecord(version: string, nowSecs: number): UpdateNudgeVerdict {
   return { version, snoozed_until: nowSecs + SNOOZE_SECS, skipped: false }
 }
 
 /** The record "Skip this version" writes. */
-export function skipRecord(version: string): Required<UpdateNudgeRecord> {
+export function skipRecord(version: string): UpdateNudgeVerdict {
   return { version, snoozed_until: 0, skipped: true }
 }

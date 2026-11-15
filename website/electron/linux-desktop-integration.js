@@ -237,6 +237,9 @@ function renderDesktopEntry(fields) {
   lines.push("Terminal=false");
   emit("StartupWMClass", fields.wmClass);
   emit("Categories", fields.categories);
+  // The bundled x-scheme-handler/kirocrew line: without it update-desktop-database
+  // binds no handler to this launcher, so kirocrew:// links never reach the AppImage.
+  emit("MimeType", fields.mimeType);
   return lines.join("\n") + "\n";
 }
 
@@ -1660,6 +1663,7 @@ function integrateLinuxDesktop(deps) {
     iconName,
     wmClass: entry.StartupWMClass || iconName,
     categories: entry.Categories,
+    mimeType: entry.MimeType,
   });
 
   const stateRoot = path.join(stateDir, MANIFEST_DIR);

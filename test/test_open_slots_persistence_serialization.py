@@ -307,7 +307,7 @@ async def test_ws_connect_snapshot_failure_is_logged_with_the_offender(
 
     fake_ws = FakeWebSocket()
     monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-    monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+    monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
 
     with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.ws"):
         result = await dashboard_ws.api_ws(Request())  # type: ignore[arg-type]

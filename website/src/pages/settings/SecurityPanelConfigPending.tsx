@@ -107,6 +107,12 @@ const SECURITY_RULES: ReadonlyArray<{
     key: 'hooks.auto_approve_tools',
     hint: c => kept(c) ? i18nT('pages.settings.securityPanel.configPending.hint_auto_approve') : null,
   },
+  // The per-tool "Always allow" grants: the same widening, in their own list.
+  {
+    file: 'config',
+    key: 'hooks.auto_approve_tool_identities',
+    hint: c => kept(c) ? i18nT('pages.settings.securityPanel.configPending.hint_auto_approve') : null,
+  },
   // The standing approve-every-tool grant, in each spelling the gateway reads. Any
   // change to it (removing a `false` included) can change which tools ask first.
   {

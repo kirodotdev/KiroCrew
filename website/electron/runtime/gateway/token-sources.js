@@ -239,6 +239,22 @@ function createTokenSources({
    * probe has no parent-pid lookup here, so a launcher there still falls
    * through to the token prompt.
    */
+  /**
+   * Does the kernel name this process's own live gateway child (or a direct child of
+   * it holding this home's gateway.lock) as the listener on the launch port? The
+   * proof `mintLocalToken` demands before it sends a secret, as a question. Anything
+   * unproven (no child, a configured remote crew, an unreadable snapshot, Windows
+   * where none can be taken) is false.
+   */
+  async function ownsLocalListener() {
+    const child = getGatewayProcess();
+    if (!child || child.exitCode !== null) return false;
+    if (getRemoteHostConfig(store, PORT)?.host) return false;
+    const holders = await snapshotGatewayPortPids(PORT);
+    const owned = holders && await ownedListener(holders, child.pid);
+    return Boolean(owned) && getGatewayProcess() === child && child.exitCode === null;
+  }
+
   async function ownedListener(holders, ownPid) {
     if (holders.includes(ownPid)) return true;
     if (isWindows) return false;
@@ -250,7 +266,7 @@ function createTokenSources({
     return false;
   }
 
-  return { fetchRemoteToken, mintLocalToken };
+  return { fetchRemoteToken, mintLocalToken, ownsLocalListener };
 }
 
 module.exports = { createTokenSources };

@@ -194,6 +194,36 @@ def test_a_resumed_read_parses_only_the_entries_appended_since(_cheap_writes):
     assert value == _cold((FIRST,))
 
 
+def test_a_resumed_read_leaves_no_uncharged_state_on_its_fold(_cheap_writes, monkeypatch):
+    """The fold a resumed read keeps in its memo holds no ``latest`` after the pass.
+
+    A resumed tail steps the fold through ``apply_owned``, which records the state it is
+    stepping on ``latest``. The memo outlives the pass and a warm step later replaces the
+    cell, so a reference left there pins a state ``slot_fold_cache_bytes`` never counts.
+    """
+    from kiro_crew.crew_log import projection_slot_memo
+
+    _unit(FIRST)
+    _steps(FIRST, 1, 6)
+    _read((FIRST,))
+    _steps(FIRST, 7, 9)
+    folds: list[Any] = []
+    real_init = projection_slot_memo._SlotFold.__init__
+
+    def recording_init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        folds.append(self)
+
+    monkeypatch.setattr(projection_slot_memo._SlotFold, "__init__", recording_init)
+
+    value, parsed = _restart((FIRST,))
+
+    assert parsed == 3, "the read resumed from the savepoint"
+    assert value == _cold((FIRST,))
+    assert folds, "the resumed read registered a fold"
+    assert all(fold.latest is None for fold in folds)
+
+
 def test_a_resumed_read_joins_the_units_a_slot_ran_under(_cheap_writes):
     """A slot owns one session id at a time, so the record spans its units.
 

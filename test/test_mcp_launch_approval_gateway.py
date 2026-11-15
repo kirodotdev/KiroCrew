@@ -282,6 +282,7 @@ async def test_re_approving_a_running_server_keeps_its_declared_env_forwarded(
         json.dumps(
             {
                 "name": "a",
+                "tools": ["*"],
                 "mcpServers": {"srv": {"command": _APPROVED_CMD, "args": [], "env": declared}},
             }
         )

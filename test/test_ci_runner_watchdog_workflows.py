@@ -349,7 +349,7 @@ def test_a_rate_limited_recovery_keeps_the_heal_slots_it_already_spent() -> None
     api.get = get  # type: ignore[method-assign]
     _, outcomes = _sweep(api, max_runs=5)
     assert outcomes.get(2) == wd.OUTCOME_RECOVERED
-    assert outcomes[wd.RATE_LIMIT_MARKER_ID] == wd.OUTCOME_ABORTED_RATE_LIMITED
+    assert outcomes[wd.RATE_LIMIT_MARKER_ID] == wd.OUTCOME_QUOTA_EXHAUSTED
     reruns = _posts(api, "/rerun")
     assert len(reruns) <= 5, f"the five-per-tick cap was bypassed: {reruns}"
 

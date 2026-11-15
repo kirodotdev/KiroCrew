@@ -162,6 +162,7 @@ async def _tick(manager, end=None, *, linux: bool = True) -> MagicMock:
     return end
 
 
+@pytest.mark.usefixtures("rss_runtimes_read_under_ceiling")
 class TestRssTickLeftovers:
     @pytest.mark.asyncio
     async def test_a_recycle_ends_the_leftovers_once_the_runtime_is_gone(self) -> None:

@@ -59,7 +59,11 @@ def test_global_session_binding_matches_equivalent_alias(monkeypatch):
         "kirocrew",
         selection_name="original",
     )
-    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: captured)
+    monkeypatch.setattr(
+        session_agent_selection,
+        "read_session_execution",
+        lambda _, *, repair_project=None: captured,
+    )
     stored = resolve_session_agent_bindings(
         resolve_agent_bindings, cfg, "dashboard:global-alias", "original"
     )
@@ -103,7 +107,9 @@ def test_resume_after_crewmate_prune_resolves_installed_agent(monkeypatch, prune
     cfg.agents = {"kirocrew": KiroCrewAgentConfig(kiro_agent="kirocrew")}
     cfg.default_agent = "kirocrew"
     record = _pruned_crewmate_record(execution_context)
-    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: record)
+    monkeypatch.setattr(
+        session_agent_selection, "read_session_execution", lambda _, *, repair_project=None: record
+    )
     monkeypatch.setattr(
         "kiro_crew.config.loader._materialized_kiro_agent",
         lambda name, project_dir=None: name if name == "synced-agent" else "",
@@ -134,7 +140,9 @@ def test_resume_after_crewmate_prune_keeps_refusing_owned_members(
     cfg.agents = {"kirocrew": KiroCrewAgentConfig(kiro_agent="kirocrew")}
     cfg.default_agent = "kirocrew"
     record = _pruned_crewmate_record(execution_context, store=store, member_id=member_id)
-    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: record)
+    monkeypatch.setattr(
+        session_agent_selection, "read_session_execution", lambda _, *, repair_project=None: record
+    )
     monkeypatch.setattr(
         "kiro_crew.config.loader._materialized_kiro_agent",
         lambda name, project_dir=None: name if name == "synced-agent" else "",
@@ -155,7 +163,9 @@ def test_resume_after_crewmate_prune_refuses_uninstalled_agent(monkeypatch, prun
     cfg.agents = {"kirocrew": KiroCrewAgentConfig(kiro_agent="kirocrew")}
     cfg.default_agent = "kirocrew"
     record = _pruned_crewmate_record(execution_context)
-    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: record)
+    monkeypatch.setattr(
+        session_agent_selection, "read_session_execution", lambda _, *, repair_project=None: record
+    )
     monkeypatch.setattr(
         "kiro_crew.config.loader._materialized_kiro_agent", lambda name, project_dir=None: ""
     )
@@ -172,7 +182,11 @@ def _record_store(monkeypatch, record):
     from kiro_crew import session_agent_selection
 
     cell = {"record": record}
-    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: cell["record"])
+    monkeypatch.setattr(
+        session_agent_selection,
+        "read_session_execution",
+        lambda _, *, repair_project=None: cell["record"],
+    )
 
     def _bind(_key, execution, **_kwargs):
         cell["record"] = execution
@@ -899,6 +913,31 @@ async def test_discovery_before_first_allocation_preserves_owner_template_pick(
     state.sessions.get_or_create.assert_awaited_once()
     assert state.sessions.get_or_create.call_args.kwargs["agent"] == TEMPLATE
     assert read_private_session_store("dashboard:template-chat") is None
+
+
+@pytest.mark.asyncio
+async def test_picking_the_same_agent_again_after_a_restart_vouches_nothing(tmp_path, monkeypatch):
+    """A restart drops the process-held vouch, and picking the agent again must not
+    restore it: every value on that path resolves through the session's own record."""
+    from collections import OrderedDict
+
+    from kiro_crew import execution_context
+
+    await _template_chat(tmp_path, monkeypatch)
+    key = "dashboard:template-chat"
+    cfg = KiroCrewConfig.load()
+    selected = resolve_agent_bindings(cfg, TEMPLATE)
+    await asyncio.to_thread(
+        record_agent_selection, key, TEMPLATE, selected, replace=True, vouch=True
+    )
+    restarted: OrderedDict = OrderedDict()
+    monkeypatch.setattr(execution_context, "_VOUCHED_EXECUTIONS", restarted)
+
+    again = resolve_session_agent_bindings(resolve_agent_bindings, cfg, key, TEMPLATE)
+    change = await asyncio.to_thread(record_agent_selection, key, TEMPLATE, again, vouch=True)
+
+    assert change is None, "an unchanged pick must publish nothing"
+    assert dict(restarted) == {}, "re-picking the agent re-vouched a record the session wrote"
 
 
 @pytest.mark.asyncio

@@ -65,17 +65,28 @@ def _reject_pending_approvals(slot: _ChatSlot) -> None:
             # resolved value stays a plain "rejected" so no caller of this future
             # has to learn a new one.
             slot._approval_stopped.add(aid)
-            fut.set_result("rejected")
-            if _mark_permission_resolved(slot.messages, aid, "rejected"):
-                slot._dirty = True
-            sel().log_tool_invocation(
-                session_key=effective_session_key(slot),
-                agent=getattr(slot, "agent", "") or "kirocrew",
-                source="dashboard",
-                tool_name=f"approval_reject:{aid}",
-                tool_kind="permission",
-                outcome="rejected_on_stop",
-            )
+            _settle_approval_rejected(slot, aid, fut, "rejected_on_stop")
+
+
+def _settle_approval_rejected(
+    slot: _ChatSlot, aid: str, fut: asyncio.Future[str], outcome: str, *, result: str = "rejected"
+) -> None:
+    """Reject the pending approval *aid*, mark its card resolved and audit *outcome*.
+
+    *result* is what the future resolves to: ``rejected``, or ``rejected_once`` for a
+    rejection the runner must not carry to the rest of the tool batch.
+    """
+    fut.set_result(result)
+    if _mark_permission_resolved(slot.messages, aid, "rejected"):
+        slot._dirty = True
+    sel().log_tool_invocation(
+        session_key=effective_session_key(slot),
+        agent=getattr(slot, "agent", "") or "kirocrew",
+        source="dashboard",
+        tool_name=f"approval_reject:{aid}",
+        tool_kind="permission",
+        outcome=outcome,
+    )
 
 
 def _resolve_stop_event(slot: _ChatSlot, outcome: str) -> None:
@@ -1137,6 +1148,18 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "queue_id required for idle interrupt", "code": "invalid_queue_id"},
                 status=400,
+            )
+        if linked_turn and not any(
+            isinstance(item, dict) and item.get("id") == queue_id for item in slot._queue
+        ):
+            # The card is gone (sent, cancelled or edited away): refuse before the
+            # cancel below, so a refused interrupt never stops the channel turn.
+            return web.json_response(
+                {
+                    "error": "queued message is no longer available",
+                    "code": "queue_item_unavailable",
+                },
+                status=409,
             )
         if linked_turn:
             # Validated: cancel the channel-path turn, then dispatch the selected

@@ -10,7 +10,7 @@ const RESTARTING_STATUS = "Restarting gateway…";
  * `POST /api/restart` because that endpoint replaces the process with
  * `os.execv`, which this supervisor cannot follow. On macOS and Linux the pid
  * stays the same while the port is down until the successor binds, and the
- * liveness monitor reads three missed probes (about 20-30s) as a wedge and
+ * liveness monitor reads six missed probes (about 50-60s) as a wedge and
  * SIGKILLs a successor that is still booting. On Windows CPython's `execv`
  * starts a new process and exits the old one, so the supervisor sees its child
  * exit, drops it, and quitting the app no longer stops the gateway. Stopping

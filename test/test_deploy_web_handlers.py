@@ -32,7 +32,7 @@ from kiro_crew.deploy import engine, handlers
 # by the _force_posix_shell fixture in deploy_web_handlers_helpers.py instead.
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
-    reason="POSIX-only file-permission semantics; reduced Windows backend scope (#2041)",
+    reason="POSIX-only file-permission semantics; reduced Windows backend scope",
 )
 
 
@@ -50,8 +50,8 @@ class _NonRestrictedState:
     _slots: dict = {}
 
 
-class _FakeReq:
-    """Test request with a non-restricted app state installed."""
+class _FakeReq(dict):
+    """Test request with a non-restricted app state installed (a mapping, like ``web.Request``)."""
 
     def __init__(self, body, *, match_info=None):
         self._body = body
@@ -350,7 +350,7 @@ def test_deploy_local_dir_missing(monkeypatch):
 
 # --- authorization guard: restricted sessions denied on all mutating routes ---
 
-class _RestrictedReq:
+class _RestrictedReq(dict):
     """Fake request that simulates a restricted session."""
 
     def __init__(self, method="POST", match_info=None, body=None):
@@ -396,7 +396,7 @@ def test_mutating_handlers_deny_restricted_session(handler_fn, kwargs):
 def test_teardown_persistent_manifest_unreachable_returns_502(monkeypatch):
     """If manifest expiry fails and the deploy is persistent, return 502 without
     tombstoning (card retains Tear down button for retry)."""
-    # F2 (r4): teardown validates metadata profile against the registry —
+    # Teardown validates metadata profile against the registry —
     # register the fake profile so these tests exercise the paths under test.
     from kiro_crew.deploy import profiles as _profiles_mod
     monkeypatch.setattr(_profiles_mod, "load_registry", lambda: {
@@ -432,7 +432,7 @@ def test_teardown_persistent_manifest_unreachable_returns_502(monkeypatch):
     monkeypatch.setattr(handlers, "_expire_manifest_best_effort", _fake_expire)
 
     # Non-restricted request with confirm=True
-    class _Req:
+    class _Req(dict):
         headers = {"X-Session-Key": "dashboard:ui"}
         match_info = {"slug": "test-slug"}
         app = {"state": MagicMock(_restricted_keys=set(), _slots={})}
@@ -630,7 +630,7 @@ def test_deploy_rejects_on_windows(monkeypatch):
 
 def test_teardown_reaper_present_tombstones(monkeypatch):
     """Teardown proceeds (tombstones) when the reaper stack exists."""
-    # F2 (r4): teardown validates metadata profile against the registry —
+    # Teardown validates metadata profile against the registry —
     # register the fake profile so these tests exercise the paths under test.
     from kiro_crew.deploy import profiles as _profiles_mod
     monkeypatch.setattr(_profiles_mod, "load_registry", lambda: {
@@ -675,7 +675,7 @@ def test_teardown_reaper_present_tombstones(monkeypatch):
 
 def test_teardown_reaper_absent_returns_409(monkeypatch):
     """Teardown returns 409 when the reaper stack is not installed."""
-    # F2 (r4): teardown validates metadata profile against the registry —
+    # Teardown validates metadata profile against the registry —
     # register the fake profile so these tests exercise the paths under test.
     from kiro_crew.deploy import profiles as _profiles_mod
     monkeypatch.setattr(_profiles_mod, "load_registry", lambda: {
@@ -963,7 +963,6 @@ def test_migrated_builtin_cleans_hyphenated_name(tmp_path, monkeypatch):
     monkeypatch.setattr(mgr, "apps_dir", lambda: tmp_path)
     app_path = tmp_path / "deploy-web"
     app_path.mkdir()
-    # Write minimal installed.json (origin=builtin)
     import json as _json
     (app_path / "installed.json").write_text(_json.dumps({
         "name": "deploy-web",
@@ -1254,7 +1253,7 @@ def test_allowed_local_roots_no_bare_tmp(monkeypatch, tmp_path):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# F1 (R11): NUL-prepended file still scanned for credentials
+# NUL-prepended file still scanned for credentials
 # ══════════════════════════════════════════════════════════════════════════════
 
 

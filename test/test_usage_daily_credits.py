@@ -257,3 +257,69 @@ class TestParseSessionsCarriesCredits:
         # The credit-only day does not inflate the session statistics.
         assert r["total_sessions"] == 1
         assert r["today"]["sessions"] == 1
+
+
+def _billed_row(ts: datetime, credits: float, cost: float) -> dict[str, object]:
+    """A shard row as the recorder writes it: every row carries both ``credits`` and ``cost``."""
+    return {**_row(ts, credits), "cost": cost}
+
+
+class TestDailySpendDollarDays:
+    def test_daily_spend_sums_credits_and_cost(self, shard_dir: Path) -> None:
+        today = _noon(0)
+        _write_shard(
+            shard_dir,
+            _day(today),
+            [_billed_row(today, 0.0, 1.25), _billed_row(today, 0.0, 0.5), {**_row(today, 2.0)}],
+        )
+        assert usage_mod.daily_spend() == {_day(today): {"credits": 2.0, "cost": 1.75}}
+        assert daily_credits() == {_day(today): 2.0}
+
+    def _history(self, tmp_path: Path, today: datetime) -> list[dict[str, object]]:
+        """Daily History with one transcript on *today*, the day the test's shard rows use."""
+        d = tmp_path / "cli"
+        d.mkdir()
+        f = d / "s1.jsonl"
+        _write_session(f, [{"kind": "Prompt", "timestamp": today.isoformat()}])
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
+        ):
+            return _parse_sessions()["daily_history"]
+
+    def test_a_dollar_billed_day_has_no_credits_and_carries_its_cost(
+        self, tmp_path: Path, shard_dir: Path
+    ) -> None:
+        today = _noon(0)
+        _write_shard(
+            shard_dir, _day(today), [_billed_row(today, 0.0, 2.5), _billed_row(today, 0.0, 0.125)]
+        )
+        [row] = self._history(tmp_path, today)
+        assert "credits" not in row
+        assert row["cost_usd"] == 2.625
+
+    def test_a_credit_billed_day_is_unchanged(self, tmp_path: Path, shard_dir: Path) -> None:
+        today = _noon(0)
+        _write_shard(shard_dir, _day(today), [_billed_row(today, 1.5, 0.0)])
+        assert self._history(tmp_path, today) == [
+            {"date": _day(today), "sessions": 1, "messages": 1, "tool_calls": 0, "credits": 1.5}
+        ]
+
+    def test_a_mixed_day_keeps_its_credits_and_adds_its_cost(
+        self, tmp_path: Path, shard_dir: Path
+    ) -> None:
+        today = _noon(0)
+        _write_shard(
+            shard_dir, _day(today), [_billed_row(today, 1.0, 0.0), _billed_row(today, 0.0, 3.0)]
+        )
+        [row] = self._history(tmp_path, today)
+        assert (row["credits"], row["cost_usd"]) == (1.0, 3.0)
+
+    def test_a_day_s_cost_is_not_rounded_before_display(
+        self, tmp_path: Path, shard_dir: Path
+    ) -> None:
+        # Rounding is the page's job: a server-side round turns $0.00004 into 0.
+        today = _noon(0)
+        _write_shard(shard_dir, _day(today), [_billed_row(today, 0.0, 0.00004)])
+        [row] = self._history(tmp_path, today)
+        assert row["cost_usd"] == 0.00004

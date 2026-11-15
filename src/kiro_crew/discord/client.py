@@ -1119,6 +1119,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _command_options,
         _find_button_label,
         _heartbeat_interval_secs,
+        _reply_message_id,
     )
     from kiro_crew.discord.client_recheck import (  # noqa: F401
         _REVOKED_DETAIL,

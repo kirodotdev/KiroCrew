@@ -668,6 +668,14 @@ PEEK_CALLERS: "dict[str, str]" = {
         "its policy failed to compose — is handled separately by withholding "
         "the line's text (LOG_WITHHELD_PLACEHOLDER)."
     ),
+    "history_append.py::_redact_at_write_boundary": (
+        "no-context answer is the full OSS baseline redaction pass, the same "
+        "answer the PlatformCompositionError arm gives, so a user row is never "
+        "withheld and known credentials are still removed. Resolving instead "
+        "would re-pay a config load on every transcript write of a "
+        "non-standalone host that never booted, or install a process-wide "
+        "default context from a write path."
+    ),
     "speech_providers.py::_installed_speech": (
         "no-context answer is 'no registered speech providers and no edition "
         "default', which is the standalone answer: the built-in STT and TTS sets. "
@@ -1323,6 +1331,13 @@ def redact_log_via_context(text: str) -> str:
     slicing a redacted string is what keeps a credential from surviving as an
     unmatchable fragment.
     """
+    # Not an output seam, whatever the owner's seams switch says. Callers clip the
+    # result (``redact_log_via_context(text)[:120]``) and the clip then goes to sinks
+    # that stay redacted (the dashboard's live log stream, the SEL). A credential
+    # pass that stood down here would let the clip cut a raw value into a fragment no
+    # later pass can match, so the redact-before-clip rule above holds with the
+    # switch off too. The switch covers the log record filter alone
+    # (``log_redaction.SecretRedactionFilter``).
     if installed_context() is None:
         from kiro_crew.security import redact as _security_redact
 

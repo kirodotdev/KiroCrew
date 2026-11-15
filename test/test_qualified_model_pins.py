@@ -35,6 +35,7 @@ _BASE_CONFIG = {
 _MODEL_PINS = (
     "agent.role_models.background",
     "agent.role_models.subagent",
+    "agent.role_models.subagent_light",
     "agent.fallback_model",
     "agent.refusal_fallback_model",
 )

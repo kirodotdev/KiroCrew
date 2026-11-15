@@ -42,6 +42,8 @@ def _create(title: str = "do the thing", worker: str = WORKER) -> str:
 
 
 def _close(item_id: str, state: str = "accepted") -> None:
+    if state == "accepted":
+        work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     work_ledger.apply_conductor_action(
         CONDUCTOR, "close", item_id=item_id, state=state, decision="checked"
     )

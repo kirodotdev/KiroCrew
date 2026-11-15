@@ -30,6 +30,10 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_red_base_staging_does_not_dereference_a_credential_symlink",
         "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_the_pin_refuses_a_symlink_and_fails_closed",
         "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_the_pin_survives_a_normal_repo",
+        # Fixed `git` argv (init, add, commit) in a repo under `tmp_path`; the planted host
+        # hook is the fixture, so sandboxing the spawn would test the sandbox instead.
+        "apps/builtins/auto_improvement/tests/test_git_config_isolation.py"
+        "::test_a_host_hook_that_refuses_commits_does_not_reach_a_fixture_commit",
         # Ops Mission Control ledger-sync tests: fixed `git` argv (init --bare / ls-files)
         # against a per-test tempdir. Nothing here is agent-influenced — the repo path is
         # `tempfile.mkdtemp()` and every argument is a literal in the test file. These are

@@ -55,6 +55,16 @@ CRED_JIRA_API_TOKEN = "JIRA_API_TOKEN"  # Jira Cloud/Server API token (resolved 
 
 CRED_WAKATIME_API_KEY = "WAKATIME_API_KEY"  # vault-only; never loaded from .env
 
+# WakaTime OAuth credentials, vault-only for the same reason as the API key: a
+# value in .env reaches an agent subprocess through the environment, and the
+# spawn scrub only strips names it knows. The client ID is NOT a secret and
+# lives in config.wakatime instead. The tokens entry is one JSON object holding
+# the access token, refresh token, expiry, and redirect URI, so a refresh
+# commits them in one atomic vault replace.
+CRED_WAKATIME_OAUTH_CLIENT_SECRET = "WAKATIME_OAUTH_CLIENT_SECRET"
+
+CRED_WAKATIME_OAUTH_TOKENS = "WAKATIME_OAUTH_TOKENS"
+
 CRED_AZURE_DEVOPS_EXT_PAT = "AZURE_DEVOPS_EXT_PAT"
 
 CRED_BITBUCKET_EMAIL = "BITBUCKET_EMAIL"
@@ -863,7 +873,7 @@ def decode_env_bytes(raw: bytes, encoding: str | None = None, errors: str = "str
         # encoding is always UTF-8, so a file saved in the real ANSI code page
         # would fail here every time. ``getencoding`` ignores UTF-8 mode and names
         # that code page. Tried only after UTF-8 failed, so a file that decodes
-        # today reads exactly as before.
+        # as UTF-8 is unaffected.
         if not _sys.flags.utf8_mode:
             raise
         actual = _locale.getencoding()

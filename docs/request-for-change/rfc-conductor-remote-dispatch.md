@@ -33,6 +33,11 @@ references now point at what main serves today.
 background puller (§2 "Background pull"), shipped in the same PR as this
 amendment.
 
+**Revision 2026-11-15.** The `goal-conductor` skill's remote-dispatch procedure
+moved from `SKILL.md` to `references/remote-dispatch.md`; only the `crew` and
+`work_item` argument descriptions name it, so it is reachable only while
+`work_ledger.remote_dispatch` is on.
+
 ## Summary
 
 A conductor on this gateway can only dispatch workers onto this gateway. This
@@ -227,8 +232,9 @@ How (a) works:
   `last_report_at`). Nothing is written from both sides.
 - **Peer routes, per slot, under `api/chat`.**
   `GET api/chat/slots/{slot}/work-item` returns the worker-owned fields plus the
-  event tail. `PATCH api/chat/slots/{slot}/work-item` takes a `decision`. Owner
-  token, the same auth as the rest of `api/chat`.
+  event tail, and `trust_active` (§4). `PATCH api/chat/slots/{slot}/work-item`
+  takes a `decision`, `trust: false` (§4), or both. Owner token, the same auth
+  as the rest of `api/chat`.
 - **Ingest on read.** `work_ledger_read` on the hub fetches the peer copy of each
   open remote item's **current** binding (§5b) and appends any newer report as
   a normal local report event, keyed by `event_id`, so a repeat read adds
@@ -289,9 +295,16 @@ subagents where that exists:
 
 | Resource | Short when | Source |
 |---|---|---|
-| Memory | `check_memory_available(estimate)` fails, or `posture` is critical | `subagent_parts/host_memory.py`, `resource_status.probe()` |
+| Memory | `check_memory_available((open_workers + 1) × estimate)` fails, or `posture` is critical | `subagent_parts/host_memory.py`, `resource_status.probe()` |
 | CPU | `load_per_cpu` ≥ a new threshold (proposed 1.0), or the agents running already fill `adaptive_exec_cap()` | `resource_status.probe()`, `AdaptiveController` |
-| Disk | free bytes under `agent_scratch.scratch_root()` < one estimate | new: `shutil.disk_usage` |
+| Disk | free bytes under `agent_scratch.scratch_root()` < `(open_workers + 1) × estimate` | new: `shutil.disk_usage` |
+
+Each open `hub:` worker on the peer (`open_workers`, below) reserves one
+estimate of memory and disk, so a worker admitted but not yet using either still
+counts. The gate runs twice: once before the slot is minted, and again at the
+bind, where the measure and the binding write take one lock, so a create bound
+meanwhile is counted and two hubs cannot both fill the last room. A count that
+cannot be read reserves nothing.
 
 `posture` is the memory posture; nothing on main turns CPU into a posture, which
 is why CPU needs its own threshold. A short resource is refused with a typed
@@ -428,10 +441,47 @@ ones.
   only a peer slot that is the `worker_session_key` of an item in the caller's
   ledger with a matching `worker_instance_id`. A conductor cannot drive the
   person's own chats on that crew.
-- **Approvals stay the peer's.** The worker runs under the peer's approval mode.
-  Its prompts show in the local crew window and are answered there
-  (`POST api/chat/slots/{slot}/approve`, shipped in #16757). No tool here
-  approves.
+- **The conductor's Trust reaches its worker.** A local child of a Trust chat
+  works without asking; a remote worker does the same. When the conductor slot
+  is in Trust (a Trust a person set on it, `trust_carries`; a Crew Mode card
+  trust does not carry) or a YOLO grant reaches it at create time, the bound
+  create's `work_item` carries `trust: true`. A Normal or Reads conductor sends
+  nothing, and the worker runs under the peer's approval mode as before; its
+  prompts show in the local crew window and are answered there
+  (`POST api/chat/slots/{slot}/approve`, shipped in #16757). The peer turns
+  `trust: true` into one `SafetyOverride` scoped grant (`activate_scoped`) on
+  that worker slot only (`_trust_scope`, key `remote-dispatch:<slot>`), never
+  crew-wide:
+  - it is accepted only on a create the existing gates already admit: the
+    peer's `work_ledger.remote_dispatch` switch on and an owner-authenticated
+    hub create;
+  - the peer's own `approval_modes` policy decides: a denied `trust` or `yolo`
+    refuses the grant, and the worker asks. The grant stands in for Trust, so
+    a ceiling installed later that denies `trust` masks it on every approval
+    (`_slot_is_trusted`), as a `yolo` deny masks every scoped grant;
+  - it lasts the peer's ad-hoc duration (`agent.yolo_duration`, default 6 h),
+    held to `yolo_max_seconds`, with no renewal; when it lapses the worker
+    asks again;
+  - the peer's deny rules and its `hooks.confirm_tools` list bind the worker as
+    they bind any trusted slot, so they still block or ask;
+  - it ends when the worker slot closes, and when the hub records a write that
+    closes the item (`PATCH .../work-item` with `trust: false`);
+  - it ends when the conductor leaves Trust: the peer's `GET .../work-item`
+    reply says `trust_active`, and the next pull (every 30 s from the
+    background puller, or a `work_ledger_read`) that finds the conductor no
+    longer in Trust sends `trust: false`. Until that pull lands, up to one pull
+    interval, the worker keeps the grant. A hub that cannot reach the peer
+    cannot revoke; the grant then ends at its TTL or when the slot closes.
+  The PATCH takes only `false`: a grant is armed at create and never later.
+  A peer older than this change refuses `trust` as an unknown `work_item` field
+  (`invalid_value`, `field: trust`); the hub sends that create once more
+  without it, and that worker asks as before.
+- **Risk: a compromised hub unlocks its own remote workers.** Anyone who can
+  make an owner-authenticated hub create can now also have that one worker run
+  without prompts on the peer. The bound is the list above: one slot, the
+  peer's switch, the peer's policy and deny floors, a TTL, and an end on close.
+  The hub could already send that worker any prompt it likes; the grant removes
+  the person on the peer as the check on each tool call.
 - **Redaction on read.** Every peer reply that reaches the conductor runs
   `_redact_peer_payload`, as the window does. Ingested report text is then
   redacted again on the way out (`mcp_work` already does). The headroom route
@@ -501,7 +551,7 @@ branch, its state (`current`, `retired`, `destroyed`) and its timestamps.
 |---|---|---|
 | Unit | a visible session in the crew's group | a silent subagent run |
 | Who can take over | the person, from the sidebar | nobody; status lives in a local shadow record |
-| Approvals | peer's, answered in the window | peer's, shown only on the peer |
+| Approvals | peer's, answered in the window; a Trust or YOLO conductor's worker gets a scoped, time-limited grant on its own slot (§4) | peer's, shown only on the peer |
 | Source | the worker clones from a repo URL into its scratch | tracked-file snapshot uploaded |
 | Placement | most headroom after reservations, peer-gated; `crew=` overrides | least-loaded or pinned |
 | Result | ledger report + acceptance | subagent completion event |

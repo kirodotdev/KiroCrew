@@ -166,3 +166,18 @@ test("a child that exits during the parent lookup gets nothing", async () => {
   assert.strictEqual(await mintLocalToken(), "");
   assert.deepStrictEqual(secretRequests, []);
 });
+
+test("ownsLocalListener: true only when the kernel names our own child as the listener", async () => {
+  assert.strictEqual(await sources({ holders: [OWN_PID] }).ownsLocalListener(), true);
+  assert.strictEqual(
+    await sources({ holders: [OWN_PID + 1], ppids: { [OWN_PID + 1]: OWN_PID }, lockHolders: [OWN_PID + 1] }).ownsLocalListener(),
+    true,
+    "a launcher's gateway holding the home lock is ours",
+  );
+});
+
+test("ownsLocalListener: another installation's gateway on the port, no child, or no snapshot is not ours", async () => {
+  assert.strictEqual(await sources({ holders: [OWN_PID + 99] }).ownsLocalListener(), false, "a foreign listener pid");
+  assert.strictEqual(await sources({ holders: null }).ownsLocalListener(), false, "an unreadable snapshot");
+  assert.strictEqual(await sources({ holders: [OWN_PID], child: { pid: OWN_PID, exitCode: 1 } }).ownsLocalListener(), false, "a dead child");
+});

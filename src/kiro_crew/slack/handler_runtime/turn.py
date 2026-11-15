@@ -88,6 +88,7 @@ if TYPE_CHECKING:
         canonical_key,
         consume_reinjection,
         context_template,
+        continue_timed_out_calls,
         credential_give_up_text,
         enter_turn,
         exit_turn,
@@ -581,6 +582,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 try:
                     await slack.delete_message(channel, _ts)
                 except Exception:
+                    # A message that cannot be deleted stays; the replay posts its own.
                     pass
         _working_ts = None
         turn._working_ts = None
@@ -952,7 +954,10 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             await turn.clear_working_indicators()
             return False
 
-        async for event in client.stream(full_message):
+        # A call whose own silence timer ends the prompt is handed back to the
+        # model inside this turn (``acp.timed_out_continuation``): the same session
+        # is told the call timed out, and its answer streams on into this reply.
+        async for event in continue_timed_out_calls(client.stream, full_message):
             if event.kind == EVENT_TEXT_CHUNK:
                 await answer.on_text(event)
 

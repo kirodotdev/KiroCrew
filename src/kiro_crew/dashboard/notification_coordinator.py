@@ -475,6 +475,8 @@ class NotificationCoordinator:
         removed = len(state._notification_log) < before
         if removed:
             await state._rewrite_notifications_async()
+            # Every other open view drops it too, as a publisher's dismissal does.
+            state.broadcast_ws("notification_dismiss", {"ts": ts})
         return removed
 
     @staticmethod
@@ -490,21 +492,16 @@ class NotificationCoordinator:
         return False
 
     @staticmethod
-    async def resolve_skill_reviews(state: Any, slug: str, consumed_at: str) -> int:
-        """Acknowledge only the consumed generation of one skill review."""
-        if not slug or not consumed_at:
-            return 0
+    async def acknowledge_where(state: Any, matches: Callable[[dict[str, Any]], bool]) -> int:
+        """Acknowledge every unread note *matches* accepts; persist once, then broadcast.
+
+        For a producer retiring the notes whose subject it has seen resolved.
+        Acks, never deletes: the note stays in the feed, read.
+        """
         acknowledged: list[str] = []
         for note in state._notification_log:
             ts = note.get("ts")
-            if (
-                note.get("channel") == "system.skills"
-                and note.get("slug") == slug
-                and not note.get("acked")
-                and isinstance(ts, str)
-                and ts
-                and ts <= consumed_at
-            ):
+            if not note.get("acked") and isinstance(ts, str) and ts and matches(note):
                 note["acked"] = True
                 acknowledged.append(ts)
         if not acknowledged:
@@ -513,6 +510,18 @@ class NotificationCoordinator:
         for ts in acknowledged:
             state.broadcast_ws("notification_ack", {"ts": ts})
         return len(acknowledged)
+
+    @classmethod
+    async def resolve_skill_reviews(cls, state: Any, slug: str, consumed_at: str) -> int:
+        """Acknowledge only the consumed generation of one skill review."""
+        if not slug or not consumed_at:
+            return 0
+        return await cls.acknowledge_where(
+            state,
+            lambda note: note.get("channel") == "system.skills"
+            and note.get("slug") == slug
+            and note["ts"] <= consumed_at,
+        )
 
     @staticmethod
     async def clear(state: Any) -> None:

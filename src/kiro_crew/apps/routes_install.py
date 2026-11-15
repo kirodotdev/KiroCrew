@@ -72,6 +72,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers._shared import (
         body_not_object_error,
         require_owner_dashboard_request,
+        string_field_error,
     )
 
     denied = await require_owner_dashboard_request(request, "app_update")
@@ -94,13 +95,15 @@ async def handle_update_app(request: web.Request) -> web.Response:
 
     try:
         body = await request.json()
-    except json.JSONDecodeError:
+    except (LookupError, RecursionError, ValueError):
         body = {}
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
 
     source = body.get("source", info.get("source", ""))
+    if (wrong_type := string_field_error("source", source)) is not None:
+        return wrong_type
 
     # Consent to the repository a registry update installs, sent when the app's
     # grant covers its local folder only (the ``app_trust_local_only`` refusal
@@ -122,6 +125,26 @@ async def handle_update_app(request: web.Request) -> web.Response:
                 ),
                 "code": "invalid_repository_consent",
             },
+            status=400,
+        )
+
+    # A marketplace app is never updated from a folder, whether the request names
+    # its recorded source (``market:<ref>@<n>``, what the Update button and
+    # ``kirocrew app update`` send) or a ``--source`` folder: refuse before anything
+    # is stopped or deregistered. ``update_app`` refuses the same way.
+    from kiro_crew.apps.market_source import MARKET_OVERWRITE_HINT, is_market_source
+
+    if is_market_source(source) or is_market_source(info.get("source")):
+        error = f"{name!r} cannot be updated from a folder. {MARKET_OVERWRITE_HINT}"
+        sel().log_api_access(
+            caller="dashboard",
+            operation="provenance",
+            outcome="rejected",
+            resources=name,
+            error=error,
+        )
+        return web.json_response(
+            {"ok": False, "name": name, "error": error, "code": "app_update_market_source"},
             status=400,
         )
 
@@ -412,6 +435,7 @@ async def handle_register_external(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers._shared import (
         body_not_object_error,
         require_owner_dashboard_request,
+        string_field_error,
     )
 
     denied = await require_owner_dashboard_request(request, "app_register_external")
@@ -419,8 +443,8 @@ async def handle_register_external(request: web.Request) -> web.Response:
         return denied
     try:
         body = await request.json()
-    except json.JSONDecodeError:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    except (LookupError, RecursionError, ValueError):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
@@ -428,6 +452,8 @@ async def handle_register_external(request: web.Request) -> web.Response:
     name = body.get("name", "")
     version = body.get("version", "")
     display_name = body.get("displayName", "")
+    if (wrong_type := string_field_error("name", name)) is not None:
+        return wrong_type
     if not name or not version or not display_name:
         return web.json_response(
             {"error": "name, version, and displayName are required"},
@@ -495,6 +521,7 @@ async def handle_install_app(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers._shared import (
         body_not_object_error,
         require_owner_dashboard_request,
+        string_field_error,
     )
 
     denied = await require_owner_dashboard_request(request, "app_install")
@@ -502,13 +529,15 @@ async def handle_install_app(request: web.Request) -> web.Response:
         return denied
     try:
         body = await request.json()
-    except json.JSONDecodeError:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    except (LookupError, RecursionError, ValueError):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
 
     source = body.get("source", "")
+    if (wrong_type := string_field_error("source", source)) is not None:
+        return wrong_type
     if not source:
         return web.json_response({"error": "source path required"}, status=400)
 
@@ -561,7 +590,12 @@ async def handle_install_app(request: web.Request) -> web.Response:
                 )
             ver_err = _check_min_version(manifest_data)
             if ver_err:
-                return web.json_response({"error": ver_err}, status=400)
+                # Call-time import: the ``routes`` facade mirrors this module's names.
+                from kiro_crew.apps.version import MIN_VERSION_REFUSAL_CODE
+
+                return web.json_response(
+                    {"error": ver_err, "code": MIN_VERSION_REFUSAL_CODE}, status=400
+                )
             raw_name = manifest_data.get("name")
             if isinstance(raw_name, str) and raw_name:
                 lock_name = raw_name

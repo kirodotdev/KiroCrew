@@ -33,7 +33,6 @@
  *
  * Exit codes: 0 all clear · 1 at least one check failed · 2 a script could not be run.
  */
-import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import {
@@ -43,6 +42,7 @@ import {
   resolveRows,
   verdict,
 } from './lib/i18n-gate-table.mjs'
+import { runScript } from './lib/i18n-run-script.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CI = !!process.env.GITHUB_ACTIONS
@@ -59,17 +59,15 @@ const group = (title, body) => {
 // ---- run everything, keep every byte ---------------------------------------
 const runs = new Map()
 for (const s of SCRIPTS) {
-  const res = spawnSync(process.execPath, [join(HERE, s.argv[0]), ...s.argv.slice(1)], {
-    cwd: join(HERE, '..'), encoding: 'utf-8', env: process.env, maxBuffer: 256 * 1024 * 1024,
-  })
-  // A script that could not be started, was killed by a signal, or overflowed the
-  // buffer is an INFRASTRUCTURE failure, not a finding: exit 2 rather than reporting a
-  // table built from truncated text that a regex might read as a pass.
-  if (res.error || res.status === null) {
-    out(`[i18n] FATAL — ${s.argv[0]} could not run: ${res.error?.message || `killed by ${res.signal}`}`)
+  const res = runScript([join(HERE, s.argv[0]), ...s.argv.slice(1)], { cwd: join(HERE, '..') })
+  // A script that could not be started, was killed by a signal, hit the time limit or
+  // overflowed the buffer is an INFRASTRUCTURE failure, not a finding: exit 2 rather
+  // than reporting a table built from truncated text that a regex might read as a pass.
+  if (res.fatal) {
+    out(`[i18n] FATAL — ${s.argv[0]} did not finish: ${res.fatal}`)
     process.exit(2)
   }
-  runs.set(s.key, { status: res.status, text: `${res.stdout || ''}${res.stderr || ''}` })
+  runs.set(s.key, res)
 }
 
 const rows = resolveRows({ checks: CHECKS, runs, base: BASE })

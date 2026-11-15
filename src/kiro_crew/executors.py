@@ -230,11 +230,10 @@ _CRON_GATE_QUEUE_SHARE = 0.25
 # and every other ``to_thread`` caller, so the gate gets its own pool and its
 # calls queue only behind other gate calls.
 #
-# Four workers.  The resolver has :data:`_PATH_RESOLVE_WORKERS_DEFAULT` children,
-# and a gate thread beyond that count only waits inside the resolver, so a much
-# larger pool buys nothing during a stall; four leaves two workers serving
-# non-path verdicts and the degraded-mount fast refusals while both children are
-# wedged.  A healthy gate call costs milliseconds, so four is a ceiling on how
+# Four workers.  The resolver children are shared with every other gate caller
+# (memory reads, prompt reads, the loop), so a much larger pool here buys nothing
+# during a stall: once a prefix is charged, its later calls are refused from the
+# cooldown without a child.  A healthy gate call costs milliseconds, so four is a ceiling on how
 # many calls can be stalled at once, not on throughput.  It also stays below the
 # default executor's smallest size (``min(32, cpu_count + 4)`` is at least 5), so
 # a full gate pool is never larger than the pool it is kept off.
@@ -245,9 +244,13 @@ _MAX_TOOL_GATE_WORKERS = 4
 # its own verdict, which the path tier already bounds.  Sized from the 100-agent
 # load run against two numbers: healthy queue waits
 # are milliseconds, so the bound never binds outside starvation, and a worker on
-# a dead mount holds at most one resolve budget plus grace (5 s) per call and
-# about 12 s per 25 s window (the per-thread allowance in ``security.paths``),
-# so a call queued behind four such workers is still served inside the bound.
+# dead mounts spends at most the judgment's 12 s resolver budget on one call,
+# plus one anchor wait already in flight when the deadline runs out: either a
+# root-key wait of its budget plus grace, or a target rebuild of up to 12 s.
+# Every request checks the deadline before submission. A stalled anchor charges
+# the home prefix, so later calls are refused from its cooldown with no wait;
+# only in the first seconds of a wedge on the home mount can a call queued behind
+# four such workers miss the bound, and it is then refused unjudged.
 _TOOL_GATE_QUEUE_WAIT_SECS = 15.0
 
 # Pillow work for the gateway's tool-result image budget is CPU-bound (a
@@ -289,16 +292,21 @@ _MAX_STT_WORKERS = 2
 # costs one respawn (~11ms), never a pinned worker.  Measurements and the
 # reasoning are in ``subprocess_pool/executor.py``.
 #
-# The knob sizes the number of children.  One sustains ~45k resolutions/s, so the
-# second buys wedge isolation rather than throughput: while one child is stuck on
-# a dead mount (until the deadline reclaims it), the other keeps serving every
-# healthy prefix.  The DEFAULT stays 2 and the floor is 2 for that reason; the
-# resolver is the caller that cannot accept a single child.  Read once at import,
+# The knob sizes the number of children.  One sustains ~45k resolutions/s idle,
+# but a caller holds its child for the whole round trip INCLUDING its own wait for
+# the GIL to read the answer, so under CPU load the count of children is how many
+# GIL-starved callers fit before the next one is refused for want of a free child.
+# ``scripts/measure_path_gate_under_load.py`` with 32 busy threads and 16 callers
+# making 20 checks each admitted 111 of 320 with 2 children, 229 with 4, and all 320
+# with 8 or 16.  The DEFAULT is 8, the smallest count that cleared the lease wait;
+# each child is about 9 to 13 MiB resident.  The floor is 2
+# for wedge isolation: while one child is stuck on a dead mount (until the
+# deadline reclaims it), another keeps serving every healthy prefix.  Read once at import,
 # because the pool is a module-level singleton; an unparseable or out-of-range
 # value keeps the default rather than failing the import, since a gateway that
 # will not start is a worse outcome than one resolving with the shipped size.
 _PATH_RESOLVE_WORKERS_ENV = "KIROCREW_PATH_RESOLVE_WORKERS"
-_PATH_RESOLVE_WORKERS_DEFAULT = 2
+_PATH_RESOLVE_WORKERS_DEFAULT = 8
 _PATH_RESOLVE_WORKERS_MIN = 2
 _PATH_RESOLVE_WORKERS_MAX = 64
 
@@ -306,9 +314,8 @@ _PATH_RESOLVE_WORKERS_MAX = 64
 def _path_resolve_worker_count() -> int:
     """The resolver pool size: :data:`_PATH_RESOLVE_WORKERS_DEFAULT` unless overridden.
 
-    Fail-soft TO THE DEFAULT, which is the conservative direction here: the default
-    is the LOWER ceiling, so a bad value can only ever leave the shipped behaviour
-    in place, never widen it.
+    Fail-soft TO THE DEFAULT: a bad value leaves the shipped size in place rather
+    than failing the import.
     """
     raw = os.environ.get(_PATH_RESOLVE_WORKERS_ENV, "").strip()
     if not raw:
@@ -1233,16 +1240,25 @@ def recall_executor() -> ThreadPoolExecutor:
 
 
 async def run_with_recall_deadline(awaitable: Awaitable[_T]) -> _T:
-    """Bound an entire recall, including cold store opening and pool admission."""
+    """Bound an entire recall, including cold store opening and pool admission.
+
+    The deadline's owner logs one WARNING when it expires, naming the phase the
+    recall was in and the time spent in each.
+    """
     import time
 
     from kiro_crew.embeddings import EmbeddingWork, embedding_work
 
     inherited = embedding_work.get()
-    work = inherited or EmbeddingWork(time.monotonic() + RECALL_TIMEOUT_SECS)
+    now = time.monotonic()
+    work = inherited or EmbeddingWork(now + RECALL_TIMEOUT_SECS, phases=[("authorize", now)])
     token = embedding_work.set(work)
     try:
         return await asyncio.wait_for(awaitable, timeout=max(0.0, work.deadline - time.monotonic()))
+    except asyncio.TimeoutError:
+        if inherited is None:
+            logger.warning("Memory recall timed out in %s", work.phase_report())
+        raise
     finally:
         if inherited is None:
             work.cancelled.set()

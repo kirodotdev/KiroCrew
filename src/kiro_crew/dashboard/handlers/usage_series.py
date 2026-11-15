@@ -30,13 +30,14 @@ authoritative, and it also keeps the layer set closed (one label per channel,
 not one per background job), so this chart and that table bucket spend by the
 same vocabulary.
 
-The value stacked is the row's ``credits``, the unit the kiro-cli backend
-(and its KAS relay) bills in. A harness that bills in tokens or dollars writes
-rows with no credits, so the Usage tab mounts the chart only when the
-configured default harness (``agent.acp_backend``) reports credits
-(``api/acpBackend.ts``); turns a crew member ran on a different harness
+The value stacked is the row's ``credits`` by default, the unit the kiro-cli
+backend (and its KAS relay) bills in. A harness that bills in dollars (Claude
+Code) writes rows with zero credits and a dollar ``cost``, so ``metric=cost``
+stacks that instead. The Usage tab asks for credits when the configured default
+harness (``agent.acp_backend``) reports credits (``api/acpBackend.ts``) and for
+cost otherwise; turns a crew member ran on a different harness
 (``agent.member_acp_backend``) still land in the same store and count
-whatever credits they recorded.
+whatever they recorded in the metric shown.
 
 Bucketing is top-N by total over the window, with the remainder folded into
 one ``other`` series so a dimension with hundreds of distinct values (agents,
@@ -91,6 +92,10 @@ logger = logging.getLogger(__name__)
 #: Dimensions a caller may stack by. Everything but ``cohort`` is a row field.
 SERIES_DIMENSIONS: tuple[str, ...] = ("channel", "agent", "model", "cohort")
 DEFAULT_DIMENSION = "channel"
+#: What a caller may stack: a row's ``credits`` (kiro-cli and KAS bill in them)
+#: or its dollar ``cost`` (a harness that bills in dollars, such as Claude Code).
+SERIES_METRICS: tuple[str, ...] = ("credits", "cost")
+DEFAULT_METRIC = "credits"
 #: Buckets kept apart before the rest folds into ``other``. Matches the number
 #: of distinguishable hues the dashboard's session palette generates, so the
 #: chart never needs more colours than the theme can give it.
@@ -138,6 +143,7 @@ class _Row:
     agent: str
     model: str
     credits: float
+    cost: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,13 +167,13 @@ def _str_field(obj: dict[str, Any], key: str) -> str:
     return value[:MAX_FIELD_CHARS] if isinstance(value, str) else ""
 
 
-def _credits_of(obj: dict[str, Any]) -> float:
-    """The row's credits as a finite float; anything else counts 0.
+def _credits_of(obj: dict[str, Any], field: str = "credits") -> float:
+    """The row's *field* (``credits`` or ``cost``) as a finite float; anything else counts 0.
 
     ``float`` of an int wider than a double raises rather than answers, and a
     non-finite value would reach the client as ``Infinity``, which is not JSON.
     """
-    number = _usage._usage_number(obj.get("credits"))
+    number = _usage._usage_number(obj.get(field))
     if number is None:
         return 0.0
     try:
@@ -201,6 +207,7 @@ def _row_from(obj: dict[str, Any]) -> _Row | None:
             _str_field(obj, "model"), _str_field(obj, "provider")
         ),
         credits=_credits_of(obj),
+        cost=_credits_of(obj, "cost"),
     )
 
 
@@ -357,6 +364,7 @@ def build_series(
     rows: list[_Row],
     *,
     by: str = DEFAULT_DIMENSION,
+    metric: str = DEFAULT_METRIC,
     days: int = WINDOW_DAYS,
     top: int = TOP_BUCKETS,
     dropped: int = 0,
@@ -365,7 +373,8 @@ def build_series(
 ) -> dict[str, Any]:
     """Aggregate ``rows`` into the stacked-series payload. Pure; see the module doc.
 
-    ``dropped`` is how many admitted rows the retention cap refused and
+    ``metric`` picks the value stacked: each row's ``credits`` or its dollar
+    ``cost``. ``dropped`` is how many admitted rows the retention cap refused and
     ``complete_from`` the first day it left whole; both pass through as the
     payload's truncation disclosure.
     """
@@ -378,7 +387,7 @@ def build_series(
     per_bucket: dict[str, list[float]] = {}
     unattributed = [0.0] * days
     for row in window_rows:
-        value = row.credits
+        value = row.cost if metric == "cost" else row.credits
         if value == 0.0:
             continue
         key = _bucket_key(row, by, cohorts)
@@ -424,6 +433,7 @@ def build_series(
         )
     return {
         "dates": dates,
+        "metric": metric,
         "series": series,
         "total": _round(_sum(s["total"] for s in series)),
         "truncated": dropped > 0,
@@ -443,14 +453,14 @@ def _query_choice(
 
 
 async def api_usage_series(request: web.Request) -> web.Response:
-    """GET /api/usage/series?by=channel|agent|model|cohort.
+    """GET /api/usage/series?by=channel|agent|model|cohort&metric=credits|cost.
 
     Dashboard-only: the payload is the whole install's spend with no slot
     filter, so an app token — scoped to its own rows on ``/api/usage/turns`` —
     is answered 404 here, indistinguishable from a route it was never granted,
     and the refusal is SEL-audited like every app-caller decision. An unknown
-    ``by`` is a 400, because silently substituting the default would render a
-    chart of something other than what was asked for.
+    ``by`` or ``metric`` is a 400, because silently substituting the default
+    would render a chart of something other than what was asked for.
     """
     request_app = str(request.get("app", "") or "")
     if request_app:
@@ -475,7 +485,22 @@ async def api_usage_series(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    metric = _query_choice(request, "metric", SERIES_METRICS, DEFAULT_METRIC)
+    if metric is None:
+        return web.json_response(
+            {
+                "error": f"metric must be one of {', '.join(SERIES_METRICS)}",
+                "code": "invalid_metric",
+            },
+            status=400,
+        )
     scan = await asyncio.to_thread(load_rows)
     return web.json_response(
-        build_series(scan.rows, by=by, dropped=scan.dropped, complete_from=scan.complete_from)
+        build_series(
+            scan.rows,
+            by=by,
+            metric=metric,
+            dropped=scan.dropped,
+            complete_from=scan.complete_from,
+        )
     )

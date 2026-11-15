@@ -269,7 +269,8 @@ class TestSpawnGrantIsWithheldUnderASpawnPolicy:
         from kiro_crew.acp import kas_agents
 
         _install(_SPAWN_OFF)
-        kept = kas_agents._ceiling_permitted(["use_subagent", "web_fetch"], "a")
+        gate = kas_agents._authored_allow_gate("", None)
+        kept = kas_agents._ceiling_permitted(["use_subagent", "web_fetch"], "a", gate)
         assert kept == ["web_fetch"]
 
     def test_a_disabled_spawn_capability_withholds_it_on_kiro_cli(self):
@@ -315,7 +316,8 @@ class TestSpawnGrantIsWithheldUnderASpawnPolicy:
             }
         )
         assert may_skip_gate_now("use_subagent") is True
-        assert kas_agents._ceiling_permitted(["use_subagent"], "a") == ["use_subagent"]
+        gate = kas_agents._authored_allow_gate("", None)
+        assert kas_agents._ceiling_permitted(["use_subagent"], "a", gate) == ["use_subagent"]
 
     def test_no_policy_leaves_both_backends_unchanged(self):
         from kiro_crew import agent
@@ -323,7 +325,8 @@ class TestSpawnGrantIsWithheldUnderASpawnPolicy:
 
         _install(None)
         assert agent._may_auto_approve("use_subagent") is True
-        assert kas_agents._ceiling_permitted(["use_subagent"], "a") == ["use_subagent"]
+        gate = kas_agents._authored_allow_gate("", None)
+        assert kas_agents._ceiling_permitted(["use_subagent"], "a", gate) == ["use_subagent"]
 
 
 # ── shared helpers ──
@@ -771,7 +774,7 @@ class TestChannelTransportStartGate:
         assert seen["fail_closed"] is True
 
     def test_host_profile_deny_skips_transport(self):
-        # Regression: policy ALLOWS telegram, but a surface:host profile denies
+        # Policy ALLOWS telegram, but a surface:host profile denies
         # it → the host chokepoint must skip telegram (profile ∩ policy, tightest
         # wins). Proves session_key=HOST_SESSION_KEY actually binds the profile
         # (an empty key would classify to "unknown" and never match this profile).
@@ -910,7 +913,7 @@ class TestChannelTransportStartGate:
         assert calls[0]["critical"] is False
 
     def test_policy_present_but_channels_ungoverned_is_best_effort(self, monkeypatch):
-        # F1-2 (the regression): a policy EXISTS but does NOT govern channels.
+        # A policy EXISTS but does NOT govern channels.
         # resolve() returns rule="rule2-intersect" (which the old rule-based check
         # mis-read as governed) but layer="default" — so this is UNGOVERNED and
         # must be audited best-effort (critical=False), NOT critical. Otherwise an
@@ -1249,12 +1252,12 @@ class TestPublishGovernanceGate:
         assert reason is not None and "governance could not be evaluated" in reason
 
     def test_internal_resolve_error_fails_closed(self, monkeypatch):
-        # Regression (PR #14 alice): governance_permits SWALLOWS its own internal
+        # governance_permits SWALLOWS its own internal
         # errors and, by default, degrades to a permissive Decision. The publish
         # gate calls it with fail_closed=True, so an error raised INSIDE
         # governance_permits (e.g. resolve() throwing) must still DENY — the
-        # handler-level except never sees this error. Before the fix this path
-        # returned permitted==True and the gate wrongly permitted the publish.
+        # handler-level except never sees this error. Without fail_closed this
+        # path returns permitted==True and the gate wrongly permits the publish.
         from kiro_crew.dashboard.handlers import artifacts as art
 
         def _resolve_boom(*a, **k):
@@ -1327,7 +1330,7 @@ class TestPublishGovernanceGate:
 
     @pytest.mark.asyncio
     async def test_republish_gates_on_existing_provider(self, tmp_path, monkeypatch):
-        # Regression (PR #14 alice): a re-publish with NO explicit provider in the
+        # A re-publish with NO explicit provider in the
         # body must gate on the EXISTING publication's provider, not the default
         # "provider-a". publish_sync.publish() dispatches to the existing
         # provider, so gating on "provider-a" while the artifact is published to
@@ -1369,7 +1372,7 @@ class TestPublishGovernanceGate:
         req.headers = {"X-Session-Key": "dashboard:ui"}
         req.match_info = {"slug": "doc"}
         req.query = {}
-        # Body omits "provider" — the pre-fix code would default to "provider-a"
+        # Body omits "provider" — a handler that defaults would pick "provider-a"
         # (allowed) and permit the push to the provider-b-published artifact.
         attach_json_body(req, json.dumps({"visibility": "PRIVATE"}).encode())
         resp = await art.api_artifact_publish(req)

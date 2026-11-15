@@ -36,6 +36,7 @@ const H = vi.hoisted(() => {
         string,
         { kind: string; purpose?: string; label?: string; ts: number; toolName?: string }
       >,
+      slotRun: {} as Record<string, { state: string }>,
     },
   }
   const onActivateRecent = vi.fn()
@@ -221,8 +222,8 @@ const failingChunk = vi.hoisted(() => {
   }
   return { state, Overlay }
 })
-vi.mock('../apps/overlayRegistry', () => ({
-  getBuiltinOverlay: () => failingChunk.Overlay,
+vi.mock('./commandBar/CommandBarOverlay', () => ({
+  default: failingChunk.Overlay,
 }))
 
 import CommandPalette from './CommandPalette'
@@ -240,6 +241,7 @@ afterEach(() => {
   H.storeState.dashboard.unreadSlots = []
   H.sessionsOpenKeys.length = 0
   H.storeState.chat.slotStatusDetail = {}
+  H.storeState.chat.slotRun = {}
   // localStorage is file-scoped, not per-test: a chat-config write (e.g. the
   // simplifiedToolNames toggle test) would otherwise persist into siblings.
   localStorage.removeItem('mc-chat-config')
@@ -535,6 +537,22 @@ describe('CommandPalette — render', () => {
     await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(4))
   })
 
+  it('refreshes recents when a running slot starts compacting under an unchanged status detail', async () => {
+    // A compaction moves only the slot's run state; the status detail keeps the
+    // phase from before it, so the row's "Compacting…" depends on the key reading it.
+    H.storeState.dashboard.slots = [
+      { key: 'chat-1', title: 'Live session', running: true, messages: 2 },
+    ]
+    H.storeState.chat.slotStatusDetail = { 'chat-1': { kind: 'thinking', ts: 1 } }
+    const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+    expect(H.recentsProvider.search).toHaveBeenCalledTimes(1)
+
+    H.storeState.chat.slotRun = { 'chat-1': { state: 'compacting' } }
+    rerender(<CommandPalette open onClose={vi.fn()} />)
+    await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(2))
+  })
+
   it('refreshes recents when last_ts advances beyond a nonempty activity timestamp', async () => {
     H.storeState.dashboard.slots = [
       {
@@ -640,7 +658,7 @@ describe('CommandPalette — keyboard & activation', () => {
     // "fold" uniquely prefixes nothing here. If a Folders provider is ever put
     // back into this host, the hint label appears and Tab adopts the scope — and
     // this assertion is the thing that says so, because the feature would then
-    // have two implementations (this one and `apps/command-bar/foldersProvider`)
+    // have two implementations (this one and `components/commandBar/foldersProvider`)
     // free to disagree about ranking and about what a reveal does.
     fireEvent.change(screen.getByRole('textbox', { name: 'Search everywhere' }), { target: { value: 'fold' } })
     await waitFor(() => expect(H.allProvider.search).toHaveBeenCalled())
@@ -1322,7 +1340,8 @@ describe('CommandPalette — fallback for a failed overlay chunk', () => {
       const onClose = vi.fn()
       render(
         <QuickSearchSurface
-          owners={{ 'quick-search': { app: 'command-bar', overlayId: 'command-bar' } }}
+          owners={{}}
+          commandBar
           open
           onClose={onClose}
         />,
@@ -1333,7 +1352,9 @@ describe('CommandPalette — fallback for a failed overlay chunk', () => {
       fireEvent.change(catcher, { target: { value: 'alice' } })
       await act(async () => { release(); await failingChunk.state.promise })
 
-      const input = await screen.findByRole('textbox', { name: 'Search everywhere' })
+      // Waits across QuickSearchSurface's `lazy(() => import('./commandBar/CommandBarOverlay'))`
+      // settling into the thrown chunk and its fallback to this palette.
+      const input = await screen.findByRole('textbox', { name: 'Search everywhere' }, { timeout: 5000 })
       expect(input).toHaveValue('alice')
       expect(await screen.findByText('All Result')).toBeInTheDocument()
       expect(H.allProvider.search).toHaveBeenCalledWith('alice')

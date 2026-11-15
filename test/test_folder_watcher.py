@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_crew.knowledge import folder_watcher
+from kiro_crew.knowledge import folder_watcher, llm_pool
 from kiro_crew.knowledge.connectors.local_folder import LocalFolderConnector
 from kiro_crew.knowledge.folder_watcher import MAX_SCAN_ATTEMPTS, FolderWatcher
 from kiro_crew.knowledge.ingestion import FileTooLargeError
@@ -778,6 +778,22 @@ class TestFolderWatcherFailedFiles:
             assert str(exc) in row["error_message"]
         errors = [r for r in caplog.records if r.name == folder_watcher.logger.name]
         assert bool(errors) is logs_error
+
+    @pytest.mark.asyncio
+    async def test_a_pool_shut_down_at_exit_leaves_the_file_to_the_next_start(
+            self, store, pipeline, vault):
+        """Gateway exit is not a defect in the file: a terminal 'failed' would keep
+        it out of every later scan until the user retried it by hand."""
+        fw = FolderWatcher(store, pipeline)
+        source_id = store.add_source("test", "local_folder", str(vault))
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder", "properties": "{}"}
+        pipeline.ingest_file = AsyncMock(side_effect=llm_pool.LLMPoolClosed())
+
+        with pytest.raises(llm_pool.LLMPoolClosed):
+            await fw.scan_source(source)
+        rows = store.db.execute(
+            "SELECT status FROM folder_file_state WHERE source_id = ?", (source_id,)).fetchall()
+        assert [row["status"] for row in rows] == ["scanning"]
 
 
 class TestHashFileSecurity:

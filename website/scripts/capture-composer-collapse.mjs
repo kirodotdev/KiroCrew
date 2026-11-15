@@ -171,18 +171,8 @@ async function main() {
     preserveStorage: true,
     localStorageEntries: { 'mc-active-slot': SLOT },
   })
-  await page.addInitScript(() => {
-    // Start from the shipped default so the first frame is today's behaviour --
-    // but ONCE, on the first boot only. This script re-runs on every navigation,
-    // and an unconditional removal also wiped the preference across the reload
-    // further down, which made "the state survives a reload" untestable here and
-    // reported a false negative for it. sessionStorage is the right sentinel: it
-    // survives a reload in the same tab and dies with the context.
-    if (!sessionStorage.getItem('mc-capture-booted')) {
-      localStorage.removeItem('mc-composer-collapsed')
-      sessionStorage.setItem('mc-capture-booted', '1')
-    }
-  })
+  // The context is new, so the first boot has no `mc-composer-collapsed` and the
+  // first frame is the shipped default; the reloads below keep what it records.
   await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2500)
 

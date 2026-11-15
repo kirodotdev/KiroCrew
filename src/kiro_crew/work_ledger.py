@@ -23,7 +23,7 @@ than one update function with a field allowlist:
   * :func:`apply_conductor_action` writes ``title``, ``acceptance``, ``state``,
     ``verdict``, ``decision``, ``worker_session_key``, ``round`` and ``fails``.
   * :func:`apply_worker_report` writes ``status``, ``reason``, ``wake_at``,
-    ``summary``, ``artifacts``, ``pr`` and ``last_report_at``.
+    ``summary``, ``artifacts``, ``pr``, ``discussion`` and ``last_report_at``.
 
 The two field sets are disjoint. Phase 2 mounts one tool on each, so a worker cannot
 reach a conductor field because the function it can call takes no parameter that
@@ -542,6 +542,13 @@ def _rebuild_locked(
             record = dataclasses.replace(record, created_at=existing.created_at)
         if not record.generation and existing.generation:
             record = dataclasses.replace(record, generation=existing.generation)
+        if not record.goal_id and existing.goal_id:
+            # No entry carries it, so the cache's id is kept whatever the trust check
+            # below says. shortcut: after a failed undo (a dirty cache) that can be a
+            # refused new_goal's id; it only keys traces, so a rebuild accepts that.
+            record = dataclasses.replace(record, goal_id=existing.goal_id)
+        if not record.round_started_at and existing.round_started_at:
+            record = dataclasses.replace(record, round_started_at=existing.round_started_at)
         if existing.recorded_at:
             record = dataclasses.replace(record, recorded_at=existing.recorded_at)
         # The goal's concurrency cap and where its count starts ride no crew-log
@@ -1002,6 +1009,7 @@ from kiro_crew.work_ledger_records import (  # noqa: E402, F401
     CODE_DUPLICATE_ITEM,
     CODE_FIELD_TOO_LONG,
     CODE_GOAL_CONCURRENCY_CAP_REACHED,
+    CODE_HOST_MEMORY_CRITICAL,
     CODE_INVALID_ACTION,
     CODE_INVALID_STATUS,
     CODE_INVALID_VALUE,
@@ -1098,6 +1106,7 @@ from kiro_crew.work_ledger_rules import (  # noqa: E402, F401
     _require_artifacts,
     _require_choice,
     _require_count,
+    _require_discussion,
     _require_pr,
     _require_text,
     _require_wake_at,
@@ -1121,6 +1130,12 @@ from kiro_crew.work_ledger_store import (  # noqa: E402, F401
     _ITEM_ID_RE,
     _ITEMS_DIR,
     _KEY_FILE,
+    _LISTING_MEMO,
+    _LISTING_MEMO_BOARDS,
+    _LISTING_MEMO_ITEMS,
+    _LISTING_MEMO_LOCK,
+    _LISTINGS,
+    _LISTINGS_LOCK,
     _LOCK_FILE,
     _READ_MEMO,
     _READ_MEMO_LOCK,
@@ -1136,9 +1151,13 @@ from kiro_crew.work_ledger_store import (  # noqa: E402, F401
     _change_marks,
     _coalesce_progress,
     _commit_item_locked,
+    _copy_item,
     _existing_conductor_lock,
+    _item_from_record,
     _item_lock_path,
+    _json_copy,
     _last_mark,
+    _Listing,
     _mark_changed,
     _memo_read_bytes,
     _open_lock,
@@ -1152,6 +1171,7 @@ from kiro_crew.work_ledger_store import (  # noqa: E402, F401
     _serialize,
     _slot_key_is_shaped,
     _stored_item_ids,
+    _walk_items,
     _work_ledger_root,
     _write_record,
     binding_lock,
@@ -1193,13 +1213,16 @@ from kiro_crew.work_ledger_writes import (  # noqa: E402, F401
     _create_item,
     _header_under_lock,
     _read_binding_text,
+    _refuse_if_host_critical,
     _refuse_if_worker_holds_open_item,
+    _require_ask_options,
     _restore_binding_text,
     _write_binding,
     _write_goal,
     _write_item_action,
     accept_batch,
     apply_acceptance_update,
+    apply_ask_record,
     apply_conductor_action,
     apply_person_steer,
     apply_worker_report,
@@ -1229,7 +1252,7 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # the project names this module imported that only its owners read
-    from kiro_crew import work_preview  # noqa: F401
+    from kiro_crew import resource_status, work_preview  # noqa: F401
     from kiro_crew.atomic_write import read_bytes_with_retry  # noqa: F401
     from kiro_crew.config.paths import data_home  # noqa: F401
     from kiro_crew.platform_compat import (  # noqa: F401
@@ -1247,6 +1270,11 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
         unlink_lock_in_hold,
     )
     from kiro_crew.work_vocab import (  # noqa: F401
+        WORK_ASK_LABEL_CHARS,
+        WORK_ASK_MAX_OPTIONS,
+        WORK_ASK_OUTCOME_CHARS,
+        WORK_ASK_WHAT_CHARS,
+        WORK_ASK_WHY_CHARS,
         WORK_BLOCKED_REASONS,
         WORK_ITEM_STATES,
         WORK_MAX_ARTIFACT_VALUE_CHARS,
@@ -1260,7 +1288,10 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
         WORK_STORED_ITEM_LIMIT,
         WORK_VERDICTS,
         WORK_WORKER_STATUSES,
+        coerce_ask,
+        coerce_discussion,
         coerce_retired_bindings,
+        discussion_problem,
         work_event_id,
         worker_statuses,
     )

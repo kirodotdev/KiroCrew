@@ -48,6 +48,7 @@ from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import (  # noqa: F401 - selectable_backend_values is a facade name
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_PROMPT_HANDLER_COMMANDS,
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
     model_registry_namespace,
@@ -112,10 +113,12 @@ from kiro_crew.apps.manager import (  # noqa: F401
     apps_dir,
 )
 from kiro_crew.atomic_write import replace_with_retry  # noqa: F401
+from kiro_crew.bounded_read import bounded_read  # noqa: F401
 from kiro_crew.config.loader import (  # noqa: F401
     ConfigReadError,
     KiroCrewAgentConfig,
     KiroCrewConfig,
+    PendingEditBlocksSave,
     _overlay_kiro_agent,
     _safe_color,
     coerce_dict_section,
@@ -224,6 +227,7 @@ from kiro_crew.dashboard.agent_admin.crew_records import (  # noqa: F401
     _eager_copy_mate_config,
     _mark_first_greeting_owed,
     _refresh_session_defaults,
+    _teammate_create_refusal,
     api_kirocrew_agent_resolved_model,
     api_kirocrew_agents_create,
 )
@@ -328,7 +332,14 @@ from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
 )
 from kiro_crew.dashboard.handlers.agents_cc_model_rows import merge_advertised_rows
 from kiro_crew.dashboard.handlers.agents_effort_levels import api_effort_levels  # noqa: F401
-from kiro_crew.dashboard.handlers.models_kas_bundle import api_models_kas_bundle
+from kiro_crew.dashboard.handlers.agents_session_commands import (
+    menu_backend,
+    menu_with_session_commands,
+)
+from kiro_crew.dashboard.handlers.models_kas_bundle import (
+    api_models_kas_bundle,
+    api_models_kas_crew_relay,
+)
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
     owner_view_for_request,
 )
@@ -363,7 +374,6 @@ from kiro_crew.memory_stores import (  # noqa: F401
 )
 from kiro_crew.platform.governance import sanitize_agent_config_governance  # noqa: F401
 from kiro_crew.platform_compat import is_link_or_junction, kill_and_reap  # noqa: F401
-from kiro_crew.quick_prompts import user_quick_prompt_menu
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -477,6 +487,7 @@ def _supply_live_enum(entry: dict) -> None:
 
 async def api_config_schema(request: web.Request) -> web.Response:
     """GET /api/config/schema — return config schema entries."""
+    from kiro_crew.dashboard.handlers.config_all_settings import attach_descriptor
     from kiro_crew.edition_locks import LOCKED_BY_POLICY, config_path_locked
 
     entries = SCHEMA_REGISTRY
@@ -492,8 +503,7 @@ async def api_config_schema(request: web.Request) -> web.Response:
     if dep_param == "false":
         entries = [e for e in entries if not e.deprecated]
 
-    # Serialize, masking sensitive defaultValues and converting dataclass
-    # defaults to None (they aren't JSON-serializable).
+    # Serialize; a sensitive or dataclass default (not JSON-serializable) is sent as None.
     result = []
     for entry in entries:
         d = config_entry_to_dict(entry)
@@ -503,7 +513,7 @@ async def api_config_schema(request: web.Request) -> web.Response:
         # An LTS build ignores this local value (RFC D3, kiro_crew.edition_locks).
         if config_path_locked(entry.path):
             d["lockedByPolicy"] = LOCKED_BY_POLICY
-        result.append(d)
+        result.append(attach_descriptor(d, entry))
 
     return web.json_response({"entries": result})
 
@@ -611,7 +621,7 @@ def _advertised_cc_models(request: web.Request, namespace: str) -> list[dict]:
             continue
         try:
             advertised = getter()
-        except Exception:
+        except Exception:  # A provider whose list fails gives no evidence; ask the next one.
             continue
         rows = model_registry.live_advertised_model_rows(advertised) if advertised else []
         if rows:
@@ -691,7 +701,7 @@ async def _entitled_kiro_models(request: web.Request, models: list[dict]) -> lis
             continue
         try:
             ids = advertised_model_ids(getter())
-        except Exception:
+        except Exception:  # A provider whose list fails gives no evidence; ask the next one.
             continue
         if not ids:
             continue
@@ -1451,7 +1461,8 @@ async def api_models(request: web.Request) -> web.Response:
         if cached is None or not await kiro_latched_ready(request):
             blocked = await reject_if_kiro_unverified(request)
             if blocked is not None:
-                return blocked
+                crew_relay = await api_models_kas_crew_relay(request, backend, blocked)
+                return blocked if crew_relay is None else crew_relay
         if cached is not None:
             # Serve the last good catalog straight away; a stale one is refreshed
             # behind the reply (stale-while-revalidate). Entitlement narrowing
@@ -1549,15 +1560,16 @@ async def api_models(request: web.Request) -> web.Response:
 async def api_slash_commands(request: web.Request) -> web.Response:
     """GET /api/slash-commands — list available slash commands (provider-aware)."""
     cfg = KiroCrewConfig.load()
-    # This global endpoint has no session/member key; the configured default
-    # backend is its capability authority, independent of the provider label.
+    # The ``?slot=`` chat's backend decides the base list, the one the slash gate
+    # resolves for that chat, so a chat pinned off the configured default lists
+    # what runs there. With no slot it is the configured default. ``?slot=`` then
+    # adds what that chat's live session advertised.
+    backend = await menu_backend(request, cfg.agent.acp_backend)
     blocked_commands = _BLOCKED_SLASH_COMMANDS
-    if capabilities_for(cfg.agent.acp_backend).supports_native_todos:
+    if capabilities_for(backend).supports_native_todos:
         blocked_commands = blocked_commands - {"/todos"}
     # A harness that runs its own commands gets its own list, not kiro-cli's.
-    if capabilities_for(cfg.agent.acp_backend).runs_own_slash_commands or is_claude_code(
-        cfg.agent.provider
-    ):
+    if capabilities_for(backend).runs_own_slash_commands or is_claude_code(cfg.agent.provider):
         cc_commands = [
             "compact",
             "clear",
@@ -1580,7 +1592,9 @@ async def api_slash_commands(request: web.Request) -> web.Response:
                 result.append(
                     {"name": command, "description": SLASH_COMMAND_DESCRIPTIONS.get(command, "")}
                 )
-        return web.json_response(result + await asyncio.to_thread(user_quick_prompt_menu))
+        return web.json_response(
+            await menu_with_session_commands(request, result, blocked_commands)
+        )
 
     # Blocked commands stay in _SLASH_COMMANDS (typing one still gets the
     # explicit "not available in the dashboard" rejection in chat_runner), but
@@ -1590,12 +1604,17 @@ async def api_slash_commands(request: web.Request) -> web.Response:
     # The same holds for a harness with no command channel: the slash gate answers
     # its commands with a notice, so list only what the dashboard serves there
     # (local_harness_menu, which /help prints too).
-    if cfg.agent.acp_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS:
-        offered = offered & local_harness_menu(cfg.agent.acp_backend)
-    return web.json_response(
-        [{"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")} for c in sorted(offered)]
-        + await asyncio.to_thread(user_quick_prompt_menu)  # expanded on every harness
-    )
+    if backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS:
+        offered = offered & local_harness_menu(backend)
+    # A harness whose prompt handler runs only some harness commands gets the
+    # notice for the rest too, so list what the dashboard serves and that row.
+    runs_from_prompt = ACP_BACKEND_PROMPT_HANDLER_COMMANDS.get(backend)
+    if runs_from_prompt is not None:
+        offered = offered & (local_harness_menu(backend) | runs_from_prompt)
+    rows = [
+        {"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")} for c in sorted(offered)
+    ]
+    return web.json_response(await menu_with_session_commands(request, rows, blocked_commands))
 
 
 # Windows reserves these basenames (before the first dot, any extension) at the
@@ -1910,10 +1929,16 @@ async def api_kirocrew_agent_avatar_get(request: web.Request) -> web.Response:
     from the bytes served, so a replaced picture invalidates even when size
     and second-granularity mtime coincide.
     """
-    denied = await _require_owner(request, "agent.avatar_get")
-    if denied is not None:
-        return denied
-    if (name := agent_route_name(request)) is None:
+    name = agent_route_name(request)
+    # A team Crew teammate sees a person-created Bot's picture: their roster
+    # already names it, and the image is the same value.
+    from kiro_crew.dashboard.handlers.members import _teammate_admitted
+
+    if name is None or not await _teammate_admitted(request, "agent.avatar_get", name=name):
+        denied = await _require_owner(request, "agent.avatar_get")
+        if denied is not None:
+            return denied
+    if name is None:
         return invalid_agent_name_response()
     # The file is served only while the crew's config actually selects it —
     # a leftover file after an out-of-band config edit or a failed cleanup

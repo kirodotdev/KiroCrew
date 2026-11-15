@@ -160,6 +160,12 @@ def is_connection_server(session_key: str, server: str) -> bool:
         return any(b.session_key == session_key and b.server == server for b in _bridges.values())
 
 
+def serves_connection(server: str) -> bool:
+    """Whether a registered bridge serves *server* for any session."""
+    with _lock:
+        return any(b.server == server for b in _bridges.values())
+
+
 def drop_slug(slug: str) -> None:
     """Forget every bridge of *slug* (a failed Disconnect); their next call is refused."""
     with _lock:
@@ -528,14 +534,14 @@ def _refresh_refusal(code: str) -> Any:
         return _refuse(
             409,
             "the OAuth app for this Connection is not configured: "
-            "set it under Settings → OAuth Apps",
+            "set it under Settings → Connections",
             "client_not_configured",
         )
     # The provider answered and refused: a retry will not help.
     return _refuse(
         502,
         f"the provider rejected the sign-in refresh ({code[:64]}): check the OAuth app "
-        "under Settings → OAuth Apps, then reconnect if it persists",
+        "under Settings → Connections, then reconnect if it persists",
         "refresh_rejected",
     )
 
@@ -651,9 +657,12 @@ async def handle(request: Any) -> Any:
                 token = await crew_oauth.access_token(bridge.slug, force=force)
             except crew_oauth.CrewOAuthError as exc:
                 if exc.code == "needs_auth":
-                    return _refuse(
-                        409, "not connected: reconnect it on the Connections page", "needs_auth"
+                    where = (
+                        "the MCP Servers page"
+                        if crew_oauth.is_custom_key(bridge.slug)
+                        else "the Connections page"
                     )
+                    return _refuse(409, f"not connected: reconnect it on {where}", "needs_auth")
                 return _refresh_refusal(exc.code)
             try:
                 upstream = await session.request(

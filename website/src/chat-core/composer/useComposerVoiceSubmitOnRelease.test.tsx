@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -358,5 +358,69 @@ describe('submit on release: streaming', () => {
     t.drainEnds()
     expect(t.onAutoSubmit).not.toHaveBeenCalled()
     expect(t.inputRef.current).toBe('typed earlier')
+  })
+})
+
+describe('screen lock stops the recording as a draft', () => {
+  // The desktop shell's bridge, faked: the hook subscribes, the test fires.
+  let listeners: Array<() => void> = []
+  const lock = () => act(() => { for (const fn of [...listeners]) fn() })
+  beforeEach(() => {
+    listeners = []
+    ;(window as unknown as { electronAPI?: unknown }).electronAPI = {
+      onSessionLocked: (cb: () => void) => {
+        listeners.push(cb)
+        return () => { listeners = listeners.filter(fn => fn !== cb) }
+      },
+    }
+  })
+  afterEach(() => {
+    delete (window as unknown as { electronAPI?: unknown }).electronAPI
+  })
+
+  it('stops a live recording and never sends, even with send-on-stop on', async () => {
+    const t = mount({ submit: true })
+    await t.startRecording()
+    lock()
+    t.render()
+    expect(t.e.stop).toHaveBeenCalledTimes(1)
+    t.batchAnswers('half a thought')
+    t.render(); t.render()
+    expect(t.inputRef.current).toBe('half a thought')
+    expect(t.onAutoSubmit).not.toHaveBeenCalled()
+  })
+
+  it('keeps the streamed text as a draft', async () => {
+    const t = mount({ submit: true, streaming: true })
+    await t.startRecording()
+    t.partial('still talking')
+    lock()
+    t.render()
+    expect(t.e.stop).toHaveBeenCalledTimes(1)
+    t.drainEnds()
+    t.render(); t.render()
+    expect(t.onAutoSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does nothing when nothing is recording', () => {
+    const t = mount()
+    lock()
+    expect(t.e.stop).not.toHaveBeenCalled()
+  })
+
+  it('leaves a recording another composer owns to that composer', async () => {
+    const t = mount()
+    await t.startRecording()
+    t.e.sessionOwner = 'slot-b'
+    t.render()
+    lock()
+    expect(t.e.stop).not.toHaveBeenCalled()
+  })
+
+  it('stops listening when the composer unmounts', () => {
+    const t = mount()
+    expect(listeners).toHaveLength(1)
+    t.view.unmount()
+    expect(listeners).toHaveLength(0)
   })
 })

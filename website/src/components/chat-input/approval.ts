@@ -1,5 +1,6 @@
 import { createElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Trans } from 'react-i18next'
+import { useQueryClient } from '@tanstack/react-query'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, type useAppDispatch } from '../../store'
 import { pendingQuestionFor, resolveApprovalRow, resolveShownApprovalRow, openActivityToTool, openActivityToTab, selectSlotMessages, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, selectSlotSubagents, isSpawnApprovalGone, markSubagentApproving, markSubagentApprovalGone, reconcileGoneSubagent, sseSubagentDone } from '../../store/chatSlice'
@@ -26,6 +27,7 @@ import { isUnknownPrincipal } from '../../api/sharedCrewUi'
 import { useResolvedElsewhere } from './useResolvedElsewhere'
 import { useRaisedBy } from '../../pages/chat/shared-crew/useRaisedBy'
 import { REJECT_APPROVAL_EVENT } from '../../pages/chat/composerFocus'
+import { refusalText } from '../../utils/toolGrantRefusal'
 
 /* The slot's approval chrome as state: the pending tool approval (its
    decision submit, the approval-mode discovery hint and nudge, the ghost
@@ -46,7 +48,7 @@ type AppDispatch = ReturnType<typeof useAppDispatch>
  *  `approvalIsUnattended`), so the Trust controls are withheld and only
  *  Allow once / Reject are offered. Kept in sync with the backend's
  *  `_BACKGROUND_APPROVAL_SOURCES` minus `autonudge`, which does run in-session. */
-const TRUST_DECISIONS = ['trust_command', 'trust_base', 'trust', 'trust_reads']
+const TRUST_DECISIONS = ['trust_command', 'trust_base', 'trust', 'trust_reads', 'always_allow_tool']
 
 export const UNATTENDED_APPROVAL_SOURCES = new Set(['cron', 'heartbeat', 'taskrunner'])
 
@@ -69,6 +71,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   approvalMode?: string
   dispatch: AppDispatch
 }) {
+  const qc = useQueryClient()
   const pendingApprovalRaw = useAppSelector(s => selectSlotPendingApproval(s, slotId), shallowEqual)
   // Suppressed at the READ so every consumer (bar, ghost, pill, rounded-corner
   // class) follows one judgment instead of each render site re-deciding.
@@ -176,6 +179,11 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
    *  a card that could still take a session grant offered allow-once and reject
    *  alone. */
   const approvalTrustAllGrantable = approvalMeta?.trust_grantable === '1'
+  /** "Always allow this tool": the verified `@server/tool` the server says this
+   *  card may grant for good, or the code saying why not. Server facts only. */
+  const approvalAlwaysAllowRef = approvalMeta?.always_allow_tool_grantable === '1' && typeof approvalMeta?.always_allow_tool_ref === 'string'
+    ? approvalMeta.always_allow_tool_ref : ''
+  const approvalAlwaysAllowRefusal = refusalText(typeof approvalMeta?.always_allow_tool_refusal === 'string' ? approvalMeta.always_allow_tool_refusal : '')
   /** Server word that a reason typed with a rejection reaches the model (the
    *  backend reads one). Without it the reject menu asks for none. */
   const approvalTakesReason = approvalMeta?.rejection_reason_accepted === '1'
@@ -283,6 +291,12 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   // same error surface, so the tool and spawn paths share one notice.
   const showApprovalError = useCallback((message: string) => {
     setApprovalNoticeKind('error')
+    setApprovalNotice(message)
+  }, [])
+  // A spawn decide that found its approval gone: status, like the tool
+  // path's 404 below.
+  const showApprovalStatus = useCallback((message: string) => {
+    setApprovalNoticeKind('status')
     setApprovalNotice(message)
   }, [])
   const showInChat = useCallback(() => {
@@ -402,7 +416,10 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
       const extra: Record<string, string | number> = { request_id: approvalTarget.id, origin: 'native', request_mid: approvalTarget.mid, response_id: responseId }
       if (pattern) extra.pattern = pattern
       if (ttlSeconds !== undefined) extra.ttl_seconds = ttlSeconds
-      api.approveChatSlot(activeSlot, decision, extra).then(finish).catch(fail)
+      api.approveChatSlot(activeSlot, decision, extra).then(() => {
+        if (decision === 'always_allow_tool') void qc.invalidateQueries({ queryKey: ['mcp-tool-grants'] })
+        finish()
+      }).catch(fail)
     } else if (reason && decision !== 'approved' && activeSlot && approvalTarget.origin === 'native' && !approvalIsUnattended) {
       // A rejection's reason travels only on the slot route, the one the server
       // takes it on, bound to the row this card showed like every other decide.
@@ -413,7 +430,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     } else {
       api.decideApproval(approvalTarget, toApiDecision(decision), responseId).then(finish).catch(fail)
     }
-  }, [approvalId, approvalTarget, approvalMeta, pendingApproval, pendingApprovalIndex, activeSlot, approvalIsUnattended, approvalSource, approvalMode, approvalFullCommand, approvalBaseCommand, dispatch, teamAttribution, viewerId, markSettled])
+  }, [approvalId, approvalTarget, approvalMeta, pendingApproval, pendingApprovalIndex, activeSlot, approvalIsUnattended, approvalSource, approvalMode, approvalFullCommand, approvalBaseCommand, dispatch, teamAttribution, viewerId, markSettled, qc])
 
   // The reject-approval chord reaches this pane's bar as an event on its action
   // row (`rejectPendingApproval`). State, not a ref: the row mounts with the
@@ -429,20 +446,22 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   return {
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
-    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
+    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError, showApprovalStatus,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTakesReason, approvalMid,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
+    approvalAlwaysAllowRef, approvalAlwaysAllowRefusal,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction,
     approvalActionsRef,
   }
 }
 
-export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showApprovalError }: {
+export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showApprovalError, showApprovalStatus }: {
   slotId: string | null
   slotApprovalChrome: boolean
   dispatch: AppDispatch
   showApprovalError: (message: string) => void
+  showApprovalStatus: (message: string) => void
 }) {
   // Pending sub-agent SPAWN approvals for this slot (blocked on user approval).
   // Surfaced as a top-level banner with inline Approve/Reject so the user can
@@ -493,10 +512,10 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showAp
     const approvalId = a.approval_id
     if (!approvalId) return
     dispatch(markSubagentApprovalGone({ id: a.id, approval_id: approvalId, target }))
-    // A rejected request, so an error surface, and the only one: the
-    // refusal is reported once, by the surface that sent it. The chip and
-    // the activity card show this id's liveness as neutral status.
-    showApprovalError(i18nT('components.approvalCard.approval_no_longer_pending'))
+    // Status, not an error (nothing the user did failed), reported once,
+    // by the surface that sent it. The chip and the activity card show
+    // this id's liveness as neutral status too.
+    showApprovalStatus(i18nT('components.approvalCard.approval_no_longer_pending'))
     // The liveness read that settles the card. A refusal leaves it
     // unresolved (the chip's poll retries) and is reported, not swallowed,
     // on its own notice so the refusal above stays on screen: until the
@@ -506,7 +525,7 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showAp
         .then(() => setLivenessFailedFor(prev => (prev === a.id ? null : prev)))
         .catch(() => setLivenessFailedFor(a.id))
     }
-  }, [dispatch, slotId, showApprovalError])
+  }, [dispatch, slotId, showApprovalStatus])
   const resolveOneSpawn = useCallback((a: SubagentActivity, action: 'approve' | 'reject') => {
     if (!a.approval_id || a.approving) return
     // Bound to the request the spawn card was raised for; one that names none

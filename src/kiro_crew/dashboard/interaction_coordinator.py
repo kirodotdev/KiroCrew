@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
 from kiro_crew.shared_crew.collab import DecisionKind, DecisionState
 from kiro_crew.shared_crew.collaborators import (
     broadcast_to_collaborators,
@@ -143,7 +144,14 @@ class ApprovalCoordinator:
         redact_secret: _Redactor,
         run_task_id: str = "",
         task_index: int | None = None,
+        on_host_decision: Callable[[str], object] | None = None,
     ) -> bool:
+        """Wait for a person's answer; an expired or cancelled wait answers ``False``.
+
+        A caller that records who decided passes *on_host_decision*: it is told
+        ``DENY_CAUSE_APPROVAL_TIMEOUT`` before an expiry's ``False``, and a
+        cancellation is raised to it, because nobody refused.
+        """
         loop = asyncio.get_running_loop()
         future: asyncio.Future[bool] = loop.create_future()
         state._approval_futures[approval_id] = future
@@ -185,7 +193,13 @@ class ApprovalCoordinator:
         )
         try:
             return await asyncio.wait_for(future, timeout=timeout)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except asyncio.TimeoutError:
+            if on_host_decision is not None:
+                on_host_decision(DENY_CAUSE_APPROVAL_TIMEOUT)
+            return False
+        except asyncio.CancelledError:
+            if on_host_decision is not None:
+                raise
             return False
         finally:
             # The id is the caller's and can recur while this wait is open; a

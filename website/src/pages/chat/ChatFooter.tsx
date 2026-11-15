@@ -5,7 +5,8 @@ import { motion } from 'framer-motion'
 
 import { i18nT } from '../../i18n/t'
 import { fmtElapsed } from '../../i18n/format'
-import type { ChatMessage } from '../../types'
+import type { ChatMessage, ToolActivity } from '../../types'
+import { toolReturned } from '../../utils/toolReturned'
 import { GHOST_POSE_ICONS } from '../../components/GhostPoses'
 import { getThemeBranding } from '../../themeBranding'
 import { resolveThemeLoaderIcons } from '../../themeLoaderIcons'
@@ -14,6 +15,7 @@ import ErrorBoundary from '../../components/ErrorBoundary'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { useBrowserLiveInControl } from '../../hooks/useBrowserLive'
 import { PackLoaderImage } from './PackLoaderImage'
+import { TOOL_LOG_CAP } from './types'
 type StopState = 'idle' | 'soft_pending' | 'killing'
 
 /** One carousel beat — the cadence the .csb4 cross-fade was built around. */
@@ -303,6 +305,18 @@ export function turnSentHere(messages: ReadonlyArray<Pick<ChatMessage, 'role' | 
   return i >= 0 && !!messages[i].meta?.optimistic
 }
 
+/** Every tool call in the slot's tool log (`selectSlotToolLog`, where each new
+ *  call adds an entry not yet returned) has returned or was refused; false
+ *  while the log holds none. A call is judged by its newest entry per
+ *  `tool_call_id`, the one a result lands on, and a full log is never trusted:
+ *  it may have dropped a call still running. */
+export function allToolCallsReturned(log: ReadonlyArray<Pick<ToolActivity, 'type' | 'output' | 'output_partial' | 'rejected' | 'tool_call_id'>>): boolean {
+  if (log.length >= TOOL_LOG_CAP) return false
+  const calls = new Map<string | number, (typeof log)[number]>()
+  log.forEach((e, i) => { if (e.type === 'tool') calls.set(e.tool_call_id || i, e) })
+  return calls.size > 0 && [...calls.values()].every(e => e.rejected || (toolReturned(e) && !e.output_partial))
+}
+
 /** Whether this view may watch the turn for a stall. A turn already running
  *  when the view opened on its session (a reload, a switch, a split pane) is
  *  read from a saved page, which cannot tell a quiet tool call from a stall,
@@ -361,7 +375,7 @@ function StallNotice({ since }: { since: number }) {
  *  (ChatEmbed) passes a window wider than its poll interval, because its tick
  *  only advances once per poll and a shorter window would flash the indicator
  *  between every two reads of a reply that is still arriving. */
-const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0, sendUnconfirmed = false, streamIdleMs = STREAM_IDLE_MS, statusLabel, browserSessionKey = null, activityKey, sentHere = false, waitingOnUser = false }: {
+const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0, sendUnconfirmed = false, streamIdleMs = STREAM_IDLE_MS, statusLabel, browserSessionKey = null, activityKey, sentHere = false, waitingOnUser = false, toolsReturned = false }: {
   running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState; streamTick?: number; sendUnconfirmed?: boolean; streamIdleMs?: number
   /** `transcriptActivityKey(messages)` whenever the host's transcript is
    *  authoritative (loaded, no switch in flight), running or not; a host may
@@ -374,6 +388,10 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
   /** The turn is parked on the person (a tool approval or a question card), so
    *  its quiet is theirs to end and the stall notice stays off. */
   waitingOnUser?: boolean
+  /** `allToolCallsReturned` over this slot's tool log. The slot reads
+   *  `tool_running` from a tool row until the next text chunk, so once its
+   *  calls returned the quiet is the model's and the stall notice is watched. */
+  toolsReturned?: boolean
   /** Replaces "Thinking…" while the turn is not yet thinking — a remote session
    *  environment still starting (`useEnvironmentStartLabel`). */
   statusLabel?: EnvironmentStart | null
@@ -400,13 +418,13 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
   // "still streaming", so the loader stayed hidden with nothing else moving.
   const streamingText = lastRole === 'streaming' && state === 'streaming'
   const streamQuiet = useStreamIdle(streamTick, streamingText, streamIdleMs)
-  // Off where the footer already names the wait (a tool, which may rightly run
-  // for many minutes, a stop, a compaction, an environment start, a browser
-  // hand-back), while the turn waits on the person, and while the newest send
-  // is unconfirmed.
+  // Off where the footer already names the wait (a tool call not yet returned,
+  // which may rightly run for many minutes, a stop, a compaction, an
+  // environment start, a browser hand-back), while the turn waits on the
+  // person, and while the newest send is unconfirmed.
   const stallArmed = useStallArmed(browserSessionKey ?? '', running, activityKey, sentHere)
   const stallWatched = stallArmed && activityKey !== undefined && running && !stopping && !sendUnconfirmed && !waitingOnUser
-    && !statusLabel && !browserInControl && state !== 'tool_running' && state !== 'compacting'
+    && !statusLabel && !browserInControl && (state !== 'tool_running' || toolsReturned) && state !== 'compacting'
     && stopState !== 'soft_pending' && stopState !== 'killing'
   const stallSince = useStallSince(`${browserSessionKey ?? ''}:${activityKey ?? ''}`, stallWatched)
   // Hidden once the turn is inactive. While the turn RUNS the indicator shows for

@@ -212,6 +212,10 @@ class ToolCall:
     #: ``AcpEvent.spec_denied_grant``: grants that hold only after the
     #: ``spec-denies`` row finds no deny naming the call. ``None`` grants nothing.
     spec_denied_grant: SpecDeniedGrant | None = None
+    #: ``AcpEvent.spec_unjudged_denies``: a Bot worker's ``deniedCommands`` entries
+    #: neither KAS nor the gate can judge. Read by the ``spec-unjudged-denies`` tier,
+    #: which REFUSES a shell call that is not read-only. A restriction, never a grant.
+    spec_unjudged_denies: tuple[dict[str, Any] | str, ...] = ()
     #: ``AcpEvent.spec_shell_readonly``: the KAS session's own agent sets
     #: ``autoAllowReadonly: true`` beside ``denyByDefault``, so the
     #: ``spec-shell-allowlist`` tier lets a read-only command past for the
@@ -264,6 +268,8 @@ class ToolCall:
         ``resolved_agent`` the event does not carry). A name that is not a field is
         a ``TypeError`` at the site, never a silently ignored keyword.
         """
+        from kiro_crew.agent_sdk.kas_tool_view import worker_deny_records
+
         unknown = set(overrides) - set(cls.__dataclass_fields__)
         if unknown:
             raise TypeError(
@@ -298,6 +304,7 @@ class ToolCall:
             ),
             "spec_write_cwd": _plain_str(getattr(event, "spec_write_cwd", "")),
             "spec_denied_grant": as_spec_denied_grant(getattr(event, "spec_denied_grant", None)),
+            "spec_unjudged_denies": worker_deny_records(getattr(event, "spec_unjudged_denies", ())),
             "spec_shell_readonly": getattr(event, "spec_shell_readonly", False) is True,
             "spec_granted_paths": _granted_patterns(getattr(event, "spec_granted_paths", None)),
             "spec_granted_read_paths": _granted_patterns(
@@ -336,6 +343,7 @@ class ToolCall:
             "spec_write_allowlist": self.spec_write_allowlist,
             "spec_write_cwd": self.spec_write_cwd,
             "spec_denied_grant": self.spec_denied_grant,
+            "spec_unjudged_denies": self.spec_unjudged_denies,
             "spec_shell_readonly": self.spec_shell_readonly,
             "spec_granted_paths": self.spec_granted_paths,
             "spec_granted_read_paths": self.spec_granted_read_paths,

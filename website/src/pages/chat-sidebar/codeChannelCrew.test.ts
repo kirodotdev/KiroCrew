@@ -3,8 +3,8 @@
 import { describe, it, expect } from 'vitest'
 import { aggregateLine, codeChannelCrews, crewAttention, crewState, foldCodeChannelCrews, memberState, sameCrewView, type CrewSignals } from './codeChannelCrew'
 import type { WorkAggregate } from '../../types'
-import { PREVIEW_CREW_MODE, setPreviewFlag } from '../../utils/previewFlags'
 import type { Slot } from './types'
+import { turnOffCrewModeAsLts } from '../../test/crewModeOff'
 
 const CODE = { channel_name: 'fix-login', status: 'active' as const, web_url: 'https://slack.com/app_redirect?channel=C0CODE1&team=T0TEAM1' }
 const row = (key: string, extra: Partial<Slot> = {}): Slot => ({ key, title: key, running: false, messages: 1, ...extra } as Slot)
@@ -138,17 +138,12 @@ describe('codeChannelCrews: only code-channel conductors fold', () => {
   it('a Crew Mode root is not a code-channel conductor while Crew Mode is on', () => {
     const aggregate: WorkAggregate = { state: 'done', label: '', counts: { done: 1, total: 1 } }
     const rows = [row('cond', { code_channel: CODE, crew_mode_root: true, work_aggregate: aggregate } as Partial<Slot>), worker('w1')]
-    try {
-      setPreviewFlag(PREVIEW_CREW_MODE, true)
-      expect(codeChannelCrews(rows).size).toBe(0)
-      const fold = foldCodeChannelCrews(rows, rows, [], { narrowed: false, expanded: new Set(), signals: signals() })
-      expect(fold.viewOf(rows[0])).toBeUndefined()
-      // Off, the same row is an ordinary code-channel conductor.
-      setPreviewFlag(PREVIEW_CREW_MODE, false)
-      expect(codeChannelCrews(rows).get('cond')!.map(s => s.key)).toEqual(['w1'])
-    } finally {
-      setPreviewFlag(PREVIEW_CREW_MODE, false)
-    }
+    expect(codeChannelCrews(rows).size).toBe(0)
+    const fold = foldCodeChannelCrews(rows, rows, [], { narrowed: false, expanded: new Set(), signals: signals() })
+    expect(fold.viewOf(rows[0])).toBeUndefined()
+    // Off (LTS), the same row is an ordinary code-channel conductor.
+    turnOffCrewModeAsLts()
+    expect(codeChannelCrews(rows).get('cond')!.map(s => s.key)).toEqual(['w1'])
   })
 })
 

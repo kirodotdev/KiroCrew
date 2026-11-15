@@ -12,7 +12,7 @@
  */
 import { act, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
-import WorkflowRunTree from '../apps/workflows/WorkflowRunTree'
+import WorkflowRunTree from '../components/workflows/WorkflowRunTree'
 import { i18next, initI18n } from '../i18n/all'
 import { renderWithProviders } from './helpers'
 

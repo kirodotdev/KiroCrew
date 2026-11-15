@@ -143,6 +143,8 @@ class WorkLedgerProbe(irq.Probe):
             staleness window.
         worker_looping: ``session_key -> its session holds an active loop``.
             Defaults to :func:`_never_looping`, which never suppresses a flag.
+        worker_loop_held: ``session_key -> its session holds an active loop that
+            cannot fire``, which voids a ``wake_at``. Defaults to never.
     """
 
     def __init__(
@@ -151,10 +153,12 @@ class WorkLedgerProbe(irq.Probe):
         worker_running: Callable[[str], bool] | None = None,
         worker_closed: Callable[[str], bool] | None = None,
         worker_looping: Callable[[str], bool] | None = None,
+        worker_loop_held: Callable[[str], bool] | None = None,
     ) -> None:
         self._worker_running = worker_running or _always_idle
         self._worker_closed = worker_closed or _always_open
         self._worker_looping = worker_looping or _never_looping
+        self._worker_loop_held = worker_loop_held or _never_looping
         self._conductor = ""
         #: The polling driver's identity, read off the ctx each tick. The seen set
         #: is kept per driver; see ``ledger_wake._MAX_WATCHERS_PER_ITEM``.
@@ -390,15 +394,20 @@ class WorkLedgerProbe(irq.Probe):
                     )
                 )
 
-        running, closed, looping = work_ledger.item_liveness(
+        running, closed, looping, held = work_ledger.item_liveness(
             conductor_key,
             item,
             running=self._worker_running,
             closed=self._worker_closed,
             looping=self._worker_looping,
+            held=self._worker_loop_held,
         )
         if work_ledger.is_stale(
-            item, worker_running=running, worker_closed=closed, worker_looping=looping
+            item,
+            worker_running=running,
+            worker_closed=closed,
+            worker_looping=looping,
+            worker_loop_held=held,
         ):
             # The whole liveness conjunction is ``is_stale``'s, not this module's:
             # quiet past the window -- or the worker's session gone, which needs no

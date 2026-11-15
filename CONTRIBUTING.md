@@ -178,7 +178,7 @@ copy, which only the next stage replaces. See the runtime dist resolution notes 
 
 | Env var | Purpose | Default |
 |---------|---------|---------|
-| `KIROCREW_HOME` | Config/data directory override | `~/.kiro/crew` |
+| `KIROCREW_HOME` | Config/data directory override. Some folders stay under `~/.kiro` whatever it is set to (see [Folders beside the data home](docs/guides/install.md#folders-beside-the-data-home)) | `~/.kiro/crew` |
 | `KIROCREW_PORT` | Dashboard port override | `5476` |
 | `KIROCREW_KIRO_BIN` | Explicit path to the `kiro-cli` binary (overrides PATH auto-detection) | auto-detected |
 | `KIROCREW_ALLOWED_LOOPBACK_PORTS` | Extra loopback ports trusted as browser origins (comma-separated), e.g. `3000` for the Vite dev server. Every page served on a listed port can act as you in the dashboard | none |
@@ -198,7 +198,7 @@ KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777 KIROCREW_ALLOWED_LOOPBACK_PORTS=3
 # Terminal 2 — start the frontend dev server (hot-reloads .tsx changes)
 cd website
 KIROCREW_PORT=6777 npm run dev
-# → Vite starts at http://localhost:3000, proxies /api/* to backend on port 6777
+# → Vite starts at http://localhost:3000, proxies /api/* and /v1/crew/* to backend on port 6777
 
 # Terminal 3 — generate an auth token
 KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777 kirocrew token
@@ -337,7 +337,11 @@ the one or two commits this repo allows, opening or updating the PR, then pollin
 and the review bots and fixing what they find. An agent that loads it follows the
 same route a maintainer would, which is why the process holds regardless of who or
 what wrote the code. If you are contributing with an agent, point it at that skill
-instead of describing the steps yourself.
+instead of describing the steps yourself. From a fork, `origin` is your fork and the
+skill reads the base from `origin/main`, so bring your fork's `main` level with
+upstream before each run (`gh repo sync <your-username>/KiroCrew`, then
+`git fetch origin`); otherwise its diff, review briefs and squash all measure
+against your fork's older `main`.
 
 One thing the GitHub UI will get wrong for you: if your branch falls behind the
 base while the PR is open, **rebase it, do not merge**. Plain-clicking

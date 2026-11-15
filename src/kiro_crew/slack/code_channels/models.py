@@ -135,3 +135,11 @@ class ChannelInfo:
     name: str = ""
     origin_channel_id: str = ""
     origin_ts: str = ""
+    #: Whether the channel is shared beyond this workspace (Slack Connect, an
+    #: org-wide share, or a pending external share): ``True`` when any share
+    #: flag is set, ``False`` only when Slack positively reported the flags
+    #: unset, ``None`` when the answer did not carry them.
+    shared: bool | None = None
+    #: Whether Slack reports the channel archived (``is_archived``); ``None`` when
+    #: the answer did not carry it.
+    archived: bool | None = None

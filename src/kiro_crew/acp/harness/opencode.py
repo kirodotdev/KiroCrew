@@ -24,7 +24,7 @@ import re
 import subprocess as subprocess_mod
 from typing import Any, Collection
 
-from kiro_crew import acp_tool_gate
+from kiro_crew import acp_tool_gate, platform_compat
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
 from kiro_crew.acp.harness_tool_names import (
@@ -162,10 +162,13 @@ def _opencode_reported_major(session: ProcessSession, argv: list[str]) -> int | 
     )
     env["PATH"] = augmented_path(env.get("PATH", ""))
     try:
-        completed = subprocess_mod.run(
+        # In its own process group, so a timeout ends everything the probe started.
+        completed = platform_compat.run_killing_tree_on_timeout(
             argv,
             cwd=session._spawn_work_dir,
             env=env,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -595,9 +598,9 @@ def _verify_opencode_routing(
     before the masked session spawn. The caller wraps because it is the async
     side and has the resolved mask in hand.
 
-    Records the config's rewritten MCP server names on *session*, where the
-    turn-time hook matcher reads them. Blocking (spawns a short-lived child);
-    callers run it off the loop.
+    Records the config's rewritten MCP server names in the session's read-back
+    (``_harness_read_back``), where the turn-time hook matcher reads them.
+    Blocking (spawns a short-lived child); callers run it off the loop.
     """
     # The session's own credential repair and PATH augmentation, owned by the client
     # and read there at call time, so the read-back's environment is built by the
@@ -626,10 +629,13 @@ def _verify_opencode_routing(
     env["PATH"] = augmented_path(env.get("PATH", ""))
     env[_ENV_OPENCODE_CONFIG_CONTENT] = config_content
     try:
-        completed = subprocess_mod.run(
+        # In its own process group, so a timeout ends everything the probe started.
+        completed = platform_compat.run_killing_tree_on_timeout(
             argv,
             cwd=session._spawn_work_dir,
             env=env,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -668,18 +674,19 @@ def _verify_opencode_routing(
     config_servers, servers_issue = _opencode_config_mcp_server_names(resolved)
     if servers_issue:
         return servers_issue, _opencode_config_mcp_servers_remedy()
-    session._opencode_config_mcp_servers = config_servers
+    read_back = session._harness_read_back()
+    read_back.config_mcp_servers = config_servers
+    configured_model = resolved.get("model")
+    read_back.config_model = configured_model.strip() if isinstance(configured_model, str) else ""
     seeded_denies = _opencode_seeded_deny_rules(config_content, setting_key)
     # Which of Crew's deny rules the harness's own resolution keeps in force. A rule
     # that lost is normally not a refusal: the projection withholds its server.
-    session._opencode_denies_unenforced = _opencode_unenforced_denies(
-        resolved, setting_key, seeded_denies
-    )
+    read_back.denies_unenforced = _opencode_unenforced_denies(resolved, setting_key, seeded_denies)
     # ...unless opencode mounts that server from its OWN config too. Withholding the
     # array element does not reach that mount, so the switched-off tool would stay
     # callable there: refuse the session instead.
     lost = frozenset(getattr(session, "_session_harness_deny_rules", ()) or ()) - (
-        frozenset(seeded_denies) - session._opencode_denies_unenforced
+        frozenset(seeded_denies) - read_back.denies_unenforced
     )
     native = _opencode_native_servers_holding(resolved, lost)
     # A server the projection could not keep narrowed at all (a tool id the harness
@@ -689,7 +696,7 @@ def _verify_opencode_routing(
     mounts: set[str] = {str(n) for n in raw_mounts} if isinstance(raw_mounts, dict) else set()
     # Kept so a later re-projection on this spawn is checked against the same native
     # mounts (see refuse_native_mount_of_unhonoured).
-    session._opencode_native_mounts = frozenset(mounts)
+    read_back.native_mounts = frozenset(mounts)
     unhonoured: frozenset[str] = getattr(session, "_session_mcp_unhonoured", frozenset())
     native = sorted(set(native) | (mounts & unhonoured))
     if native:
@@ -764,10 +771,11 @@ def settle_opencode_denies(session: ProcessSession, config_content: str) -> froz
     """
     setting_key = acp_tool_gate.permission_setting_for(ACP_BACKEND_OPENCODE)[0]
     seeded = frozenset(_opencode_seeded_deny_rules(config_content or "", setting_key))
-    unenforced: frozenset[str] = getattr(session, "_opencode_denies_unenforced", frozenset())
-    session._opencode_denies_in_force = seeded - unenforced
+    read_back = session._harness_read_back()
+    unenforced: frozenset[str] = read_back.denies_unenforced
+    read_back.denies_in_force = seeded - unenforced
     asked = frozenset(getattr(session, "_session_harness_deny_rules", ()) or ())
-    return asked - session._opencode_denies_in_force
+    return asked - read_back.denies_in_force
 
 
 def refuse_native_mount_of_unhonoured(session: ProcessSession) -> None:
@@ -777,10 +785,8 @@ def refuse_native_mount_of_unhonoured(session: ProcessSession) -> None:
     own config, so a narrowed server there would keep its switched-off tool. The
     native mounts are the ones the read-back resolved for this spawn.
     """
-    native = sorted(
-        getattr(session, "_opencode_native_mounts", frozenset())
-        & getattr(session, "_session_mcp_unhonoured", frozenset())
-    )
+    mounts: frozenset[str] = session._harness_read_back().native_mounts
+    native = sorted(mounts & getattr(session, "_session_mcp_unhonoured", frozenset()))
     if not native:
         return
     issue, remedy = _native_mount_refusal(session, native)
@@ -796,6 +802,7 @@ class OpencodeLaunch(ProcessAdapter):
     backend = ACP_BACKEND_OPENCODE
 
     def __init__(self) -> None:
+        super().__init__()
         # The routing seed the read-back verified, carried to the child's environment.
         self._config_content = ""
 

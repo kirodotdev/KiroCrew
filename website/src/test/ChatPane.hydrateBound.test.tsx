@@ -7,7 +7,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { PANE_HYDRATE_LIMIT, hydrateSlotMessages, appendSlotMessage, switchSlot, confirmOptimisticSend } from '../store/chatSlice'
+import chatReducer, { PANE_HYDRATE_LIMIT, hydrateSlotMessages, appendSlotMessage, switchSlot, confirmOptimisticSend, sseChatMessage, sseToolActivity, sseToolResult } from '../store/chatSlice'
 import { STALL_MS } from '../pages/chat/ChatFooter'
 import dashboardReducer, { sseSlots } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
@@ -489,6 +489,30 @@ describe('ChatPane stall watch for a turn it sent', () => {
         view.store.dispatch(appendSlotMessage({ slot, message: { role: 'streaming', content: 'Hel', ts: 't2' } as never }))
       })
       act(() => { view.store.dispatch(confirmOptimisticSend({ slot, sendId: 'send-1' })) })
+      act(() => { vi.advanceTimersByTime(STALL_MS) })
+      expect(view.queryByTestId('chat-footer-stall')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows the notice when a turn goes quiet after its tool call returned', async () => {
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('offline'))
+    const slot = 'pane-tool-returned-stall'
+    const view = renderPane(slot, { running: true })
+    await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
+    vi.useFakeTimers()
+    try {
+      act(() => {
+        view.store.dispatch(appendSlotMessage({ slot, message: { role: 'user', content: 'q', ts: 't1', meta: { optimistic: true, sendId: 'send-1' } } as never }))
+        view.store.dispatch(sseChatMessage({ slot, role: 'tool', content: 'read', ts: 't2', meta: { tool_call_id: 'call-1' } }))
+        view.store.dispatch(sseToolActivity({ slot, tool: 'read', kind: 'read', purpose: '', input_preview: '', tool_call_id: 'call-1' }))
+      })
+      // While the call runs, its wait is the tool's.
+      act(() => { vi.advanceTimersByTime(STALL_MS * 2) })
+      expect(view.queryByTestId('chat-footer-stall')).toBeNull()
+      // It returns and no text follows: the slot still reads tool_running.
+      act(() => { view.store.dispatch(sseToolResult({ slot, output: 'ok', tool_call_id: 'call-1' })) })
       act(() => { vi.advanceTimersByTime(STALL_MS) })
       expect(view.queryByTestId('chat-footer-stall')).toBeTruthy()
     } finally {

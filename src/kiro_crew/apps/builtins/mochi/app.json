@@ -57,7 +57,12 @@
       "pinned:file-deleted"
     ],
     "cron": true,
-    "spawn": true
+    "spawn": true,
+    "desktopCapabilities": [
+      "screenCapture",
+      "localFiles",
+      "gatewayChoice"
+    ]
   },
   "ui": {
     "pages": [

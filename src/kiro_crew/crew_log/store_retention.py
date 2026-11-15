@@ -7,8 +7,7 @@ never be resumed (``_TERMINAL_CLOSE_REASONS``) and that close is older than the 
 The session tree's reads of a unit's log sit beside it: ``read_last_tree_edge`` takes the
 newest adoption or release from the tail window the sweep reads, through the same walk
 (``_last_entry_of_types``); ``find_last_tree_edge`` reads every segment when that window
-cannot answer (``_scan_whole_for_types``); ``tree_edge_scan_identity`` says when an earlier
-complete answer still holds; and ``find_spawned_entries`` returns the ``session/spawned``
+cannot answer (``_scan_whole_for_types``); and ``find_spawned_entries`` returns the ``session/spawned``
 entries a creator recorded over its whole log.
 """
 
@@ -336,49 +335,6 @@ def read_last_tree_edge(segment: Path) -> "Entry | None":
     return _last_entry_of_types(tail, _TREE_EDGE_TYPES)
 
 
-def tree_edge_scan_identity(directory: Path) -> "tuple[int, int, int, int] | None":
-    """What must be unchanged for an earlier COMPLETE tree-edge read of this unit to
-    still be its answer, or ``None`` when the unit has no segments.
-
-    :func:`find_last_tree_edge` is the only honest read for a rebuild and it is
-    proportional to the unit's whole log, because a unit that records no decision is
-    only proved to record none by reading all of it. Paying that on every process start
-    for every unit is what this exists to avoid: the verdict is a pure function of the
-    bytes, so it can be cached across boots as long as something can say the bytes are
-    the same ones.
-
-    Four numbers, each closing a different way the answer could go stale:
-
-    * the directory's own mtime, which moves when a segment is ADDED or REMOVED -- a
-      rotation, or retention taking the oldest;
-    * the number of segments, because two changes inside one mtime granularity can leave
-      the directory looking untouched while its contents are not;
-    * the newest segment's size and mtime, which move on an APPEND -- the one change that
-      does not touch the directory at all, and the one that can add a decision.
-
-    Deliberately NOT a content hash: this runs per unit on a boot path, and the whole
-    point is to be cheaper than reading the bytes. It is a staleness check, not proof of
-    identity -- so it is used only to skip re-deriving a NEGATIVE verdict, where being
-    wrong costs a decision that is re-read on the next change, and never to admit an edge
-    that no read produced.
-
-    Raises what the stats raise. A caller that cannot get an identity must do the read.
-    """
-    newest: tuple[int, Path] | None = None
-    count = 0
-    for child in directory.iterdir():
-        first = _segment_first_seq(child)
-        if first is None:
-            continue
-        count += 1
-        if newest is None or first > newest[0]:
-            newest = (first, child)
-    if newest is None:
-        return None
-    stat = newest[1].stat()
-    return (directory.stat().st_mtime_ns, count, stat.st_size, stat.st_mtime_ns)
-
-
 def find_last_tree_edge(directory: Path) -> "Entry | None":
     """The newest tree-edge entry in the WHOLE of *directory*'s surviving log, or
     ``None``.
@@ -547,6 +503,15 @@ def find_spawned_entries(
     return list(kept), cut, hit_cap
 
 
+def _type_needle(entry_type: str) -> bytes:
+    """The bytes every record of *entry_type* contains: the type as a JSON string.
+
+    :func:`~kiro_crew.crew_log.schema.serialize` writes ASCII and escapes no ``/``, so
+    the type is in the line exactly as spelled here. A test pins that.
+    """
+    return b'"' + entry_type.encode("ascii") + b'"'
+
+
 def _scan_whole_for_types(segment: Path, types: "frozenset[str]") -> "Entry | None":
     """The newest entry of *types* anywhere in *segment*, or ``None``.
 
@@ -569,10 +534,17 @@ def _scan_whole_for_types(segment: Path, types: "frozenset[str]") -> "Entry | No
     if size <= _TAIL_WINDOW:
         # The window already covered this whole file, so there is nothing new to read.
         return None
+    # A record of one of *types* holds that type as a JSON string, so a line holding
+    # none of them is skipped without a JSON parse, which is most of this read's cost
+    # (the same skip :func:`find_spawned_entries` makes). The type is still checked
+    # after the parse, so a line that only mentions one costs a parse and nothing else.
+    needles = tuple(_type_needle(entry_type) for entry_type in types)
     newest: Entry | None = None
     with open(segment, "rb") as handle:
         try:
             for raw in strict_raw_records(handle, segment, cap=MAX_ENTRY_BYTES):
+                if not any(needle in raw for needle in needles):
+                    continue
                 parsed = _parses_to_object(raw.strip())
                 if parsed is None:
                     continue

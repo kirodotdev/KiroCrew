@@ -26,6 +26,7 @@ from kiro_crew import pinned_fs
 from kiro_crew import seed as seed_mod
 from kiro_crew import user_json
 from kiro_crew.atomic_write import atomic_write_at
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.identity_stores import StoreMapping, store_mappings
 from kiro_crew.platform_compat import is_link_or_junction, open_file_no_reparse, pin_directory
 from kiro_crew.pod import home_liveness, launchd, runtime
@@ -100,7 +101,7 @@ def _prepare_seeded_home_fd(home_fd: int) -> None:
         try:
             with os.fdopen(fd, "r", encoding="utf-8", errors="strict") as handle:
                 fd = -1
-                text = handle.read(1024 * 1024 + 1)
+                text = bounded_read(handle, 1024 * 1024 + 1)
         except (OSError, UnicodeError) as exc:
             raise PodError(f"could not read seeded config.json: {exc}") from exc
         finally:

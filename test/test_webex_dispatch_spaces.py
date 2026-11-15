@@ -111,6 +111,7 @@ class TestGroupSpaceRouting:
         d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg_group())
         with mock.patch.object(type(d), "_bot_name", lambda self: "Kiro"):
             key = d._session_key(webex_dispatch._route_of(_space()))
+            webex_dispatch._APPROVALS.reserve(key, 1)
             task = asyncio.create_task(
                 webex_dispatch._APPROVALS.decide_with_cause(key, SimpleNamespace(request_id=1))
             )

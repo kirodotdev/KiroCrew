@@ -239,6 +239,12 @@ QUEUED_CONTAINMENT_META_KEY = "queued_containment"
 # copies the admission dict onto the new entry's meta.
 SEND_ORIGIN_META_KEY = "send_origin_slot"
 
+# Queue-entry meta key that only ``session_send``'s queue arm writes, so
+# ``session_queue`` can tell the caller's queued send from a requeued steer that
+# carries the same sender stamp. The requeue never copies it: it builds the
+# entry from the steer's admission, which does not hold this key.
+SESSION_SEND_QUEUED_META = "session_send_queued"
+
 
 # Queue-entry meta key naming the CHANNEL CONVERSATION that sent a message into a
 # resumed dashboard session mid-turn (``dashboard.channel_handoff``), so a

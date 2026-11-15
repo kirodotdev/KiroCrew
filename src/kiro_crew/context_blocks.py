@@ -63,6 +63,7 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("working_folder", r"\[PROJECT\]"),
     ("folder_path", r"\[FOLDER\]"),
     ("resource_advisory", r"\[RESOURCES\]"),
+    ("mcp_servers", r"\[MCP SERVERS\]"),
     ("user_display", r"\[CURRENT USER\]"),
     ("user_profile", r"\[USER PROFILE\]"),
     ("ui_language", r"\[UI LANGUAGE\]"),

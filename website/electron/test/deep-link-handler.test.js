@@ -250,7 +250,8 @@ describe("installDeepLinks", () => {
 });
 
 describe("main.js wiring", () => {
-  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  // LF whatever the checkout's core.autocrlf: the "\n}\n" needle below would miss on CRLF.
+  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8").replace(/\r\n/g, "\n");
 
   it("routes a second-instance argv through the handler and keeps the show-window fallback", () => {
     // The registration lives in main.js so the GPU-policy ordering tests keep

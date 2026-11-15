@@ -20,6 +20,7 @@ import functools
 import re
 
 import pytest
+from redaction_structured_cases import ALNUM, github_classic, synth
 
 import kiro_crew.validation as validation
 from kiro_crew import security, security_posture
@@ -254,11 +255,14 @@ def _gate_side_baseline_log_sites(
 #: nets to zero (both edits land in one reviewed diff), and the scan is
 #: single-scope (see :func:`_gate_side_baseline_log_sites`).
 _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
+    # The model-substitution retry's warning, moved out of client_start.py with the
+    # retry; same gateway process.
+    "acp/client_claude_session.py": 1,
     "acp/client_lifecycle.py": 1,
     # +1: model-unavailable warning log in the rejected-model path
     "acp/client_model_selection.py": 2,
     "acp/client_permissions.py": 1,
-    "acp/client_start.py": 2,
+    "acp/client_start.py": 1,
     "acp/client_transport.py": 1,
     # _format_acp_error's scrubbed-content warning, in the same gateway process as
     # the client owners' sites.
@@ -621,7 +625,7 @@ class TestDisclosureContract:
     def test_the_redaction_guard_is_not_vacuous(self):
         # Guard the guard: if redact_credentials ever stopped firing, the
         # assertion above would pass trivially and the contract would be unpinned.
-        _redacted, warnings = security.redact_credentials("AKIAIOSFODNN7EXAMPLE")
+        _redacted, warnings = security.redact_credentials(github_classic())
         assert warnings != []
 
 
@@ -841,7 +845,9 @@ class TestOmissionDetection:
         without a family row.
         """
         samples = {
-            "AWS access keys": "AKIAIOSFODNN7EXAMPLE",
+            # A key ID is an Identifier with the structured detectors on; the secret
+            # key is what this family redacts.
+            "AWS access keys": "aws_secret_access_key=" + synth(40, ALNUM, seed=3),
             "Private keys": "-----BEGIN RSA PRIVATE KEY-----\nQUJD\n-----END RSA PRIVATE KEY-----",
             "Slack tokens": "xoxb-000000000000-abcdefghijkl",
             "GitHub tokens": "ghp_" + "a" * 36,
@@ -1174,6 +1180,11 @@ class TestRedactionSinkRegistry:
             "redact_tree",
             "redact_and_truncate",
             "redact_via_context",
+            # Delegates to redact_via_context, plus containment for a miscomposed host.
+            "redact_log_via_context",
+            # The transcript write boundary: the composed policy for a user row, else
+            # redact_exfiltration_urls THEN redact_credentials.
+            "_redact_at_write_boundary(",
             "display_safe",
             # The shared dashboard memory helper recursively runs the exfil
             # scanner followed by the credential scanner for every text value.
@@ -1232,9 +1243,10 @@ class TestRedactionSinkRegistry:
 
         chat_utils._clear_display_redaction_cache()
         url = "https://collect.attacker.example/?token=" + "aB3" * 70 + "&host=corp-laptop"
-        out = chat_utils._redact_for_display(f"key AKIAIOSFODNN7EXAMPLE then {url}")
+        secret = github_classic()
+        out = chat_utils._redact_for_display(f"key {secret} then {url}")
         chat_utils._clear_display_redaction_cache()
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert secret not in out
         assert "corp-laptop" not in out and "attacker.example/?token" not in out
 
     def test_sink_prose_claims_are_true_of_the_named_module(self):
@@ -1434,7 +1446,7 @@ class TestGateSideLogRedactorSpelling:
         for rel in ("platform/update_provider.py", "task_planner.py", "name_grant.py"):
             assert (
                 rel not in _BASELINE_LOG_SITE_CENSUS
-            ), f"{rel} was converged by #7151 and must not carry a baseline log site"
+            ), f"{rel} is converged and must not carry a baseline log site"
 
 
 class TestPostureClaimsMatchEnforcement:

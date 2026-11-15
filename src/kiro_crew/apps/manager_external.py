@@ -21,6 +21,7 @@ from kiro_crew.apps.execution import repository_bound_grant_denied
 from kiro_crew.apps.host_exec_grants import grant_host_exec
 from kiro_crew.apps.manager_builtins import _builtin_owns_install
 from kiro_crew.apps.manager_records import (
+    _AWAITING_MANIFEST_TEXT,
     APP_MANIFEST_FILENAME,
     INSTALLED_META_FILENAME,
     AppResult,
@@ -35,8 +36,8 @@ from kiro_crew.apps.manager_records import (
     _read_installed,
     _restore_approved_grants,
     _session_control_widening,
-    _write_approve_declared,
     _write_approved_grants,
+    _write_awaiting_manifest,
     _write_installed,
     app_data_dir,
     app_dir,
@@ -238,6 +239,27 @@ def register_external_app(
             ),
         )
 
+    # A marketplace record's ``market:`` source and zip sha256 are its
+    # provenance and trust coordinate; the update branch below would replace
+    # them. Refused like a folder update (manager_install.update_app).
+    from kiro_crew.apps.market_source import MARKET_OVERWRITE_HINT, is_market_source
+
+    if existing and is_market_source(existing.source):
+        error = f"{name!r} cannot be replaced by self-registration. {MARKET_OVERWRITE_HINT}"
+        sel().log_api_access(
+            caller="app_register_external",
+            operation="provenance",
+            outcome="rejected",
+            resources=f"name={name!r}",
+            error=error,
+        )
+        return AppResult(
+            ok=False,
+            name=name,
+            error=error,
+            error_code="app_update_market_source",
+        )
+
     # Self-registration admits a new manifest the way install and update do, so it
     # applies the same cron-grant rule. A re-registration at the version already on
     # record, whose recorded manifest already scheduled crons without the grant, is
@@ -301,10 +323,22 @@ def register_external_app(
     if not manifest_data:
         if existing:
             approved_grants = _effective_approved_grants(name, existing)
-        elif (on_disk := get_app_manifest(name)) is not None:
-            approved_grants = _declared_grant_entries(grant_source(on_disk))
+        elif (stored_text := _approved_grants_snapshot(name)) is not None:
+            # A record the folder lost (renamed aside, recreated): the sealed set
+            # stands, a registration still awaiting its first manifest included. The
+            # folder's own app.json, which an agent can write, never decides it.
+            approved_grants = (
+                None
+                if stored_text == _AWAITING_MANIFEST_TEXT
+                else _effective_approved_grants(name, None)
+            )
         else:
             approved_grants = None
+    elif existing and prior_grants_text == _AWAITING_MANIFEST_TEXT:
+        # The first manifest of a registration that declared nothing, sent by this
+        # owner route: approved as declared, as a first registration with it would be.
+        # The sealed store, not the agent-writable app.json, says none came before.
+        approved_grants = _declared_grant_entries(new_permissions)
     elif existing:
         approved_grants = _approved_grants_after_manifest_change(
             existing_approved=prior_grants,
@@ -422,9 +456,9 @@ def register_external_app(
         if approved_grants is not None:
             _write_approved_grants(name, approved_grants)
         else:
-            # Nothing declared yet: a later manifest is approved as declared, as an
-            # install from before approved sets existed.
-            _write_approve_declared(name)
+            # Nothing declared yet: the first manifest this route sends is approved
+            # as declared; one written into the app's folder approves nothing.
+            _write_awaiting_manifest(name)
         _write_installed(name, meta)
         # Persist manifest if provided (so dashboard can show full info).
         if manifest_data:
@@ -437,8 +471,14 @@ def register_external_app(
     # Generate app secret only for new registrations — preserve existing secrets
     from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
 
-    secret_path = dest / ".app_secret"
-    is_new_secret = not (existing and secret_path.is_file())
+    # The stored record alone: a registration from before the gateway kept it gets a new
+    # secret IN ITS RESPONSE, the only channel a self-managed app has, rather than one
+    # replaced behind its back.
+    try:
+        has_secret = protected_app_state.read_secret(name) is not None
+    except (OSError, UnicodeDecodeError, ValueError):
+        has_secret = False
+    is_new_secret = not (existing and has_secret)
     if is_new_secret:
         secret = generate_app_secret()
         write_app_secret(name, secret)
@@ -461,7 +501,13 @@ def register_external_app(
                     ),
                 )
     else:
-        secret = ""
+        # Every caller is owner-authenticated, and the folder holds no copy, so the
+        # response is how a self-managed app gets its secret back, e.g. after a
+        # registry install registered it first.
+        try:
+            secret = protected_app_state.read_secret(name) or ""
+        except (OSError, UnicodeDecodeError, ValueError):
+            secret = ""
 
     action = "updated" if existing else "registered"
     logger.info(
@@ -489,7 +535,7 @@ def register_external_app(
                 f"requests {session_control_widening.words} -- review it on the app page "
                 "and enable it"
             ),
-            secret=secret if is_new_secret else "",
+            secret=secret,
             notice="session_approval_reconsent",
         )
     if widened_grants:
@@ -504,6 +550,6 @@ def register_external_app(
         ok=True,
         name=name,
         message=f"{action} {name} v{version}",
-        secret=secret if is_new_secret else "",
+        secret=secret,
     )
     return result

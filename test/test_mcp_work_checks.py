@@ -77,8 +77,10 @@ def test_the_check_is_advertised_and_granted_to_the_conductor_and_team_lead():
 
 
 def test_no_advertised_field_carries_a_command_or_path_to_run():
+    """``items`` is a document to judge and ``item_id`` names one ledger item.
+    Neither is a command, an argv or a path to run."""
     defs = {t["name"]: t for t in mcp_work._list_tools()}
-    assert set(defs["accept_eval"]["inputSchema"]["properties"]) == {"items"}
+    assert set(defs["accept_eval"]["inputSchema"]["properties"]) == {"items", "item_id"}
 
 
 def test_the_tool_loads_the_packaged_script():
@@ -185,10 +187,10 @@ def test_the_cmd_kind_is_still_refused_and_runs_nothing(caller, argvs):
 @pytest.mark.parametrize(
     "args",
     [
-        {},  # no items
         {"items": "not a list"},
         {"items": [], "command": "ls"},  # an unknown field
         {"items": [{}] * 257},
+        {"item_id": "not-an-item-id"},
     ],
 )
 def test_a_malformed_document_is_refused_by_the_schema(args):

@@ -259,7 +259,7 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 | `session/spawned` | `on_session_spawned`, from `session_control._record_spawn` when a minted create or fork commits, into the CREATOR's log; nothing when the creator has no ACP session yet | the child's slot |
 | `panel/published` | `on_panel_published`, from `panel_publish`, into the member's own DM session log | the published panel |
 | `crew/dispatch` / `crew/report` | `on_crew_dispatch` / `on_crew_report`, into the crew kind's log | the dispatch and the child's report |
-| `object/observed` | `monitoring.controller.MonitorController.tick`, after the service has published a probe's observation whose fingerprint differs from the one it held; into the log of the monitor's OWNER session, named by the host's resolver | `producer` (closed: `probe`), the monitored `kind`, the subject's full `target` URL, the probe's `fingerprint`, the canonical `facts` snapshot verbatim (short by named members in `facts_omitted` only when the line would not fit), `observed_at` -- no turn |
+| `object/observed` | `monitoring.controller.MonitorController.tick`, after the service has published a probe's observation whose fingerprint differs from the one it held, into the log of the monitor's OWNER session, named by the host's resolver; and `warm_task_brief_inputs.read_live_prs`, once per pull request whose fresh read changed, into the conductor slot's own session (`producer: warm_brief`). No extra GitHub call: each records a read it already made | `producer` (closed: `probe`, `warm_brief`), the monitored `kind`, the subject's full `target` URL, the probe's `fingerprint`, the canonical `facts` snapshot verbatim (short by named members in `facts_omitted` only when the line would not fit), `observed_at` -- no turn |
 | `card/proposed` | `dashboard.chat_cards.record_change_proposed`, called by `POST /api/cards/agent/propose` after the store accepted the card and beside the append of its `card` transcript row | slot, `card_id`, kind, redacted title, revision, risk, the live turn when one is, the row's `mid` -- never a parameter |
 | `card/finished` | `dashboard.chat_cards.record_change_status`, from the card routes' one `_broadcast`, when the store publishes a card ENTERING a finished status this process has not logged for it | `card_id`, `status` (closed: the store's finished statuses), revision -- no turn |
 | `guide/offered` | `dashboard.chat_cards.record_guide_offered`, called by `POST /api/guide/agent/start` beside the append of the offer's `card` row | slot, `guide_id`, the action ids, the live turn, the row's `mid` |
@@ -293,8 +293,9 @@ pin this account cannot run is withheld at spawn and the session runs on the bac
 default, while the pin is deliberately KEPT -- the composer chip still shows it, and
 clearing it would delete an explicit user setting on the evidence of one session's
 advertised list. An unpinned slot is the mirror case: it names no model of its own,
-and the model it runs on is known only after the handle exists (when only its
-Bot pins a model, its pin is backfilled from the provider then).
+and the model it runs on is known only after the handle exists (a Bot thread with
+no pick of its own is one too: it asks for the Bot's model, and `slot.model` stays
+empty).
 
 So `session/opened` and `request/configured` read `served_model`, the session fact,
 through one helper. It is empty when the backend serves its own default, and the entry
@@ -380,16 +381,29 @@ would be a second, unobserved claim.
 
 ### Writer loss is admitted before appending resumes
 
-Every writer loss but the inline refusal below creates one per-session pending-loss record:
+Every writer loss creates one per-session pending-loss record:
 `{dropped_count, dropped_bytes}`. Retry exhaustion, a hard buffer-ceiling rejection and a permanent
 refusal all feed the same record. `dropped_bytes` is the size hint the producer supplied for the
 rejected jobs.
 
-A refusal on the inline path is the exception: it is counted in `dropped_writes()` but creates no
-record, so no `write/dropped` marker follows it and a reader of the log cannot see that hole
-(`_INLINE_REFUSAL_OWES_MARKER` in `crew_log/writer.py`). Owing one would first need a rule for a
-marker the log itself refuses: a log another process owns, or one whose creation failed, refuses the
-marker as well, and a refused marker's debt is carried into the next one.
+A refusal on the inline path owes its marker like one on the batch path: it starts a pass when none
+is coming, as a queued entry does, and with no executor the next `flush()` runs that pass.
+Debt whose marker the log refused as well (a log another process owns, or one whose creation
+failed, refuses every append) has no pass that could write it, and the writer PARKS it. Parked
+debt is still owed and counts in `loss_markers_owed`. The session's next entry takes it back and queues
+behind it, as an entry for a session that owes a marker always does, so the marker is written
+ahead of that entry and a synchronous caller's next entry lands through a pass rather than inline.
+Parked debt holds neither `flush()` nor the shutdown drain, which no pass could satisfy, is not
+retried in the background, so a log another process owns is not reopened for it, and does not
+count in `owes()`, which reports what a pass will still write and which the child-repair probe
+reads. A marker the log refused is not itself counted in `dropped_writes()`, since its debt is
+carried, so each later entry on a refusing log adds only itself. The loss was already named
+when it happened, so a parked marker left at exit is counted in the shutdown report but does not
+make the drain incomplete. A marker that FAILS (an error that may clear) is not parked and still
+holds `flush()`. When the log refuses a marker and the session's next job is its opening (the
+session was opened again after the cause was repaired), the opening is tried first and the marker
+right behind it, because only the opening can create a log whose creation failed. If the opening
+is refused too, its loss merges into the marker's debt, which parks as before.
 
 The record carries no reason code, deliberately. The only site that knows a cause cannot separate
 the ones that matter: the writer's refusal check collapses a malformed entry and a well-formed entry refused
@@ -404,9 +418,11 @@ bytes merge into it. If the marker itself reaches the write-attempt ceiling, its
 back into the next marker along with ordinary jobs that could not pass it. The session is not
 poisoned: a later append retries the marker and can resume once it lands.
 
-For every loss but the inline refusal above, the ordering invariant is: **no entry is ever appended
-after a loss until a marker naming that loss
-has been appended.** Jobs emitted before a concurrent loss may already be in flight; every ordinary
+The ordering invariant is: **no entry is ever appended after a loss until a marker naming that
+loss has been appended**, with one exception: an opening goes ahead of a marker the log refused,
+because only it can create a log whose creation failed, so that file reads header,
+`session/opened`, `write/dropped`. On a log another process owns, that opening is refused too or
+writes nothing. Jobs emitted before a concurrent loss may already be in flight; every ordinary
 job still waiting behind that observation is requeued behind the marker without spending its retry
 budget. `seq` remains contiguous because lost jobs never acquired a seq. A reader detects the hole
 from `write/dropped`, not from a numeric gap, and can fold later entries normally after admitting the
@@ -737,8 +753,8 @@ log's tail is short by them -- and the warning names the buffered count, how man
 sessions are still owed a `write/dropped` marker, and whether a batch was in flight, so
 the gap is attributable rather than silent.
 
-The owed-marker count reads both places a session's loss debt lives. It sits in the
-pending-loss map while no marker job exists for that session; once one is built the debt
+The owed-marker count reads every place a session's loss debt lives. It sits in the
+pending-loss map, or parked, while no marker job exists for that session; once one is built the debt
 travels INSIDE the job, because building the marker takes the debt out of the map to
 serialize it and a failed append hands the job back to the retained batch. A marker
 waiting to be retried is therefore owed while the map is empty, and that is a state a
@@ -1232,10 +1248,10 @@ the finding: an unnamed site records `user`.
 
 | dispatch site | what produces the message | actor |
 |---|---|---|
-| `chat_handlers._api_chat` | dashboard composer, or an app backend under its own token | `user`, or `app` when the request carries one |
+| `chat_handlers.api_chat` | dashboard composer, or an app backend under its own token | `user`, or `app` when the request carries one |
 | `slack/handler` linked-thread router | a channel message | `user` |
-| `openai_compat.chat_completions` | API request body | `user` |
-| `chat_regenerate` (regenerate, edit-resend) | the user's own message, re-run | `user` |
+| `openai_compat.api_completions` | API request body | `user`, or `app` when the request carries one |
+| `chat_regenerate` (regenerate, edit-resend) | the user's own message, re-run; for Regenerate, the gateway prompt row its reply answers (a workflow follow-up, a heartbeat prompt) when there is one | `user` |
 | `chat_rewind` | the user's own message, rewound | `user` |
 | queue drain (`_finish_queue_cycle`) | the consumed entry's enqueue-time `kind` | `cron`, `subagent`, else `user` |
 | queue drain, a synthetic recovery | the original turn's actor, stamped at requeue (`meta.turnActor`) | whatever that turn's was |
@@ -1246,11 +1262,14 @@ the finding: an unnamed site records `user`.
 | `chat_runner` synthesis dispatch | the sub-agent synthesis prompt | `subagent` |
 | `issue_radar.crew_runtime_session` | a crew-composed prompt | `crew` |
 | `handlers/taskrunner` (plan, result) | a task-runner summary | `gateway` |
+| `mate_welcome.dispatch_hidden_turn` | a hidden gateway-composed prompt | `gateway` |
+| `chat_turn/agent_started._on_agent_turn` | a turn the backend agent started on its own | `agent` |
+| `chat_turn/slash_commands` prompt expansion | the expanded `@prompt` re-entry | the carrying turn's actor |
 
 One shared helper passes no actor on purpose: `spec_builder.runtime.enqueue_or_run_prompt`
 takes both the message and its origin as parameters, so its actor is its CALLER's fact and
 hardcoding one here would record a guess; it inherits `user` until the caller supplies one,
-which is the same default every unaudited path has. `_api_chat` serves an app backend as
+which is the same default every unaudited path has. `api_chat` serves an app backend as
 well as a person and can tell them apart without asking its caller, because the auth
 middleware has already stamped the token's app on the request -- so it names the actor
 itself. A site that holds the fact and stays silent does not record a missing detail; the

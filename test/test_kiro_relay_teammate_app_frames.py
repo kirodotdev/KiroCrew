@@ -378,6 +378,35 @@ async def test_a_teammates_clear_keeps_the_app_notifications_it_cannot_see(
         assert not [kind for kind, _ in broadcasts if kind == "notifications_clear"]
         assert unread_count(state._notification_log) == 1
         assert withheld == ["notifications_clear"]
+        # Every open view drops exactly the notes cleared, and keeps the app's.
+        assert [data["ts"] for kind, data in broadcasts if kind == "notification_dismiss"] == [
+            "1",
+            "3",
+        ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("who", ["owner", "teammate"])
+async def test_a_delete_withdraws_the_note_from_every_open_view(tmp_path, monkeypatch, who):
+    state, broadcasts = _feed_state(tmp_path, monkeypatch)
+    ingress = _personal() if who == "owner" else _team()
+    user = OWNER if who == "owner" else TEAMMATE
+    async with TestClient(TestServer(_feed_app(state, ingress))) as client:
+        resp = await client.delete(
+            "/api/notifications",
+            json={"ts": "1"},
+            headers=ingress.stamp_headers([], relay_user=user),
+        )
+        assert resp.status == 200, await resp.text()
+        assert (await resp.json())["ok"] is True
+        missing = await client.delete(
+            "/api/notifications",
+            json={"ts": "nope"},
+            headers=ingress.stamp_headers([], relay_user=user),
+        )
+        assert (await missing.json())["ok"] is False
+    assert [note["ts"] for note in state._notification_log] == ["2", "3"]
+    assert broadcasts == [("notification_dismiss", {"ts": "1"})], "nothing for a miss"
 
 
 @pytest.mark.asyncio

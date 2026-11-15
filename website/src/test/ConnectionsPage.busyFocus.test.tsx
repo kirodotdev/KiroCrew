@@ -11,7 +11,7 @@
 //   - Connect/Reconnect UNMOUNT when the mint moves the card to
 //     waiting-for-approval, so focus is handed to that state's Cancel.
 //
-// The api mock, the McpTab stub and the beforeEach are copied from
+// The api mock, the OAuthAppPanel stub and the beforeEach are copied from
 // ConnectionsPage.coverage.test.tsx, whose header explains the seams.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, waitFor, within, act } from '@testing-library/react'
@@ -60,10 +60,12 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-vi.mock('../pages/overview/McpTab', () => ({
-  default: ({ onManagedProviderClick }: { onManagedProviderClick: (slug: string) => void }) => (
-    <button type="button" onClick={() => onManagedProviderClick('stripe')}>deep link to stripe</button>
-  ),
+// The OAuth app part a card opens is its own unit (OAuthAppPanel.test.tsx).
+vi.mock('../pages/connections/OAuthAppPanel', async () => ({
+  OAuthDraftsContext: (await vi.importActual<typeof import('react')>('react')).createContext<(slug: string, dirty: boolean) => void>(() => {}),
+  OAuthClientWrittenContext: (await vi.importActual<typeof import('react')>('react')).createContext<(slugs: string[]) => void>(() => {}),
+  OAuthDraftValuesContext: (await vi.importActual<typeof import('react')>('react')).createContext({ get: () => undefined, set: () => {} }),
+  OAuthAppPanel: ({ settingSlug }: { settingSlug: string }) => <div data-testid={`oauth-app-${settingSlug}`} />,
 }))
 
 import { server, mount, card, deferred } from './ConnectionsPage.coverageTestUtils'

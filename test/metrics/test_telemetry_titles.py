@@ -29,6 +29,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.chat_utils import slot_transcript_key
 from kiro_crew.dashboard.handlers.telemetry import _with_conversation_titles
@@ -67,13 +68,14 @@ def _cost(*slot_keys: str) -> dict:
 
 @pytest.mark.asyncio
 async def test_a_credential_shaped_title_is_redacted():
-    # A real AWS-key shape. The scanner recognises it; the point is that this
-    # endpoint runs the scanner at all.
-    leaked = "notes for AKIA" + "IOSFODNN7EXAMPLE"
+    # A GitHub token with a valid checksum. The scanner recognises it; the point
+    # is that this endpoint runs the scanner at all.
+    token = github_classic(seed=61)
+    leaked = "notes for " + token
     slots = {"chat-1-1": SimpleNamespace(display_title=leaked)}
     out = await _with_conversation_titles(_request(slots), _cost("chat-1-1"))
     title = out["conversations"][0]["title"]
-    assert "AKIA" + "IOSFODNN7EXAMPLE" not in title
+    assert token not in title
     assert "REDACTED" in title
 
 
@@ -188,7 +190,8 @@ class TestClosedConversations:
 
     @pytest.mark.asyncio
     async def test_a_persisted_title_is_redacted_like_a_live_one(self, tmp_path):
-        leaked = "notes for AKIA" + "IOSFODNN7EXAMPLE"
+        token = github_classic(seed=61)
+        leaked = "notes for " + token
         log = ConversationLog(tmp_path)
         log.set_title(slot_transcript_key("chat-1-1"), leaked)
 
@@ -196,7 +199,7 @@ class TestClosedConversations:
             _request({}, conversation_log=log), _cost("chat-1-1")
         )
         title = out["conversations"][0]["title"]
-        assert "AKIA" + "IOSFODNN7EXAMPLE" not in title
+        assert token not in title
         assert "REDACTED" in title
 
     @pytest.mark.asyncio

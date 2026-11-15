@@ -11,6 +11,7 @@ import { defaultAgentQuery } from '../api/defaultAgentQuery'
 import { recencyEpoch } from '../components/commandPalette/providers/recentsProvider'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { sliceCodePoints } from '../utils/codePoints'
+import { pollWhileVisible } from '../lib/pollWhileVisible'
 
 export interface AgentSource {
   id: string
@@ -76,13 +77,16 @@ export function useAgentSync() {
 
   useEffect(() => {
     let cancelled = false
-    let cronTimer: ReturnType<typeof setTimeout> | undefined
-    let spawnTimer: ReturnType<typeof setTimeout> | undefined
+    let cronBusy = false
+    let spawnBusy = false
     let cronResult: AgentSource[] = []
     let spawnResult: AgentSource[] = []
     const update = () => { if (!cancelled) setExtras([...cronResult, ...spawnResult]) }
 
+    // One read of each at a time: a slow answer is not overtaken by the next tick.
     const pollCron = async () => {
+      if (cronBusy) return
+      cronBusy = true
       try {
         const cronData = await api.crons()
         const jobs = Array.isArray(cronData.jobs) ? cronData.jobs : []
@@ -92,11 +96,13 @@ export function useAgentSync() {
           running: cr.is_running === true, detail: cr.schedule,
         }))
       } catch { /* ignore */ }
+      cronBusy = false
       update()
-      if (!cancelled) cronTimer = setTimeout(pollCron, CRON_POLL_MS)
     }
 
     const pollSpawn = async () => {
+      if (spawnBusy) return
+      spawnBusy = true
       try {
         const spawnData = await api.spawnList()
         const children = Array.isArray(spawnData.agents) ? spawnData.agents : []
@@ -106,12 +112,14 @@ export function useAgentSync() {
           running: !sp.done, detail: sp.done ? 'done' : 'running',
         }))
       } catch { /* ignore */ }
+      spawnBusy = false
       update()
-      if (!cancelled) spawnTimer = setTimeout(pollSpawn, SPAWN_POLL_MS)
     }
 
-    pollCron(); pollSpawn()
-    return () => { cancelled = true; clearTimeout(cronTimer); clearTimeout(spawnTimer) }
+    void pollCron(); void pollSpawn()
+    const stopCron = pollWhileVisible(() => { void pollCron() }, CRON_POLL_MS)
+    const stopSpawn = pollWhileVisible(() => { void pollSpawn() }, SPAWN_POLL_MS)
+    return () => { cancelled = true; stopCron(); stopSpawn() }
   }, [])
 
   const agents = useMemo(() => [...slotAgents, ...extras].slice(0, MAX_AGENTS), [slotAgents, extras])

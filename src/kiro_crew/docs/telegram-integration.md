@@ -227,7 +227,7 @@ Everything lives in the `telegram` section of `config.json`:
 | `allowed_forum_chat_ids` | `[]` | Supergroup `chat_id`s allowed to do that (they are NEGATIVE, e.g. `-1001234567890`); empty = no group at all |
 | `forum_activation` | `"always"` | When to answer inside an allow-listed Topic: `always`, `mention` (only when `@YourBot` is used or one of its own messages is replied to), or `off`. Slack's channel equivalent defaults to `mention`; this defaults to `always` so an existing forum keeps working after an upgrade. A value that is present but unrecognized falls back to `mention`, not `always`, so a typo cannot widen who the bot answers in a shared Topic. Never applies to a 1:1 DM, which is always served |
 | `session_folder` | `""` | Sidebar folder these conversations are filed into |
-| `max_text_inject_kb` | `50` | How much of an attached text file or document reaches the model, in KiB; the rest is cut with a `[… truncated]` marker. Raise it for a long CSV or log. At least `1` |
+| `max_text_inject_kb` | `50` | How much of an attached text file or document is put into the model's prompt, in KiB. A longer one is cut with a marker that says how much was shown, and the agent gets its whole text as a temporary file it can read for that turn. Raise it to put a long CSV or log in the prompt whole. At least `1` |
 | `bot_token` | `""` | Token fallback if `TELEGRAM_BOT_TOKEN` isn't set |
 | `accounts` | `{}` | Deprecated compatibility map for former named bots; it is parsed but starts no channel |
 

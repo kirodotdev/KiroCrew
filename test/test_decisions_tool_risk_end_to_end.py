@@ -214,8 +214,12 @@ async def test_a_credential_in_the_command_is_annotated_rather_than_refused(
         client,
         [
             _tool_call(
+                # A 40-char AWS secret; an AWS key ID is kept visible, so it
+                # cannot stand in for the credential.
                 arguments=(
-                    '{"command": "aws configure set aws_access_key_id AKIAIOSFODNN7EXAMPLE"}'
+                    '{"command": "aws configure set aws_secret_access_key '
+                    "Qh4Tm2Vx9KpRc/Z8Nw3Hd/"
+                    'Jf1Lb5Gs0Ye9Ua2WkE"}'
                 )
             )
         ],

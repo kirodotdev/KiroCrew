@@ -190,6 +190,7 @@ from kiro_crew.cron_service.store import (  # noqa: F401 -- re-exported
     _job_from_record,
     _read_job_records,
     _record_is_enabled,
+    _record_parked_by_run,
     _record_user_paused,
     cron_store_lock,
     decode_jobs,
@@ -309,7 +310,8 @@ def unhealthy_jobs_from_disk() -> tuple[list[tuple[str, str]], list[tuple[str, s
     ``last_status="error"`` too; auto-pause wins, since re-triggering a paused job
     does not un-pause it. A user-paused job is in NEITHER bucket: a deliberate
     pause is not a health signal. Both pause flags can be set at once (enabling
-    is what clears ``auto_paused``), and the user pause wins.
+    is what clears ``auto_paused``), and the user pause wins. A one-shot its own
+    run parked is not a user pause (``_record_parked_by_run``) and is scanned.
     """
     auto_paused: list[tuple[str, str]] = []
     errored: list[tuple[str, str]] = []
@@ -321,10 +323,9 @@ def unhealthy_jobs_from_disk() -> tuple[list[tuple[str, str]], list[tuple[str, s
             # report behind it. The predicate that clears `loadable` decides here.
             continue
         entry = (str(j.get("id") or "no-id"), str(j.get("name") or "(unnamed)"))
-        if _record_user_paused(j):
-            # No exemption for an errored `at` record: a parked fired at-job and a
-            # user pause are both enabled=False + user_paused=True on disk
-            # (`fire_time_denied` is not persisted), so they cannot be told apart.
+        if _record_user_paused(j) and not _record_parked_by_run(j):
+            # A fired one-shot is parked with the user-pause flags, but its run
+            # stamped `last_run_ts`: that park is the run's, so its error counts.
             continue
         if j.get("auto_paused", False):
             auto_paused.append(entry)
@@ -335,8 +336,9 @@ def unhealthy_jobs_from_disk() -> tuple[list[tuple[str, str]], list[tuple[str, s
 
 
 def job_pause_state_from_disk(job_id: str) -> str | None:
-    """``"paused by the user"`` / ``"auto-paused"`` / ``"enabled"`` for *job_id*,
-    or None when the store has no such job.
+    """``"parked after its one-shot run"`` / ``"paused by the user"`` /
+    ``"auto-paused"`` / ``"enabled"`` for *job_id*, or None when the store has
+    no such job.
 
     A sibling of :func:`unhealthy_jobs_from_disk` for the doctor's stall
     attribution: once a dump is attributed to a job, the next question is
@@ -347,6 +349,8 @@ def job_pause_state_from_disk(job_id: str) -> str | None:
     for j in records:
         if str(j.get("id") or "") != job_id:
             continue
+        if _record_parked_by_run(j):
+            return "parked after its one-shot run"
         if _record_user_paused(j):
             return "paused by the user"
         if j.get("auto_paused", False):
@@ -625,6 +629,9 @@ class CronService:
         # fires once per deferral episode, not once per deferred tick.
         self._admission_deferring: bool = False
         self._admission_last_log: float = 0.0
+        # The previous timer tick's clock, which bounds the cron minutes a late
+        # tick catches up (_on_timer). None until this process's first tick.
+        self._last_tick_ts: float | None = None
         # job_id -> ordered live session keys, each attributed to the run
         # (_RunClaim) that registered it. One job can hold several: an older
         # stateless run kept alive for pending sub-agents, or one key per agent
@@ -975,20 +982,22 @@ class CronService:
                 "SEL audit for one-shot cron removal failed (job %s)", job_id, exc_info=True
             )
 
-    def _remove_job_locked(self, job_id: str) -> bool:
+    def _remove_job_locked(self, job_id: str) -> CronJob | None:
         """Lock/reload/mutate/save core of :meth:`remove_job` (no timer work).
 
         Removing a job also releases every job that job OWNS, in the same locked
-        write — see :meth:`_release_children_of_removed`.
+        write — see :meth:`_release_children_of_removed`. Returns the removed
+        row as the reloaded store held it, or ``None`` when no job had the id.
         """
         with self._file_lock():
             self._sync_for_write()
             # Bump UNCONDITIONALLY: grant_epoch_ids() raises on corrupt epoch
             # state, so removing even a missing id surfaces that corruption
-            # instead of answering a quiet False. The bump reads live rows, so
+            # instead of answering a quiet None. The bump reads live rows, so
             # it must precede the filter inside _remove_job_rows.
             self._bump_grant_epochs_for({job_id})
-            if any(j.id == job_id for j in self._jobs):
+            row = next((j for j in self._jobs if j.id == job_id), None)
+            if row is not None:
                 restore = self._remove_job_rows({job_id})
                 try:
                     self._save()
@@ -1001,28 +1010,30 @@ class CronService:
                     self._reset_fingerprint()
                     raise
                 logger.info("Removed cron job %s", job_id)
-                return True
-        return False
+                return row
+        return None
 
     def _remove_job_if_locked(
         self,
         job_id: str,
         expected_revision: str,
         revision_of: Callable[["CronJob"], str],
-    ) -> str:
+    ) -> tuple[str, CronJob | None]:
         """Lock/reload/compare/mutate/save core of :meth:`remove_job_if_async`.
 
         An exact ``revision_of``/``expected_revision`` match proceeds to the same
         remove-rows + cascade + save the unconditional path uses; a live job that
         differs is left untouched (``"changed"``), a missing one ``"not_found"``.
+        Returns the outcome and, on ``"removed"``, the removed row as the
+        reloaded store held it.
         """
         with self._file_lock():
             self._sync_for_write()
             job = next((j for j in self._jobs if j.id == job_id), None)
             if job is None:
-                return "not_found"
+                return "not_found", None
             if revision_of(job) != expected_revision:
-                return "changed"
+                return "changed", None
             # Same ordering as _remove_job_locked: the grant-epoch bump reads
             # live rows and must precede the row filter.
             self._bump_grant_epochs_for({job_id})
@@ -1035,7 +1046,7 @@ class CronService:
                 self._reset_fingerprint()
                 raise
             logger.info("Removed cron job %s", job_id)
-            return "removed"
+            return "removed", job
 
     def _enable_job_locked(
         self, job_id: str, enabled: bool = True, *, expected_owner: str | None = None
@@ -1068,6 +1079,7 @@ class CronService:
                     ):
                         job.user_pause_generation += 1
                     job.user_paused = not enabled
+                    job.user_pause_requested = not enabled
                     job.enabled = enabled
                     # Re-enabling clears an execution auto-pause; without this a
                     # job auto-paused after failures would be re-derived as

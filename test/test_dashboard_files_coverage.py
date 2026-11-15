@@ -43,6 +43,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
+from redaction_structured_cases import github_classic
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from kiro_crew import atomic_write as atomic_write_mod
@@ -158,7 +159,8 @@ class TestFileRead:
         A cut first severs a credential at the cap and serves its prefix as real
         bytes; whoever writes the file chooses the offset.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        # A GitHub token with a valid checksum is redacted; an AWS key ID stays visible.
+        secret = github_classic(seed=21)
         f = tmp_path / "padded.txt"
         f.write_bytes(("a" * (files_mod._FILE_READ_CAP - 10) + secret + "\nkeep\n").encode("utf-8"))
         async with TestClient(TestServer(self._client_app())) as client:
@@ -187,7 +189,7 @@ class TestFileRead:
         jwt = b64('{"alg":"HS256","typ":"JWT"}') + "." + b64("x" * 3000) + "." + "s" * 43
         head = (jwt + "\n") * 4
         cap, margin = files_mod._FILE_READ_CAP, files_mod._STREAM_HOLDBACK_JWT_MAX
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=22)
         filler = "a" * (cap + margin - 6 - len(head))
         f = tmp_path / "shrink.txt"
         f.write_bytes((head + filler + secret + "\nkeep\n").encode("utf-8"))
@@ -418,8 +420,8 @@ class TestFileRead:
     @pytest.mark.asyncio
     async def test_credentials_in_content_are_redacted(self, tmp_path, mock_sel):
         f = tmp_path / "creds.txt"
-        secret = "AKIAIOSFODNN7EXAMPLE"
-        f.write_text(f"aws_access_key_id={secret}\n", encoding="utf-8", newline="\n")
+        secret = github_classic(seed=23)
+        f.write_text(f"GITHUB_TOKEN={secret}\n", encoding="utf-8", newline="\n")
         async with TestClient(TestServer(self._client_app())) as client:
             resp = await client.get(f"/api/file-read?path={f}")
             assert resp.status == 200
@@ -1619,6 +1621,7 @@ class TestDashboardConfigPut:
             "merge_queued_messages",
             "tail_fork_enabled",
             "folder_suggestions_enabled",
+            "project_tags_enabled",
             "topic_tags_enabled",
             "link_previews",
             "quick_send",
@@ -1638,6 +1641,7 @@ class TestDashboardConfigPut:
     async def test_coded_boolean_errors_carry_a_machine_code(self, config_client_app):
         coded = {
             "folder_suggestions_enabled": "invalid_folder_suggestions_enabled",
+            "project_tags_enabled": "invalid_project_tags_enabled",
             "topic_tags_enabled": "invalid_topic_tags_enabled",
             "link_previews": "invalid_link_previews",
             "mcp_app_panel": "invalid_mcp_app_panel",
@@ -1725,6 +1729,7 @@ class TestDashboardConfigPut:
             "tail_fork_enabled": True,
             "link_previews": True,
             "folder_suggestions_enabled": True,
+            "project_tags_enabled": False,
             "topic_tags_enabled": True,
             "side_panel_always_open": True,
             "side_panel_pin_summary": True,

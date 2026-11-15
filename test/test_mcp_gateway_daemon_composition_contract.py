@@ -468,7 +468,16 @@ class TestControlFrameBytes:
         await _handle(_Reader({"type": "ping"}), writer, _pool())
         assert len(writer.writes) == 1
         pong = json.loads(writer.writes[0])
-        assert list(pong) == ["type", "targets", "fingerprint", "owner_pid", "pid", "start_time"]
+        assert list(pong) == [
+            "type",
+            "targets",
+            "fingerprint",
+            "owner_pid",
+            "owner_port",
+            "owner_port_unverifiable",
+            "pid",
+            "start_time",
+        ]
         assert writer.writes[0] == _line(pong)
 
     @pytest.mark.asyncio

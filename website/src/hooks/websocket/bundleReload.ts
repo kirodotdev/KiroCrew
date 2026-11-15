@@ -52,14 +52,12 @@ export function handleUpdateProgress(dispatch: AppDispatch, data: FrameData): vo
   } else if (prog.step === 'failed' || prog.step === 'error' || prog.step === 'done') {
     // A failure AFTER `restarting` was pushed (invalid exe path) means
     // no exec is coming — an armed latch would reload over the next
-    // unrelated blip. `done` is only ever simulated, same cleanup.
+    // unrelated blip. `done` ends a staged install: no exec is coming, same cleanup.
     try { sessionStorage.removeItem(UPDATE_RESTART_LATCH_KEY) } catch { /* best effort */ }
   }
-  if (prog.step === 'done') {
-    dispatch(setUpdateProgress(null))
-  } else {
-    dispatch(setUpdateProgress(prog))
-  }
+  // `done` is kept, not cleared: a staged install (the new version waits for the
+  // next restart) ends on it, and the update flow reads it to say so.
+  dispatch(setUpdateProgress(prog))
 }
 
 /**

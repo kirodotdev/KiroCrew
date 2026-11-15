@@ -638,8 +638,13 @@ class TestTurnEntryWiring:
         names = TURN_ENTRY_FUNCTIONS.get((module_name, func_name), (func_name,))
         source = "".join(inspect.getsource(getattr(module, name)) for name in names)
 
-        acquire = source.find("get_or_create(")
-        assert acquire != -1, f"{func_name} no longer calls get_or_create"
+        # The acquisition is where the turn waits for its session: `get_or_create`
+        # directly, or `acquire_with_token`, the wrapper that calls it and mints the
+        # claim token the instant it returns.
+        acquire = source.find("acquire_with_token(")
+        if acquire == -1:
+            acquire = source.find("get_or_create(")
+        assert acquire != -1, f"{func_name} no longer acquires a session"
 
         before = source.find("expire_slack_options(")
         after = source.find("expire_slack_options(", acquire)
@@ -648,6 +653,6 @@ class TestTurnEntryWiring:
             before != -1 and before < acquire
         ), f"{func_name} must expire the control BEFORE acquiring the session"
         assert after != -1, (
-            f"{func_name} must expire AGAIN after get_or_create returns, or a "
+            f"{func_name} must expire AGAIN after the session is acquired, or a "
             "control posted while this turn was queued stays clickable"
         )

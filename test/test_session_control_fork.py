@@ -300,6 +300,18 @@ def test_an_agent_fork_of_a_pinned_session_is_not_pinned(tmp_path):
     assert state.get_slot(result["target"]).pinned is False
 
 
+def test_an_agent_fork_keeps_the_sources_color(tmp_path):
+    """Unlike the pin, color groups sessions the way the folder does, so the
+    agent's child keeps it too (``test_chat_fork_inherits_color.py``)."""
+    state = _make_state(tmp_path)
+    caller = _seed(state, "chat-1")
+    caller.color_index = 4
+
+    result = _fork(state, caller)
+
+    assert state.get_slot(result["target"]).color_index == 4
+
+
 def test_an_unknown_folder_refuses_the_whole_fork(tmp_path):
     state = _make_state(tmp_path)
     caller = _seed(state, "chat-1")
@@ -540,7 +552,7 @@ def test_the_slot_cap_refuses_a_fork_before_the_copy(tmp_path, monkeypatch):
 def test_the_creator_cap_refuses_a_fork_before_the_copy(tmp_path, monkeypatch):
     state = _make_state(tmp_path)
     caller = _seed(state, "chat-1")
-    monkeypatch.setattr(sc, "MAX_SLOTS_PER_CREATOR", 0)
+    monkeypatch.setattr("kiro_crew.dashboard.state.max_slots_per_creator", lambda: 0)
     before = set(state._slots)
     with pytest.raises(sc.SessionControlError) as exc:
         _fork(state, caller)
@@ -579,7 +591,8 @@ def test_the_creator_cap_is_re_read_at_the_mint(tmp_path, monkeypatch):
 
     async def _fill_then_resolve(*a, **kw):
         source = await real_resolve(*a, **kw)
-        monkeypatch.setattr(sc, "MAX_SLOTS_PER_CREATOR", state.creator_slot_count(caller.key))
+        held = state.creator_slot_count(caller.key)
+        monkeypatch.setattr("kiro_crew.dashboard.state.max_slots_per_creator", lambda: held)
         return source
 
     monkeypatch.setattr(sc, "resolve_fork_source", _fill_then_resolve)

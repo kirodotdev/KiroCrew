@@ -71,7 +71,7 @@ def test_a_listed_server_with_no_approved_launch_is_named(home, capsys, local):
     ]
     assert "✅" in captured.out
     assert _names_in(captured.err) == ["wide-tools"]
-    assert "Customize → Connections → MCP Servers" in captured.err
+    assert "MCP Servers" in captured.err
 
 
 def test_a_config_file_with_a_share_list_names_the_same_servers(home, tmp_path, capsys):

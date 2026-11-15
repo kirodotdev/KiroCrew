@@ -13,10 +13,11 @@
 // gateway that is alive but slow to bind its port.
 
 const DEFAULT_GATEWAY_WAIT_MS = 30_000;
-// Importing a freshly installed bundled Python tree can exceed the ordinary
-// connection deadline on Windows. Keep the splash responsive through that cold
-// start without weakening the fail-fast child-exit path above.
-const WINDOWS_LOCAL_GATEWAY_WAIT_MS = 120_000;
+// A first launch imports a freshly installed bundled Python tree and probes its
+// MCP servers before the gateway binds, which can exceed the ordinary connection
+// deadline on any platform. Keep the splash responsive through that cold start
+// without weakening the fail-fast child-exit path above.
+const LOCAL_GATEWAY_WAIT_MS = 120_000;
 // An LTS gateway checks the kiro login and loads the governance policy
 // before it binds (kiro_crew/lts_boot.py), and exits if either fails.
 // Their own limits: kiro-cli `--version` 10s and `whoami` 30s
@@ -31,22 +32,19 @@ const LTS_PRE_BIND_HEADROOM_MS = 30_000;
 /**
  * Pick the readiness deadline for the connection being opened.
  *
- * Only the primary local gateway gets the extended Windows cold-start budget,
- * and, in an LTS build, the pre-bind check budget on top. Connection
+ * Only the primary local gateway gets the extended cold-start budget, and, in
+ * an LTS build, the pre-bind check budget on top. Connection
  * tabs still fail on the ordinary deadline, and every spawned child exit still
  * wins immediately through `getFailure`.
  *
- * @param {{platform?: string, watchSpawn?: boolean, edition?: string}} [o]
+ * @param {{watchSpawn?: boolean, edition?: string}} [o]
  * @returns {number}
  */
 function gatewayWaitTimeoutMs({
-  platform = process.platform,
   watchSpawn = false,
   edition = "oss",
 } = {}) {
-  const base = platform === "win32" && watchSpawn
-    ? WINDOWS_LOCAL_GATEWAY_WAIT_MS
-    : DEFAULT_GATEWAY_WAIT_MS;
+  const base = watchSpawn ? LOCAL_GATEWAY_WAIT_MS : DEFAULT_GATEWAY_WAIT_MS;
   return watchSpawn && edition === "lts"
     ? base + LTS_PRE_BIND_CHECKS_MS + LTS_PRE_BIND_HEADROOM_MS
     : base;
@@ -479,7 +477,7 @@ function isPortInUse(text) {
 
 module.exports = {
   DEFAULT_GATEWAY_WAIT_MS,
-  WINDOWS_LOCAL_GATEWAY_WAIT_MS,
+  LOCAL_GATEWAY_WAIT_MS,
   LTS_PRE_BIND_CHECKS_MS,
   LTS_PRE_BIND_HEADROOM_MS,
   gatewayWaitTimeoutMs,

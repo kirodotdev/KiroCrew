@@ -100,8 +100,8 @@ export const SURFACES = [
   // can see (dynamic keys, backend-supplied English, concatenation seams,
   // overflow) had no coverage at all.
   //
-  // `projects` above is the precedent: it is already a `/:builtinApp` route and
-  // has rendered here since Phase 5 shipped, which is what makes this safe to
+  // `projects` above was the precedent: it rendered here as a `/:builtinApp` route
+  // from Phase 5 until it became a core route, which is what made this safe to
   // extend rather than a new mechanism.
   //
   // Ordered by measured static-finding density in the backing code, so the two

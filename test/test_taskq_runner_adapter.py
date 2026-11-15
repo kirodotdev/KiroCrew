@@ -1182,6 +1182,46 @@ def test_l3_ladder_bounds_the_stall_recoveries(clock: Clock) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_wait_the_store_cannot_record_still_honours_the_retry_instant(
+    store: TaskStore, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adm, sleeps = _admission(store, clock, cap=1)
+    rec = adm.accept(kind=m.KIND_WORKFLOW_AGENT, task_id="workflow:w:agent1")
+    h = await adm.admit(rec.id, kind=m.KIND_WORKFLOW_AGENT)
+    h.running()
+
+    def store_down(*_args, **_kwargs):
+        raise TaskStoreUnavailable("disk I/O error")
+
+    monkeypatch.setattr(store, "enter_wait", store_down)
+    signal = DependencySignal(
+        kind=KIND_RATE_LIMITED, dependency_scope="api", source="test", retry_at=clock.t + 30
+    )
+    assert await adm.yield_dependency(h, signal) is True
+    # The server asked for 30 s; an immediate re-run would just hit the limit again.
+    assert sleeps.calls == [pytest.approx(30.0)]
+    assert adm.lane.running == 1  # slot taken back for the retry
+
+
+@pytest.mark.asyncio
+async def test_a_wait_the_store_refuses_keeps_its_immediate_retry(
+    store: TaskStore, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A refusal is a fenced generation, not an outage: this owner's handling of
+    # it is unchanged here and tracked separately.
+    adm, sleeps = _admission(store, clock, cap=1)
+    rec = adm.accept(kind=m.KIND_WORKFLOW_AGENT, task_id="workflow:w:agent1")
+    h = await adm.admit(rec.id, kind=m.KIND_WORKFLOW_AGENT)
+    h.running()
+    monkeypatch.setattr(store, "enter_wait", lambda *_a, **_k: False)
+    signal = DependencySignal(
+        kind=KIND_RATE_LIMITED, dependency_scope="api", source="test", retry_at=clock.t + 30
+    )
+    assert await adm.yield_dependency(h, signal) is True
+    assert sleeps.calls == [0.0]
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_parks_in_waiting_dependency_and_tick_wakes_it(
     store: TaskStore, clock: Clock
 ) -> None:

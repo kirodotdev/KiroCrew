@@ -171,6 +171,12 @@ def _handle_agent(args: argparse.Namespace) -> None:
     """Dispatch agent subcommands: list, create, update, delete."""
 
     action = getattr(args, "agent_action", None)
+    if action == "validate":
+        # Offline by design: a config that does not load must not stop a spec check.
+        from kiro_crew.cli_agent_validate import agent_validate
+
+        agent_validate(args)
+        return
     cfg = KiroCrewConfig.load()
 
     if action == "list":
@@ -245,7 +251,20 @@ def _handle_agent(args: argparse.Namespace) -> None:
         # binding would be re-served by the cli_commands facade mirror and trip
         # its composition contract (every served name must be owner-DEFINED).
         from kiro_crew.crew_avatar_seed import default_icon_avatar
+        from kiro_crew.member_workspace import DEFAULT_WORKSPACE
 
+        # Saved as given, as `agent update` does, but an unconfigured name falls
+        # back to another workspace's directory, so the caller is told.
+        if (
+            args.workspace
+            and args.workspace not in cfg.workspaces
+            and args.workspace not in (DEFAULT_WORKSPACE, cfg.default_workspace)
+        ):
+            print(
+                f"Warning: workspace '{safe_terminal_line(args.workspace)}' is not "
+                "configured; the crew shares a fallback workspace directory",
+                file=sys.stderr,
+            )
         # A crew that carried this name before may still be listed on a team
         # (every removal path drops it best-effort). persist_member_config
         # purges that INSIDE the registry's locked mutation, right before the
@@ -476,7 +495,7 @@ def _handle_agent(args: argparse.Namespace) -> None:
         # exit 2, the argparse convention, so a script does not read 0 after a
         # typo.
         print(
-            "Usage: kirocrew agent {list|create|update|delete|pin|reset-model}",
+            "Usage: kirocrew agent {list|create|update|delete|pin|validate|reset-model}",
             file=sys.stderr,
         )
         sys.exit(2)

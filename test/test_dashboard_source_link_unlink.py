@@ -718,7 +718,7 @@ class TestUnlinkEndpoint:
 
     @pytest.mark.asyncio
     async def test_persist_writes_only_the_dismissed_field_never_a_full_save(self):
-        # GPT 5.6: a full-slot save rebuilds title/tags/folder from the requesting
+        # A full-slot save rebuilds title/tags/folder from the requesting
         # slot's live fields, so on a shared transcript it can revert a sibling
         # alias's committed rename. The unlink must persist ONLY the
         # dismissed_source_links field via update_metadata (a merge that leaves

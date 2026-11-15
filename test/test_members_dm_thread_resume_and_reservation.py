@@ -26,6 +26,7 @@ from members_dm_thread_helpers import (
     _member_slot,
     _patched_config,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.dashboard.chat_handlers import _history_key_for
@@ -647,6 +648,7 @@ class TestOpenAiCompatPin:
         slot.agent = CREW
         slot.mode = DM_SLOT_MODE
         slot.task = None
+        slot.is_closing = False
         slot.event = _asyncio.Event()
         slot.drain = MagicMock(return_value=[])
         state = MagicMock()
@@ -677,7 +679,7 @@ class TestOpenAiCompatPin:
         assert slot.agent == CREW
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("name", ["AKIAIOSFODNN7EXAMPLE", "crew password=shortvalue"])
+    @pytest.mark.parametrize("name", [github_classic(seed=53), "crew password=shortvalue"])
     async def test_completion_refuses_a_redaction_requiring_stored_member_pin(self, name):
         import asyncio as _asyncio
 
@@ -758,6 +760,7 @@ class TestOpenAiCompatPin:
         state.get_or_create_slot = MagicMock(return_value=slot)
         state._slots = {slot.key: slot}
         state._background_tasks = set()
+        state.session_still_loading = AsyncMock(return_value=False)
 
         request = MagicMock()
         request.json = AsyncMock(

@@ -10,6 +10,7 @@ import pytest
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew import crewmate_prompts
 from kiro_crew.dashboard import goal_setup
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 from kiro_crew.testing.wait import async_wait_until
 
 SNAP = {
@@ -276,7 +277,7 @@ def test_the_removed_nudge_names_the_goal_and_its_orphaned_milestones() -> None:
 
 
 def test_every_goal_nudge_quotes_goals_and_milestones_scrubbed() -> None:
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = SAMPLE_AWS_SECRET.replace("/", "+")
     goal = {"id": "g00000001", "text": f"Rotate {secret} weekly"}
     other = {"id": "g00000002", "text": f"Audit {secret} usage"}
     gone = {"id": "g00000003", "text": f"Drop {secret} keys"}

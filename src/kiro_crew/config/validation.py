@@ -78,7 +78,7 @@ _APP_OWNED_TOP_KEYS: frozenset = _builtin_config_top_keys()
 #     (``cfg.raw.get("voice_reply")``), and also by
 #     telegram/transport_dispatch.py (``raw.get("voice_reply")``). No
 #     SCHEMA_REGISTRY entry.
-#   * connections -- the Connections block. The Settings "OAuth Apps" form
+#   * connections -- the Connections block. The Settings → Connections OAuth app form
 #     writes ``connections.oauth_clients.<slug>.client_id``
 #     (dashboard/handlers/connections.py::_write_oauth_client), read back by
 #     connections/oauth_clients.py::_config_client_id; the

@@ -374,6 +374,7 @@ class CronRunRecord:
     summary: str = ""
     trace: str = ""
     error: str = ""
+    idle: bool = False  # a script's Skip(): it ran and found nothing to do
 
     def to_dict(self, include_trace: bool = True) -> dict[str, Any]:
         d = asdict(self)

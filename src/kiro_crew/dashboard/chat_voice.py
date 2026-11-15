@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 from aiohttp import web
 
-from kiro_crew import aws_consent, speech_providers
+from kiro_crew import aws_consent, platform_compat, speech_providers
 from kiro_crew.config.loader import (
     ConfigReadError,
     ConfigWriteRefused,
@@ -929,6 +929,7 @@ async def api_voice_voices(request: web.Request) -> web.Response:
     if region:
         cmd += ["--region", region]
 
+    proc = None
     try:
         # A Python-based `aws` (aws-cli v1) must not import the gateway's own
         # interpreter packages, so the launcher's Python settings stay behind.
@@ -959,7 +960,13 @@ async def api_voice_voices(request: web.Request) -> web.Response:
         _voices_cache_ts = now
         _voices_cache_key = cache_key
         return web.json_response({"voices": voices})
+    except asyncio.CancelledError:
+        # A torn-down request must not leave the aws child running with no owner.
+        if proc is not None:
+            await platform_compat.kill_and_reap(proc)
+        raise
     except asyncio.TimeoutError:
+        assert proc is not None  # only the wait under wait_for can time out
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
         # Reap via communicate(), not wait(): wait_for cancelled the pipe

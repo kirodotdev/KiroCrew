@@ -730,12 +730,18 @@ def test_merge_queue_readiness_budget_covers_ci_critical_path() -> None:
     def cap_minutes(spec: dict) -> int:
         # Like max-parallel, timeout-minutes may be a CodeBuild-routed
         # conditional; on the hosted/off-CodeBuild fallback it evaluates to the
-        # `|| N` value, which is the worst case the budget must cover.
+        # `|| N` value. A `matrix.<key> || N` cap is set per leg, so its worst
+        # case is the largest of N and every leg's own value.
         value = spec["timeout-minutes"]
         if isinstance(value, str):
             m = re.search(r"\|\|\s*(\d+)\s*\}\}", value)
             assert m, f"unparseable timeout-minutes expression: {value!r}"
-            return int(m.group(1))
+            caps = [int(m.group(1))]
+            key = re.search(r"matrix\.(\w+)\s*\|\|", value)
+            if key:
+                legs = ((spec.get("strategy") or {}).get("matrix") or {}).get("include") or []
+                caps += [int(leg[key.group(1)]) for leg in legs if key.group(1) in leg]
+            return max(caps)
         return int(value)
 
     def longest_path(job_id: str) -> int:
@@ -751,6 +757,21 @@ def test_merge_queue_readiness_budget_covers_ci_critical_path() -> None:
         f"of timeout-minutes is {critical_path} min; raise the budget with the cap"
     )
     assert int(job["timeout-minutes"]) > budget_minutes
+
+
+def test_new_test_stability_sets_each_legs_own_limit() -> None:
+    """Each leg of New-test stability fits three passes over a large test PR.
+
+    One Windows pass over about 400 files takes about 32 minutes, and one pass
+    on a slow Ubuntu runner takes 22-24 (about 15 of them collecting), so
+    neither leg may fall back to the shared 60-minute default.
+    """
+    job = yaml.safe_load((_WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))["jobs"][
+        "new-test-stability"
+    ]
+    assert job["timeout-minutes"] == "${{ matrix.timeout_minutes || 60 }}"
+    caps = {leg["os"]: leg.get("timeout_minutes") for leg in job["strategy"]["matrix"]["include"]}
+    assert caps == {"ubuntu-latest": 90, "windows-latest": 150}
 
 
 def _readiness_job() -> dict:

@@ -31,14 +31,14 @@ export function ComposerPickerMenus({ pickers, value, onChange, composerAnchorRe
     slashMenuOpen, setSlashMenuOpen, filePickerOpen, setFilePickerOpen, fileQuery, setFileQuery,
     pathPickerOpen, setPathPickerOpen, pathQuery, setPathQuery, skillPickerOpen, setSkillPickerOpen, skillQuery, setSkillQuery,
     nextTrustRequestIdRef, activeTrustRequestIdRef, trustPrompt, setTrustPrompt, skillSlotKey, skillSlotKeyRef, skillProjectRef,
-    applyPickedToken, openPickersForText,
+    applyPickedToken, openPickersForText, slotId,
   } = pickers
   return (
     <ComposerPickerSourceProvider value={source}>
       {/* A pick is written without passing through the composer's own onChange,
           so the gate is re-run on it here: picking `/workflow` goes straight on
           to the saved-workflow list, every other pick closes the menu. */}
-      {slashOn && <SlashCommandMenu input={value} anchorRef={composerAnchorRef} open={slashMenuOpen} hidden={hiddenCommands} sendOnEnter={sendOnEnter} onSelect={cmd => { onChange(cmd); openPickersForText(cmd, cmd) }} onClose={() => setSlashMenuOpen(false)} />}
+      {slashOn && <SlashCommandMenu input={value} anchorRef={composerAnchorRef} open={slashMenuOpen} hidden={hiddenCommands} sendOnEnter={sendOnEnter} slotId={slotId} onSelect={cmd => { onChange(cmd); openPickersForText(cmd, cmd) }} onClose={() => setSlashMenuOpen(false)} />}
 
       {fileOn && onFileSelect && (
         <FilePickerMenu

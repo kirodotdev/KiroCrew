@@ -453,6 +453,14 @@ queries), and are each `ErrorBoundary`-isolated. The same rule as for capsule
 segments applies: a widget's size must not depend on the collapse classes or
 level.
 
+**A widget that owns the desktop update flow.** A widget that offers and arms
+the desktop app's update itself (through `window.updateAPI`) also needs the
+core's two update prompts to stay closed, or they open over it. That is not a
+frontend registration: the edition sets `"updatePrompts": "edition"` in the
+`EXTERNALLY-MANAGED` marker it bakes into the app, and every update push then
+carries the flag the prompts read
+([desktop-app.md → Externally-managed installs](../../docs/build/desktop-app.md#externally-managed-installs-repackagers)).
+
 **Theme centre decoration is a backdrop, not a cell.** Under the three-track grid
 `branding.topBar` renders as a full-header background layer, not as a sized flow
 cell between the search and the actions group: `absolute inset-0`, `pointer-events-none`,

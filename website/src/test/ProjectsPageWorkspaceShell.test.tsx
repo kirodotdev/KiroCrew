@@ -12,6 +12,7 @@ import { renderWithProviders } from './helpers'
 import ProjectsPage from '../pages/ProjectsPage'
 import { api } from '../api/client'
 import { BUILTIN_COMPONENT_REGISTRY, hasBuiltinComponent } from '../apps/builtinRegistry'
+import { hasPopoutPage } from '../pages/corePopoutPages'
 import {
   COLLAPSED_RAIL_WIDTH, DEFAULT_RAIL_WIDTH, MAX_RAIL_WIDTH, MIN_RAIL_WIDTH,
   RAIL_COLLAPSED_KEY, RAIL_WIDTH_KEY, loadRailCollapsed, loadRailWidth,
@@ -72,13 +73,14 @@ beforeEach(() => {
   localStorage.clear()
 })
 
-describe('Task Runner — builtin app routing', () => {
-  it('resolves /projects through the builtin component registry', () => {
-    // Every other builtin page is looked up here by its manifest route; a
-    // hardcoded App.tsx <Route> would leave this false and skip the shared
-    // Suspense + ErrorBoundary wrapper the registry route provides.
-    expect(hasBuiltinComponent('/projects')).toBe(true)
-    expect(BUILTIN_COMPONENT_REGISTRY['/projects']).toBeTruthy()
+describe('Task Runner as a core page, not a builtin app', () => {
+  it('is out of the builtin app registry and still opens in a pop-out window', () => {
+    // Task Runner stopped being the built-in app `projects`: App.tsx routes it
+    // (through `lazyPage`, which brings its own Suspense and ErrorBoundary), and
+    // the pop-out window renders it as a core page.
+    expect(hasBuiltinComponent('/projects')).toBe(false)
+    expect(BUILTIN_COMPONENT_REGISTRY['/projects']).toBeUndefined()
+    expect(hasPopoutPage('/projects')).toBe(true)
   })
 })
 

@@ -23,6 +23,7 @@ from test_tool_call_classification_kas import _kas_builtin_flow
 from kiro_crew.acp import kas_agents
 from kiro_crew.acp._dispatch import attach_kas_custom_agents
 from kiro_crew.acp.kas_permissions import (
+    _MAX_ALLOWED_COMMANDS,
     CREW_ANSWERED_COMMANDS_KEY,
     allowed_command_pattern,
     crew_answered_commands,
@@ -118,8 +119,6 @@ def test_a_command_no_pattern_fullmatches_still_prompts(pattern: str, command: s
 @pytest.mark.parametrize(
     "command",
     [
-        "git status > out.txt",
-        "git status < in.txt",
         "git status $(whoami)",
         "git status `whoami`",
         "git status ${HOME}",
@@ -634,10 +633,10 @@ def test_allowed_commands_are_named_only_when_a_pattern_cannot_be_used() -> None
     ]
 
 
-def test_an_allow_list_over_the_bound_is_named() -> None:
-    patterns = [f"make target{i}" for i in range(65)]
+def test_an_allow_list_over_the_bound_keeps_its_first_entries_and_is_named() -> None:
+    patterns = [f"make target{i}" for i in range(_MAX_ALLOWED_COMMANDS + 1)]
     settings = {"shell": {"allowedCommands": patterns}}
-    assert len(crew_answered_commands(settings)) == 64
+    assert crew_answered_commands(settings) == patterns[:_MAX_ALLOWED_COMMANDS]
     assert tools_settings_to_permissions(settings)[1] == ["shell.allowedCommands"]
 
 

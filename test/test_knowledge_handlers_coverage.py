@@ -34,11 +34,16 @@ from knowledge_handlers_coverage_helpers import (  # noqa: F401 -- the fixture i
     _make_app,
     store_fixture,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.testing.wait import await_until
+
+# A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
+# stays visible as an identifier, so it cannot show that a value is redacted.
+_SECRET_TOKEN = github_classic(seed=45)
 
 
 def _add_job(store, job_id="job-1", *, status="processing", source_id=None):
@@ -725,7 +730,7 @@ class TestImportBundle:
 
     @pytest.mark.asyncio
     async def test_redacts_credentials_in_imported_content(self, store):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET_TOKEN
         bundle = {
             "items": [
                 {"id": "i1", "title": "t", "item_type": "note", "content": f"key {secret} here"}
@@ -825,6 +830,41 @@ class TestImportBundle:
             assert resp.status == 400
             body = await resp.json()
         assert body["code"] == "malformed_knowledge_bundle"
+        assert store.db.execute("SELECT COUNT(*) c FROM items").fetchone()["c"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "table,field",
+        [
+            ("items", "title"),
+            ("items", "content"),
+            ("entities", "name"),
+            ("relations", "description"),
+        ],
+    )
+    async def test_a_lone_surrogate_in_a_text_field_is_400_not_500(self, store, table, field):
+        # JSON allows an escaped lone surrogate, which SQLite cannot bind as
+        # UTF-8: UnicodeEncodeError at bind time, the text twin of the
+        # oversized-integer case above.
+        bundle = {
+            "items": [{"id": "i1", "title": "t", "content": "c", "item_type": "note"}],
+            "entities": [{"id": "e1", "name": "Alice", "entity_type": "person"}],
+            "relations": [
+                {
+                    "id": "r1",
+                    "source_id": "e1",
+                    "target_id": "e1",
+                    "relation_type": "self",
+                    "description": "d",
+                }
+            ],
+        }
+        bundle[table][0][field] += "\ud800"
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 400
+            body = await resp.json()
+        assert body == {"error": "malformed bundle", "code": "malformed_knowledge_bundle"}
         assert store.db.execute("SELECT COUNT(*) c FROM items").fetchone()["c"] == 0
 
     @pytest.mark.asyncio
@@ -1100,9 +1140,9 @@ class TestImportBundle:
             "agent_item_state": [
                 {
                     "source_id": "s1",
-                    "slug": "doc-AKIAIOSFODNN7EXAMPLE",
+                    "slug": f"doc-{_SECRET_TOKEN}",
                     "content_hash": "h",
-                    "item_ids": json.dumps(["absent-AKIAIOSFODNN7EXAMPLE"]),
+                    "item_ids": json.dumps([f"absent-{_SECRET_TOKEN}"]),
                     "updated_at": "2024-01-01T00:00:00",
                     "name": "N",
                 }
@@ -1117,7 +1157,7 @@ class TestImportBundle:
             w for w in result["withheld"] if w.get("reason") == "ownership_row_names_absent_items"
         ]
         assert named, f"fixture must produce a withheld entry: {result['withheld']}"
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(
+        assert _SECRET_TOKEN not in json.dumps(
             result
         ), "bundle-authored credential text reached the import response"
         assert "REDACTED" in named[0]["key"]
@@ -1148,8 +1188,8 @@ class TestImportBundle:
             ],
             "agent_item_state": [
                 {
-                    "source_id": "src-AKIAIOSFODNN7EXAMPLE",
-                    "slug": "doc-AKIAIOSFODNN7EXAMPLE",
+                    "source_id": f"src-{_SECRET_TOKEN}",
+                    "slug": f"doc-{_SECRET_TOKEN}",
                     "content_hash": "h",
                     "item_ids": json.dumps(["i1"]),
                     "updated_at": "2024-01-01T00:00:00",
@@ -1166,7 +1206,7 @@ class TestImportBundle:
             w for w in result["withheld"] if w.get("reason") == "ownership_row_source_undeclared"
         ]
         assert named, f"fixture must produce a withheld entry: {result['withheld']}"
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(
+        assert _SECRET_TOKEN not in json.dumps(
             result
         ), "bundle-authored credential text reached the import response"
         assert "REDACTED" in named[0]["source_id"]
@@ -1177,7 +1217,7 @@ class TestImportBundle:
         """The control on the other side: redaction belongs to the RESPONSE. The store
         matches this key against a PRIMARY KEY, so a redacted one would not find its own
         document."""
-        slug = "doc-AKIAIOSFODNN7EXAMPLE"
+        slug = f"doc-{_SECRET_TOKEN}"
         bundle = {
             "sources": [
                 {
@@ -1349,6 +1389,34 @@ class TestBatchEmbedItems:
         ).fetchone()
         assert row["embedding"] is not None
         assert row["embedding_sig"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("spelling", ["false", "False", " false ", "0", "off"])
+    async def test_the_string_false_does_not_start_a_rebuild(self, store, spelling):
+        # A JSON-string "false" is truthy, so it started a full re-embed; it is
+        # now read as False with a warning, and the fill-NULL path runs instead.
+        store.add_item("a", "body a", "note")
+        async with _client(_make_app(store, embedder=_FakeEmbedder())) as client:
+            resp = await client.post(
+                "/api/knowledge/embedding/generate", json={"rebuild": spelling}
+            )
+            assert resp.status == 200
+            data = await resp.json()
+        assert "job_id" not in data
+        assert (data["embedded"], data["total"], data["remaining"]) == (1, 1, 0)
+        assert data["warnings"] == [
+            f"rebuild was the string {spelling!r}; read as False. "
+            "Send a JSON boolean (true/false)."
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_json_bool_reply_carries_no_warnings(self, store):
+        store.add_item("a", "body a", "note")
+        async with _client(_make_app(store, embedder=_FakeEmbedder())) as client:
+            data = await (
+                await client.post("/api/knowledge/embedding/generate", json={"rebuild": False})
+            ).json()
+        assert "warnings" not in data
 
     @pytest.mark.asyncio
     async def test_items_the_embedder_declines_stay_unembedded(self, store):

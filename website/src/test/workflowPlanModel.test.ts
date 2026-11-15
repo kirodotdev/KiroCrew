@@ -7,7 +7,7 @@
  * reality that superseded it.
  */
 import { describe, expect, it } from 'vitest'
-import { asText, buildGraph, type RunPlan } from '../apps/workflows/planModel'
+import { asText, buildGraph, type RunPlan } from '../components/workflows/planModel'
 
 function ev(type: string, data: Record<string, unknown> = {}, seq = 0, ts = '2026-09-18T10:00:00.000Z') {
   return { run_id: 'wf_1', seq, ts, type, data }

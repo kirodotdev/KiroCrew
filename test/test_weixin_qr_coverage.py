@@ -275,8 +275,8 @@ def _save(monkeypatch, tmp_path: Path, body: Any, config: str = "{}", state: Any
 @pytest.mark.parametrize(
     ("body", "reply"),
     [
-        (ValueError("not json"), {"error": "invalid JSON"}),
-        (["a list"], {"error": "body must be an object"}),
+        (ValueError("not json"), {"error": "invalid JSON", "code": "invalid_json"}),
+        (["a list"], {"error": "body must be an object", "code": "body_not_object"}),
         ({"enabled": "yes"}, {"error": "enabled must be a boolean"}),
         ({"dm_policy": "everyone"}, {"error": "invalid dm_policy"}),
         ({"allowed_user_ids": "u-1"}, {"error": "allowed_user_ids must be a list"}),

@@ -139,7 +139,7 @@ def test_multiple_glued_markers_on_separate_lines_all_reflow() -> None:
 
 
 def test_interior_closer_shape_is_not_split_into_a_false_pill() -> None:
-    # GPT 5.6 F1: the interior ``]`` after ``Fix`` terminates the match early (it
+    # The interior ``]`` after ``Fix`` terminates the match early (it
     # is followed by ``x``, not a separator), and the remainder ``x logging |
     # Skip]`` still carries a ``|`` and a closer. This is the grammar's documented
     # "unmatched -- no opener at all" residual that must fail toward a VISIBLE

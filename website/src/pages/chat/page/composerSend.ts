@@ -12,7 +12,7 @@ import { expandAll as expandPasteTokens, carryPastes, mergeCarriedDraft, type Pa
 import { mergeSessionRefs, type SessionRef } from '../../../utils/sessionRefs'
 import type { PickedFileTokens } from './composerFileMentions'
 import { queuedSendStash } from '../../../hooks/useQueuedMessageActions'
-import { syncSlotRunningFromServer, capturePendingAskId, createSlot, appendMessage, selectComposerBusy, startLocalTurn, endLocalTurn, appendSlotMessage, setSlotRunning, selectSendConfirmed, selectSlotRunEpoch, selectSlotStreamState, markSendUnconfirmed, confirmOptimisticSend, resolveOptimisticSteer, recordSendAttempt, ageFolderSuggestion } from '../../../store/chatSlice'
+import { syncSlotRunningFromServer, capturePendingAskId, createSlot, appendMessage, selectComposerBusy, startLocalTurn, endLocalTurn, appendSlotMessage, setSlotRunning, selectPendingTurn, selectSendConfirmed, selectSlotRunEpoch, selectSlotStreamState, markSendUnconfirmed, confirmOptimisticSend, resolveOptimisticSteer, recordSendAttempt, ageFolderSuggestion } from '../../../store/chatSlice'
 import { confirmedDelivered } from '../../../utils/sendDelivery'
 import { warnDeliveryUnconfirmed } from '../../../utils/deliveryWarning'
 import { announceIfRemovedSendDelivered } from '../../../components/useDeliveryWarningStrip'
@@ -476,7 +476,8 @@ export function useComposerSend({
       ? { wire: raw, bubble: raw, inlined: raw, meta: {}, pastes: [], storedPaste: undefined, typedOnly: true }
       : buildOutgoingTurn({ text: raw, files: sentFiles, pastes: activePastes, sessionRefs: sentSessionRefs, knowledge: knowledgeBlock, quote: sentQuote, project: currentProjectRef.current || '', dictationNote }, 'send')
     if (!isolated) knowledgeFetchRef.current.clearPending()
-    storeSentPastes(turn.storedPaste)
+    const sendId = mintSendId()
+    storeSentPastes(turn.storedPaste, sendId)
 
     if (!isolated) setPrefillHint(false)
     // The alias sub-map this send is about to drop, kept as a frozen snapshot
@@ -761,7 +762,6 @@ export function useComposerSend({
     // to this exact optimistic bubble without relying on content equality.
     // The server preserves meta fields on the user row it appends, so the
     // echo carries both this sendId AND the server-minted `mid` (#2845).
-    const sendId = mintSendId()
     meta.sendId = sendId
     const metaPayload = meta
     // A busy snapshot may be stale. The server's user event supplies the
@@ -802,7 +802,7 @@ export function useComposerSend({
     const endOwnLocalTurn = () => {
       if (!slot) return
       const state = store.getState()
-      if (state.chat.pendingTurnSlot === slot && selectSlotRunEpoch(state, slot) === sendEpoch && selectSlotStreamState(state, slot) === 'idle') dispatch(endLocalTurn(slot))
+      if (selectPendingTurn(state, slot) && selectSlotRunEpoch(state, slot) === sendEpoch && selectSlotStreamState(state, slot) === 'idle') dispatch(endLocalTurn(slot))
     }
     const restoreComposerAfterFailedSend = () => {
       // App payloads remain in the page-level error notice for copying; the

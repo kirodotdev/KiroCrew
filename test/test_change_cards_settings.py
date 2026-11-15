@@ -205,6 +205,21 @@ def test_check_setting_value_takes_only_a_list_of_strings_for_str_list():
         assert exc.value.code == "invalid_value", bad
 
 
+def test_check_setting_value_takes_auto_where_the_route_does():
+    """The idle-unload key is ``int | str``: a card may set a number or put "auto" back."""
+    from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+    spec = _EDITABLE_CONFIG["memory.embedding_idle_evict_secs"]
+    cards.check_setting_value(spec, "auto")
+    cards.check_setting_value(spec, 900)
+    for bad in ("soon", -1, True):
+        with pytest.raises(catalog.CardCatalogError) as exc:
+            cards.check_setting_value(spec, bad)
+        assert exc.value.code == "invalid_value", bad
+    with pytest.raises(catalog.CardCatalogError):
+        cards.check_setting_value(_EDITABLE_CONFIG["session.pool_size"], "auto")
+
+
 def test_check_setting_value_runs_a_normalized_settings_own_normalizer():
     # The route's spec for these keys, so a card is refused with the same reason
     # the PATCH route would give, before anyone is asked to approve it.
@@ -467,7 +482,10 @@ def test_shim_routes_find_setting(monkeypatch):
     )
     out = json.loads(mcp_guide._call_tool_inner("find_setting", {"query": "shorter replies"}))
     assert sent == ["/api/cards/agent/settings?q=shorter+replies"]
-    assert out == {"settings": [{"a": 1}]}
+    assert out["settings"] == [{"a": 1}]
+    # Not every answer is a setting: the result points at search_docs, so a
+    # question like "stop asking for this MCP tool" reaches the docs page.
+    assert "search_docs" in out["next"]
 
 
 # ── settings diagnosis ──

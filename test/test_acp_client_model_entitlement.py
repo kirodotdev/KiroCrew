@@ -152,11 +152,9 @@ class TestModelEntitlementPreflight:
     def _client(advertised, model, is_claude=False):
         from kiro_crew.acp.client import ACP_BACKEND_CLAUDE, AcpClient
 
-        client = AcpClient()
+        client = AcpClient(acp_backend=ACP_BACKEND_CLAUDE if is_claude else "")
         client._session_id = "sess-1"
         client._model = model
-        # _is_claude is derived from the backend seam, not settable directly.
-        client._acp_backend = ACP_BACKEND_CLAUDE if is_claude else ""
         client._available_models = [{"modelId": m, "name": m} for m in advertised]
 
         # The refusal and the withhold first re-ask entitlement on a throwaway
@@ -523,11 +521,10 @@ class TestColdCacheModelFallback:
     def _claude_client(model):
         from kiro_crew.acp.client import ACP_BACKEND_CLAUDE, AcpClient
 
-        client = AcpClient()
+        client = AcpClient(acp_backend=ACP_BACKEND_CLAUDE)
         client._session_id = "sess-1"
         client._model = model
         client._resolved_model_id = model
-        client._acp_backend = ACP_BACKEND_CLAUDE
         return client
 
     @staticmethod

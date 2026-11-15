@@ -1049,6 +1049,76 @@ class TestApproveEndpoint:
         assert req.app["state"]._background_tasks == set()
         await asyncio.to_thread(_assert_update_lock_free)
 
+    async def test_a_gateway_on_the_stable_link_arms_instead_of_promoting_under_itself(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import update_next_start
+        from kiro_crew.platform import wheel_apply
+
+        async def forbidden(**_kw: object) -> None:
+            raise AssertionError("an approve must not promote under a running gateway")
+
+        monkeypatch.setattr(wheel_apply, "relaunch_before_apply", lambda: True)
+        monkeypatch.setattr(wheel_apply, "run_wheel_apply", forbidden)
+        monkeypatch.setattr(updates, "_audit_update_event", AsyncMock())
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(updates, "min_version", lambda: "")
+        monkeypatch.setattr(updates, "_local_version", "0.7.0")
+        pending = update_stepup.arm("9.9.9", "stable")
+        try:
+            req = _request({"nonce": pending.nonce})
+            resp = await updates.api_update_approve(req)
+            assert resp.status == 202
+            body = json.loads(resp.body.decode())
+            assert (body["armed"], body["version"]) == (True, "9.9.9")
+            assert update_next_start.read().armed_version == "9.9.9"
+            assert body["status"] == "armed"
+            frames = [c.args for c in req.app["state"].push_update_progress.call_args_list]
+            assert frames and frames[-1][0] == "done" and "armed" in frames[-1][1]
+            assert req.app["state"]._background_tasks == set()
+            _assert_update_lock_free()
+        finally:
+            update_next_start.disarm()
+            update_stepup.clear_pending()
+
+    async def test_a_stable_link_approval_for_a_version_not_newer_is_not_armed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import update_next_start
+        from kiro_crew.platform import wheel_apply
+
+        monkeypatch.setattr(wheel_apply, "relaunch_before_apply", lambda: True)
+        monkeypatch.setattr(updates, "_audit_update_event", AsyncMock())
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(updates, "min_version", lambda: "")
+        pending = update_stepup.arm("0.0.1", "stable")
+        try:
+            resp = await updates.api_update_approve(_request({"nonce": pending.nonce}))
+            assert resp.status == 409
+            assert json.loads(resp.body.decode())["code"] == "restart_first"
+            assert not update_next_start.read().armed
+            _assert_update_lock_free()
+        finally:
+            update_next_start.disarm()
+            update_stepup.clear_pending()
+
+    async def test_the_arm_status_names_a_consumed_request_that_armed_the_next_start(
+        self, tmp_path: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import update_next_start
+
+        update_next_start.arm("9.9.9")
+        try:
+            resp = await updates.api_update_arm_status(_request())
+            body = json.loads(resp.body.decode())
+            assert (body["armed"], body["next_start_armed"], body["version"]) == (
+                False,
+                True,
+                "9.9.9",
+            )
+        finally:
+            update_next_start.disarm()
+
     async def test_wrong_nonce_refused(self) -> None:
         update_stepup.arm("9.9.9", "stable")
         try:
@@ -1190,11 +1260,11 @@ class TestApproveEndpoint:
 
         restarted: list[object] = []
 
-        async def fake_restart(state: object, *, resolver: object) -> bool:
-            assert resolver is wheel_engine.respawn_executable
+        async def fake_restart(state: object, **kwargs: object) -> bool:
             restarted.append(state)
             return True
 
+        from kiro_crew import update_restart_ready
         from kiro_crew.platform import wheel_apply, wheel_engine
 
         monkeypatch.setattr(wheel_engine, "apply_wheel_update", fake_apply)
@@ -1211,7 +1281,11 @@ class TestApproveEndpoint:
             await task
         assert len(applied) == 1
         assert applied[0]["expected_version"] == "9.9.9"
-        assert restarted, "a promoted update must restart the gateway"
+        assert restarted == [], "an approved update never restarts the running gateway"
+        note = update_restart_ready.current()
+        assert note is not None
+        assert (note.reason, note.version) == (update_restart_ready.REASON_STAGED, "9.9.9")
+        req.app["state"].push_refresh.assert_any_call("update_available")
         # Single-use: the nonce file is gone.
         assert update_stepup.read_pending() is None
         _assert_update_lock_free()
@@ -1457,7 +1531,7 @@ class TestApproveEndpoint:
         for task in list(req.app["state"]._background_tasks):
             await task
         assert audited == ["granted", "success"]
-        restart.assert_awaited_once()
+        restart.assert_not_awaited()
         other.cancel()
         _assert_update_lock_free()
 

@@ -377,7 +377,7 @@ async def test_effort_keys_its_own_warm_subpool():
 class _EffortProvider(_FakeProvider):
     """A provider whose fresh conversation loses its effort, as on KAS and Codex."""
 
-    def __init__(self, tag: str, *, refuse: bool = False, offered: tuple = ()) -> None:
+    def __init__(self, tag: str, *, refuse: bool | str = False, offered: tuple = ()) -> None:
         super().__init__(tag)
         self.efforts_pushed: list[str] = []
         self.refuse = refuse
@@ -387,6 +387,10 @@ class _EffortProvider(_FakeProvider):
         return not self.offered or level in self.offered
 
     async def change_effort(self, level: str) -> bool:
+        if self.refuse == "kiro-cli":
+            from kiro_crew.acp.command_refused import AcpCommandRefused
+
+            raise AcpCommandRefused(f"invalid effort level {level!r}")
         if self.refuse:
             raise RuntimeError("effort push refused")
         self.efforts_pushed.append(level)
@@ -394,7 +398,7 @@ class _EffortProvider(_FakeProvider):
 
 
 class _EffortProviderSessions(_EffortSessions):
-    def __init__(self, *, refuse: bool = False, offered: tuple = ()) -> None:
+    def __init__(self, *, refuse: bool | str = False, offered: tuple = ()) -> None:
         super().__init__()
         self.refuse = refuse
         self.offered = offered
@@ -460,6 +464,22 @@ async def test_a_level_the_session_does_not_offer_keeps_the_cheap_reuse():
 
 
 @pytest.mark.asyncio
+async def test_a_level_kiro_cli_refuses_keeps_the_cheap_reuse():
+    """A hard reset would cold-start on the refused level and respawn on every reuse."""
+    sessions = _EffortProviderSessions(refuse="kiro-cli")
+    agent_fn, pool = build_pooled_agent_fn(sessions, run_id="ef10", max_workers=1)
+    try:
+        await agent_fn("a", {"effort": "high"})
+        await agent_fn("b", {"effort": "high"})
+        provider = next(iter(sessions.live.values()))
+    finally:
+        await pool.shutdown()
+    assert sessions.resets == 0
+    assert sessions.cold_starts == 1
+    assert provider.new_conversation_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_a_refused_effort_push_falls_back_to_a_cold_start_with_the_override():
     sessions = _EffortProviderSessions(refuse=True)
     agent_fn, pool = build_pooled_agent_fn(sessions, run_id="ef8", max_workers=1)
@@ -470,6 +490,72 @@ async def test_a_refused_effort_push_falls_back_to_a_cold_start_with_the_overrid
         await pool.shutdown()
     assert sessions.resets == 1
     assert sessions.created_efforts == ["high", "high"]
+
+
+class _LiveEffortSessions(_EffortProviderSessions):
+    """Reports a second acquire of a live key as not new, as SessionManager does."""
+
+    async def get_or_create(self, key, **kwargs):
+        was_live = key in self.live
+        provider, _is_new, resumed = await super().get_or_create(key, **kwargs)
+        return provider, not was_live, resumed
+
+
+@pytest.mark.asyncio
+async def test_a_named_session_reused_at_another_effort_gets_that_effort():
+    sessions = _LiveEffortSessions()
+    agent_fn, pool = build_pooled_agent_fn(sessions, run_id="ef10", max_workers=1)
+    try:
+        await agent_fn("a", {"session": "chain-N", "effort": "low"})
+        provider = sessions.live["chain-N"]
+        assert provider.efforts_pushed == []
+        await agent_fn("b", {"session": "chain-N", "effort": "high"})
+        await agent_fn("c", {"session": "chain-N"})
+    finally:
+        await pool.shutdown()
+        await sessions.destroy("chain-N")
+    assert sessions.created_efforts == ["low"]
+    assert provider.efforts_pushed == ["high"]
+
+
+@pytest.mark.asyncio
+async def test_a_raised_effort_push_on_a_named_session_fails_the_step():
+    sessions = _LiveEffortSessions(refuse=True)
+    agent_fn, pool = build_pooled_agent_fn(sessions, run_id="ef11", max_workers=1)
+    try:
+        await agent_fn("a", {"session": "chain-R", "effort": "low"})
+        with pytest.raises(RuntimeError, match="effort push refused"):
+            await agent_fn("b", {"session": "chain-R", "effort": "high"})
+    finally:
+        await pool.shutdown()
+        await sessions.destroy("chain-R")
+    # Both steps returned their lease without ending the named conversation.
+    assert sessions.releases == 2
+
+
+@pytest.mark.asyncio
+async def test_a_named_session_on_a_chosen_backend_takes_a_later_steps_effort():
+    """A backend= named chain skips the pool and is keyed by its backend; a later
+    step on that live session still pushes its own effort, on the same harness."""
+    backends: list = []
+
+    class _Recording(_LiveEffortSessions):
+        async def get_or_create(self, key, **kwargs):
+            backends.append((key, kwargs.get("backend_override")))
+            return await super().get_or_create(key, **kwargs)
+
+    sessions = _Recording()
+    agent_fn, pool = build_pooled_agent_fn(sessions, run_id="ef12", max_workers=1)
+    try:
+        await agent_fn("a", {"session": "chain", "backend": "claude", "effort": "low"})
+        await agent_fn("b", {"session": "chain", "backend": "claude", "effort": "high"})
+        provider = sessions.live["chain@claude"]
+    finally:
+        await pool.shutdown()
+        await sessions.destroy("chain@claude")
+    assert backends == [("chain@claude", "claude"), ("chain@claude", "claude")]
+    assert sessions.created_efforts == ["low"]
+    assert provider.efforts_pushed == ["high"]
 
 
 @pytest.mark.asyncio
@@ -567,6 +653,38 @@ async def test_an_invalid_effort_that_looks_like_an_outage_still_fails_the_row(t
         state = await asyncio.to_thread(store.state_of, workflow_task_id("ef5", 1))
         assert state == m.FAILED, f"an invalid effort settled as {state!r}, not terminally"
         assert sessions.cold_starts == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_non_string_prompt_settles_its_row_and_frees_the_lane(tmp_path):
+    """``ctx.agent(7)`` reaches the admitted wrapper; measuring the prompt must not
+    raise after ``admit`` took the lane slot, or the slot is never given back."""
+    import kiro_crew.taskq.model as m
+    from kiro_crew.taskq.adapters.runner import RunnerAdmission, RunnerLane, workflow_task_id
+    from kiro_crew.taskq.store import TaskStore
+    from kiro_crew.testing.wait import finished
+    from kiro_crew.workflows.agent_pool import admitted_agent_fn
+
+    seen: list = []
+
+    async def agent_fn(prompt, opts):
+        seen.append(prompt)
+        return "ok"
+
+    store = TaskStore(tmp_path / "tasks.db", network_fs=False).open()
+    try:
+        lane = RunnerLane(1, mode="aimd")
+        admission = RunnerAdmission(store, lane=lane)
+        fn = admitted_agent_fn(agent_fn, admission, run_id="np1", session_key="parent")
+        assert await finished(fn(7, {}), "the first numeric call") == "ok"
+        # A one-slot lane: the second call only runs if the first gave its slot back.
+        assert await finished(fn(8, {}), "the second numeric call") == "ok"
+        await settle_store_writes(store)
+        state = await asyncio.to_thread(store.state_of, workflow_task_id("np1", 1))
+        assert state == m.SUCCEEDED, state
+        assert seen == [7, 8]
     finally:
         store.close()
 

@@ -322,14 +322,15 @@ code.
 
 ## Workflows in the release path
 
-Every one of these exists on `main`. Two trigger workflows call the same set of
+Every one of these exists on `main`. Two trigger workflows (plus `release-lts.yml`,
+see "LTS edition releases") call the same set of
 reusable ones, which hold all of the build, sign, and publish logic so the
 recipe exists exactly once; the triggers carry only their trigger, their
 concurrency group, and their version derivation.
 
 | Workflow | Kind | Role |
 |---|---|---|
-| `nightly.yml` | trigger (schedule + dispatch) | Derives the date stamp, then calls everything below. `concurrency: nightly-build` with `cancel-in-progress: true`. |
+| `nightly.yml` | trigger (schedule + dispatch) | Derives the date stamp, then calls everything below. `concurrency: nightly-build`; only a scheduled run cancels the run in progress (`cancel-in-progress: ${{ github.event_name == 'schedule' }}`), so a manual dispatch waits behind the scheduled nightly instead of cancelling it. |
 | `release.yml` | trigger (`push` on `v*` tags) | Derives version + channel + wheel version from the tag. A prerelease tag builds, publishes to insider, and records the immutable promotion bundle. A bare tag verifies the same-commit successful prerelease run, then rebuilds under the bare version by default; `STABLE_PROMOTE_BYTES` opts one base into exact-byte reuse. Then it creates the GitHub Release. `concurrency: release-publish` with `cancel-in-progress: false` (queued). |
 | `dependency-vulnerability.yml` | reusable gate | `scripts/check_npm_audit.py`. On a release every build job needs it; on a nightly every **publish** job needs it and no build job does, so a slow registry delays publication rather than failing the build. |
 | `build-wheel.yml` | reusable build | Stamps the PEP 440 version into `pyproject.toml` and `__init__.py`, stamps the distribution channel, builds the frontend and stages it into the package, then `python -m build`. Uploads artifact `cli-wheel` (wheel + sdist). Credential-free. |
@@ -418,9 +419,9 @@ one with no exact kernel version (a non-`.0` macOS 11+ floor).
 
 Every channel file, on every platform, also carries `releaseNotes`: the version's
 `CHANGELOG.md` section, which the desktop app shows for a pending update before the
-user installs it. `scripts/feed_release_notes.py` picks the section the way
-Settings > Releases does (`0.4.0-insider.14` reads `## [0.4.0]`) and prints it as one
-JSON string, which is also a YAML double-quoted scalar, so no changelog text can
+user installs it. `scripts/feed_release_notes.py` picks the section the way the release
+notes in Settings > About do (`0.4.0-insider.14` reads `## [0.4.0]`) and prints it as
+one JSON string, which is also a YAML double-quoted scalar, so no changelog text can
 break the file. A version with no section, in practice a nightly, gets `""`.
 
 Every public URL is exactly one of two classes, and the class decides the cache
@@ -658,7 +659,8 @@ with the matching `*-mac.zip`.
    unsigned app is removed and replaced with the stapled app before the image
    is shrunk and recompressed. This preserves the Finder background and icon
    positions while ensuring no unsigned app survives. The resulting DMG is
-   signed by a second CDSigner task with a `type: dmg` manifest, notarized,
+   signed by a second CDSigner task with a `type: "app"` manifest that names the
+   DMG as its output, notarized,
    stapled, and held to the same `spctl` gate. The DMG signature is load-bearing
    twice over: an `hdiutil` DMG carries an adhoc signature that the Apple notary
    accepts but Gatekeeper treats as "no usable signature" ("app is damaged" on
@@ -698,7 +700,8 @@ byte-for-byte would otherwise leave the old object published while the feed
 described the new one, and every client would refuse to install.
 
 Ordering **across** runs has two layers: the trigger workflows' `concurrency`
-groups (nightly cancels an in-flight older run, release queues), plus
+groups (a scheduled nightly cancels an in-flight older run, a manual nightly
+and a release queue), plus
 `scripts/check_feed_advance.py` before each mutable pointer write. The guard
 compares the candidate with both the live CDN feed and repository tags; older
 runs still publish immutable versioned assets but do not move feeds or aliases.
@@ -858,6 +861,15 @@ bucket is private and a manifest must never advertise a raw S3 URL.
 so a retried job produces a byte-identical manifest and the immutable write
 still succeeds.
 
+**The optional advance notice, `announce.json`.** Beside `latest-cli.json` the
+feed may carry `feed/<channel>/announce.json`, which the gateway reads to draw
+the About page's "Upcoming update" block (field schema and failure rules:
+[learn-cron-dashboard](../system-specs/modules/learn-cron-dashboard.md), "Upcoming
+update notice"). It is unsigned display text. Nothing writes it yet: a follow-up
+adds a step to `publish-cli.yml`, next to the manifest write, that publishes it
+from the release's changelog section ahead of the release and removes or
+replaces it once the release ships.
+
 Key provisioning, the `kms:GetPublicKey` + `kms:Sign` grant, and the rotation
 procedure (dual-trust, never an in-place swap, because schema v1 pins exactly
 one key) are in [../../packaging/signing/README.md](../../packaging/signing/README.md).
@@ -981,7 +993,7 @@ path. On Linux the install shape decides: an AppImage is replaced in place (so
 the directory holding it must be writable, which `bundle-location.js`'s
 `canUpdateLinuxInstall` gates on), while a deb or rpm is handed to
 `dpkg`/`rpm` behind an elevation prompt by electron-updater's `DebUpdater` /
-`RpmUpdater`. `resolveLinuxInstall()` picks the shape from three positive
+`RpmUpdater`. `classifyLinuxInstall()` picks the shape from three positive
 signals — `resources/package-type`, `$APPIMAGE`, and an `/opt` install path —
 and a package whose FORMAT cannot be named is refused rather than pointed at
 another format's feed. On Windows `NsisUpdater` reads
@@ -1001,11 +1013,14 @@ Two Windows details do not generalise from the other platforms:
   it also has to contend with `Provider.findFile()` disambiguating entries by
   matching `process.arch` against the URL path.
 - **Windows updates are visible but non-interactive.** `quitAndInstall` passes
-  `isSilent=false` and `isForceRunAfter=true`. The assisted installer
+  `isSilent=false` and `isForceRunAfter=false` (see "Updates install on the
+  user's quit" below), so the installer does not start the app again; the one
+  exception is a Restart now the user asked for. The assisted installer
   (`nsis.oneClick: false`) uses update-only hooks in `installer.nsh` to skip the
   Welcome, install-mode, and Finish decisions, leaving only the native
-  extraction page and its real progress visible. At completion it runs the
-  locked electron-builder `StartApp` contract and exits successfully. The same
+  extraction page and its real progress visible. At completion it exits
+  successfully, running the locked electron-builder `StartApp` contract only
+  when the update was started with `--force-run`. The same
   hooks call `SetSilent normal` for `/S --updated`, so a client released before
   this behavior change also gets visible progress on its first upgrade into it.
   The downloaded installer owns this UI contract: a downgrade or channel
@@ -1094,11 +1109,30 @@ platform — on macOS that flag stages eagerly, which arms ShipIt to swap the
 bundle on ANY exit (including exits that skip the gateway teardown) and cannot
 be un-armed, so it would also defeat release retraction.
 
+**Updates install on the user's quit, never while the app runs.** The Install
+click ARMS the staged build (`install()` on the lane, `updateAPI.install()` in
+the renderer): it does not stop the gateway, does not call `quitAndInstall` and
+quits nothing, and the renderer is told with `armed: true` on the `downloaded`
+state. The renderer reads that as finished, not as an install still in flight:
+`useInstallDispatch` releases its latch, the modal and the About card say the
+update installs when the user quits, and a Restart now action calls
+`updateAPI.relaunch()`. An armed stage installs even when the auto-download preference is off,
+because the user chose it. The install itself runs only from the `before-quit`
+handler, after the gateway has fully stopped, and that handler calls
+`quitAndInstall(false, false)`: the app is not relaunched by it. Squirrel.Mac
+brings the app back after its swap whatever that argument says; that is the
+platform's behavior. `updateAPI.relaunch()` (Restart now) is a plain quit and
+relaunch: with an armed stage the quit's install runs and then relaunches
+(`quitAndInstall(false, true)`), otherwise it is `app.relaunch()`. The maintainer's
+rulings are
+the 2026-11-10 decision "updates never restart a running gateway".
+The managed lane follows the same rule with its own commands; see
+[desktop-app.md → Externally-managed installs](desktop-app.md#externally-managed-installs-repackagers).
+
 **A stage is re-verified against the feed before it installs, so an install
 always applies the NEWEST build.** A download can sit staged for hours while
 newer releases publish, and installing it then applies a superseded build the
-user must immediately update again. Both install paths — the About panel's
-explicit install and the deferred install on quit — therefore call
+user must immediately update again. The quit-time install therefore calls
 `verifyStageIsLatest` (`website/electron/runtime/update/freshness-gate.js`, composed by `feed-lane.js`) first.
 It drives an ordinary `checkForUpdates`, or waits for the one already in flight,
 and reads the verdict back out of the existing handlers, so the direction gate

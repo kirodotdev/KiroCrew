@@ -38,6 +38,9 @@ _UV_STUB = f"""#!/bin/sh
 case "$1 $2" in
   "python install")
     echo "native=${{UV_NATIVE_TLS:-}}" >> "$ATTEMPTS"
+    echo "$*" >> "$ATTEMPTS.args"
+    # The real uv would link python3.12 into ~/.local/bin without --no-bin.
+    [ "$3" = "--no-bin" ] || {{ echo "stub: python install without --no-bin: $*" >&2; exit 3; }}
     [ "${{UV_NATIVE_TLS:-0}}" != 0 ] && exit 0
     echo "  Caused by: invalid peer certificate: UnknownIssuer" >&2
     exit 2 ;;
@@ -113,6 +116,15 @@ def test_a_certificate_refusal_is_retried_on_the_system_store(tmp_path: Path) ->
     assert attempts == ["native=", "native=1"], output
     assert "Retrying the Python download with the system certificate store" in output
     assert f"PY={_MANAGED_PY}" in output
+
+
+def test_every_install_attempt_skips_the_bin_link(tmp_path: Path) -> None:
+    """``--no-bin`` on both tries: uv links nothing into ~/.local/bin, so it never
+    warns mid-install that that directory is off PATH."""
+    output, _attempts = _provision(tmp_path, {})
+
+    args = (tmp_path / "attempts.args").read_text().splitlines()
+    assert args == ["python install --no-bin cpython-3.12"] * 2, output
 
 
 def test_a_user_set_uv_native_tls_is_not_overridden(tmp_path: Path) -> None:

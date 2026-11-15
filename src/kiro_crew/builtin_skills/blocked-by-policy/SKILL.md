@@ -96,7 +96,7 @@ keyword query can score below the match threshold while the exact id hits. So:
    fixes it), the session runs an app agent whose policy neutralizes ungranted
    ambient servers, or the server is in `mcpServers` but never referenced from
    the agent's `tools` array. For the default agent, send the user to
-   **Customize → Connections → MCP Servers** to check the server is listed and
+   **MCP Servers** to check the server is listed and
    on; a server whose program is not found on this computer is dropped from the
    agent's spec.
    `~/.kiro/agents/kirocrew.json` is rebuilt on every gateway start, so never
@@ -163,6 +163,27 @@ local file was never the point, make the call without one. And if **no** local
 file is involved at all — an ordinary authenticated request that merely resembled
 the refused shape — say so plainly and report it as an over-block, rather than
 looking for a form that gets past the rule.
+
+One member of this family reads direction rather than shape: the three
+`aws s3 cp|mv|sync` rows. They exist to stop an UPLOAD, but their text also
+matches a download that carries a leading flag (`aws s3 cp --recursive s3://b/p
+./d`). A reader narrows them away when it can read the whole line as a sequence of
+plain downloads (and plain `NAME=value` assignments it resolves), so most real
+downloads are never blocked. When one still trips — because the line has a shell
+variable it cannot resolve, a glob, a quote, a redirect, a pipe, a command
+substitution, a subshell, a here-document or a second command it cannot
+split — and the line is plainly a download (an `s3://` source, a local
+destination), it is an over-block of a download, not an upload. Do not re-spell it
+to slip past. What passes is a call that holds only the downloads, with literal
+paths or an unquoted `NAME=value` set once earlier in the same call and before
+any `&&` or `||`, plus at most plain
+`cat`, `echo`, `touch`, `mkdir`, `ls`, `cd` or `pwd` with no `>` or `<` redirect.
+So run the downloads in their own call, and do the rest (sourcing a file, a pipe, a
+redirect, a script, a here-document fed to a program) in a separate call after it.
+Or use
+`aws s3api get-object --bucket <bucket> --key <key> <local-path>`. If the bytes
+really are going OUT to `s3://`, that is the upload the rows exist to stop: name
+the file and the destination and let the user run it.
 
 ### The self-protection floor
 

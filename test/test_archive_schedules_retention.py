@@ -191,10 +191,20 @@ async def test_a_tab_close_stops_and_stamps_the_sessions_workspace(tmp_path, mon
 
     monkeypatch.setattr(retention, "_environments", environments)
     monkeypatch.setattr(retention, "_TASKS", set())
+    # Read the task when it is scheduled: it can finish, and leave _TASKS,
+    # before the close returns.
+    started: set[asyncio.Task[None]] = set()
+    schedule = retention.schedule_archived
+
+    def schedule_and_record(keys, notify=None):
+        schedule(keys, notify)
+        started.update(retention._TASKS)
+
+    monkeypatch.setattr(retention, "schedule_archived", schedule_and_record)
     await close_slot(state, slot, slot.key)
     # The close does not wait for Coder; wait for the task it started, bounded.
-    assert retention._TASKS, "the close scheduled no retention task"
-    await await_until(asyncio.gather(*retention._TASKS), what="archive retention tasks")
+    assert started, "the close scheduled no retention task"
+    await await_until(asyncio.gather(*started), what="archive retention tasks")
     assert f"stop {row.workspace_name}" in fake.calls
     stamped = envs.registry.get_by_session(key)
     due = datetime.fromisoformat(stamped.deletion_due_at.replace("Z", "+00:00"))

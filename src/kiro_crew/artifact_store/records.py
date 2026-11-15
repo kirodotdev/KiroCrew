@@ -86,11 +86,9 @@ def append_event(
     if from_version is not None:
         entry["from_version"] = int(from_version)
     if metadata:
-        # Defense-in-depth: accept only string keys + simple scalar
-        # values, cap each value at 256 chars. Prevents callers from
-        # smuggling unbounded blobs into meta.json (which is read on
-        # every artifact GET) or nested structures that would defeat
-        # the activity timeline UI's flat-rendering assumption.
+        # Only string keys and scalar values, each capped at 256 chars:
+        # meta.json is read on every artifact GET, and the activity timeline
+        # renders each detail flat, so a blob or a nested value has no place.
         cleaned: dict[str, Any] = {}
         for k, v in metadata.items():
             if not isinstance(k, str) or len(cleaned) >= 8:
@@ -186,19 +184,16 @@ def decode_meta(raw: Any, path: Path) -> Artifact:
     slug = raw.get("slug")
     if not slug:
         raise ArtifactError(f"meta.json missing slug: {path}")
-    # Events: lifecycle audit log. Tolerate older meta.json files written
-    # before the field existed — they get an empty
-    # list and pick up a synthetic backfilled history on next get().
+    # Events: the lifecycle audit log. A record without it loads as [] and gets
+    # a synthetic backfilled history on the next get().
     raw_events = raw.get("events", []) or []
     events: _List[dict] = []
     if isinstance(raw_events, list):
         for ev in raw_events:
             if isinstance(ev, dict):
                 events.append(dict(ev))
-    # Publication: provider state. Tolerate older meta.json without the
-    # field (defaults to None) and a malformed/partial block (a missing
-    # artifact_id means the artifact isn't really published — treat as
-    # unpublished rather than raising).
+    # Publication: a missing block is None, and so is a partial one without an
+    # artifact_id, which is not really published; neither raises.
     publication = parse_publication(raw.get("publication"))
     fork_metadata = parse_fork_metadata(raw.get("fork_metadata"))
     image = parse_image_metadata(raw.get("image"))
@@ -237,9 +232,8 @@ def decode_meta(raw: Any, path: Path) -> Artifact:
         events=events,
         events_backfilled=bool(raw.get("events_backfilled", False)),
         source_path=str(raw.get("source_path", "")),
-        # Tolerant: every artifact written before source_root existed
-        # defaults to "" and therefore keeps exactly today's allowed-roots
-        # behavior (home / data home / configured relocate roots).
+        # "" when absent: only the default allowed roots apply (home, data
+        # home, configured relocate roots).
         source_root=str(raw.get("source_root", "")),
         source_copy_only=bool(raw.get("source_copy_only", False)),
         folder_id=str(raw.get("folder_id") or ""),
@@ -325,9 +319,8 @@ def parse_publication(raw_pub: Any) -> "ArtifactPublication | None":
     shared_with = (
         [str(a) for a in raw_shared if isinstance(a, str)] if isinstance(raw_shared, list) else []
     )
-    # Tolerant parse: a corrupted/hand-edited meta.json may store a
-    # non-numeric value here; honor the "schema drift never crashes a load"
-    # contract by falling back to 0 (same pattern as version_map above).
+    # A hand-edited meta.json may hold a non-number here; it reads as 0, since
+    # schema drift must never crash a load (as with version_map above).
     try:
         last_synced = int(raw_pub.get("last_synced_kirocrew_version", 0) or 0)
     except (TypeError, ValueError, OverflowError):

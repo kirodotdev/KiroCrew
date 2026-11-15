@@ -692,13 +692,24 @@ class CodexMirror(AgentConfigMirror):
             ),
             Concern.HOOKS: Ruling(
                 _D.NO_CHANNEL,
-                "codex runs hooks natively (codex-rs app-server-protocol ships "
-                "HookEventName, ConfiguredHookMatcherGroup and hooks/list), and "
-                "codex-acp's build_session_config carries no hooks field -- so a "
-                "user's per-agent hooks block reaches kiro-cli and no other "
-                "backend, exactly the gap claude records. Crew's OWN hooks "
-                "(hooks.py, fired on ACP tool events) are unaffected and work on "
-                "this backend already; this gap is only the spec block",
+                "codex-acp's build_session_config carries no hooks field, so the "
+                "harness never sees the spec's hooks block; Crew's turn loop fires "
+                "its postToolUse, userPromptSubmit, agentSpawn and stop hooks "
+                "instead (agent_sdk/spec_hooks.py, "
+                "ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS). Their matchers meet a "
+                "call through codex's row in acp/harness_tool_names.py "
+                "(CODEX_TOOL_IDS_BY_KIRO_TOOL), read off what codex-acp writes and "
+                "never off the title, so a command is execute_bash and a file change "
+                "fs_write; a postToolUse matcher for a built-in outside that row "
+                "(grep, glob, web_fetch, use_subagent, code) meets no codex call and "
+                "a new session gets a notice naming it. preToolUse is the gap: under "
+                "read-only, codex runs reads and sandboxed commands without a "
+                "permission request, so a Crew-fired gating hook would be skipped on "
+                "those, and a new session whose spec has one gets a notice. codex "
+                "runs hooks natively (codex-rs app-server-protocol ships "
+                "HookEventName, ConfiguredHookMatcherGroup and hooks/list) from its "
+                "own config layers only. Crew's OWN hooks (hooks.py, fired on ACP "
+                "tool events) are unaffected",
                 channel="a hooks field on the codex-acp session/new element set, or "
                 "a Crew-owned CODEX_HOME overlay under create-or-decline -- Crew "
                 "writes no codex file today, which is why this needs a decision "

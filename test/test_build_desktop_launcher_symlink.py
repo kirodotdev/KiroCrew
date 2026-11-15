@@ -131,7 +131,7 @@ def test_resolves_through_absolute_symlink(tmp_path):
     proc = _invoke(shim)
 
     assert proc.returncode == 0, (
-        f"launcher failed when invoked through a PATH symlink (issue #845): {proc.stderr}"
+        f"launcher failed when invoked through a PATH symlink: {proc.stderr}"
     )
     assert f"DIR={bundle / 'bin'}" in proc.stdout, (
         "launcher must resolve $DIR to the real bundle bin dir, not the symlink's dir; "
@@ -225,7 +225,7 @@ def test_launcher_keeps_the_symlink_walk(tmp_path):
     launcher = _extract_launcher()
 
     assert 'while [ -h "$SOURCE" ]' in launcher, (
-        "launcher lost its symlink-chain walk (issue #845 regression)"
+        "launcher lost its symlink-chain walk"
     )
     assert "readlink" in launcher, "launcher must readlink its way to the real path"
     # `cd -P` (physical) is what makes the final dirname immune to a symlinked
@@ -234,7 +234,7 @@ def test_launcher_keeps_the_symlink_walk(tmp_path):
         "final DIR must be computed with `cd -P` so a symlinked parent resolves"
     )
     assert 'DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' not in launcher, (
-        "launcher reverted to the naive BASH_SOURCE form that broke issue #845"
+        "launcher reverted to the naive BASH_SOURCE form, which breaks when invoked through a PATH symlink"
     )
 
 
@@ -297,11 +297,11 @@ def test_strips_inherited_pythonpath_and_pythonhome_through_the_shim(tmp_path):
 
         assert proc.returncode == 0, proc.stderr
         assert "PYTHONPATH=<unset>" in proc.stdout, (
-            f"{entry.name}: bundled interpreter still inherits PYTHONPATH (issue #18378): "
+            f"{entry.name}: bundled interpreter still inherits PYTHONPATH: "
             f"{proc.stdout}"
         )
         assert "PYTHONHOME=<unset>" in proc.stdout, (
-            f"{entry.name}: bundled interpreter still inherits PYTHONHOME (issue #18378): "
+            f"{entry.name}: bundled interpreter still inherits PYTHONHOME: "
             f"{proc.stdout}"
         )
 
@@ -337,7 +337,7 @@ def test_launcher_keeps_the_python_env_scrub():
     launcher = _extract_launcher()
 
     assert "unset PYTHONPATH PYTHONHOME" in launcher, (
-        "launcher lost its PYTHONPATH/PYTHONHOME scrub (issue #18378 regression)"
+        "launcher lost its PYTHONPATH/PYTHONHOME scrub"
     )
     assert re.search(r'exec "\$DIR/python3\.12" (?:-[sP] )*-E', launcher) is None, (
         "launcher must not use -E: it would also drop PYTHONUTF8 and the bytecode knobs"

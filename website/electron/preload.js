@@ -6,7 +6,8 @@ let cursorAwaySubscribers = 0;
 let navigateReadySent = false;
 // Set for a window whose gateway is not this machine's: the bridges whose
 // channels `assertLocalDashboard` refuses are then withheld, not exposed.
-const REMOTE_GATEWAY = process.argv.includes("--kc-remote-gateway");
+// Asked of the shell on every load; only an explicit `false` exposes them.
+const REMOTE_GATEWAY = ipcRenderer.sendSync("dashboard:is-remote-gateway") !== false;
 
 contextBridge.exposeInMainWorld("kirocrew", {
   platform: process.platform,
@@ -129,7 +130,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Windows custom titlebar: menu surfaces render in the dashboard so hover
   // can switch between them; command execution stays in the main process.
   getAppMenuItems: (id) => ipcRenderer.invoke("app-menu:items", id),
-  executeAppMenuItem: (id, index) => ipcRenderer.send("app-menu:execute", id, index),
+  // Answers whether the click DISPATCHED. `invoke`, not `send`, because the
+  // renderer acts on a refusal: a row can be painted enabled and still be
+  // refused by the per-action gate, and the refusal is the only moment the
+  // renderer can learn its rows are stale. It refetches on `false`, which
+  // greys the gated rows and renders the footer naming the reason.
+  executeAppMenuItem: (id, index) => ipcRenderer.invoke("app-menu:execute", id, index),
   // App-menu navigation: main.js sends an in-app path ("/settings",
   // "/settings/about") when the user picks Settings…/About from the
   // native application menu; the SPA routes to it (see App.tsx).
@@ -152,6 +158,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     const handler = () => cb();
     ipcRenderer.on("focus-mode:toggle", handler);
     return () => ipcRenderer.removeListener("focus-mode:toggle", handler);
+  },
+  // The OS session locked (macOS and Windows; see session-lock.js). The page
+  // stops a dictation that is still recording.
+  onSessionLocked: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on("os-session-locked", handler);
+    return () => ipcRenderer.removeListener("os-session-locked", handler);
   },
   // A macOS swipe main.js relays as one route-history step: -1 Back, 1 Forward
   // (see swipe-history.js). The SPA takes it through its guarded history step.
@@ -438,7 +451,14 @@ contextBridge.exposeInMainWorld("updateAPI", {
   },
   check: () => ipcRenderer.invoke("update:check"),
   download: () => ipcRenderer.invoke("update:download"),
+  // This shell's install ARMS the update. An older shell's install applies it at
+  // once, so the dashboard offers "Install when I quit" only when this is true.
+  armsOnQuit: true,
+  // ARMS the update: it installs when the user quits, never while the app runs.
   install: () => ipcRenderer.invoke("update:install"),
+  // A plain quit and relaunch with no update command of its own. An armed
+  // update is applied by the quit it triggers.
+  relaunch: () => ipcRenderer.invoke("update:relaunch"),
   getInfo: () => ipcRenderer.invoke("update:get-info"),
   // Channel switcher (Settings > About): "" follows the build stamp,
   // "insider"|"stable" opts the production app onto that lane.

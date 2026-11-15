@@ -323,6 +323,7 @@ describe('FeaturedSpotlight hero art (editorial)', () => {
 
   const card = (over: Partial<RegistryApp>) => render(
     <FeaturedSpotlight
+      connected
       type="app"
       apps={[registryApp(over)]}
       onOpenApp={noop} onGet={noop} onEnable={noop}
@@ -348,6 +349,7 @@ describe('the list surfaces no longer reach art resolution at all', () => {
     const noop = () => {}
     render(
       <AppListRow
+        connected
         app={registryApp({ heroImageDark: 'assets/hero-dark.png' })}
         onOpen={noop} onGet={noop} onUpdate={noop} onEnable={noop}
       />,

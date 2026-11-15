@@ -244,7 +244,7 @@ class TestMemoryInjectionAllAgents:
     def test_refresh_materialized_agents_invalidates_flag_cache(self, monkeypatch) -> None:
         # Wiring: rescanning the materialized-agent snapshot MUST invalidate the
         # flag cache, so a flipped includeCrewContext takes effect without a
-        # gateway restart (the restart-heals class this PR removes).
+        # gateway restart (a fix that only a restart heals is a bug).
         import kiro_crew.context as ctx
         from kiro_crew.config import loader
 
@@ -500,7 +500,7 @@ class TestMMRReranking:
         """Episodic search applies MMR by default (keyword fallback path)."""
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        # Write several topically similar entries
+        # Three entries on different topics; only the first matches the query.
         store.write_episodic("deployed the app to production successfully")
         store.write_episodic("user prefers dark mode for all editors")
         store.write_episodic("database migration completed for PostgreSQL")

@@ -1411,6 +1411,35 @@ class TestCgroupAvailable:
         # 8 - (7 - (3 + 2 - 1))
         assert sub._cgroup_available_gb() == pytest.approx(5.0, abs=0.01)
 
+    def test_reading_pairs_the_limit_with_the_headroom_admission_uses(self, monkeypatch) -> None:
+        """The dashboard's total and free figure come from the walk admission sizes on."""
+        import kiro_crew.subagent as sub
+
+        gib = 1024**3
+        vals = {
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes": 8 * gib,
+            "/sys/fs/cgroup/memory/memory.usage_in_bytes": 3 * gib,
+        }
+        monkeypatch.setattr(sub, "_read_int_file", lambda p: vals.get(p))
+        limit, headroom = sub._container_cgroup_reading()
+        assert limit == 8 * gib
+        assert headroom == pytest.approx(5.0, abs=0.01)
+        assert headroom == sub._container_cgroup_available_gb()
+
+    def test_reading_keeps_a_limit_whose_usage_is_unreadable(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        vals = {"/sys/fs/cgroup/memory/memory.limit_in_bytes": 8 * 1024**3}
+        monkeypatch.setattr(sub, "_read_int_file", lambda p: vals.get(p))
+        assert sub._container_cgroup_reading() == (8 * 1024**3, 0.0)
+        assert sub._container_cgroup_reading(measured_only=True) == (8 * 1024**3, -1.0)
+
+    def test_reading_without_a_finite_limit_is_empty(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub, "_read_int_file", lambda p: None)
+        assert sub._container_cgroup_reading() == (None, -1.0)
+
     @pytest.mark.parametrize("used_gb", [2, 3])
     def test_nested_exhaustion_blocks_admission(self, monkeypatch, cgroup_files, used_gb):
         monkeypatch.setattr(subagent.platform_compat, "IS_LINUX", True)
@@ -1674,6 +1703,7 @@ class TestMacosMemoryProbe:
             sub.os,
             "sysconf",
             lambda n: 16384 if n == "SC_PAGE_SIZE" else real_sysconf(n),  # 16 KiB pages
+            raising=False,
         )
         monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: 200000)
         expected = round(200000 * 16384 / (1024**3), 2)
@@ -1691,7 +1721,10 @@ class TestMacosMemoryProbe:
 
         real_sysconf = getattr(sub.os, "sysconf", absent_sysconf)
         monkeypatch.setattr(
-            sub.os, "sysconf", lambda n: 16384 if n == "SC_PAGE_SIZE" else real_sysconf(n)
+            sub.os,
+            "sysconf",
+            lambda n: 16384 if n == "SC_PAGE_SIZE" else real_sysconf(n),
+            raising=False,
         )
         monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: pages)
         assert sub._macos_available_memory_gb() == -1.0
@@ -1706,7 +1739,7 @@ class TestMacosMemoryProbe:
                 raise ValueError("SC_PAGE_SIZE unavailable")
             return real_sysconf(n)
 
-        monkeypatch.setattr(sub.os, "sysconf", _boom)
+        monkeypatch.setattr(sub.os, "sysconf", _boom, raising=False)
         assert sub._macos_available_memory_gb() == -1.0
 
     def test_nonpositive_page_size_fails_open(self, monkeypatch) -> None:
@@ -1714,7 +1747,10 @@ class TestMacosMemoryProbe:
 
         real_sysconf = getattr(sub.os, "sysconf", absent_sysconf)
         monkeypatch.setattr(
-            sub.os, "sysconf", lambda n: 0 if n == "SC_PAGE_SIZE" else real_sysconf(n)
+            sub.os,
+            "sysconf",
+            lambda n: 0 if n == "SC_PAGE_SIZE" else real_sysconf(n),
+            raising=False,
         )
         # _macos_vm_reclaimable_pages must not even be consulted
         monkeypatch.setattr(

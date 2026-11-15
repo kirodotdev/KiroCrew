@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from aiohttp import web
@@ -46,6 +47,14 @@ def _rollout(home: Path, day: str, name: str, lines: list[object], mtime: float)
     )
     os.utime(path, (mtime, mtime))
     return path
+
+
+@pytest.fixture(autouse=True)
+def _no_kept_reading(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test starts with no reading that an earlier test kept in the module."""
+    import kiro_crew.dashboard.handlers.codex_usage as codex_usage
+
+    _floor_monkeypatch.setattr(codex_usage, "_last_reading", None)
 
 
 @pytest.fixture
@@ -107,6 +116,83 @@ def test_a_resumed_session_in_an_older_day_directory_wins(codex_home: Path) -> N
 
 def test_no_logs_is_no_data(codex_home: Path) -> None:
     assert read_codex_rate_limits() is None
+
+
+def test_a_reading_outlives_the_deleted_log_for_the_same_store_only(
+    codex_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A disposable Codex session deletes its rollout; the meter keeps the last reading."""
+    import kiro_crew.dashboard.handlers.codex_usage as codex_usage
+
+    monkeypatch.setattr(codex_usage, "time", SimpleNamespace(time=lambda: 1000.0))
+    log = _rollout(
+        codex_home,
+        "2026/11/06",
+        "incognito",
+        [_token_count("2026-11-06T10:00:00Z", 10, 63, resets_at=2000)],
+        1,
+    )
+    first = read_codex_rate_limits()
+    assert first is not None and first["five_hour"]["stale"] is False
+    log.unlink()
+    monkeypatch.setattr(codex_usage, "time", SimpleNamespace(time=lambda: _FUTURE - 1))
+
+    kept = read_codex_rate_limits()
+
+    assert kept is not None
+    assert kept["five_hour"]["used_percent"] == 10
+    assert kept["five_hour"]["stale"] is True
+    assert kept["weekly"]["stale"] is False
+    other = tmp_path / "other-codex"
+    other.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(other))
+    assert read_codex_rate_limits() is None
+
+
+def test_an_older_block_in_a_kept_log_does_not_replace_a_newer_reading(codex_home: Path) -> None:
+    """After the disposable log goes, a persistent log's older block loses to the kept one."""
+    persistent = _rollout(
+        codex_home,
+        "2026/11/05",
+        "persistent",
+        [_token_count("2026-11-05T09:00:00Z", 10, 20)],
+        1,
+    )
+    disposable = _rollout(
+        codex_home,
+        "2026/11/06",
+        "incognito",
+        [_token_count("2026-11-06T10:00:00Z", 90, 63)],
+        2,
+    )
+    assert read_codex_rate_limits()["five_hour"]["used_percent"] == 90
+    disposable.unlink()
+    # A line with no block still moves the persistent log's modification time past the kept one.
+    with persistent.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"timestamp": "2026-11-06T11:00:00Z", "type": "x"}) + "\n")
+    os.utime(persistent, (3, 3))
+
+    kept = read_codex_rate_limits()
+
+    assert kept is not None
+    assert kept["five_hour"]["used_percent"] == 90
+    assert kept["captured_at"] == "2026-11-06T10:00:00Z"
+    # A log that was written before the persistent one can still hold a newer block.
+    _rollout(
+        codex_home, "2026/11/06", "older-log", [_token_count("2026-11-06T11:00:00Z", 50, 60)], 2.5
+    )
+    assert read_codex_rate_limits()["five_hour"]["used_percent"] == 50
+    _rollout(
+        codex_home,
+        "2026/11/05",
+        "persistent",
+        [
+            _token_count("2026-11-05T09:00:00Z", 10, 20),
+            _token_count("2026-11-06T12:00:00Z", 95, 64),
+        ],
+        4,
+    )
+    assert read_codex_rate_limits()["five_hour"]["used_percent"] == 95
 
 
 def test_a_window_past_its_reset_is_stale(codex_home: Path) -> None:

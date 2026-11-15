@@ -213,7 +213,7 @@ describe('AppListRow — untouched consumer stays default-inert', () => {
     } as unknown as RegistryApp
     const { container } = render(
       <MemoryRouter>
-        <AppListRow app={app} onOpen={() => {}} onGet={() => {}} onUpdate={() => {}} onEnable={() => {}} />
+        <AppListRow connected app={app} onOpen={() => {}} onGet={() => {}} onUpdate={() => {}} onEnable={() => {}} />
       </MemoryRouter>,
     )
     const img = imgBySrc(REGISTRY)

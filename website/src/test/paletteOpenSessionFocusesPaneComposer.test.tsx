@@ -31,7 +31,7 @@ import { sseSlots } from '../store/dashboardSlice'
 import chatReducer from '../store/chatSlice'
 import SessionGridView from '../components/SessionGridView'
 import CommandPalette from '../components/CommandPalette'
-import CommandBarOverlay from '../apps/command-bar/CommandBarOverlay'
+import CommandBarOverlay from '../components/commandBar/CommandBarOverlay'
 import type { GridNode } from '../hooks/useSessionGrid'
 import type { ChatSlot } from '../types'
 

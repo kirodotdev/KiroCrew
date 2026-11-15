@@ -49,7 +49,12 @@ from typing import Any, Literal, NamedTuple
 from aiohttp import web
 
 from kiro_crew.config import KiroCrewConfig
-from kiro_crew.config.loader import ConfigReadError, config_path, update_config_locked
+from kiro_crew.config.loader import (
+    ConfigReadError,
+    PendingEditBlocksSave,
+    config_path,
+    update_config_locked,
+)
 from kiro_crew.dashboard import tailnet, tailnet_serve
 from kiro_crew.dashboard.boot_id import current_boot_id
 from kiro_crew.dashboard.handlers._shared import _caller_bounds, _is_restricted_session
@@ -730,6 +735,10 @@ async def api_tailnet_mobile_configure(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "failed to read config file", "code": "config_read_failed"}, status=500
         )
+    except PendingEditBlocksSave:
+        # A ValueError, so ahead of the arm below; the dashboard chain answers it 409.
+        await _audit_async(request, "tailnet.mobile.configure", "error", "file-pending-review")
+        raise
     except ValueError as exc:
         await _audit_async(request, "tailnet.mobile.configure", "error", "config-invalid")
         return web.json_response({"error": str(exc), "code": "config_invalid"}, status=500)

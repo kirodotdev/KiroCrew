@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { render as rtlRender, screen } from '@testing-library/react'
+import { render as rtlRender, screen, within } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import McpOAuthBanner, { mcpServerLabel, renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
@@ -288,6 +288,39 @@ describe('renderMcpOAuthMessage', () => {
     render(<>{node}</>)
     expect(screen.getByText(/no longer active/i)).toBeInTheDocument()
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('says an attempt that ended unconnected timed out, with no link', () => {
+    // KAS keeps an attempt's callback listener open for its connect timeout only,
+    // so its link is dead once the backend marks the row ended. The copy
+    // names the way back: only a message naming the server offers a fresh link.
+    const node = renderMcpOAuthMessage(
+      makeMsg({ server_name: 'figma', expired: true, expired_reason: 'attempt_ended' }),
+    )
+    render(<>{node}</>)
+    expect(screen.getByText(/timed out/i)).toBeInTheDocument()
+    expect(screen.getByText(/Name this server in a message/i)).toBeInTheDocument()
+    expect(screen.queryByText(/session that started it ended/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('shows a timed-out attempt as a failure, with the hand-off the host allows', () => {
+    // The attempt failed, so it takes the shared error surface; a process-ended
+    // row is status text and keeps its plain notice.
+    const row = makeMsg({ server_name: 'figma', expired: true, expired_reason: 'attempt_ended' })
+    const { unmount } = render(<>{renderMcpOAuthMessage(row)}</>)
+    const notice = screen.getByRole('alert')
+    expect(notice).toHaveTextContent(/figma sign-in timed out/i)
+    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+    unmount()
+    const { unmount: unmountOff } = render(<>{renderMcpOAuthMessage(row, false, false)}</>)
+    expect(screen.getByRole('alert')).toHaveTextContent(/Name this server in a message/i)
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
+    unmountOff()
+    render(<>{renderMcpOAuthMessage(makeMsg({ server_name: 'miro', expired: true }))}</>)
+    expect(screen.getByText(/no longer active/i)).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
   it('renders expired even when the stored row still carries a url', () => {

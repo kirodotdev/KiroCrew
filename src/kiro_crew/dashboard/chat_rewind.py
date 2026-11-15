@@ -42,8 +42,10 @@ from kiro_crew.dashboard.kiro_readiness import (
     refuse_rerun_after_signed_out_turn,
     reject_if_kiro_unverified,
     rerun_signs_in_via_kiro_cli,
+    turn_gate_target,
 )
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
+from kiro_crew.dashboard.slot_buffers import flush_restored_hold
 from kiro_crew.dashboard.slot_ownership import (
     audit_app_slot_denial,
     checkpoint_slot_replaced,
@@ -134,7 +136,19 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     kiro_turn = await rerun_signs_in_via_kiro_cli(state.sessions, state._slots.get(name))
     if kiro_turn:
-        blocked = await reject_if_kiro_unverified(request)
+        # The session the rerun's turn will run on names its harness; the slot
+        # is looked up again after the await, so this read only feeds the gate.
+        # A rewind either discards the live conversation (the turn cold-starts on
+        # the configured route) or, with sub-agents attached, swaps it on the live
+        # process, so the gate judges both.
+        harness_turn, turn_session = turn_gate_target(state, name)
+        blocked = await reject_if_kiro_unverified(
+            request,
+            harness_turn=harness_turn,
+            session_key=turn_session,
+            turn_reuses_session=False,
+            may_keep_live_process=True,
+        )
         if blocked is not None:
             return blocked
     slot = state._slots.get(name)
@@ -163,9 +177,11 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
-        return web.json_response({"error": "body must be a JSON object"}, status=400)
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
+        )
 
     raw_index = body.get("at_message_index", body.get("index"))
     ts = body.get("ts")
@@ -178,7 +194,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     if len(content) > 32_768:
         return web.json_response({"error": "content too long (max 32768 chars)"}, status=400)
 
-    # The stored Ultra Mode pause is read (off the loop) before the pause
+    # The stored conductor mode pause is read (off the loop) before the pause
     # check under the lock, so a paused crew's history is not rewritten
     # right after a restart.
     from kiro_crew import crew_pause as _crew_pause
@@ -328,6 +344,26 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             )
             return slot_not_found()
 
+        # A hold a restart restored into this idle slot is owed to this turn, above
+        # its user row. Flushed on the LIVE slot, not the scratch copy below: the
+        # copy shares the hold and its note dicts, so a flush there would retire
+        # notes from the live hold for rows a refused rewind then throws away. A
+        # refused rewind leaves the notes delivered here, as the next seam would.
+        rewound_row = msgs[index]
+        pre_flush_rows = list(slot.messages)
+        pre_flush_ids = {id(row) for row in pre_flush_rows}
+        flush_restored_hold(slot, logger=logger)
+        restored_rows = [row for row in slot.messages if id(row) not in pre_flush_ids]
+        # The flush's append can trim the window's front, which moves the index
+        # and the archived count it is offset by.
+        index = next((i for i, row in enumerate(slot.messages) if row is rewound_row), -1)
+        disk_older = getattr(slot, "_disk_older_count", 0)
+        if index < 0:
+            return web.json_response(
+                {"error": "user message not found", "code": "user_message_not_found"},
+                status=400,
+            )
+
         # The transcript this rewind was authorized against. A concurrent
         # rebinding (a cron injection re-linking the slot) moves the slot to
         # another transcript while the boundaries below are pending; the
@@ -346,7 +382,8 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         # while either durable boundary below is pending, so exposing a truncated
         # live window here could make a rejected edit permanent.
         prospective_slot = copy.copy(slot)
-        prospective_slot.messages = list(slot.messages[:index])
+        # The restored notes' rows follow the kept prefix, above the rewound row.
+        prospective_slot.messages = list(slot.messages[:index]) + restored_rows
         prospective_slot._queue = []
         prospective_slot._pending = list(slot._pending)
         prospective_slot._question_pending = dict(slot._question_pending)

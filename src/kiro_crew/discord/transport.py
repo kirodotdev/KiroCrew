@@ -73,6 +73,9 @@ class DiscordInboundMessage(InboundMessage):
     """
 
     message_id: str = ""
+    # Id of the message this one replies to, or "". With the channel id it names a
+    # bridged approval note a reply answers (notifications bridge, B4g).
+    reply_to_message_id: str = ""
 
 
 # A dispatch callback consumes a normalized, already-authorized message and
@@ -723,6 +726,7 @@ class DiscordTransport(MessagingTransport):
             text=inbound.text,
             thread_id=thread_id,
             message_id=inbound.message_id,
+            reply_to_message_id=inbound.reply_to_message_id,
             attachments=list(inbound.attachments),
         )
         if not self.authorize(msg):

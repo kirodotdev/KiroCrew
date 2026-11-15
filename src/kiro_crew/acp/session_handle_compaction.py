@@ -278,6 +278,7 @@ async def wait_for_compaction(
                         # loop, so it must drop the stale counts itself —
                         # mirrors AcpClient._handle_compaction_status.
                         self.last_prompt_stats.reset_after_compaction()
+                        self._forget_sent_images()
                         poisoned = await self._drain_post_compaction_metadata(buffered=buffered)
                     # Redact backend-echoed summary before it reaches callers
                     # (compact() surfaces this to the dashboard).
@@ -580,6 +581,7 @@ def _codex_compaction_event(self: AcpSessionHandle, update: dict[str, Any]) -> A
     if status_type == "completed":
         self._compaction_failed_at = None
         self.last_prompt_stats.reset_after_compaction()
+        self._forget_sent_images()
     elif status_type == "failed":
         # Arm the bounded post-failure wait, as every other failure producer
         # does: the backend may never answer the prompt this compaction was

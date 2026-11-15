@@ -311,6 +311,7 @@ class TestAwaitBindingRegressions:
         slot.linked_session_key = "cron:job"
         slot.append("assistant", PR_A)
         slot._dismissed_hydrated = False
+        slot.turn_timeout_secs = None  # its turn limit is read; only the dismissed set is not
         key = _identity_key(PR_A)
         state = MagicMock()
         state.get_slot.return_value = slot

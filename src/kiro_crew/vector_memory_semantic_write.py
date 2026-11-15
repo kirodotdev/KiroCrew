@@ -218,6 +218,9 @@ def _write_semantic(
                 source,
                 metadata=metadata,
                 operation="update" if existing else "create",
+                new_value=bool(
+                    existing and not _semantic._json_value_equal(existing["value_json"], value_json)
+                ),
             )
             if private_policy:
                 self.db.execute(

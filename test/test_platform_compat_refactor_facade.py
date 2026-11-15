@@ -131,7 +131,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _ProcessEntry32 _ProcessMemoryCounters _MemoryStatusEx _SidAndAttributes _TokenUser
         _IoCounters _JobObjectBasicLimitInformation _JobObjectExtendedLimitInformation
         _ThreadEntry32 _windows_last_error _open_process_query_handle _close_process_handle
-        _PROCESS_QUERY_LIMITED_INFORMATION _ACCESS_HONOURS_EFFECTIVE_IDS
+        _PROCESS_QUERY_LIMITED_INFORMATION _ACCESS_HONOURS_EFFECTIVE_IDS c_strlen_address
         """.split()),
     "kiro_crew.platform_compat_proctable": tuple("""
         _DARWIN_PROC_PIDVNODEPATHINFO _DARWIN_VNODE_INFO_SIZE _DARWIN_MAXPATHLEN
@@ -210,7 +210,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
     "kiro_crew.platform_compat_files": tuple("""
         _RENAME_NOREPLACE_FN _RENAME_NOREPLACE_FLAG _SYS_RENAMEAT2_BY_MACHINE
         _build_renameat2_via_syscall RENAME_NOREPLACE_AVAILABLE TCC_PROTECTED_HOME_DIRS
-        TCC_LIBRARY_WALKABLE_CHILDREN _LIBRARY_DIR rename_noreplace publish_dir_noreplace
+        rename_noreplace publish_dir_noreplace
         tcc_protected_dirs_for_walk tcc_prune_walk_dirs fchmod_safe dup_fd_at_or_above
         chmod_safe
         claude_code_managed_settings_dir
@@ -248,7 +248,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         """.split()),
     "kiro_crew.platform_compat_identity": tuple("""
         process_cwd get_ppid _ANCESTRY_MAX_DEPTH _PYTHON_INTERPRETER_NAME
-        process_executable_path _is_python_interpreter_path is_exec_supervisor_of_this_process
+        process_executable_path _is_python_interpreter_path is_exec_supervisor_of_this_process is_exec_supervisor_of _exec_supervisor_walk
         get_process_start_identity get_process_start_id process_namespaces_match
         process_is_sandboxed process_can_read_under_sandbox ProcessIdentitySource
         _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS _WINDOWS_EXIT_FILETIME_POLL_SECS
@@ -268,7 +268,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _LOOPBACK_COVERING_ADDRESSES _LSOF_TIMEOUT_SECS _normalize_local_address
         address_covers_loopback loopback_owner_pids probe_port_listeners
         _linux_loopback_listener_inodes _windows_loopback_listener_owner_pids
-        process_owns_loopback_listener find_port_listeners find_listening_pids
+        process_owns_loopback_listener process_owns_port_listener find_port_listeners
+        find_listening_pids
         """.split()),
     "kiro_crew.platform_compat_descendants": tuple("""
         _descendants_from_parent_map _posix_process_parent_map ProcessDescendantIdentity
@@ -331,7 +332,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         proc_rss_tree_mb_for_pid proc_cpu_seconds _prev_win_sys_cpu system_memory
         system_cpu_percent _MIB_BYTES _NATURAL_T _HOST_VM_INFO64 _VMStatistics64
         _EXTERNAL_PAGE_COUNT_ELEMENTS macos_vm_statistics _macos_available_mib
-        _linux_available_mib host_total_mib host_available_mib MEMORY_PRESSURE_NORMAL
+        _linux_available_mib host_total_mib _darwin_memsize_bytes host_available_mib MEMORY_PRESSURE_NORMAL
         MEMORY_PRESSURE_WARN MEMORY_PRESSURE_CRITICAL _MEMORY_PRESSURE_NAMES
         _MEMORY_PRESSURE_SYSCTL memory_pressure_level memory_pressure_name
         POWER_AC POWER_BATTERY POWER_UNKNOWN _LINUX_POWER_SUPPLY_ROOT _WIN_AC_OFFLINE

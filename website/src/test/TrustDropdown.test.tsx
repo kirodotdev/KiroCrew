@@ -3,7 +3,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@radix-ui/react-dropdown-menu"))
 
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
-import TrustDropdown from '../components/TrustDropdown'
+import TrustDropdown, { TrustUnavailable } from '../components/TrustDropdown'
 import { fmtTime } from '../i18n/format'
 // `/all` for the ja/ko/de/zh-CN catalogs: `../i18n` registers English only.
 import { i18next } from '../i18n/all'
@@ -409,6 +409,21 @@ describe('TrustDropdown without a command (hasCommand=false)', () => {
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
     expect(screen.getAllByRole('menuitem')).toHaveLength(3)
+  })
+})
+
+describe('TrustUnavailable', () => {
+  const reason = 'Trust is not available for this request. Allow it once or reject it.'
+
+  it('holds the Trust slot as a disabled trigger that says why no grant is offered', () => {
+    render(<TrustUnavailable className={btnClass} />)
+    const trust = screen.getByRole('button', { name: 'Trust' })
+    expect(trust).toBeDisabled()
+    expect(trust).toHaveAccessibleDescription(reason)
+    // The tooltip sits on the wrapper: a disabled button gets no pointer events.
+    expect(trust.parentElement).toHaveAttribute('title', reason)
+    fireEvent.click(trust)
+    expect(screen.queryByRole('menuitem')).not.toBeInTheDocument()
   })
 })
 

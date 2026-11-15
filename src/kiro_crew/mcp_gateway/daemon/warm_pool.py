@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 from kiro_crew.mcp_gateway.admission import Admission
 from kiro_crew.mcp_gateway.backend import Backend
 from kiro_crew.mcp_gateway.daemon import logger
-from kiro_crew.mcp_gateway.daemon.launch import TargetResolver
+from kiro_crew.mcp_gateway.daemon.launch import TargetResolver, _owner_port_pending
 from kiro_crew.mcp_gateway.pool import DRAIN_DEADLINE_SECS, BackendPool, PoolKey
 from kiro_crew.mcp_gateway.prewarm import HotKeyStore, prewarm_from_payloads
 
@@ -239,6 +239,19 @@ class _Prewarmer:
                 if not payloads:
                     logger.info("prewarm: no hot keys yet — nothing to warm")
                     return
+                # A control-plane key is skipped, not refused, while the owner
+                # has not announced its port: no stub waits on a prewarm, and
+                # the boot pass always runs before the owner's listener binds.
+                # The top-up sweeper's next pass warms it.
+                to_warm = [
+                    p for p in payloads if not _owner_port_pending(str(p.get("server_name") or ""))
+                ]
+                if len(to_warm) < len(payloads):
+                    logger.info(
+                        "prewarm: %d control-plane key(s) wait for the owner's port; "
+                        "a later pass warms them",
+                        len(payloads) - len(to_warm),
+                    )
 
                 async def _acquire(pool_key: PoolKey) -> Backend:
                     # Audit only a REAL spawn (not a pool reuse) so the SEL log
@@ -283,7 +296,7 @@ class _Prewarmer:
                     return backend
 
                 await prewarm_from_payloads(
-                    payloads,
+                    to_warm,
                     _acquire,
                     limit=self.prewarm_count,
                     unreserve=pool.unreserve,

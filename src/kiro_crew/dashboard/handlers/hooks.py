@@ -83,6 +83,7 @@ from kiro_crew.session_capabilities import CapabilityStartupError
 from kiro_crew.shared_crew.admission import OperationKind
 from kiro_crew.shared_crew.turn_gate import TurnRefused, run_admitted_or_raise
 from kiro_crew.tool_gate_busy import hook_gate_busy
+from kiro_crew.tracing import surfaces as trace_surfaces
 
 logger = logging.getLogger(__name__)
 
@@ -754,6 +755,7 @@ def _capability_refusal_text(
     )
 
 
+@trace_surfaces.rooted(trace_surfaces.TRIGGER_WEBHOOK)
 async def _run_hook_inner(
     state: DashboardState,
     session_key: str,
@@ -1361,4 +1363,5 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.agent_discovery import _read_agent_spec, list_agents  # noqa: F401
+    from kiro_crew.shell_audit_log import platform_spec_hooks  # noqa: F401
     from kiro_crew.validation import sanitize_string  # noqa: F401

@@ -80,22 +80,24 @@ async function main() {
   const page = await context.newPage()
   logPageProblems(page)
 
-  await stubDashboardApi(page, { slots, theme: 'dark' })
-  await page.addInitScript(slot => {
-    localStorage.setItem('mc-active-slot', slot)
-    localStorage.setItem('mc-activity-open:' + slot, 'true')
-    localStorage.setItem('mc-privacy-notice-v1', '1')
-    localStorage.setItem('mc-panel-tabs:' + slot, JSON.stringify({
-      tabs: [
-        { id: 'changes', kind: 'changes', title: 'Changes' },
-        { id: 'files', kind: 'files', title: 'Files' },
-        { id: 'artifacts', kind: 'artifacts', title: 'Artifacts' },
-      ],
-      activeId: 'files',
-    }))
-    // Start from the default dock so frame 1 is the untouched right column.
-    localStorage.removeItem('mc-side-panel-dock')
-  }, SLOT)
+  // The stub's clear leaves the default dock, so frame 1 is the untouched
+  // right column.
+  await stubDashboardApi(page, {
+    slots, theme: 'dark',
+    localStorageEntries: {
+      'mc-active-slot': SLOT,
+      ['mc-activity-open:' + SLOT]: 'true',
+      'mc-privacy-notice-v1': '1',
+      ['mc-panel-tabs:' + SLOT]: JSON.stringify({
+        tabs: [
+          { id: 'changes', kind: 'changes', title: 'Changes' },
+          { id: 'files', kind: 'files', title: 'Files' },
+          { id: 'artifacts', kind: 'artifacts', title: 'Artifacts' },
+        ],
+        activeId: 'files',
+      }),
+    },
+  })
 
   await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2600)

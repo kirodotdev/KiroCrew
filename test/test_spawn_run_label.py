@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 from test_handlers_messaging_coverage import _info, _mgr, _Req, _run, _state
 
 import kiro_crew.dashboard.handlers.messaging as messaging
@@ -67,14 +68,15 @@ class TestNormalize:
     def test_a_key_straddling_the_cut_is_redacted_before_the_cut(self) -> None:
         """Cut first, the label would keep the key's first characters, which no
         later redactor recognizes as a key any more."""
-        key = "AKIAIOSFODNN7EXAMPLE"
+        key = github_classic(seed=1)
         out = normalize_spawn_label("x" * 68 + key)
-        assert "AKIA" not in out
+        assert key[:4] not in out
         assert key[:12] not in out
 
     def test_a_key_anywhere_in_the_label_is_redacted(self) -> None:
-        out = normalize_spawn_label("audit AKIAIOSFODNN7EXAMPLE now")
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        key = github_classic(seed=1)
+        out = normalize_spawn_label(f"audit {key} now")
+        assert key not in out
         assert out.startswith("audit ")
 
 

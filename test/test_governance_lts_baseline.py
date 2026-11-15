@@ -69,8 +69,15 @@ _BASELINE_TABLE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "agent_backend": (("kas",), ("claude", "kiro")),
     "webhooks": ((), ("agent", "ops-mission-control")),
     "capabilities.publish": (
-        ("", "destinations:default"),
-        ("destinations:s3", "regions:us-east-1", "audience:private", "accounts:123456789012"),
+        (),
+        (
+            "",
+            "destinations:default",
+            "destinations:s3",
+            "regions:us-east-1",
+            "audience:private",
+            "accounts:123456789012",
+        ),
     ),
     "bind_address": (("127.0.0.1",), ("0.0.0.0", "::", "10.0.0.5")),
     "dashboard_origins": ((), ("https://crew.example.com", "http://localhost:3000")),

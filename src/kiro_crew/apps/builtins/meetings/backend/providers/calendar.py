@@ -47,13 +47,16 @@ import re
 import socket
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiohttp
-from aiohttp.abc import AbstractResolver, ResolveResult
+from aiohttp.abc import AbstractResolver
 from yarl import URL
+
+if TYPE_CHECKING:  # `ResolveResult` exists only from aiohttp 3.10; setup.cfg allows 3.9.
+    from aiohttp.abc import ResolveResult
 
 from kiro_crew import hooks, link_unfurl
 from kiro_crew.apps.builtins.meetings.backend import constants as k
@@ -558,6 +561,8 @@ def parse_ics(text: str, *, days: int = k.CALENDAR_SYNC_DAYS) -> list[CalendarEv
             current["end"] = _parse_dt(value, params)
         elif name == "DURATION":
             current["duration"] = value.strip()
+        elif name == "STATUS":
+            current["status"] = value
         elif name == "LOCATION":
             current["location"] = _unescape(value)
         elif name == "DESCRIPTION":
@@ -640,6 +645,12 @@ def _finalize_event(
     if not isinstance(start, datetime):
         return None
     if start < floor or start > horizon:
+        return None
+    # RFC 5545 marks a called-off meeting with STATUS:CANCELLED rather than
+    # removing it, and many feeds keep it. Listing it would show the meeting as
+    # scheduled and let the poller pre-create a directory for it. Producers vary
+    # in case and stray whitespace; TENTATIVE and CONFIRMED stay listed.
+    if str(raw.get("status") or "").strip().upper() == "CANCELLED":
         return None
     end = raw.get("end")
     if not isinstance(end, datetime):
@@ -882,15 +893,16 @@ class _PinnedResolver(AbstractResolver):
             addr_family = socket.AF_INET6 if is_v6 else socket.AF_INET
             if family not in (socket.AF_UNSPEC, addr_family):
                 continue
+            # Plain dict: aiohttp 3.9 lacks `ResolveResult`; every version reads these six keys.
             results.append(
-                ResolveResult(
-                    hostname=host,
-                    host=address,
-                    port=port,
-                    family=addr_family,
-                    proto=socket.IPPROTO_TCP,
-                    flags=socket.AI_NUMERICHOST | socket.AI_NUMERICSERV,
-                )
+                {
+                    "hostname": host,
+                    "host": address,
+                    "port": port,
+                    "family": addr_family,
+                    "proto": socket.IPPROTO_TCP,
+                    "flags": socket.AI_NUMERICHOST | socket.AI_NUMERICSERV,
+                }
             )
         if not results:
             raise OSError(f"no vetted address for calendar host {host!r} in this family")

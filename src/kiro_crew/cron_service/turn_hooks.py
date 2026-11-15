@@ -14,14 +14,17 @@ nobody watches:
 * ``Stop`` with the reply once the turn landed.
 
 The Hooks page's hooks keep the role they have on a cron turn: none of them
-runs here, and their PreToolUse stays the informational fire on each tool call. A cron turn does not re-project its KAS
-session: when the session's batch is stale for the agent it runs (a PreToolUse
-hook added since covers a call it auto-approves), the turn runs none of the
-spec's hooks, which is what it did before, and its result says so.
+runs here, and their PreToolUse stays the informational fire on each tool call. A cron claim re-projects a stale KAS
+batch (:func:`kiro_crew.agent_sdk.spec_hooks.reproject_unattended_claim`). When
+the session is still stale for the agent it runs (a PreToolUse hook added since
+covers a call it auto-approves: two resets did not cure it, or a mid-turn switch
+moved to such a batch), the turn runs none of the spec's hooks, as before, and
+its result says so; the next claim re-projects it.
 """
 
 from __future__ import annotations
 
+import functools
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -60,8 +63,15 @@ class CronTurnHooks:
 
         agent = running_agent(provider, agent)
         turn = ScriptHookTurn(session_key, prompt, store_hooks=False)
-        hooks = await ChannelTurnHooks.prepare(provider, agent, turn)
-        stale = await cls._stale(provider, agent, hooks.spec, hook_projection_stale)
+        # Cron is unchanged by a folder's project-hooks choice: its turn never
+        # reads a KAS folder agent's own hooks, only the user-level spec's.
+        hooks = await ChannelTurnHooks.prepare(provider, agent, turn, project_hooks=False)
+        stale = await cls._stale(
+            provider,
+            agent,
+            hooks.spec,
+            functools.partial(hook_projection_stale, project_hooks=False),
+        )
         if stale:
             empty = TurnSpecHooks([], hooks.spec.cwd, False, False, hooks.spec.lost)
             hooks = ChannelTurnHooks(provider, turn, empty)

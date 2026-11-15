@@ -590,8 +590,8 @@ class TestTheGatesLiveInTheGateWorkflow:
         ci_on = dict(ci.get("on", ci.get(True)))
         fg_on = dict(fast_gate.get("on", fast_gate.get(True)))
         expected = {
-            "push": {"branches": ["main"]},
-            "pull_request": {"branches": ["main"]},
+            "push": {"branches": ["main", "release/**"]},
+            "pull_request": {"branches": ["main", "release/**"]},
             "merge_group": {"types": ["checks_requested"]},
         }
         assert ci_on == expected
@@ -599,7 +599,7 @@ class TestTheGatesLiveInTheGateWorkflow:
         # barrier consumes that run before the full push matrix.
         assert fg_on == expected, (
             "Fast Gate's triggers drifted from ci.yml's. A WIDER filter newly reviews "
-            "fork PRs on a non-main base (the fork reviewers key on this workflow), and "
+            "fork PRs on bases CI never tests (the fork reviewers key on this workflow), and "
             "a NARROWER one leaves await-fast-gate waiting for a run that never starts."
         )
         assert list(fg_on) == list(expected), "keep the trigger order matching ci.yml"
@@ -888,10 +888,12 @@ class TestOnlyThePushOnlyCancelJobCanWrite:
         assert guard == _CANCEL_IF
         # A conjunction only: one `||` would let a second event through.
         assert "||" not in guard
-        # The trigger list is what makes `push` mean main; the guard restates it.
+        # `push` also fires for release branches, so the guard's own
+        # `refs/heads/main` test is what keeps this job off a release push.
         # PyYAML reads the bare key `on` as boolean True.
         triggers = ci.get(True) or ci.get("on") or {}
-        assert triggers["push"] == {"branches": ["main"]}
+        assert triggers["push"] == {"branches": ["main", "release/**"]}
+        assert "github.ref == 'refs/heads/main'" in guard
 
     def test_the_cancel_job_runs_beside_the_barrier_and_gates_nothing(self, ci: dict) -> None:
         assert "needs" not in ci["jobs"][_CANCEL_JOB]

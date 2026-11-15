@@ -222,8 +222,9 @@ use [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
 The [install guide](docs/guides/install.md) owns every install path, first-run
 step, optional dependency, upgrade, uninstall, and recovery procedure. User data
-lives under `~/.kiro/crew` by default and moves with `KIROCREW_HOME`; configuration
-keys and precedence are canonical in the
+lives under `~/.kiro/crew` by default and moves with `KIROCREW_HOME`, except some
+[folders that stay under `~/.kiro`](docs/guides/install.md#folders-beside-the-data-home);
+configuration keys and precedence are canonical in the
 [config spec](docs/system-specs/modules/config.md).
 
 For a new source or wheel install:
@@ -277,7 +278,19 @@ kirocrew telemetry status         # print both switches and exactly what would b
 Turn off and `kirocrew telemetry disable` write the same settings, so either
 one sticks across restarts and upgrades. `KIROCREW_TELEMETRY_DISABLED` and
 `DO_NOT_TRACK` override them: when one is set, the dashboard toggle is disabled
-and says so. When the Privacy screen's text changes, existing users see it once
+and says so. An existing install that turned the heartbeat off, wrote
+`telemetry.enabled: false`, or sets `DO_NOT_TRACK` keeps local recording off
+after an upgrade and is not asked again, with one exception. Builds before
+recording was on by default wrote `telemetry.enabled: false` into every new
+config. The written value looks the same whether the old build or the person
+wrote it, so an install whose only reason for being off is a written
+`telemetry.enabled: false` sees the Privacy screen once, even if the person
+chose that value. It is an off form that names Kiro telemetry and offers Turn on
+performance metrics or Keep off. Until you turn them on, only the daily
+heartbeat and official app install receipts are sent, and no performance
+metrics are recorded. A
+terminal-only install gets one line pointing at `kirocrew telemetry enable`
+instead. When the Privacy screen's text changes, existing users see it once
 more at their next dashboard load while local recording is on.
 
 **Exactly these five fields are sent, at most once per day, and nothing else:**
@@ -337,9 +350,20 @@ would not take effect:
 
 See [docs/system-specs/modules/governance.md](docs/system-specs/modules/governance.md).
 
-This is separate from `telemetry.enabled`, which controls **local-only**
-performance metrics that never leave your machine. See
-[docs/system-specs/modules/metrics.md](docs/system-specs/modules/metrics.md).
+This is separate from `telemetry.enabled`, which controls performance metrics.
+They are on by default, are recorded on your machine, are capped at 30 days and
+100 MB, and turn off with the same Turn off button, `kirocrew telemetry disable`,
+`KIROCREW_TELEMETRY=0` or `DO_NOT_TRACK=1`. A terminal-only install prints a
+one-line notice about them on its first start.
+
+While they are on, the public build also sends the reviewed product usage metrics
+(which features are used and how long things take; no prompts, files, paths or
+credentials) to Kiro telemetry, labelled with a hashed install ID. Nothing is sent
+until the Privacy screen, or the one-line terminal notice, has named it. It is
+not sent from an enterprise (LTS) build or a CI runner, and every off switch
+above stops it. See
+[docs/guides/telemetry-otlp-export.md](docs/guides/telemetry-otlp-export.md#the-kiro-telemetry-destination)
+and [docs/system-specs/modules/metrics.md](docs/system-specs/modules/metrics.md).
 
 ## Docs and contributing
 

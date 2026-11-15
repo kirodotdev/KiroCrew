@@ -84,6 +84,7 @@ def test_purge_retention_uses_actual_latest_activity(monkeypatch, residue, age, 
         (directory / "conductor.json").unlink()
     else:
         item_id = _new_item()
+        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
         wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
         directory = wl.conductor_dir(CONDUCTOR)
     before = {
@@ -114,6 +115,7 @@ def test_purge_retention_skips_the_age_gate_when_there_is_no_activity_to_read(mo
     ``None`` only if every candidate is unavailable.
     """
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     directory = wl.conductor_dir(CONDUCTOR)
     monkeypatch.setattr(wl, "_newest_activity", lambda *a, **k: None)
@@ -153,6 +155,7 @@ def test_purge_conductor_removes_the_ledger_under_the_conductor_lock(monkeypatch
     directory and return the same value.
     """
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     directory = wl.conductor_dir(CONDUCTOR)
     assert (directory / "items" / f"{item_id}.json").exists()
@@ -201,6 +204,7 @@ def test_newest_activity_falls_back_to_the_directory_when_the_header_is_gone(mon
     from datetime import timedelta
 
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     directory = wl.conductor_dir(CONDUCTOR)
     path = wl.item_path(CONDUCTOR, item_id)
@@ -223,6 +227,7 @@ def test_purge_conductor_refuses_a_torn_header_unless_the_caller_asks(monkeypatc
     check -- the one the sweep's scanner uses -- so the recheck cannot trust a
     report over the store's account of itself."""
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     directory = wl.conductor_dir(CONDUCTOR)
     (directory / "conductor.json").write_text("[]", encoding="utf-8")
@@ -247,6 +252,7 @@ def test_census_reads_an_item_shaped_file_with_a_foreign_stem_as_unreadable(monk
         CONDUCTOR, "create", title="second", acceptance={"kind": "human_approval"}
     )["item"].item_id
     for each in (item_id, other):
+        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=each, verdict="pass")
         wl.apply_conductor_action(CONDUCTOR, "close", item_id=each, state="accepted")
     directory = wl.conductor_dir(CONDUCTOR)
     stray = directory / "items" / "renamed-by-hand.json"
@@ -399,6 +405,7 @@ def test_a_late_report_on_a_purged_ledger_refuses_and_rebuilds_nothing(monkeypat
     sweep keeps forever -- so the lock is taken non-creating and a missing lock
     file IS the missing item."""
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     directory = wl.conductor_dir(CONDUCTOR)
     _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
@@ -433,6 +440,7 @@ def test_the_lost_lock_recreate_loses_a_purge_race_without_rebuilding_the_store(
     in the removed store; the locked recreate finds no ledger and touches
     nothing."""
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     directory = wl.conductor_dir(CONDUCTOR)
     wl._item_lock_path(CONDUCTOR, item_id).unlink()
@@ -468,6 +476,7 @@ def test_a_goal_on_a_purged_ledger_refuses_and_rebuilds_nothing(monkeypatch):
     item_id = wl.apply_conductor_action(
         CONDUCTOR, "create", title="t", acceptance={"kind": "human_approval"}
     )["item"].item_id
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     directory = wl.conductor_dir(CONDUCTOR)
     _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
@@ -518,6 +527,7 @@ def test_census_reads_a_misnamed_item_as_unreadable_not_closed(monkeypatch):
     hand-moved file would count as closed and a plain purge would delete a record
     the store itself refuses to read."""
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     path = wl.item_path(CONDUCTOR, item_id)
     record = json.loads(path.read_text(encoding="utf-8"))
@@ -539,6 +549,7 @@ def test_purge_conductor_keeps_the_header_when_any_content_survives(monkeypatch)
     gone -- so a failed removal leaves an identifiable store, never a header-less
     pile of items."""
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     directory = wl.conductor_dir(CONDUCTOR)
     _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
@@ -562,6 +573,7 @@ def test_purge_conductor_removal_failures_are_counted_not_ignored(monkeypatch):
     """``rmtree(ignore_errors=True)`` would report success over a subtree it left
     standing; the count is what the header decision depends on."""
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     directory = wl.conductor_dir(CONDUCTOR)
     (directory / "stray.txt").write_text("x", encoding="utf-8")
@@ -584,6 +596,7 @@ def test_purge_conductor_keeps_the_breadcrumb_until_the_header_is_gone(monkeypat
     later purge can still be aimed at it. Deleting the breadcrumb first would
     strand the ledger: header present, no key, no primitive that can reach it."""
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     directory = wl.conductor_dir(CONDUCTOR)
     _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
@@ -666,6 +679,7 @@ def test_purge_conductor_refuses_while_a_worker_holds_an_item_lock(monkeypatch):
     import os
 
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     # Torn on disk, as a mid-write record looks, AND its lock held by "the writer".
     wl.item_path(CONDUCTOR, item_id).write_text("{mid-wr", encoding="utf-8")
@@ -697,6 +711,7 @@ def test_purge_conductor_holds_every_item_lock_through_the_removal(monkeypatch):
         )["item"].item_id
     )
     for item_id in ids:
+        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
         wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     directory = wl.conductor_dir(CONDUCTOR)
     _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
@@ -742,6 +757,7 @@ def test_purge_never_unlinks_a_lock_file_while_its_handle_is_held(monkeypatch):
         )["item"].item_id
     )
     for item_id in ids:
+        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
         wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     directory = wl.conductor_dir(CONDUCTOR)
     _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
@@ -828,6 +844,7 @@ def test_every_lock_inode_is_unlinked_inside_the_holds(monkeypatch):
     writer queued on any of them acquires a detached inode and refuses; nothing is
     handed a second inode while a first is held."""
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     directory = wl.conductor_dir(CONDUCTOR)
     _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
@@ -893,6 +910,7 @@ def test_census_tolerates_a_naive_closed_at_beside_an_aware_one():
         CONDUCTOR, "create", title="second", acceptance={"kind": "human_approval"}
     )["item"].item_id
     for item_id in (first, second):
+        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
         wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     stamps = {first: "2026-01-10T09:00:00", second: "2026-01-10T09:00:00+00:00"}
     for item_id, stamp in stamps.items():
@@ -915,6 +933,7 @@ def test_a_purge_racing_a_finished_purge_recreates_nothing(monkeypatch):
     import shutil
 
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     directory = wl.conductor_dir(CONDUCTOR)
     real_lock = wl.conductor_lock

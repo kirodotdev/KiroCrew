@@ -3,7 +3,8 @@
 A crewmate's worker runs on ``kirocrew-mate-worker``, whose base spec and the
 crewmate's own file both live in ``~/.kiro/mates/agents/`` (``rfc-mate-owned-agent-
 config``). The agents rewrite (:func:`kiro_crew.mcp_gateway.rewriter.rewrite_agents`)
-reads ``~/.kiro/agents/`` only, so a stubbed server the crewmate file declares had
+reads ``~/.kiro/agents/`` plus the conductor spec only
+(:func:`with_conductor_source`), so a stubbed server the crewmate file declares had
 no overlay: the worker session got no stub, and KAS declared the server directly,
 where its non-``${NAME}`` ``env`` is withheld and it starts without credentials.
 
@@ -53,7 +54,11 @@ from pathlib import Path
 from typing import Any, Callable, Collection
 
 from kiro_crew import platform_compat
-from kiro_crew.agent_files import MATE_WORKER_AGENT_FILENAME, is_mate_service_agent
+from kiro_crew.agent_files import (
+    MATE_CONDUCTOR_AGENT_FILENAME,
+    MATE_WORKER_AGENT_FILENAME,
+    is_mate_service_agent,
+)
 from kiro_crew.mcp_gateway.rewriter_launch import _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY
 from kiro_crew.mcp_gateway.rewriter_overlay import _source_sig
 
@@ -153,6 +158,30 @@ def _is_plain_file(path: Path) -> bool:
         return stat.S_ISREG(os.lstat(path).st_mode)
     except OSError:
         return False
+
+
+def with_conductor_source(sources: list[Path], mate_dir: Path | None) -> list[Path]:
+    """*sources*, the ``~/.kiro/agents`` specs, plus the crewmate conductor's spec.
+
+    Every crewmate's chat runs the one stock conductor spec in *mate_dir* and its
+    session looks stubs up by that agent name, so the agents half rewrites the spec
+    like an ``~/.kiro/agents`` one, under its own name. It takes the place of a
+    source with the same stem, which no crewmate chat runs. *sources* comes back
+    unchanged when *mate_dir* is ``None``, a symlink or not a folder (as
+    :func:`list_mate_sources` refuses it), or holds no plain conductor file.
+    Ordered by file name, the order the cached path serves overlays in.
+    """
+    if mate_dir is None:
+        return sources
+    try:
+        mode = os.lstat(mate_dir).st_mode
+    except OSError:
+        return sources
+    conductor = mate_dir / MATE_CONDUCTOR_AGENT_FILENAME
+    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode) or not _is_plain_file(conductor):
+        return sources
+    kept = [p for p in sources if p.stem.casefold() != conductor.stem.casefold()]
+    return sorted([*kept, conductor], key=lambda p: p.name)
 
 
 def list_mate_sources(mate_dir: Path) -> MateSources:

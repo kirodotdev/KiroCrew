@@ -1,16 +1,19 @@
-"""Tracer lifecycle: off by default, built on first use, rebuilt on a config change.
+"""Tracer lifecycle: off by default, built once the switch reads on, kept across config changes.
 
-``telemetry.traces_enabled`` (default off) is read once, the first time a turn
-asks :func:`current`. Off means no OpenTelemetry SDK import, no
+``telemetry.traces_enabled`` (default off) is read on a worker thread that
+:func:`watch_config` starts at gateway boot; the turn paths only :func:`peek`
+at what that read resolved. Off means no OpenTelemetry SDK import, no
 ``TracerProvider`` and no export thread: every hook point costs one call that
 returns ``None``. On means one ``TracerProvider`` with a ``BatchSpanProcessor``
-writing to the local JSONL sink under ``<data home>/traces`` and nothing else;
-spans never leave the host from this module.
+writing to the local JSONL sink under ``<data home>/traces``, and a second one,
+added the first time a collector resolves, that sends spans over OTLP/HTTP
+(``tracing/otlp.py``). Both processors run on :data:`BATCH_LIMITS`.
 
 Kept apart from ``metrics/provider.py``: the two signals share the shard store
-and the attribute guard, not a lifecycle. :func:`watch_config` drops the tracer
-on any ``telemetry.*`` write so the next turn re-reads the switch; a process
-that registers no watcher keeps the value it read first.
+and the attribute guard, not a lifecycle. :func:`watch_config` re-reads the
+switch after a ``telemetry.*`` write that moves one of its inputs, keeping the
+one tracer it built; a process that registers no watcher never reads the switch
+and is not traced.
 
 **Deterministic ids.** The SDK mints ids through its ``IdGenerator``. Every span
 here is started by :func:`start_span`, which pins the ids the ``tracing/ids.py``
@@ -23,9 +26,10 @@ from __future__ import annotations
 import logging
 import random
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +48,8 @@ class TraceState:
     hash_key: bytes | None
     #: The local JSONL sink, whose caps a config write updates in place.
     sink: Any = None
+    #: The OTLP side (``otlp.RemoteSpans``), whose target a config write swaps.
+    remote: Any = None
 
 
 _lock = threading.Lock()
@@ -73,7 +79,9 @@ def current() -> TraceState | None:
 
 
 def resolved() -> bool:
-    """Whether the switch has been read since the last rebuild."""
+    """Whether the switch is resolved: read since the process started or since it
+    was last cleared (a ``telemetry.*`` write that moved an input, or :func:`shutdown`).
+    """
     return _resolved
 
 
@@ -82,8 +90,9 @@ def peek() -> TraceState | None:
 
     The hook points run on the event loop and on the ACP reader task, where a
     config read, a vault key's fsync or a stalled data-home disk must not stall
-    every turn. Resolution happens in ``turns.traced``, which awaits
-    :func:`current` on a worker thread before a turn's spans open.
+    every turn. Resolution happens off the loop: on the thread
+    :func:`watch_config` starts at boot, and on the worker thread that applies a
+    ``telemetry.*`` write. A turn that starts before it finishes is not traced.
     """
     return _state if _resolved else None
 
@@ -100,13 +109,61 @@ def traces_dir() -> Path:
     return config_dir() / "traces"
 
 
-def _inputs(cfg: Any) -> tuple[bool, object, object]:
+def _pairs(value: object) -> object:
+    return (
+        tuple(sorted((str(k), str(v)) for k, v in value.items())) if isinstance(value, dict) else ()
+    )
+
+
+def _inputs(cfg: Any) -> tuple[object, ...]:
     """The settings a tracer is built from; a write that moves none keeps it."""
-    return (cfg.traces_enabled is True, cfg.retention_days, cfg.max_total_mb)
+    return (
+        cfg.traces_enabled is True,
+        cfg.retention_days,
+        cfg.max_total_mb,
+        getattr(cfg, "traces_otlp_endpoint", ""),
+        _pairs(getattr(cfg, "traces_otlp_headers_secret", None)),
+        _pairs(getattr(cfg, "traces_otlp_headers_env", None)),
+        getattr(cfg, "traces_conductor_mode", CONDUCTOR_MODE_RUN),
+    )
+
+
+#: ``telemetry.traces_conductor_mode``: a conductor mode round is one trace (``run``), or every turn its own (``turn``).
+#: Read with the switch, served by :func:`conductor_mode_shape`.
+CONDUCTOR_MODE_RUN = "run"
+CONDUCTOR_MODE_TURN = "turn"
+_conductor_mode_shape = CONDUCTOR_MODE_RUN
+
+
+def conductor_mode_shape() -> str:
+    """The conductor mode trace shape the last read of the switch resolved; never reads."""
+    return _conductor_mode_shape
 
 
 #: ``_inputs`` of the last resolution, or ``None`` when it could not read config.
-_built_inputs: tuple[bool, object, object] | None = None
+_built_inputs: tuple[object, ...] | None = None
+
+#: Both span processors' limits, pinned so an ``OTEL_BSP_*`` variable set for
+#: another tool cannot change them. 512 spans stay far under X-Ray's 10,000-span,
+#: 5 MB request cap; a full queue drops its oldest span rather than growing.
+BATCH_LIMITS: Mapping[str, int] = {
+    "max_queue_size": 2048,
+    "schedule_delay_millis": 5000,
+    "max_export_batch_size": 512,
+    "export_timeout_millis": 10_000,
+}
+
+
+def _batch_processor(exporter: Any) -> Any:
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+    return BatchSpanProcessor(
+        exporter,
+        max_queue_size=BATCH_LIMITS["max_queue_size"],
+        schedule_delay_millis=BATCH_LIMITS["schedule_delay_millis"],
+        max_export_batch_size=BATCH_LIMITS["max_export_batch_size"],
+        export_timeout_millis=BATCH_LIMITS["export_timeout_millis"],
+    )
 
 
 def _build() -> TraceState | None:
@@ -121,7 +178,12 @@ def _build() -> TraceState | None:
         _built_inputs = None
         return None
     _built_inputs = _inputs(cfg)
-    global _built
+    global _built, _conductor_mode_shape
+    _conductor_mode_shape = (
+        CONDUCTOR_MODE_TURN
+        if getattr(cfg, "traces_conductor_mode", "") == CONDUCTOR_MODE_TURN
+        else CONDUCTOR_MODE_RUN
+    )
     # Today's caps reach the kept tracer whatever the switch says: a turn still
     # open on it keeps exporting (and pruning), so with tracing just switched off
     # a cap the operator set to 0 must stop deletions too.
@@ -133,8 +195,11 @@ def _build() -> TraceState | None:
     # Only a real True turns it on: a section that is not a TelemetryConfig (a
     # test double, a malformed load) must never start an export thread.
     if cfg.traces_enabled is not True:
+        if _built is not None:  # spans a turn still ends stay on this host
+            _sync_remote(_built, cfg)
         return None
     if _built is not None:  # switched back on: the same tracer, today's caps
+        _sync_remote(_built, cfg)
         return _built
     try:
         _built = _build_live(cfg)
@@ -155,8 +220,6 @@ def _hash_key() -> bytes | None:
 
 
 def _build_live(cfg: Any) -> TraceState:
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
     from kiro_crew.tracing import ids
     from kiro_crew.tracing.exporter import JsonlSpanExporter
 
@@ -164,30 +227,72 @@ def _build_live(cfg: Any) -> TraceState:
     # Everything that can fail runs BEFORE the processor exists: its constructor
     # starts the export thread, and a thread nothing owns is never shut down.
     namespace, hash_key = ids.load_namespace(directory), _hash_key()
+    from kiro_crew.tracing.otlp import RemoteSpans
+
     exporter = JsonlSpanExporter(
         directory, retention_days=cfg.retention_days, max_total_mb=cfg.max_total_mb
     )
-    processor = BatchSpanProcessor(exporter)
+    processor = _batch_processor(exporter)
     try:
-        return new_state(processor, namespace, hash_key, sink=exporter)
+        state = new_state(processor, namespace, hash_key, sink=exporter, remote=RemoteSpans())
     except BaseException:
         processor.shutdown()
         raise
+    _sync_remote(state, cfg)
+    return state
+
+
+def _sync_remote(state: TraceState, cfg: Any) -> None:
+    """Point *state*'s OTLP side at the collector *cfg* names now; never raises.
+
+    The first collector adds the OTLP batch processor (its thread starts then,
+    and only then). Later writes swap its exporter, or clear it so batches are
+    dropped; a write that names the same destination keeps the exporter.
+    Headers are read when an exporter is built, so a rotated vault entry takes
+    effect when the destination changes, when tracing is switched off and on
+    (off clears the exporter, on builds a new one), or on restart. A write to
+    any other input finds the same destination and keeps the exporter.
+    """
+    remote = state.remote
+    if remote is None:
+        return
+    try:
+        from kiro_crew.tracing import otlp
+
+        dest = otlp.resolve(cfg)
+        if dest is not None and dest == remote.destination:
+            return
+        target = otlp.build_exporter(dest) if dest is not None else None
+        if target is not None and not remote.attached:
+            state.provider.add_span_processor(_batch_processor(remote))
+            remote.attached = True
+        # A refused destination is not remembered, so the next write retries it.
+        remote.swap(dest if target is not None else None, target)
+    except Exception as exc:  # export must never cost a turn or the local sink
+        logger.warning("trace OTLP export setup failed; spans stay local: %s", type(exc).__name__)
 
 
 def new_state(
-    processor: Any, namespace: str, hash_key: bytes | None, *, sink: Any = None
+    processor: Any,
+    namespace: str,
+    hash_key: bytes | None,
+    *,
+    sink: Any = None,
+    remote: Any = None,
 ) -> TraceState:
     """A tracer that hands every finished span to *processor*.
 
     The production processor is a ``BatchSpanProcessor`` over the JSONL sink;
-    a test passes a ``SimpleSpanProcessor`` over an in-memory exporter.
+    a test passes a ``SimpleSpanProcessor`` over an in-memory exporter. The
+    resource's ``service.name`` is ``OTEL_SERVICE_NAME`` when set (traces only;
+    metrics keep ``kirocrew``).
     """
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.id_generator import IdGenerator
 
     from kiro_crew import __version__
+    from kiro_crew.tracing.otlp import service_name
 
     class _PinnedIds(IdGenerator):
         def generate_span_id(self) -> int:
@@ -203,7 +308,7 @@ def new_state(
     provider = TracerProvider(
         resource=Resource.create(
             {
-                "service.name": "kirocrew",
+                "service.name": service_name(),
                 "service.version": __version__,
                 "kirocrew.trace_ns": namespace,
             }
@@ -211,7 +316,27 @@ def new_state(
         id_generator=_PinnedIds(),
     )
     provider.add_span_processor(processor)
-    return TraceState(provider.get_tracer(SCOPE_NAME), provider, namespace, hash_key, sink)
+    return TraceState(provider.get_tracer(SCOPE_NAME), provider, namespace, hash_key, sink, remote)
+
+
+#: Spans started per trace id in this process, newest traces last: what the run
+#: roots' span budget (``tracing/runs.py``) reads. Bounded like the turn registries.
+_span_counts: "OrderedDict[str, int]" = OrderedDict()
+_counts_lock = threading.Lock()
+_MAX_COUNTED_TRACES = 4096
+
+
+def span_count(trace_id: str) -> int:
+    """How many spans this process has started in *trace_id*."""
+    with _counts_lock:
+        return _span_counts.get(trace_id, 0)
+
+
+def _count_span(trace_id: str) -> None:
+    with _counts_lock:
+        _span_counts[trace_id] = _span_counts.pop(trace_id, 0) + 1
+        while len(_span_counts) > _MAX_COUNTED_TRACES:
+            _span_counts.popitem(last=False)
 
 
 def start_span(
@@ -222,11 +347,15 @@ def start_span(
     span_id: str,
     parent: Any = None,
     attributes: Mapping[str, Any] | None = None,
+    links: Sequence[Any] = (),
+    start_time: int | None = None,
 ) -> Any:
     """Start a span with the given hex ids under *parent* (``None`` = a root).
 
     A root is started under an EMPTY context, never whatever span happens to be
-    current, so its trace id is always the pinned one.
+    current, so its trace id is always the pinned one. Under a parent the span
+    takes the parent's trace id, which the caller passes as *trace_id* too.
+    *start_time* (epoch ns) backdates the start, for a step that began earlier.
     """
     from opentelemetry import trace
     from opentelemetry.context import Context
@@ -235,10 +364,18 @@ def start_span(
     _pins.trace_id = int(trace_id, 16)
     _pins.span_id = int(span_id, 16)
     try:
-        return state.tracer.start_span(name, context=context, attributes=dict(attributes or {}))
+        span = state.tracer.start_span(
+            name,
+            context=context,
+            attributes=dict(attributes or {}),
+            links=list(links),
+            start_time=start_time,
+        )
     finally:
         _pins.trace_id = None
         _pins.span_id = None
+    _count_span(trace_id)
+    return span
 
 
 def shutdown() -> None:
@@ -276,7 +413,11 @@ async def flush_for_exit() -> None:
 
 def reset_for_testing() -> None:
     """Shut down and forget the tracer, so a test starts from the switch."""
+    global _conductor_mode_shape
     shutdown()
+    _conductor_mode_shape = CONDUCTOR_MODE_RUN
+    with _counts_lock:
+        _span_counts.clear()
 
 
 def install_for_testing(state: TraceState | None) -> None:
@@ -294,15 +435,17 @@ _config_sub: object = None
 def _apply_config_change() -> None:
     """Re-read the switch after a ``telemetry.*`` write that moved one of its inputs.
 
-    Nothing is shut down: the next turn resolves again, getting the same tracer
-    with the new caps, or ``None`` when the switch went off. A turn still
-    streaming keeps ending its spans on the tracer it started with.
+    Nothing is shut down: it resolves again at once, on this worker thread,
+    serving the one tracer this process builds (the kept one, or a first one
+    when none was built yet) with the new caps, or ``None`` when the switch is
+    off or the build fails. A turn still streaming keeps ending its spans on the
+    tracer it started with.
     """
     global _resolved, _state
     try:
         from kiro_crew.config.loader import KiroCrewConfig
 
-        now: tuple[bool, object, object] | None = _inputs(KiroCrewConfig.load().telemetry)
+        now: tuple[object, ...] | None = _inputs(KiroCrewConfig.load().telemetry)
     except Exception:
         now = None
     # Under the lock, which a build holds from its config read to its install:

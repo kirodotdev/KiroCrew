@@ -15,18 +15,25 @@ import { i18nT } from '../i18n/t'
 import { clearSlotSuccession, recordSlotSuccession } from '../utils/slotSuccession'
 import ChatPanel from '../app-sdk/ChatPanel'
 
-vi.mock('../pages/ChatPage', () => ({
-  default: (props: { embedded?: boolean; embedMode?: 'chat' | 'sessions'; noUrlSync?: boolean }) => (
-    <div
-      data-testid="chat-page"
-      data-embedded={props.embedded ? 'true' : 'false'}
-      data-embed-mode={props.embedMode ?? 'unset'}
-      data-no-url-sync={props.noUrlSync === undefined ? 'unset' : String(props.noUrlSync)}
-    >
-      ChatPage
-    </div>
-  ),
-}))
+vi.mock('../pages/ChatPage', async () => {
+  const { useContext } = await import('react')
+  const { ExpandStepsContext } = await import('../hooks/useToolCallsStartExpanded')
+  function ChatPageStub(props: { embedded?: boolean; embedMode?: 'chat' | 'sessions'; noUrlSync?: boolean }) {
+    const expandSteps = useContext(ExpandStepsContext)
+    return (
+      <div
+        data-testid="chat-page"
+        data-embedded={props.embedded ? 'true' : 'false'}
+        data-embed-mode={props.embedMode ?? 'unset'}
+        data-no-url-sync={props.noUrlSync === undefined ? 'unset' : String(props.noUrlSync)}
+        data-expand-steps={String(expandSteps)}
+      >
+        ChatPage
+      </div>
+    )
+  }
+  return { default: ChatPageStub }
+})
 
 // Mirrors the real thunk: a live session becomes the active slot; a deleted one
 // rejects with the 404 payload and leaves the previous active slot in place; a
@@ -116,6 +123,15 @@ describe('ChatPanel', () => {
     expect(chatPage.getAttribute('data-embedded')).toBe('true')
     expect(chatPage.getAttribute('data-embed-mode')).toBe('chat')
     expect(chatPage.getAttribute('data-no-url-sync')).toBe('true')
+  })
+
+  it('opens the transcript steps for this panel only with expandSteps, writing no chat config', async () => {
+    const { unmount } = renderWithProviders(<ChatPanel slotKey="zzq-slot-1" />, { store: storeWith('zzq-slot-1') })
+    expect((await screen.findByTestId('chat-page')).getAttribute('data-expand-steps')).toBe('false')
+    unmount()
+    renderWithProviders(<ChatPanel slotKey="zzq-slot-1" expandSteps />, { store: storeWith('zzq-slot-1') })
+    expect((await screen.findByTestId('chat-page')).getAttribute('data-expand-steps')).toBe('true')
+    expect(localStorage.getItem('mc-chat-config')).toBeNull()
   })
 
   it('switches once per slot key, and again when the key changes', async () => {

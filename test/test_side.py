@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 from side_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _SIDE_ANSWER,
     _SIDE_QUESTION,
@@ -617,11 +618,11 @@ async def test_side_stream_redacts_credential_split_across_chunks(tmp_path, monk
     the wire, and the stored/final text must be redacted.
 
     broadcast_side_result redacts each frame, but per-frame redaction alone
-    misses a secret split across deltas (``...AKIA`` | ``IOSFODNN7...``). The
+    misses a secret split across deltas (``...ghp_`` | ``body...``). The
     StreamRedactor withholds the trailing credential-class run until it's safe,
     matching the main chat path.
     """
-    raw_cred = "AKIAIOSFODNN7EXAMPLE"
+    raw_cred = github_classic(seed=168)
     # Long-query URL so redact_exfiltration_urls() actually flags it (bare /
     # short-query URLs are intentionally left alone). The unique payload is what
     # must never survive — the redaction label itself names the host.
@@ -646,9 +647,9 @@ async def test_side_stream_redacts_credential_split_across_chunks(tmp_path, monk
         # Split the credential across two deltas so a naive per-frame redactor
         # would leak the reassembled token across the stream. Also include an
         # exfiltration URL to prove redact() applies BOTH passes (URLs + creds).
-        on_chunk("here is a key AKIA")
-        on_chunk(f"IOSFODNN7EXAMPLE see {exfil_url} done")
-        return f"here is a key AKIAIOSFODNN7EXAMPLE see {exfil_url} done"
+        on_chunk(f"here is a key {raw_cred[:4]}")
+        on_chunk(f"{raw_cred[4:]} see {exfil_url} done")
+        return f"here is a key {raw_cred} see {exfil_url} done"
 
     monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", _fake_stream)
 
@@ -1281,7 +1282,7 @@ async def test_a_submit_during_the_stop_window_does_not_replace_the_cancelled_tu
         stop = asyncio.ensure_future(client.post("/api/chat/slots/parent/side/stop", json={}))
         await await_until(in_cancel_cleanup)
 
-        # The exact GPT seam: is_complete is already True here, so WITHOUT the
+        # The exact seam: is_complete is already True here, so WITHOUT the
         # is_stopping claim the busy gate would read idle and dispatch q2 as a
         # replacement. is_stopping must keep it QUEUED.
         assert slot._side.is_complete is True, "precondition: finally flipped is_complete"

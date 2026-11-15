@@ -69,7 +69,7 @@ describe('Windows gateway paths show their file name (#14581)', () => {
     [POSIX_BACKSLASH, 'we\\ird.md'],
     ['/a/b/', 'b'],
   ])('usePanelTabs titles a tab for %s as %s', (path, title) => {
-    const { result } = renderHook(() => usePanelTabs(null, []))
+    const { result } = renderHook(() => usePanelTabs('slot-a', []))
     act(() => result.current.openFolder(path, 'slot-a'))
     expect(result.current.tabs.at(-1)?.title).toBe(title)
   })

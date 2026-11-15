@@ -424,7 +424,7 @@ async def test_two_UNNAMED_stubs_on_one_backend_get_distinct_namespaces(
         )
         assert nonces[0] != nonces[1], (
             f"both unnamed co-tenants got the same nonce {nonces[0]!r}. One "
-            "namespace for two sessions is exactly #5322: each one's own "
+            "namespace for two sessions is the failure: each one's own "
             "fingerprint check still passes, so a wrong-target action is silent."
         )
     finally:

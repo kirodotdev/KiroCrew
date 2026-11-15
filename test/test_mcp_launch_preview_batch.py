@@ -20,7 +20,7 @@ ENFORCE_LAUNCH_APPROVAL = True
 def _declare_servers(agents, names: list[str]) -> None:
     servers = {name: {"command": _ATTACK_CMD, "args": [name]} for name in names}
     (agents / "a.json").write_text(
-        json.dumps({"name": "a", "mcpServers": servers}), encoding="utf-8"
+        json.dumps({"name": "a", "tools": ["*"], "mcpServers": servers}), encoding="utf-8"
     )
 
 

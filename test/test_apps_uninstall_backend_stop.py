@@ -106,6 +106,25 @@ class TestCliUninstallDelegatesToTheGateway:
         assert action.get_header("Content-type") == "application/json"
         assert json.loads(action.data) == {"purge_data": purge_data}
 
+    def test_a_refusal_names_the_uninstall_control_not_the_toggle(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import kiro_crew.app_lifecycle_client as client
+
+        def _refuse(*a: Any, **k: Any) -> None:
+            raise client.AppGatewayError("app 'demo' is busy")
+
+        with (
+            patch("kiro_crew.app_lifecycle_client.toggle_app", side_effect=_refuse),
+            patch("kiro_crew.cli_commands.uninstall_app") as local_uninstall,
+            pytest.raises(SystemExit),
+        ):
+            cc._handle_app(_ns(app_action="uninstall", name="demo", purge_data=False))
+        err = capsys.readouterr().err
+        assert "Press Uninstall on the app's page in the dashboard instead." in err
+        assert "Toggle" not in err
+        local_uninstall.assert_not_called()
+
 
 class TestCliFileOnlyUninstallDoesNotClaimAStop:
     """With no gateway reachable the CLI stops nothing, and must say so."""

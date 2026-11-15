@@ -336,7 +336,7 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
         try:
             body = await request.json()
         except Exception:
-            return _deny("invalid JSON")
+            return _deny("invalid JSON", code="invalid_json")
         if body_not_object_error(body) is not None:
             # The same answer, through ``_deny`` so it is audited like every refusal.
             return _deny("body must be a JSON object", code="body_not_object")
@@ -389,14 +389,21 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
 
             # Capture the hard cap from the *persisted* config BEFORE applying any
             # subagent_auto_max from this request — deny-by-default prevents a
-            # same-request ceiling-raise+spend.
-            persisted_hard_cap = agent.get("subagent_auto_max", 16)
+            # same-request ceiling-raise+spend. An unset value is the loader's own
+            # default, the cap the gateway really runs under and the page shows.
+            # Imported here, not at module top: this module is mirrored by the
+            # ``core`` facade, and a new top-level name would have to join it.
+            from kiro_crew.config.fields import field_default
+            from kiro_crew.config.loader import AgentConfig
+
+            default_hard_cap = field_default(AgentConfig, "subagent_auto_max")
+            persisted_hard_cap = agent.get("subagent_auto_max", default_hard_cap)
             if (
                 not isinstance(persisted_hard_cap, int)
                 or isinstance(persisted_hard_cap, bool)
                 or persisted_hard_cap < 3
             ):
-                persisted_hard_cap = 16
+                persisted_hard_cap = default_hard_cap
             persisted_hard_cap = min(persisted_hard_cap, SUBAGENT_AUTO_MAX_CEILING)
 
             if "subagent_auto_max" in agent_settings:
@@ -503,7 +510,7 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
         await _hot_apply_after_write()
         return web.json_response({"ok": True, "restart_required": restart_required})
 
-    cfg = KiroCrewConfig.load()
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
     return web.json_response(_config_body(cfg, await _kas_in_use(cfg)))
 
 

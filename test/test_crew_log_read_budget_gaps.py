@@ -17,6 +17,7 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
+from crew_log_core_helpers import _split_into_segments
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog, checkpoint
@@ -81,7 +82,7 @@ def _open(unit_id: str, kind: str = lg.KIND_SESSION) -> CrewLog:
     return CrewLog.open(kind, unit_id)
 
 
-def test_a_page_of_a_long_unit_is_reported_and_a_short_one_is_not(caplog):
+def test_a_page_of_a_long_unit_is_read_from_its_end_and_not_reported(caplog):
     _unit("acp-page", BIG)
     _unit("acp-short", 100)
     read_budget.mark_gateway_process()
@@ -90,18 +91,19 @@ def test_a_page_of_a_long_unit_is_reported_and_a_short_one_is_not(caplog):
             handle = _open(unit_id)
             assert len(handle.page(None, 50).entries) == 50
             handle.release_ownership()
-    (line,) = _warnings(caplog)
-    assert "fold=page unit=acp-page" in line and f"records={BIG}" in line and "delta=51" in line
-    assert "test_crew_log_read_budget_gaps.py:" in line
+    assert _warnings(caplog) == [], "a page seeks to its window (test_crew_log_seek_reads.py)"
 
 
-def test_a_get_near_the_end_is_reported_with_delta_one(caplog):
+def test_a_get_near_the_end_seeks_and_a_get_on_two_segments_is_reported(caplog):
     _unit("acp-get", BIG)
     read_budget.mark_gateway_process()
     handle = _open("acp-get")
     with caplog.at_level(logging.WARNING, logger=read_budget.__name__):
         assert handle.get(BIG - 1).seq == BIG - 1
         assert handle.get(3).seq == 3
+        assert _warnings(caplog) == []
+        _split_into_segments(lg.KIND_SESSION, "acp-get", BIG // 2)
+        assert handle.get(BIG - 1).seq == BIG - 1
     handle.release_ownership()
     (line,) = _warnings(caplog)
     assert "fold=get unit=acp-get" in line and f"records={BIG - 1}" in line and "delta=1" in line

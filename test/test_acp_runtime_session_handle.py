@@ -1405,6 +1405,27 @@ class TestAcpSessionHandleCommands:
         assert cmd["args"] == {"level": "high"}
 
     @pytest.mark.asyncio
+    async def test_send_command_raises_when_kiro_cli_refuses(self):
+        """A success: false answer with no JSON-RPC error is a refusal, not text."""
+        from kiro_crew.acp.client import AcpError
+
+        rt, _, _ = _make_runtime()
+        q = _register(rt, "s1")
+        handle = AcpSessionHandle("s1", q["s1"], rt)
+
+        async def refuse_send(method, params, **_kw):
+            resp_msg = JsonRpcMessage.from_dict(
+                {"id": 250, "result": {"success": False, "message": "invalid effort level 'bogus'"}}
+            )
+            await q["s1"].put(resp_msg)
+            return 250
+
+        rt.send_request = refuse_send
+        with pytest.raises(AcpError, match="invalid effort level 'bogus'") as refused:
+            await handle.send_command("/effort", args={"level": "bogus"})
+        assert refused.value.command_refused is True
+
+    @pytest.mark.asyncio
     async def test_set_config_option(self):
         """set_config_option sends correct JSON-RPC request."""
         rt, _, _ = _make_runtime()

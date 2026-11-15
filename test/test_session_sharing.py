@@ -980,7 +980,7 @@ class TestSessionSharingParentReset:
         calls = {"n": 0}
 
         class _FlakyRuntime:
-            def __init__(self, agent=None):
+            def __init__(self, agent=None, background_qos=False):
                 self._alive = False
 
             async def spawn(self, start_priority=None):
@@ -1015,7 +1015,7 @@ class TestSessionSharingParentReset:
         calls = {"n": 0}
 
         class _DeadRuntime:
-            def __init__(self, agent=None):
+            def __init__(self, agent=None, background_qos=False):
                 pass
 
             async def spawn(self, start_priority=None):

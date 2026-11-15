@@ -27,13 +27,21 @@ import re
 # keep resolving the unpatched object and the instrument would count nothing.
 from . import shell_normalizer as _shell_normalizer
 from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
-from .argv_floor_self import _self_token_frames, _static_substitution_output
+from .argv_floor_self import (
+    _quoted_assignment_scripts,
+    _self_token_frames,
+    _static_substitution_output,
+)
+from .shell_commands import read_commands
 from .shell_normalizer import (
     _argv_programs,
     _cut_at_operator,
     _data_consumer_exempt,
     _decode_shell_quoted_literals,
     _ends_argv,
+    _iter_shell_chars,
+    _matching_close_paren,
+    _only_single_quoted_openers,
     _program_basename,
     _resolve_param_defaults,
     _strip_redirect,
@@ -65,7 +73,23 @@ from .shell_normalizer import (
 # resolves is classified by its addresses; a DOTTED name whose lookup FAILS
 # is refused per call, deliberately -- answering a failed lookup open would
 # let whoever controls resolution mint an allow by suppressing it, the
-# same class the verdict cache refuses to latch.
+# same class the verdict cache refuses to latch.  The one definite failure,
+# "no such name", is not an allow on its own either: it counts as not this
+# host only for a HostName rewrite without a proxy, one ProxyJump without a
+# ProxyCommand, or exactly ``ssh [-q] -W %h:%p host`` (either option order).
+# The literal hop must pass the live IP-host guard for every DNS address;
+# a matching Host or Match block that sets a destination key (HostName,
+# ProxyJump, ProxyCommand, Canonical*) refuses it. Proxy forms require a
+# literal final HostName and check every locally resolved address, or its IP
+# literal, without checking its Host block. A literal final name with no
+# local DNS answer is left for the proxy to resolve. Other proxy commands,
+# flags, multi-hop routes and unresolved hop destinations stay refused.
+# The proof runs inside the agent's sandbox on sandbox-read config bytes;
+# unreadable Includes, Includes inside blocks, unsupported Match criteria,
+# tier off and a missing backend keep refusing. A route-cleared name has
+# the same standing as a DNS-cleared name: outer -F/-S/rsync -e routing
+# remains the documented network-fence residual. Failed revalidation drops
+# the route-only allow.
 #
 # The strictly larger residual is OUT OF GATE SCOPE by the module's own
 # doctrine (a script body is never a gate subject): interpreter/script-file
@@ -168,6 +192,64 @@ _QUOTED_SEP_SENTINELS = {
     "(": "\x05",
     "{": "\x06",
 }
+
+
+def _double_quoted_substitution_bodies(text: str) -> "list[str]":
+    """The body of each ``$(...)`` that sits directly inside double quotes in *text*.
+
+    :func:`_mask_quoted_separators` keeps double-quoted text as data, but bash runs
+    such a body as a command line of its own, in a new quote context. Only an
+    unpaired ``$`` opens one (``$$`` is the PID, ``\\$`` is text); the body ends at
+    its own matching ``)``, or runs to the end of *text* when none is found. A ``)``
+    in a heredoc body that :func:`read_commands` finds there does not end it. The
+    text that a bare ``cat`` prints from a quoted-tag heredoc is cut out of each
+    body (:func:`_without_quoted_heredoc_text`).
+    """
+    bodies: list[str] = []
+    i, state = 0, 0
+    while i < len(text):
+        dollars = 0
+        for step in _iter_shell_chars(text[i:], state):
+            at = i + step.offset
+            dollars = dollars + 1 if step.state == 2 and step.text == "$" else 0
+            if dollars % 2 and text.startswith("(", at + 1):
+                rest = text[at + 2 :]
+                commands = read_commands(rest, heredocs=True) if "<<" in rest else []
+                for doc in [doc for command in commands for doc in command.heredocs]:
+                    blank = re.sub("[^\n]", " ", rest[doc.start : doc.end])
+                    rest = rest[: doc.start] + blank + rest[doc.end :]
+                end, proven = _matching_close_paren(rest, 0)
+                bodies.append(text[at + 2 : at + 1 + end] if proven else text[at + 2 :])
+                i, state = (at + 2 + end if proven else len(text)), 2
+                break
+        else:
+            break
+    return [_without_quoted_heredoc_text(body) for body in bodies]
+
+
+def _without_quoted_heredoc_text(body: str) -> str:
+    """*body* with the text of each quoted-tag heredoc that a bare ``cat`` prints cut out.
+
+    Bash expands nothing in such a text, and a ``cat`` that writes to no file and
+    pipes to nothing only prints it. Every other heredoc keeps its text, so a shell
+    fed one (``bash <<'EOF'``, ``cat <<'EOF' | sh``) is read as before.
+    """
+    if "<<" not in body:
+        return body
+    docs = [
+        doc
+        for cmd in read_commands(body, heredocs=True)
+        if [word.raw for word in cmd.argv] == ["cat"]
+        and all(word.raw.startswith("<<") for word, _target in cmd.redirects)
+        and not cmd.separator.startswith("|")
+        for doc in cmd.heredocs
+        if doc.quoted
+    ]
+    cut = len(body)
+    for doc in sorted(docs, key=lambda doc: doc.start, reverse=True):
+        if doc.end <= cut:
+            body, cut = body[: doc.start] + body[doc.end :], doc.start
+    return body
 
 
 def _mask_quoted_separators(text: str) -> str:
@@ -927,7 +1009,14 @@ def _function_call_binds_self(text: str) -> bool:
     return False
 
 
-def _is_ssh_to_self(text_lower: str) -> bool:
+def _reaches_self_over_ssh(text_lower: str) -> bool:
+    """:func:`_is_ssh_to_self` on *text_lower* and on each quoted assignment script in it,
+    read whole: the separator mask would turn a script's own separators into data."""
+    scripts = _quoted_assignment_scripts(text_lower)
+    return _is_ssh_to_self(text_lower, own_line=True) or any(map(_is_ssh_to_self, scripts))
+
+
+def _is_ssh_to_self(text_lower: str, *, own_line: bool = False) -> bool:
     """True if *text_lower* opens an ssh/scp/sftp/rsync channel to THIS host.
 
     Structural for the same reason the other floors are: the target hides
@@ -972,6 +1061,10 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     the shell-builtin export spellings (``declare -x``/``typeset -x``), which
     are not leading-assignment syntax and so are not modeled by the walk.
     """
+    # Single quotes read as literal only in the caller's own line, and only when it
+    # has no live substitution opener before the splices below rewrite it: a spliced
+    # static output (``x'y``) could otherwise pair into quotes around a live one.
+    literal = own_line and _only_single_quoted_openers(text_lower)
     # Collapse empty expansions in the SOURCE so the gate and tokenization both
     # read the spliced-out spelling (``s$()sh localhost`` -> ``ssh localhost``).
     text_lower = _EMPTY_EXPANSION_RE.sub("", text_lower)
@@ -998,6 +1091,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     # separator-free by construction, so the substitution cannot fabricate a
     # command boundary the masking below would misread.
     text_lower = _resolve_line_assignments(text_lower)
+    unmasked = text_lower
     # Mask every ``;``/``|`` that is QUOTED or backslash-escaped in the source to
     # a sentinel BEFORE tokenization, so a quoted separator surviving into a
     # shlex-dequoted token (``scp 'a;b' localhost:/x``) is not read as a
@@ -1026,6 +1120,10 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     # argument is the destination the walk below cannot see through ``$1``.
     if _function_call_binds_self(text_lower):
         return True
+    # The mask above keeps double-quoted text as data, but bash runs a ``$(...)``
+    # there, so each such body is judged as a command line of its own.
+    if any(map(_is_ssh_to_self, _double_quoted_substitution_bodies(unmasked))):
+        return True
     # A self-targeting ``RSYNC_RSH`` set in one frame is inherited by
     # LATER frames (an exported value, or a command-scoped prefix on a command
     # that spawns a nested ``sh -c`` payload), where the per-frame pending/export
@@ -1043,7 +1141,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     # frames (a copy staged in a wrapper payload reaches its siblings); a
     # copy staged in an EARLIER command line is the documented residual.
     bound_program_verbs: "dict[str, str]" = {}
-    for tokens in _self_token_frames(text_lower):
+    for tokens in _self_token_frames(text_lower, literal):
         programs = _argv_programs(tokens)
         # A leading ``RSYNC_RSH=<cmd>`` environment assignment selects rsync's
         # remote shell exactly like ``-e``/``--rsh``, but rides BEFORE the verb

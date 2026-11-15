@@ -21,13 +21,7 @@ class TestShippedInventory:
 
     def test_registry_matches_the_scenario_loader(self) -> None:
         # One taxonomy: a slug the inventory groups by is a slug a scenario may claim.
-        # The loader's registry ships with the feature/user_story scenario schema; on a
-        # branch without it the check is skipped, not faked -- once both are on main the
-        # two must agree.
-        registry = getattr(scenarios, "FEATURES", None)
-        if registry is None:
-            pytest.skip("scenarios.FEATURES is not on this branch yet")
-        assert fc.FEATURE_TITLES == registry
+        assert fc.FEATURE_TITLES == scenarios.FEATURES
 
     def test_features_md_is_rendered_from_features_json(self) -> None:
         assert (HERE / "FEATURES.md").read_text(encoding="utf-8") == fc.render(fc.load())

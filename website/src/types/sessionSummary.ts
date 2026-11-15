@@ -6,6 +6,8 @@
  * panel and the api client share one definition rather than two that drift.
  */
 
+import { fmtList } from '../i18n/format'
+
 /** What the panel renders as a single word in an intent's header.
  *
  *  Derived server-side from the two stored axes (progress status + verification)
@@ -126,9 +128,7 @@ export function collectTriage(
 
 /** Render a range list as the panel shows it: `turns 1–14, 77–100`. */
 export function formatRanges(ranges: [number, number][]): string {
-  return ranges
-    .map(([a, b]) => (a === b ? String(a) : `${a}–${b}`))
-    .join(', ')
+  return fmtList(ranges.map(([a, b]) => (a === b ? String(a) : `${a}–${b}`)), { style: 'narrow' })
 }
 
 /** True when an intent was returned to after a gap — more than one range.

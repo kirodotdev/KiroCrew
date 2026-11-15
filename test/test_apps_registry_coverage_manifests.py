@@ -886,6 +886,11 @@ class TestMergeManifest:
         assert merged["manifest"]["setup"] == {"onInstall": "echo hi"}
         assert merged["manifest"]["openCommand"] == "open"
 
+    def test_the_desktop_declaration_reaches_the_trust_prompt(self):
+        desktop = {"windows": [{"id": "pet", "entry": "pet.mjs", "kind": "background"}]}
+        merged = registry._merge_manifest({"name": "demo", "repo": "o/demo"}, {"desktop": desktop})
+        assert merged["manifest"]["desktop"] == desktop
+
     def test_no_manifest_key_means_no_manifest_block(self):
         merged = registry._merge_manifest({"name": "demo", "repo": "o/demo"}, {})
         assert "manifest" not in merged

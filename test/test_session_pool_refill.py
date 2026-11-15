@@ -304,6 +304,7 @@ class TestPoolCwd:
 
         factory.assert_called_once()
         assert factory.call_args.kwargs.get("cwd") == "/home/user/.kirocrew/workspace"
+        assert mgr._warm_pool.qsize() == 1
 
     @pytest.mark.asyncio
     async def test_fill_warm_pool_passes_none_when_pool_cwd_empty(self):
@@ -319,6 +320,7 @@ class TestPoolCwd:
 
         factory.assert_called_once()
         assert factory.call_args.kwargs.get("cwd") is None
+        assert mgr._warm_pool.qsize() == 1
 
 
 _MID_REFILL_LOST_RUN_CEILING_SECS = 30.0

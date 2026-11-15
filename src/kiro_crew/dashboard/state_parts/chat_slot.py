@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew._facade_bindings import own_methods
 from kiro_crew.approval_mode_policy import session_mode_permitted
+from kiro_crew.dashboard import run_clock as _run_clock
 from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
@@ -83,8 +84,6 @@ class _ChatSlot:
         "_crew_log_pending_channel",
         "_reasoning_effort",
         "_effort_pick_gen",
-        "turn_timeout_secs",
-        "_turn_timeout_hydrated",
         "mode",
         "workspace",
         "memory_store",
@@ -99,8 +98,15 @@ class _ChatSlot:
         "_task",
         "_turn_admission_reserved",
         "_turn_generation",
+        "_run_started_at",
+        "_run_started_turns",
+        "_task_started_at",
+        "_turn_lineage",
         "_turns_started",
         "_unstarted_generation",
+        "_handoff_generation",
+        "_handoff_mark",
+        "_unsent_resends",
         "_wake_starting_task",
         "_chunk_seq",
         "event",
@@ -141,6 +147,8 @@ class _ChatSlot:
         "_last_stop_reason",
         "_created_by",
         "_attribution",
+        "_participants",
+        "_participants_dropped",
         "_created_by_sid",
         "_saved_created_by",
         "_lineage_minted",
@@ -159,6 +167,10 @@ class _ChatSlot:
         "_mcp_report_session_id",
         "_mcp_banner_shown",
         "_hidden_scratch_notice_shown",
+        "_mcp_sign_in_notice_shown",
+        "_telemetry_notice_shown",
+        "_project_hook_files_notice_shown",
+        "_session_notice_marks",
         "_on_message",
         "_on_row",
         "_on_card_event",
@@ -196,6 +208,7 @@ class _ChatSlot:
         "_slack_linked",
         "_slack_channel",
         "_slack_thread_ts",
+        "_pending_thread_parent",
         "channel_origin",
         "_channel_runtime_origin",
         "folder_id",
@@ -257,6 +270,8 @@ class _ChatSlot:
         "_empty_response_retries",
         "_empty_episode_productive",
         "_carried_ttft_clock",
+        "_prev_turn_ctx_used",
+        "_prev_turn_ctx_session",
         "_promise_only_retries",
         "_compaction_continue_retries",
         "_batch_rejected",
@@ -300,6 +315,7 @@ class _ChatSlot:
         "_disk_meta_key",
         "_disk_tail_ts",
         "_frozen_prefix_cache",
+        "_append_basis",
         "_foreign_reported",
         "_pending_rewrite",
         "_file_changes",
@@ -323,6 +339,7 @@ class _ChatSlot:
         "remote_slot",
         "_turn_in_flight_generation",
         "_turn_in_flight_prompt",
+        "_restored_turn_marker",
         "_active_turn_session_key",
         "_responsive",
         "_side",
@@ -347,6 +364,7 @@ class _ChatSlot:
         "_turn_user_sent",
         "_turn_owner_sent",
         "_turn_agent_started",
+        "_turn_wrote_text",
         "_steer_admissions",
         "_steer_decision_strips",
         "_steer_possibly_delivered",
@@ -369,6 +387,14 @@ class _ChatSlot:
         "_embed_question_polled_at",
         "_welcomed_agent",
         "_welcome_preview",
+        # Sidebar-row memos (``dashboard/slot_row_memo.py``); ``None`` means no memo.
+        "_row_summary_memo",
+        "_row_redacted_memo",
+        "_row_links_memo",
+        "_slot_links_memo",
+        # A per-slot record kept outside the slot (the code-channel sender record)
+        # holds it weakly, so a closed slot is freed with everything it carries.
+        "__weakref__",
     )
 
     # Initialised by state_parts/source_links.py.
@@ -379,6 +405,11 @@ class _ChatSlot:
     _dismissed_hydrated: bool
     _dismissed_txn_depth: int
     _dismissed_txn_pending: set[str]
+    # Initialised by state_parts/slot_transcript.py; see dashboard/slot_row_memo.py.
+    _row_summary_memo: tuple[Any, ...] | None
+    _row_redacted_memo: tuple[Any, ...] | None
+    _row_links_memo: tuple[list[dict], list[dict]] | None
+    _slot_links_memo: tuple[Any, ...] | None
 
     # Initialised by state_parts/slot_sidebar.py.
     _artifact: str
@@ -423,8 +454,6 @@ class _ChatSlot:
     served_model: str
     _effort_pick_gen: int
     _reasoning_effort: str
-    turn_timeout_secs: int | None
-    _turn_timeout_hydrated: bool
     memory_store: str
     _memory_assignment_from_history: bool
     _binding: TranscriptBinding
@@ -448,6 +477,8 @@ class _ChatSlot:
     _last_stop_reason: str
     _created_by: str
     _attribution: Any
+    _participants: list[dict[str, Any]]
+    _participants_dropped: dict[str, Any]
     _created_by_sid: str
     _saved_created_by: str
     _lineage_minted: bool
@@ -459,6 +490,18 @@ class _ChatSlot:
     # Whether this chat already showed the hidden-scratch-folder start notice in
     # this gateway run; in memory only, so a restart shows it once more.
     _hidden_scratch_notice_shown: bool
+    # Whether this chat has shown its "waiting for a sign-in" notice during this
+    # gateway run; in memory only, so a restart shows it once more.
+    _mcp_sign_in_notice_shown: bool
+    # A mark of the last KAS telemetry notice this chat showed, "" for none; saved
+    # on the metadata line, so a restart does not show the same notice again.
+    _telemetry_notice_shown: str
+    # A mark of the project folder and hook-file names whose withheld-files notice
+    # this chat last showed, "" for none; saved on the metadata line like the above.
+    _project_hook_files_notice_shown: str
+    # Marks of the session-start spec notices this chat showed, oldest first
+    # (``dashboard.session_notice_marks``); saved on the metadata line.
+    _session_notice_marks: list[str]
     _pending_reset_history_key: str | None
     _pending_reset_clears_cwd: bool
     _pending_discard_conversation_key: str | None
@@ -473,6 +516,10 @@ class _ChatSlot:
     _slack_linked: bool
     _slack_channel: str
     _slack_thread_ts: str
+    #: ``(channel, thread_ts, parent text)`` of the Slack thread this new session
+    #: joined (``chat_slack._seed_thread_parent``), handed to each prompt built
+    #: until the session holds a reply, then dropped.
+    _pending_thread_parent: tuple[str, str, str] | None
     _model_pick_gen: int
     _model_runtime_pick_gen: int | None
     _pending_memory_mode: str | None
@@ -490,6 +537,9 @@ class _ChatSlot:
     # Initialised by state_parts/slot_turns.py.
     _turn_in_flight_generation: int
     _turn_in_flight_prompt: dict[str, Any] | None
+    # What a restore found in a marker that outlived its process, kept after the
+    # marker itself is cleared (``slot_persistence.turn_marker``); None otherwise.
+    _restored_turn_marker: dict[str, Any] | None
     _buffers: SlotBufferCoordinator
     _queue_repository: SlotQueueRepository
     _closing: int
@@ -502,8 +552,22 @@ class _ChatSlot:
     _task: asyncio.Task[Any] | None
     _turn_admission_reserved: bool
     _turn_generation: int
+    # ``run_clock.now()`` when the first turn of the running run started, or
+    # None between runs; the run's final ``chat_done`` reads and clears it.
+    _run_started_at: float | None
+    # ``_turns_started`` when ``_run_started_at`` was stamped. While the two are
+    # equal no turn of the run has passed the dispatch gates yet.
+    _run_started_turns: int
+    # ``run_clock.now()`` when the task holding the slot was set, or None.
+    _task_started_at: float | None
+    # ``(generation, first generation)`` of a dispatch that retried the turn
+    # before it (``queue_drain``); read through :meth:`_turn_lineage_generation`.
+    _turn_lineage: tuple[int, int]
     _turns_started: int
     _unstarted_generation: int
+    _handoff_generation: int
+    _handoff_mark: asyncio.Future[None] | None
+    _unsent_resends: tuple[dict[str, Any], str, dict[str, Any]] | None
     _wake_starting_task: asyncio.Task[Any] | None
     _chunk_seq: int
     event: asyncio.Event
@@ -643,6 +707,8 @@ class _ChatSlot:
     _empty_response_retries: int
     _empty_episode_productive: bool
     _carried_ttft_clock: Any
+    _prev_turn_ctx_used: int
+    _prev_turn_ctx_session: str
     _promise_only_retries: int
     _compaction_continue_retries: int
     _batch_rejected: bool
@@ -669,6 +735,9 @@ class _ChatSlot:
     #: The turn running now is one the agent started on its own between prompts
     #: (``chat_turn.agent_started``); its assistant rows carry ``meta.origin``.
     _turn_agent_started: bool
+    #: The turn running now has streamed reply text (``chat_turn.stream_chunks``);
+    #: ``POST /api/session-directive`` reports it to the directive tool.
+    _turn_wrote_text: bool
     _steer_admissions: dict[str, dict]
     _steer_decision_strips: dict[str, dict]
     _steer_possibly_delivered: set[str]
@@ -708,7 +777,8 @@ class _ChatSlot:
     _disk_older_durable_count: int
     _disk_window_len: int
     _disk_tail_ts: str | None
-    _frozen_prefix_cache: tuple[float, int, int, str, list[str]] | None
+    _frozen_prefix_cache: tuple[float, int, int, str | tuple[int, int], list[str]] | None
+    _append_basis: tuple[str, tuple[int, int, int, int], int, str, list[bytes], int] | None
     _foreign_reported: frozenset[int]
     _pending_rewrite: bool
 
@@ -801,6 +871,25 @@ class _ChatSlot:
     def autocompact_pct(self, value: float | None) -> None:
         self._binding.autocompact_pct = value
         self._binding.autocompact_set = True
+
+    @property
+    def turn_timeout_secs(self) -> int | None:
+        """The session's own turn time limit, held in the binding aliases share."""
+        return self._binding.turn_timeout_secs
+
+    @turn_timeout_secs.setter
+    def turn_timeout_secs(self, value: int | None) -> None:
+        self._binding.turn_timeout_secs = value
+        self._binding.turn_timeout_hydrated = True
+
+    @property
+    def _turn_timeout_hydrated(self) -> bool:
+        """False until the shared limit is read from the transcript or set."""
+        return self._binding.turn_timeout_hydrated
+
+    @_turn_timeout_hydrated.setter
+    def _turn_timeout_hydrated(self, value: bool) -> None:
+        self._binding.turn_timeout_hydrated = value
 
     @property
     def reasoning_effort(self) -> str:
@@ -960,9 +1049,32 @@ class _ChatSlot:
 
     @task.setter
     def task(self, value: asyncio.Task[Any] | None) -> None:
-        if value is not None and value is not self._task:
-            self._turn_generation += 1
+        if value is not self._task:
+            # A stamp is the run's once one of its turns passed the dispatch
+            # gates. Before that it belongs to the task holding the slot, so an
+            # app reservation or a drain that leaves with no such turn takes it
+            # along, and the next run is not measured from it.
+            if self._run_started_turns == self._turns_started:
+                self._run_started_at = None
+            self._task_started_at = None
+            if value is not None:
+                self._turn_generation += 1
+                # Every turn starts here, so the earliest turn of a run stamps it
+                # and the run's final ``chat_done`` (``queue_cycle._send_chat_done``)
+                # reports the whole run, whichever window is watching. A person's
+                # message restamps from ``_task_started_at`` at the dispatch gates.
+                now = _run_clock.now()
+                self._task_started_at = now
+                if self._run_started_at is None:
+                    self._run_started_at = now
+                    self._run_started_turns = self._turns_started
         self._task = value
+
+    def _turn_lineage_generation(self) -> int:
+        """The generation that started the turn of the latest dispatch: that
+        dispatch's own, unless it was the previous turn's own retry."""
+        generation, first = self._turn_lineage
+        return first if generation == self._turn_generation else self._turn_generation
 
     @property
     def turn_running(self) -> bool:
@@ -1129,7 +1241,7 @@ class _ChatSlot:
         so two concurrent callers targeting the same slot cannot both observe
         ``running == False`` within a single loop iteration.
         """
-        # An Ultra Mode "Pause all" holds this session: queue, never start.
+        # A conductor mode "Pause all" holds this session: queue, never start.
         from kiro_crew import crew_pause
 
         # circular import: chat_utils_injected_rows imports through state.

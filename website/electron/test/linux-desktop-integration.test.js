@@ -174,6 +174,8 @@ test("integrateLinuxDesktop creates icons + launcher and resolves refreshers", (
   const launcher = fs._files.get(`${HOME}/.local/share/applications/kirocrew-desktop-appimage.desktop`);
   assert.match(launcher, /^Exec="\/opt\/K\.AppImage" %U$/m);
   assert.match(launcher, /^StartupWMClass=kirocrew-desktop$/m);
+  // The bundled scheme line, so kirocrew:// links open this AppImage.
+  assert.match(launcher, /^MimeType=x-scheme-handler\/kirocrew;$/m);
 
   // The private manifest records the exact launcher and icon bytes we wrote.
   const state = JSON.parse(fs._files.get(STATE_PATH));
@@ -317,6 +319,21 @@ test("integrateLinuxDesktop verifies current managed files without refreshing ca
 
   assert.deepEqual(res, { installed: true, iconName: "kirocrew-desktop", sizes: 1 });
   assert.deepEqual(runs, []);
+});
+
+test("integrateLinuxDesktop adds the scheme line to a managed launcher written without it", () => {
+  const withoutScheme = BUNDLED_DESKTOP.replace("MimeType=x-scheme-handler/kirocrew;\n", "");
+  const bundled = `${APPDIR}/kirocrew-desktop.desktop`;
+  const fs = makeFakeFs(bundleWithIcons(["16x16"], { [bundled]: withoutScheme }));
+  integrateLinuxDesktop(baseDeps(fs));
+  const launcher = `${HOME}/.local/share/applications/kirocrew-desktop-appimage.desktop`;
+  assert.doesNotMatch(fs._files.get(launcher), /^MimeType=/m);
+
+  fs._files.set(bundled, BUNDLED_DESKTOP);
+  const res = integrateLinuxDesktop(baseDeps(fs, { version: "0.6.0" }));
+
+  assert.equal(res.installed, true);
+  assert.match(fs._files.get(launcher), /^MimeType=x-scheme-handler\/kirocrew;$/m);
 });
 
 test("integrateLinuxDesktop updates its managed launcher after the AppImage moves", () => {

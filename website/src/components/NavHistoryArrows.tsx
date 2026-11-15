@@ -15,6 +15,10 @@ import {
 import { routeHistoryMenuEntries, type RouteHistoryMenuEntry } from '../lib/routeHistoryLabels'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from './ui/context-menu'
 
+/** How long a mouse press on an arrow must be held to open its history menu,
+ *  in the range browsers use for their own Back button. */
+export const MOUSE_HOLD_MS = 500
+
 /**
  * Feed the route-history position store — mounted ONCE inside the router (next
  * to `NavigationBackGuard` in main.tsx), and deliberately not folded into the
@@ -135,7 +139,9 @@ export function NavHistoryArrows() {
  * One arrow plus its history menu (#17453), built on the shared
  * `ui/context-menu`: a right-click, the menu key, Shift+F10 or a touch/pen
  * long press opens a named list of the destinations behind or ahead of it.
- * Dismissal, focus return and the long-press timer are the shared menu's.
+ * Dismissal, focus return and the touch long-press timer are the shared menu's.
+ * A mouse held down on an arrow for `MOUSE_HOLD_MS` opens the same menu, as a
+ * browser's Back button does; the shared menu times only touch and pen.
  *
  * The list is read when the menu opens, so its steps describe the stack as it
  * is then. Another navigation while it is open (browser Back, a chord) would
@@ -158,9 +164,12 @@ function HistoryArrow({ direction, className, disabled, label, title, keyshortcu
   // The release of the long press that opened the menu is followed by a
   // click; that click must not also step. Cleared by the next press or key.
   const skipClick = useRef(false)
-  // A touch or pen press is down on the arrow.
+  // A touch or pen press is down on the arrow, or a mouse hold opened the menu.
   const pressing = useRef(false)
   const buttonRef = useRef<HTMLButtonElement | null>(null)
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const endHold = () => { if (holdTimer.current !== null) { clearTimeout(holdTimer.current); holdTimer.current = null } }
+  useEffect(() => endHold, [])
   const locationKey = useLocation().key
   useEffect(() => {
     if (isOpen.current) {
@@ -173,6 +182,8 @@ function HistoryArrow({ direction, className, disabled, label, title, keyshortcu
   const onOpenChange = (open: boolean) => {
     isOpen.current = open
     if (!open) return
+    // Already open (a right-click or macOS Ctrl+click): a running hold must not reopen it.
+    endHold()
     openedAt.current = routerEntry().idx
     setEntries(routeHistoryMenuEntries(direction))
     // Only a long press is followed by a click; a right-click or the menu
@@ -192,9 +203,22 @@ function HistoryArrow({ direction, className, disabled, label, title, keyshortcu
             if (skipClick.current) { skipClick.current = false; return }
             step(direction)
           }}
-          onPointerDown={e => { skipClick.current = false; pressing.current = e.pointerType !== 'mouse' }}
-          onPointerUp={() => { pressing.current = false }}
-          onPointerCancel={() => { pressing.current = false }}
+          onPointerDown={e => {
+            skipClick.current = false
+            pressing.current = e.pointerType !== 'mouse'
+            endHold()
+            if (e.pointerType !== 'mouse' || e.button !== 0 || !hasEntries) return
+            const { clientX, clientY } = e
+            holdTimer.current = setTimeout(() => {
+              holdTimer.current = null
+              // Its release is followed by a click, which must not also step.
+              pressing.current = true
+              buttonRef.current?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX, clientY }))
+            }, MOUSE_HOLD_MS)
+          }}
+          onPointerUp={() => { pressing.current = false; endHold() }}
+          onPointerCancel={() => { pressing.current = false; endHold() }}
+          onPointerLeave={endHold}
           onKeyDown={() => { skipClick.current = false }}
           onContextMenu={e => { if (!hasEntries) e.preventDefault() }}
           disabled={disabled}

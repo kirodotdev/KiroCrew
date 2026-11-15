@@ -11,8 +11,9 @@ Writes: ``_channel_window_mtime``, ``_dirty_flag``, ``_dirty_gen``,
 ``_disk_window_len``, ``_foreign_reported``, ``_frozen_prefix_cache``,
 ``_guarded_history_writes``, ``_lazy_tail``, ``_lazy_window``, ``_messages``,
 ``_metadata_persist_inflight``, ``_pending_rewrite``, ``_question_pending``,
-``_resumed_count``, ``_unknown_row_fields_bytes``, ``_window_loader_thread``,
-``total_messages``.
+``_resumed_count``, ``_row_links_memo``, ``_row_redacted_memo``,
+``_row_summary_memo``, ``_slot_links_memo``, ``_unknown_row_fields_bytes``,
+``_window_loader_thread``, ``total_messages``.
 Reads only: ``_buffers``, ``_coordinator_approvals``, ``_on_card_event``,
 ``_on_message``, ``_on_question_retired``, ``_on_row``, ``_pending``, ``_projection``,
 ``event``, ``key``.
@@ -32,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config.loader import resolve_effective_agent
 from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.dashboard.slot_row_memo import ROW_MEMO
 from kiro_crew.dashboard.state_parts.source_links import (
     _budgeted_source_links,
     _project_source_links,
@@ -40,12 +42,14 @@ from kiro_crew.dashboard.state_parts.transcript_rows import (
     _TRANSIENT_ROLES,
     _WIRE_ONLY_ROLES,
     durable_row_count,
+    is_interruption_stale,
     is_turn_interrupted,
     parse_cls_meta,
 )
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.history import latest_transcript_ts, mint_row_mid, monotonic_transcript_ts
 from kiro_crew.shared_crew.attribution import with_request_author
+from kiro_crew.shared_crew.participants import note_author
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
@@ -214,6 +218,11 @@ def init_transcript_fields(self: _ChatSlot) -> None:
     # retraction of this slot's name must order itself after the real write,
     # so it waits on these futures, which complete with the worker.
     self._guarded_history_writes = set()
+    # The sidebar-row memos (``dashboard/slot_row_memo.py``); ``None`` is no memo.
+    self._row_summary_memo = None
+    self._row_redacted_memo = None
+    self._row_links_memo = None
+    self._slot_links_memo = None
     # Transcript mtime the in-memory window was last brought up to date
     # against. Only meaningful for a slot bound to a channel session, whose
     # transcript the channel also writes to (see channel_slots).
@@ -261,8 +270,13 @@ def init_transcript_fields(self: _ChatSlot) -> None:
     # _disk_older_count) so a 5s flush is O(window), not O(file). The
     # (mtime, size) pair also doubles as the "did another process write this
     # file since we last saved?" signal that gates the cross-process
-    # foreign-append merge. See chat_persistence._save_*.
+    # foreign-append merge. See chat_persistence_parts.save_transaction._save_slot_to_history.
     self._frozen_prefix_cache = None
+    # What the last committed save left on disk (path, file identity,
+    # disk_older, metadata line, window digests, first file-change row), so
+    # the next save can append its new rows instead of rewriting the file.
+    # None: the next save rewrites.
+    self._append_basis = None
     # Hashes of kept foreign lines already logged, so a re-scan stays quiet.
     self._foreign_reported = frozenset()
     # Set by rewind/regenerate after they TRUNCATE the window. While set,
@@ -300,6 +314,7 @@ def append(
     broadcast_user: bool = False,
     meta: dict | None = None,
     mint_mid: bool = True,
+    note_participant: bool = True,
 ) -> dict[str, Any]:
     # A durable row ends the segment a permission request held open, so the
     # reply's text lands above it. Cleared first: the cut appends a row too.
@@ -360,6 +375,7 @@ def append(
             try:
                 self._on_question_retired(self.key, retired)  # type: ignore[operator]
             except Exception:
+                # A failing listener must not stop the append.
                 pass
     msg: dict[str, Any] = {
         "role": role,
@@ -391,6 +407,11 @@ def append(
         # Shared Crew: a live user row written by a request handler names
         # that request's server-derived author unless it already names one.
         meta = with_request_author(meta)
+        # The row's author, if a person, joins the session's participants. A
+        # resume replaying stored rows live passes ``note_participant=False``:
+        # reopening a session is not writing in it.
+        if note_participant:
+            note_author(self, meta)
     if meta:
         msg["meta"] = meta
     # Stamp a per-row delivery identity. A client sees the SAME row through
@@ -659,6 +680,25 @@ def to_dict(
     coordinator_pending: list[dict] = (
         coordinator_approvals(self.key) if coordinator_approvals is not None else []
     )
+    projected: list[dict] | None = None
+    ctx = ROW_MEMO.get()
+    if not include_check_status and not dashboard_user and ctx is not None:
+        # The bare audience reads no status cache and audits nothing, so its
+        # chips are a pure function of the extracted links. That list is
+        # rebuilt (a new object) whenever extraction reruns, so its identity
+        # keys the memo; holding it keeps the identity from being reused.
+        memo = self._row_links_memo
+        if memo is not None and memo[0] is source_links:
+            ctx.counts["chips_hit"] += 1
+        else:
+            ctx.counts["chips_miss"] += 1
+            memo = (
+                source_links,
+                _project_source_links(_budgeted_source_links(source_links), False),
+            )
+            self._row_links_memo = memo
+        # Fresh dicts per row, as the projection itself returns.
+        projected = [dict(link) for link in memo[1]]
     return self._projection.to_dict(
         self,
         include_check_status=include_check_status,
@@ -671,6 +711,7 @@ def to_dict(
         strip_options=_strip_options,
         parse_cls_meta=parse_cls_meta,
         is_turn_interrupted=is_turn_interrupted,
+        is_interruption_stale=is_interruption_stale,
         is_system_notice=is_system_notice,
         latest_transcript_ts=latest_transcript_ts,
         last_message_preview=_last_message_preview,
@@ -684,4 +725,5 @@ def to_dict(
         project_source_links=(
             lambda links, incl: _project_source_links(links, incl, dashboard_user=dashboard_user)
         ),
+        source_links_projected=projected,
     )

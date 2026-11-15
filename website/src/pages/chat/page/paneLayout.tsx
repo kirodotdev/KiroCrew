@@ -18,6 +18,7 @@ import { resolveFolderAgent, resolveFolderProjectDir, isStaleProjectDirError } f
 import { PanelLeftLight, PanelLeftSolid } from '../../../components/icons/panels'
 import { sidePanelDockMotion } from '../sidePanelMount'
 import { errMessage } from '../../../utils/thunkError'
+import { isSplitChord } from '../../../hooks/splitChord'
 import { memorySwitchTimeoutMs } from '../../../utils/memorySwitchTimeout'
 import { forgetSlotSuccession } from '../../../utils/slotSuccession'
 import type { MemorySwitchContext } from '../memoryModeSwitch'
@@ -117,7 +118,7 @@ export function usePaneLayoutState({
     if (!safeSetItem(key, '1')) return
     // Without the Auto-Open Git setting the tab is only created for discovery,
     // so it is automatic: it neither stops Pin Summary's landing nor takes the
-    // focus from a Summary the landing chose. An Ultra Mode chat keeps the
+    // focus from a Summary the landing chose. A conductor mode chat keeps the
     // Board (or the tab the person picked) in front either way.
     tabsCtl.openView('git', { automatic: !autoOpenGitPanel || tabsCtl.boardFirst })
     if (autoOpenGitPanel) dispatch(openActivityPanel())
@@ -193,7 +194,7 @@ export function usePaneLayoutState({
   useEffect(() => {
     if (embedMode) return
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'd') {
+      if (isSplitChord(e)) {
         // A crew window covers the pane: never split the hidden local session.
         if (!splitFeatureEnabled || splitMode || !activeSlot || crewWindowShown()) return
         e.preventDefault()

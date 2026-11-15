@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Callable
 from kiro_crew.embeddings import PRIORITY_BULK, PRIORITY_NORMAL
 
 if TYPE_CHECKING:
+    from kiro_crew.memory_recall_filters import RecallFilters
     from kiro_crew.vector_memory import VectorMemoryStore
 
 # The store's own logger: callers and tests filter on it by name.
@@ -43,6 +44,8 @@ class _RecallQuery:
     vector: list[float] | None
     generation: int | None
     signature: str | None
+    #: Optional kind/time filters of an explicit ``memory_recall``; None changes nothing.
+    filters: RecallFilters | None = None
 
 
 class _RecallSpaceChanged(Exception):

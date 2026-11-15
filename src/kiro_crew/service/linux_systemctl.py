@@ -353,29 +353,72 @@ def _unit_state(*, user: bool) -> _UnitState:
     )
 
 
-def _loaded_restart_prevent(*, user: bool) -> str | None:
-    """The ``RestartPreventExitStatus`` value the scope's manager has LOADED for
-    our unit -- the merged unit, drop-ins included, as of the last daemon-reload
-    -- or ``None`` when ``systemctl`` answered with no such property line.
+def _loaded_property(name: str, *, user: bool) -> str | None:
+    """The value of property *name* the scope's manager has LOADED for our unit
+    -- the merged unit, drop-ins included, as of the last daemon-reload -- or
+    ``None`` when ``systemctl`` answered with no such property line.
 
-    ``--all`` so an unset property still prints as ``RestartPreventExitStatus=``
-    (empty) rather than being omitted, which keeps "not set" apart from "this
-    systemctl did not answer".
+    ``--all`` so an unset property still prints as ``<name>=`` (empty) rather
+    than being omitted, which keeps "not set" apart from "this systemctl did not
+    answer".
     """
     res = _systemctl(
         "show",
         "--all",
         "-p",
-        "RestartPreventExitStatus",
+        name,
         f"{SERVICE_NAME}.service",
         sudo=False,
         user=user,
     )
     for line in (res.stdout or "").splitlines():
         key, sep, value = line.partition("=")
-        if sep and key.strip() == "RestartPreventExitStatus":
+        if sep and key.strip() == name:
             return value.strip()
     return None
+
+
+def _loaded_restart_prevent(*, user: bool) -> str | None:
+    """The LOADED ``RestartPreventExitStatus`` of our unit (:func:`_loaded_property`)."""
+    return _loaded_property("RestartPreventExitStatus", user=user)
+
+
+def _restart_policy_line(state: _UnitState) -> str | None:
+    """One line saying the LOADED unit's ``Restart=`` is not ``always``, with the
+    remedy, or ``None`` when there is nothing to say.
+
+    A unit written before ``render_unit`` emitted ``Restart=always`` carries
+    ``Restart=on-failure``, which never relaunches a gateway that exits 0: the
+    stale-asset watchdog's exit, and an in-place ``kirocrew restart``, leave the
+    host with no gateway. Advisory, unlike :func:`_stale_unit_lines`: a host can
+    run on such a unit for good, so ``kirocrew doctor`` warns without counting it
+    as an issue. Same reading as :func:`_stale_unit_line`: the manager's loaded
+    value, read-only, a loaded unit of ours only, and no claim when ``systemctl``
+    did not print the property.
+    """
+    if state.load != "loaded" or not state.ours:
+        return None
+    user = state.scope == "user"
+    value = _loaded_property("Restart", user=user)
+    if not value or value == "always":
+        return None
+    remedy = _unit_remedy(state, "`Restart=always`")
+    if state.scope == "system":
+        remedy += (
+            f", or add a drop-in under /etc/systemd/system/{SERVICE_NAME}.service.d/ "
+            "with `Restart=always` under [Service] and run `sudo systemctl daemon-reload`"
+        )
+    drop_ins = _loaded_property("DropInPaths", user=user)
+    if drop_ins:
+        reload = "systemctl --user daemon-reload" if user else "sudo systemctl daemon-reload"
+        remedy = (
+            f"if one of the loaded drop-ins ({drop_ins}) sets `Restart=`, change it there "
+            f"to `Restart=always` and run `{reload}`; otherwise {remedy}"
+        )
+    return (
+        f"the loaded unit has `Restart={value}`, which does not relaunch the gateway "
+        f"after every exit (this build's unit carries `Restart=always`): {remedy}."
+    )
 
 
 def _stale_unit_line(state: _UnitState) -> str | None:

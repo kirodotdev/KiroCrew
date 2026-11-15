@@ -182,12 +182,10 @@ COMPACT_WAIT_SECS_MAX = 3600.0
 # the same load/write asymmetry the security-relevant knobs also close.
 #
 # Defined HERE and imported by `_EDITABLE_CONFIG` rather than spelled twice, so
-# the write gate and the load clamp cannot drift. Three fields already clamped on
-# load but duplicated their literals across the two files; those now read from
-# these names too, which is the "two-literal drift" half of the same problem.
+# the write gate and the load clamp cannot drift.
 #
-# Bounds are the ones the write path already declared. This change does not
-# re-litigate any range; it makes the load path honour what the API promised.
+# Bounds are the ones the write path declares; the load path honours what the
+# API promises.
 COMPLETION_KEEP_CHARS_MIN = 0
 # Mirrors ``context_management.RESULT_FILE_MAX_BYTES`` (500 KB) rather than importing
 # it: ``context_management`` does ``from kiro_crew.config.loader import config_dir``, so
@@ -252,9 +250,10 @@ SOFT_STOP_BUDGET_MAX = 60.0
 EXTRACTION_POOL_SIZE_MIN = 1
 EXTRACTION_POOL_SIZE_MAX = 10
 # Load-only bounds. Unlike the parity block above these are NOT consumed by
-# `_EDITABLE_CONFIG` — the field is config-file-only (no dashboard write path),
-# so the only clamp site is the loader. Kept out of the shared block so its
-# "every bound is shared with the write gate" claim stays true.
+# `_EDITABLE_CONFIG`, so the loader is their only clamp site. Kept out of the
+# shared block so its "every bound is shared with the write gate" claim stays
+# true. Settings -> Advanced's generic rule can write `session.kas_delete_delay_secs`
+# without these bounds, and the loader clamps a stored value outside them.
 EMPTY_RESPONSE_MAX_CONTINUES_MIN = 1
 EMPTY_RESPONSE_MAX_CONTINUES_MAX = 10
 # Also load-only, and a floor only: 0 keeps every turn's copies, so a negative
@@ -289,6 +288,16 @@ HARNESS_BACKGROUND_HOLD_SECS_MAX = 86400
 # 0 is meaningful (observe-only) and is the floor, so a negative clamps DOWN to it
 # and disables the arm rather than enabling it.
 RECONCILE_MAX_KILLS_MAX = 5
+# ``session.max_per_creator`` (default ``DEFAULT_MAX_PER_CREATOR``): how many live
+# sessions one creator may hold. Shared by the Settings write gate, the
+# ``_SECURITY_BOUNDED_FIELDS`` sweep and the read at each session create
+# (``dashboard.state.max_slots_per_creator``). The floor keeps a decomposed goal's
+# sessions startable. The ceiling is the live-session ceiling
+# (``dashboard.state.MAX_LIVE_SLOTS``, 500) minus a reserve of 50, so a creator at
+# the highest setting still leaves 50 sessions to everyone else. This module
+# cannot import the dashboard, so ``test_slot_cap_config.py`` pins that relation.
+MAX_PER_CREATOR_MIN = 10
+MAX_PER_CREATOR_MAX = 450
 # knowledge.* budgets. These share a floor of 0, but 0 is MEANINGFUL for several
 # of them (a zero budget disables that sweep), so the floor is deliberately not
 # enforced by clamping a negative up to 0 -- see `_safe_nonnegative_int`, which

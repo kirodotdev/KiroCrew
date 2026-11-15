@@ -112,6 +112,23 @@ async def test_the_person_keeps_every_write(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_repeated_id_in_a_reorder_leaves_no_two_columns_sharing_a_place(
+    tmp_path, monkeypatch
+):
+    """A repeated id keeps its first place, so an unlisted column lands after it
+    instead of sharing its ``order``; the request is still accepted."""
+    state, app = _board_app(tmp_path, monkeypatch)
+    state._tag_boards.append(
+        {"id": "c3", "name": "Three", "tag_ids": [], "mode": "any", "order": 2, "source": "tags"}
+    )
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.put("/api/chat/tag-columns/order", json={"ids": ["c2", "c1", "c2"]})
+        assert resp.status == 200
+    orders = {c["id"]: c["order"] for c in state._tag_boards}
+    assert orders == {"c2": 0, "c1": 1, "c3": 2}
+
+
+@pytest.mark.asyncio
 async def test_create_rate_limits_an_internal_caller(tmp_path, monkeypatch):
     """Mutation guard: drop the ``allow_create`` call and the whole burst is 201."""
     create_rate_limit.reset_for_tests()

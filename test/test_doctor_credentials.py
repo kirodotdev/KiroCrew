@@ -549,6 +549,17 @@ class TestTheProbeDoesNotFollowARelocatedConfig:
                 assert var not in env, f"{probe} let the CLI follow {var}"
 
 
+def test_the_aws_probe_env_drops_the_gateway_python_env(monkeypatch):
+    """aws-cli v1 is Python: the gateway's PYTHONPATH/PYTHONHOME must not reach it."""
+    monkeypatch.setenv("PYTHONPATH", "<gw>")
+    monkeypatch.setenv("PYTHONHOME", "<gw>")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = cli_doctor._aws_probe_env()
+    assert "PYTHONPATH" not in env
+    assert "PYTHONHOME" not in env
+    assert env["PATH"] == "/usr/bin"
+
+
 class TestNeitherProbeResolvesThroughPath:
     """The probes run under an OPERATOR's ``kirocrew doctor``, outside the sandbox.
 

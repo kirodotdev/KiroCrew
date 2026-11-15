@@ -23,6 +23,7 @@ from acp_runtime_helpers import (
     _stop_reader,
 )
 
+from kiro_crew.acp.kas_start_agent import START_AGENT_ID
 from kiro_crew.acp.runtime import AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -717,8 +718,11 @@ class TestAcpRuntimeLoadSession:
         assert token, "the hoisted kirocrew-core was launched without the session token"
         assert token == handle.stub_session_token, "the element must carry THIS session's token"
         # A third-party server stays in the agent block, and never gets the token.
-        (agent_block,) = params["_meta"]["kiro"]["customAgents"]
-        assert STUB_SESSION_TOKEN_ENV not in json.dumps(agent_block)
+        # Both a new session and a load register the server-less start agent after it.
+        agent_block, *rest = params["_meta"]["kiro"]["customAgents"]
+        assert [a["id"] for a in rest] == [START_AGENT_ID]
+        assert "external" in agent_block["mcpServers"]
+        assert STUB_SESSION_TOKEN_ENV not in json.dumps([agent_block, *rest])
 
     @pytest.mark.asyncio
     async def test_load_session_keeps_the_transcript_path_alongside_the_agents(self, monkeypatch):
@@ -1035,10 +1039,14 @@ class TestAcpRuntimeLoadSession:
         # response and is terminated before any prompt. Such a session never
         # calls a tool, so pooled broker stubs would add per-probe MCP boot
         # churn without pooling anything. Everything a REAL conversation runs
-        # through must stay in the ratchet.
-        _NEVER_PROMPTS = {"probe_advertised_models"}
+        # through must stay in the ratchet. ``_park_in_start_agent`` is the same
+        # shape on session/load: it sends no server at all, changes the stored mode
+        # and frees that copy before the load a conversation runs through.
+        _NEVER_PROMPTS = {"probe_advertised_models", "_park_in_start_agent"}
         for name in _NEVER_PROMPTS:
-            assert name in builders, f"{name} no longer issues session/new — remove its exemption"
+            assert (
+                name in builders
+            ), f"{name} no longer issues session/new or session/load — remove its exemption"
             builders.pop(name)
         # The four known builders; a new one is included automatically.
         _EXPECTED = {
@@ -1057,7 +1065,7 @@ class TestAcpRuntimeLoadSession:
         for name, body in builders.items():
             assert "pooled_session_servers" in body or "_pooled_mcp_servers" in body, (
                 f"{name} issues session/new or session/load but never consults "
-                "the pooled broker stubs — it would un-pool its sessions (#3528)"
+                "the pooled broker stubs — it would un-pool its sessions"
             )
 
 

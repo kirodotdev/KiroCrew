@@ -14,9 +14,9 @@ import { createTestStore } from './helpers'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { api } from '../api/client'
 import { store as globalStore } from '../store'
-import chatReducer, { setActiveSlot, clearMessages, sseChatMessage } from '../store/chatSlice'
+import chatReducer, { setActiveSlot, clearMessages, sseChatMessage, setVoicePreparing } from '../store/chatSlice'
 import { recentErrors } from '../utils/errorReport'
-import { ACTIVE, BACKGROUND, WS_INSTANCES, MockWebSocket, MockAudio } from './UseWebSocketCoverageTestUtils'
+import { ACTIVE, BACKGROUND, WS_INSTANCES, MockWebSocket, MockAudio, mirrorVoiceFlagsToSingleton } from './UseWebSocketCoverageTestUtils'
 
 vi.mock('../api/client', () => ({
   ApiError: class ApiError extends Error { status = 500 },
@@ -154,6 +154,221 @@ describe('useWebSocket frame router', () => {
     })
     expect(chat().voicePreparing).toBe(false)
     expect(chat().voicePlaying).toBe(true)
+  })
+
+  describe('pause and resume', () => {
+    let stopMirroring: () => void
+    beforeEach(() => { stopMirroring = mirrorVoiceFlagsToSingleton(testStore) })
+    afterEach(() => { stopMirroring() })
+
+    const pause = () => act(() => { window.dispatchEvent(new Event('voice-pause')) })
+    const resume = () => act(() => { window.dispatchEvent(new Event('voice-resume')) })
+    const stop = () => act(() => { window.dispatchEvent(new Event('voice-stop')) })
+    const sendChunk = (ws: ReturnType<typeof mount>['ws'], text: string) => act(async () => {
+      ws.simulateMessage({ type: 'voice_chunk', data: { request_id: 'test-voice', slot: ACTIVE, audio: btoa(text) } })
+    })
+
+    it('pauses the playing audio element and resumes the same element', async () => {
+      vi.stubGlobal('Audio', MockAudio)
+      const { ws } = mount()
+      await sendChunk(ws, 'first')
+      const audio = MockAudio.instances[0]
+      expect(audio.play).toHaveBeenCalledOnce()
+
+      pause()
+      expect(chat().voicePaused).toBe(true)
+      expect(audio.pause).toHaveBeenCalledOnce()
+
+      resume()
+      expect(chat().voicePaused).toBe(false)
+      expect(audio.play).toHaveBeenCalledTimes(2)
+      expect(MockAudio.instances).toHaveLength(1)
+    })
+
+    it('ignores a pause or resume when nothing is being read', () => {
+      mount()
+      act(() => { testStore.dispatch(setVoicePreparing(false)) })
+      pause()
+      expect(chat().voicePaused).toBe(false)
+      resume()
+      expect(chat().voicePaused).toBe(false)
+    })
+
+    it('holds the next queued chunk when the audio ends while paused, and plays it on resume', async () => {
+      vi.stubGlobal('Audio', MockAudio)
+      const { ws } = mount()
+      await sendChunk(ws, 'first')
+      await sendChunk(ws, 'second')
+      expect(MockAudio.instances).toHaveLength(1)
+
+      pause()
+      act(() => { MockAudio.instances[0].onended?.() })
+      expect(MockAudio.instances).toHaveLength(1)
+      expect(chat().voicePlaying).toBe(true)
+      expect(chat().voicePaused).toBe(true)
+
+      resume()
+      expect(MockAudio.instances).toHaveLength(2)
+      expect(MockAudio.instances[1].play).toHaveBeenCalledOnce()
+    })
+
+    it('queues a chunk that arrives while paused and plays it only on resume', async () => {
+      vi.stubGlobal('Audio', MockAudio)
+      const { ws } = mount()
+      expect(chat().voicePreparing).toBe(true)
+      pause()
+      expect(chat().voicePaused).toBe(true)
+
+      await sendChunk(ws, 'arrives while paused')
+      expect(MockAudio.instances).toHaveLength(0)
+      expect(chat().voicePlaying).toBe(true)
+      expect(chat().voicePaused).toBe(true)
+
+      resume()
+      expect(MockAudio.instances).toHaveLength(1)
+      expect(MockAudio.instances[0].play).toHaveBeenCalledOnce()
+    })
+
+    it('does not report a failure when pausing interrupts a play() that was still starting', async () => {
+      let rejectPlayback!: (reason: Error) => void
+      MockAudio.playResult = () => new Promise((_, reject) => { rejectPlayback = reject })
+      vi.stubGlobal('Audio', MockAudio)
+      const { ws } = mount()
+      const errors = vi.fn()
+      window.addEventListener('voice-error', errors)
+      try {
+        await sendChunk(ws, 'first')
+        pause()
+        await act(async () => { rejectPlayback(new DOMException('interrupted by pause()', 'AbortError')) })
+        expect(errors).not.toHaveBeenCalled()
+        expect(chat().voicePlaying).toBe(true)
+        expect(chat().voicePaused).toBe(true)
+        expect(api.voiceCancel).not.toHaveBeenCalled()
+      } finally {
+        window.removeEventListener('voice-error', errors)
+      }
+    })
+
+    it('ignores a stale AbortError that arrives after pause and resume start a new play attempt', async () => {
+      let rejectFirstPlayback!: (reason: Error) => void
+      let attempt = 0
+      MockAudio.playResult = () => {
+        attempt++
+        return attempt === 1
+          ? new Promise((_, reject) => { rejectFirstPlayback = reject })
+          : Promise.resolve()
+      }
+      vi.stubGlobal('Audio', MockAudio)
+      const { ws } = mount()
+      const errors = vi.fn()
+      window.addEventListener('voice-error', errors)
+      try {
+        await sendChunk(ws, 'first')
+        const audio = MockAudio.instances[0]
+        pause()
+        resume()
+        expect(audio.play).toHaveBeenCalledTimes(2)
+
+        await act(async () => {
+          rejectFirstPlayback(new DOMException('interrupted by pause()', 'AbortError'))
+        })
+        expect(errors).not.toHaveBeenCalled()
+        expect(chat().voicePlaying).toBe(true)
+        expect(chat().voicePaused).toBe(false)
+        expect(api.voiceCancel).not.toHaveBeenCalled()
+        expect(audio.pause).toHaveBeenCalledOnce()
+      } finally {
+        window.removeEventListener('voice-error', errors)
+      }
+    })
+
+    it('reports a NotAllowedError from the current play attempt and stops playback', async () => {
+      let rejectPlayback!: (reason: Error) => void
+      MockAudio.playResult = () => new Promise((_, reject) => { rejectPlayback = reject })
+      vi.stubGlobal('Audio', MockAudio)
+      const { ws } = mount()
+      const errors = vi.fn()
+      window.addEventListener('voice-error', errors)
+      try {
+        await sendChunk(ws, 'first')
+        await act(async () => {
+          rejectPlayback(new DOMException('autoplay blocked', 'NotAllowedError'))
+        })
+        expect(errors).toHaveBeenCalledOnce()
+        expect((errors.mock.calls[0][0] as CustomEvent).detail.code).toBe('voice_playback_blocked')
+        expect(chat().voicePlaying).toBe(false)
+        expect(api.voiceCancel).toHaveBeenCalledWith(ACTIVE, 'test-voice')
+      } finally {
+        window.removeEventListener('voice-error', errors)
+      }
+    })
+
+    it('clears the paused state on stop and lets the next reading start', async () => {
+      vi.stubGlobal('Audio', MockAudio)
+      const { ws } = mount()
+      await sendChunk(ws, 'first')
+      pause()
+      expect(chat().voicePaused).toBe(true)
+
+      stop()
+      expect(chat().voicePaused).toBe(false)
+      expect(chat().voicePlaying).toBe(false)
+      expect(MockAudio.instances[0].pause).toHaveBeenCalled()
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('voice-synthesis-start', { detail: { slot: ACTIVE, request_id: 'next' } }))
+      })
+      await act(async () => {
+        ws.simulateMessage({ type: 'voice_chunk', data: { request_id: 'next', slot: ACTIVE, audio: btoa('next') } })
+      })
+      expect(MockAudio.instances).toHaveLength(2)
+      expect(MockAudio.instances[1].play).toHaveBeenCalledOnce()
+    })
+
+    it('keeps PCM audio that arrives while paused silent until resume', async () => {
+      const contexts: { state: string; suspend: ReturnType<typeof vi.fn>; resume: ReturnType<typeof vi.fn>; sources: { start: ReturnType<typeof vi.fn> }[] }[] = []
+      class FakeContext {
+        state = 'running'
+        currentTime = 0
+        destination = {}
+        sources: { start: ReturnType<typeof vi.fn> }[] = []
+        decodeAudioData = vi.fn().mockResolvedValue({ duration: 0.2 })
+        suspend = vi.fn(() => { this.state = 'suspended'; return Promise.resolve() })
+        resume = vi.fn(() => { this.state = 'running'; return Promise.resolve() })
+        close = vi.fn().mockResolvedValue(undefined)
+        createBufferSource() {
+          const source = { start: vi.fn(), stop: vi.fn(), connect: vi.fn(), disconnect: vi.fn(), onended: null }
+          this.sources.push(source)
+          return source
+        }
+        constructor() { contexts.push(this) }
+      }
+      vi.stubGlobal('AudioContext', FakeContext)
+      const { ws } = mount()
+      pause()
+      expect(contexts[0].suspend).toHaveBeenCalledOnce()
+
+      await act(async () => {
+        ws.simulateMessage({ type: 'voice_chunk', data: { request_id: 'test-voice', slot: ACTIVE, audio: btoa('wav'), audioMime: 'audio/wav' } })
+      })
+      await vi.waitFor(() => expect(contexts[0].sources).toHaveLength(1))
+      expect(contexts[0].state).toBe('suspended')
+      expect(contexts[0].resume).not.toHaveBeenCalled()
+      expect(chat().voicePaused).toBe(true)
+
+      resume()
+      expect(contexts[0].resume).toHaveBeenCalledOnce()
+      expect(contexts[0].state).toBe('running')
+    })
+
+    it('clears the paused state when the request fails while preparing', () => {
+      const { ws } = mount()
+      pause()
+      expect(chat().voicePaused).toBe(true)
+      act(() => { ws.simulateMessage({ type: 'voice_error', data: { slot: ACTIVE, request_id: 'test-voice', code: 'voice_synthesis_failed' } }) })
+      expect(chat().voicePreparing).toBe(false)
+      expect(chat().voicePaused).toBe(false)
+    })
   })
 
   it('ends preparing when synthesis errors, fails over HTTP or is stopped, and ignores a background slot', () => {

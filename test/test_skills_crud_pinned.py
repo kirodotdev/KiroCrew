@@ -464,6 +464,49 @@ def test_delete_removes_the_skill(loader):
     assert not (loader._dir / "gone").exists()
 
 
+@pytest.mark.parametrize(
+    "pinned", [pytest.param(True, marks=needs_pinned_walk), pytest.param(False)]
+)
+def test_delete_refuses_a_folder_that_is_not_a_skill(loader, monkeypatch, pinned):
+    """A directory without its own SKILL.md holds skills; deleting it by name is refused."""
+    from kiro_crew import skills as skills_mod
+
+    monkeypatch.setattr(skills_mod, "_DIR_FD_SUPPORTED", pinned)
+    assert loader.create_skill("team/a", "a") is True
+    assert loader.create_skill("team/b", "b") is True
+
+    assert loader.delete_skill("team") is False
+    assert (loader._dir / "team" / "a" / "SKILL.md").read_text(encoding="utf-8") == "a"
+    assert (loader._dir / "team" / "b" / "SKILL.md").read_text(encoding="utf-8") == "b"
+    # A real skill inside it is still deletable by its own name.
+    assert loader.delete_skill("team/a") is True
+    assert not (loader._dir / "team" / "a").exists()
+
+
+@pytest.mark.parametrize(
+    "pinned", [pytest.param(True, marks=needs_pinned_walk), pytest.param(False)]
+)
+def test_delete_still_removes_a_skill_whose_skill_md_is_a_link(
+    loader, monkeypatch, tmp_path, pinned
+):
+    """A linked SKILL.md still names a skill; the delete removes the link, not its target."""
+    from kiro_crew import skills as skills_mod
+
+    monkeypatch.setattr(skills_mod, "_DIR_FD_SUPPORTED", pinned)
+    target = tmp_path / "shared-skill.md"
+    target.write_text("shared", encoding="utf-8")
+    skill_dir = loader._dir / "linked-md"
+    skill_dir.mkdir(parents=True)
+    try:
+        os.symlink(target, skill_dir / "SKILL.md")
+    except (OSError, NotImplementedError):
+        pytest.skip("file symlinks are not available on this host")
+
+    assert loader.delete_skill("linked-md") is True
+    assert not skill_dir.exists()
+    assert target.read_text(encoding="utf-8") == "shared"
+
+
 def test_delete_refuses_a_symlinked_skill_dir(loader, tmp_path):
     """A skill directory that is a link is refused, not followed into an rmtree."""
     from kiro_crew.platform_compat import symlink_or_junction

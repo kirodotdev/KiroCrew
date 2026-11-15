@@ -189,12 +189,10 @@ def _write_member_rules(slug: str, *, member: str, text: str) -> None:
         raise ValueError(
             f"member rules for {slug!r} exceed {MEMBER_RULES_MAX_CHARS} chars ({len(text)})"
         )
-    # JSON permits escaped lone surrogates ("\ud800"), so request-parsed text
-    # can hold code points UTF-8 cannot encode. Reject them HERE, before any
-    # state changes: letting the write raise mid-flight (atomic_write encodes
-    # to UTF-8) turns a bad payload into a 500, and escaping them into the
-    # file (ensure_ascii=True) only defers the same crash to prompt-encode
-    # time — inside the member's turn instead of at the save.
+    # JSON allows escaped lone surrogates ("\ud800"), which UTF-8 cannot
+    # encode. Reject them HERE, before any state changes: the UTF-8 write
+    # would raise mid-flight (a 500), and escaping them (ensure_ascii=True)
+    # only moves the crash into the member's turn.
     try:
         text.encode("utf-8")
     except UnicodeEncodeError as exc:
@@ -206,11 +204,10 @@ def _write_member_rules(slug: str, *, member: str, text: str) -> None:
             path.unlink()
         except FileNotFoundError:
             return
-        # The unlink changed a directory ENTRY, which atomic_write's file-level
-        # fsync never covers: without syncing the parent, a power-off after the
-        # 200 can bring the cleared rules back. best_effort: the clear is
-        # already committed — see fsync_dir's contract for why a raise here
-        # would report completed work as failed.
+        # The unlink changed a directory ENTRY; without syncing the parent, a
+        # power-off after the 200 can bring the cleared rules back.
+        # best_effort: the clear is done, and a raise would report it failed
+        # (see fsync_dir).
         fsync_dir(path.parent, best_effort=True)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,13 +226,11 @@ def _write_member_rules(slug: str, *, member: str, text: str) -> None:
         "rules": text,
     }
     atomic_write(path, json.dumps(payload, ensure_ascii=False), fsync=True)
-    # atomic_write's fsync=True forces the file DATA; the rename that
-    # publishes it — and, on first save, the just-created member-rules
-    # directory's own entry in ITS parent — live in directory metadata a
-    # power-off can still lose, returning the dashboard's confirmed save to
-    # the old (or no) rules. Sync both levels, raising like the write itself:
-    # the caller is the rules PUT endpoint and the human must know their
-    # safety boundary did not land.
+    # fsync=True covers the file DATA only. The rename, and on first save the
+    # new rules directory's entry in its parent, are directory metadata a
+    # power-off can lose, undoing a confirmed save. Sync both levels and raise
+    # on failure: the caller is the rules PUT endpoint, and the person must
+    # know their rules did not land.
     fsync_dir(path.parent)
     fsync_dir(path.parent.parent)
 
@@ -303,6 +298,9 @@ def read_member_briefing_bounded(slug: str) -> tuple[str, float | None, bool]:
     from the same open as the text and ``None`` whenever the text reads as no
     briefing. Blocking file IO.
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read_fd
+
     try:
         parent, name = _briefing_pinned_target(slug)
     except (MemberSlugError, OSError, RuntimeError):
@@ -332,7 +330,7 @@ def read_member_briefing_bounded(slug: str) -> tuple[str, float | None, bool]:
             # A FIFO, device or socket is never a briefing; reading one can
             # block or misbehave, so it reads as "no briefing yet".
             return "", None, False
-        data = os.read(fd, byte_cap + 1)
+        data = bounded_read_fd(fd, byte_cap + 1)
     except OSError:
         return "", None, False
     finally:

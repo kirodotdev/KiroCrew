@@ -45,3 +45,14 @@ export function tipDocHref(doc: string | undefined): string | null {
   if (!doc || !DOC_FILENAME_RE.test(doc)) return null
   return `${DOCS_BASE}/${doc}`
 }
+
+/** A shipped docs file and one heading anchor in it: the registry's
+ *  `org_admin_guide` shape, which the backend validator enforces too. */
+const DOC_SECTION_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*\.md#[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+/** The public URL for a `<file>.md#<anchor>` docs section, or `null` for any
+ *  other shape, on the same refuse-rather-than-render terms as `tipDocHref`. */
+export function docSectionHref(section: string | undefined): string | null {
+  if (!section || !DOC_SECTION_RE.test(section)) return null
+  return `${DOCS_BASE}/${section}`
+}

@@ -1,6 +1,7 @@
 /**
- * One image of an installed pack's art (a loader image, or the welcome screen's
- * brand mark), held on its first frame while the user asks for reduced motion.
+ * One image of an installed pack's art (a loader image, or the brand mark on the
+ * welcome screen, the rail or the narrow header), held on its first frame while
+ * the user asks for reduced motion.
  *
  * Pack loader art may animate by itself: an animated WebP/APNG/GIF, or an SVG
  * carrying its own CSS or SMIL animation. That motion runs inside the image, where
@@ -11,14 +12,17 @@
  * SVG included. Theme overlays already stand down under reduced motion
  * (`ThemeExperienceLayer`); this is the loader's half of that rule.
  *
- * So under reduced motion a hidden `<img>` decodes the art and it is painted ONCE
- * onto a `<canvas>`, which never repaints it. A canvas paints an animated raster's
- * default (first) frame, and an SVG that is not displayed does not advance, so the
- * paint is the art at rest. The hidden `<img>` also carries the load-error path:
- * its `error` event reaches the footer's `onErrorCapture` the same way the visible
- * image's does. With motion allowed it renders the plain `<img>`.
+ * So under reduced motion a hidden `<img>` decodes the art and it is painted onto
+ * a `<canvas>` when it loads, and again only when the canvas changes size (the
+ * rail's mark grows when the rail collapses). A canvas paints an animated raster's
+ * default (first) frame, and an SVG that is not displayed does not advance, so
+ * every paint is the same art at rest. The hidden `<img>` also carries the
+ * load-error path: its `error` event reaches the footer's `onErrorCapture` the same
+ * way the visible image's does. With motion allowed it renders the plain `<img>`.
+ * `onLoad` and `onError` fire from whichever `<img>` is decoding; under reduced
+ * motion `onLoad` runs after the still frame is painted.
  */
-import { useRef, type CSSProperties, type SyntheticEvent } from 'react'
+import { useEffect, useRef, type CSSProperties, type SyntheticEvent } from 'react'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
 
 /** Box edge used when the canvas has no laid-out size yet (a carousel slot is 14px). */
@@ -27,17 +31,37 @@ const FALLBACK_EDGE_PX = 14
 /** Hides the decode-only `<img>`: inline, so the carousel's `.lyr>img` rule cannot show it. */
 const DECODE_ONLY: CSSProperties = { display: 'none' }
 
-export function PackLoaderImage({ src, className, style }: { src: string; className?: string; style?: CSSProperties }) {
+export function PackLoaderImage({ src, className, style, onLoad, onError }: {
+  src: string
+  className?: string
+  style?: CSSProperties
+  onLoad?: () => void
+  onError?: () => void
+}) {
   const reduced = useReducedMotion()
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const decodeRef = useRef<HTMLImageElement>(null)
+  // The canvas exists only under reduced motion, so this re-runs when it mounts.
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const observer = new ResizeObserver(() => {
+      if (decodeRef.current?.complete) paintStill(canvas, decodeRef.current)
+    })
+    observer.observe(canvas)
+    return () => observer.disconnect()
+  }, [reduced])
   if (!reduced) {
-    return <img className={className} src={src} alt="" aria-hidden="true" draggable={false} style={style} />
+    return <img className={className} src={src} alt="" aria-hidden="true" draggable={false} style={style} onLoad={onLoad} onError={onError} />
   }
-  const paint = (e: SyntheticEvent<HTMLImageElement>) => paintStill(canvasRef.current, e.currentTarget)
+  const paint = (e: SyntheticEvent<HTMLImageElement>) => {
+    paintStill(canvasRef.current, e.currentTarget)
+    onLoad?.()
+  }
   return (
     <>
       <canvas ref={canvasRef} className={className} aria-hidden="true" style={style} />
-      <img src={src} alt="" aria-hidden="true" draggable={false} style={DECODE_ONLY} onLoad={paint} />
+      <img ref={decodeRef} src={src} alt="" aria-hidden="true" draggable={false} style={DECODE_ONLY} onLoad={paint} onError={onError} />
     </>
   )
 }

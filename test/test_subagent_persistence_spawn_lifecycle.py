@@ -146,11 +146,11 @@ class TestSpawnCreatesFolder:
             # Assert the invariant WHILE info2 is still queued — a queued agent has no
             # folder, because the sandbox is created when the agent actually STARTS, not
             # when it is accepted. This MUST run before draining info1: completing info1's
-            # task frees the slot, which promotes info2 and lets it create its folder. The
-            # earlier version awaited first and then asserted "no folder", which is a
-            # wall-clock race — it passed only when info2's promotion had not finished yet,
-            # and failed on a slow (Windows) runner where it had. Asserted against info2's
-            # real id, which does not carry a `q<n>` sentinel name to filter on.
+            # task frees the slot, which promotes info2 and lets it create its folder.
+            # Awaiting first and then asserting "no folder" is a wall-clock race that
+            # fails on a slow (Windows) runner where the promotion has finished.
+            # Asserted against info2's real id, which does not carry a `q<n>`
+            # sentinel name to filter on.
             assert info2 is not None
             assert info2.queued is True
             folders = list(agent_root.iterdir()) if agent_root.exists() else []

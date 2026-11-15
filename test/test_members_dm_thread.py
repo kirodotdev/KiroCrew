@@ -32,6 +32,7 @@ from members_dm_thread_helpers import (
     _patched_config,
     _record_or_explain,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.members import (
@@ -335,7 +336,7 @@ class TestMemberRoutes:
         )
 
         companion_shape = "SSO-COOKIE"
-        baseline_shape = "AKIAIOSFODNN7EXAMPLE"
+        baseline_shape = github_classic()
 
         class _Policy:
             def redact(self, text: str) -> str:
@@ -497,8 +498,8 @@ class TestMemberRoutes:
         state = _make_state(tmp_path)
         write_dm_binding(CREW, member=CREW, slot_key=member_slot_key(CREW))
         key = f"dashboard:{member_slot_key(CREW)}"
-        # Padding places the AKIA token across the 120-char boundary.
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        # Padding places the token across the 120-char boundary.
+        secret = github_classic()
         state.conversation_log.append(key, "assistant", "x" * 110 + " " + secret)
         with _patched_config([CREW]):
             async with TestClient(TestServer(_make_members_app(state))) as client:
@@ -507,7 +508,7 @@ class TestMemberRoutes:
                 data = await resp.json()
         preview = {r["name"]: r for r in data["members"]}[CREW]["last_message"]
         # Neither the full token nor any partial prefix of it survives.
-        assert "AKIA" not in preview
+        assert secret[:8] not in preview
 
     @pytest.mark.asyncio
     async def test_roster_preview_uses_shared_external_text_redaction(self, tmp_path):
@@ -681,7 +682,7 @@ class TestMemberRoutes:
         pushed = []
         state.push_slot_title = lambda key, title, **kw: pushed.append(title)  # type: ignore[method-assign]
         cfg = _fake_config([CREW])
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic()
         cfg.agents[CREW].display_name = f"Reviewer {secret}"
         with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=cfg):
             async with TestClient(TestServer(_make_members_app(state))) as client:
@@ -1085,7 +1086,7 @@ class TestPinEnforcement:
         assert slot.agent == name
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("name", ["AKIAIOSFODNN7EXAMPLE", "crew password=shortvalue"])
+    @pytest.mark.parametrize("name", [github_classic(), "crew password=shortvalue"])
     async def test_agent_switch_refuses_a_non_dispatchable_stored_pin(self, tmp_path, name):
         from chat_test_helpers import _make_app_with_agent_routes
 
@@ -1203,7 +1204,7 @@ class TestPinEnforcement:
         assert slot.agent == name
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("name", ["AKIAIOSFODNN7EXAMPLE", "crew password=shortvalue"])
+    @pytest.mark.parametrize("name", [github_classic(), "crew password=shortvalue"])
     async def test_send_path_refuses_a_redaction_requiring_stored_member_pin(self, tmp_path, name):
         from chat_test_helpers import _make_app
 
@@ -1227,7 +1228,7 @@ class TestPinEnforcement:
         from kiro_crew.eventlog.service import get_service
 
         name = "crew password=shortvalue"
-        credential = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
+        credential = github_classic()
         slot_key = f"member-{credential}"
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
@@ -1335,7 +1336,7 @@ class TestPinEnforcement:
         from kiro_crew.dashboard.chat_runner import _run_chat
 
         name = "crew password=shortvalue"
-        credential = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
+        credential = github_classic()
         slot_key = f"chat-{credential}"
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()

@@ -280,6 +280,25 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "state and binary pixel frames are unchanged.",
     ),
     (
+        "Browser action change reports",
+        "browser_harness/change_report.py",
+        "The `changes` report a click, type or select carries while "
+        "`browser.report_changes` is on: the page address, title, dialog names, "
+        "the message of a JavaScript dialog (read uncut), "
+        "alert text, the names of fields that failed validation and control names, "
+        "all written by the page; no validation message is read. "
+        "Each string is stripped of control characters and passed through the "
+        "platform-aware credential and exfiltration-URL redactor, and only then cut to "
+        "one bounded line, before it reaches the agent; text too long to read whole is "
+        "left out, never cut, in the walker and here, so a cut can never split a "
+        "credential before redaction. Text the page does not draw is not read, and "
+        "text that holds a token once its white space is removed, by a prefixed rule "
+        "or by any token format the credential detectors know, is left "
+        "out. Nothing inside a field names anything, and a name built from several "
+        "elements is read whole or not at all. The address is cleaned by the recordings' "
+        "`clean_url` first. No field's value is read.",
+    ),
+    (
         "Subagent wait broadcasts",
         "subagent_manager/admission/waits.py",
         "The wait REASON on the `subagent_waiting` frame, which reaches every dashboard "
@@ -357,7 +376,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Central policy fetch failures",
         "platform/policy_distribution_boot.py",
         "The failure text of a central governance-policy fetch, which reaches TWO "
-        "surfaces: `kirocrew policy fetch` on stdout and a `logger` line (durable, "
+        "surfaces: `kirocrew policy fetch` on stderr and a `logger` line (durable, "
         "and served to the dashboard by `GET /api/logs`). The bytes are not ours -- a "
         "malformed document reaches the message through a parser error, and `json`'s "
         "errors quote the offending text, so an endpoint that echoes back the "
@@ -503,6 +522,16 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "content read off a live slot, so it can carry a credential a tool "
         "printed — the same output-boundary reason as the session-storage inventory "
         "below, with the reader being an LLM rather than the browser.",
+    ),
+    (
+        "Session control queue",
+        "dashboard/session_control_queue.py",
+        "The first 50 queued entries on a session the caller manages, whether a "
+        "person, another session or the caller queued them, served by "
+        "`POST /api/session-control/queue` to the calling agent. Queued text has "
+        "not run yet, so it can carry a key someone pasted; the excerpt and the "
+        "entry id are redacted on the way out for the same reason as the "
+        "session-control read above.",
     ),
     (
         "Session storage inventory",
@@ -863,7 +892,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Streamed and non-streamed completions served to third-party clients.",
     ),
     (
-        "An Ultra Mode root's worker list and timeline",
+        "A conductor mode root's worker list and timeline",
         "dashboard/handlers/crew_workers.py",
         "The side panel's worker cards (a closed worker's saved title, the ledger "
         "line through the board's deep redactor) and every timeline bar and mark "

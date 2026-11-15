@@ -5,6 +5,7 @@ import { Folder, RotateCw, ExternalLink, ChevronDown, ChevronUp, Search, X } fro
 import DetailPanel from '../../components/DetailPanel'
 import { revealOrOpen, useCanReveal, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
 import ErrorNotice from '../../components/ErrorNotice'
+import TruncatedText from '../../components/TruncatedText'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { api } from '../../api/client'
 import { fileIcon, colorForExt } from '../../utils/fileIcons'
@@ -392,7 +393,7 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
       customHeader={
         <div className="flex items-center gap-2 h-[38px] px-3 shrink-0 border-b border-border">
           <Folder size={14} className="shrink-0 text-muted" />
-          <span className="text-[12px] text-text-strong truncate" title={cwd}>{basename(cwd)}</span>
+          <TruncatedText full={cwd} className="text-[12px] text-text-strong">{basename(cwd)}</TruncatedText>
           <span className="flex-1" />
           <button
             onClick={refresh}
@@ -483,7 +484,7 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
         )}
       </div>
       <div className={showTree ? 'flex-1 min-h-0 flex flex-col py-1.5' : 'flex-1 overflow-y-auto px-2 py-1.5'}>
-        <div className={`shrink-0 text-[10.5px] text-muted/80 font-mono truncate pb-1.5 ${showTree ? 'px-3' : 'px-2'}`} title={cwd}>{cwd}</div>
+        <TruncatedText full={cwd} className={`block shrink-0 text-[10.5px] text-muted/80 font-mono pb-1.5 ${showTree ? 'px-3' : 'px-2'}`} />
         {treeMode && (
           // `hidden` while the matches stand in for a truncated tree, never
           // unmounted: the expansion lives in the mounted tree's model.

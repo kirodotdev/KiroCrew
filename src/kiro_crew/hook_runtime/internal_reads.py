@@ -15,6 +15,7 @@ if TYPE_CHECKING:
         _AUDIT_ONLY_READ_IDS,
         _INTERNAL_READ_ALLOWLIST,
         MAX_FILE_BYTES,
+        bounded_read,
         is_sensitive_path,
         logger,
         platform_compat,
@@ -140,7 +141,7 @@ def safe_read_file_internal(read_id: str) -> bytes | None:
             return None
         with os.fdopen(fd, "rb", closefd=True) as fh:
             fd = -1  # ownership transferred to fh; do not double-close
-            data = fh.read(MAX_FILE_BYTES + 1)
+            data = bounded_read(fh, MAX_FILE_BYTES + 1)
     except OSError:
         _emit_internal_read_audit(read_id, "unreadable")
         return None

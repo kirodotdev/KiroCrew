@@ -20,6 +20,7 @@ import pytest
 
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew import mcp_discovery
+from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME, ASSISTANT_MEMBER_NAME
 from kiro_crew.config import loader
 from kiro_crew.cron_service import schedule
 from kiro_crew.dashboard import change_cards as cards
@@ -237,6 +238,34 @@ def test_a_crewmate_is_labelled_by_its_display_name_else_its_key(monkeypatch):
     assert cards._crewmate_label("ada") == "Ada Lovelace"
     assert cards._crewmate_label("bob") == "bob"
     assert cards._crewmate_label("cy") == "cy"
+    assert cards._crewmate_label("zed") == "zed"
+
+
+@pytest.mark.parametrize("display_name", ["", "   ", None])
+def test_an_unnamed_first_crewmate_is_labelled_bot_not_its_key(monkeypatch, display_name):
+    # The first crewmate's key is an internal id nobody chose, so it is the one
+    # key a card must never show: every other surface reads the default label.
+    agents = {ASSISTANT_MEMBER_NAME: SimpleNamespace(display_name=display_name)}
+    monkeypatch.setattr(loader.KiroCrewConfig, "load", lambda: SimpleNamespace(agents=agents))
+
+    assert cards._crewmate_label(ASSISTANT_MEMBER_NAME) == ASSISTANT_DEFAULT_DISPLAY_NAME
+
+
+def test_a_named_first_crewmate_keeps_its_name_and_others_keep_their_key(monkeypatch):
+    agents = {
+        ASSISTANT_MEMBER_NAME: SimpleNamespace(display_name="Scout"),
+        "ada": SimpleNamespace(display_name=""),
+    }
+    monkeypatch.setattr(loader.KiroCrewConfig, "load", lambda: SimpleNamespace(agents=agents))
+
+    assert cards._crewmate_label(ASSISTANT_MEMBER_NAME) == "Scout"
+    assert cards._crewmate_label("ada") == "ada"
+
+
+def test_a_first_crewmate_missing_from_the_config_still_reads_bot(monkeypatch):
+    monkeypatch.setattr(loader.KiroCrewConfig, "load", lambda: SimpleNamespace(agents={}))
+
+    assert cards._crewmate_label(ASSISTANT_MEMBER_NAME) == ASSISTANT_DEFAULT_DISPLAY_NAME
     assert cards._crewmate_label("zed") == "zed"
 
 

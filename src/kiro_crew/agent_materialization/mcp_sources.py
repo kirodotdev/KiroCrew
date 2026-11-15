@@ -397,7 +397,8 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # and ``disabled``, never their command/args/env, the edition's invocation.
     # Not folded into ``managed_names``, which also drives the shared-server
     # tools/allowedTools/disabled sync.
-    edition_names = frozenset(agent_mod._extra_mcp_servers()) - managed_names
+    edition_servers = agent_mod._extra_mcp_servers()
+    edition_names = frozenset(edition_servers) - managed_names
 
     # App-contributed MCP servers go in FIRST so an app's namespaced entry
     # outranks any same-named leftover in the shared global file (every loop
@@ -491,6 +492,16 @@ def merge_mcp_sources(config: dict) -> McpSources:
                 # mcps[name] is a private copy (globals were copied in above),
                 # so update() does not mutate any source dict.
                 mcps[name].update(spec)
+                # An edition-supplied name keeps the env keys the edition ships:
+                # the store's own env keys win, but a same-named store entry
+                # must not drop the keys the server needs to run as shipped.
+                # Merged over the SHIPPED env, not the previous spec's, so a key
+                # the store's env leaves out drops out of the spec.
+                store_env = spec.get("env")
+                if name in edition_names and isinstance(store_env, dict):
+                    shipped_env = edition_servers[name].get("env")
+                    if isinstance(shipped_env, dict):
+                        mcps[name]["env"] = {**shipped_env, **store_env}
             else:
                 mcps[name] = dict(spec)
     return McpSources(kirocrew_mcp, shared_mcp, extra_shared_mcp, managed_names, _replaced)
@@ -1002,16 +1013,17 @@ def resolve_mcp_servers(
             # that was defined but couldn't be resolved.
             #
             # Deliberately NOT added to _unresolved_this_pass: there is nothing
-            # here for a later pass to resolve, so the ref reconcile below treats
-            # this as a real absence and drops the refs. Keeping them would leave
-            # an allowedTools grant sitting on a name that any later server can
-            # be bound to, and that list never reaches the PreToolUse gate.
+            # here for a later pass to resolve, so the dangling-ref reconcile in
+            # default_spec_commit.write_default_spec treats this as a real absence
+            # and drops the refs. Keeping them would leave an allowedTools grant
+            # sitting on a name that any later server can be bound to, and that
+            # list never reaches the PreToolUse gate.
             agent_mod.logger.warning("Dropping MCP server %r: no command", name)
         else:
             # A command WAS declared and did not resolve here, which a later pass
-            # can reverse once the binary is installed -- so the ref reconcile
-            # below keeps this server's refs (see prune_dangling_tool_refs for why
-            # a per-tool grant cannot be re-derived).
+            # can reverse once the binary is installed -- so that reconcile keeps
+            # this server's refs, through ResolvedServers.narrowed_away (see
+            # prune_dangling_tool_refs for why a per-tool grant cannot be re-derived).
             _unresolved_this_pass.add(name)
             _unresolved_commands[name] = str(spec.get("command", ""))
             # The searched directories go in the WARNING so a default-level reader
@@ -1144,7 +1156,7 @@ def sync_shared_server_refs(
     # generated agent config is simultaneously the mount decision and the only
     # home for agent-only configuration, so dropping an entry destroys whatever
     # lives only there and stamping ``disabled`` makes ``list_servers`` delete the
-    # server's own row. See the follow-up issue linked from
+    # server's own row. See "6. Deferred unmount" in
     # docs/system-specs/modules/mcp-probe-quarantine.md.
     for name, spec in _shared_source_entries:
         if not isinstance(spec, dict) or name in managed_names:

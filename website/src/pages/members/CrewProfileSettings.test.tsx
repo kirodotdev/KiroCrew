@@ -955,3 +955,34 @@ describe('CrewProfileSettings dashboard card send', () => {
     expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0].dashboard_card_send).toBeUndefined()
   })
 })
+
+describe('CrewProfileSettings workers at once', () => {
+  it('reads No limit when the record sets none, and says only the owner changes it', () => {
+    setup(member())
+    expect(rowValue('max_workers')).toHaveTextContent('No limit')
+    expect(open('max_workers')).toHaveTextContent('The most workers oncall can run at the same time. Only you can change this, not oncall.')
+    expect(checked('max_workers')).toHaveAccessibleName('No limit')
+  })
+
+  it('sends No limit back as 0', async () => {
+    setup(member({ max_workers: 3 }))
+    pick('max_workers', 'No limit')
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { max_workers: 0 }))
+  })
+
+  it('writes the pick to the record as a number, and touches no thread', async () => {
+    setup(member({ max_workers: 8 }))
+    pick('max_workers', '3')
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { max_workers: 3 }))
+    expect(mockApi.chatSlotModel).not.toHaveBeenCalled()
+    expect(mockApi.chatSlotReasoningEffort).not.toHaveBeenCalled()
+    await waitFor(() => expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0].max_workers).toBe(3))
+  })
+
+  it('offers a stored limit the steps do not list, checked', () => {
+    setup(member({ max_workers: 5 }))
+    expect(rowValue('max_workers')).toHaveTextContent('5')
+    open('max_workers')
+    expect(checked('max_workers')).toHaveAccessibleName('5')
+  })
+})

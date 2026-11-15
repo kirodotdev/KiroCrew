@@ -16,7 +16,7 @@ import {
 } from '../hooks/usePreviewFlagServerSync'
 import * as previewFlags from '../utils/previewFlags'
 import {
-  PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_FLAGS, PREVIEW_FLAG_PREFIX, PREVIEW_INSTANCE_SESSIONS,
+  PREVIEW_ARTIFACT_DEPLOY, PREVIEW_EXPLORE, PREVIEW_FLAGS, PREVIEW_FLAG_PREFIX, PREVIEW_INSTANCE_SESSIONS,
   PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, previewFlagConfigPath, readPreviewFlag, setPreviewFlag,
   setRemoteCrewChat,
 } from '../utils/previewFlags'
@@ -33,11 +33,11 @@ function newClient(): QueryClient {
   return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
 }
 
-/** Mount the sync next to a reader of the Ultra Mode flag, as the app shell does. */
+/** Mount the sync next to a reader of the conductor mode flag, as the app shell does. */
 function mountSync(qc: QueryClient) {
   return renderHook(() => {
     usePreviewFlagServerSync()
-    return usePreviewFlag(PREVIEW_CREW_MODE)
+    return usePreviewFlag(PREVIEW_EXPLORE)
   }, { wrapper: harness(qc) })
 }
 
@@ -64,7 +64,7 @@ afterEach(() => {
 
 describe('preview flag config paths', () => {
   it('names each flag by its snake_case config path', () => {
-    expect(previewFlagConfigPath(PREVIEW_CREW_MODE)).toBe('dashboard.feature_previews.crew_mode')
+    expect(previewFlagConfigPath(PREVIEW_EXPLORE)).toBe('dashboard.feature_previews.explore')
     expect(previewFlagConfigPath(PREVIEW_ARTIFACT_DEPLOY)).toBe('dashboard.feature_previews.artifact_deploy')
     expect(new Set(PREVIEW_FLAGS).size).toBe(PREVIEW_FLAGS.length)
   })
@@ -79,25 +79,25 @@ describe('preview flag config paths', () => {
 })
 
 describe('usePreviewFlagServerSync', () => {
-  it('turns Ultra Mode on from the server when this browser has no copy', async () => {
-    server = { crew_mode: true }
+  it('turns conductor mode on from the server when this browser has no copy', async () => {
+    server = { explore: true }
     const { result } = mountSync(newClient())
     await waitFor(() => expect(result.current).toBe(true))
-    expect(localStorage.getItem(PREVIEW_CREW_MODE)).toBe('1')
+    expect(localStorage.getItem(PREVIEW_EXPLORE)).toBe('1')
     expect(patchSpy).not.toHaveBeenCalled()
   })
 
   it('lets the server copy win over a stale browser copy', async () => {
-    server = { crew_mode: false }
-    localStorage.setItem(PREVIEW_CREW_MODE, '1')
+    server = { explore: false }
+    localStorage.setItem(PREVIEW_EXPLORE, '1')
     const { result } = mountSync(newClient())
     await waitFor(() => expect(result.current).toBe(false))
-    expect(readPreviewFlag(PREVIEW_CREW_MODE)).toBe(false)
+    expect(readPreviewFlag(PREVIEW_EXPLORE)).toBe(false)
     expect(patchSpy).not.toHaveBeenCalled()
   })
 
   it('reads a switch set only in this browser as off, without writing it', async () => {
-    localStorage.setItem(PREVIEW_CREW_MODE, '1')
+    localStorage.setItem(PREVIEW_EXPLORE, '1')
     const { result } = mountSync(newClient())
     await waitFor(() => expect(result.current).toBe(false))
     expect(patchSpy).not.toHaveBeenCalled()
@@ -105,7 +105,7 @@ describe('usePreviewFlagServerSync', () => {
 
   it('clears the keys the one-time carry-up kept', async () => {
     localStorage.setItem('kc-feature-previews-synced', '1')
-    localStorage.setItem('kc-feature-previews-server-backed', JSON.stringify([PREVIEW_CREW_MODE]))
+    localStorage.setItem('kc-feature-previews-server-backed', JSON.stringify([PREVIEW_EXPLORE]))
     mountSync(newClient())
     await waitFor(() => expect(localStorage.getItem('kc-feature-previews-synced')).toBeNull())
     expect(localStorage.getItem('kc-feature-previews-server-backed')).toBeNull()
@@ -115,11 +115,11 @@ describe('usePreviewFlagServerSync', () => {
     const qc = newClient()
     const { result } = mountSync(qc)
     await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
-    act(() => { expect(setPreviewFlag(PREVIEW_CREW_MODE, true)).toBe(true) })
+    act(() => { expect(setPreviewFlag(PREVIEW_EXPLORE, true)).toBe(true) })
     expect(result.current).toBe(true)
-    await waitFor(() => expect(server).toEqual({ crew_mode: true }))
-    expect(patchSpy).toHaveBeenCalledWith('dashboard.feature_previews.crew_mode', true)
-    await waitFor(() => expect(qc.getQueryData<Body>(['kirocrewConfig'])?.dashboard?.feature_previews).toEqual({ crew_mode: true }))
+    await waitFor(() => expect(server).toEqual({ explore: true }))
+    expect(patchSpy).toHaveBeenCalledWith('dashboard.feature_previews.explore', true)
+    await waitFor(() => expect(qc.getQueryData<Body>(['kirocrewConfig'])?.dashboard?.feature_previews).toEqual({ explore: true }))
     expect(result.current).toBe(true)
   })
 
@@ -130,32 +130,32 @@ describe('usePreviewFlagServerSync', () => {
       server[path.replace('dashboard.feature_previews.', '')] = value as boolean
       return { ok: true }
     })
-    server = { crew_mode: false }
+    server = { explore: false }
     const qc = newClient()
     const { result } = mountSync(qc)
     await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, true) })
     // A config body read before the write landed still says off.
     await act(async () => { await qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
     expect(result.current).toBe(true)
     await act(async () => { release() })
-    await waitFor(() => expect(server.crew_mode).toBe(true))
-    await waitFor(() => expect(qc.getQueryData<Body>(['kirocrewConfig'])?.dashboard?.feature_previews).toEqual({ crew_mode: true }))
+    await waitFor(() => expect(server.explore).toBe(true))
+    await waitFor(() => expect(qc.getQueryData<Body>(['kirocrewConfig'])?.dashboard?.feature_previews).toEqual({ explore: true }))
     expect(result.current).toBe(true)
   })
 
   it('puts a refused write right from the server copy', async () => {
-    server = { crew_mode: false }
+    server = { explore: false }
     patchSpy.mockRejectedValue(new Error('owner only'))
     const { result } = mountSync(newClient())
     await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, true) })
     expect(result.current).toBe(true)
     await waitFor(() => expect(result.current).toBe(false))
   })
 
   it('reports a toggle the gateway refused as owner-only on a 403', async () => {
-    server = { crew_mode: false }
+    server = { explore: false }
     patchSpy.mockRejectedValue(Object.assign(new Error('owner only'), { status: 403 }))
     const qc = newClient()
     const { result } = renderHook(() => {
@@ -164,14 +164,14 @@ describe('usePreviewFlagServerSync', () => {
     }, { wrapper: harness(qc) })
     await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
     expect(result.current).toBeNull()
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
-    await waitFor(() => expect(result.current).toEqual({ flag: PREVIEW_CREW_MODE, denied: true }))
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, true) })
+    await waitFor(() => expect(result.current).toEqual({ flag: PREVIEW_EXPLORE, denied: true }))
     act(() => { clearPreviewFlagWriteError() })
     expect(result.current).toBeNull()
   })
 
   it('reports any other refused toggle as a failed save, and clears it on the next accepted one', async () => {
-    server = { crew_mode: false }
+    server = { explore: false }
     patchSpy.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }))
     const qc = newClient()
     const { result } = renderHook(() => {
@@ -179,16 +179,16 @@ describe('usePreviewFlagServerSync', () => {
       return usePreviewFlagWriteError()
     }, { wrapper: harness(qc) })
     await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
-    await waitFor(() => expect(result.current).toEqual({ flag: PREVIEW_CREW_MODE, denied: false }))
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, true) })
+    await waitFor(() => expect(result.current).toEqual({ flag: PREVIEW_EXPLORE, denied: false }))
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, true) })
     await waitFor(() => expect(result.current).toBeNull())
-    expect(server.crew_mode).toBe(true)
+    expect(server.explore).toBe(true)
   })
 
   it('keeps the browser copy when the config cannot be read', async () => {
     vi.mocked(api.kirocrewConfig).mockRejectedValue(new Error('offline'))
-    localStorage.setItem(PREVIEW_CREW_MODE, '1')
+    localStorage.setItem(PREVIEW_EXPLORE, '1')
     const qc = newClient()
     const { result } = mountSync(qc)
     await waitFor(() => expect(qc.getQueryState(['kirocrewConfig'])?.status).toBe('error'))
@@ -202,15 +202,15 @@ describe('usePreviewFlagServerSync', () => {
     const qc = newClient()
     const { result } = mountSync(qc)
     await waitFor(() => expect(qc.getQueryState(['kirocrewConfig'])?.status).toBe('error'))
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, false) })
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, true) })
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, false) })
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, true) })
     await waitFor(() => expect(patchSpy).toHaveBeenCalledTimes(3))
     await waitFor(() => expect(result.current).toBe(false))
   })
 
   it('keeps another switch\'s notice when a different switch saves', async () => {
-    server = { crew_mode: false, webhooks: false }
+    server = { explore: false, webhooks: false }
     patchSpy.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }))
     const qc = newClient()
     const { result } = renderHook(() => {
@@ -218,15 +218,15 @@ describe('usePreviewFlagServerSync', () => {
       return usePreviewFlagWriteError()
     }, { wrapper: harness(qc) })
     await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
-    await waitFor(() => expect(result.current).toEqual({ flag: PREVIEW_CREW_MODE, denied: false }))
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, true) })
+    await waitFor(() => expect(result.current).toEqual({ flag: PREVIEW_EXPLORE, denied: false }))
     act(() => { setPreviewFlag(PREVIEW_WEBHOOKS, true) })
     await waitFor(() => expect(server.webhooks).toBe(true))
-    expect(result.current).toEqual({ flag: PREVIEW_CREW_MODE, denied: false })
+    expect(result.current).toEqual({ flag: PREVIEW_EXPLORE, denied: false })
   })
 
   it('reports a refused click only once the last queued click of that switch has settled', async () => {
-    server = { crew_mode: false }
+    server = { explore: false }
     let refuseFirst!: () => void
     let acceptSecond!: () => void
     const accept = patchSpy.getMockImplementation()!
@@ -239,24 +239,24 @@ describe('usePreviewFlagServerSync', () => {
     const qc = newClient()
     const { result } = renderHook(() => {
       usePreviewFlagServerSync()
-      return [usePreviewFlagWriteError(), usePreviewFlag(PREVIEW_CREW_MODE)] as const
+      return [usePreviewFlagWriteError(), usePreviewFlag(PREVIEW_EXPLORE)] as const
     }, { wrapper: harness(qc) })
     await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, false) })
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, true) })
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, false) })
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, true) })
     await waitFor(() => expect(patchSpy).toHaveBeenCalledTimes(1))
     await act(async () => { refuseFirst() })
     await waitFor(() => expect(patchSpy).toHaveBeenCalledTimes(2))
     expect(result.current[0]).toBeNull()
     await act(async () => { acceptSecond() })
-    await waitFor(() => expect(server.crew_mode).toBe(true))
+    await waitFor(() => expect(server.explore).toBe(true))
     await waitFor(() => expect(result.current[1]).toBe(true))
     expect(result.current[0]).toBeNull()
   })
 
   it('reports a 403 from a session that no longer authenticates as a failed save, not owner-only', async () => {
-    server = { crew_mode: false }
+    server = { explore: false }
     patchSpy.mockRejectedValue(Object.assign(new Error('sign in'), { status: 403, authRequired: true }))
     const qc = newClient()
     const { result } = renderHook(() => {
@@ -264,23 +264,23 @@ describe('usePreviewFlagServerSync', () => {
       return usePreviewFlagWriteError()
     }, { wrapper: harness(qc) })
     await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
-    await waitFor(() => expect(result.current).toEqual({ flag: PREVIEW_CREW_MODE, denied: false }))
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, true) })
+    await waitFor(() => expect(result.current).toEqual({ flag: PREVIEW_EXPLORE, denied: false }))
   })
 
   it('keeps a refused toggle notice when the server value arrives', async () => {
-    server = { crew_mode: false }
+    server = { explore: false }
     const qc = newClient()
     const { result } = renderHook(() => {
       usePreviewFlagServerSync()
-      return [usePreviewFlagWriteError(), usePreviewFlag(PREVIEW_CREW_MODE)] as const
+      return [usePreviewFlagWriteError(), usePreviewFlag(PREVIEW_EXPLORE)] as const
     }, { wrapper: harness(qc) })
     await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
     patchSpy.mockRejectedValue(Object.assign(new Error('owner only'), { status: 403 }))
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
-    await waitFor(() => expect(result.current[0]).toEqual({ flag: PREVIEW_CREW_MODE, denied: true }))
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, true) })
+    await waitFor(() => expect(result.current[0]).toEqual({ flag: PREVIEW_EXPLORE, denied: true }))
     await act(async () => { await qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
-    expect(result.current[0]).toEqual({ flag: PREVIEW_CREW_MODE, denied: true })
+    expect(result.current[0]).toEqual({ flag: PREVIEW_EXPLORE, denied: true })
     expect(result.current[1]).toBe(false)
   })
 
@@ -295,19 +295,19 @@ describe('usePreviewFlagServerSync', () => {
     })
     const { result } = mountSync(newClient())
     await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
-    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, false) })
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, true) })
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, false) })
     // The second write waits for the first to settle.
     await waitFor(() => expect(order).toEqual([true]))
     await act(async () => { releases[0]() })
     await waitFor(() => expect(order).toEqual([true, false]))
     await act(async () => { releases[1]() })
-    await waitFor(() => expect(server.crew_mode).toBe(false))
+    await waitFor(() => expect(server.explore).toBe(false))
     await waitFor(() => expect(result.current).toBe(false))
   })
 
   it('reads a switch the server dropped as off', async () => {
-    server = { crew_mode: true }
+    server = { explore: true }
     const qc = newClient()
     const { result } = mountSync(qc)
     await waitFor(() => expect(result.current).toBe(true))
@@ -352,7 +352,7 @@ describe('usePreviewFlagServerSync', () => {
     const { unmount } = mountSync(newClient())
     await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
     unmount()
-    expect(setPreviewFlag(PREVIEW_CREW_MODE, true)).toBe(true)
+    expect(setPreviewFlag(PREVIEW_EXPLORE, true)).toBe(true)
     expect(patchSpy).not.toHaveBeenCalled()
   })
 })

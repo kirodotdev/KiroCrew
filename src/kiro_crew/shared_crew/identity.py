@@ -329,6 +329,15 @@ def _people_principal(principal: Principal) -> Principal:
     return principal
 
 
+def budget_id(principal_id: str) -> str:
+    """The id fair admission charges *principal_id* to: one id for all the owner's local ids."""
+    from kiro_crew.shared_crew import owner
+
+    if principal_id in owner.local_owner_principal_ids():
+        return principal_id_for(PROVIDER_LOCAL, LOCAL_ISSUER, owner.owner_subject())
+    return principal_id
+
+
 async def publish_actor(
     request: web.Request,
     *,

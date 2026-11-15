@@ -2,9 +2,10 @@
 
 A fork is born ``↳ Fork of <parent>`` (``↳ Tail of`` for a tail fork,
 ``chat_fork.fork_slot``) and keeps that name until the person sends the child a
-message. That message, not a question copied from the parent, then names it
-through ``chat_title.refresh_forked_title``. This module decides when that one
-pass starts; ``chat_title`` owns the pass itself.
+message. That message then names it through ``chat_title.refresh_forked_title``,
+read together with the turns before it; a question copied from the parent never
+starts the pass. This module decides when that one pass starts; ``chat_title``
+owns the pass itself.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from kiro_crew.dashboard.chat_title import (
     _refresh_blocked,
     refresh_forked_title,
 )
+from kiro_crew.dashboard.prompt_handoff import turn_handed_off
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import HUMAN_TURN_META_KEY
 
@@ -60,15 +62,22 @@ def schedule_fork_title(state: DashboardState, slot: _ChatSlot) -> None:
 
     Called by the send handler (``chat_api.chat_send``) right after it appends
     a person's message to a slot for which ``fork_title_pending`` holds, so the
-    name lands during the turn, as a new session's first title does. The task
+    name lands during the turn, after its prompt handoff, as a new session's
+    first title does. The task
     handle goes in ``_title_task`` so chat_done's ``title_then_refresh`` waits
     for it before the milestone refresh reads the title.
     """
     slot._fork_title_spent = True
-    task = asyncio.create_task(refresh_forked_title(state, slot))
+    task = asyncio.create_task(_name_fork_after_handoff(state, slot))
     slot._title_task = task
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
+
+
+async def _name_fork_after_handoff(state: DashboardState, slot: _ChatSlot) -> None:
+    """The on-send pass: it waits for the turn that send started to hand off."""
+    await turn_handed_off(slot)
+    await refresh_forked_title(state, slot)
 
 
 async def name_queued_fork(state: DashboardState, slot: _ChatSlot) -> None:

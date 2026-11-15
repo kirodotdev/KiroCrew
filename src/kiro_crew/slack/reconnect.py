@@ -433,10 +433,11 @@ async def _reconnect(orch: GatewayOrchestrator) -> dict[str, Any]:
             # Work admitted through this client stays held until Slack is back
             # or the give-up window ends (see ``client_lost_to_reconnect``).
             orch._slack_client_lost = True
+        retired = orch.slack
         await _close_socket(orch)
         _hoist(orch, creds)
         try:
-            return await _bring_up(orch, team_id)
+            return await _bring_up(orch, team_id, retired)
         except Exception as exc:
             # Whatever failed, Slack ends down and says why; it is never left
             # half-built behind an error.
@@ -528,7 +529,9 @@ async def _check_workspace(
     return team_id, _refuse_switch(orch, team_id)
 
 
-async def _bring_up(orch: GatewayOrchestrator, team_id: str | None = None) -> dict[str, Any]:
+async def _bring_up(
+    orch: GatewayOrchestrator, team_id: str | None = None, retired: Any = None
+) -> dict[str, Any]:
     from kiro_crew.slack.client import RealSlackClient
     from kiro_crew.slack.events import SeenCache, init_socket_mode
     from kiro_crew.slack.events_queue import resume_held_slack_drains
@@ -592,6 +595,12 @@ async def _bring_up(orch: GatewayOrchestrator, team_id: str | None = None) -> di
     from kiro_crew.slack.agent_sessions.status import configure as _configure_agent_sessions
 
     _configure_agent_sessions(orch)
+    # A code-channel turn that went "processing" through the retired client
+    # ends through this one; nothing awaits before it, so no turn end plants
+    # an empty driver here first.
+    from kiro_crew.slack.code_channels import status as code_channel_status
+
+    code_channel_status.move_driver(retired, client)
     orch._slack_client_lost = False
     orch._slack_workspace_pinned = True
     orch._slack_team_id = team_id

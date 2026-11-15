@@ -28,6 +28,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Dict, Mapping, Optional, Tuple
 
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.constants import ENV_TRUTHY
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance import (
@@ -427,7 +428,7 @@ def _fetch_file(request: FetchRequest) -> FetchedPolicy:
                 "it; it tightens this tier."
             )
         with os.fdopen(fd, "rb", closefd=False) as handle:
-            body = handle.read(MAX_POLICY_BYTES + 1)
+            body = bounded_read(handle, MAX_POLICY_BYTES + 1)
     finally:
         os.close(fd)
     if len(body) > MAX_POLICY_BYTES:

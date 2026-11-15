@@ -41,7 +41,8 @@ from pathlib import Path
 from typing import Any, Iterator, Literal, TypedDict
 
 from kiro_crew.atomic_write import replace_with_retry
-from kiro_crew.platform_compat import chmod_safe, file_lock
+from kiro_crew.owner_only_files import restrict_file_to_owner_soft
+from kiro_crew.platform_compat import file_lock
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +199,7 @@ def write_queue_atomic(queue_path: str | Path, data: MochiQueue) -> None:
     tmp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}")
     try:
         tmp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        chmod_safe(tmp_path, 0o600)
+        restrict_file_to_owner_soft(tmp_path)
         replace_with_retry(tmp_path, path)
     except BaseException:
         # The pid in the name means each process leaves its own leftover, so a

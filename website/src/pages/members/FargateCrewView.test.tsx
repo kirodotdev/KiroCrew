@@ -8,8 +8,10 @@
  * a RUNNING that ECS returned, nothing says "stopped" without a STOPPED, and a
  * read that failed says it could not read, never a state.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+// `/all` for the Japanese catalog: `../../i18n` registers English only.
+import { i18next } from '../../i18n/all'
 import { renderWithProviders } from '../../test/helpers'
 import FargateCrewView, { ecsTaskConsoleUrl, taskPhase, taskPhaseIsTransitional } from './FargateCrewView'
 import { ApiError, type LaunchJob, type LaunchTaskReport, type LaunchTaskSighting } from '../../api/client'
@@ -205,7 +207,7 @@ describe('FargateCrewView', () => {
     render(job())
     const state = await screen.findByTestId('deploy-task-state-stopped')
     expect(state.textContent).toContain('has stopped')
-    expect(screen.getByTestId('deploy-task-stopped').textContent).toContain('It stopped 25m ago.')
+    expect(screen.getByTestId('deploy-task-stopped')).toHaveTextContent('It stopped 25 min ago.')
     expect(screen.getByTestId('deploy-task-stopped-reason').textContent).toBe('Essential container in task exited')
     // No "since deploy" beside "has stopped": that would read as an uptime.
     expect(screen.queryByTestId('deploy-stats')).toBeNull()
@@ -217,6 +219,21 @@ describe('FargateCrewView', () => {
     expect(screen.getByTestId('deploy-task-check')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('deploy-action-deploy'))
     expect(goToSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('says when the task stopped in unit words inside the Japanese sentence, never the narrow 25m (#36611)', async () => {
+    onTestFinished(() => i18next.changeLanguage('en'))
+    await i18next.changeLanguage('ja')
+    // The age is computed from a pinned instant, never the real clock.
+    const nowSec = 1_758_470_400
+    vi.setSystemTime(nowSec * 1000)
+    onTestFinished(() => vi.useRealTimers())
+    const stoppedAt = nowSec - 25 * 60
+    cloudLaunchTask.mockResolvedValue(
+      report(sighting({ last_status: 'STOPPED', desired_status: 'STOPPED', stopped_at: stoppedAt })),
+    )
+    render(job())
+    expect(await screen.findByTestId('deploy-task-stopped')).toHaveTextContent('25 分前に停止しました。')
   })
 
   it('says ECS no longer lists the task when the read returned none, and nothing about running or billing', async () => {

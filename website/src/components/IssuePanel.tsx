@@ -667,7 +667,7 @@ export default function IssuePanel({
               className="shrink-0 mx-4 my-2"
               variant="inline"
               message={i18nT('components.issuePanel.provider_results_failed_for_sections', {
-                sections: partial.failed.join(', '),
+                sections: fmtList(partial.failed, { style: 'narrow' }),
               })}
               askAgent
               testId="issue-panel-failed-sections"
@@ -679,7 +679,7 @@ export default function IssuePanel({
               <AlertCircle className="lucide-inline shrink-0 mt-0.5 text-warn" aria-hidden="true" />
               <span>
                 {i18nT('components.issuePanel.provider_results_may_be_partial_for_sections_ope', {
-                  sections: partial.truncated.join(', '),
+                  sections: fmtList(partial.truncated, { style: 'narrow' }),
                 })}
               </span>
             </div>

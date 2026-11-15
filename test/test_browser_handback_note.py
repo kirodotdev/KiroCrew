@@ -227,6 +227,138 @@ async def test_a_new_turn_starts_with_nothing_parked_or_kept() -> None:
     assert sess.parked is False and sess.handback is None
 
 
+async def test_a_note_after_the_parked_op_gave_up_goes_to_chat() -> None:
+    hub = lh.get_live_hub()
+    now = [1000.0]
+    hub._clock = lambda: now[0]
+    hub.turn_started("chat-1", "turn-1")
+    await _live()
+    await hub.claim("chat-1")
+    hub.park("chat-1")
+    # The shim's hold ran out and it stopped polling, telling the hub nothing.
+    now[0] += lh.HOLD_TIMEOUT_S
+    assert await hub.release("chat-1", note="I signed in") == lh.DELIVERED_CHAT
+    # The turn's next, unrelated op is not handed a note meant for the earlier one.
+    assert hub.take_handback("chat-1") is None
+
+
+async def test_a_poll_after_the_hold_ended_stops_the_op_instead_of_running_it() -> None:
+    hub = lh.get_live_hub()
+    now = [1000.0]
+    hub._clock = lambda: now[0]
+    hub._sleep = _instant
+    hub.turn_started("chat-1", "turn-1")
+    await _live()
+    await hub.claim("chat-1")
+    hub.park("chat-1")
+    now[0] += lh.HOLD_TIMEOUT_S - 1
+    # Still inside the hold: the poll keeps waiting.
+    early = json.loads(
+        (await ops_mod.api_browser_handback(_request({"session_key": "chat-1"}))).body
+    )
+    assert early["released"] is False and "hold_over" not in early
+    now[0] += 2
+    # "Stop" lands after the hub's hold ended: it goes to chat, and the shim's poll
+    # that is still running must not re-post the op behind it.
+    assert await hub.release("chat-1", choice="Stop") == lh.DELIVERED_CHAT
+    late = json.loads(
+        (await ops_mod.api_browser_handback(_request({"session_key": "chat-1"}))).body
+    )
+    assert late["released"] is False and late["hold_over"] is True
+    assert late["handed_back"] is None
+
+
+async def test_every_call_parked_in_the_session_hears_the_hold_end() -> None:
+    hub = lh.get_live_hub()
+    now = [1000.0]
+    hub._clock = lambda: now[0]
+    hub._sleep = _instant
+    hub.turn_started("chat-1", "turn-1")
+    await _live()
+    await hub.claim("chat-1")
+    hub.park("chat-1")
+    hub.park("chat-1")  # a second call held in the same session
+    now[0] += lh.HOLD_TIMEOUT_S
+
+    async def poll() -> dict:
+        resp = await ops_mod.api_browser_handback(_request({"session_key": "chat-1"}))
+        return json.loads(resp.body)
+
+    assert (await poll())["hold_over"] is True
+    assert await hub.release("chat-1", choice="Stop") == lh.DELIVERED_CHAT
+    second = await poll()
+    assert second["hold_over"] is True and second["released"] is False
+
+
+async def test_taken_back_before_the_poll_saw_the_hand_back_the_op_waits_again() -> None:
+    hub = lh.get_live_hub()
+    now = [1000.0]
+    hub._clock = lambda: now[0]
+    hub._sleep = _instant
+    hub.turn_started("chat-1", "turn-1")
+    await _live()
+    await hub.claim("chat-1")
+    hub.park("chat-1")
+    now[0] += lh.HOLD_TIMEOUT_S - 1
+    assert await hub.release("chat-1") == ""  # a silent hand-back, not yet polled
+    await hub.claim("chat-1")  # taken back before the poll saw it
+    now[0] += 7
+    assert await hub.release("chat-1", choice="Stop") == lh.DELIVERED_CHAT
+    late = json.loads(
+        (await ops_mod.api_browser_handback(_request({"session_key": "chat-1"}))).body
+    )
+    assert late["released"] is False and late["hold_over"] is True
+    assert late["handed_back"] is None, "the earlier silent hand-back resumes nothing"
+
+
+async def test_a_note_given_before_a_re_take_reaches_the_op_when_its_hold_ends() -> None:
+    hub = lh.get_live_hub()
+    now = [1000.0]
+    hub._clock = lambda: now[0]
+    hub._sleep = _instant
+    hub.turn_started("chat-1", "turn-1")
+    await _live()
+    await hub.claim("chat-1")
+    hub.park("chat-1")
+    now[0] += 300
+    assert await hub.release("chat-1", note="Wrong account") == lh.DELIVERED_AGENT
+    await hub.claim("chat-1")  # taken back before the poll took the note
+    now[0] += lh.HOLD_TIMEOUT_S
+    late = json.loads(
+        (await ops_mod.api_browser_handback(_request({"session_key": "chat-1"}))).body
+    )
+    assert late["hold_over"] is True
+    assert late["handed_back"] == {"choice": "", "note": "Wrong account"}
+    assert hub.take_handback("chat-1") is None, "nothing is left for a later op"
+
+
+async def test_the_poll_seeing_the_hand_back_ends_the_hold_and_each_park_gets_its_own() -> None:
+    hub = lh.get_live_hub()
+    now = [1000.0]
+    hub._clock = lambda: now[0]
+    hub._sleep = _instant
+    hub.turn_started("chat-1", "turn-1")
+    await _live()
+    await hub.claim("chat-1")
+    hub.park("chat-1")
+    now[0] += 300
+    # A note at the hand-back: the shim reports it without re-posting the op.
+    assert await hub.release("chat-1", note="Wrong account") == lh.DELIVERED_AGENT
+    taken = json.loads(
+        (await ops_mod.api_browser_handback(_request({"session_key": "chat-1"}))).body
+    )
+    assert taken["released"] is True and taken["handed_back"]["note"] == "Wrong account"
+    assert hub.get("chat-1").park_resumed is False, "the poll that saw it consumed it"
+    # A new op held later in the turn waits its own full hold.
+    now[0] += 200
+    await hub.claim("chat-1")
+    hub.park("chat-1")
+    now[0] += lh.HOLD_TIMEOUT_S - 1
+    assert hub.hold_over("chat-1") is False
+    now[0] += 1
+    assert hub.hold_over("chat-1") is True
+
+
 async def test_each_hand_back_goes_to_the_op_parked_on_it() -> None:
     hub = lh.get_live_hub()
     hub.turn_started("chat-1", "turn-1")

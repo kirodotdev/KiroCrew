@@ -849,7 +849,7 @@ class TestWebappMetadataBoundedValidation:
         with pytest.raises(ValidationError, match="invalid slug"):
             validate_tool_args(args, ARTIFACT_SAVE_SCHEMA)
 
-    # --- item 4 R18: empty string public_url for drafts ---
+    # --- empty string public_url for drafts ---
 
     def test_empty_public_url_accepted_for_drafts(self):
         """deploy_target.public_url="" is valid (documented draft state)."""
@@ -873,7 +873,7 @@ class TestWebappMetadataBoundedValidation:
             validate_tool_args(args, ARTIFACT_SAVE_SCHEMA)
 
 
-# --- deploy_artifact schema tests (item 6 R18) ---
+# --- deploy_artifact schema tests ---
 
 class TestDeployArtifactSchema:
     """Test the deploy_artifact MCP tool schema validation."""
@@ -881,8 +881,8 @@ class TestDeployArtifactSchema:
     def test_schema_accepts_valid_artifact_slug(self):
         from kiro_crew.validation import DEPLOY_ARTIFACT_SCHEMA
 
-        # confirm/override_scan were REMOVED from the schema (round-19: the MCP
-        # tool is preview-only; human confirmation happens in the dashboard).
+        # confirm/override_scan are NOT in the schema: the MCP tool is
+        # preview-only; human confirmation happens in the dashboard.
         args = {"site_id": "my-app", "artifact_slug": "my-demo"}
         result = validate_tool_args(args, DEPLOY_ARTIFACT_SCHEMA)
         assert result["site_id"] == "my-app"
@@ -1056,6 +1056,8 @@ class TestValidateMcpToolArguments:
                                  "default": "x", "examples": ["y"]}},
         }
         self._v({"a": "anything"}, schema)
+        # Ignored means not obeyed: the annotations never switch off the type check.
+        self._raises({"a": 1}, schema, "expected str")
 
     def test_const_and_pattern(self):
         schema = {
@@ -1125,6 +1127,12 @@ def test_boolean_true_subschema_accepts_anything():
     validate_mcp_tool_arguments(
         {"x": {"any": [1, 2, 3]}}, {"type": "object", "properties": {"x": True}}
     )
+    # `true` accepts only its own key: a sibling property is still checked.
+    with pytest.raises(ValidationError, match="expected str"):
+        validate_mcp_tool_arguments(
+            {"x": {"any": [1]}, "y": 1},
+            {"type": "object", "properties": {"x": True, "y": {"type": "string"}}},
+        )
 
 
 def test_enum_rejects_bool_for_number():
@@ -1150,7 +1158,7 @@ def test_malformed_type_keyword_rejected():
 
 
 def test_malformed_property_subschema_rejected_fail_closed():
-    # GPT 5.6 finding: a property VALUE that is neither a subschema (object)
+    # A property VALUE that is neither a subschema (object)
     # nor a boolean (e.g. the string "false") must NOT recurse to the
     # "no subschema → return" branch and admit the field unvalidated. The
     # whole schema is rejected fail-closed.

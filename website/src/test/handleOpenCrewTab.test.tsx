@@ -19,6 +19,9 @@ import type { ResizeInfo } from '../utils/resizeImage'
 
 const closeSearch = vi.hoisted(() => vi.fn())
 const openCrewSession = vi.hoisted(() => vi.fn())
+// A recognisable plain action in place of the thunk, so a test can see the
+// switch reach `dispatch`.
+const switchSlot = vi.hoisted(() => vi.fn((arg: { key: string }) => ({ type: 'test/switchSlot', payload: arg })))
 
 vi.mock('../components/ChatDropOverlay', () => ({
   useChatFileDrop: () => ({ active: false, dropTargetProps: {} }),
@@ -58,6 +61,10 @@ vi.mock('../utils/composerSendHolds', () => ({
 // The single shared reveal `handleOpenCrewTab` reuses — mock it so the test
 // asserts delegation rather than re-spelling switchSlot+openPanelView+open.
 vi.mock('../pages/chat/command-center/CrewWorkerList', () => ({ openCrewSession }))
+vi.mock('../store/chatSlice', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../store/chatSlice')>(),
+  switchSlot,
+}))
 
 import { useChatPageResourcesController } from '../pages/chat/useChatPageResourcesController'
 
@@ -130,5 +137,35 @@ describe('handleOpenCrewTab (Crew Mode dispatch-notice reveal)', () => {
     // belongs to the card's chat, not the active pane's.
     expect(openCrewSession).toHaveBeenCalledWith(dispatch, 'conductor-1', true)
     expect(closeSearch).toHaveBeenCalledTimes(1)
+  })
+})
+
+// The folder twin of handleFileOpen's split-pane override (#9921, #35014),
+// pinned here because this file already builds the controller.
+describe('handleFolderOpen (split-pane slot override)', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('stamps the folder tab with the pane slot it is given and switches the panel to that chat', () => {
+    // The panel is bound to activeSlot, so without the switch the folder tab
+    // sits in pane-chat's strip while the panel keeps showing active-chat's.
+    const { result } = renderHook(() => useController('active-chat'), { wrapper })
+    result.current.handleFolderOpen('/repo/evidence/', { slot: 'pane-chat' })
+    const openFolder = vi.mocked(result.current.tabsCtl.openFolder)
+    expect(openFolder).toHaveBeenCalledTimes(1)
+    expect(openFolder).toHaveBeenCalledWith('/repo/evidence/', 'pane-chat', { hold: true })
+    expect(switchSlot).toHaveBeenCalledTimes(1)
+    expect(switchSlot).toHaveBeenCalledWith({ key: 'pane-chat', announceOnMissing: true, gesture: true })
+    const switchCall = vi.mocked(dispatch).mock.calls.findIndex(([a]) => (a as { type?: string }).type === 'test/switchSlot')
+    expect(switchCall).not.toBe(-1)
+    // Held first, then switched (the order `openCrewSession` uses).
+    expect(openFolder.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(dispatch).mock.invocationCallOrder[switchCall])
+    expect(closeSearch).toHaveBeenCalledTimes(1)
+  })
+
+  it('without an override stamps the active slot', () => {
+    const { result } = renderHook(() => useController('active-chat'), { wrapper })
+    result.current.handleFolderOpen('/repo/evidence/')
+    expect(result.current.tabsCtl.openFolder).toHaveBeenCalledWith('/repo/evidence/', 'active-chat')
+    expect(switchSlot).not.toHaveBeenCalled()
   })
 })

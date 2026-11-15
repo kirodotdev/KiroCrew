@@ -42,7 +42,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -102,16 +101,12 @@ async def test_handshake_requests_fallback_when_admission_closes_the_connection(
         await server.wait_closed()
 
     assert accepted.is_set(), "the endpoint never accepted, so nothing was tested"
-    # Deliberately NOT asserting a specific reason string. Measured: this lands on
-    # "register io failed: [Errno 104] Connection reset by peer", not the clean-EOF
-    # "gateway closed during handshake" branch -- because gatewayd refuses BEFORE
-    # reading the Register frame, so those bytes are still unread in the socket
-    # buffer at close() and the kernel answers with RST rather than FIN. Which of
-    # the two branches runs is a timing/buffer detail, so pinning one would make
-    # this test brittle about the wrong thing. What must hold is the type (that is
-    # what `main` keys fallback_exec on) and a non-empty reason (that is what lands
-    # in stub_fallback.jsonl, the only signal an operator has that pooling quietly
-    # stopped engaging).
+    # No specific reason string: gatewayd refuses BEFORE reading the Register
+    # frame, so the unread bytes make close() send RST ("Connection reset by
+    # peer") or FIN ("gateway closed during handshake") depending on timing.
+    # What must hold is the type (what `main` keys fallback_exec on) and a
+    # non-empty reason (what stub_fallback.jsonl records, the operator's only
+    # sign that pooling stopped engaging).
     assert excinfo.value.reason, "fallback_exec would audit an empty reason"
 
 
@@ -294,28 +289,42 @@ async def test_silence_from_a_queue_aware_daemon_times_out_before_the_budget(
     short_sock_dir,
 ) -> None:
     """The timer is silence, not budget: a daemon that promised keepalives and
-    sends none for one window is not serving, however much budget remains."""
+    sends none for one window is not serving, however much budget remains.
+
+    The budget clock is frozen, so the budget can never run out: the only way to a
+    timeout is the silence window. The daemon never answers and never hangs up, so
+    the outcome cannot be a close either. A stub that timed the read by the budget
+    instead waits until ``finished`` fails it by name."""
 
     async def script(writer: Any) -> None:
-        await asyncio.sleep(0.5)
+        await asyncio.Event().wait()
 
-    server, sock = await _serve(_scripted_daemon(script), short_sock_dir)
+    handler = _scripted_daemon(script)
+    server = writer = None
     try:
+        server, sock = await _serve(handler, short_sock_dir)
         reader, writer = await _open(sock)
-        t0 = time.monotonic()
         outcome, frame = await finished(
             stub._ensure_backend_admitted(
-                reader, writer, queue_aware=True, total_budget_secs=60.0, silence_secs=0.1
+                reader,
+                writer,
+                queue_aware=True,
+                total_budget_secs=60.0,
+                silence_secs=0.1,
+                now=lambda: 0.0,
             ),
             "admitted",
         )
-        elapsed = time.monotonic() - t0
-        writer.close()
     finally:
-        server.close()
-        await server.wait_closed()
+        if writer is not None:
+            writer.close()
+        for task in handler.tasks:
+            task.cancel()
+        await asyncio.gather(*handler.tasks, return_exceptions=True)
+        if server is not None:
+            server.close()
+            await server.wait_closed()
     assert (outcome, frame) == (stub._ADMIT_TIMEOUT, None)
-    assert elapsed < 0.4, f"gave up after {elapsed:.2f}s -- the silence window, not the budget"
 
 
 @pytest.mark.asyncio

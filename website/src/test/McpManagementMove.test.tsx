@@ -1,59 +1,72 @@
 /**
- * MCP Management lives in Customize → Connections → MCP Servers.
+ * MCP Management lives at the top of Customize → MCP Servers (`McpPage`).
  *
  * The decision that stubs MCP servers and shares their backends used to live on
- * the Developer internals pages (`mcp-pool`). This suite pins where it is now:
+ * the Developer internals pages (`mcp-pool`), then below the servers list on a
+ * Customize sub-tab. This suite pins where it is now:
  *
- *  1. In Customize → MCP, the MCP Servers sub-tab (`?tab=mcp&view=mcp-servers`)
- *     renders MCP Management beside the servers list — WITHOUT Developer Mode,
- *     and NOT on the Services sub-tab, whose cards are a different thing.
- *  2. `/developer?tab=mcp-pool` (bookmarks, docs, the share-refused notice's old
- *     target) redirects to the new Customize spot, landing on the MCP Servers
- *     sub-tab at the MCP Management section.
+ *  1. `/mcp` renders MCP Management (the sharing hero and approval card) above
+ *     its Servers and Sharing views — WITHOUT Developer Mode — and Settings →
+ *     Connections, whose cards are a different thing, does not render it.
+ *  2. `?view=` picks the view, Servers by default, and a switch replaces the
+ *     history entry.
+ *  3. Old links land there: `/developer?tab=mcp-pool`, and the Customize
+ *     `?tab=mcp` forms, which `legacyConnectionsTarget` maps.
  *
- * McpManagement and McpTab are heavy (gateway + server queries); they are mocked
- * to markers, because what is under test is the WIRING, not their bodies.
+ * McpTab is heavy (server queries); it is mocked to a marker, because what is
+ * under test is the WIRING, not its body. McpManagement renders for real with
+ * an empty gateway.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { screen, waitFor, render, act } from '@testing-library/react'
+import { screen, waitFor, render, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 
 import { renderWithProviders } from './helpers'
 
-// A test can swap in a pending server list to hold McpTab in its loading state.
-const serversRead = vi.hoisted(() => ({ next: (): Promise<unknown[]> => Promise.resolve([]) }))
-
 vi.mock('../api/client', () => ({
   ApiError: class ApiError extends Error {},
   api: {
-    mcpServers: () => serversRead.next(),
+    mcpServers: () => Promise.resolve([]),
     connectionsStatus: () => Promise.resolve({ connections: [] }),
     connectionsMintState: () => Promise.resolve(undefined),
     connectionsPremint: () => Promise.resolve(undefined),
     mcpProbe: () => Promise.resolve([]),
+    mcpGatewayStatus: () => Promise.resolve({ enabled: false, supported: true, stub: [], running: [] }),
+    mcpGatewayServers: () => Promise.resolve({ servers: [] }),
+    mcpGatewayFootprint: () => Promise.resolve(null),
   },
 }))
 vi.mock('../hooks/useConnectionsUi', () => ({ useConnectionsUiEnabled: () => true }))
 vi.mock('../providers', () => ({
   useProvider: () => ({ labels: { pluginRegistryName: 'packages' } }),
 }))
-vi.mock('../pages/settings/McpManagement', () => ({
-  McpManagement: () => <div data-testid="mcp-management" />,
-}))
 vi.mock('../pages/overview/McpTab', () => ({ default: () => <div data-testid="mcp-tab" /> }))
+vi.mock('../pages/connections/OAuthAppPanel', async () => ({
+  OAuthAppPanel: () => null,
+  OAuthDraftsContext: (await vi.importActual<typeof import('react')>('react')).createContext<(slug: string, dirty: boolean) => void>(() => {}),
+  OAuthClientWrittenContext: (await vi.importActual<typeof import('react')>('react')).createContext<(slugs: string[]) => void>(() => {}),
+  OAuthDraftValuesContext: (await vi.importActual<typeof import('react')>('react')).createContext({ get: () => undefined, set: () => {} }),
+}))
 
 import ConnectionsPage from '../pages/connections/ConnectionsPage'
+import McpPage from '../pages/McpPage'
 import DeveloperPage from '../pages/DeveloperPage'
+import { legacyConnectionsTarget } from '../pages/connections/connectionsLinks'
+import { i18nT } from '../i18n/t'
 
-// The `mcp-management` marker sits behind ConnectionsPage's React.lazy import of
-// McpManagement (mocked above), so a wait for it waits on that dynamic import
-// resolving and gets its own deadline rather than waitFor's 1 s default.
+// MCP Management sits behind McpPage's React.lazy import, so a wait for it
+// waits on that dynamic import and gets its own deadline.
 const LAZY_PAGE_TIMEOUT_MS = 5000
 
 function Where() {
   const loc = useLocation()
   return <div data-testid="where">{loc.pathname + loc.search + loc.hash}</div>
+}
+
+function Back() {
+  const navigate = useNavigate()
+  return <button type="button" onClick={() => navigate(-1)}>back</button>
 }
 
 function wrapDeveloper(entry: string) {
@@ -70,109 +83,77 @@ function wrapDeveloper(entry: string) {
   )
 }
 
-describe('MCP Management in Customize → Connections → MCP Servers', () => {
-  it('renders MCP Management beside the servers list, without Developer Mode', async () => {
-    // No Developer Mode is set up anywhere; the MCP Servers sub-tab must still
-    // show the surface, beside the servers list.
-    renderWithProviders(<ConnectionsPage servicesEnabled />, { route: '/capabilities?tab=mcp&view=mcp-servers' })
-    await waitFor(() => expect(screen.getByTestId('mcp-management')).toBeTruthy(), {
-      timeout: LAZY_PAGE_TIMEOUT_MS,
-    })
-    expect(screen.getByTestId('mcp-tab')).toBeTruthy()
+const heroTitle = () => i18nT('pages.mcpManagement.hero_title')
+
+describe('MCP Management on the MCP Servers page', () => {
+  it('renders the sharing hero above the Servers view, without Developer Mode', async () => {
+    renderWithProviders(<McpPage />, { route: '/mcp' })
+    const hero = await screen.findByText(heroTitle(), undefined, { timeout: LAZY_PAGE_TIMEOUT_MS })
+    const list = await screen.findByTestId('mcp-tab', undefined, { timeout: LAZY_PAGE_TIMEOUT_MS })
+    expect(hero.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByRole('tab', { name: i18nT('pages.mcpPage.view_servers') })).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('does not render MCP Management on the Services sub-tab', async () => {
-    // Default (no `view`) is the Services gallery; MCP Management belongs with
-    // the servers list, not the connector cards.
-    renderWithProviders(<ConnectionsPage servicesEnabled />, { route: '/capabilities?tab=mcp' })
-    await waitFor(() => expect(screen.getByRole('tab', { name: /Services/ })).toBeTruthy())
-    expect(screen.queryByTestId('mcp-management')).toBeNull()
+  it('opens the Sharing view from ?view=sharing, with no Advanced toggle in front of it', async () => {
+    renderWithProviders(<McpPage />, { route: '/mcp?view=sharing' })
+    const sharing = await screen.findByRole('tab', { name: i18nT('pages.mcpPage.view_sharing') }, { timeout: LAZY_PAGE_TIMEOUT_MS })
+    expect(sharing).toHaveAttribute('aria-selected', 'true')
+    // The server list stays mounted (hidden) under the Sharing view.
+    expect(screen.getByTestId('mcp-tab')).not.toBeVisible()
+    expect(screen.getByRole('tab', { name: i18nT('pages.mcpManagement.view_servers') })).toBeInTheDocument()
   })
 
-  it('re-scrolls to the section on a REPEAT link to the same #mcp-management URL', async () => {
-    // Clicking "Review in MCP Management" a second time navigates to the
-    // identical URL while ConnectionsPage stays mounted. The scroll still fires,
-    // because the effect keys off the location's navigation key as well as
-    // activeTab/hash (which do not change on a repeat same-URL navigation).
-    const scrollSpy = vi.fn()
-    const origScroll = Element.prototype.scrollIntoView
-    Element.prototype.scrollIntoView = scrollSpy
-    const origRaf = globalThis.requestAnimationFrame
-    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
-      cb(0)
-      return 0
-    }) as typeof globalThis.requestAnimationFrame
-    try {
-      function Relink() {
-        const nav = useNavigate()
-        return (
-          <button type="button" onClick={() => nav('/capabilities?tab=mcp&view=mcp-servers#mcp-management')}>
-            relink
-          </button>
-        )
-      }
-      renderWithProviders(
-        <>
-          <Relink />
-          <ConnectionsPage servicesEnabled />
-        </>,
-        { route: '/capabilities?tab=mcp&view=mcp-servers#mcp-management' },
-      )
-      await waitFor(() => expect(screen.getByTestId('mcp-management')).toBeTruthy(), {
-        timeout: LAZY_PAGE_TIMEOUT_MS,
-      })
-      await waitFor(() => expect(scrollSpy).toHaveBeenCalled())
-      const afterFirst = scrollSpy.mock.calls.length
-      // Re-navigate to the SAME url — the GPT trigger. Must scroll again.
-      await act(async () => {
-        screen.getByText('relink').click()
-      })
-      await waitFor(() => expect(scrollSpy.mock.calls.length).toBeGreaterThan(afterFirst))
-    } finally {
-      Element.prototype.scrollIntoView = origScroll
-      globalThis.requestAnimationFrame = origRaf
-    }
+  it('switches views by replacing the history entry', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <MemoryRouter initialEntries={['/before', '/mcp']} initialIndex={1}>
+        <QueryClientProvider client={qc}>
+          <Routes>
+            <Route path="/mcp" element={<McpPage />} />
+            <Route path="*" element={null} />
+          </Routes>
+          <Where />
+          <Back />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    )
+    const sharing = await screen.findByRole('tab', { name: i18nT('pages.mcpPage.view_sharing') }, { timeout: LAZY_PAGE_TIMEOUT_MS })
+    fireEvent.mouseDown(sharing)
+    fireEvent.click(sharing)
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/mcp?view=sharing'))
+    fireEvent.click(screen.getByRole('button', { name: 'back' }))
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/before'))
   })
 
-  it('waits for the servers list to load before scrolling to the section', async () => {
-    // A cold deep link: while the shared ['mcp-servers'] query loads, McpTab
-    // shows a short skeleton, so a scroll then would clamp at the top and be
-    // left behind when the taller table arrives. The scroll must wait for it.
-    const scrollSpy = vi.fn()
-    const origScroll = Element.prototype.scrollIntoView
-    Element.prototype.scrollIntoView = scrollSpy
-    const origRaf = globalThis.requestAnimationFrame
-    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
-      cb(0)
-      return 0
-    }) as typeof globalThis.requestAnimationFrame
-    let resolveServers: (v: unknown[]) => void = () => {}
-    serversRead.next = () => new Promise(resolve => { resolveServers = resolve })
-    try {
-      renderWithProviders(<ConnectionsPage servicesEnabled />, {
-        route: '/capabilities?tab=mcp&view=mcp-servers#mcp-management',
-      })
-      await waitFor(() => expect(screen.getByTestId('mcp-management')).toBeTruthy(), {
-        timeout: LAZY_PAGE_TIMEOUT_MS,
-      })
-      expect(scrollSpy).not.toHaveBeenCalled()
-      await act(async () => {
-        resolveServers([])
-      })
-      await waitFor(() => expect(scrollSpy).toHaveBeenCalled())
-    } finally {
-      serversRead.next = () => Promise.resolve([])
-      Element.prototype.scrollIntoView = origScroll
-      globalThis.requestAnimationFrame = origRaf
-    }
+  it('keeps the server list mounted on the Sharing view, so staged edits survive', async () => {
+    renderWithProviders(<McpPage />, { route: '/mcp' })
+    const list = await screen.findByTestId('mcp-tab', undefined, { timeout: LAZY_PAGE_TIMEOUT_MS })
+    fireEvent.mouseDown(screen.getByRole('tab', { name: i18nT('pages.mcpPage.view_sharing') }))
+    await waitFor(() => expect(screen.getByRole('tab', { name: i18nT('pages.mcpPage.view_sharing') })).toHaveAttribute('aria-selected', 'true'))
+    expect(screen.getByTestId('mcp-tab')).toBe(list)
+    expect(list).not.toBeVisible()
+  })
+
+  it('is not on Settings → Connections', async () => {
+    renderWithProviders(<ConnectionsPage servicesEnabled />, { route: '/settings/connections' })
+    await screen.findByRole('region', { name: 'Connections' })
+    expect(screen.queryByText(heroTitle())).toBeNull()
+    expect(screen.queryByTestId('mcp-tab')).toBeNull()
   })
 })
 
-describe('/developer?tab=mcp-pool redirects to Customize → Connections → MCP Servers', () => {
-  it('lands on the MCP Servers sub-tab at the MCP Management section', async () => {
+describe('old links land on the new pages', () => {
+  it('/developer?tab=mcp-pool opens the Sharing view', async () => {
     wrapDeveloper('/developer?tab=mcp-pool')
-    expect(await screen.findByTestId('where')).toHaveTextContent(
-      '/capabilities?tab=mcp&view=mcp-servers#mcp-management',
-    )
+    expect(await screen.findByTestId('where')).toHaveTextContent('/capabilities?tab=mcp-servers&view=sharing')
+  })
+
+  it('maps every Customize ?tab=mcp form, keeping the other params', () => {
+    expect(legacyConnectionsTarget('?tab=mcp&view=mcp-servers', '')).toBe('/capabilities?tab=mcp-servers')
+    expect(legacyConnectionsTarget('?tab=mcp&view=mcp-servers', '#mcp-management')).toBe('/capabilities?tab=mcp-servers&view=sharing')
+    expect(legacyConnectionsTarget('?tab=mcp', '')).toBe('/settings/connections')
+    expect(legacyConnectionsTarget('?tab=mcp&provider=github', '')).toBe('/settings/connections?provider=github')
+    expect(legacyConnectionsTarget('?tab=skills', '')).toBeNull()
+    expect(legacyConnectionsTarget('', '')).toBeNull()
   })
 })

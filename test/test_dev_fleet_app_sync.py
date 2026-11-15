@@ -19,6 +19,7 @@ from dev_fleet_app_helpers import _reset_shutdown_admission_state  # noqa: F401 
 from dev_fleet_app_helpers import _sweep_staged_sync_tempdirs  # noqa: F401 - fixture
 from dev_fleet_app_helpers import _venv_maps_to_the_synced_checkout  # noqa: F401 - fixture
 from dev_fleet_app_helpers import _cleanup_sync_tempdirs, _install_step, _run_sync
+from redaction_structured_cases import github_classic
 
 import kiro_crew.apps.builtins.dev_fleet.server as mod
 from kiro_crew.apps.builtins.dev_fleet import fleet_state as fleet_state_mod
@@ -429,9 +430,10 @@ def test_redact_applied():
 
     # Should not crash on normal strings
     assert _redact("hello world") == "hello world"
-    # Should redact AWS keys
-    result = _redact("key=AKIAIOSFODNN7EXAMPLE")
-    assert "AKIAIOSFODNN7EXAMPLE" not in result
+    # Should redact credentials
+    secret = github_classic()
+    result = _redact(f"key={secret}")
+    assert secret not in result
 
 
 # --- disk aggregation name derivation ---

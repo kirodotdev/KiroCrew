@@ -1031,19 +1031,31 @@ class TestWriteStructuredMemory:
         assert f"Wrote {cap} episodic entries from consolidation" in caplog.text
         assert vs.write_episodic.call_count == cap
 
-    def test_non_list_sections_are_ignored(self) -> None:
-        vs = MagicMock()
+    def test_non_list_sections_are_ignored(self, tmp_path, opened) -> None:
+        import sqlite3
+
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        vs = opened(VectorMemoryStore(db_path=tmp_path / "m.db", embedding_dim=4))
+        vs.init()
         c = _consolidator(vector_store=vs)
         c._write_structured_memory({"semantic": "nope", "episodic": {"a": 1}}, "k")
-        vs.set_semantic.assert_not_called()
-        vs.write_episodic.assert_not_called()
+        with contextlib.closing(sqlite3.connect(tmp_path / "m.db")) as db:
+            rows = [
+                db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                for table in ("semantic_memory", "episodic_memories")
+            ]
+        assert rows == [0, 0]
 
 
 class TestSaveLessons:
-    def test_non_list_is_ignored(self) -> None:
-        vs = MagicMock()
+    def test_non_list_is_ignored(self, tmp_path, opened) -> None:
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        vs = opened(VectorMemoryStore(db_path=tmp_path / "m.db", embedding_dim=4))
+        vs.init()
         _consolidator(vector_store=vs)._save_lessons({"rule": "x"})
-        vs.write_lesson.assert_not_called()
+        assert vs.get_lessons() == []
 
     def test_caps_and_warns(self, caplog) -> None:
         vs = MagicMock()
@@ -1128,11 +1140,18 @@ class TestDedupeJudge:
     @pytest.mark.asyncio
     async def test_returns_text_and_releases_session(self) -> None:
         sessions = _fake_sessions()
+        client = MagicMock(
+            new_conversation=AsyncMock(return_value=None), swaps_conversation_in_place=True
+        )
+        sessions.get_or_create = AsyncMock(return_value=(client, False, False))
+        sessions.end_children_for = AsyncMock(return_value=None)
         c = _consolidator(sessions=sessions)
         with patch("kiro_crew.history.stream_and_collect", AsyncMock(return_value="DUP")):
             assert await c._dedupe_judge("prompt") == "DUP"
         sessions.release.assert_called_once_with(BACKGROUND_KEY)
-        sessions.recycle_background.assert_awaited_once()
+        # The judge leaves ``_bg`` on an empty conversation instead of recycling.
+        client.new_conversation.assert_awaited_once()
+        sessions.recycle_background.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_empty_text_becomes_empty_string(self) -> None:
@@ -1169,6 +1188,11 @@ class TestMergeSkillUpdate:
     @pytest.mark.asyncio
     async def test_returns_merged_body_and_prompts_with_all_inputs(self) -> None:
         sessions = _fake_sessions()
+        client = MagicMock(
+            new_conversation=AsyncMock(return_value=None), swaps_conversation_in_place=True
+        )
+        sessions.get_or_create = AsyncMock(return_value=(client, False, False))
+        sessions.end_children_for = AsyncMock(return_value=None)
         c = _consolidator(sessions=sessions)
         collector = AsyncMock(return_value="## When to use\nmerged\n")
         with patch("kiro_crew.history.stream_and_collect", collector):
@@ -1180,7 +1204,8 @@ class TestMergeSkillUpdate:
         for needle in ("EXISTING BODY", "the description", "trig1, trig2", "1. do it"):
             assert needle in prompt
         sessions.release.assert_called_once_with(BACKGROUND_KEY)
-        sessions.recycle_background.assert_awaited_once()
+        client.new_conversation.assert_awaited_once()
+        sessions.recycle_background.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_empty_text_returns_none(self) -> None:

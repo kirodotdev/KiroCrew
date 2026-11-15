@@ -17,11 +17,14 @@
  *  every row through the window's `ReadOnlyCodeCtx`. */
 import { i18nT } from '../../../i18n/t'
 import { parseFileRecord } from '../../../lib/fileRecord'
+import NoticeCard from '../NoticeCard'
+import { isProjectHooksNotice } from '../projectHooksNoticeMatch'
 import { formatTs, quoteMessageFor, renderAssistantBubble, type MessageRenderer } from '../../../app-sdk/messageRenderers'
 import UserMessage from '../UserMessage'
 import { renderUserContent } from '../ChatPageMessageContent'
 import { fmtMessageTimeFull } from '../messageTime'
 import { createTranscriptRenderers } from '../transcriptRenderers'
+import { continuesAuthorRun } from '../../../api/sharedCrewUi'
 import type { ChatMessage } from '../../../types'
 
 /** The slot key the window's shared rows and composer are mounted under. It
@@ -61,10 +64,20 @@ export function createCrewWindowRenderers(o: {
   const shared = createTranscriptRenderers({ slot: crewWindowSlot(o.instanceId, o.key) })
   return [
     {
+      // The SDK default draws a Turn on / Turn off link that writes THIS hub's
+      // project-hooks choice, never the peer's; same id, so it replaces that
+      // row with the peer's notice text alone, read-only.
+      id: 'project_hooks',
+      roles: ['*'],
+      match: isProjectHooksNotice,
+      render: (m, ctx) => ctx.row(<NoticeCard content={m.content} />),
+    },
+    {
       id: 'user',
       roles: ['user'],
-      // The local chat's bubble and hover row (Quote, Copy, More). No copy
-      // link or pin: each names a session or record on THIS machine.
+      // The local chat's bubble and hover row (Quote, Copy, and Edit & Resend
+      // while it can rewind; More only for app actions). No copy link or pin:
+      // each names a session or record on THIS machine.
       render: (m, ctx) => ctx.wrapper(
         <UserMessage
           content={m.content}
@@ -75,6 +88,7 @@ export function createCrewWindowRenderers(o: {
           canEdit={o.canRewind(m)}
           slotRunning={ctx.running}
           messageIndex={ctx.index}
+          continuesRun={continuesAuthorRun(ctx.messages, ctx.index)}
           messageTs={m.ts || ''}
           onEditResend={(_i, ts, content) => o.onRewind(ts, content)}
           onQuoteMessage={quoteMessageFor(m, ctx, 'user')}

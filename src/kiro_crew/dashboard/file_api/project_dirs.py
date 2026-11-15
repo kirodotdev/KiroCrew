@@ -128,7 +128,10 @@ def _match_known_project(raw: str, known: list[str]) -> str | None:
     on the untrusted value — deliberately not realpath, which would stat a
     caller-controlled path and reintroduce the probe this guard removes.
     """
-    want = os.path.normpath(os.path.expanduser(raw))
+    try:
+        want = os.path.normpath(os.path.expanduser(raw))
+    except ValueError:  # a NUL byte or a lone surrogate in the path
+        return None
     for cand in known:
         if os.path.normpath(os.path.expanduser(cand)) == want:
             return cand

@@ -26,6 +26,7 @@ const TAGS: ChatTag[] = [
   { id: 't2', name: 'zzq-beta', color: '#222', order: 2 } as ChatTag,
   { id: 't1', name: 'zzq-alpha', color: '#111', order: 1 } as ChatTag,
 ]
+const NEW_TAG = { id: 't9', name: 'zzq-new', color: '#999', order: 9 } as ChatTag
 
 function mount(
   slotTags: string[] = [],
@@ -43,7 +44,14 @@ function mount(
   return renderWithProviders(<SlotTagPopover />, { store })
 }
 
-const options = () => screen.getAllByRole('menuitemcheckbox')
+// The tag rows only; the Create row is an option too, found by its test id.
+const options = () => screen.queryAllByRole('option').filter(o => o.getAttribute('data-testid') !== 'slot-tag-create')
+const search = () => screen.getByPlaceholderText('Find or create a tag…') as HTMLInputElement
+/** The row the search box names as highlighted, or null. */
+const highlighted = () => {
+  const id = search().getAttribute('aria-activedescendant')
+  return id ? document.getElementById(id) : null
+}
 // A PUT is (slot, tags[, baseTagsRevision]); most assertions care only about
 // what was written, not which revision it was composed onto.
 const writes = () => setSlotTags.mock.calls.map(call => call.slice(0, 2))
@@ -74,40 +82,449 @@ describe('SlotTagPopover', () => {
     mount(['t2'])
     await screen.findByText('zzq-alpha')
     expect(options().map(o => o.textContent)).toEqual(['zzq-alpha', 'zzq-beta'])
-    expect(options()[0].getAttribute('aria-checked')).toBe('false')
-    expect(options()[1].getAttribute('aria-checked')).toBe('true')
+    expect(options()[0].getAttribute('aria-selected')).toBe('false')
+    expect(options()[1].getAttribute('aria-selected')).toBe('true')
   })
 
   it('shows the empty hint when there are no tags at all', async () => {
     chatTags.mockResolvedValue([] as never)
     mount()
-    expect(await screen.findByText('No tags yet. Create one below.')).toBeInTheDocument()
+    expect(await screen.findByText('No tags yet. Type a name to create one.')).toBeInTheDocument()
   })
 
-  it('the deferred focus lands on the first option, and is skipped on touch', async () => {
-    // The focus is deferred a tick so the list has painted. Switching slots with
-    // the tag list already cached is the case where options exist immediately.
+  it('the deferred focus lands on the search box, and is skipped on touch', async () => {
+    // The focus is deferred a tick so the dialog has painted.
     const { rerender } = mount()
     await screen.findByText('zzq-alpha')
-    document.body.focus()
+    await waitFor(() => expect(document.activeElement).toBe(search()))
 
+    document.body.focus()
     popover.slotKey = 'zzq-slot-2'
     rerender(<SlotTagPopover />)
-    await waitFor(() => expect(document.activeElement).toBe(options()[0]))
+    await waitFor(() => expect(document.activeElement).toBe(search()))
 
     vi.mocked(isTouchDevice).mockReturnValue(true)
     document.body.focus()
     popover.slotKey = 'zzq-slot-3'
     rerender(<SlotTagPopover />)
     await new Promise(r => setTimeout(r, 5))
-    expect(document.activeElement).not.toBe(options()[0])
+    expect(document.activeElement).not.toBe(search())
+  })
+
+  it('typing filters the list case-insensitively and offers to create the typed name', async () => {
+    mount()
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'ALP' } })
+    expect(options().map(o => o.textContent)).toEqual(['zzq-alpha'])
+    expect(screen.getByTestId('slot-tag-create').textContent).toBe('Create “ALP”')
+
+    fireEvent.change(search(), { target: { value: 'nothing-like-it' } })
+    expect(options()).toHaveLength(0)
+    expect(screen.getByTestId('slot-tag-create')).toBeInTheDocument()
+
+    fireEvent.change(search(), { target: { value: '' } })
+    expect(options()).toHaveLength(2)
+    expect(screen.queryByTestId('slot-tag-create')).toBeNull()
+  })
+
+  it('an exact name match offers no create row, is highlighted, and Enter applies it', async () => {
+    mount()
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: '  ZZQ-Beta ' } })
+    expect(screen.queryByTestId('slot-tag-create')).toBeNull()
+    expect(highlighted()?.textContent).toBe('zzq-beta')
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    await waitFor(() => expect(lastWrite()).toEqual(['zzq-slot', ['t2']]))
+    expect(createChatTag).not.toHaveBeenCalled()
+    expect(search().value).toBe('')
+  })
+
+  it('the exact name of a tag the chat already has highlights nothing, and Enter changes nothing', async () => {
+    mount(['t2'])
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'zzq-beta' } })
+    expect(highlighted()).toBeNull()
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    expect(search().value).toBe('zzq-beta')
+    expect(setSlotTags).not.toHaveBeenCalled()
+    expect(createChatTag).not.toHaveBeenCalled()
+    expect(options().map(o => o.textContent)).toEqual(['zzq-beta'])
+    expect(options()[0]).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('Enter on the exact-name row of a tag the chat has, once the pointer picked it, removes it like a click', async () => {
+    mount(['t2'])
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'zzq-beta' } })
+    const beta = options()[0]
+    fireEvent.mouseMove(beta, { clientX: 10, clientY: 10 })
+    fireEvent.mouseMove(beta, { clientX: 12, clientY: 10 })
+    expect(highlighted()).toBe(beta)
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    await waitFor(() => expect(lastWrite()).toEqual(['zzq-slot', []]))
+    expect(search().value).toBe('zzq-beta')
+  })
+
+  it('a resting pointer on the exact-name row of a tag the chat has cannot pick it, so Enter still changes nothing', async () => {
+    mount(['t2'])
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'zzq-beta' } })
+    const beta = options()[0]
+    // A re-render under a pointer that never moved fires mousemove at the
+    // same position, which must not count as motion.
+    fireEvent.mouseMove(beta, { clientX: 10, clientY: 10 })
+    fireEvent.mouseMove(beta, { clientX: 10, clientY: 10 })
+    expect(highlighted()).toBeNull()
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    expect(setSlotTags).not.toHaveBeenCalled()
+    expect(createChatTag).not.toHaveBeenCalled()
+    expect(search().value).toBe('zzq-beta')
+  })
+
+  it('a partial match highlights the first matching tag, a name no tag contains highlights the create row, and a blank search highlights nothing', async () => {
+    mount()
+    await screen.findByText('zzq-alpha')
+    expect(highlighted()).toBeNull()
+    fireEvent.change(search(), { target: { value: 'zz' } })
+    expect(screen.getByTestId('slot-tag-create')).toBeInTheDocument()
+    expect(highlighted()?.textContent).toBe('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'ETA' } })
+    expect(highlighted()?.textContent).toBe('zzq-beta')
+    fireEvent.change(search(), { target: { value: 'qqx' } })
+    expect(highlighted()).toBe(screen.getByTestId('slot-tag-create'))
+  })
+
+  it('Enter on a partial match adds the first matching tag, creates nothing, and clears the search', async () => {
+    mount()
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'zzq' } })
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    await waitFor(() => expect(lastWrite()).toEqual(['zzq-slot', ['t1']]))
+    expect(createChatTag).not.toHaveBeenCalled()
+    expect(search().value).toBe('')
+  })
+
+  it('a partial match skips a tag the chat already has, and Enter adds the first match it does not have', async () => {
+    mount(['t1'])
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'zzq' } })
+    expect(highlighted()?.textContent).toBe('zzq-beta')
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    await waitFor(() => expect(lastWrite()).toEqual(['zzq-slot', ['t1', 't2']]))
+    expect(createChatTag).not.toHaveBeenCalled()
+    expect(search().value).toBe('')
+  })
+
+  it('when the chat has every matching tag, the create row is highlighted and the tag rows are one arrow key away', async () => {
+    mount(['t1'])
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'alp' } })
+    expect(highlighted()).toBe(screen.getByTestId('slot-tag-create'))
+    fireEvent.keyDown(search(), { key: 'ArrowDown' })
+    expect(highlighted()?.textContent).toBe('zzq-alpha')
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    await waitFor(() => expect(lastWrite()).toEqual(['zzq-slot', []]))
+    expect(createChatTag).not.toHaveBeenCalled()
+  })
+
+  it('when the chat has every matching tag, Enter on the create row creates the typed name and keeps the tags the chat has', async () => {
+    const created = { id: 't6', name: 'alp', color: '#666', order: 6 } as ChatTag
+    createChatTag.mockImplementation(async () => {
+      chatTags.mockResolvedValue([...TAGS, created] as never)
+      return created as never
+    })
+    mount(['t1'])
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'alp' } })
+    expect(highlighted()).toBe(screen.getByTestId('slot-tag-create'))
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    await waitFor(() => expect(createChatTag).toHaveBeenCalledWith('alp'))
+    await waitFor(() => expect(lastWrite()).toEqual(['zzq-slot', ['t1', 't6']]))
+    expect(search().value).toBe('')
+  })
+
+  it('a checked tag between the create row and the typed highlight takes one Up press, and the next Up press reaches the create row', async () => {
+    mount(['t1'])
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'zzq' } })
+    expect(highlighted()?.textContent).toBe('zzq-beta')
+    fireEvent.keyDown(search(), { key: 'ArrowUp' })
+    expect(highlighted()?.textContent).toBe('zzq-alpha')
+    fireEvent.keyDown(search(), { key: 'ArrowUp' })
+    expect(highlighted()).toBe(screen.getByTestId('slot-tag-create'))
+    expect(setSlotTags).not.toHaveBeenCalled()
+  })
+
+  it('in a partial match, Enter on a tag row picked with the arrows toggles it', async () => {
+    mount(['t2'])
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'zzq' } })
+    fireEvent.keyDown(search(), { key: 'ArrowDown' })
+    expect(highlighted()?.textContent).toBe('zzq-beta')
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    await waitFor(() => expect(lastWrite()).toEqual(['zzq-slot', []]))
+    expect(createChatTag).not.toHaveBeenCalled()
+    expect(search().value).toBe('zzq')
+  })
+
+  it('from the default partial-match highlight, ArrowUp reaches the create row, and Enter there creates', async () => {
+    const created = { id: 't8', name: 'zzq', color: '#888', order: 8 } as ChatTag
+    createChatTag.mockImplementation(async () => {
+      chatTags.mockResolvedValue([...TAGS, created] as never)
+      return created as never
+    })
+    mount()
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'zzq' } })
+    expect(highlighted()?.textContent).toBe('zzq-alpha')
+    fireEvent.keyDown(search(), { key: 'ArrowUp' })
+    expect(highlighted()).toBe(screen.getByTestId('slot-tag-create'))
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    await waitFor(() => expect(createChatTag).toHaveBeenCalledWith('zzq'))
+    await waitFor(() => expect(lastWrite()).toEqual(['zzq-slot', ['t8']]))
+    expect(search().value).toBe('')
+  })
+
+  it('a name no tag contains still highlights the create row, and Enter creates it', async () => {
+    const created = { id: 't7', name: 'qqx', color: '#777', order: 7 } as ChatTag
+    createChatTag.mockImplementation(async () => {
+      chatTags.mockResolvedValue([...TAGS, created] as never)
+      return created as never
+    })
+    mount(['t2'])
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'qqx' } })
+    expect(options()).toHaveLength(0)
+    expect(highlighted()).toBe(screen.getByTestId('slot-tag-create'))
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    await waitFor(() => expect(createChatTag).toHaveBeenCalledWith('qqx'))
+    await waitFor(() => expect(lastWrite()).toEqual(['zzq-slot', ['t2', 't7']]))
+    expect(search().value).toBe('')
+  })
+
+  it('Enter on a new name creates the tag and assigns it to this chat', async () => {
+    createChatTag.mockImplementation(async () => {
+      // The gateway's tag list holds the new tag from now on.
+      chatTags.mockResolvedValue([...TAGS, NEW_TAG] as never)
+      return NEW_TAG as never
+    })
+    mount(['t1'])
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: '  zzq-new  ' } })
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    await waitFor(() => expect(createChatTag).toHaveBeenCalledWith('zzq-new'))
+    await waitFor(() => expect(lastWrite()).toEqual(['zzq-slot', ['t1', 't9']]))
+    expect(search().value).toBe('')
+    expect(await screen.findByRole('option', { name: /zzq-new/ })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('clicking the create row does the same as Enter', async () => {
+    createChatTag.mockResolvedValue(NEW_TAG as never)
+    mount()
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'zzq-new' } })
+    fireEvent.click(screen.getByTestId('slot-tag-create'))
+    await waitFor(() => expect(lastWrite()).toEqual(['zzq-slot', ['t9']]))
+  })
+
+  it('a duplicate create response keeps the tag already assigned to the chat', async () => {
+    let resolveTags!: (tags: ChatTag[]) => void
+    let resolveCreate!: (tag: ChatTag) => void
+    chatTags.mockImplementation(() => new Promise(resolve => { resolveTags = resolve }) as never)
+    createChatTag.mockImplementation(() => new Promise(resolve => { resolveCreate = resolve }) as never)
+    mount(['t1'])
+    fireEvent.change(search(), { target: { value: 'zzq-alpha' } })
+    expect(highlighted()).toBe(screen.getByTestId('slot-tag-create'))
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    await waitFor(() => expect(createChatTag).toHaveBeenCalledWith('zzq-alpha'))
+
+    await act(async () => {
+      resolveTags(TAGS)
+      resolveCreate(TAGS[1])
+    })
+    expect(setSlotTags).not.toHaveBeenCalled()
+  })
+
+  it('a create response adds a tag the chat does not have exactly once', async () => {
+    let resolveTags!: (tags: ChatTag[]) => void
+    let resolveCreate!: (tag: ChatTag) => void
+    chatTags.mockImplementation(() => new Promise(resolve => { resolveTags = resolve }) as never)
+    createChatTag.mockImplementation(() => new Promise(resolve => { resolveCreate = resolve }) as never)
+    mount()
+    fireEvent.change(search(), { target: { value: 'zzq-alpha' } })
+    expect(highlighted()).toBe(screen.getByTestId('slot-tag-create'))
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    await waitFor(() => expect(createChatTag).toHaveBeenCalledWith('zzq-alpha'))
+
+    await act(async () => {
+      resolveTags(TAGS)
+      resolveCreate(TAGS[1])
+    })
+    await waitFor(() => expect(lastWrite()).toEqual(['zzq-slot', ['t1']]))
+    expect(setSlotTags).toHaveBeenCalledOnce()
+  })
+
+  it('two Enter keydowns on the same add-only highlight add the tag once', async () => {
+    mount()
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'zzq-alpha' } })
+    expect(highlighted()?.textContent).toBe('zzq-alpha')
+    act(() => {
+      fireEvent.keyDown(search(), { key: 'Enter' })
+      fireEvent.keyDown(search(), { key: 'Enter' })
+    })
+    await waitFor(() => expect(lastWrite()).toEqual(['zzq-slot', ['t1']]))
+    expect(setSlotTags).toHaveBeenCalledOnce()
+  })
+
+  it('a create that resolves after the picker moved to another chat assigns nothing', async () => {
+    let resolveCreate!: (tag: unknown) => void
+    createChatTag.mockImplementation(() => new Promise(r => { resolveCreate = r }) as never)
+    const { rerender } = mount()
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'zzq-new' } })
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    await waitFor(() => expect(createChatTag).toHaveBeenCalled())
+
+    popover.slotKey = 'zzq-slot-2'
+    rerender(<SlotTagPopover />)
+    await waitFor(() => expect(search().value).toBe(''))
+    // The same text typed on the other chat is that chat's own draft.
+    fireEvent.change(search(), { target: { value: 'zzq-new' } })
+    chatTags.mockResolvedValue([...TAGS, NEW_TAG] as never)
+    resolveCreate(NEW_TAG)
+    await screen.findByRole('option', { name: 'zzq-new' })
+    expect(setSlotTags).not.toHaveBeenCalled()
+    expect(search().value).toBe('zzq-new')
+  })
+
+  it('a new open starts with an empty search', async () => {
+    const { rerender } = mount()
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'alp' } })
+    popover.slotKey = 'zzq-slot-2'
+    rerender(<SlotTagPopover />)
+    await waitFor(() => expect(search().value).toBe(''))
+    expect(options()).toHaveLength(2)
+  })
+
+  it('the arrows move the highlight, wrap at both ends, and leave focus in the search box', async () => {
+    mount()
+    await screen.findByText('zzq-alpha')
+    search().focus()
+    const [alpha, beta] = options()
+    // ArrowUp with nothing highlighted starts from the bottom.
+    fireEvent.keyDown(search(), { key: 'ArrowUp' })
+    expect(highlighted()).toBe(beta)
+    fireEvent.keyDown(search(), { key: 'ArrowDown' })
+    expect(highlighted()).toBe(alpha)
+    fireEvent.keyDown(search(), { key: 'ArrowDown' })
+    expect(highlighted()).toBe(beta)
+    fireEvent.keyDown(search(), { key: 'ArrowDown' })
+    expect(highlighted()).toBe(alpha)
+    fireEvent.keyDown(search(), { key: 'ArrowUp' })
+    expect(highlighted()).toBe(beta)
+    expect(document.activeElement).toBe(search())
+  })
+
+  it('the arrows reach the create row above the first match, and walk the filtered tags', async () => {
+    mount()
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'zzq' } })
+    expect(highlighted()?.textContent).toBe('zzq-alpha')
+    fireEvent.keyDown(search(), { key: 'ArrowUp' })
+    expect(highlighted()).toBe(screen.getByTestId('slot-tag-create'))
+    fireEvent.keyDown(search(), { key: 'ArrowDown' })
+    expect(highlighted()?.textContent).toBe('zzq-alpha')
+    fireEvent.keyDown(search(), { key: 'ArrowDown' })
+    expect(highlighted()?.textContent).toBe('zzq-beta')
+  })
+
+  it('Enter on a row picked with the arrows toggles it, like a click', async () => {
+    mount(['t2'])
+    await screen.findByText('zzq-alpha')
+    fireEvent.keyDown(search(), { key: 'ArrowDown' })
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    await waitFor(() => expect(lastWrite()).toEqual(['zzq-slot', ['t2', 't1']]))
+    fireEvent.keyDown(search(), { key: 'ArrowDown' })
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    await waitFor(() => expect(lastWrite()).toEqual(['zzq-slot', ['t1']]))
+    // A picked row keeps the highlight, so it can be toggled back at once.
+    expect(highlighted()?.textContent).toBe('zzq-beta')
+  })
+
+  it('typing after picking a row hands the highlight back to the typed text', async () => {
+    mount()
+    await screen.findByText('zzq-alpha')
+    fireEvent.change(search(), { target: { value: 'zzq-' } })
+    expect(highlighted()?.textContent).toBe('zzq-alpha')
+    fireEvent.keyDown(search(), { key: 'ArrowDown' })
+    expect(highlighted()?.textContent).toBe('zzq-beta')
+    // Beta still matches the new text, so only the reset hands the highlight back.
+    fireEvent.change(search(), { target: { value: 'zzq' } })
+    expect(highlighted()?.textContent).toBe('zzq-alpha')
+  })
+
+  it('the arrows are left to an IME while it composes', async () => {
+    mount()
+    await screen.findByText('zzq-alpha')
+    fireEvent.compositionStart(search())
+    fireEvent.keyDown(search(), { key: 'ArrowDown' })
+    expect(highlighted()).toBeNull()
+    // The latch outlives compositionend by a short window; the faked clock
+    // steps past it instead of waiting on the wall clock.
+    vi.useFakeTimers()
+    try {
+      fireEvent.compositionEnd(search())
+      fireEvent.keyDown(search(), { key: 'ArrowDown' })
+      expect(highlighted()).toBeNull()
+      vi.advanceTimersByTime(60)
+      fireEvent.keyDown(search(), { key: 'ArrowDown' })
+      expect(highlighted()).toBe(options()[0])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('moving the pointer over a row highlights it; a resting pointer does not', async () => {
+    mount()
+    await screen.findByText('zzq-alpha')
+    const beta = options()[1]
+    // The first move only records a position, so a re-render under a pointer
+    // that never moved cannot take the highlight.
+    fireEvent.mouseMove(beta, { clientX: 10, clientY: 10 })
+    expect(highlighted()).toBeNull()
+    fireEvent.mouseMove(beta, { clientX: 12, clientY: 10 })
+    expect(highlighted()).toBe(beta)
+  })
+
+  it('only the highlighted row is filled, and every row carries exactly one background utility', async () => {
+    // `bg-transparent` is emitted after the colour utilities in the built CSS,
+    // so a row carrying both renders transparent and the highlight vanishes.
+    mount(['t2'])
+    await screen.findByText('zzq-alpha')
+    fireEvent.keyDown(search(), { key: 'ArrowDown' })
+    const fills = (el: HTMLElement) => el.className.split(/\s+/).filter(c => /^bg-/.test(c))
+    const [alpha, beta] = options()
+    expect(fills(alpha)).toEqual(['bg-bg-hover'])
+    expect(fills(beta)).toEqual(['bg-transparent'])
+  })
+
+  it('pressing a row keeps focus in the search box, and the click still toggles', async () => {
+    mount()
+    await screen.findByText('zzq-alpha')
+    search().focus()
+    const alpha = options()[0]
+    expect(fireEvent.mouseDown(alpha)).toBe(false)
+    fireEvent.click(alpha)
+    await waitFor(() => expect(lastWrite()).toEqual(['zzq-slot', ['t1']]))
   })
 
   it('toggling a tag on writes the extended list optimistically', async () => {
     mount()
     await screen.findByText('zzq-alpha')
     fireEvent.click(options()[0])
-    expect(options()[0].getAttribute('aria-checked')).toBe('true')
+    expect(options()[0].getAttribute('aria-selected')).toBe('true')
     await waitFor(() =>
       expect(writes()).toContainEqual(['zzq-slot', ['t1']]))
   })
@@ -137,11 +554,11 @@ describe('SlotTagPopover', () => {
     await screen.findByText('zzq-alpha')
 
     fireEvent.click(options()[0])
-    expect(options()[0].getAttribute('aria-checked')).toBe('true')
+    expect(options()[0].getAttribute('aria-selected')).toBe('true')
     await waitFor(() => expect(setSlotTags).toHaveBeenCalledOnce())
 
     await act(async () => { finish({ ok: true, tags: ['t1'] }) })
-    expect(options()[0].getAttribute('aria-checked')).toBe('true')
+    expect(options()[0].getAttribute('aria-selected')).toBe('true')
     expect(store.getState().dashboard.slots[0].tags).toEqual([])
 
     // A pre-PUT frame can arrive after the HTTP response. It must not expose
@@ -151,7 +568,7 @@ describe('SlotTagPopover', () => {
         { key: 'zzq-slot', messages: 0, running: false, tags: [] } as ChatSlot,
       ]))
     })
-    expect(options()[0].getAttribute('aria-checked')).toBe('true')
+    expect(options()[0].getAttribute('aria-selected')).toBe('true')
 
     act(() => {
       store.dispatch(sseSlots([
@@ -159,7 +576,7 @@ describe('SlotTagPopover', () => {
       ]))
     })
     await waitFor(() => expect(store.getState().dashboard.slots[0].tags).toEqual(['t1']))
-    expect(options()[0].getAttribute('aria-checked')).toBe('true')
+    expect(options()[0].getAttribute('aria-selected')).toBe('true')
 
     // Once confirmed, a later authoritative update is visible rather than
     // being hidden forever behind the optimistic overlay.
@@ -169,7 +586,7 @@ describe('SlotTagPopover', () => {
         { key: 'zzq-slot', messages: 0, running: false, tags: [] } as ChatSlot,
       ]))
     })
-    await waitFor(() => expect(options()[0].getAttribute('aria-checked')).toBe('false'))
+    await waitFor(() => expect(options()[0].getAttribute('aria-selected')).toBe('false'))
   })
 
   it('treats a leaked provisional revision named by the 409 as stale, not as a newer writer', async () => {
@@ -207,7 +624,7 @@ describe('SlotTagPopover', () => {
     })
     // Rolled back: the rejected tag is NOT shown as accepted, and the notice
     // is visible.
-    await waitFor(() => expect(options()[0].getAttribute('aria-checked')).toBe('false'))
+    await waitFor(() => expect(options()[0].getAttribute('aria-selected')).toBe('false'))
     expect(screen.getByRole('alert')).toHaveTextContent('session was deleted or rebound')
 
     // The rollback frame (revision-1, []) lands; still rolled back.
@@ -216,7 +633,7 @@ describe('SlotTagPopover', () => {
         { key: 'zzq-slot', messages: 0, running: false, tags: [], tags_revision: 'revision-1' } as ChatSlot,
       ]))
     })
-    await waitFor(() => expect(options()[0].getAttribute('aria-checked')).toBe('false'))
+    await waitFor(() => expect(options()[0].getAttribute('aria-selected')).toBe('false'))
 
     // A deliberate new click composes from the rolled-back list, not from the
     // rejected ['t1'] the leaked frame showed.
@@ -264,7 +681,7 @@ describe('SlotTagPopover', () => {
     // revision-2 frame must NOT promote the rejected ['t1'] as accepted.
     popover.slotKey = 'zzq-slot'
     rerender(<SlotTagPopover />)
-    await waitFor(() => expect(options()[0].getAttribute('aria-checked')).toBe('false'))
+    await waitFor(() => expect(options()[0].getAttribute('aria-selected')).toBe('false'))
 
     // And the next toggle composes from the rolled-back list, not from ['t1'].
     fireEvent.click(options()[1]) // t2
@@ -334,7 +751,7 @@ describe('SlotTagPopover', () => {
     popover.slotKey = 'zzq-slot'
     rerender(<SlotTagPopover />)
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['true', 'false'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['true', 'false'])
     })
     fireEvent.click(options()[1]) // t2 -> composes onto zzq-slot's ['t1']
     await waitFor(() => expect(setSlotTags).toHaveBeenCalledTimes(2))
@@ -363,7 +780,7 @@ describe('SlotTagPopover', () => {
         { key: 'zzq-slot', messages: 0, running: false, tags: ['t1'], tags_revision: R(2) } as ChatSlot,
       ]))
     })
-    await waitFor(() => expect(options()[0].getAttribute('aria-checked')).toBe('true'))
+    await waitFor(() => expect(options()[0].getAttribute('aria-selected')).toBe('true'))
 
     // A delayed HTTP snapshot X arrives: revision R0 — OLDER than anything
     // accepted, and never seen by this client (not in the predecessor set).
@@ -373,7 +790,7 @@ describe('SlotTagPopover', () => {
         { key: 'zzq-slot', messages: 0, running: false, tags: [], tags_revision: R(0) } as ChatSlot,
       ]))
     })
-    expect(options()[0].getAttribute('aria-checked')).toBe('true')
+    expect(options()[0].getAttribute('aria-selected')).toBe('true')
 
     // The next toggle composes onto the accepted ['t1'], not onto X's [].
     fireEvent.click(options()[1]) // t2
@@ -404,7 +821,7 @@ describe('SlotTagPopover', () => {
         { key: 'zzq-slot', messages: 0, running: false, tags: ['t1'], tags_revision: R(900, '0000000000000001') } as ChatSlot,
       ]))
     })
-    await waitFor(() => expect(options()[0].getAttribute('aria-checked')).toBe('true'))
+    await waitFor(() => expect(options()[0].getAttribute('aria-selected')).toBe('true'))
 
     // Gateway restarts; its first frame for this slot carries sequence 1 of a
     // new epoch and a different (authoritative) tag list.
@@ -414,7 +831,7 @@ describe('SlotTagPopover', () => {
       ]))
     })
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'true'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'true'])
     })
     // The next toggle composes onto the adopted post-restart list.
     fireEvent.click(options()[0]) // t1
@@ -432,7 +849,7 @@ describe('SlotTagPopover', () => {
     } as never)
     const { store } = mount(['t1'], [], R(900, '0000000000000001'))
     await screen.findByText('zzq-alpha')
-    expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['true', 'false'])
+    expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['true', 'false'])
 
     // Restarted gateway's first frame: new epoch B, authoritative list ['t2'].
     act(() => {
@@ -441,7 +858,7 @@ describe('SlotTagPopover', () => {
       ]))
     })
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'true'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'true'])
     })
 
     // Late reply from the retired epoch A with the pre-restart list ['t1'].
@@ -451,7 +868,7 @@ describe('SlotTagPopover', () => {
       ]))
     })
     // Not re-adopted: the accepted epoch-B list stays on screen ...
-    expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'true'])
+    expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'true'])
     // ... and the next toggle composes onto it, not onto the stale ['t1'].
     fireEvent.click(options()[0]) // t1
     await waitFor(() => expect(setSlotTags).toHaveBeenCalledOnce())
@@ -520,7 +937,7 @@ describe('SlotTagPopover', () => {
       expect(lastWrite()).toEqual(['zzq-slot', ['t2', 't1']])
       expect(lastWriteBase()).toBe(R(2, E1))
       await waitFor(() => {
-        expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['true', 'true'])
+        expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['true', 'true'])
       })
       expect(screen.queryByRole('alert')).toBeNull()
       // The next click composes onto the committed list at its revision.
@@ -541,7 +958,7 @@ describe('SlotTagPopover', () => {
       setSlotTags.mockResolvedValueOnce({ ok: true, tags: ['t2'] } as never)
       const { store } = mount(['t1'], [], R(5, E2))
       await screen.findByText('zzq-alpha')
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['true', 'false'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['true', 'false'])
       act(() => {
         store.dispatch(sseSlots([
           { key: 'zzq-slot', messages: 0, running: false, tags: [] } as ChatSlot,
@@ -549,7 +966,7 @@ describe('SlotTagPopover', () => {
       })
       // The legacy frame is authoritative: no overlay re-covers it with ['t1'].
       await waitFor(() => {
-        expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'false'])
+        expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'false'])
       })
       // The next toggle composes onto the legacy list, not the retired ['t1'].
       fireEvent.click(options()[1]) // t2
@@ -582,7 +999,7 @@ describe('SlotTagPopover', () => {
     popover.slotKey = 'zzq-slot'
     rerender(<SlotTagPopover />)
     // Store is all the client knows for this slot, so it renders it ...
-    expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['true', 'true'])
+    expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['true', 'true'])
     // ... but the restarted gateway's first frame replaces it outright, even
     // though its sequence (1) is far below the stale frame's (901).
     act(() => {
@@ -592,7 +1009,7 @@ describe('SlotTagPopover', () => {
       ]))
     })
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'false'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'false'])
     })
     fireEvent.click(options()[0]) // t1 composes onto the adopted []
     await waitFor(() => expect(setSlotTags).toHaveBeenCalledOnce())
@@ -629,7 +1046,7 @@ describe('SlotTagPopover', () => {
     })
     // The rollback overlay shows the server's restored list (store is still R1).
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'true'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'true'])
     })
     expect(screen.getByRole('alert')).toHaveTextContent('session was deleted or rebound')
 
@@ -654,7 +1071,7 @@ describe('SlotTagPopover', () => {
         { key: 'zzq-slot', messages: 0, running: false, tags: ['t1'], tags_revision: 'revision-2' } as ChatSlot,
       ]))
     })
-    await waitFor(() => expect(options()[0].getAttribute('aria-checked')).toBe('true'))
+    await waitFor(() => expect(options()[0].getAttribute('aria-selected')).toBe('true'))
 
     // A delayed revision-1 frame (empty tags) arrives out of order. Without an
     // overlay active it would render and visibly reverse the checkmark.
@@ -663,7 +1080,7 @@ describe('SlotTagPopover', () => {
         { key: 'zzq-slot', messages: 0, running: false, tags: [], tags_revision: 'revision-1' } as ChatSlot,
       ]))
     })
-    expect(options()[0].getAttribute('aria-checked')).toBe('true')
+    expect(options()[0].getAttribute('aria-selected')).toBe('true')
 
     // The store catching back up to the accepted revision keeps it checked.
     act(() => {
@@ -671,7 +1088,7 @@ describe('SlotTagPopover', () => {
         { key: 'zzq-slot', messages: 0, running: false, tags: ['t1'], tags_revision: 'revision-2' } as ChatSlot,
       ]))
     })
-    await waitFor(() => expect(options()[0].getAttribute('aria-checked')).toBe('true'))
+    await waitFor(() => expect(options()[0].getAttribute('aria-selected')).toBe('true'))
   })
 
   it('a click after close/reopen composes onto the in-flight write, not the stale frame', async () => {
@@ -696,7 +1113,7 @@ describe('SlotTagPopover', () => {
     // renders the store honestly (no resurrected intent) ...
     popover.slotKey = 'zzq-slot'
     rerender(<SlotTagPopover />)
-    expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'false'])
+    expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'false'])
 
     // ... yet the next click is a DELTA queued behind the in-flight write, so
     // it composes onto that write's confirmed result rather than the stale
@@ -711,7 +1128,7 @@ describe('SlotTagPopover', () => {
 
     // The kept overlay is the server-confirmed list, and its frame retires it.
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['true', 'true'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['true', 'true'])
     })
     act(() => {
       store.dispatch(sseSlots([
@@ -719,7 +1136,7 @@ describe('SlotTagPopover', () => {
       ]))
     })
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['true', 'true'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['true', 'true'])
     })
   })
 
@@ -748,7 +1165,7 @@ describe('SlotTagPopover', () => {
     })
     popover.slotKey = 'zzq-slot'
     rerender(<SlotTagPopover />)
-    expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'true'])
+    expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'true'])
 
     // User adds t1 again against the foreign frame; still queued behind PUT1.
     fireEvent.click(options()[0])
@@ -795,7 +1212,7 @@ describe('SlotTagPopover', () => {
     rerender(<SlotTagPopover />)
     // The stale intent ['t1'] must not resurrect over the newer store state.
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'true'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'true'])
     })
 
     // The next toggle composes from the newer revision-3 list, not from ['t1'].
@@ -825,7 +1242,7 @@ describe('SlotTagPopover', () => {
         { key: 'zzq-slot', messages: 0, running: false, tags: ['t1'], tags_revision: 'revision-2' } as ChatSlot,
       ]))
     })
-    await waitFor(() => expect(options()[0].getAttribute('aria-checked')).toBe('true'))
+    await waitFor(() => expect(options()[0].getAttribute('aria-selected')).toBe('true'))
 
     // Second write is in flight when a DELAYED revision-1 frame (a known
     // predecessor, not a newer writer) arrives out of order.
@@ -842,7 +1259,7 @@ describe('SlotTagPopover', () => {
       })
     })
     // The stale frame must not clear the overlay or become the next base.
-    expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['true', 'true'])
+    expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['true', 'true'])
 
     act(() => {
       store.dispatch(sseSlots([
@@ -850,7 +1267,7 @@ describe('SlotTagPopover', () => {
       ]))
     })
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['true', 'true'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['true', 'true'])
     })
     fireEvent.click(options()[0]) // t1 off, composed from ['t1', 't2'] not from []
     await waitFor(() => expect(setSlotTags).toHaveBeenCalledTimes(3))
@@ -882,7 +1299,7 @@ describe('SlotTagPopover', () => {
     // as the overlay and as the base for the next user intent.
     popover.slotKey = 'zzq-slot'
     rerender(<SlotTagPopover />)
-    await waitFor(() => expect(options()[0].getAttribute('aria-checked')).toBe('true'))
+    await waitFor(() => expect(options()[0].getAttribute('aria-selected')).toBe('true'))
 
     setSlotTags.mockResolvedValueOnce({
       ok: true,
@@ -917,7 +1334,7 @@ describe('SlotTagPopover', () => {
         } as ChatSlot,
       ]))
     })
-    expect(options()[0].getAttribute('aria-checked')).toBe('true')
+    expect(options()[0].getAttribute('aria-selected')).toBe('true')
 
     // A later client can legitimately restore the same tag list. Its distinct
     // revision proves this is a newer authoritative reversal, not the stale frame.
@@ -929,7 +1346,7 @@ describe('SlotTagPopover', () => {
         } as ChatSlot,
       ]))
     })
-    await waitFor(() => expect(options()[0].getAttribute('aria-checked')).toBe('false'))
+    await waitFor(() => expect(options()[0].getAttribute('aria-selected')).toBe('false'))
 
     setSlotTags.mockResolvedValueOnce({
       ok: true, tags: ['t2'], tags_revision: 'revision-4',
@@ -952,7 +1369,7 @@ describe('SlotTagPopover', () => {
 
     await act(async () => { rejectFirst(new Error('first write failed')) })
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'false'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'false'])
     })
     await act(async () => {})
     expect(setSlotTags).toHaveBeenCalledOnce()
@@ -994,7 +1411,7 @@ describe('SlotTagPopover', () => {
 
     // Revision 2 is the server-declared predecessor of the committed revision 3,
     // so it must not replace the latest optimistic intent while revision 3 travels.
-    expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['true', 'false'])
+    expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['true', 'false'])
 
     act(() => {
       store.dispatch(sseSlots([
@@ -1005,7 +1422,7 @@ describe('SlotTagPopover', () => {
       ]))
     })
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['true', 'false'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['true', 'false'])
     })
 
     setSlotTags.mockResolvedValueOnce({
@@ -1034,7 +1451,7 @@ describe('SlotTagPopover', () => {
       ]))
     })
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'true'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'true'])
     })
 
     setSlotTags.mockResolvedValueOnce({ ok: true, tags: ['t2', 't1'] } as never)
@@ -1060,14 +1477,14 @@ describe('SlotTagPopover', () => {
     })
     await act(async () => { finishFirst({ ok: true, tags: ['t1'] }) })
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'true'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'true'])
     })
 
     fireEvent.click(options()[0])
     await waitFor(() => expect(setSlotTags).toHaveBeenCalledTimes(2))
     expect(lastWrite()).toEqual(['zzq-slot', ['t2', 't1']])
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'true'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'true'])
     })
   })
 
@@ -1089,7 +1506,7 @@ describe('SlotTagPopover', () => {
 
     await act(async () => { finish[1]({ ok: true, tags: ['t1', 't2'] }) })
     expect(store.getState().dashboard.slots[0].tags).toEqual([])
-    expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['true', 'true'])
+    expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['true', 'true'])
 
     act(() => {
       store.dispatch(sseSlots([
@@ -1114,7 +1531,7 @@ describe('SlotTagPopover', () => {
     popover.slotKey = 'zzq-slot-2'
     rerender(<SlotTagPopover />)
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'false'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'false'])
     })
 
     await act(async () => { rejectFirst(new Error('slot A failed')) })
@@ -1139,12 +1556,12 @@ describe('SlotTagPopover', () => {
     popover.slotKey = 'zzq-slot-2'
     rerender(<SlotTagPopover />)
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['true', 'false'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['true', 'false'])
     })
     popover.slotKey = 'zzq-slot'
     rerender(<SlotTagPopover />)
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'false'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'false'])
     })
     fireEvent.click(options()[0])
     await waitFor(() => expect(setSlotTags).toHaveBeenCalledOnce())
@@ -1167,14 +1584,14 @@ describe('SlotTagPopover', () => {
     popover.slotKey = 'zzq-slot-2'
     rerender(<SlotTagPopover />)
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'true'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'true'])
     })
 
     fireEvent.click(options()[0])
     await waitFor(() => expect(setSlotTags).toHaveBeenCalledTimes(2))
     expect(lastWrite()).toEqual(['zzq-slot-2', ['t2', 't1']])
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'true'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'true'])
     })
   })
 
@@ -1195,7 +1612,7 @@ describe('SlotTagPopover', () => {
     popover.slotKey = 'zzq-slot-2'
     rerender(<SlotTagPopover />)
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['false', 'false'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['false', 'false'])
     })
     fireEvent.click(options()[1])
     await waitFor(() => expect(setSlotTags).toHaveBeenCalledTimes(2))
@@ -1221,7 +1638,7 @@ describe('SlotTagPopover', () => {
     await act(async () => { writes[1].reject(new Error('second write failed')) })
 
     await waitFor(() => {
-      expect(options().map(o => o.getAttribute('aria-checked'))).toEqual(['true', 'false'])
+      expect(options().map(o => o.getAttribute('aria-selected'))).toEqual(['true', 'false'])
     })
     expect(store.getState().dashboard.slots[0].tags).toEqual([])
 
@@ -1239,8 +1656,8 @@ describe('SlotTagPopover', () => {
     await screen.findByText('zzq-alpha')
 
     fireEvent.click(options()[0])
-    expect(options()[0].getAttribute('aria-checked')).toBe('true')
-    await waitFor(() => expect(options()[0].getAttribute('aria-checked')).toBe('false'))
+    expect(options()[0].getAttribute('aria-selected')).toBe('true')
+    await waitFor(() => expect(options()[0].getAttribute('aria-selected')).toBe('false'))
 
     const notice = await screen.findByRole('alert')
     expect(notice).toHaveTextContent('write failed')
@@ -1249,39 +1666,13 @@ describe('SlotTagPopover', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
-  it('roving focus walks the option list and wraps at both ends', async () => {
-    mount()
-    await screen.findByText('zzq-alpha')
-    const list = screen.getByRole('menu')
-    const opts = options()
-
-    opts[0].focus()
-    fireEvent.keyDown(list, { key: 'ArrowDown' })
-    expect(document.activeElement).toBe(opts[1])
-    fireEvent.keyDown(list, { key: 'ArrowDown' })
-    expect(document.activeElement).toBe(opts[0])
-    fireEvent.keyDown(list, { key: 'ArrowUp' })
-    expect(document.activeElement).toBe(opts[opts.length - 1])
-    fireEvent.keyDown(list, { key: 'Home' })
-    expect(document.activeElement).toBe(opts[0])
-    fireEvent.keyDown(list, { key: 'End' })
-    expect(document.activeElement).toBe(opts[opts.length - 1])
-  })
-
-  it('an unhandled key in the list leaves focus alone', async () => {
-    mount()
-    await screen.findByText('zzq-alpha')
-    const opts = options()
-    opts[0].focus()
-    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Tab' })
-    expect(document.activeElement).toBe(opts[0])
-  })
-
-  it('the roving handler no-ops when the list has no options', async () => {
+  it('the arrows do nothing when the list has no rows', async () => {
     chatTags.mockResolvedValue([] as never)
     mount()
-    await screen.findByText('No tags yet. Create one below.')
-    fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowDown' })
+    await screen.findByText('No tags yet. Type a name to create one.')
+    fireEvent.keyDown(search(), { key: 'ArrowDown' })
+    fireEvent.keyDown(search(), { key: 'ArrowUp' })
+    expect(highlighted()).toBeNull()
     expect(popover.close).not.toHaveBeenCalled()
   })
 
@@ -1317,34 +1708,19 @@ describe('SlotTagPopover', () => {
     expect(popover.close).toHaveBeenCalledTimes(2)
   })
 
-  it('Enter in the new-tag input creates the tag and clears the field', async () => {
+  it('Enter on a blank search creates nothing and toggles nothing', async () => {
     mount()
     await screen.findByText('zzq-alpha')
-    const input = screen.getByPlaceholderText('New tag…') as HTMLInputElement
-
-    input.focus()
-    fireEvent.change(input, { target: { value: '  zzq-new  ' } })
-    fireEvent.keyDown(input, { key: 'Enter' })
-    await waitFor(() => expect(createChatTag).toHaveBeenCalledWith('zzq-new'))
-    expect(input.value).toBe('')
-  })
-
-  it('an empty new-tag name creates nothing', async () => {
-    mount()
-    await screen.findByText('zzq-alpha')
-    const input = screen.getByPlaceholderText('New tag…') as HTMLInputElement
-    input.focus()
-    fireEvent.change(input, { target: { value: '   ' } })
-    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.change(search(), { target: { value: '   ' } })
+    fireEvent.keyDown(search(), { key: 'Enter' })
     expect(createChatTag).not.toHaveBeenCalled()
+    expect(setSlotTags).not.toHaveBeenCalled()
   })
 
-  it('Escape in the new-tag input closes the picker', async () => {
+  it('Escape in the search box closes the picker', async () => {
     mount()
     await screen.findByText('zzq-alpha')
-    const input = screen.getByPlaceholderText('New tag…')
-    input.focus()
-    fireEvent.keyDown(input, { key: 'Escape' })
+    fireEvent.keyDown(search(), { key: 'Escape' })
     expect(popover.close).toHaveBeenCalled()
   })
 })

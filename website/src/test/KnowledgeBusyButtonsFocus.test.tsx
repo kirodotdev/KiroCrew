@@ -161,3 +161,26 @@ describe('knowledge ignore-patterns Save button keeps focus', () => {
     await act(async () => { gate!.resolve({ ok: true }); await gate!.promise })
   })
 })
+
+describe('knowledge DetailView action notice', () => {
+  it('reports the newer failure when a delete fails after an archive failed', async () => {
+    vi.mocked(api.knowledgeApi).mockImplementation(((path: string, opts?: RequestInit) => {
+      if (opts?.method === 'PATCH') return Promise.reject(new Error('zz-archive-refused'))
+      if (opts?.method === 'DELETE') return Promise.reject(new Error('zz-delete-refused'))
+      if (path.endsWith('/related')) return Promise.resolve([])
+      return Promise.resolve(ITEM)
+    }) as typeof api.knowledgeApi)
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(
+      <QueryClientProvider client={newClient()}>
+        <DetailView itemId="i1" onBack={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: ARCHIVE }))
+    expect(await screen.findByText(/zz-archive-refused/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: DELETE }))
+    expect(await screen.findByText(/zz-delete-refused/)).toBeInTheDocument()
+    expect(screen.queryByText(/zz-archive-refused/)).toBeNull()
+    confirmSpy.mockRestore()
+  })
+})

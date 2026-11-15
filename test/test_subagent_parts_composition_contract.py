@@ -17,8 +17,11 @@ they define on the facade's globals. These tests pin what that composition promi
   except ``SpawnApprovalUnreachable``, which reports the facade's;
 * nothing but ``kiro_crew.subagent`` imports a module of ``subagent_parts`` at runtime,
   except ``manager.py``, which imports the ``*_surface`` modules its class binds and
-  ``run_limits`` for its default arguments; an owner imports the facade only for type
-  checking, and no owner carries an agent-sdk boundary edge;
+  ``run_limits`` for its default arguments, and ``kiro_crew.subagent_standalone``, which
+  imports the two owners that work before the facade is loaded; an owner imports the
+  facade only for type checking, and no owner carries an agent-sdk boundary edge;
+* the two standalone owners bind every global their functions read, load without the
+  facade, and are called through one object on both sides of the facade's load;
 * every import the facade keeps only for the owners is read by one;
 * ``SubagentManager`` keeps every member of the one-module class with its kind and
   signature, each binding IS its collaborator's function, and no bound function needs
@@ -166,6 +169,10 @@ def _family_edges(module: str) -> bool:
     )
 
 
+#: Owners that also run before the facade is loaded (``kiro_crew.subagent_standalone``).
+_STANDALONE_OWNERS = ("host_memory", "spawn_allowlists")
+_STANDALONE = "kiro_crew/subagent_standalone.py"
+
 #: Owner functions the sweeps must find (a floor, so a sweep that finds nothing fails).
 _MIN_OWNER_FUNCTIONS = 300
 
@@ -241,7 +248,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
     ),
     "agent_policy": (
-        ("UNADVERTISED_AGENTS", "value", "frozenset"),
         ("AGENT_NOT_FOUND_CODE", "value", "str"),
         ("AGENT_NOT_AVAILABLE_CODE", "value", "str"),
         ("AGENT_INTERNAL_CODE", "value", "str"),
@@ -251,14 +257,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(requested: 'str', available: 'list[str]') -> 'str'",
         ),
         ("_AGENT_GLOB_RE", "value", "Pattern"),
-        (
-            "visible_agent_names",
-            "function",
-            "(names: 'Iterable[str]', *, exclude: 'Container[str]' = <frozenset>, limit: 'int | None' = None) -> 'tuple[list[str], int]'",
-        ),
         ("_MAX_AVAILABLE_IN_ERROR", "value", "int"),
-        ("_MAX_AVAILABLE_AGENTS_GLOBS", "value", "int"),
-        ("_MAX_AVAILABLE_AGENTS_GLOB_CHARS", "value", "int"),
         ("_available_agents_hint", "function", "(available: 'list[str]') -> 'str'"),
         ("_validate_app_agent_ownership", "function", "(agent: 'str', app: 'str') -> 'str'"),
         ("AgentCheck", "value", "GenericAlias"),
@@ -275,27 +274,9 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_vet_spawn_governance",
             "function",
-            "(parent_session_key: 'str', agent: 'str', app: 'str' = '') -> 'str | None'",
+            "(parent_session_key: 'str', agent: 'str', app: 'str' = '', "
+            "parent_agent: 'str' = '') -> 'str | None'",
         ),
-        ("spawn_allowlist", "function", "(spec: 'Mapping[str, Any]') -> 'tuple[str, ...] | None'"),
-        (
-            "agent_matches_allowlist",
-            "function",
-            "(agent: 'str', allowlist: 'Iterable[str]', *, app: 'str' = '') -> 'bool'",
-        ),
-        (
-            "parent_spawn_allowlists",
-            "function",
-            "(parent_template: 'str', project_dirs: 'Sequence[str | Path]' = (), *, parent_session_key: 'str' = '') -> 'tuple[tuple[str, ...], ...] | None'",
-        ),
-        ("_ScopeAllowlists", "value", "GenericAlias"),
-        (
-            "_scope_spawn_allowlists",
-            "function",
-            "(agents_dir: 'Path', parent_template: 'str', memo: \"'AgentsDirMemo[_ScopeAllowlists]'\", operation: 'str') -> '_ScopeAllowlists'",
-        ),
-        ("_UNRESOLVED_PARENT_WARNED", "value", "set"),
-        ("_UNRESOLVED_PARENT_WARNED_MAX", "value", "int"),
         ("_parent_project_resolver", "value", "NoneType"),
         (
             "set_parent_project_resolver",
@@ -303,18 +284,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(resolver: \"Callable[[str], 'Iterable[str | Path]'] | None\") -> 'None'",
         ),
         ("parent_project_dirs", "function", "(parent_session_key: 'str') -> 'tuple[str, ...]'"),
-        (
-            "_surface_unresolved_parent_spec",
-            "function",
-            "(parent_template: 'str', parent_session_key: 'str') -> 'None'",
-        ),
-        ("_PARENT_PROJECT_ALLOWLIST_MEMO", "value", "AgentsDirMemo"),
-        ("_PARENT_ALLOWLIST_MEMO", "value", "AgentsDirMemo"),
-        (
-            "_scan_parent_spawn_allowlists",
-            "function",
-            "(agents_dir: 'Path', parent_template: 'str', operation: 'str' = 'spawn_available_agents', *, pins: 'Mapping[str, str] | None' = None) -> '_ScopeAllowlists'",
-        ),
         (
             "parent_template_allowlists",
             "function",
@@ -337,6 +306,47 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "validate_cwd",
             "function",
             "(cwd: 'str', allowed_roots: 'list[str]') -> 'tuple[str, str]'",
+        ),
+    ),
+    "spawn_allowlists": (
+        ("UNADVERTISED_AGENTS", "value", "frozenset"),
+        (
+            "visible_agent_names",
+            "function",
+            "(names: 'Iterable[str]', *, exclude: 'Container[str]' = <frozenset>, limit: 'int | None' = None) -> 'tuple[list[str], int]'",
+        ),
+        ("_MAX_AVAILABLE_AGENTS_GLOBS", "value", "int"),
+        ("_MAX_AVAILABLE_AGENTS_GLOB_CHARS", "value", "int"),
+        ("spawn_allowlist", "function", "(spec: 'Mapping[str, Any]') -> 'tuple[str, ...] | None'"),
+        (
+            "agent_matches_allowlist",
+            "function",
+            "(agent: 'str', allowlist: 'Iterable[str]', *, app: 'str' = '') -> 'bool'",
+        ),
+        (
+            "parent_spawn_allowlists",
+            "function",
+            "(parent_template: 'str', project_dirs: 'Sequence[str | Path]' = (), *, parent_session_key: 'str' = '') -> 'tuple[tuple[str, ...], ...] | None'",
+        ),
+        ("_ScopeAllowlists", "value", "GenericAlias"),
+        (
+            "_scope_spawn_allowlists",
+            "function",
+            "(agents_dir: 'Path', parent_template: 'str', memo: \"'AgentsDirMemo[_ScopeAllowlists]'\", operation: 'str') -> '_ScopeAllowlists'",
+        ),
+        ("_UNRESOLVED_PARENT_WARNED", "value", "set"),
+        ("_UNRESOLVED_PARENT_WARNED_MAX", "value", "int"),
+        (
+            "_surface_unresolved_parent_spec",
+            "function",
+            "(parent_template: 'str', parent_session_key: 'str') -> 'None'",
+        ),
+        ("_PARENT_PROJECT_ALLOWLIST_MEMO", "value", "AgentsDirMemo"),
+        ("_PARENT_ALLOWLIST_MEMO", "value", "AgentsDirMemo"),
+        (
+            "_scan_parent_spawn_allowlists",
+            "function",
+            "(agents_dir: 'Path', parent_template: 'str', operation: 'str' = 'spawn_available_agents', *, pins: 'Mapping[str, str] | None' = None) -> '_ScopeAllowlists'",
         ),
     ),
     "model_choice": (
@@ -1254,7 +1264,12 @@ def test_the_moved_exception_reports_the_facade_module() -> None:
 
 def test_the_owners_log_through_the_facade_logger() -> None:
     assert subagent.logger.name == _FACADE
-    assert [o.__name__ for o in _owners() if "logger" in vars(o)] == []
+    # A standalone owner logs before the facade exists, so it binds that logger by name.
+    binders = {
+        o.__name__.rpartition(".")[2]: vars(o)["logger"] for o in _owners() if "logger" in vars(o)
+    }
+    assert sorted(binders) == sorted(_STANDALONE_OWNERS)
+    assert all(logger is subagent.logger for logger in binders.values())
     assert any("logger" in set(_global_names(fn.__code__)) for _label, fn in _owner_functions())
 
 
@@ -1348,14 +1363,22 @@ def test_the_importer_check_sees_every_spelling(source: str, flagged: bool) -> N
 
 def test_nothing_but_the_facade_imports_an_owner() -> None:
     importers = sorted(
-        str(path.relative_to(_SRC))
+        path.relative_to(_SRC).as_posix()
         for path in sorted((_SRC / "kiro_crew").rglob("*.py"))
         if path.parent != _PARTS_DIR
         and path.name != "subagent.py"
         and "subagent_parts" in (text := path.read_text(encoding="utf-8"))
         and _imports_an_owner(text)
     )
-    assert importers == []
+    assert importers == [_STANDALONE]
+    imported = {
+        mod
+        for _line, mod in _runtime_imports(
+            ast.parse((_SRC / _STANDALONE).read_text(encoding="utf-8"))
+        )
+        if mod.startswith(f"{subagent_parts.__name__}.")
+    }
+    assert imported == {f"{subagent_parts.__name__}.{name}" for name in _STANDALONE_OWNERS}
 
 
 def _boundary_gate():

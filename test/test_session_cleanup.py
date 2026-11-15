@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import json
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -63,6 +63,13 @@ async def _owning(manager):
 # Feature: subagent-session-cleanup, Property 5: Path traversal is blocked
 # Validates: Requirements 7.2
 # ══════════════════════════════════════════════════════════════════════
+
+
+class _ResolvedWindowsPath(PureWindowsPath):
+    """A Windows path that is already resolved, so any host runs the Windows case."""
+
+    def resolve(self) -> _ResolvedWindowsPath:
+        return self
 
 
 class TestIsSafePathTraversal:
@@ -131,6 +138,38 @@ class TestIsSafePathTraversal:
         root.mkdir()
         target = root / "."
         assert not _is_safe_path(target, root)
+
+    def test_child_of_filesystem_root_allowed(self, tmp_path):
+        """A child of a filesystem or drive root is safe.
+
+        ``/`` and ``R:\\`` already end in a separator, so a string prefix of
+        ``root + os.sep`` (``//`` or ``R:\\\\``) rejected every child.
+        """
+        root = Path(tmp_path.anchor)
+        assert _is_safe_path(tmp_path / "rollout.jsonl", root)
+
+    def test_filesystem_root_itself_is_not_safe(self, tmp_path):
+        root = Path(tmp_path.anchor)
+        assert not _is_safe_path(root, root)
+
+    def test_child_of_a_windows_drive_root_allowed(self):
+        """``R:\\`` already ends in a separator, so ``R:\\`` plus ``os.sep`` matched nothing."""
+        root = _ResolvedWindowsPath("R:\\")
+        assert _is_safe_path(_ResolvedWindowsPath("R:\\sessions\\rollout.jsonl"), root)
+        assert not _is_safe_path(root, root)
+
+    def test_a_windows_sibling_that_differs_only_by_case_blocked(self):
+        """A case-sensitive Windows directory can hold ``cli`` and ``CLI`` side by side."""
+        root = _ResolvedWindowsPath("C:\\data\\cli")
+        assert not _is_safe_path(_ResolvedWindowsPath("C:\\data\\CLI\\x.json"), root)
+        assert _is_safe_path(_ResolvedWindowsPath("C:\\data\\cli\\x.json"), root)
+
+    def test_string_prefix_sibling_blocked(self, tmp_path):
+        """``<dir>/ab`` shares a string prefix with root ``<dir>/a`` but is not under it."""
+        root = tmp_path / "a"
+        root.mkdir()
+        assert not _is_safe_path(tmp_path / "ab", root)
+        assert not _is_safe_path(tmp_path / "ab" / "x.json", root)
 
 
 # ══════════════════════════════════════════════════════════════════════

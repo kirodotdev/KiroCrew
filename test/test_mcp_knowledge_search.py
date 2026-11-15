@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.validation import ValidationError
 
@@ -340,13 +341,14 @@ class TestKnowledgeSearchSourceFilter:
 
         from kiro_crew.mcp_core import _call_tool_inner
 
+        key = github_classic(seed=7)
         _call_tool_inner(
             "local_knowledge_search",
-            {"query": "key AKIAIOSFODNN7EXAMPLE leak", "source_id": "no-such-id"},
+            {"query": f"key {key} leak", "source_id": "no-such-id"},
         )
         logged = mock_sel.return_value.log_tool_invocation.call_args.kwargs
         assert logged["outcome"] == "unknown_source"
-        assert "AKIAIOSFODNN7EXAMPLE" not in logged["metadata"]["query"]
+        assert key not in logged["metadata"]["query"]
 
 
 class TestKnowledgeSearchRemoteLegScope:

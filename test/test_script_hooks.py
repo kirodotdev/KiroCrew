@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic, synth
 
 from kiro_crew import platform_compat
 from kiro_crew.hooks import (
@@ -30,6 +31,10 @@ _IS_WINDOWS = platform.system() == "Windows"
 # shell-specific: POSIX sh expands ``$VAR``, cmd.exe expands ``%VAR%`` and
 # leaves ``$VAR`` as a literal.
 _ECHO_HOOK_EVENT = "echo %KIROCREW_HOOK_EVENT%" if _IS_WINDOWS else "echo $KIROCREW_HOOK_EVENT"
+
+
+# A synthetic 40-character secret the redactor removes; an AWS key ID stays visible.
+_SECRET = synth(40, seed=204)
 
 
 def _script_command(script: Path, body: str) -> str:
@@ -90,6 +95,136 @@ class TestScriptHook:
         assert hook.timeout == 10
         assert hook.enabled is False
         assert hook.matcher == "fs_*"
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            # A hand-edited "off" must turn the hook off (bool("false") is True).
+            ("false", False),
+            ("FALSE", False),
+            ("0", False),
+            ("no", False),
+            ("off", False),
+            (0, False),
+            # Recognised "on" values keep it on.
+            (True, True),
+            ("true", True),
+            ("1", True),
+            (1, True),
+            (2, True),
+            (-1, True),
+            (" On ", True),
+            ("YES", True),
+            (False, False),
+            # null and "" were falsy before and still load off.
+            (None, False),
+            ("", False),
+        ],
+    )
+    def test_from_dict_coerces_enabled(self, raw, expected):
+        hook = ScriptHook.from_dict({"id": "e1", "command": "echo hi", "enabled": raw})
+        assert hook.enabled is expected
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "ture",
+            "y",
+            "n",
+            "junk",
+            "enabled",
+            [1],
+            ["x"],
+            [],
+            {},
+            1.0,
+            0.0,
+            # Whitespace-only is not "": bool("   ") was True, so the gate ran.
+            " ",
+            "   ",
+            "\t\n",
+            "\u00a0",
+            " \u00a0 ",
+        ],
+    )
+    def test_from_dict_loads_unrecognised_enabled_on_with_warning(self, raw, caplog):
+        """An unrecognised value is not guessed off: off would silently drop a
+        PreToolUse deny gate. It loads on, and the load says so."""
+        with caplog.at_level("WARNING", logger="kiro_crew.hooks"):
+            hook = ScriptHook.from_dict({"id": "e1", "command": "echo hi", "enabled": raw})
+        assert hook.enabled is True
+        assert "unrecognised 'enabled'" in caplog.text
+        assert "'e1'" in caplog.text
+
+    @pytest.mark.parametrize("raw", [True, False, "false", "on", 0, 1, None, ""])
+    def test_from_dict_recognised_enabled_does_not_warn(self, raw, caplog):
+        with caplog.at_level("WARNING", logger="kiro_crew.hooks"):
+            ScriptHook.from_dict({"id": "e1", "command": "echo hi", "enabled": raw})
+        assert "unrecognised 'enabled'" not in caplog.text
+
+    def test_from_dict_absent_enabled_defaults_on(self):
+        assert ScriptHook.from_dict({"id": "e1", "command": "echo hi"}).enabled is True
+
+    @staticmethod
+    def _hand_edit_gate(tmp_path: Path, raw: object) -> str:
+        """Save a PreToolUse deny hook, then hand-edit its ``enabled`` to *raw*."""
+        gate = ScriptHookStore(tmp_path).create(
+            {"name": "gate", "event": HOOK_EVENT_PRE_TOOL_USE, "command": "exit 2"}
+        )
+        path = tmp_path / "hooks.json"
+        doc = json.loads(path.read_text())
+        doc["hooks"][0]["enabled"] = raw
+        path.write_text(json.dumps(doc))
+        return gate.id
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", ["junk", "ture", [1], "   ", "\u00a0"])
+    async def test_registered_store_still_blocks_with_junk_enabled_gate(
+        self, tmp_path: Path, monkeypatch, raw
+    ):
+        """The gateway path: a registered store loaded from a hooks.json whose
+        deny hook holds a typo in ``enabled`` still runs the gate and blocks."""
+        import kiro_crew.hooks as hooks_mod
+
+        # As TestScriptHookStoreFire: run the hook unsandboxed so CI hosts
+        # without the sandbox still reach its real exit code.
+        monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
+        gate_id = self._hand_edit_gate(tmp_path, raw)
+        store = ScriptHookStore(tmp_path)
+        monkeypatch.setattr(hooks_mod, "get_global_hook_store", lambda: store)
+        assert hooks_mod.persisted_hook_store() is store
+        gate = store.get(gate_id)
+        assert gate is not None and gate.enabled is True
+        results = await store.fire(HOOK_EVENT_PRE_TOOL_USE, "test", tool_name="fs_write")
+        assert [r.exit_code for r in results] == [2]
+
+    def test_persisted_store_loads_junk_enabled_gate_on(self, tmp_path: Path, monkeypatch):
+        """The standalone path (no registered store) reads the same gate as on."""
+        import kiro_crew.hooks as hooks_mod
+        from kiro_crew.config import loader
+
+        monkeypatch.setattr(loader, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(hooks_mod, "_global_script_hook_store", None)
+        monkeypatch.setattr(hooks_mod, "get_global_hook_store", lambda: None)
+        gate_id = self._hand_edit_gate(tmp_path, "ture")
+        gate = hooks_mod.persisted_hook_store().get(gate_id)
+        assert gate is not None and gate.enabled is True
+
+    @pytest.mark.parametrize("raw", ["false", 0, None])
+    def test_store_load_keeps_hand_disabled_hook_off(self, tmp_path: Path, raw):
+        """A hooks.json entry hand-set to an "off" spelling loads disabled."""
+        hook = ScriptHookStore(tmp_path).create(
+            {"name": "hand-off", "event": HOOK_EVENT_PRE_TOOL_USE, "command": "echo hi"}
+        )
+        path = tmp_path / "hooks.json"
+        doc = json.loads(path.read_text())
+        for entry in doc["hooks"]:
+            if entry["id"] == hook.id:
+                entry["enabled"] = raw
+        path.write_text(json.dumps(doc))
+        reloaded = ScriptHookStore(tmp_path).get(hook.id)
+        assert reloaded is not None
+        assert reloaded.enabled is False
 
 
 class TestScriptHookStore:
@@ -338,11 +473,12 @@ class TestCappedScriptHookOutput:
         # The limit falls inside the key. Cut first, the key's first ten
         # characters would reach the caller unredacted, as no pattern matches a
         # fragment; cut after redaction, only the redaction text is cut.
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=94)
         monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
         monkeypatch.setattr("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: list(argv))
         command = _script_command(
-            tmp_path / "leaky_output.py", f"import sys\nsys.stdout.write('o' * 90 + {secret!r})\n"
+            tmp_path / "leaky_output.py",
+            f"import sys\nsys.stdout.write('o' * 90 + ' ' + {secret!r})\n",
         )
         hook = ScriptHook(
             id="leaky-output",
@@ -495,7 +631,7 @@ class TestRunScriptHook:
     def test_subprocess_env_excludes_gateway_credentials(self, monkeypatch):
         from kiro_crew.hooks import _hook_subprocess_env
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         proxy_secret = "http://svc:pa55word@proxy.example.com"
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", secret)
         monkeypatch.setenv("HTTPS_PROXY", proxy_secret)
@@ -544,7 +680,7 @@ class TestRunScriptHook:
     @pytest.mark.asyncio
     async def test_subprocess_routes_allowlist_through_safe_spawn_funnel(self, monkeypatch):
         """The wrapper gets bus locators without widening the hook base env."""
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         bus_address = "unix:path=/run/user/4242/bus"
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", secret)
         seen: dict[str, object] = {}
@@ -592,7 +728,7 @@ class TestRunScriptHook:
 
     @pytest.mark.asyncio
     async def test_stdout_and_stderr_are_redacted_before_return(self, tmp_path):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         command = _script_command(
             tmp_path / "leaky_hook.py",
             "import sys\n"
@@ -618,7 +754,7 @@ class TestRunScriptHook:
 
     @pytest.mark.asyncio
     async def test_exception_text_is_redacted_before_return_or_persistence(self):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         hook = ScriptHook(
             id="redacted-exception",
             name="redacted-exception",
@@ -1156,7 +1292,7 @@ class TestLastError:
         # hooks.json is operator-writable; a persisted last_error can carry a
         # credential. from_dict() must scrub it before it reaches /api/hooks and
         # the dashboard InfoTip — not only the runtime write path.
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         hook = ScriptHook.from_dict(
             {"id": "sek", "name": "leaky", "last_error": f"auth failed: {secret}"}
         )

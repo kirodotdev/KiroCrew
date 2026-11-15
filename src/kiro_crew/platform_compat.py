@@ -270,7 +270,6 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
     from kiro_crew.platform_compat_files import (  # noqa: F401
         _AT_EMPTY_PATH,
         _AT_FDCWD,
-        _LIBRARY_DIR,
         _RENAME_NOREPLACE_FLAG,
         _RENAME_NOREPLACE_FN,
         _RMTREE_BACKOFF_SECONDS,
@@ -284,7 +283,6 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _WIN_FILE_SHARE_READ_WRITE_DELETE,
         _WINDOWS_RUNNABLE_HOOK_SUFFIXES,
         RENAME_NOREPLACE_AVAILABLE,
-        TCC_LIBRARY_WALKABLE_CHILDREN,
         TCC_PROTECTED_HOME_DIRS,
         _build_renameat2_via_syscall,
         _clear_readonly_and_retry,
@@ -315,6 +313,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _WINDOWS_EXIT_FILETIME_POLL_SECS,
         _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS,
         ProcessIdentitySource,
+        _exec_supervisor_walk,
         _is_python_interpreter_path,
         _linux_boot_id,
         _own_identity_token,
@@ -325,6 +324,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         get_ppid,
         get_process_start_id,
         get_process_start_identity,
+        is_exec_supervisor_of,
         is_exec_supervisor_of_this_process,
         linux_process_name,
         own_process_start_time,
@@ -464,6 +464,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         HeapTrimMaintainer,
         MallocArenaCap,
         SubtreeSample,
+        _darwin_memsize_bytes,
         _glibc_mallopt,
         _linux_available_mib,
         _linux_current_rss_bytes,
@@ -533,6 +534,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _SidAndAttributes,
         _ThreadEntry32,
         _windows_last_error,
+        c_strlen_address,
     )
     from kiro_crew.platform_compat_ports import (  # noqa: F401
         _LOOPBACK_COVERING_ADDRESSES,
@@ -561,6 +563,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         loopback_owner_pids,
         probe_port_listeners,
         process_owns_loopback_listener,
+        process_owns_port_listener,
     )
     from kiro_crew.platform_compat_proctable import (  # noqa: F401
         _DARWIN_BSDINFO_SIZE,

@@ -508,6 +508,7 @@ async def _rss_tick(manager: Any, rss: int = 2514) -> None:
 
 
 @pytest.mark.usefixtures("_proc_route")
+@pytest.mark.usefixtures("rss_runtimes_read_under_ceiling")
 class TestRssRecycleHonoursHarnessWork:
     @pytest.mark.asyncio
     async def test_a_launch_inside_the_hold_keeps_the_session(self, caplog) -> None:
@@ -548,6 +549,29 @@ class TestRssRecycleHonoursHarnessWork:
         reason = cb.await_args.kwargs["reason"]
         assert reason.startswith(f"memory limit ({rss}MB)")
         assert 'workflow "sleep-echo"' in reason
+
+    @pytest.mark.asyncio
+    async def test_the_hard_ceiling_scales_with_the_runtimes_tenant_count(self) -> None:
+        # The hold is read against the ceiling this runtime actually gets, which
+        # a shared runtime scales by its tenant count. Against the one-session
+        # figure instead, the multiple can land BELOW that scaled ceiling, and
+        # then no tree can be both over the ceiling and inside the multiple --
+        # the hold would never apply to a shared runtime at all.
+        manager = _make_manager(rss_max_mb=1000)
+        for name in ("a", "b", "c", "d"):
+            manager._sessions[f"dashboard:{name}"] = _session_with_launch(_INSIDE)
+        manager.reset = AsyncMock(return_value=True)
+        manager.get_pid = MagicMock(return_value=4242)  # one runtime, four tenants
+        # Over the scaled ceiling (4 x 1000), so every tenant is a victim, and
+        # inside twice it (8000) so the hold still covers them. Against the
+        # unscaled multiple (2 x 1000) this tree would be recycled instead.
+        # The tenant count is the chat LEASES on the pid (a shared chat runtime).
+        from kiro_crew.runtime_ownership import RUNTIME_OWNERSHIP
+
+        with patch.object(RUNTIME_OWNERSHIP, "leases_on_pid", return_value=4):
+            await _rss_tick(manager, rss=5000)
+
+        manager.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_launch_recycles_as_before(self) -> None:

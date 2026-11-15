@@ -13,12 +13,13 @@ A turn start is a function or method that names ``_run_chat``, calls
 ``spawn_guarded_turn`` or ``enqueue_or_run_prompt``, or drains the queue
 (``_dequeue_next_message`` / ``_dequeue_next_system_message``). It flushes when a
 ``flush_deferred_notes`` or ``flush_restored_hold`` call sits above the first row
-it writes itself: a user-row append, a drain (which appends the successor's row)
-or an ``enqueue_or_run_prompt`` call. A flush below that row lands the note under
-the message it should precede, where the prompt build's ``exclude_last_n=1`` drops
-the note instead of the request, and a turn start that writes no row of its own
-cannot flush above it. Every other turn start is a row of :data:`_DOES_NOT_FLUSH`,
-with the reason.
+it writes itself: a user-row append (``append_and_surface`` included), a drain
+(which appends the successor's row) or an ``enqueue_or_run_prompt`` call. A flush
+below that row lands the note under the message it should precede, where the
+prompt build's ``exclude_last_n=1`` drops the note instead of the request. A turn
+start that writes no row of its own (Regenerate re-runs a row already in the
+window) flushes when the call sits above its launch, so the note lands above the
+reply. Every other turn start is a row of :data:`_DOES_NOT_FLUSH`, with the reason.
 """
 
 from __future__ import annotations
@@ -40,10 +41,6 @@ _FLUSHES = frozenset({"flush_deferred_notes", "flush_restored_hold"})
 
 _AUTOMATIC = (
     "a note is owed to the next turn a person starts; the hold waits for this turn's cycle end"
-)
-_RESTORED_HOLD_MISSED = (
-    "a person's turn that does not deliver a hold a restart restored onto an idle slot, "
-    "so the note lands at its cycle end, below its reply (open in #32240)"
 )
 
 #: Turn starts that do not flush the hold above their anchor, keyed by path under
@@ -86,19 +83,6 @@ _DOES_NOT_FLUSH: dict[tuple[str, str], str] = {
         "start decided the hold"
     ),
     ("cli.py", "main"): "the terminal chat's own _run_chat, which drives no dashboard slot",
-    ("dashboard/chat_regenerate.py", "api_chat_slot_regenerate"): (
-        f"Regenerate is {_RESTORED_HOLD_MISSED}"
-    ),
-    ("dashboard/chat_regenerate.py", "api_chat_slot_edit_resend"): (
-        f"Edit & Resend is {_RESTORED_HOLD_MISSED}"
-    ),
-    ("dashboard/chat_rewind.py", "api_chat_slot_rewind"): f"rewind is {_RESTORED_HOLD_MISSED}",
-    ("slack/handler_runtime/inbound.py", "route_linked_thread"): (
-        f"a message in a linked channel thread is {_RESTORED_HOLD_MISSED}"
-    ),
-    ("apps/builtins/spec_builder/backend/runtime.py", "_dispatch_turn"): (
-        f"a Spec Builder chat turn is {_RESTORED_HOLD_MISSED}"
-    ),
 }
 
 
@@ -108,33 +92,42 @@ def _call_name(call: ast.Call) -> str | None:
 
 
 def _is_user_row(call: ast.Call) -> bool:
-    """``<x>.append("user", ...)`` or ``<x>.append(role="user", ...)``."""
-    if not (isinstance(call.func, ast.Attribute) and call.func.attr == "append"):
+    """``<x>.append("user", ...)``, ``<x>.append(role="user", ...)`` or
+    ``append_and_surface(state, slot, "user", ...)``."""
+    name = _call_name(call)
+    if isinstance(call.func, ast.Attribute) and name == "append":
+        position = 0
+    elif name == "append_and_surface":
+        position = 2
+    else:
         return False
-    role = call.args[0] if call.args else None
+    role = call.args[position] if len(call.args) > position else None
     if role is None:
         role = next((kw.value for kw in call.keywords if kw.arg == "role"), None)
     return isinstance(role, ast.Constant) and role.value == "user"
 
 
 def _flushes_above_its_row(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool | None:
-    """``None`` when *fn* starts no turn, else whether a flush sits above the first row it writes."""
-    starts = False
+    """``None`` when *fn* starts no turn, else whether a flush sits above the first row it
+    writes, or above its launch when it writes none."""
+    launches: list[int] = []
     rows: list[int] = []
     flushes: list[int] = []
     for node in ast.walk(fn):
         if isinstance(node, ast.Name) and node.id == _RUNNER:
-            starts = True
+            launches.append(node.lineno)
         elif isinstance(node, ast.Call):
             name = _call_name(node)
-            starts = starts or name in _TURN_STARTS
+            if name in _TURN_STARTS:
+                launches.append(node.lineno)
             if name in _FLUSHES:
                 flushes.append(node.lineno)
             elif name in _ROW_WRITERS or _is_user_row(node):
                 rows.append(node.lineno)
-    if not starts:
+    if not launches:
         return None
-    return bool(rows) and any(line < min(rows) for line in flushes)
+    anchor = min(rows or launches)
+    return any(line < anchor for line in flushes)
 
 
 def _functions(
@@ -218,12 +211,28 @@ def test_the_scan_can_fail() -> None:
     )
     assert scan(below_the_drain) == {"start": False}
 
+    below_the_surfaced_row = (
+        "def start(state, slot):\n"
+        "    append_and_surface(state, slot, 'user', 'x', 'msg msg-u')\n"
+        "    flush_restored_hold(slot, logger=None)\n"
+        "    slot.task = asyncio.create_task(_run_chat(state, slot, 'x'))\n"
+    )
+    assert scan(below_the_surfaced_row) == {"start": False}
+
+    no_row_launched_first = (
+        "def start(state, slot):\n"
+        "    task = asyncio.create_task(_run_chat(state, slot, 'x'))\n"
+        "    flush_restored_hold(slot, logger=None)\n"
+        "    slot.task = task\n"
+    )
+    assert scan(no_row_launched_first) == {"start": False}
+
     no_row_of_its_own = (
         "def start(state, slot):\n"
         "    slot.flush_deferred_notes()\n"
         "    spawn_guarded_turn(state, slot, _run_chat(state, slot, 'x'))\n"
     )
-    assert scan(no_row_of_its_own) == {"start": False}
+    assert scan(no_row_of_its_own) == {"start": True}
 
     flushes = (
         "class Slot:\n"

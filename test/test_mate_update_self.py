@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 from guide_route_helpers import FakeState, agent, run_guide_app
+from redaction_structured_cases import ALNUM, synth
 
 from kiro_crew import crewmate_prompts, mcp_mate
 from kiro_crew import members as members_mod
@@ -632,7 +633,8 @@ def test_the_row_masks_a_credential_shaped_trait_but_the_undo_keeps_it() -> None
     _seed()
     state = FakeState()
     slot = _thread(state, ASSISTANT_MEMBER_NAME)
-    planted = "AKIAIOSFODNN7EXAMPLE"
+    # A short GitLab-shaped token: a trait value is capped below a GitHub token's length.
+    planted = "glpat-" + synth(20, ALNUM, 6)
     status, body = _update(state, {"avatar": {"traits": {"eyes": planted}}})
     assert status == 200, body
     (row,) = _self_rows(slot)
@@ -652,6 +654,20 @@ def test_the_row_names_the_crewmate_by_its_display_name_not_its_key() -> None:
     assert body["name"] == "Scout"
     (row,) = _self_rows(slot)
     assert row["meta"]["card"]["name"] == "Scout"
+
+
+def test_the_row_names_an_unnamed_first_crewmate_bot_not_mate() -> None:
+    # The first crewmate's key is `mate`, so the key is the one label that must
+    # never reach the row; with no display name it reads what every other
+    # surface reads.
+    _seed()
+    state = FakeState()
+    slot = _thread(state, ASSISTANT_MEMBER_NAME)
+    status, body = _update(state, {"description": "I keep the lights on."})
+    assert status == 200, body
+    assert body["name"] == ASSISTANT_DEFAULT_DISPLAY_NAME
+    (row,) = _self_rows(slot)
+    assert row["meta"]["card"]["name"] == ASSISTANT_DEFAULT_DISPLAY_NAME
 
 
 def test_the_crewmate_hears_about_an_undo_once_on_its_next_turn() -> None:
@@ -853,6 +869,25 @@ def test_taking_a_rename_back_renames_the_home_folder_too() -> None:
     assert undone["changed"] == ["display_name"]
     assert _home_name(state, home) == "Scout"
     assert state.slots_pushed == 2
+
+
+def test_taking_the_first_crewmates_rename_back_names_its_folder_bot() -> None:
+    # The undo counterpart of the unnamed-first-crewmate row: an undo restores
+    # an empty display name, so the label it answers with is the only thing
+    # keeping the `mate` key out of the sidebar in that direction. The undo
+    # route answers with no label of its own, so the folder it renames is where
+    # the restored label is observable.
+    _seed()
+    state = FakeState()
+    _thread(state, ASSISTANT_MEMBER_NAME)
+    home = _home(state, ASSISTANT_DEFAULT_DISPLAY_NAME)
+    status, body = _update(state, {"display_name": "Pebble"})
+    assert status == 200, body
+    assert _home_name(state, home) == "Pebble"
+    status, undone = _undo(state, members_mod.member_slug(ASSISTANT_MEMBER_NAME), body["change_id"])
+    assert status == 200, undone
+    assert undone["changed"] == ["display_name"]
+    assert _home_name(state, home) == ASSISTANT_DEFAULT_DISPLAY_NAME
 
 
 def test_a_change_that_is_not_a_rename_leaves_the_home_folder_alone() -> None:

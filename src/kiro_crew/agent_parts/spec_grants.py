@@ -110,8 +110,10 @@ _MATE_AUTO_GRANTS = (
 #:   distribution: one caller could hold all 500, and every later create — the
 #:   person opening a chat tab included — got the 429. A bounded resource that one
 #:   caller can exhaust is not bounded from anybody else's point of view. Now
-#:   ``MAX_SLOTS_PER_CREATOR`` bounds what a single caller holds, leaving 450 slots
-#:   reachable no matter what the conductor does.
+#:   the per-creator cap (``session.max_per_creator``, default
+#:   ``MAX_SLOTS_PER_CREATOR``) bounds what a single caller holds, leaving 450 slots
+#:   reachable no matter what the conductor does, and never fewer than 50 at the
+#:   highest value the owner can set.
 #:
 #: Every verb this server exposes, against that rule:
 #:
@@ -122,7 +124,7 @@ _MATE_AUTO_GRANTS = (
 #:   keep them.
 #: * ``session_create`` — creates a NEW session in the caller's workspace, bounded
 #:   both globally (``MAX_LIVE_SLOTS``, 409 on breach) and per caller
-#:   (``MAX_SLOTS_PER_CREATOR``), and visible in the sidebar. GRANTED.
+#:   (``session.max_per_creator``), and visible in the sidebar. GRANTED.
 #:   One known side effect, recorded because it is the closest thing to an
 #:   exception here: ``create_session`` mints its slot with
 #:   ``origin=SlotOrigin.USER`` (it is a first-class user-owned session, which is
@@ -142,6 +144,10 @@ _MATE_AUTO_GRANTS = (
 #:   ``session_read_message`` is and returns a digest of the same transcript: a
 #:   verb is granted for a step, and no conductor step calls it yet. A skill that
 #:   adopts it for the patrol cycle adds it here with that step as the reason.
+#: * ``session_queue`` — WITHHELD. Its ``move`` action reorders instructions
+#:   waiting in another session's queue, which is a write to
+#:   what that session runs next, and no conductor step calls it yet. The same
+#:   step-adopts-it rule as ``session_summary`` applies.
 #: * ``chat_folder_move_session`` — WITHHELD. It writes another session's
 #:   ``folder_id``: the PATCH goes to ``/api/chat/slots/<target>/folder`` where the
 #:   target is the session named in the ARGUMENTS, and the strictly-resolved
@@ -238,6 +244,8 @@ _MATE_AUTO_GRANTS = (
 #: * ``session_set_color`` — WITHHELD. Writes a session other than the
 #:   caller's (its sidebar tint). The route confines it to sessions the
 #:   caller created and refuses the caller's own, but no conductor step needs it.
+#: * ``session_set_note`` — WITHHELD. Writes text another session's next turn
+#:   reads. Same reach as ``session_set_color``, and no conductor step needs it.
 #: * ``session_reload`` — WITHHELD. Tears down another session's agent process
 #:   and relaunches it. The conversation survives, but a reload is still a
 #:   process-level action on a session a person may be watching, and no
@@ -447,7 +455,9 @@ _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
 #: still an installed spec.
 #:
 #: ``work_ledger_rebuild`` is the goal conductor's recovery step and no other
-#: conductor's procedure names it. ``work_brief`` is a worker-half verb
+#: conductor's procedure names it. ``work_ask_record`` writes only the ask record
+#: on the conductor's own item, the goal-conductor skill's step when it relays a
+#: question to the person. ``work_brief`` is a worker-half verb
 #: granted: it only READS the caller's own bound item (or answers ``not_bound``),
 #: which is the same rule the two conductor verbs rest on. It is also a
 #: second-level conductor's mandated FIRST call, in a child session nobody opened —
@@ -472,6 +482,7 @@ _CONDUCTOR_BASE_WORK_GRANTS: tuple[str, ...] = (
 #: ``not_bound``. The pipeline and security conductors keep it gated.
 _LEDGER_CONDUCTOR_WORK_GRANTS: tuple[str, ...] = _CONDUCTOR_BASE_WORK_GRANTS + (
     "@kirocrew-work/work_ledger_rebuild",
+    "@kirocrew-work/work_ask_record",
     "@kirocrew-work/work_brief",
     "@kirocrew-work/work_report",
     "@kirocrew-work/accept_eval",

@@ -1,7 +1,6 @@
 """The bounded session close every in-process restart runs before it ends the process.
 
-The dashboard's ``_restart_gateway``, the update restart
-(``GatewayOrchestrator._restart_after_update_claimed``) and the Slack
+The dashboard's ``_restart_gateway`` and the Slack
 ``/kirocrew restart`` (``_handle_restart``) each close every session with
 ``SessionManager.close_all()`` and then exec or exit, which is the only thing that
 ends the old image. ``close_all`` bounds its turn drain and its provider shutdown,

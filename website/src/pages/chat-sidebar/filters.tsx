@@ -5,13 +5,14 @@ import { Circle, Zap, Pin, Clock } from 'lucide-react'
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { shallowEqual } from 'react-redux'
 import type { SessionFilterKey, Slot } from './types'
-import { safeSetItem } from '../../utils/safeStorage'
-import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, GROUP_BY_KIND_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY, UNREAD_HIDDEN_LS_KEY, RUNNING_HIDDEN_LS_KEY, PINNED_HIDDEN_LS_KEY, readStoredModelFilter, writeStoredModelFilter, type StoredModelFilter } from './persistence'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
+import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, FOLDERS_UNREAD_FIRST_LS_KEY, GROUP_BY_KIND_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY, UNREAD_HIDDEN_LS_KEY, RUNNING_HIDDEN_LS_KEY, PINNED_HIDDEN_LS_KEY, readStoredModelFilter, writeStoredModelFilter, type StoredModelFilter } from './persistence'
 import { useAppSelector } from '../../store'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
+import { previewFlagsLocked } from '../../utils/previewFlags'
 import { selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectSidebarStartedSubagentCounts, selectSidebarSubagentCounts, selectSidebarApprovalCounts } from '../../store/chatSlice'
 import { decomposeRecentWindow, type RecentUnit, clampRecentAmount, customRecentWindowMs, recentTickIntervalMs, isWithinRecentWindow } from '../recentWindow'
-import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
+import { normalizeRunSessionKey } from '../../components/workflows/runModel'
 import { slotActivityTs } from '../chat/sessionOrder'
 import { decideUnreadDrain } from '../unreadDrain'
 import type { ChatFolder } from '../../types'
@@ -55,7 +56,7 @@ export const SESSION_FILTERS: SessionFilterDef[] = [
     // workers are never rows here, so there is nothing for a hide to drop.
     key: 'crew', storageKey: 'mc-session-crew-only',
     color: 'var(--accent)',
-    // The Ultra Mode lightning bolt on the gradient, the mark the root rows wear.
+    // The conductor mode lightning bolt on the gradient, the mark the root rows wear.
     icon: (active) => <span className={`w-3 h-3 rounded-full grid place-items-center ${active ? 'crew-grad' : 'bg-aim-subtle text-aim'}`}><Zap size={8} aria-hidden="true" className="inline-block shrink-0" /></span>,
   },
 ]
@@ -67,56 +68,69 @@ const FILTER_STORED_OFF = '0'
 const FILTER_STORED_ON = '1'
 const FILTER_STORED_PAUSED = '2'
 
-/** The status filters that are on, and whether they are all paused: kept in the
- *  chip row, not narrowing the list. ONE state object rather than a Set beside a
- *  boolean, so every mutation below is a single updater: the unread auto-drain
- *  removing the last filter cannot race the menu's pause row and leave a pause
+/** The status filters that are on, and which of them are paused: kept in the
+ *  chip row, not narrowing the list. `paused` is always a subset of `active`.
+ *  ONE state object, so every mutation below is a single updater: the unread
+ *  auto-drain removing a filter cannot race a pause and leave a paused key
  *  behind with no chip to carry it. */
 interface StatusFilterState {
   active: Set<SessionFilterKey>
-  paused: boolean
+  paused: Set<SessionFilterKey>
 }
 
 function writeFilterStored(key: SessionFilterKey, value: string) {
   safeSetItem(SESSION_FILTERS.find(sf => sf.key === key)!.storageKey, value)
 }
 
-/** Pause means nothing with no chip to carry it, so the last filter going off
- *  drops it: the next filter turned on narrows, exactly as it would after a
- *  reload, where every key then reads '0'. */
-function withPause(active: Set<SessionFilterKey>, paused: boolean): StatusFilterState {
-  return { active, paused: paused && active.size > 0 }
+/** Every active filter is paused. A filter turned on in that state joins the
+ *  pause, so one "Resume all filters" still brings the whole set back together
+ *  instead of leaving the new one narrowing beside lifted ones. */
+function allPaused(state: StatusFilterState): boolean {
+  return state.active.size > 0 && state.paused.size === state.active.size
 }
 
-/** Read the stored values into one state. A filter stored '2' is on and paused.
- *  A MIX of '1' and '2' reads as not paused and is rewritten to '1' once: only a
- *  build that paused filters one at a time could store that, and the menu row
- *  has one state to offer, not a partial one. With the Crew Mode preview off a
- *  stored Crew Mode filter is turned off: its key is rewritten to '0' and it is
- *  not added, so it neither narrows the list nor takes part in the pause. */
+/** Turn `key` on, persisted, joining the pause when every filter already on is
+ *  paused (see `allPaused`). */
+function turnFilterOn(prev: StatusFilterState, key: SessionFilterKey): StatusFilterState {
+  const joinPause = allPaused(prev)
+  writeFilterStored(key, joinPause ? FILTER_STORED_PAUSED : FILTER_STORED_ON)
+  return { active: new Set(prev.active).add(key), paused: joinPause ? new Set(prev.paused).add(key) : prev.paused }
+}
+
+/** Turn `key` off, persisted, its pause with it. */
+function turnFilterOff(prev: StatusFilterState, key: SessionFilterKey): StatusFilterState {
+  const active = new Set(prev.active)
+  active.delete(key)
+  let paused = prev.paused
+  if (paused.has(key)) { paused = new Set(paused); paused.delete(key) }
+  writeFilterStored(key, FILTER_STORED_OFF)
+  return { active, paused }
+}
+
+/** Read the stored values into one state. A filter stored '2' is on and paused,
+ *  each filter on its own. While conductor mode is off a stored conductor mode filter
+ *  is not added, so it neither narrows the list nor takes part in a pause; in an LTS
+ *  build its key is also rewritten to '0'. Before the edition lock is known it is
+ *  left as stored, so a standard build's saved filter comes back once the lock arrives. */
 function readStoredStatusFilters(crewMode: boolean): StatusFilterState {
   const active = new Set<SessionFilterKey>()
-  let pausedCount = 0
+  const paused = new Set<SessionFilterKey>()
   for (const filterDef of SESSION_FILTERS) {
-    const stored = localStorage.getItem(filterDef.storageKey)
+    const stored = safeGetItem(filterDef.storageKey)
     if (filterDef.key === 'crew' && !crewMode) {
-      if (stored === FILTER_STORED_ON || stored === FILTER_STORED_PAUSED) writeFilterStored('crew', FILTER_STORED_OFF)
+      if (previewFlagsLocked() && (stored === FILTER_STORED_ON || stored === FILTER_STORED_PAUSED)) writeFilterStored('crew', FILTER_STORED_OFF)
       continue
     }
     if (stored === FILTER_STORED_ON) active.add(filterDef.key)
-    else if (stored === FILTER_STORED_PAUSED) { active.add(filterDef.key); pausedCount += 1 }
+    else if (stored === FILTER_STORED_PAUSED) { active.add(filterDef.key); paused.add(filterDef.key) }
   }
-  if (pausedCount > 0 && pausedCount < active.size) {
-    for (const key of active) writeFilterStored(key, FILTER_STORED_ON)
-    return { active, paused: false }
-  }
-  return withPause(active, pausedCount > 0)
+  return { active, paused }
 }
 
 /** The status chips, folder hides, tag selection and shelved flag, each persisted. */
 export function useSessionFilterState() {
-  // With the Crew Mode preview off a stored Crew Mode filter is turned off (see
-  // readStoredStatusFilters); flipping the preview re-reads the stored state.
+  // In a build without conductor mode (LTS) a stored conductor mode filter is turned
+  // off (see readStoredStatusFilters); the edition lock arriving re-reads the stored state.
   const crewMode = useCrewMode()
   const [statusFilters, setStatusFilters] = useState<StatusFilterState>(() => readStoredStatusFilters(crewMode))
   const readCrewModeRef = useRef(crewMode)
@@ -126,7 +140,8 @@ export function useSessionFilterState() {
     setStatusFilters(readStoredStatusFilters(crewMode))
   }, [crewMode])
   const activeFilters = statusFilters.active
-  const filtersPaused = statusFilters.paused
+  const pausedFilters = statusFilters.paused
+  const filtersPaused = allPaused(statusFilters)
   // Which folders are excluded from the flat lane, chosen from the filter
   // menu's folder checkboxes. We persist the HIDDEN ids (not the visible ones)
   // so a folder created later defaults to visible instead of silently
@@ -238,6 +253,14 @@ export function useSessionFilterState() {
   const toggleGroupByKind = useCallback(() => {
     setGroupByKind(v => { const next = !v; safeSetItem(GROUP_BY_KIND_LS_KEY, next ? '1' : '0'); return next })
   }, [])
+  // Off by default: folders keep the folder-order mode's sequence. On, folders
+  // holding an unread chat are drawn first (`./unreadFolderFloat`). This browser only.
+  const [foldersUnreadFirst, setFoldersUnreadFirst] = useState(() => {
+    try { return localStorage.getItem(FOLDERS_UNREAD_FIRST_LS_KEY) === '1' } catch { return false }
+  })
+  const toggleFoldersUnreadFirst = useCallback(() => {
+    setFoldersUnreadFirst(v => { const next = !v; safeSetItem(FOLDERS_UNREAD_FIRST_LS_KEY, next ? '1' : '0'); return next })
+  }, [])
   // Chips whose HIDE state is on: their matching rows are dropped from the list.
   // Include chips OR together ("unread or pinned"), but a hide is an AND over
   // the result, so "Unread + hide In progress" reads as unread sessions that are
@@ -249,8 +272,8 @@ export function useSessionFilterState() {
     const initialHidden = new Set<SessionFilterKey>()
     for (const filterDef of SESSION_FILTERS) {
       if (!filterDef.hideStorageKey) continue
-      const storedHidden = localStorage.getItem(filterDef.hideStorageKey) === '1'
-      if (localStorage.getItem(filterDef.storageKey) === '1') {
+      const storedHidden = safeGetItem(filterDef.hideStorageKey) === '1'
+      if (safeGetItem(filterDef.storageKey) === '1') {
         // A stored pair of '1's (hand-edited storage) resolves to show-only, and
         // the losing flag is written back too: `clearHideFor` persists nothing
         // for a key that is not in the set, so a stale '1' left here would come
@@ -273,59 +296,51 @@ export function useSessionFilterState() {
       return next
     })
   }, [])
-  /** The menu row: off -> on, on -> off. A filter turned on while the filters
-   *  are paused JOINS the pause (stored '2'). The person asked to see the whole
-   *  list, so one menu click still resumes everything, instead of some chips
-   *  narrowing and others sitting paused beside them. */
+  /** The menu row and the chip's X: off -> on, on -> off. */
   const toggleFilter = useCallback((key: SessionFilterKey) => {
-    setStatusFilters(prev => {
-      const active = new Set(prev.active)
-      if (active.has(key)) { active.delete(key); writeFilterStored(key, FILTER_STORED_OFF) }
-      else { active.add(key); writeFilterStored(key, prev.paused ? FILTER_STORED_PAUSED : FILTER_STORED_ON) }
-      return withPause(active, prev.paused)
-    })
+    setStatusFilters(prev => (prev.active.has(key) ? turnFilterOff(prev, key) : turnFilterOn(prev, key)))
     // If the chip was hiding, show-only was off, so this toggle turned it ON and
     // the hide must go. If the chip was not hiding, clearing is a no-op.
     clearHideFor(key)
   }, [clearHideFor])
   const disableFilter = useCallback((key: SessionFilterKey) => {
-    setStatusFilters(prev => {
-      if (!prev.active.has(key)) return prev
-      const active = new Set(prev.active)
-      active.delete(key)
-      writeFilterStored(key, FILTER_STORED_OFF)
-      return withPause(active, prev.paused)
-    })
+    setStatusFilters(prev => (prev.active.has(key) ? turnFilterOff(prev, key) : prev))
   }, [])
   const enableFilter = useCallback((key: SessionFilterKey) => {
-    setStatusFilters(prev => {
-      if (prev.active.has(key)) return prev
-      const active = new Set(prev.active)
-      active.add(key)
-      writeFilterStored(key, prev.paused ? FILTER_STORED_PAUSED : FILTER_STORED_ON)
-      return withPause(active, prev.paused)
-    })
+    setStatusFilters(prev => (prev.active.has(key) ? prev : turnFilterOn(prev, key)))
     clearHideFor(key)
   }, [clearHideFor])
-  /** The menu's "Pause all filters" / "Resume all filters" row. Every active
-   *  filter moves together and its stored value moves with it, so a reload comes
-   *  back paused with the same filters still set. The `active` Set is reused, so
-   *  the memos that only read which filters are on do not re-derive. */
-  const setAllFiltersPaused = useCallback((paused: boolean) => {
+  /** The chip body: pause or resume this one filter. It stays set either way, so
+   *  a reload comes back the same. A no-op for a filter that is not on. */
+  const toggleFilterPaused = useCallback((key: SessionFilterKey) => {
     setStatusFilters(prev => {
-      if (prev.paused === paused || prev.active.size === 0) return prev
-      for (const key of prev.active) writeFilterStored(key, paused ? FILTER_STORED_PAUSED : FILTER_STORED_ON)
+      if (!prev.active.has(key)) return prev
+      const paused = new Set(prev.paused)
+      if (paused.has(key)) { paused.delete(key); writeFilterStored(key, FILTER_STORED_ON) }
+      else { paused.add(key); writeFilterStored(key, FILTER_STORED_PAUSED) }
       return { active: prev.active, paused }
     })
   }, [])
-  /** Drop every status filter, the pause with it. The reveal registry's clear:
+  /** The menu's "Pause all filters" / "Resume all filters" row. Every active
+   *  filter moves together and its stored value moves with it. The `active` Set
+   *  is reused, so the memos that only read which filters are on do not
+   *  re-derive. */
+  const setAllFiltersPaused = useCallback((pause: boolean) => {
+    setStatusFilters(prev => {
+      if (prev.active.size === 0) return prev
+      if (pause ? allPaused(prev) : prev.paused.size === 0) return prev
+      for (const key of prev.active) writeFilterStored(key, pause ? FILTER_STORED_PAUSED : FILTER_STORED_ON)
+      return { active: prev.active, paused: pause ? new Set(prev.active) : new Set() }
+    })
+  }, [])
+  /** Drop every status filter, its pause with it. The reveal registry's clear:
    *  a filter left stored would come back on the next mount and re-hide the row
    *  the person just asked to see. */
   const clearAllFilters = useCallback(() => {
     setStatusFilters(prev => {
       if (prev.active.size === 0) return prev
       for (const key of prev.active) writeFilterStored(key, FILTER_STORED_OFF)
-      return { active: new Set(), paused: false }
+      return { active: new Set(), paused: new Set() }
     })
   }, [])
   const toggleHideFilter = useCallback((key: SessionFilterKey) => {
@@ -352,21 +367,21 @@ export function useSessionFilterState() {
     })
   }, [])
   return {
-    activeFilters, filtersPaused, setAllFiltersPaused, clearAllFilters,
+    activeFilters, pausedFilters, filtersPaused, setAllFiltersPaused, toggleFilterPaused, clearAllFilters,
     filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter, unhideFolderChain,
     showAllFolders, filterTagIds, toggleTagFilter, clearTagFilter, foldersShelved, setFoldersShelved,
-    toggleFoldersShelved, toggleFilter, disableFilter, enableFilter, groupByKind, toggleGroupByKind,
+    toggleFoldersShelved, foldersUnreadFirst, toggleFoldersUnreadFirst, toggleFilter, disableFilter, enableFilter, groupByKind, toggleGroupByKind,
     hiddenFilters, toggleHideFilter, clearHiddenFilters,
     filterModelKeys, filterModelsExcluded, toggleModelFilter, setModelFilterExcluded, clearModelFilter,
   }
 }
 
 /** Which local rows are running, recent or unread, the Recent window and the unread auto-drain. */
-export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPaused, enableFilter, localSlots, disableFilter }: {
+export function useSessionStatusFilters({ unreadSlots, activeFilters, pausedFilters, enableFilter, localSlots, disableFilter }: {
   unreadSlots: string[]
   activeFilters: Set<SessionFilterKey>
-  /** Every active status filter is lifted, so none of them narrows the list. */
-  filtersPaused: boolean
+  /** The active status filters that are lifted, so they do not narrow the list. */
+  pausedFilters: ReadonlySet<SessionFilterKey>
   enableFilter: (key: SessionFilterKey) => void
   localSlots: Slot[]
   disableFilter: (key: SessionFilterKey) => void
@@ -409,7 +424,7 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
   // paused) so we don't wake an idle tab needlessly, mirroring the `staleTick`
   // pattern in shell/topbar/metricsReadout.tsx: while paused the filter hides
   // nothing, so no row can age out of view.
-  const recentFilterActive = activeFilters.has('recent') && !filtersPaused
+  const recentFilterActive = activeFilters.has('recent') && !pausedFilters.has('recent')
   // User-selectable recency window (ms), persisted. Presets + custom value live
   // in the filter submenu; the chip and menu row show the current window.
   const [recentWindowMs, setRecentWindowMs] = useState(readStoredRecentWindow)
@@ -517,7 +532,9 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
   // tick. See the helper's docstring for the known accepted batched-update
   // edge case.
   const prevUnreadCount = useRef<number | null>(null)
+  // A paused filter still counts: pausing one must never let the drain take a different chip away.
   const otherFiltersOn = useMemo(() => [...activeFilters].some(key => key !== 'unread'), [activeFilters])
+  const unreadPaused = pausedFilters.has('unread')
   const prevOtherFiltersOn = useRef<boolean | null>(null)
   useEffect(() => {
     // Guard the ENTIRE body on slotsLoaded: without this, the unconditional
@@ -532,9 +549,9 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
     // `prevUnreadCount` at 0, and `decideUnreadDrain` reads 0 -> 0 as "nothing
     // changed" forever, so resuming would narrow to an empty list with no drain
     // left to rescue it. Returning early freezes the pre-pause count instead,
-    // and `filtersPaused` is a dependency so RESUMING re-runs this with that
+    // and `unreadPaused` is a dependency so RESUMING re-runs this with that
     // frozen count and drains then.
-    if (filtersPaused) return
+    if (unreadPaused) return
     const action = decideUnreadDrain({
       prev: prevUnreadCount.current,
       current: unreadSlots.length,
@@ -546,7 +563,7 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
     if (action === 'disable') disableFilter('unread')
     prevUnreadCount.current = unreadSlots.length
     prevOtherFiltersOn.current = otherFiltersOn
-  }, [unreadSlots.length, slotsLoaded, disableFilter, filtersPaused, otherFiltersOn])
+  }, [unreadSlots.length, slotsLoaded, disableFilter, unreadPaused, otherFiltersOn])
   return {
     slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentStartedCounts, subagentApprovalCounts, unreadSet,
     recentWindowMs, recentAmountDraft, setRecentAmountDraft, recentUnitDraft, selectRecentPreset,

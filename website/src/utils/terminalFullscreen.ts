@@ -57,20 +57,22 @@ export function isTerminalFullscreenAllowed(isMobile: boolean): boolean {
   return !isMobile
 }
 
-/** The stacking-context class `<main>` carries. `isolate` ONLY when the dock
- *  terminal is actually rendered AND maximized — the maximized panel is a later
- *  sibling of `<main>` and must paint above the in-content chat layers it covers.
- *  It tracks the dock's own render condition (`terminalEnabled && !terminalPoppedOut`),
- *  not the bare fullscreen flag: the flag persists across a pop-out and a disable,
- *  but no panel is on screen then, so isolating `<main>` would trap a page-level
- *  inline modal inside it for nothing. Docked-but-not-maximized, popped out,
- *  disabled, or closed: no stacking context, so the modal paints over the dock. */
+/** The stacking-context class `<main>` carries. Isolate while a relay connection
+ *  retries: main is inert and covered, so its inline modals and drawers must stay
+ *  under the reconnecting view. Otherwise isolate only when the dock terminal is
+ *  actually rendered AND maximized: the maximized panel is a later sibling of
+ *  `<main>` and must paint above the in-content chat layers it covers.
+ *  Track the dock's render condition (`terminalEnabled && !terminalPoppedOut`),
+ *  not the bare fullscreen flag, which persists across a pop-out and a disable.
+ *  Without either covering surface, add no stacking context so page-level inline
+ *  modals can paint over the dock. */
 export function mainStackingClass(opts: {
   isTerminalFullscreen: boolean
   terminalEnabled: boolean
   terminalPoppedOut: boolean
+  relayRetrying?: boolean
 }): string {
   const maximizedPanelOnScreen =
     opts.isTerminalFullscreen && opts.terminalEnabled && !opts.terminalPoppedOut
-  return maximizedPanelOnScreen ? 'isolate' : ''
+  return maximizedPanelOnScreen || opts.relayRetrying ? 'isolate' : ''
 }

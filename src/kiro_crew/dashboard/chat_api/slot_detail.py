@@ -62,6 +62,7 @@ async def api_chat_slots(request: web.Request) -> web.Response:
         is_owner_dashboard_request,
         schedule_visibility_refresh,
     )
+    from kiro_crew.dashboard.slot_list_pass import shared_slot_list
     from kiro_crew.dashboard.source_providers.chip_refresh import schedule_tiered_check_refresh
 
     # Same warm-up as the WebSocket connect path: slot source-link extraction is
@@ -74,15 +75,18 @@ async def api_chat_slots(request: web.Request) -> web.Response:
 
     include_check_status = is_owner_dashboard_request(request)
     is_dashboard_user = bool(request.get("is_dashboard_user"))
-    payloads = state.serialize_slots(
-        include_check_status=include_check_status, dashboard_user=is_dashboard_user
+    # Shared with the connects and GETs of a reconnect storm (see slot_list_pass);
+    # the list may be shared, so everything below builds new lists and rows.
+    payloads = await shared_slot_list(
+        state, include_check_status=include_check_status, dashboard_user=is_dashboard_user
     )
     # A crew-member caller admitted here (the chat gate stamped its verified
     # principal) sees ONLY the sessions it owns or created -- the same set the
     # folder tree read shows it -- so admitting the session list for its folder
     # tools to resolve its own slot does not turn the list into an enumeration
-    # of the person's and other agents' sessions. The person and app callers get
-    # the full, unchanged response (an app row is already app-scoped downstream).
+    # of the person's and other agents' sessions. An app token's list is the
+    # slots its ``/api/ws`` snapshot shows it (below); the person and an
+    # internal-secret caller get the full, unchanged response.
     from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
 
     if folder_principal(state, request):
@@ -101,6 +105,25 @@ async def api_chat_slots(request: web.Request) -> web.Response:
             for p in payloads
             if member_owns_slot(state, state._slots.get(str(p.get("key") or "")), caller_key)
         ]
+    request_app = str(request.get("app") or "")
+    if request_app and not is_dashboard_user and request.get("internal_auth") is not True:
+        # A ``permissions.api`` grant on ``/api/chat`` is a prefix, so it admits
+        # this list too. Without this an app token would read every session's
+        # title, path and last message, which its own socket and the per-slot
+        # routes (``slot_ownership``) both withhold. Same filter, same declared
+        # ``slots:*`` scopes, as the WebSocket connect snapshot: a disabled app
+        # sees no slot, and an unreadable manifest grants no declared scope.
+        from kiro_crew.dashboard.ws_event_scope import (
+            filter_slots_for_app,
+            load_declared_events_for_connect,
+        )
+
+        try:
+            enabled, events = await asyncio.to_thread(load_declared_events_for_connect, request_app)
+        except Exception:
+            logger.debug("slot list: no scope for app %r", request_app, exc_info=True)
+            enabled, events = True, frozenset()
+        payloads = filter_slots_for_app(payloads, request_app, events, state) if enabled else []
     # A person's list leaves Crew Mode workers out; an agent's read keeps them
     # (``crew_mode.list_view``). Imported here: this body is re-bound into the
     # ``chat_handlers`` facade's namespace, so it may name only what it imports.
@@ -677,6 +700,34 @@ def _bounded_slot_page(
     return messages, total, start > 0, start
 
 
+#: Largest page, in serialized bytes, one slot-detail read sends (about 400 KB gzipped on
+#: real transcripts). Rows are cut from the OLD end; the newest row is always sent, so a
+#: single row over the budget goes alone and is never dropped.
+SLOT_DETAIL_PAGE_BYTE_BUDGET = 1_500_000
+
+
+def _oldest_over_byte_budget(fragments: list[str | None]) -> int:
+    """How many of the OLDEST positions to leave for an older-page read.
+
+    Walks newest to oldest, one step per row of the page (the handler caps a page at
+    ``SLOT_DETAIL_MAX_LIMIT`` rows), and stops before the row that would pass the byte
+    budget. The newest rendered row is always kept. A ``None`` fragment renders as nothing
+    but still holds a position, so the count is in positions and ``next_before`` stays exact.
+    """
+    used = 0
+    kept_rendered = False
+    keep_from = len(fragments)
+    for i in range(len(fragments) - 1, -1, -1):
+        fragment = fragments[i]
+        if fragment is not None:
+            used += len(fragment) + 2
+            if kept_rendered and used > SLOT_DETAIL_PAGE_BYTE_BUDGET:
+                break
+            kept_rendered = True
+        keep_from = i
+    return keep_from
+
+
 def _note_owner_focus(request: web.Request, state: "DashboardState", key: str) -> None:
     """The owner opened this session: keep its chips fresh, starting now.
 
@@ -720,6 +771,11 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         page when it is not. See ``kiro_crew.dashboard.slot_detail_delta``.
         Either form routes to the paged read and cannot be combined with
         ``before``.
+      - ``page_bytes=1`` (with a cursor read): cut the page by the same byte
+        budget as a plain page, oldest rows first, with ``next_before`` and
+        ``cursor.from`` naming the first row sent. Only a reader that pages
+        older with ``before=next_before`` sends it (the dashboard store); the
+        app-sdk embed does not, so its window is not cut.
 
     Either param being a non-integer is a 400, not an uncaught 500 out of the
     handler.
@@ -997,9 +1053,31 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                 return history_corpus_unreadable()
             requires_full_reader = bool(rotated)
 
+        # A sidebar row whose window has not loaded holds no rows in memory, so
+        # its page is read straight from disk and the window stays unloaded:
+        # opening a restored tab reads the page it shows, not its whole window.
+        if (
+            state.conversation_log
+            and not requires_full_reader
+            and getattr(slot, "window_pending", False) is True
+        ):
+            from kiro_crew.dashboard import slot_window_tail as _window_tail
+
+            row_page = await asyncio.to_thread(
+                _window_tail.read_row_page,
+                state.conversation_log,
+                history_key,
+                limit=read_limit,
+                before=before,
+            )
+            # A load that landed during the read may have appended rows the
+            # page does not hold; the usual path below reconciles them.
+            if row_page is not None and getattr(slot, "window_pending", False) is True:
+                bounded_page = row_page
+
         # A memory-only gateway (no conversation log) has no durable rows to
         # index; the fallback below already serves it from the resident window.
-        if state.conversation_log and not requires_full_reader:
+        if bounded_page is None and state.conversation_log and not requires_full_reader:
             # Imported here, not at module scope: this function runs on the
             # handlers module's globals (``_facade_compose.compose``).
             from kiro_crew.dashboard.transcript_snapshot import (
@@ -1125,6 +1203,11 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         if bounded_page is not None:
             messages, total, has_more, next_before = bounded_page
         else:
+            # The full reader reconciles against the resident window, so a row
+            # that has not loaded it loads it here, with the read off the loop.
+            from kiro_crew.dashboard.state import load_window_off_loop
+
+            await load_window_off_loop(slot)
             try:
                 all_msgs = (
                     await asyncio.to_thread(
@@ -1208,6 +1291,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             "meta": dict(q.get("meta") or {}),
             "_directive_user_origin": q.get("_directive_user_origin", False),
             "_directive_channel_origin": q.get("_directive_channel_origin", False),
+            **({"edit_rev": q["edit_rev"]} if isinstance(q.get("edit_rev"), int) else {}),
         }
         for q in slot._queue
     ]
@@ -1223,6 +1307,11 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     # an older page by its cursor, or the whole history. Until its row memo
     # has been filled in the background, it is rendered without the memo.
     memo_scope = (slot_history_key(slot), before, limit_raw is None and before_raw is None)
+    # A page (a limit or a cursor position) is also bounded by bytes; the whole-history
+    # read is not. A cursor read is cut only on ``page_bytes=1`` (a reader that pages
+    # older), inside the planner (``byte_floor``), which keeps its row-position contract.
+    cursor_bytes = cursor_mode and request.query.get("page_bytes") == "1"
+    paged = not cursor_mode and (limit_raw is not None or before_raw is not None)
     use_memo, fill = wire_render.plan_read(memo_scope)
 
     def _render(live_child: str) -> str:
@@ -1240,6 +1329,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         #
         # The session's stored display verdicts (display_verdicts) let a cold
         # render skip the scan for every string a save already judged.
+        page_has_more, page_next_before = has_more, next_before
         with display_verdicts.session(verdict_key):
             plan: slot_detail_delta.PagePlan | None = None
             if cursor_mode:
@@ -1261,21 +1351,30 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                     total=total,
                     window=limit,
                     cursor=delta_cursor,
+                    byte_floor=(first + _oldest_over_byte_budget(fragments) if cursor_bytes else 0),
                 )
                 messages_json = "[" + ", ".join(plan.fragments) + "]"
-            elif use_memo:
-                messages_json = wire_render.prepare_messages_json(
+            elif use_memo or paged:
+                fragments, _identities = wire_render.prepare_message_rows(
                     messages,
                     running,
                     live_child=live_child,
                     workspace=workspace,
+                    use_memo=use_memo,
                     scope=memo_scope,
                 )
+                if paged:
+                    dropped = _oldest_over_byte_budget(fragments)
+                    if dropped:
+                        fragments = fragments[dropped:]
+                        page_next_before += dropped
+                        page_has_more = True
+                messages_json = "[" + ", ".join(f for f in fragments if f is not None) + "]"
             else:
                 messages_json = json.dumps(
                     _prepare_messages(messages, running, live_child=live_child, workspace=workspace)
                 )
-        page_fields: dict[str, Any] = {"has_more": has_more, "next_before": next_before}
+        page_fields: dict[str, Any] = {"has_more": page_has_more, "next_before": page_next_before}
         if plan is not None:
             page_fields = {"has_more": plan.has_more, "next_before": plan.next_before}
             if plan.cursor is not None:
@@ -1331,4 +1430,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         wire_render.schedule_fill(
             memo_scope, messages, running, live_child=live_child, workspace=workspace
         )
-    return web.Response(text=body, content_type="application/json")
+    # Access was decided above, so a 304 here is never an access shortcut.
+    from kiro_crew.dashboard.conditional_get import conditional_json_response
+
+    return await conditional_json_response(request, body.encode())

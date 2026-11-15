@@ -650,8 +650,10 @@ installed one.
 
 - Patch for fixes, minor for features, major for breaking changes (agent config
   schema, MCP tool interface).
-- `minKiroCrewVersion` is checked on install and update; too-old gateways get a
-  clear error telling the user to update Kiro Crew first.
+- `minKiroCrewVersion` is checked on install and update, by the gateway that serves
+  the request; a too-old gateway refuses with its own version and says to update
+  Kiro Crew, then restart that gateway. `kirocrew app install` names the version
+  of the gateway that decided.
 - Users update from the store or via `POST /api/apps/{name}/update`. For a
   registry-sourced app the update runs its preflight, stops the backend and
   deregisters the app's resources, then re-clones, rebuilds, and re-runs
@@ -689,7 +691,7 @@ useful to Kiro Crew users.
 |-------|-------------------|
 | Scaffold | `kirocrew app init my-app` |
 | Build UI | `npm run build` in `ui/` |
-| Install locally | `POST /api/apps/install`, or `kirocrew app install <dir>` |
+| Install locally | `POST /api/apps/install`, or `kirocrew app install <dir or git URL>` |
 | Enable | Trust the app first, then `POST /api/apps/{name}/enable`, or `kirocrew app enable <name>` |
 | Live reload | `kirocrew app dev <name>` |
 | Update local copy | `POST /api/apps/{name}/update`, or `kirocrew app update <name> [--source <dir>]` |

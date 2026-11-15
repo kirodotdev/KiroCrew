@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileCode2, MessageSquare, UserPlus, Copy, Trash2, Lock, Plus, X, MoreHorizontal, ToggleLeft, ToggleRight, Star } from 'lucide-react'
 import { useAppDispatch } from '../../store'
@@ -20,12 +20,13 @@ import { useAvailableModels } from '../../hooks/useAvailableModels'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
 import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { parseErrorCode, parseErrorField } from '../../utils/errorReport'
-import { defaultLookFor } from '../../lib/avatarPoses'
 import { errMessage } from '../../utils/thunkError'
 import { templateSourceKind } from '../../lib/templateSource'
 import { queryReadFailed } from '../../utils/queryReadFailed'
 import { i18nT } from '../../i18n/t'
 import UnlistedSpecFiles, { type UnlistedSpec } from './UnlistedSpecFiles'
+import EnrollAsBotDialog from './EnrollAsBotDialog'
+import { TEMPLATE_PARAM } from './agentTemplateLink'
 
 /** One row of `GET /api/agents/templates`: the discovery record plus the two
  *  facts a management page needs — whether it may be edited here, and what
@@ -58,8 +59,8 @@ export interface TemplateReference {
   label: string
 }
 
-/** `GET /api/agents/detail/{name}`: the spec passed through, plus the two
- *  computed views (`skills`, `unmanaged_skills`) over `resources`. */
+/** `GET /api/agents/detail/{name}`: the spec passed through, computed skill
+ *  views over `resources`, and whether the saved spec's KAS projection lists tools. */
 interface TemplateDetail {
   name?: string
   description?: string
@@ -71,6 +72,7 @@ interface TemplateDetail {
   mcpServers?: unknown
   skills?: string[]
   unmanaged_skills?: string[]
+  session_lists_tools?: boolean
 }
 
 /** The editable definition. `allowed` mirrors `allowedTools`: the tools the
@@ -89,11 +91,20 @@ const PANE_SHELL_CLASS = 'flex gap-3 -mx-2 md:mx-0 h-[calc(100vh-212px)] support
 
 const strList = (v: unknown): string[] => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
 
+/** `tools` as an editable list. `"*"` as the whole value means every tool, the
+ *  same as `["*"]` (agent-spec-fields.md), so it is read as that list: the editor
+ *  shows it, and an edit to the list keeps it instead of dropping it. */
+const toolList = (v: unknown): string[] => v === '*' ? ['*'] : strList(v)
+
+/** Whether a tool list names any tool, read as the backend's `spec_lists_tools`
+ *  reads it, so this page and the chat's no-tools notice agree. */
+const listsTools = (tools: readonly string[]) => tools.some(t => t !== '')
+
 const draftFrom = (d: TemplateDetail): Draft => ({
   description: typeof d.description === 'string' ? d.description : '',
   model: typeof d.model === 'string' ? d.model : '',
   prompt: typeof d.prompt === 'string' ? d.prompt : '',
-  tools: strList(d.tools),
+  tools: toolList(d.tools),
   allowed: strList(d.allowedTools),
 })
 
@@ -254,7 +265,9 @@ function ChipList({ items, onRemove, onToggle, marked, addLabel, addPlaceholder,
     <div className="flex flex-wrap gap-1.5">
       {items.map(item => {
         const isMarked = marked?.has(item)
-        const stateLabel = isMarked ? i18nT('pages.overview.agentTemplatesTab.tool_state_auto') : i18nT('pages.overview.agentTemplatesTab.tool_state_asks')
+        const stateLabel = isMarked ? i18nT('pages.overview.agentTemplatesTab.tool_state_auto')
+          : item === '*' ? i18nT('pages.overview.agentTemplatesTab.tool_state_wildcard')
+          : i18nT('pages.overview.agentTemplatesTab.tool_state_asks')
         // Two separate affordances, legible without the caption: the tool's name,
         // a worded state tag that IS the toggle, and a remove control set apart
         // by a divider so neither click can be mistaken for the other.
@@ -265,7 +278,7 @@ function ChipList({ items, onRemove, onToggle, marked, addLabel, addPlaceholder,
               <button
                 type="button"
                 className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-body text-[10.5px] cursor-pointer shadow-sm transition-all active:scale-[0.97] active:duration-75 ${isMarked ? 'bg-accent-subtle text-accent border-accent/40 hover:border-accent hover:bg-bg-hover' : 'bg-bg text-text border-border-strong hover:border-accent/40 hover:bg-bg-hover'}`}
-                title={isMarked ? i18nT('pages.overview.agentTemplatesTab.tool_auto_approved') : i18nT('pages.overview.agentTemplatesTab.tool_asks_first')}
+                title={isMarked ? i18nT('pages.overview.agentTemplatesTab.tool_auto_approved') : item === '*' ? stateLabel : i18nT('pages.overview.agentTemplatesTab.tool_asks_first')}
                 aria-label={`${item}: ${stateLabel}`}
                 aria-pressed={!!isMarked}
                 onClick={() => onToggle(item)}
@@ -388,9 +401,6 @@ export default function AgentTemplatesTab() {
     setDraft(d); setBaseline(d)
   }, [detailQuery.data, detailQuery.isFetching, dirty])
   const editable = !!selected && selected.read_only === null
-  // Enrolling creates a crewmate NAMED after the template, so that is the
-  // name that decides whether it has already happened.
-  const enrolled = !!selected && selected.used_by.some(u => u.kind === 'crew' && u.id === selected.name)
   const dirtyMessage = i18nT('pages.overview.agentTemplatesTab.discard_unsaved_changes')
   // The rail click belongs to the shell; it consults this guard before
   // unmounting the pane and taking an unsaved draft with it.
@@ -511,29 +521,26 @@ export default function AgentTemplatesTab() {
   // A delete from "Files not shown" refused as referenced opens the same
   // reference list a row's refused delete opens.
   const onUnlistedReferenced = (name: string, body: string) => setBlocked({ name, references: referencesIn(body) })
-  const enroll = useMutation({
-    mutationFn: (row: TemplateRow) => api.createKirocrewAgent({ name: row.name, kiro_agent: row.name, memory_store: 'default', avatar: defaultLookFor(row.name) }),
-    onSuccess: (r: { error?: string }, row) => {
-      if (r?.error) { setNotice({ kind: 'err', text: r.error }); return }
-      setNotice({ kind: 'ok', text: i18nT('pages.overview.agentTemplatesTab.enrolled', { name: row.name }) })
-      invalidate()
-      // Enrolling is a crew registry write, so it has to reach the registry's
-      // readers too -- the Crews tab beside this one on the same rail
-      // (CapabilitiesPage), and the Crew Members roster under the same prefix
-      // (api/membersQuery.ts). Nothing else will while that cache entry is
-      // live: the QueryClient sets `staleTime: Infinity`, so a remount serves
-      // the cached roster without refetching, and `POST /api/agents` pushes no
-      // `refresh` frame (the only `push_refresh("agents")` is the MCP
-      // capability install). A user who opens Capabilities on Crews, comes
-      // here, enrolls and goes back is inside that entry's `gcTime`, and the
-      // crewmate this tab just reported as enrolled is missing from the list.
-      void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
-      // The same write lands in config.json, whose masked read ships the agent
-      // records -- the pairing #12740 established for a member write.
-      void queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
-    },
-    onError: writeError,
-  })
+  // The custom agent "Enroll as bot" is open for. A bot can never take the
+  // agent's own name, so the dialog asks for one (EnrollAsBotDialog).
+  const [enrolling, setEnrolling] = useState<string | null>(null)
+  const onBotCreated = () => {
+    invalidate()
+    // Enrolling is a crew registry write, so it has to reach the registry's
+    // readers too -- the Crews tab beside this one on the same rail
+    // (CapabilitiesPage), and the Crew Members roster under the same prefix
+    // (api/membersQuery.ts). Nothing else will while that cache entry is
+    // live: the QueryClient sets `staleTime: Infinity`, so a remount serves
+    // the cached roster without refetching, and `POST /api/agents` pushes no
+    // `refresh` frame (the only `push_refresh("agents")` is the MCP
+    // capability install). A user who opens Capabilities on Crews, comes
+    // here, enrolls and goes back is inside that entry's `gcTime`, and the
+    // crewmate this tab just reported as enrolled is missing from the list.
+    void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+    // The same write lands in config.json, whose masked read ships the agent
+    // records -- the pairing #12740 established for a member write.
+    void queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+  }
 
   // The template a session runs when NOTHING names one: a plain chat, a CLI
   // chat, a warm-pool process, an agent-less schedule. A crewmate's DM thread
@@ -650,6 +657,22 @@ export default function AgentTemplatesTab() {
     if (allFiltered.length === 0) return
     if (!selectedName || !rows.some(r => r.name === selectedName)) setSelectedName(allFiltered[0].name)
   }, [allFiltered, rows, selectedName, dirty])
+
+  // A link that names one agent (`agentTemplateHref`, e.g. a chat's no-tools
+  // notice) opens that agent's page, once per link. Declared after the default
+  // selection above so it wins on the render both run in; never over a dirty
+  // editor, like every other selection change here.
+  const [searchParams] = useSearchParams()
+  const linkedName = searchParams.get(TEMPLATE_PARAM)
+  const openedLink = useRef<string | null>(null)
+  useEffect(() => {
+    if (!linkedName || openedLink.current === linkedName || dirty) return
+    if (!rows.some(r => r.name === linkedName)) return
+    openedLink.current = linkedName
+    setDraft(null); setBaseline(null)
+    setSelectedName(linkedName)
+    openDetail()
+  }, [linkedName, rows, dirty, openDetail])
 
   const groupLabel = (k: GroupKey) => {
     switch (k) {
@@ -942,14 +965,14 @@ export default function AgentTemplatesTab() {
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="min-w-[260px] max-w-[min(360px,calc(100vw-2rem))]">
                           {!selected.private_to && (
-                            <DropdownMenuItem disabled={enroll.isPending || enrolled} onSelect={() => enroll.mutate(selected)} className="items-start">
+                            <DropdownMenuItem onSelect={() => setEnrolling(selected.name)} className="items-start">
                               <UserPlus className="lucide-inline mt-0.5 shrink-0 text-muted" aria-hidden />
                               <span className="flex flex-col gap-0.5">
                                 <span>{i18nT('pages.overview.agentTemplatesTab.enroll')}</span>
                                 {/* What enrolling starts, so the click is not a leap: a
                                     crewmate with its own memory, and nothing running. */}
                                 <span className="text-[11.5px] text-muted whitespace-normal">
-                                  {enrolled ? i18nT('pages.overview.agentTemplatesTab.enroll_already') : i18nT('pages.overview.agentTemplatesTab.enroll_hint')}
+                                  {i18nT('pages.overview.agentTemplatesTab.enroll_hint')}
                                 </span>
                               </span>
                             </DropdownMenuItem>
@@ -1069,6 +1092,26 @@ export default function AgentTemplatesTab() {
                           addPlaceholder={i18nT('pages.overview.agentTemplatesTab.add_tool_placeholder')}
                           suggestions={toolSuggestions}
                         />
+                        {/* An agent that lists no tools cannot run commands or work with
+                            files. One click allows all of them, so nobody has to know a
+                            tool's name to get started. Existing auto-approvals stay unchanged.
+                            Saved with the Save bar, like any edit. */}
+                        {!detailReadOnly && !listsTools(detailDraft.tools) && (
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2 text-[12px]">
+                            <span className="text-muted">{i18nT(detailQuery.data?.session_lists_tools && !listsTools(toolList(detailQuery.data.tools))
+                              ? 'pages.overview.agentTemplatesTab.no_tools_added_servers_hint'
+                              : 'pages.overview.agentTemplatesTab.no_tools_hint')}</span>
+                            <Btn
+                              type="button"
+                              data-testid="tpl-allow-every-tool"
+                              className="inline-flex items-center gap-1.5 border-dashed"
+                              onClick={() => setD({ tools: ['*'] })}
+                            >
+                              <Plus className="lucide-inline" aria-hidden />
+                              {i18nT('pages.overview.agentTemplatesTab.all_tools_add')}
+                            </Btn>
+                          </div>
+                        )}
                         {!detailReadOnly && spawnRefsToAdd.length > 0 && (
                           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2 text-[12px]">
                             <span className="text-muted">{i18nT('pages.overview.agentTemplatesTab.spawn_tool_hint')}</span>
@@ -1211,6 +1254,14 @@ export default function AgentTemplatesTab() {
           until the create succeeds. */}
       {notice?.kind === 'err' && <ErrorNotice message={notice.text} className="mt-3" />}
     </Modal>
+
+    <EnrollAsBotDialog
+      agent={enrolling}
+      agentNames={rows.map(r => r.name)}
+      onCreated={onBotCreated}
+      onEnrolled={bot => setNotice({ kind: 'ok', text: i18nT('pages.overview.agentTemplatesTab.enroll_added', { bot, agent: enrolling ?? '' }) })}
+      onClose={() => setEnrolling(null)}
+    />
 
     <Modal open={!!blocked} onClose={() => setBlocked(null)} title={i18nT('pages.overview.agentTemplatesTab.cannot_delete_title', { name: blocked?.name ?? '' })} maxWidth={520} footer={<Btn onClick={() => setBlocked(null)}>{i18nT('pages.overview.agentTemplatesTab.close')}</Btn>}>
       <p className="text-[12.5px] text-muted mb-3">{i18nT('pages.overview.agentTemplatesTab.cannot_delete_body', { count: blocked?.references.length ?? 0 })}</p>

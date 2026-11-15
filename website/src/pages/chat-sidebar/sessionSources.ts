@@ -6,6 +6,7 @@ import { useAppSelector } from '../../store'
 import { useRemoteCrewChat } from '../../hooks/usePreviewFlag'
 import { api } from '../../api/client'
 import { crewGroupsFor, useInstanceSessions } from '../../hooks/useInstanceSessions'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { useSelectInstance } from '../../hooks/useSelectInstance'
@@ -114,7 +115,7 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
     if (instanceSessions.failed.length > 0) {
       return say(
         i18nT('pages.chatSidebar.sessions_from_instance_unavailable', {
-          names: instanceSessions.failed.join(', '),
+          names: fmtList(instanceSessions.failed, { style: 'narrow' }),
         }),
         instanceSessions.failure,
       )

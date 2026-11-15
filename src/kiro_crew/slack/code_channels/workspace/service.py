@@ -96,7 +96,8 @@ _CHANNEL_DISABLING_ERRORS = frozenset(
 
 #: ``worktree_skipped`` reasons that describe the project or host, so a later
 #: bind would decide the same. Any other reason is a git error and is retried,
-#: at most :data:`_MAX_BIND_ATTEMPTS` times in all.
+#: at most :data:`_MAX_BIND_ATTEMPTS` times in all. The ``git_*`` and
+#: ``broken_gitfile`` reasons are git refusing to open the project folder at all.
 WORKTREE_REFUSED = "worktree_refused"  # git_ops.WorktreeRefused: the repository refuses one
 _SETTLED_SKIPS = frozenset(
     {
@@ -104,6 +105,10 @@ _SETTLED_SKIPS = frozenset(
         "no_project",
         "project_missing",
         "not_a_repo",
+        "broken_gitfile",
+        "git_dubious_ownership",
+        "git_permission_denied",
+        "git_probe_failed",
         "sensitive_path",
         "sandbox_unavailable",
         WORKTREE_REFUSED,
@@ -713,7 +718,9 @@ class WorkspaceService:
                     record.worktree_skipped = "project_missing"
                     return record
                 project_real = recovered[0]
-            root = await asyncio.to_thread(git_ops.toplevel, project_real)
+            root, refusal, git_line = await asyncio.to_thread(
+                git_ops.toplevel_or_refusal, project_real
+            )
         except git_ops.SandboxUnavailable as exc:
             record.worktree_skipped = "sandbox_unavailable"
             _audit("code_channel_worktree", "denied", f"channel={channel}", str(exc)[:200])
@@ -721,7 +728,15 @@ class WorkspaceService:
         except (subprocess.TimeoutExpired, OSError) as exc:
             return _git_failed(record, exc, f"channel={channel} project={project}")
         if not root:
-            record.worktree_skipped = "not_a_repo"
+            # git's reason, so /create-pr can name it. Redact the whole line, then
+            # clip: a clip first can cut a credential URL before redaction sees it.
+            record.worktree_skipped = "not_a_repo" if refusal == "not_a_git_repository" else refusal
+            _audit(
+                "code_channel_worktree",
+                "denied",
+                f"channel={channel} project={project}",
+                f"{record.worktree_skipped}: {redact_via_context(git_line)[:300]}",
+            )
             return record
         rel = recovered[1] if recovered is not None else os.path.relpath(project_real, root)
         record.subdir = "" if rel == "." else rel

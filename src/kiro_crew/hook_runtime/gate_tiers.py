@@ -6,7 +6,7 @@ another tier. A tier body answers one question about one call and returns a
 ``ToolHookResult`` through its counted factories, or ``None`` to let the next row
 decide. :class:`GateFacts` carries the call, the surface asking, and the values
 the tiers derive from them, derived on first use from one platform-context
-snapshot per judgement (the effective deny set is resolved twice from it).
+snapshot per judgement (the effective deny set is resolved once from it).
 
 Composed onto ``kiro_crew.hooks``; see :mod:`kiro_crew.hook_runtime`. The tier
 bodies read the facade's globals at call time, so a test that patches
@@ -82,9 +82,9 @@ class GateFacts:
     each computed on first use and kept for the rest of the judgement; the pure
     projections of the frozen call (the canonical MCP name, the governance
     reference, the exempt command) are simply recomputed. The effective deny set is
-    resolved twice, both times against the one snapshot: once for the enabled rule
-    ids and once for the deny-rules tier. Two consequences matter. The platform
-    context is read ONCE per call (:meth:`snapshot`), so a live ceiling refresh
+    resolved once against the one snapshot, and both its readers take that one
+    result: the enabled rule ids and the deny-rules tier. Two consequences matter.
+    The platform context is read ONCE per call (:meth:`snapshot`), so a live ceiling refresh
     cannot land between two reads and judge one call half under the old ceiling
     and half under the new one. And a value no tier reaches is never computed -- a
     call the first tier denies reads neither the context nor the effective deny
@@ -247,7 +247,7 @@ class GateFacts:
         input vetting) keep passing."""
         return self._once(
             "enabled_ids",
-            lambda: security.enabled_rule_ids(self.manager._effective_denied(self.ctx)),
+            lambda: security.enabled_rule_ids(self.denied_regexes),
         )
 
     @property
@@ -1018,14 +1018,10 @@ def _tier_governance(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     own_scopes = facts.governance_own_scopes
     if "tools" in own_scopes and not alias_groups and call.mcp_tool not in identity:
         identity = (*identity, call.mcp_tool)
-    if call.is_shell and call.command:
-        # A shell call's title may not carry its command (KAS titles it "Run
-        # Command"), so the recovered command is asked under ``commands`` too, in
-        # the same title form kiro-cli's shell call arrives in. The first tier has
-        # already refused a shell call whose command could not be recovered.
-        from kiro_crew.platform.governance import _RUNNING_PREFIX
-
-        identity = (*identity, f"{_RUNNING_PREFIX}{call.command}")
+    # A shell call's title may not carry its command (KAS titles it "Run Command"),
+    # so it is judged under ``commands`` on its recovered command alone. The first
+    # tier has already refused a shell call whose command could not be recovered.
+    shell_command = call.command if call.is_shell and call.command else ""
     gov_reason = _governance_denial(
         facts.ctx,
         call.title,
@@ -1041,6 +1037,7 @@ def _tier_governance(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
         deny_aliases=deny_aliases,
         spawn_target=call.spawn_target,
         own_scopes=own_scopes,
+        shell_command=shell_command,
     )
     if gov_reason:
         return ToolHookResult.deny_policy(gov_reason)
@@ -1173,7 +1170,7 @@ def _operator_confirms(facts: GateFacts, grant_targets: tuple[str, ...]) -> bool
 
 
 def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
-    """The operator's ``auto_approve_tools`` patterns.
+    """The operator's ``auto_approve_tools`` patterns and per-tool identity grants.
 
     Matched against both the original title (preserves "Running: "/"Reading "
     prefixes) and the normalized name (stripped), so "Running: *" and bare
@@ -1199,6 +1196,13 @@ def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
     (over-denying is safe); a grant may not. An identity that is present but
     unproven falls back to the title, exactly as before.
 
+    ``auto_approve_tool_identities`` (the grants the approval card's "Always
+    allow this tool" and the MCP tool list write) uses case-insensitive literal
+    equality against a verified identity, never glob or path normalization and
+    never the title: a shell call's title can be the model's
+    own ``description``, so one reading ``@ops/list`` must not win that grant.
+    ``confirm_tools`` outranks it exactly as it outranks ``auto_approve_tools``.
+
     ``classifier_only`` skips this tier (see the app-own-server tier for why).
     """
     if facts.classifier_only:
@@ -1221,6 +1225,10 @@ def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
     for pattern in facts.config.auto_approve_tools:
         if any(_tool_matches(pattern, target) for target in grant_targets):
             return ToolHookResult.auto_approve(identity_grant=identity_grant)
+    if identity_ref and any(
+        grant.lower() == identity_ref.lower() for grant in facts.config.auto_approve_tool_identities
+    ):
+        return ToolHookResult.auto_approve(identity_grant=True)
     if identity_ref:
         # Runtime breadcrumb for the deliberate title-match exclusion: a pattern
         # that matches the agent-authored title does not grant an
@@ -1256,15 +1264,22 @@ def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
     """Whether a spec's ``toolsSettings.shell.allowedCommands`` grants this call.
 
     Only a shell call (kiro-cli's ``execute_bash`` among its names) with its
-    command recovered by the host and plain, or a chain of plain commands, each of
+    command recovered by the host and plain once its plain redirects are taken off,
+    or a chain of plain commands, each of
     which one of ``spec_granted_commands`` matches whole
     (:func:`_command_matches_any`), as kiro-cli anchors each entry at both ends. Each entry is read
     by :mod:`kiro_crew.platform.allowed_commands`, which accepts only the syntax
     both engines read alike and matches it in linear time; any other grants nothing.
+    Every file a redirect opens must pass Crew's floors
+    (:func:`kiro_crew.platform.redirect_floor.redirects_clear`).
     """
     if not call.spec_granted_commands or "execute_bash" not in names or not call.is_shell:
         return False
-    return _command_matches_any(call.command, call.spec_granted_commands)
+    from kiro_crew.platform.redirect_floor import redirects_clear
+
+    return _command_matches_any(call.command, call.spec_granted_commands) and redirects_clear(
+        call.command, call.spec_write_cwd
+    )
 
 
 def _spec_write_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
@@ -1379,7 +1394,8 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
             "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
             "and this command matches allowedCommands, but a chain (&&, ||, ;, |) matches only "
             "when every command in it does and it holds no quote, backslash, non-ASCII "
-            "character or --%, and >, <, $() or backticks never match. "
+            "character or --%, and $(), backticks or a redirect before the command never "
+            "match. "
             "Run the script alone, or move the pipeline into the script."
         )
     from kiro_crew.platform import allowed_commands
@@ -1520,6 +1536,50 @@ def _tier_spec_denies(facts: GateFacts, tier: GateTier) -> ToolHookResult | None
 
     reason = spec_denies_refusal(facts.call, _spec_builtin_names(facts.call))
     return None if reason is None else ToolHookResult.deny_policy(reason)
+
+
+def _tier_spec_unjudged_denies(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A Bot worker's ``deniedCommands`` entries that neither KAS nor the gate can
+    judge: refuse that agent's shell calls that are not read-only.
+
+    The KAS projection records them for a Bot's worker only
+    (``kas_spec_denies.with_unjudged_denies``), and the session handle stamps them
+    on its own agent's requests (``AcpEvent.spec_unjudged_denies``; empty on every
+    other session and on a sub-agent's request). A worker runs under its Bot's
+    Permissions, and under Trust an ask is answered for the person, so an entry
+    nobody can check must not reach an ask: this row refuses a shell call (kiro-cli's
+    ``execute_bash`` among its names, no MCP server behind it) unless its recovered
+    command is one the read-only row answers (:func:`_command_is_read_only`), which
+    no such entry blocks. Gate-only entries carry a conditional flag in the record and
+    hold unless ``spec_denied_gate.shell_denies_match`` returns a definite
+    no-match. The earlier ``spec-denies`` row uses that same judge to refuse
+    matches. A deny holds on every policy.
+
+    shortcut: an entry with a regex alternation (``(\\s|$)``) is unjudged; teach
+    ``allowed_commands.parse`` alternation inside a group to refuse only matches.
+    """
+    call = facts.call
+    unjudged = call.spec_unjudged_denies
+    if not unjudged or call.mcp_server:
+        return None
+    if not call.is_shell and "execute_bash" not in _spec_builtin_names(call):
+        return None
+    if _command_is_read_only(call.command):
+        return None
+    from kiro_crew.agent_sdk.kas_tool_view import unjudged_denies_for_command
+
+    unjudged = unjudged_denies_for_command(unjudged, call.command)
+    if not unjudged:
+        return None
+    # The first three are named and the rest counted. A literal: the tiers run on
+    # ``hooks``' globals (``compose``), where a module constant here is unbound.
+    named = ", ".join(unjudged[:3])
+    more = len(unjudged) - 3
+    return ToolHookResult.deny_policy(
+        "Blocked by this agent's spec: Kiro Crew cannot check some of its "
+        f"deniedCommands ({named}{f' and {more} more' if more > 0 else ''}), "
+        "so this command cannot run on the Bot's worker"
+    )
 
 
 def _tier_spec_builtin_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:

@@ -2,7 +2,7 @@
 // provider, the mint and its approval link, waiting for approval, relaying the
 // loopback return address, the authorization status feed and the approval tab.
 // ConnectionsPage.coverage.test.tsx covers the rest of the page, and its header
-// explains the seams. The api mock, the McpTab stub and the beforeEach below are
+// explains the seams. The api mock, the OAuthAppPanel stub and the beforeEach below are
 // copied from it word for word; the shared fixtures are in
 // ConnectionsPage.coverageTestUtils.tsx.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -57,12 +57,12 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-// The MCP Servers sub-tab is a page in its own right; the only contract this
-// page has with it is the managed-provider deep link back into the gallery.
-vi.mock('../pages/overview/McpTab', () => ({
-  default: ({ onManagedProviderClick }: { onManagedProviderClick: (slug: string) => void }) => (
-    <button type="button" onClick={() => onManagedProviderClick('stripe')}>deep link to stripe</button>
-  ),
+// The OAuth app part a card opens is its own unit (OAuthAppPanel.test.tsx).
+vi.mock('../pages/connections/OAuthAppPanel', async () => ({
+  OAuthDraftsContext: (await vi.importActual<typeof import('react')>('react')).createContext<(slug: string, dirty: boolean) => void>(() => {}),
+  OAuthClientWrittenContext: (await vi.importActual<typeof import('react')>('react')).createContext<(slugs: string[]) => void>(() => {}),
+  OAuthDraftValuesContext: (await vi.importActual<typeof import('react')>('react')).createContext({ get: () => undefined, set: () => {} }),
+  OAuthAppPanel: ({ settingSlug }: { settingSlug: string }) => <div data-testid={`oauth-app-${settingSlug}`} />,
 }))
 
 import {
@@ -214,6 +214,11 @@ describe('connecting a new provider', () => {
       reason: 'mint_server_absent',
       state: 'failed',
       expected: 'Action failed: The MCP server entry disappeared before authorization could start. Try connecting again.',
+    },
+    {
+      reason: 'mint_kiro_cli_missing',
+      state: 'failed',
+      expected: 'Action failed: Connect needs kiro-cli installed and signed in on this machine. Install kiro-cli, run kiro-cli login, then try connecting again.',
     },
     {
       reason: 'mint_url_rejected',

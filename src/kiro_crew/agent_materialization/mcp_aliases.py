@@ -597,7 +597,8 @@ def normalize_server_keys(config: dict, unresolved: set[str]) -> dict[str, str]:
 
     # Drop any server whose argv invokes the deleted mcp-playwright-proxy
     # subcommand.  Runs on EVERY rebuild because the entry can be
-    # re-injected from ~/.kiro/crew/mcp.json by the merges above.  The
+    # re-injected from ~/.kiro/crew/mcp.json by the source merge the caller
+    # runs first (mcp_sources.merge_mcp_sources, then resolve_mcp_servers).  The
     # first-run marker-guarded purge (clean_stale_managed_mcp) covers the
     # GLOBAL ~/.kiro/settings/mcp.json, which is a different file and a
     # different ownership boundary; this covers the assembled agent config.

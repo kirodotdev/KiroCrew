@@ -14,6 +14,7 @@ import { api } from '../api/client';
 import { AlertTriangle, Download, Hourglass, Zap } from 'lucide-react';
 import { Badge } from '../components/ui';
 import ErrorNotice from '../components/ErrorNotice';
+import StatusNotice from '../components/StatusNotice';
 import { RadioChipGroup, radioChip } from '../components/RadioChipGroup';
 import Tablist from '../components/Tablist';
 import { isTerminalApprovalRefusal, noPendingApprovalError } from '../api/apiError';
@@ -107,20 +108,22 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
   // to vanish: the mutations had no onError and nothing read isError, so a
   // refused decision looked like one that had not been clicked.
   const [actionError, setActionError] = useState('');
+  // A decide that found its gate gone: status, not an error.
+  const [gateGone, setGateGone] = useState('');
 
   const queryClient = useQueryClient();
-  // A refused decide is a failed request and renders through the page's own
-  // ErrorNotice (errors-use-error-notice). A terminal refusal means the gate
-  // is gone: the notice names the task whose gate was refused (another gate
-  // can still be waiting in the banner below it), and the listing is
-  // refetched so the page drops its Approve/Deny and its "waiting" banner.
+  // A refused decide renders through the page's own ErrorNotice. A terminal
+  // refusal means the gate is gone, which is status: the notice names the
+  // task whose gate was refused (another gate can still be waiting in the
+  // banner below it), and the listing is refetched so the page drops its
+  // Approve/Deny and its "waiting" banner.
   const onDecideError = (e: unknown, index: number | undefined) => {
     if (!isTerminalApprovalRefusal(e)) {
       setActionError(errText(e));
       return;
     }
     const task = index === undefined ? undefined : tasks.find(t => t.index === index);
-    setActionError(task
+    setGateGone(task
       ? i18nT('pages.projectDetailPage.task_approval_no_longer_pending', { index: task.index, title: task.title })
       : i18nT('components.approvalCard.approval_no_longer_pending'));
     queryClient.invalidateQueries({ queryKey: ['approvals', run.task_id] });
@@ -130,7 +133,7 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
       if (!selected) return;
       return decideGate(selected.index, decision);
     },
-    onMutate: () => { setActionError(''); return { index: selected?.index }; },
+    onMutate: () => { setActionError(''); setGateGone(''); return { index: selected?.index }; },
     onSuccess: (_, decision) => {
       queryClient.invalidateQueries({ queryKey: ['approvals', run.task_id] });
       onRefresh?.();
@@ -142,7 +145,7 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
     mutationFn: async ({ index, decision }: { index: number; decision: 'approve' | 'reject' }) => {
       return decideGate(index, decision);
     },
-    onMutate: () => setActionError(''),
+    onMutate: () => { setActionError(''); setGateGone(''); },
     onSuccess: (_, { index, decision }) => {
       queryClient.invalidateQueries({ queryKey: ['approvals', run.task_id] });
       onRefresh?.();
@@ -311,6 +314,7 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
             override. A hand-off unmounts all of it. */}
         <ErrorNotice message={approvalsFailed ? errText(approvalsError) : ''} className="mx-4 mt-2 shrink-0" testId="project-detail-approvals-error" />
         <ErrorNotice message={actionError} onDismiss={() => setActionError('')} className="mx-4 mt-2 shrink-0" testId="project-detail-action-error" />
+        <StatusNotice tone="info" message={gateGone} onDismiss={() => setGateGone('')} className="mx-4 mt-2 shrink-0" testId="project-detail-gate-gone" />
         <ErrorNotice message={exportMutation.isError ? errText(exportMutation.error) : ''} onDismiss={() => exportMutation.reset()} className="mx-4 mt-2 shrink-0" testId="project-detail-export-error" />
 
         {/* Approval banner */}

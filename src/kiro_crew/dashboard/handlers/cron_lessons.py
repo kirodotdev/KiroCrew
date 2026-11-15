@@ -463,6 +463,44 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # Bounded: a saturated inference queue yields None here rather than holding
         # the request past the client timeout, and the lesson still lands below.
         rule_emb = await asyncio.to_thread(_embed_lesson_bounded, vs, rule)
+        # The lesson tier policy's re-teach signal, before the write can merge into
+        # the lesson it compares with: does this rule repeat one shadow would demote?
+        # Only a person re-teaches: an agent's own write counts only when the chat's
+        # latest input row is the person's (the origin gate's fail-closed rule).
+        from kiro_crew import injection_receipts
+        from kiro_crew import memory_shadow_trace as _trace
+        from kiro_crew import memory_tier_policy as _tier_policy
+        from kiro_crew.memory_origin_gate import TURN_HUMAN, triggering_turn
+
+        tier_mode = _tier_policy.configured_mode()
+        # The shadow report's re-teach signal for every stage: the stored lessons
+        # this rule comes within the re-teach bar of, read before the write too.
+        teach = rule_emb is not None and _trace.observing()
+        by_person = (
+            (tier_mode == _tier_policy.MODE_SHADOW or teach)
+            and rule_emb is not None
+            and (
+                request.get("internal_auth") is not True
+                or triggering_turn(
+                    getattr(memory_changes.slot_for_session(state, sk), "messages", None)
+                )
+                == TURN_HUMAN
+            )
+        )
+        if by_person and tier_mode == _tier_policy.MODE_SHADOW:
+            await asyncio.to_thread(
+                _tier_policy.record_reteach, vs, rule_emb, tier_mode, session_key=sk
+            )
+        if by_person and teach:
+            neighbours = await asyncio.to_thread(_trace.reteach_neighbours, vs, rule_emb)
+            injection_receipts.schedule_write(
+                injection_receipts.build_outcome_line(
+                    injection_receipts.LEARN_ADD,
+                    session_key=sk,
+                    store=_lesson_silo or "",
+                    ids=neighbours,
+                )
+            )
         # Persist the lesson immediately so the request returns fast. The
         # contradiction sweep below makes a per-candidate LLM call (~27s each);
         # running it inline would exceed the MCP client's 30s timeout while the
@@ -506,7 +544,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         reason = result.reason
         stored = result.stored
         if origin is not None and origin.gate.loggable:
-            await asyncio.to_thread(record_origin_gate, vs, origin.gate)
+            await asyncio.to_thread(record_origin_gate, vs, origin.gate, session_key=sk)
         # Redacted through the SAME chain this handler already applies to a lesson's
         # rule and category below (`_redact_memory_field`, which walks a list). A
         # superseded rule is stored user text leaving the process, so a credential or
@@ -665,7 +703,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # predicate, the blocked-content screen and the row cap -- and all answer
         # with the bare ``refused`` string, so the cause has to be re-derived here.
         # Re-running the predicates is exact rather than a guess: they are the same
-        # pure-text calls the store made, and ``_lesson_withheld`` above re-derives
+        # pure-text calls the store made, and the listing's ``_safe_lesson`` re-derives
         # the first the same way for its own surface. Reporting every refusal as
         # ``volatile_session_fact`` told a user at the row cap to reword a rule
         # whose wording was never the problem. The blocked-content reason is the

@@ -710,7 +710,10 @@ def _bind_cron_slot(
         # practice. It is here so EVERY assignment site reaches the recorder and the
         # derived pin needs no exception for this one.
         note_crew_log_class(state, slot)
-        from kiro_crew.dashboard.transcript_binding import bind_transcript
+        from kiro_crew.dashboard.transcript_binding import (
+            bind_transcript,
+            mark_turn_timeout_unread,
+        )
 
         bind_transcript(state, slot)
         hydrate_slot_from_history(slot, history or [])
@@ -719,8 +722,7 @@ def _bind_cron_slot(
         # it, the slot's saves carry the on-disk value forward rather than
         # writing "follow the global limit" over it; a reused slot's limit from
         # a prior binding is dropped for the same reason.
-        slot.turn_timeout_secs = None
-        slot._turn_timeout_hydrated = False
+        mark_turn_timeout_unread(state, slot)
         if dismissed is not _DISMISSED_UNREAD:
             _restore_dismissed_source_links(slot, dismissed)
         else:

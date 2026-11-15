@@ -99,8 +99,9 @@ This is a known limitation — Hindi cannot address an unknown-gender user witho
 | placeholder parity with English | `catalogParity.test.ts` |
 | correct CLDR plural categories (2) | `catalogParity.test.ts` |
 | sentence-final Latin-period debt does not exceed 30 | `hiStyle.test.ts` |
-| formal-address debt does not exceed 117 | `hiStyle.test.ts` |
+| formal-address debt does not exceed 113 | `hiStyle.test.ts` |
 | changed values address the reader as तुम, never आप | `hiStyle.test.ts` (`I18N_BASE_REF`) |
+| the Kiro CLI setup screen (`components.kiroPrerequisiteGate`) addresses the reader as तुम throughout | `hiStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 | balanced delimiters | `qa.test.ts` |
 | no full-width alphanumerics | `qa.test.ts` |

@@ -57,8 +57,9 @@ def _deploy_with_progress(
     ``ec2.deploy`` blocks (the ``aws cloudformation deploy`` call waits on the
     WaitCondition), so we run it in a background thread and, on this thread,
     poll + print: (1) each new stack resource event, and (2) once the instance
-    exists, the tail of ``/var/log/kirocrew-setup.log`` over SSM. This replaces
-    the opaque spinner with real progress and makes failures diagnosable.
+    exists, the bootstrap's own phase lines from ``/var/log/kirocrew-setup.log``
+    over SSM. This replaces the opaque spinner with real progress and makes
+    failures diagnosable.
     """
     box: dict[str, object] = {}
     # Capture the detached `aws cloudformation deploy` child so a Ctrl+C on THIS
@@ -80,6 +81,7 @@ def _deploy_with_progress(
                 extra_packages=extra_packages,
                 ssm_kms_key_arn=ssm_kms_key_arn,
                 proc_sink=lambda p: deploy_proc.__setitem__("proc", p),
+                on_network_fallback=ui.info,
             )
         except BaseException as exc:  # noqa: BLE001 - surfaced on join
             box["error"] = exc
@@ -157,11 +159,16 @@ def _stream_progress(
                     instance_id = ev["physical_id"]
         except AWSError:
             pass
-        # 2) On-box bootstrap log tail (once the instance is up + SSM-managed).
+        # 2) On-box bootstrap phase lines (once the instance is up + SSM-managed).
         if instance_id:
             for logln in _fetch_bootstrap_log(instance_id, profile, region):
                 if logln in seen_log_lines:
                     continue
+                if not seen_log_lines:
+                    ui.detail(
+                        "      (setup phases only; full log:"
+                        " /var/log/kirocrew-setup.log on the instance)"
+                    )
                 seen_log_lines.add(logln)
                 ui.detail(f"      [box] {logln[:180]}")
                 printed = True
@@ -313,7 +320,7 @@ def _verify_operational(
         ui.detail(f"Verification code: {prompt.code}")
     login.resume_login_daemon(instance_id, profile, region, target=target)
     try:
-        with ui.Spinner("Waiting for sign-in approval…"):
+        with ui.Spinner(f"Waiting for sign-in approval (up to {login.signin_wait_limit()})…"):
             signed = login.wait_until_logged_in(instance_id, profile, region, target=target)
     finally:
         prompt.close()
@@ -322,16 +329,20 @@ def _verify_operational(
     return "ok" if signed else "unsigned"
 
 
-def _fetch_bootstrap_log(
-    instance_id: str, profile: str, region: str, *, lines: int = 6
-) -> list[str]:
-    """Best-effort tail of the on-box setup log over SSM (empty on any error)."""
+def _fetch_bootstrap_log(instance_id: str, profile: str, region: str) -> list[str]:
+    """Best-effort read of the bootstrap's phase lines over SSM (empty on any error).
+
+    Selected on the box from the whole log, so a phase line that scrolled past
+    between two polls under build output is still returned; carriage returns
+    split first, so one written after a spinner frame still starts a line.
+    """
+    # `/var/log/kirocrew-setup.log` is a path on the instance, not on this host, so
+    # it is spelled in the remote command rather than hoisted into a constant here.
     try:
         res = ssm.run_command(
             instance_id,
-            "tail -n %d /var/log/kirocrew-setup.log 2>/dev/null "
-            "| tr -d '\\r' "
-            "| grep -avE 'Installing (npm|kirocrew and) depend|building React app' || true" % lines,
+            "tr '\\r' '\\n' 2>/dev/null < /var/log/kirocrew-setup.log "
+            "| grep -aE '^(=== |--- |BOOTSTRAP FAILED)' || true",
             profile,
             region,
             run_as="root",
@@ -439,14 +450,18 @@ def launch(
         ui.detail(
             "The crew will sign in with Builder ID (pass --identity-provider for Identity Center)."
         )
-    if subnet_id:
-        try:
+    try:
+        # Before anything is recorded: a rejected value saved as the default
+        # would break every bare `cloud` command.
+        profile = ec2.validate_profile(profile)
+        region = ec2.validate_region(region)
+        if subnet_id:
             subnet_id = ec2.validate_subnet_id(subnet_id)
-        except ValidationError as exc:
-            # argparse can't charset-check the id; surface a clean one-liner
-            # instead of a traceback (launch() is also a public entrypoint).
-            ui.fail(str(exc))
-            return 1
+    except ValidationError as exc:
+        # argparse can't charset-check these; surface a clean one-liner
+        # instead of a traceback (launch() is also a public entrypoint).
+        ui.fail(str(exc))
+        return 1
 
     print(ui.BANNER)
     steps = ui.Steps(_TOTAL_STEPS)
@@ -523,6 +538,14 @@ def launch(
             f"~${tier.approx_usd_per_hr:.2f}/hr · "
             f"~${sizes.monthly_estimate(tier):.0f}/mo if left running (approx)"
         )
+        # An image of the other architecture fails only at the Instance resource,
+        # after the role exists; refuse it before anything is asked or created.
+        if ami_id:
+            try:
+                ec2.assert_ami_matches_tier(ami_id, tier, profile, region)
+            except AWSError as exc:
+                ui.fail(str(exc))
+                return 1
 
         # The stack is created in whatever account the aws CLI resolves, which
         # can be a different account than the user expects (a shell left
@@ -587,13 +610,12 @@ def launch(
             ui.info(f"Extra packages: {extra_packages}")
         if ssm_kms_key_arn:
             ui.info(f"Session Manager KMS key: {ssm_kms_key_arn} (explicit --ssm-kms-key)")
-        # Do NOT persist last_tag until the deploy is healthy: a failed first launch would
-        # leave it naming a ROLLBACK_COMPLETE stack, and the next `launch` would abort at
-        # "instance not ready" instead of creating a new one. The PRIOR pointer is cleared
-        # here instead (see `_clear_prior_pointer`).
         if not _clear_prior_pointer(cfg.last_tag):
             return 1
-        cfg = dataclasses.replace(cfg, profile=profile, region=region, last_tag=tag)
+        # Record the new tag BEFORE provisioning, so whatever ends this command (Ctrl+C, a
+        # closed terminal, a failed deploy) every `cloud` verb still finds the stack. A saved
+        # stack that failed or is still creating is not resumed: `_saved_launch_is_usable`.
+        _record_launch(profile=profile, region=region, tag=tag)
         ui.info("Provisioning EC2 + installing KiroCrew (this takes a few minutes)…")
         try:
             result = _deploy_with_progress(
@@ -607,6 +629,17 @@ def launch(
                 extra_packages=extra_packages,
                 ssm_kms_key_arn=ssm_kms_key_arn,
             )
+        except KeyboardInterrupt:
+            # Stopping the wait does not stop CloudFormation, so say what may be left.
+            print()
+            ui.warn(
+                f"Stopped waiting, but AWS may still be creating {ec2.stack_name(tag)}; "
+                f"it bills about ${tier.approx_usd_per_hr:.2f}/hr while its instance runs."
+            )
+            where = _cli_scope(profile, region)
+            ui.detail(f"Check it:  kirocrew cloud status --tag {tag}{where}")
+            ui.detail(f"Remove it: kirocrew cloud destroy --tag {tag}{where}")
+            raise
         except AWSError as exc:
             ui.fail(str(exc))
             if exc.missing_action:
@@ -624,19 +657,11 @@ def launch(
                 )
                 if not keep_on_failure:
                     ui.detail(
-                        "Re-run with --keep-on-failure to keep the instance for "
-                        "inspection (`kirocrew cloud launch --keep-on-failure`)."
+                        "To keep a failed instance for inspection instead of rolling it back, "
+                        "re-run with --keep-on-failure (`kirocrew cloud launch --keep-on-failure`)."
                     )
+            _name_stack_left_behind(tag, profile, region)
             return 1
-        # Deploy succeeded (WaitCondition confirmed the gateway healthy) — NOW it
-        # is safe to persist the tag as the saved deployment.
-        #
-        # Into the LAUNCH RECORD, which this path owns, and not into `cloud.json`, which the
-        # operator owns and may have open in an editor. Writing there had to choose between
-        # overwriting their `fargate` block and refusing, and a refusal lands HERE -- after
-        # the instance is deployed and billing, before sign-in and dashboard setup -- so the
-        # command aborted over a file it did not need to write at all.
-        _record_launch(profile=profile, region=region, tag=tag)
         ui.ok(f"Instance {result.instance_id} is up and KiroCrew is healthy.")
     elif not result.instance_id:
         ui.warn("Previous cloud stack exists but the instance is not ready yet.")
@@ -686,15 +711,17 @@ def launch(
                 ui.detail(f"Verification code: {prompt.code}")
             ui.info("Approve in the browser to finish sign-in…")
             try:
-                with ui.Spinner("Waiting for sign-in approval…"):
+                with ui.Spinner(
+                    f"Waiting for sign-in approval (up to {login.signin_wait_limit()})…"
+                ):
                     signed = login.wait_until_logged_in(instance_id, profile, region, target=target)
             finally:
                 prompt.close()
             if signed:
                 ui.ok("Signed in.")
             else:
-                ui.warn("Sign-in not detected yet — you can finish it later.")
-                ui.detail("Re-run: kirocrew cloud connect (then sign in from the dashboard/SSM).")
+                ui.warn(f"Sign-in not approved within {login.signin_wait_limit()}.")
+                ui.detail(f"Sign in later with: {target.login_command()} (it shows a new code).")
         else:
             prompt.close()
             if prompt.identity_mismatch:
@@ -729,7 +756,7 @@ def launch(
     if signin_state == "unsigned":
         ui.warn(
             "Kiro backend is not signed in — new chats will error until you "
-            "sign in. Run: kirocrew cloud login"
+            f"sign in. Run: {target.login_command()}"
         )
 
     steps.step("Open the dashboard")
@@ -816,30 +843,34 @@ def _ensure_session_manager_plugin(*, assume_yes: bool = False) -> bool:
         return False
 
     ui.warn("session-manager-plugin is required for SSM dashboard tunnels.")
-    ui.detail("KiroCrew can install AWS's official Session Manager plugin locally.")
-    if not assume_yes and not ui.confirm("Install session-manager-plugin now?", default=True):
-        ui.detail("Install it later with: kirocrew cloud doctor")
-        return False
-
-    ui.info("Installing session-manager-plugin locally. Sudo may ask for your password.")
-    result = ssm.install_session_manager_plugin()
-    if result.ok:
-        ui.ok(result.message or "session-manager-plugin installed")
-        return True
-    ui.fail("Could not install session-manager-plugin.")
-    ui.detail(result.message)
+    if not ssm.session_manager_plugin_can_install():
+        ui.detail("Kiro Crew has no built-in install for it on this system.")
+    else:
+        ui.detail("Kiro Crew can install AWS's official package. It needs admin rights.")
+        if assume_yes or ui.confirm("Install session-manager-plugin now?", default=True):
+            ui.info("Installing session-manager-plugin locally. Sudo may ask for your password.")
+            result = ssm.install_session_manager_plugin()
+            if result.ok:
+                ui.ok(result.message or "session-manager-plugin installed")
+                return True
+            ui.fail("Could not install session-manager-plugin.")
+            ui.detail(result.message)
+    ui.fail("Launch stopped: it needs session-manager-plugin.")
+    for line in ssm.session_manager_plugin_next_step("kirocrew cloud launch"):
+        ui.detail(line)
     return False
 
 
 def _clear_prior_pointer(previous_tag: str) -> bool:
     """Drop the pointer to the PREVIOUS stack before a new one is provisioned.
 
-    Returns False to abort the launch. If the old pointer survived a failed post-deploy
-    write of the new one, a later no-``--tag`` ``cloud destroy`` would delete ``kc-old``,
-    a stack the operator did not mean to touch. Clearing it first turns that failure into
-    "no target" instead of "the wrong target".
+    Returns False to abort the launch. If the old pointer survived a failed write of the
+    new one, a later no-``--tag`` ``cloud destroy`` would delete ``kc-old``, a stack the
+    operator did not mean to touch. Clearing it first turns that failure into "no target"
+    instead of "the wrong target".
 
-    This refuses where :func:`_record_launch` only warns because nothing is provisioned
+    This refuses where :func:`_record_launch` only warns because a failure here could leave
+    "the wrong target" and a failed record write only "no target"; nothing is provisioned
     yet, so an abort costs no stack and no bill.
 
     ``clear_tag`` only clears a pointer that still names *previous_tag*. When another
@@ -878,17 +909,42 @@ def _clear_prior_pointer(previous_tag: str) -> bool:
     return True
 
 
+def _name_stack_left_behind(tag: str, profile: str, region: str) -> None:
+    """After a failed deploy, name the stack it left in the account and how to remove it.
+
+    The command names the tag, Region and profile, so it reaches the stack even when the
+    launch record could not be written. Prints nothing when the stack is absent or cannot
+    be read.
+    """
+    try:
+        stack = ec2.find_stack(tag, profile, region)
+    except AWSError:
+        return
+    if not stack:
+        return
+    status = str(stack.get("StackStatus", ""))
+    bills = (
+        "It holds no instance, so it does not bill."
+        if status == "ROLLBACK_COMPLETE"
+        else "It may still be billing until you remove it."
+    )
+    where = _cli_scope(profile, region)
+    ui.detail(f"The stack {ec2.stack_name(tag)} is still in your account ({status}). {bills}")
+    ui.detail(f"Remove it with: kirocrew cloud destroy --tag {tag}{where}")
+
+
 def _record_launch(*, profile: str, region: str, tag: str) -> None:
     """Write the launch record, and never fail the command over it.
 
-    Every caller runs AFTER its remote work: the instance is deployed and billing, or the
-    resume has already reattached. Sign-in, the dashboard tunnel and the closing instructions
-    still have to happen, and all of them matter more to the operator than a pointer file.
+    A NEW launch calls it right before provisioning, after :func:`_clear_prior_pointer`, so a
+    failure leaves "no target"; a resume calls it after it has reattached. A pointer is never
+    worth failing either: aborting a new launch would stop a first launch, which has no
+    pointer to clear, on a full disk or a mount without lock support, and aborting a resume
+    leaves a running instance whose sign-in never happened.
 
     So a write failure warns and the wizard continues. Nothing is silently lost: the warning
-    names the tag, and `kirocrew cloud list` enumerates the real stacks, so the instance is
-    findable and re-attachable by tag even with no pointer on disk. The reverse -- aborting
-    here -- leaves a running instance whose sign-in never happened.
+    names the tag, Region and profile, so ``status``, ``connect`` and ``destroy`` still reach
+    the stack with no pointer on disk.
 
     Narrow on purpose. Only `OSError` is swallowed, which is what a disk or permission
     failure raises; anything else is a defect in this code and must surface.
@@ -897,7 +953,15 @@ def _record_launch(*, profile: str, region: str, tag: str) -> None:
         LaunchState.record(profile=profile, region=region, last_tag=tag)
     except OSError as exc:
         ui.warn(f"Could not save the launch record: {exc}")
-        ui.detail(f"The instance is up. Reach it with: kirocrew cloud connect --tag {tag}")
+        ui.detail(
+            "Commands without --tag will not find it; pass "
+            f"--tag {tag}{_cli_scope(profile, region)}."
+        )
+
+
+def _cli_scope(profile: str, region: str) -> str:
+    """The ``--region``/``--profile`` flags that point a `cloud` command at this launch."""
+    return f" --region {region}" + (f" --profile {profile}" if profile else "")
 
 
 def _select_existing_launch(
@@ -922,9 +986,8 @@ def _select_existing_launch(
         return None
     cfg = dataclasses.replace(cfg, profile=profile, region=region, last_tag=selected.tag)
     if not selected.saved:
-        # The launch record, for the reason the post-deploy write uses it: this runs after
-        # the resume has already reattached, so a write that can fail must not be a write
-        # that can fail the command.
+        # This runs after the resume has already reattached, so a write that can fail must
+        # not be a write that can fail the command.
         _record_launch(profile=profile, region=region, tag=selected.tag)
     return result
 
@@ -938,12 +1001,11 @@ def _discover_existing_launches(
 
     if cfg.last_tag and _saved_launch_matches(cfg, profile, region):
         result = _deploy_result_for_tag(cfg.last_tag, profile, region)
-        # Defense in depth for configs written by an OLD build (or any path that
-        # persisted last_tag before the deploy confirmed): only treat the saved
-        # tag as a resumable launch if its stack is actually usable — has an
-        # instance AND is not in a failed/rolled-back terminal state. A stale tag
-        # pointing at a ROLLBACK_COMPLETE / instance-less stack is ignored (falls
-        # through to fresh discovery / a new launch) instead of being resumed and
+        # A new launch saves its tag before provisioning, so the saved stack may have
+        # failed or still be creating: only treat it as a resumable launch if it is
+        # actually usable — has an instance AND is not in a failed/rolled-back terminal
+        # state. A tag pointing at a ROLLBACK_COMPLETE / instance-less stack is ignored
+        # (falls through to fresh discovery / a new launch) instead of being resumed and
         # aborting at "instance not ready".
         if result is not None and _saved_launch_is_usable(result):
             launches.append(
@@ -961,7 +1023,7 @@ def _discover_existing_launches(
 
     rows = ec2.list_stacks(profile, region)
     live = ec2.live_instance_tags(profile, region) if rows else set()
-    where = f" --region {region}" + (f" --profile {profile}" if profile else "")
+    where = _cli_scope(profile, region)
     for row in rows:
         tag = str(row.get("tag", ""))
         if not tag or tag in seen:
@@ -1080,11 +1142,10 @@ def _saved_launch_matches(cfg: LaunchState, profile: str, region: str) -> bool:
 def _saved_launch_is_usable(result: ec2.DeployResult) -> bool:
     """True if a saved-tag stack is worth resuming (has an instance, not failed).
 
-    Guards against a stale ``last_tag`` (e.g. written by an older build before the
-    save-only-on-success fix, or any partial launch) that points at a
-    ROLLBACK_COMPLETE / no-instance stack. Such a tag must NOT be presented as the
-    resumable saved deployment — otherwise ``launch`` resumes it and aborts at
-    "instance not ready" instead of cleanly starting fresh.
+    A new launch saves ``last_tag`` before provisioning, so a launch that failed or was
+    interrupted leaves it pointing at a ROLLBACK_COMPLETE / no-instance stack. Such a tag
+    must NOT be presented as the resumable saved deployment — otherwise ``launch``
+    resumes it and aborts at "instance not ready" instead of cleanly starting fresh.
     """
     if result.status in ec2._FAILED_STATES:
         return False

@@ -17,8 +17,9 @@ import pytest
 from slack_gateway_coverage_helpers import _make_orchestrator, _mock_dashboard_state
 
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.mcp_gateway.manager import GatewayManager, GatewaySpec
 from kiro_crew.slack import gateway as gw
-from kiro_crew.testing.wait import await_until, finished
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 # ═════════════════════════════════════════════════════════════════════════
 # MCP-gateway control plane
@@ -481,6 +482,107 @@ class TestFailedMcpBrokerStartIsRetried:
             await finished(orch._stop_mcp_broker(), "the broker stop")
         old.start.assert_awaited_once()
 
+    @staticmethod
+    def _owner_port_manager(tmp_path, monkeypatch, orch, retry_gate: asyncio.Event):
+        """A real ``GatewayManager`` whose boot start fails and whose retry comes up.
+
+        The election is scripted: the retry's start waits for *retry_gate*. The
+        daemon's end of the control socket records each frame, with whether the
+        broker was already published when it arrived, and acknowledges it.
+        """
+        manager = GatewayManager(GatewaySpec(socket_path=tmp_path / "gw.sock"))
+        attempts = 0
+
+        async def start_locked() -> bool:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return False
+            await retry_gate.wait()
+            return True
+
+        received: list[tuple[dict, bool]] = []
+
+        async def roundtrip(frame: dict) -> dict:
+            received.append((frame, orch._mcp_gateway_manager is manager))
+            return {"type": "owner-port-set", "port": frame["port"]}
+
+        monkeypatch.setattr(manager, "_start_locked", start_locked)
+        monkeypatch.setattr(manager, "_control_roundtrip", roundtrip)
+        monkeypatch.setattr(manager, "shutdown", AsyncMock())
+        return manager, received
+
+    @pytest.mark.asyncio
+    async def test_a_retry_after_the_wire_sends_the_port_the_wire_stored(
+        self, tmp_path, monkeypatch
+    ):
+        """Boot: the start fails before the dashboard exists, so the wire finds the
+        manager parked for the retry. It stores the port there, and the retry's own
+        start sends it, before the broker is published."""
+        orch = self._orchestrator()
+        orch.dashboard_state = None
+        wired = asyncio.Event()
+        manager, received = self._owner_port_manager(tmp_path, monkeypatch, orch, wired)
+        with contextlib.ExitStack() as stack:
+            self._broker_seams(stack, tmp_path, MagicMock(return_value=manager))
+            stack.enter_context(
+                patch.object(orch, "_mcp_gateway_start_retry_delay", return_value=0.0)
+            )
+            await orch._init_mcp_gateway()
+            assert orch._mcp_gateway_pending is manager
+            ds = _mock_dashboard_state()
+            ds._listener_bound_port = 47211
+            orch.dashboard_state = ds
+            orch._wire_mcp_gateway_dashboard()
+            wired.set()
+            await await_until(
+                orch._mcp_gateway_start_retry, what="the retry bringing the broker up"
+            )
+            assert orch._mcp_gateway_manager is manager
+            await finished(orch._stop_mcp_broker(), "the broker stop")
+        assert received == [({"type": "owner-port", "port": 47211}, False)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bound_first", [False, True], ids=["before-the-dashboard", "between-bind-and-wire"]
+    )
+    async def test_a_retry_that_comes_up_before_the_wire_still_reaches_the_daemon(
+        self, tmp_path, monkeypatch, bound_first
+    ):
+        """The other order. A retry that comes up before the dashboard exists
+        leaves the announce to the wire; one that comes up after the bind, while
+        the manager has no port, announces it itself."""
+        orch = self._orchestrator()
+        orch.dashboard_state = None
+        retry_gate = asyncio.Event()
+        manager, received = self._owner_port_manager(tmp_path, monkeypatch, orch, retry_gate)
+        ds = _mock_dashboard_state()
+        ds._listener_bound_port = 47211
+        with contextlib.ExitStack() as stack:
+            self._broker_seams(stack, tmp_path, MagicMock(return_value=manager))
+            stack.enter_context(
+                patch.object(orch, "_mcp_gateway_start_retry_delay", return_value=0.0)
+            )
+            await orch._init_mcp_gateway()
+            if bound_first:
+                orch.dashboard_state = ds
+            retry_gate.set()
+            await await_until(
+                orch._mcp_gateway_start_retry, what="the retry bringing the broker up"
+            )
+            if not bound_first:
+                assert received == [], "nothing to send before the bind"
+                orch.dashboard_state = ds
+                orch._wire_mcp_gateway_dashboard()
+            await async_wait_until(lambda: received, describe=lambda: received)
+            announces = [
+                t for t in orch._background_tasks if t.get_name() == "mcp-gateway-owner-port"
+            ]
+            await finished(asyncio.gather(*announces), "the detached announce")
+            await finished(orch._stop_mcp_broker(), "the broker stop")
+        assert received == [({"type": "owner-port", "port": 47211}, True)]
+        assert manager.owner_port == 47211
+
 
 class TestStopAndApplyMcpBroker:
     """``_stop_mcp_broker`` / ``_apply_mcp_stub`` / ``_wire_mcp_gateway_dashboard``."""
@@ -586,6 +688,74 @@ class TestStopAndApplyMcpBroker:
         assert ds._mcp_gateway_manager is mgr
         assert ds._mcp_gateway_apply == orch._apply_mcp_gateway_enabled
         assert ds._mcp_gateway_apply_stub == orch._apply_mcp_stub
+
+    @pytest.mark.asyncio
+    async def test_wire_dashboard_announces_the_port_the_listener_bound(self, monkeypatch):
+        """The broker started before the bind, so this is where its daemon learns
+        the port: from the listener's record, never the inherited environment."""
+        monkeypatch.setenv("KIROCREW_PORT", "47299")
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "47299")
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        ds._listener_bound_port = 47211
+        orch.dashboard_state = ds
+        mgr = MagicMock()
+        mgr.announce_owner_port = AsyncMock(return_value=True)
+        orch._mcp_gateway_manager = mgr
+
+        orch._wire_mcp_gateway_dashboard()
+        await finished(asyncio.gather(*orch._background_tasks), "the announce task")
+
+        mgr.announce_owner_port.assert_awaited_once_with(47211)
+
+    @pytest.mark.parametrize("bound", [0, None, "47211"])
+    def test_wire_dashboard_announces_nothing_without_a_bound_port(self, bound):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        ds._listener_bound_port = bound
+        orch.dashboard_state = ds
+        mgr = MagicMock()
+        orch._mcp_gateway_manager = mgr
+
+        orch._wire_mcp_gateway_dashboard()
+
+        mgr.announce_owner_port.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bound", [47211, None], ids=["after-the-bind", "at-boot"])
+    async def test_a_broker_started_after_the_bind_takes_the_listeners_port(
+        self, tmp_path, monkeypatch, bound
+    ):
+        """A broker restart (the sharing toggle) builds a new manager; it learns the
+        port from the same record, before ``start()`` spawns the daemon."""
+        monkeypatch.setenv("KIROCREW_PORT", "47299")
+        orch = _make_orchestrator()
+        orch._cfg.mcp_gateway.enabled = True
+        orch._cfg.mcp_gateway.stub_servers = ["alpha-mcp"]
+        if bound is None:
+            orch.dashboard_state = None
+        else:
+            orch.dashboard_state = _mock_dashboard_state()
+            orch.dashboard_state._listener_bound_port = bound
+        manager = MagicMock()
+        manager.start = AsyncMock(return_value=True)
+        with (
+            patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True),
+            patch(
+                "kiro_crew.slack.gateway.rewrite_kwargs",
+                side_effect=_gateway_rewrite_inputs(tmp_path),
+            ),
+            patch("kiro_crew.slack.gateway.rewrite_agents", return_value=(None, {})),
+            patch("kiro_crew.slack.gateway.GatewayManager", return_value=manager),
+        ):
+            await orch._init_mcp_gateway()
+
+        calls = [name for name, _args, _kw in manager.method_calls]
+        if bound is None:
+            manager.set_owner_port.assert_not_called()
+        else:
+            manager.set_owner_port.assert_called_once_with(47211)
+            assert calls.index("set_owner_port") < calls.index("start")
 
 
 class TestMcpBrokerRefreshPrefetchAndPersistArms:

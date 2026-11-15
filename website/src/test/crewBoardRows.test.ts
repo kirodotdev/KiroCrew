@@ -122,6 +122,13 @@ describe('rowKindLabelKey', () => {
     expect(rowKindLabelKey(item({ terminal: true, state: 'accepted' }))).toBeNull()
   })
 
+  it('returns null for a question closed without a decision, which is still outstanding', () => {
+    // The server derives `outstanding` from `status: "question"` alone, so a
+    // question the conductor closed arrives with both set; partitionBoardRows
+    // puts it in Finished, and its label must not say "Needs a decision".
+    expect(rowKindLabelKey(item({ terminal: true, state: 'abandoned', status: 'question', outstanding: true }))).toBeNull()
+  })
+
   it('names an ordinary working row', () => {
     expect(rowKindLabelKey(item())).toBe('pages.crewBoard.kind_working')
   })

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import type { Page } from '@playwright/test'
+import type { Page, Request, Response } from '@playwright/test'
 
 /**
  * Text typed while a new session is still being created must land in that new
@@ -27,6 +27,18 @@ function waitForCreate(page: Page) {
   return page.waitForResponse(response =>
     response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/chat/slots',
   )
+}
+
+function waitForCreateRequest(page: Page) {
+  return page.waitForRequest(request =>
+    request.method() === 'POST' && new URL(request.url()).pathname === '/api/chat/slots',
+  )
+}
+
+async function createdKey(request: Request): Promise<string> {
+  const response = await request.response()
+  if (!response) throw new Error('the create request got no response')
+  return ((await response.json()) as { key: string }).key
 }
 
 async function openSeededSession(page: Page): Promise<string> {
@@ -82,19 +94,20 @@ test.describe('New session keeps text typed while it is being created', () => {
     await delaySlotCreate(page)
 
     // Middle-click New: a BACKGROUND create, which keeps focus on this session.
-    const createdKeys: string[] = []
-    page.on('response', async response => {
-      if (response.request().method() !== 'POST' || new URL(response.url()).pathname !== '/api/chat/slots') return
-      createdKeys.push(((await response.json()) as { key: string }).key)
-    })
+    const bgRequest = waitForCreateRequest(page)
     await page.getByRole('button', { name: 'New chat session', exact: true }).click({ button: 'middle' })
+    await bgRequest
     await composer.click()
     await page.keyboard.type('typed before the shortcut')
     // Then a foreground create while the background one is still pending.
+    // Its sid comes from its own request: the two responses can be read in
+    // either order, so their arrival order does not say which one is which.
+    const fgRequest = waitForCreateRequest(page)
     await page.keyboard.press('Alt+Shift+N')
     await page.keyboard.type('after')
-    await expect.poll(() => createdKeys.length, { timeout: 10000 }).toBe(2)
-    const fgKey = createdKeys[1]
+    const bgKey = await createdKey(await bgRequest)
+    const fgKey = await createdKey(await fgRequest)
+    expect(fgKey).not.toBe(bgKey)
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === fgKey)
 
     await expect(composer).toHaveValue('after')
@@ -109,18 +122,21 @@ test.describe('New session keeps text typed while it is being created', () => {
     const composer = page.locator('textarea[data-composer-input]')
     await delaySlotCreate(page)
 
-    const createdKeys: string[] = []
-    page.on('response', async response => {
+    // Recorded as each response arrives; reading a body first would let the
+    // second response's push overtake the first's.
+    const created: Response[] = []
+    page.on('response', response => {
       if (response.request().method() !== 'POST' || new URL(response.url()).pathname !== '/api/chat/slots') return
-      createdKeys.push(((await response.json()) as { key: string }).key)
+      created.push(response)
     })
     await composer.click()
     await page.keyboard.press('Alt+Shift+N')
     await page.keyboard.press('Alt+Shift+N')
     await page.keyboard.type('typed after two presses')
-    await expect.poll(() => createdKeys.length, { timeout: 10000 }).toBe(2)
+    await expect.poll(() => created.length, { timeout: 10000 }).toBe(2)
     // The first create to resolve activates; the second stays in the background.
-    await expect(page).toHaveURL(url => url.searchParams.get('sid') === createdKeys[0])
+    const firstKey = ((await created[0].json()) as { key: string }).key
+    await expect(page).toHaveURL(url => url.searchParams.get('sid') === firstKey)
     await expect(composer).toHaveValue('typed after two presses')
   })
 

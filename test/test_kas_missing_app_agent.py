@@ -135,6 +135,55 @@ async def test_agent_no_app_declares_gets_the_generic_reason(agents_dir, tmp_pat
     assert str(caught.value) == 'The agent "worker" can\'t start: its agent definition is missing.'
 
 
+def _run_from_worktree_on_shared_home(agents_dir, tmp_path, monkeypatch) -> None:
+    """This checkout is a linked worktree and *agents_dir* is the shared home."""
+    wt = tmp_path / "wt"
+    (wt / "src" / "kiro_crew").mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: /somewhere/KiroCrew/.git/worktrees/wt\n", encoding="utf-8")
+    monkeypatch.setattr(agent_mod, "__file__", str(wt / "src" / "kiro_crew" / "agent.py"))
+    monkeypatch.delenv("KIRO_HOME", raising=False)
+    monkeypatch.delenv("KIROCREW_POD", raising=False)
+    # The guard compares against the default data home; keep it off the real one.
+    monkeypatch.setattr(paths_mod, "_resolve_default_home", lambda: tmp_path / "default")
+    # The agents dir is what the ambient environment resolves: the shared home.
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents_dir)
+    monkeypatch.setattr(agent_mod, "ambient_agents_dir", lambda: agents_dir)
+    assert agent_mod._decline_shared_agent_home(audit=False) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_worktree_gateway_with_specs_on_the_shared_home_keeps_the_plain_reason(
+    agents_dir, tmp_path, monkeypatch
+):
+    """A home that already holds kirocrew.json was written by an install, so one
+    agent missing from it is not the worktree guard's doing: no hint."""
+    _run_from_worktree_on_shared_home(agents_dir, tmp_path, monkeypatch)
+    (agents_dir / agent_mod.AGENT_FILENAME).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(AcpAgentUnavailable) as caught:
+        await _start("worker", tmp_path)
+
+    assert str(caught.value) == 'The agent "worker" can\'t start: its agent definition is missing.'
+
+
+@pytest.mark.asyncio
+async def test_a_worktree_gateway_refused_the_shared_home_says_so(
+    agents_dir, tmp_path, monkeypatch
+):
+    """A linked-worktree gateway on an empty shared home never writes a
+    spec, so the refusal names the guard and the way out, not a missing file."""
+    _run_from_worktree_on_shared_home(agents_dir, tmp_path, monkeypatch)
+
+    with pytest.raises(AcpAgentUnavailable) as caught:
+        await _start("worker", tmp_path)
+
+    message = str(caught.value)
+    assert message.startswith('The agent "worker" can\'t start: its agent definition is missing.')
+    assert "runs from a linked git worktree" in message
+    assert str(agents_dir) in message
+    assert "Run it from a main clone or a regular install" in message
+
+
 @pytest.mark.asyncio
 async def test_a_missing_default_agent_names_the_setting_as_the_fix(agents_dir, tmp_path):
     """Every session that names no agent starts from ``agent.default_agent``, so a

@@ -170,7 +170,10 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                 # in practice -- it is here so that EVERY assignment site reaches the
                 # recorder and the derived pin needs no exception for this one.
                 note_crew_log_class(state, slot)
-                from kiro_crew.dashboard.transcript_binding import bind_transcript
+                from kiro_crew.dashboard.transcript_binding import (
+                    bind_transcript,
+                    mark_turn_timeout_unread,
+                )
 
                 bind_transcript(state, slot)
                 hydrate_slot_from_history(slot, history)
@@ -195,8 +198,7 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                 slot._dismissed_hydrated = False
                 # The tab's own turn time limit is unread for the same reason:
                 # its saves carry the on-disk value until the read below lands.
-                slot.turn_timeout_secs = None
-                slot._turn_timeout_hydrated = False
+                mark_turn_timeout_unread(state, slot)
                 if state.conversation_log is not None:
                     try:
                         _meta, _readable = await asyncio.to_thread(
@@ -336,7 +338,11 @@ def _history_page(request: web.Request) -> tuple[int, int]:
 
 
 async def api_cron_history(request: web.Request) -> web.Response:
-    """GET /api/crons/{id}/history — paginated execution history (no trace)."""
+    """GET /api/crons/{id}/history — paginated execution history (no trace).
+
+    ``hide_idle=1`` leaves out scheduled script runs that ended in Skip() and
+    counts them in ``idle_hidden``.
+    """
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
@@ -345,14 +351,22 @@ async def api_cron_history(request: web.Request) -> web.Response:
     if app_denied is not None:
         return app_denied
     limit, offset = _history_page(request)
-    runs, total = await state.crons.get_history().get_job_history(
-        job_id, limit=limit, offset=offset
-    )
+    history = state.crons.get_history()
+    idle_hidden = 0
+    if request.query.get("hide_idle") == "1":
+        # Filtered before paging, so page 1 starts at the newest run that did
+        # something. A manual run stays: someone asked to see it.
+        rows, _ = await history.get_job_history(job_id, limit=sys.maxsize, offset=0)
+        shown = [r for r in rows if not (r.get("idle") and r.get("trigger") != "manual")]
+        idle_hidden = len(rows) - len(shown)
+        runs, total = shown[offset : offset + limit], len(shown)
+    else:
+        runs, total = await history.get_job_history(job_id, limit=limit, offset=offset)
     for run in runs:
         for key in ("summary", "error"):
             if run.get(key):
                 run[key] = redact_credentials(redact_exfiltration_urls(run[key])[0])[0]
-    return web.json_response({"runs": runs, "total": total})
+    return web.json_response({"runs": runs, "total": total, "idle_hidden": idle_hidden})
 
 
 async def api_cron_history_detail(request: web.Request) -> web.Response:

@@ -246,14 +246,31 @@ def test_reinstall_and_uninstall_without_a_desktop_session_reach_the_user_job(ma
 
 
 def test_install_fails_on_a_refusal_other_than_an_unavailable_domain(mac):
+    _with_plist(mac)
     fake = FakeLaunchctl()
-    fake.loaded.add(GUI)  # a job the (absent) plist did not let us boot out
+    fake.loaded.add(GUI)
+    fake.refuse_bootout = True  # launchd keeps the job, so bootstrap is refused
     with _run(fake), pytest.raises(svc_macos.ServiceInstallError) as err:
         mac.install()
     assert "Input/output error" in str(err.value)
     assert f"bootstrap {GUI}" in str(err.value)
     # Only an unavailable domain falls back; any other refusal is reported.
     assert not any(c[1:3] == ["bootstrap", USER] for c in fake.calls), fake.calls
+
+
+def test_install_boots_out_a_loaded_job_whose_plist_is_gone(mac):
+    """An uninstall launchd refused, or a hand-deleted plist, leaves the job
+    loaded with no file. Install must still boot it out before bootstrapping."""
+    fake = FakeLaunchctl()
+    fake.loaded.add(GUI)
+    with _run(fake):
+        try:
+            mac.install()
+        except svc_macos.ServiceInstallError as exc:
+            pytest.fail(f"install over a loaded job with no plist failed: {exc}")
+    assert fake.loaded == {GUI}
+    verbs = [c[1] for c in fake.calls]
+    assert verbs.index("bootout") < verbs.index("bootstrap")
 
 
 @pytest.mark.parametrize("legacy_domain", [GUI, USER], ids=["gui", "user"])

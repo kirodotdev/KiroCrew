@@ -129,10 +129,10 @@ def test_cmd_launcher_clears_pythonpath_and_pythonhome_before_python_runs():
     python_idx = next(i for i, line in enumerate(lines) if '"%~dp0..\\python.exe"' in line)
     assert (
         'set "PYTHONPATH="' in lines[:python_idx]
-    ), f"kirocrew.cmd still forwards PYTHONPATH to the bundled python.exe (issue #18378): {lines}"
+    ), f"kirocrew.cmd still forwards PYTHONPATH to the bundled python.exe: {lines}"
     assert (
         'set "PYTHONHOME="' in lines[:python_idx]
-    ), f"kirocrew.cmd still forwards PYTHONHOME to the bundled python.exe (issue #18378): {lines}"
+    ), f"kirocrew.cmd still forwards PYTHONHOME to the bundled python.exe: {lines}"
 
 
 def test_cmd_launcher_scopes_the_deletion_with_setlocal():

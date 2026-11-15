@@ -31,7 +31,24 @@ export function lazyPage(load: () => Promise<{ default: ComponentType }>): Compo
   })
 }
 
-export function ConnectionsRedirect() { const { search } = useLocation(); return <Navigate to={'/capabilities?tab=mcp' + search.replace('?', '&')} replace /> }
+/** `/connections`: the Connections page is the Settings tab; the old
+ *  `?view=mcp-servers` named the MCP Servers list, now Customize → MCP Servers. */
+export function ConnectionsRedirect() {
+  const { search, hash } = useLocation()
+  // Literal targets: the UI index reads the first one as where this route lands.
+  if (new URLSearchParams(search).get('view') !== 'mcp-servers') return <Navigate to={'/settings/connections' + search + hash} replace />
+  return <Navigate to="/capabilities?tab=mcp-servers" replace />
+}
+/** `/mcp`: MCP Servers is a Customize tab beside Skills. `?view=` and the
+ *  hash ride along, so `/mcp?view=sharing` still opens the Sharing view. */
+export function McpRedirect() {
+  const { search, hash } = useLocation()
+  const rest = new URLSearchParams(search)
+  rest.delete('tab')
+  const query = rest.toString()
+  // Literal target first: the UI index reads it as where this route lands.
+  return <Navigate to={'/capabilities?tab=mcp-servers' + (query ? '&' + query : '') + hash} replace />
+}
 export function TasksRedirect() { const { search } = useLocation(); return <Navigate to={'/projects' + search} replace /> }
 export function ChatRedirect() { const { search } = useLocation(); return <Navigate to={'/chat' + search} replace /> }
 export function OrchestratedRedirect() { const { slug } = useParams(); const { search } = useLocation(); return <Navigate to={`/chat${slug ? '/' + slug : ''}${search}`} replace /> }

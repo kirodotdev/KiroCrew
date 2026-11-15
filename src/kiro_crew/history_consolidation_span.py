@@ -47,6 +47,7 @@ _CONSOLIDATION_META_KEYS: frozenset[str] = frozenset(
         "consolidation_attempts",
         "consolidation_retry_at",
         "consolidation_env_failures",
+        "consolidation_env_released",
         "consolidation_attempts_generation",
         "consolidation_attempts_offset",
         "consolidation_attempts_count",

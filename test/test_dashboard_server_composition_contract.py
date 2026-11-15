@@ -83,7 +83,7 @@ _BASE_NAMES = frozenset("""
         _MAX_HEADER_FIELD_SIZE _MIXED_INTERNAL_API_PATHS _NO_STORE_CACHE_CONTROL
         _OWN_HOST_WARM_TASKS _PERMISSIONS_POLICY _PNA_REQUEST_HEADER
         _PNA_RESPONSE_HEADER _PREVENT_SLEEP_POLL_INTERVAL_SECS
-        _PRE_AUDIT_DENY_STATUSES _SKILL_APPROVAL_SETTING_URL _STATIC_DIR
+        _PRE_AUDIT_DENY_STATUSES _STATIC_DIR
         _STRICT_INTERNAL_API_PATHS _STT_PREWARM_BOOT_DELAY_SECS
         _STT_SWEEP_BOOT_DELAY_SECS _TAILNET_AWAKE_TTL_SECS _TIME_WAIT_BUDGET_SECS
         _TUNNEL_STOP_TIMEOUT_SECS _UNATTENDED_EXPIRY_TITLE _VENDOR_CORS_HEADER_VALUE
@@ -298,7 +298,7 @@ def _global_names(code: types.CodeType):
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
     """Tests and other modules read private names off the server as well as public
     ones, so every module-level binding survives the split."""
-    assert len(_BASE_NAMES) == 318
+    assert len(_BASE_NAMES) == 317
     assert sorted(name for name in _BASE_NAMES if not hasattr(server, name)) == []
 
 
@@ -375,13 +375,17 @@ def test_the_shared_state_keeps_its_identity() -> None:
 #: gateway's boot path or close an import cycle, so each stays where the one-module
 #: file had it: inside the function that needs it.
 _LAZY_IMPORTS = {
-    "kiro_crew": "_hist_mod _rs crew_pause crewmate_harness_notice model_registry stt",
+    "kiro_crew": (
+        "_hist_mod _rs crew_pause crewmate_harness_notice mcp_listing_gateway model_registry stt"
+    ),
     "kiro_crew.agent": "rebuild_agent_config rebuild_agent_config_reporting",
+    "kiro_crew.agent_sdk.chat_runtime_sharing": "chat_runtime_sharing_enabled",
     "kiro_crew.change_card_catalog": "HOOKED_ROUTES",
     "kiro_crew.apps.bridges": "reconcile_enabled_app_resources",
     "kiro_crew.apps.builtin_adoption": (
         "apply_builtin_adoptions released_builtin_packages stage_builtin_adoptions"
     ),
+    "kiro_crew.apps.app_web_origin": "APP_WEB_ORIGIN_CSP_SOURCE build_app_web_origin_middleware",
     "kiro_crew.apps.builtins": "BUILTIN_NAMES",
     "kiro_crew.apps.manager": "sweep_interrupted_updates",
     "kiro_crew.apps.builtin_adoption_gate": "adopted_app_own_mcp_servers",
@@ -457,10 +461,12 @@ _LAZY_IMPORTS = {
     "kiro_crew.memory_startup_prebuild": "prebuild_startup_reads",
     "kiro_crew.history_index_worker": "SessionIndexWorkerSupervisor",
     "kiro_crew.kiro_prerequisite": "KiroPrerequisiteService register_turn_auth_service",
+    "kiro_crew.knowledge.entity_resolution": "merge_split_entities",
     "kiro_crew.hooks": "set_builtin_app_agents set_builtin_app_mcp_servers set_builtin_app_names",
     "kiro_crew.memory": "MemoryStore",
     "kiro_crew.messaging.session_trust": "clear_trusted_sessions",
     "kiro_crew.metrics": "_gauges",
+    "kiro_crew.metrics.chat_runtime_share": "record_toggled",
     "kiro_crew.metrics.crew_log_export": "install_otel_crew_log_subscriber",
     "kiro_crew.page_cache": "read_now",
     "kiro_crew.security": "redact_credentials redact_exfiltration_urls",
@@ -473,6 +479,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.shared_crew.host_hooks": "mark_sessions_restored",
     "kiro_crew.shared_crew.host_power": "shared_use_wants_awake",
     "kiro_crew.subagent": "_available_memory_gb",
+    "kiro_crew.tracing": "trace_workflows",
     "kiro_crew.transcribe": "_whisper_language",
     "kiro_crew.workflows.service": "WorkflowService",
 }
@@ -494,7 +501,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 149
+    assert len(expected) == 156
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

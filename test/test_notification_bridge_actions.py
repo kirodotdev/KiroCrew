@@ -301,18 +301,18 @@ async def test_bind_refuses_no_choices_and_a_resolved_decision(registry):
 #: The modules that may reach the B4 registry: its own two, the gateway state that
 #: holds it, the pending-approval note that binds it, the Slack and reply-transport
 #: sinks that post and link its affordances, and the Slack press handler and the
-#: Telegram reply reader that read it (behind ``actions_enabled``).
+#: shared reply reader every reply transport hands to (behind ``actions_enabled``).
 _B4_READERS = frozenset(
     {
         "notifications/bridge_actions.py",
         "notifications/bridge_action_audit.py",
         "notifications/bridge_approval_note.py",
+        "notifications/bridge_reply.py",
         "notifications/bridge_slack.py",
         "notifications/bridge_transport.py",
         "dashboard/state_parts/dashboard_state.py",
         "slack/interactions.py",
         "slack/interactions_approvals.py",
-        "telegram/dispatch/bridge_reply.py",
     }
 )
 _B4_NAMES = ("bridge_actions", "bridge_action_audit")

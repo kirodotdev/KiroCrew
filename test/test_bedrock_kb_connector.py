@@ -24,6 +24,7 @@ from kiro_crew.knowledge.connectors.bedrock_kb import (
     search_remote_sources,
     search_remote_sources_bounded,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 # Recorded from a live Retrieve against a MANAGED-type knowledge base
 # (botocore 1.43.89), so the fallback test matches the real rejection.
@@ -301,11 +302,11 @@ def test_search_redacts_complete_result_values_before_clipping(monkeypatch):
     """A bound must never cut a credential into an unrecognizable fragment.
 
     Each value is one character longer than its connector ceiling and leaves
-    39 of the canonical 40-character AWS example secret under the old
+    39 of a 40-character AWS secret under the old
     slice-first order. The connector now applies the shared platform redactor
     to the complete value before taking the bound.
     """
-    secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    secret = SAMPLE_AWS_SECRET
 
     def crossing(bound: int, prefix: str = "") -> str:
         return prefix + "x" * (bound - len(prefix) - len(secret)) + " " + secret
@@ -386,7 +387,7 @@ def test_search_drops_hits_below_the_relevance_floor(monkeypatch):
 def test_search_redacts_credential_shaped_queries_before_egress(monkeypatch):
     client = FakeClient(results_by_kb={"KBTEST0001": [_hit("ok", 0.5)]})
     monkeypatch.setattr(bedrock_kb, "_get_client", lambda region, profile: (client, None))
-    secret = "AKIAIOSFODNN7EXAMPLE"  # AWS access key id shape
+    secret = SAMPLE_AWS_SECRET  # AWS secret access key shape
     BedrockKBConnector().search(_source("KBTEST0001"), f"why does {secret} fail auth", 3)
     sent = client.calls[0]["retrievalQuery"]["text"]
     assert secret not in sent
@@ -726,9 +727,11 @@ def test_conflicting_second_bedrock_target_detection(tmp_path):
 # the handler's validation never saw it. The value stays below the SQL name
 # ceiling so this case exercises complete-name redaction; oversized names use
 # the KB-id fallback in the dedicated tests below.
-_PLANTED_TOKEN = "AKIAIOSFODNN7EXAMPLE"
+_PLANTED_TOKEN = SAMPLE_AWS_SECRET
 _PLANTED_NAME = (
-    "Team KB AKIAIOSFODNN7EXAMPLE https://collect.attacker.example/?token="
+    "Team KB "
+    + _PLANTED_TOKEN
+    + " https://collect.attacker.example/?token="
     + _PLANTED_TOKEN
     + "&host=corp-laptop&path=/home/alice/.aws/credentials"
 )
@@ -781,7 +784,6 @@ def test_conflict_rendering_redacts_a_planted_source_name(tmp_path):
     held = registered_target_mismatch(store, "team-b", "eu-west-1")
 
     assert held is not None
-    assert "AKIAIOSFODNN7EXAMPLE" not in held
     assert _PLANTED_TOKEN not in held
     assert "corp-laptop" not in held and ".aws/credentials" not in held
     assert "[REDACTED: credential]" in held
@@ -834,7 +836,7 @@ def test_both_egress_sites_redact_through_the_platform_shim(monkeypatch, tmp_pat
     )
 
     companion_shape = "SSO-COOKIE-ONLY-THE-COMPANION-KNOWS"
-    baseline_shape = "AKIAIOSFODNN7EXAMPLE"
+    baseline_shape = SAMPLE_AWS_SECRET
 
     class _CompanionPolicy:
         def redact(self, text: str) -> str:

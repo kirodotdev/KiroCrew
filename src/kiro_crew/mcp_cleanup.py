@@ -54,6 +54,50 @@ def mcp_entry_is_registry_governed(entry: Any) -> bool:
     return entry.get("type") == MCP_REGISTRY_TYPE
 
 
+#: ``type`` values that name a remote transport, as the agent spec schema and the
+#: session projections spell them.
+MCP_REMOTE_TRANSPORT_TYPES = frozenset({"http", "sse"})
+
+
+def mcp_transport_is_remote(*, url: Any, command: Any, declared_type: Any) -> bool:
+    """Whether a server with these transport fields is reached at its ``url``.
+
+    The field-level form of :func:`mcp_entry_is_remote`, for a caller that holds
+    the fields rather than the entry (``McpServerInfo``).
+
+    A ``url`` is required: without one there is nothing remote to reach. Given one,
+    the server is remote when its ``type`` is ``http`` or ``sse``, whatever
+    ``command`` holds, or when ``command`` is absent or blank. A command is not
+    evidence of a process on its own because the agent spec schema requires the
+    key on every server and defaults it to ``""``, so a schema-valid remote entry
+    carries one: a placeholder such as ``"http"``, or the empty default. A ``type``
+    that is not a string reads as no type, so a hand-edited list or object never
+    raises here.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return False
+    if isinstance(declared_type, str) and declared_type in MCP_REMOTE_TRANSPORT_TYPES:
+        return True
+    return not (isinstance(command, str) and command.strip())
+
+
+def mcp_entry_is_remote(entry: Any) -> bool:
+    """Whether one ``mcpServers`` entry is a remote server rather than a local process.
+
+    Every site that decides whether an entry has a process behind it -- the
+    sharing rows, the gateway rewriter, the probe -- asks this, so they agree with
+    each other. For every entry this reads as remote, the session projections
+    already connect to the ``url`` instead of running the ``command``. Reading the
+    mere presence of ``command`` as "stdio" would offer a remote server for
+    sharing, and sharing it fails because no launch resolves for the placeholder.
+    """
+    if not isinstance(entry, dict):
+        return False
+    return mcp_transport_is_remote(
+        url=entry.get("url"), command=entry.get("command"), declared_type=entry.get("type")
+    )
+
+
 def mcp_entry_is_muted(entry: Any) -> bool:
     """Whether one ``mcpServers`` entry asks not to be launched.
 
@@ -107,7 +151,9 @@ def mcp_entries_muted(entries: Iterable[Any]) -> bool:
     return any(mcp_entry_is_muted(entry) for entry in entries)
 
 
-def mcp_server_muted_in_any_store(name: str, agent_entry: Any = None) -> bool:
+def mcp_server_muted_in_any_store(
+    name: str, agent_entry: Any = None, *, scope_muted: frozenset[str] | None = None
+) -> bool:
     """Whether *agent_entry* or any MCP config scope mutes the server *name*.
 
     :func:`mcp_entries_muted` reads the entries a caller already holds. This is the
@@ -139,12 +185,18 @@ def mcp_server_muted_in_any_store(name: str, agent_entry: Any = None) -> bool:
     Never raises. A scope that cannot be read or parsed mutes nothing, the contract
     every reader on a launch path keeps: an unreadable config must not cost a session
     the servers the readable ones declare.
+
+    *scope_muted* is :func:`mcp_scope_muted_aliases` read once by a caller that
+    decides many servers in one pass (the KAS projection): the same files and the
+    same answer, without re-reading every scope for each server. ``None`` reads it.
     """
     if mcp_entry_is_muted(agent_entry):
         return True
     from kiro_crew.mcp_utils import mcp_server_alias
 
-    return mcp_server_alias(name) in mcp_scope_muted_aliases()
+    if scope_muted is None:
+        scope_muted = mcp_scope_muted_aliases()
+    return mcp_server_alias(name) in scope_muted
 
 
 def mcp_scope_muted_aliases() -> frozenset[str]:

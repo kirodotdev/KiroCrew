@@ -615,7 +615,7 @@ def _shape_fork_child(
 
     Synchronous and assignment-only. :func:`fork_slot` runs it in the
     push-suspended window that began at the mint, so the child's first
-    ``slots`` frame already shows the folder, tags and fork title set here.
+    ``slots`` frame already shows the folder, tags, color and fork title set here.
     ``promote`` titles the child as a kept copy ("Keep this chat") instead
     of a fork.
     """
@@ -623,10 +623,15 @@ def _shape_fork_child(
     if len(forked_from) <= MAX_FORK_PARENT_KEY_CHARS:
         new_slot.forked_from = forked_from
         new_slot.forked_from_created_at = bounded_transcript_created_at(slot._disk_meta_created_at)
+    # Keep the namespace that made the parent's alias-or-template decision. The
+    # execution carrier alone cannot preserve it: a template-stamped alias and
+    # an alias mistakenly stored as a template id share one carrier shape on
+    # disk. Saving the stamp on the child lets a later read tell them apart.
+    new_slot.agent_kind = str(getattr(slot, "agent_kind", "") or "")
     new_slot.reasoning_effort = slot.reasoning_effort
     # Inherited beside the model it belongs to: the constructor takes `model` and
     # the routing choice is the other half of the same answer, so a fork of an
-    # "Auto (Jev)" session that arrived pinned would run the parent's next turns
+    # "Auto (decision model)" session that arrived pinned would run the parent's next turns
     # on a model the parent had explicitly stopped choosing by hand.
     # Inheriting is arming a SECOND routed session, so it answers to the same owner
     # predicate as the arm itself; the caller says whether it passed that predicate.
@@ -648,6 +653,10 @@ def _shape_fork_child(
     # fetch racing the fork) must not share a revision with the inherited list,
     # or a delayed empty frame could become a client's next toggle base.
     new_slot.bump_tags_revision()
+    # Inherit the sidebar color so the fork stays in its parent's color group;
+    # either one can still be recolored on its own.
+    new_slot.color_index = slot.color_index
+    new_slot.color_hex = slot.color_hex
     parent_title = slot.title if slot._titled else "Untitled"
     parent_title, _ = redact_exfiltration_urls(parent_title)
     parent_title, _ = redact_credentials(parent_title)

@@ -72,6 +72,9 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ),
         # An app reading its own slot's conversation for the user.
         ("kiro_crew/apps/builtins/spec_builder/backend/runtime.py", "read_messages"),
+        # The same read through the App Kit seam: an app's own saved slot rows
+        # (ChatSlotSDK.transcript), only when the transcript records that app as owner.
+        ("kiro_crew/apps/chat_slot_sdk.py", "read_messages"),
         # Channel file migration: moves rows between stems, derives nothing.
         ("kiro_crew/channel_transcript_migration.py", "read_messages"),
         # SEL audit log `recent`, not a transcript.
@@ -124,6 +127,8 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/discord/session_resume.py", "recent"),
         # SEL `recent`, not a transcript.
         ("kiro_crew/feature_videos.py", "recent"),
+        # SEL audit log `recent` (the recurring-failure scan), not a transcript.
+        ("kiro_crew/failure_recurrence.py", "recent"),
         # The log and its read projection ARE the plain reads.
         ("kiro_crew/history.py", "_read_messages"),
         ("kiro_crew/history.py", "_read_messages_locked"),

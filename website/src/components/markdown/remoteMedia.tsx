@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useRef, useState } from 'r
 import { Trans } from 'react-i18next'
 import { Film, ImageOff, Volume2 } from 'lucide-react'
 import type { Element as HastElement } from 'hast'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { spa } from './elements'
 
@@ -34,7 +35,7 @@ function distinctHosts(remotes: readonly string[]): string[] {
  *  `break-all` span does not, and the label and value now share one
  *  translatable sentence, so the value has to be a single interpolated node. */
 function hostSentence(remotes: readonly string[]) {
-  return distinctHosts(remotes).join(', ')
+  return fmtList(distinctHosts(remotes), { style: 'narrow' })
 }
 
 /** `Site: <host/>` as ONE key. A key that ends in a colon leaves the rest of its

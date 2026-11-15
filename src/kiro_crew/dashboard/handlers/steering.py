@@ -64,6 +64,7 @@ from ._shared import (
     active_project_dir,
     active_project_state,
     body_not_object_error,
+    string_field_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -1217,6 +1218,8 @@ async def api_steering_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    if (bad_name := string_field_error("name", body.get("name", ""))) is not None:
+        return bad_name
     rel = _safe_rel_name(str(body.get("name", "")))
     if not rel:
         return web.json_response({"error": "name is required", "code": "name_required"}, status=400)

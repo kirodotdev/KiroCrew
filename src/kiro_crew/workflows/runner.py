@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import copy
 import hashlib
 import inspect
 import json
@@ -41,8 +42,12 @@ from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from kiro_crew.metrics.events import WORKFLOW_RUNS, emit_counter
+from kiro_crew.tracing import provider as trace_provider
+from kiro_crew.tracing import surfaces as trace_surfaces
+from kiro_crew.tracing import workflows as trace_workflows
 
 from . import BudgetExceeded, WorkflowEvent, WorkflowStepInterrupted
+from .budget_watch import BudgetWatch
 from .context import DEFAULT_MAX_AGENTS_PER_RUN, AgentCounter, Budget, build_safe_globals
 from .dsl import _call_stage, _maybe_await
 from .dsl import parallel as _parallel
@@ -78,7 +83,7 @@ except ImportError:  # pragma: no cover - security is app-layer optional
     _redact_credentials = None  # type: ignore[assignment]
     _redact_exfil = None  # type: ignore[assignment]
 
-# Wall-clock ceiling per run (matches ``_RUN_TIMEOUT_SECS`` in the spec).
+# Wall-clock ceiling per run (the spec's ``runner.DEFAULT_RUN_TIMEOUT_SECS``).
 DEFAULT_RUN_TIMEOUT_SECS = 3600
 
 # Bounds on a caller-supplied per-run ceiling. The ceiling is the runaway
@@ -507,6 +512,7 @@ class _RunContext:
         # (``_CallScope``), so two branches that make the same call each get
         # their own result back. Every call in a run has its own position, so
         # no two calls of one run share a fingerprint.
+        #
         # fingerprint → the prior call index with that fingerprint. Only prior
         # calls before ``replay_before`` that carry a fingerprint are eligible;
         # any other call runs live.
@@ -524,6 +530,8 @@ class _RunContext:
         # runs them live.
         self._prefix_rerun = replay_before > 0
         self._root_scope = _CallScope(self, ())
+        self._failed_task_logs = 0
+        self._budget_watch = BudgetWatch(budget.total, run_id=run_id)
         # call_index → why that call failed (bounded/redacted). Kept alongside
         # agent_results so "no result" is always accompanied by a reason.
         self.agent_errors: dict[int, str] = {}
@@ -608,7 +616,16 @@ class _RunContext:
         call_index = self._counter.count - 1
         agent_id = f"a{call_index}"
         use_phase = phase or self._current_phase
-        call_label = label or _fallback_label(prompt)
+        # str(): a script can pass a non-string prompt (a dict row, a number); the
+        # label is display-only, and the call's own try records what agent_fn does.
+        call_label = label or _fallback_label(str(prompt))
+        # The ordinal of the phase this call runs in; 0 when it names a phase of its
+        # own (``phase=``) or runs before any ``ctx.phase``.
+        phase_index = (
+            self._stream.phase_index
+            if self._current_phase and use_phase == self._current_phase
+            else 0
+        )
         self._record(
             self._stream.agent_started(
                 self.now,
@@ -616,6 +633,7 @@ class _RunContext:
                 label=call_label,
                 phase=use_phase,
                 call_index=call_index,
+                phase_index=phase_index,
             )
         )
         # Mark this call in flight so the ceiling can name it if the run runs out
@@ -642,6 +660,16 @@ class _RunContext:
         fingerprint = _call_fingerprint(prompt, opts, position)
         replay_index = self._replay_indices.pop(fingerprint, None) if fingerprint else None
         error = ""
+        # A live call is one turn under its phase in the run's trace; a replayed one
+        # streams nothing, so it emits nothing. Named by the script's own label or
+        # the call id: the fallback label is prompt text and never reaches a span.
+        trace_root = (
+            None
+            if replay_index is not None
+            else trace_workflows.bind_agent(
+                self._run_id, agent_id, label or agent_id, use_phase, phase_index
+            )
+        )
         try:
             if replay_index is not None:
                 # Resume: replay the prior run's result for this same call (same
@@ -657,7 +685,10 @@ class _RunContext:
                 # is the same injected agent_fn (so prod/stub both flow through).
                 async def _produce(p: str) -> str:
                     out = await self._agent_fn(p, opts)
-                    return out if isinstance(out, str) else json.dumps(out)
+                    text = out if isinstance(out, str) else json.dumps(out)
+                    # Each re-ask is its own model turn: meter the prompt it sent.
+                    self._note_spend(p, text)
+                    return text
 
                 async with _optional_slot(self._agent_slots):
                     result = await run_with_schema(_produce, prompt, schema)
@@ -680,6 +711,8 @@ class _RunContext:
             error = describe_agent_error(exc)
             if isinstance(exc, WorkflowStepInterrupted) and not self.interrupted_error:
                 self.interrupted_error = error
+        finally:
+            trace_workflows.release_agent(trace_root)
         # Settled: drop it from the in-flight set (only calls still running when
         # the ceiling fires should appear in the ceiling error).
         self._in_flight.pop(agent_id, None)
@@ -687,6 +720,8 @@ class _RunContext:
         self.agent_results[call_index] = result
         if error:
             self.agent_errors[call_index] = error
+        if replay_index is None and schema is None:
+            self._note_spend(prompt, result)  # a schema call metered each turn above
         # Checkpoint: hand the settled call to the host NOW so a later ceiling /
         # cancel / crash cannot discard work already paid for. The host records it
         # in memory; it reaches DISK on the record's existing write cadence, not
@@ -737,6 +772,11 @@ class _RunContext:
                 token = _CALL_SCOPE.set(_CallScope(self, group + (index,)))
                 try:
                     return await _maybe_await(thunk if inspect.isawaitable(thunk) else thunk())
+                except BudgetExceeded:
+                    raise
+                except Exception as exc:
+                    self._log_failed_task("parallel task", index, exc)
+                    raise
                 finally:
                     _CALL_SCOPE.reset(token)
 
@@ -757,12 +797,38 @@ class _RunContext:
                 token = _CALL_SCOPE.set(chain)
                 try:
                     return await _call_stage(stage, prev, item, index)
+                except BudgetExceeded:
+                    raise
+                except Exception as exc:
+                    self._log_failed_task("pipeline item", index, exc)
+                    raise
                 finally:
                     _CALL_SCOPE.reset(token)
 
             return run
 
         return await _pipeline(items, *[in_chain(s) for s in stages], limit=self._concurrency)
+
+    # Failed-task log events per run: enough to explain the failures, few enough
+    # that a pipeline over thousands of bad items cannot flood the event stream
+    # and the checkpoints that re-serialize it.
+    _FAILED_TASK_LOG_LIMIT = 20
+
+    def _note_spend(self, prompt: Any, result: Any) -> None:
+        warning = self._budget_watch.add(prompt, result)
+        if warning:
+            self._record(self._stream.log(self.now, message=warning))
+
+    def _log_failed_task(self, where: str, index: int, exc: Exception) -> None:
+        # The combinator resolves the task to None (A5); this event is the only
+        # record of why, so a run of all-None results can be explained.
+        self._failed_task_logs += 1
+        if self._failed_task_logs > self._FAILED_TASK_LOG_LIMIT:
+            return
+        message = f"{where} {index} failed: {describe_agent_error(exc)}"
+        if self._failed_task_logs == self._FAILED_TASK_LOG_LIMIT:
+            message += " (further failed tasks in this run are not logged)"
+        self._record(self._stream.log(self.now, message=message))
 
     def _scope(self) -> _CallScope:
         """The scope of the branch this task runs in, or the run's root scope."""
@@ -957,6 +1023,40 @@ class WorkflowRunner:
         source: str,
         *,
         run_id: str,
+        session_key: str = "",
+        on_event: Optional[Callable[[WorkflowEvent], None]] = None,
+        **kwargs: Any,
+    ) -> RunResult:
+        """Execute a workflow script end-to-end; the arguments are :meth:`_run`'s.
+
+        While tracing is on the run is one trace (``tracing/workflows.py``): its root
+        is opened here, around everything the run does, and records how it ended.
+        """
+        name = ""
+        if trace_provider.peek() is not None and source:
+            vr = validate(source)
+            name = str((vr.meta or {}).get("name", "")) if vr.ok else ""
+        with trace_workflows.run_root(run_id, name, session_key) as surface:
+            res = await self._run(
+                source,
+                run_id=run_id,
+                session_key=session_key,
+                on_event=trace_workflows.observe(run_id, on_event),
+                **kwargs,
+            )
+            if not res.ok:
+                surface.status = (
+                    trace_surfaces.STATUS_CANCELLED
+                    if res.error == "cancelled"
+                    else trace_surfaces.STATUS_FAILED
+                )
+            return res
+
+    async def _run(
+        self,
+        source: str,
+        *,
+        run_id: str,
         now: str,
         args: Optional[dict] = None,
         owner_dm: str = "",
@@ -1060,13 +1160,25 @@ class WorkflowRunner:
             def _auth_progress(msg: str) -> None:
                 emit(stream.log(now, message=msg))
 
+            async def _author() -> Any:
+                # Bound here, in the task that streams the author's turns: a root
+                # bound by this task would be refused there, and the turns would
+                # root unrelated traces.
+                call = trace_workflows.bind_agent(
+                    run_id, "author", "author", "Authoring", stream.phase_index
+                )
+                try:
+                    return await author_fn(intent, on_progress=_auth_progress)
+                finally:
+                    trace_workflows.release_agent(call)
+
             # Authoring runs under the run's deadline with the same guard and the
             # same cancellation handling the script gets in _exec_validated: a
             # hung author ends at the ceiling, and a caller cancel is answered
             # with a result instead of escaping run().
             author_task: Optional["asyncio.Future[Any]"] = None
             try:
-                author_task = asyncio.ensure_future(author_fn(intent, on_progress=_auth_progress))
+                author_task = asyncio.ensure_future(_author())
                 done, _pending = await asyncio.wait(
                     {author_task}, timeout=max(0.0, deadline - time.monotonic())
                 )
@@ -1262,7 +1374,10 @@ class WorkflowRunner:
         # 2. Build the run context + restricted exec namespace.
         ctx = _RunContext(
             run_id=run_id,
-            args=args,
+            # The script's own copy: it may edit ``ctx.args`` as scratch state, and
+            # the run record, its ``run_started`` event and a rerun keep the args
+            # the run was launched with.
+            args=copy.deepcopy(args),
             now=now,
             owner_dm=owner_dm,
             stream=stream,
@@ -1412,9 +1527,16 @@ class WorkflowRunner:
                 agent_errors=dict(ctx.agent_errors),
                 source=source,
             )
-        except Exception as exc:  # script raised — captured, not propagated
+        except BaseException as exc:  # script raised — captured, not propagated
+            # ``BaseException`` is in the script's builtins, so a script can raise
+            # one. A closing coroutine must not await, so it goes straight up; an
+            # interrupt or exit of this process is recorded first, then goes up.
+            if isinstance(exc, GeneratorExit):
+                raise
             await _pre_terminal()
             emit(stream.run_failed(now, error=repr(exc), where="exec"))
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
             return RunResult(
                 run_id,
                 ok=False,
@@ -1525,6 +1647,8 @@ class WorkflowRunner:
         run_id instantly instead of blocking on a slow synchronous author. The
         authored script is written back onto the handle for rerun/restart.
         """
+        # Here, before the run is scheduled: the turn that launched it is still open.
+        trace_workflows.pin_launcher(run_id, session_key)
 
         def _publish_source(src: str) -> None:
             # Write the authored script onto the handle the instant authoring
@@ -1651,4 +1775,6 @@ class WorkflowRunner:
             fallback_title=fallback_title,
             fallback_folder_id=fallback_folder_id,
             admission_closed=admission_closed,
+            timeout_secs=self._timeout_secs,
+            budget_total=budget_total,
         )

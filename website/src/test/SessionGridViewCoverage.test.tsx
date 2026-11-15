@@ -15,7 +15,7 @@
  * The split renderer (SessionGridLayout) and the grid state hook stay REAL so the
  * tree transforms are exercised end to end.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import SessionGridView from '../components/SessionGridView'
 import PaneDim from '../components/PaneDim'
@@ -24,7 +24,6 @@ import { renderWithProviders } from './helpers'
 import { api, ApiError } from '../api/client'
 import { emitSlotFocused } from '../hooks/useWebSocket'
 import type { GridNode, SplitDir } from '../hooks/useSessionGrid'
-import { crewModePreviewOn } from './crewModePreview'
 
 vi.mock('../api/client')
 
@@ -48,6 +47,7 @@ vi.mock('../components/ChatPane', () => ({
     onOpenFull,
     leading,
     onFileOpen,
+    onFolderOpen,
   }: {
     slotKey: string
     focused?: boolean
@@ -59,6 +59,7 @@ vi.mock('../components/ChatPane', () => ({
     onOpenFull?: (slot: string, anchorTs?: string, anchorMid?: string) => void
     leading?: { inset?: boolean; control?: React.ReactNode }
     onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+    onFolderOpen?: (path: string) => void
   }) => (
     <div data-testid={`pane-${slotKey}`} data-focused={focused ? 'yes' : 'no'} data-ptt={pushToTalk ? 'yes' : 'no'} data-leading={leading ? (leading.inset ? 'inset' : 'control') : 'none'}>
       {leading?.control}
@@ -69,6 +70,7 @@ vi.mock('../components/ChatPane', () => ({
       <button type="button" aria-label={`down ${slotKey}`} onClick={onSplitDown} />
       <button type="button" aria-label={`open full ${slotKey}`} onClick={() => onOpenFull?.(slotKey, 'ts-1', 'mid-1')} />
       <button type="button" aria-label={`open file ${slotKey}`} onClick={() => onFileOpen?.('/tmp/report.pdf')} />
+      <button type="button" aria-label={`open folder ${slotKey}`} onClick={() => onFolderOpen?.('/tmp/evidence/')} />
     </div>
   ),
 }))
@@ -112,11 +114,11 @@ function seedApi(slots: Slot[] = []) {
   return m
 }
 
-function renderGrid(seedSlot?: string | null, leading?: { inset?: boolean; control?: React.ReactNode }, onFileOpen?: (path: string, opts?: { line?: number; endLine?: number; slot?: string | null }) => void, seedDir?: SplitDir) {
+function renderGrid(seedSlot?: string | null, leading?: { inset?: boolean; control?: React.ReactNode }, onFileOpen?: (path: string, opts?: { line?: number; endLine?: number; slot?: string | null }) => void, seedDir?: SplitDir, onFolderOpen?: (path: string, opts?: { slot?: string | null }) => void) {
   const onClose = vi.fn()
   const onCollapse = vi.fn()
   const utils = renderWithProviders(
-    <SessionGridView onClose={onClose} onCollapse={onCollapse} seedSlot={seedSlot} seedDir={seedDir} leading={leading} onFileOpen={onFileOpen} />,
+    <SessionGridView onClose={onClose} onCollapse={onCollapse} seedSlot={seedSlot} seedDir={seedDir} leading={leading} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} />,
   )
   return { ...utils, onClose, onCollapse }
 }
@@ -366,6 +368,24 @@ describe('SessionGridView — split keybinding', () => {
     await waitFor(() => expect(pickers()).toHaveLength(2))
   })
 
+  it('leaves Ctrl+D to the text field on a Mac, where only Cmd+D splits', async () => {
+    const prev = navigator.platform
+    onTestFinished(() => Object.defineProperty(navigator, 'platform', { value: prev, configurable: true }))
+    Object.defineProperty(navigator, 'platform', { value: 'MacIntel', configurable: true })
+    renderGrid('a')
+    await screen.findByTestId('pane-a')
+
+    const ctrlD = new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, bubbles: true, cancelable: true })
+    document.dispatchEvent(ctrlD)
+
+    expect(ctrlD.defaultPrevented).toBe(false)
+    expect(pickers()).toHaveLength(1)
+
+    fireEvent.keyDown(document, { key: 'd', metaKey: true })
+
+    await waitFor(() => expect(pickers()).toHaveLength(2))
+  })
+
   it.each([
     ['no modifier', { key: 'd' }],
     ['Shift held', { key: 'd', metaKey: true, shiftKey: true }],
@@ -570,6 +590,23 @@ describe('SessionGridView — per-pane file opener (#9921)', () => {
 
     expect(onFileOpen).toHaveBeenNthCalledWith(1, '/tmp/report.pdf', { slot: 'a' })
     expect(onFileOpen).toHaveBeenNthCalledWith(2, '/tmp/report.pdf', { slot: 'b' })
+  })
+
+  // A folder a pane's reply names opens through the host's folder opener with
+  // that pane's slot, as a file does (#35014). Without it the pane's folder
+  // chip fell back to the OS reveal, which a headless gateway answers by
+  // copying the path.
+  it('stamps a folder opened in a pane with that pane\'s slot', async () => {
+    seedStore('a', splitOf([leaf('l-a', 'a'), leaf('l-b', 'b')]))
+    seedApi([{ key: 'a' }, { key: 'b' }])
+    const onFolderOpen = vi.fn()
+    renderGrid('a', undefined, undefined, undefined, onFolderOpen)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    await screen.findByTestId('pane-b')
+
+    fireEvent.click(screen.getByLabelText('open folder b'))
+
+    expect(onFolderOpen).toHaveBeenCalledWith('/tmp/evidence/', { slot: 'b' })
   })
 
   it('renders a pane without an opener when the host supplies none', async () => {
@@ -988,6 +1025,3 @@ describe('SessionGridView — Crew Mode workers (edge review R2 F4)', () => {
     expect(within(onlyPicker()).queryByText('Worker')).toBeNull()
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

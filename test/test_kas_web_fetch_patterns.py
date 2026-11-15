@@ -189,8 +189,24 @@ def test_the_notice_drops_only_a_trusted_list_the_gate_applies() -> None:
     ]
 
 
+_REFUSED = "; every web fetch is refused until this entry is fixed"
 _HOST_ONLY = "(whole-URL rule; KAS checks host only)"
 _REGEX_SYNTAX = "(regex syntax KAS cannot express)"
+
+
+def test_opted_in_the_notice_says_every_fetch_is_refused(monkeypatch) -> None:
+    """``agent.kas_fail_closed_web_fetch_blocked`` on: each uncarried entry says so."""
+    from kiro_crew.acp import kas_permissions, kas_unread_commands
+
+    monkeypatch.setattr(kas_permissions, "fails_closed_on_uncarried_blocked", lambda: True)
+    monkeypatch.setattr(kas_unread_commands, "fails_closed_on_uncarried_blocked", lambda: True)
+    lost = kas_agents.spec_keys_without_carrier(
+        {"toolsSettings": {"web_fetch": {"blocked": ["https://evil\\.com/.*"]}}},
+        translates_tools_settings=True,
+    )
+    assert lost == [
+        f"toolsSettings.web_fetch.blocked: https://evil\\.com/.* {_HOST_ONLY}{_REFUSED}"
+    ]
 
 
 def test_the_notice_names_each_blocked_entry_kas_cannot_carry() -> None:

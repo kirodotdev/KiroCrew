@@ -18,6 +18,7 @@ import {
 import { settingsRoute } from '../settingsRoute'
 import { settingsTabLabel } from '../settingsTabLabel'
 import type { SettingEntry } from '../settingsTypes'
+import { compareText } from '../../../i18n/format'
 
 /**
  * Settings provider for the Search Everywhere command palette.
@@ -198,7 +199,7 @@ function searchWithinTab(
     // (localized) label so the order matches what the user reads.
     return tabEntries
       .map((entry) => ({ entry, label: localizedSettingLabel(entry) }))
-      .sort((a, b) => a.label.localeCompare(b.label))
+      .sort((a, b) => compareText(a.label, b.label))
       .map(({ entry, label }) => buildResult(entry, 100, [], navigate, label))
   }
 

@@ -37,6 +37,7 @@ import logging
 import re
 from typing import Callable, Optional
 
+from kiro_crew import redaction_seams
 from kiro_crew.credential_patterns import AWS_KEY_ID_REDACTION, JWT_MULTI_SEGMENT, TOKEN_PARAMETER
 from kiro_crew.jwt_header import is_jwt_header
 
@@ -122,15 +123,30 @@ class SecretRedactionFilter:
     def redact(self, text: str) -> str:
         """Replace secret values, Bearer tokens, AWS key IDs, JWTs and ``token`` values.
 
-        Zero I/O — only applies pre-compiled patterns.
+        Zero I/O — only applies pre-compiled patterns. With the owner's output-seams
+        switch off (``redaction_seams.seams_off``) only the secret values are replaced.
         """
+        # The literal vault-secret pass runs whatever the owner chose: these are
+        # values the gateway resolved itself, never a shape guess.
         if self._secret_pattern is not None:
             text = self._secret_pattern.sub("[REDACTED]", text)
-        text = _BEARER_RE.sub("Bearer [REDACTED]", text)
-        text = _AWS_KEY_ID_RE.sub("[REDACTED]", text)
-        text = _redact_jwts(text)
-        text = _TOKEN_PARAM_RE.sub(_mask_token_value, text)
-        return text
+        # The shape passes below are the LOGS output seam.
+        if redaction_seams.seams_off():
+            return text
+        return redact_log_shapes(text)
+
+
+def redact_log_shapes(text: str) -> str:
+    """The shape passes over a log line: Bearer tokens, AWS key IDs, JWTs, ``token`` values.
+
+    Zero I/O. :class:`SecretRedactionFilter` skips them with the owner's seams switch
+    off; a sink that reaches anyone but the owner (the dashboard's live log stream)
+    applies them itself then.
+    """
+    text = _BEARER_RE.sub("Bearer [REDACTED]", text)
+    text = _AWS_KEY_ID_RE.sub("[REDACTED]", text)
+    text = _redact_jwts(text)
+    return _TOKEN_PARAM_RE.sub(_mask_token_value, text)
 
 
 #: Marks an installed factory as a redacting wrapper, and carries the two things it

@@ -1,4 +1,4 @@
-/** The chat model picker's `Auto (Jev)` entry: when it is offered, and when it is on.
+/** The chat model picker's `Auto (decision model)` entry: when it is offered, and when it is on.
  *
  *  The entry is not a model. Picking it asks the `model.route` decision point to
  *  put each turn in a difficulty tier and to run that turn on the model the tier
@@ -30,7 +30,7 @@
  *  whether the row is offered.
  */
 
-/** The id a client sends for the `Auto (Jev)` row. Mirrors `JEV_ROUTE_MODEL` in
+/** The id a client sends for the `Auto (decision model)` row. Mirrors `JEV_ROUTE_MODEL` in
  *  `dashboard/chat_handlers.py`, which is the only reader. */
 export const JEV_ROUTE_MODEL = 'auto:jev'
 
@@ -46,7 +46,7 @@ export const JEV_ROUTE_MODEL = 'auto:jev'
  *  `''` is a slot nobody has chosen for yet, and the gate cannot route it — the
  *  first session the slot opens backfills the provider's resolved model into
  *  `slot.model` before the routing question is asked. Reading the two alike made a
- *  brand-new chat say `Auto (Jev)` while every turn ran on the backend default,
+ *  brand-new chat say `Auto (decision model)` while every turn ran on the backend default,
  *  hiding the model that would actually answer.
  *
  *  Takes the slot's RAW `model`, never the composer's displayed one: the display

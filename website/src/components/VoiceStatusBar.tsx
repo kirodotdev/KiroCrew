@@ -4,6 +4,7 @@ import { useId } from 'react'
 import ErrorNotice from './ErrorNotice'
 
 import MicSourceMenu from './MicSourceMenu'
+import RecordingElapsed from './RecordingElapsed'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu'
 
 import { i18nT } from '../i18n/t'
@@ -337,6 +338,9 @@ export default function VoiceStatusBar({ recording, level, deviceLabel, deviceId
         <span className="relative inline-flex h-2 w-2 rounded-full bg-danger" />
       </span>
       <span className="font-medium shrink-0">{i18nT('components.voiceStatusBar.recording')}</span>
+      {/* Mounted with this row, which exists only while capturing, so it starts
+          at 0:00 with each recording. */}
+      <RecordingElapsed />
       {/* live input-level meter */}
       <span
         className="w-20 shrink-0 h-1.5 rounded-full bg-danger-subtle overflow-hidden"

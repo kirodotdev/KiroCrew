@@ -39,6 +39,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from mcp_gateway_backend_coverage_helpers import _no_real_metrics_file  # noqa: F401 -- autouse
 from mcp_gateway_backend_coverage_helpers import _make_backend, _pool_key, _reader
+from redaction_structured_cases import github_classic
 
 from kiro_crew import platform_compat
 from kiro_crew.acp.stderr_tail import STDERR_WITHHELD
@@ -76,9 +77,8 @@ _SERVES_UNTIL_STDIN_CLOSES = (
     "import sys\nsys.stderr.write('ready\\n')\nsys.stderr.flush()\nsys.stdin.read()\n"
 )
 
-#: A credential the redactor recognises whole but in neither half.
-_SECRET_HEAD = "AKIAIOSF"
-_SECRET_TAIL = "ODNN7EXAMPLE"
+#: A credential the redactor recognises whole but in neither half (a synthetic GitHub token).
+_SECRET_HEAD, _SECRET_TAIL = github_classic(seed=107)[:8], github_classic(seed=107)[8:]
 
 
 #: Writes the file its first argument names to its stderr, then a traceback, and

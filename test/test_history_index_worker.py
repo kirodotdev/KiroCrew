@@ -631,22 +631,34 @@ def test_request_stop_does_not_wait_for_the_child(tmp_path):
     loop, so it may only do the non-blocking things: one ``waitpid`` and one
     SIGTERM. If it ever joined, a gateway shutdown would freeze the loop for
     seconds — the failure this whole change exists to remove.
+
+    So the child's process object is watched for what it is asked: only
+    ``is_alive`` (a ``WNOHANG`` poll) and ``terminate`` (one signal). ``join``,
+    ``kill`` and ``close`` are the reap half's, and none may be called here.
     """
     sessions = _seeded_sessions(tmp_path)
     supervisor = _supervisor(sessions)
     assert supervisor.start() is True
+    real = supervisor._process
     try:
         assert supervisor.pid is not None
+        asked: list[str] = []
 
-        started = time.monotonic()
+        class _Watched:
+            def __getattr__(self, name: str) -> Any:
+                asked.append(name)
+                return getattr(real, name)
+
+        watched = _Watched()
+        supervisor._process = watched
         supervisor.request_stop()
-        elapsed = time.monotonic() - started
 
-        assert elapsed < 0.5, f"request_stop blocked for {elapsed:.2f}s"
+        assert asked[:1] == ["is_alive"] and set(asked) <= {"is_alive", "terminate"}, asked
         # It asked, it did not reap: the process object is still held so that
         # ``reap`` can wait for it.
-        assert supervisor._process is not None
+        assert supervisor._process is watched
     finally:
+        supervisor._process = real
         _stop(supervisor)
 
 

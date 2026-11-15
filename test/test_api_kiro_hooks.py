@@ -201,6 +201,36 @@ class TestApiKiroHooks:
                 assert "echo ok" in entries[0]["command"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            {"command": 5},
+            {"command": {"a": 1}},
+            {"command": "echo x", "matcher": ["m"]},
+            {"command": 0},
+            {"command": "echo x", "matcher": False},
+        ],
+    )
+    @pytest.mark.parametrize("where", ["user", "bundled"])
+    async def test_non_text_command_or_matcher_row_skipped(
+        self, kiro_dir: Path, tmp_path: Path, bad: dict, where: str
+    ) -> None:
+        """A row whose command or matcher is not text is skipped, not a 500."""
+        good = {"command": "echo ok"}
+        _write_agent_cfg(kiro_dir, {
+            "hooks": {"preToolUse": [bad, good] if where == "user" else [good]},
+        })
+        defaults = tmp_path / "defaults.json"
+        _write_defaults(defaults, {"hooks": {"preToolUse": [bad] if where == "bundled" else []}})
+        with patch(_P_AGENTS_DIR, kiro_dir), patch(_P_DEFAULTS, return_value=defaults):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get("/api/kiro-hooks")
+                assert resp.status == 200
+                entries = (await resp.json())["hooks"]["preToolUse"]
+                assert [e["command"] for e in entries] == ["echo ok"]
+                assert entries[0]["source"] == "user"
+
+    @pytest.mark.asyncio
     async def test_non_list_event_value_skipped(self, kiro_dir: Path, tmp_path: Path) -> None:
         """Event value that is not a list produces no entries."""
         _write_agent_cfg(kiro_dir, {"hooks": {"preToolUse": "not-a-list"}})

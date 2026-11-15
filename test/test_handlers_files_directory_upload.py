@@ -1189,3 +1189,18 @@ class TestWriteFailureIsACodedError:
         assert not (tmp_path / "notes.txt").exists()
         assert mock_sel.log_api_access.call_args.kwargs["outcome"] == "failure"
         assert mock_sel.log_api_access.call_args.kwargs["resources"] == str(tmp_path / "notes.txt")
+
+
+@pytest.mark.asyncio
+async def test_a_multipart_type_with_no_boundary_is_a_400(tmp_path: Path, mock_sel) -> None:
+    """``request.multipart()`` raises on a missing boundary; that is the client's
+    mistake, answered like the other upload routes answer it."""
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post(
+            f"/api/directory-upload?dir={quote(str(tmp_path))}",
+            data=b"x",
+            headers={"Content-Type": "multipart/form-data"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "not_multipart"
+    assert list(tmp_path.iterdir()) == []

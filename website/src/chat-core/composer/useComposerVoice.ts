@@ -934,6 +934,21 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     // needed here because the split into startVoice/stopVoice left this list
     // genuinely exhaustive.
   }, [voice.recording, startVoice, stopVoice])
+  /**
+   * The desktop app reports that the OS session locked. A recording this
+   * composer owns stops as a draft: no intent, so it never sends, even with
+   * `stt.submit_on_release` on. The person was not there to choose to send it.
+   * Only the owning composer stops it, since every mounted composer hears the
+   * same message. Absent in a browser, where nothing can see a screen lock.
+   */
+  useEffect(() => {
+    const subscribe = typeof window !== 'undefined' ? window.electronAPI?.onSessionLocked : undefined
+    if (!subscribe) return
+    return subscribe(() => {
+      const live = voiceRef.current
+      if (live.recording && live.sessionOwner === sessionIdRef.current) stopVoice()
+    })
+  }, [stopVoice])
   // Cancel (discard) the in-progress dictation — Esc. Batch simply drops the
   // pending audio (the hook's onstop skips transcription), so nothing lands in
   // the composer. Streaming additionally disarms the draining final AND removes

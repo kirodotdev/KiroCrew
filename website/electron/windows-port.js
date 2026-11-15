@@ -341,8 +341,9 @@ function unwrapWmicProcessIdentity(stdout) {
 /**
  * Return a process command line. PowerShell is preferred because WMIC is
  * optional on current Windows releases; WMIC remains the compatibility
- * fallback. Failure to identify a process returns an empty string so callers
- * classify it as foreign and never terminate it.
+ * fallback. Failure to identify a process returns an empty string, which
+ * callers treat as an UNIDENTIFIED holder -- never as a process proven to be
+ * someone else's, and never as one safe to terminate.
  */
 async function windowsProcessCommand(
   pid,
@@ -354,7 +355,11 @@ async function windowsProcessCommand(
   } = {}
 ) {
   const safePid = positiveInteger(pid, "pid");
-  const script = `$p = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = ${safePid}"; `
+  // A redirected console writes in the OEM code page, which turns a non-ASCII
+  // install path into replacement characters once it is read back as UTF-8.
+  // Write UTF-8 without a BOM so the path arrives byte-for-byte.
+  const script = `[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; `
+    + `$p = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = ${safePid}"; `
     + `if ($null -ne $p -and $p.ExecutablePath) { `
     + `[Console]::Out.Write(('"' + $p.ExecutablePath + '" ' + $p.CommandLine).Trim()) }`;
   try {

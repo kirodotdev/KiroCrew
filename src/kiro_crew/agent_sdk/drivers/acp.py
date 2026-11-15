@@ -55,11 +55,14 @@ __all__ = [
     "build_acp_provider",
     "catalog_row_would_drop",
     "context_provider_of",
+    "crew_loads_spec_steering",
     "projected_session_mcp_servers",
+    "spec_with_default_crew_servers",
     "agent_spec_mcp_refs",
     "claude_adapter_cached_negative",
     "claude_adapter_honours_session_options",
     "goose_side_home_supported",
+    "mirror_withheld_crew_refs",
     "claude_adapter_install_command",
     "claude_components_resolve",
     "derived_agent_permissions",
@@ -77,6 +80,7 @@ __all__ = [
     "provider_error_client",
     "provider_label",
     "provider_label_for_backend",
+    "reads_project_agents_md",
     "resolve_pin_spelling",
     "resolve_pin_spelling_on",
     "resolve_usable_model",
@@ -315,6 +319,40 @@ def provider_label_for_backend(backend: str) -> str:
     if is_claude_backend_name(backend):
         return PROVIDER_LABEL_CLAUDE
     return PROVIDER_LABEL_BY_BACKEND.get(backend, PROVIDER_LABEL_DEFAULT)
+
+
+def _label_names_a_member(provider_type: str | None, backends: Collection[str]) -> bool:
+    """Whether the provider label *provider_type* is the label of a backend in *backends*.
+
+    ``None`` and ``""`` name no harness, so they are a member of nothing.
+    """
+    if not provider_type:
+        return False
+    return any(provider_label_for_backend(backend) == provider_type for backend in backends)
+
+
+def crew_loads_spec_steering(provider_type: str | None) -> bool:
+    """Whether Crew puts the agent spec's ``file://`` steering into this session's prompt.
+
+    *provider_type* is the session's provider label, as context assembly receives
+    it. True for a harness in ``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`` (claude and
+    codex), which is handed no spec and so reads none of its ``resources``.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_LOADS_SPEC_STEERING
+
+    return _label_names_a_member(provider_type, ACP_BACKENDS_CREW_LOADS_SPEC_STEERING)
+
+
+def reads_project_agents_md(provider_type: str | None) -> bool:
+    """Whether the harness behind *provider_type* reads the project's ``AGENTS.md`` itself.
+
+    True for a harness in ``ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD`` (codex), which
+    reads the file from the session's working directory. Crew's steering load
+    leaves that file out there.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD
+
+    return _label_names_a_member(provider_type, ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD)
 
 
 def _provider_backend(provider: object) -> object:
@@ -639,6 +677,26 @@ def agent_spec_mcp_refs(
     return True, sorted(rows)
 
 
+def mirror_withheld_crew_refs(agent: str) -> frozenset[str]:
+    """The ``@server`` refs of *agent* that a mirror leaves out by design.
+
+    Crew's own identity-bound servers that the shared translation mounts (defined,
+    granted, not muted or narrowed). A mirror that cannot hand them the session's
+    identity withholds exactly those (``providers.mirrors.identity``), since mounted
+    they would refuse every call; one that can (claude) mounts them, so it never
+    reports one of these unresolved. Never raises: unreadable answers the empty set.
+    """
+    from kiro_crew.acp.session_mcp import session_mcp_projection
+    from kiro_crew.providers.mirrors.identity import identity_bound_crew_servers
+
+    try:
+        projection = session_mcp_projection(agent)
+        bound = identity_bound_crew_servers() - projection.restricted
+    except Exception:
+        return frozenset()
+    return frozenset(f"@{e.get('name')}" for e in projection.servers if e.get("name") in bound)
+
+
 def _with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, Any]:
     """*spec* with Crew's default servers added, or *spec* itself when that cannot be read.
 
@@ -657,6 +715,11 @@ def _with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, An
     except Exception:
         logger.debug("default Crew servers for %r could not be resolved", agent, exc_info=True)
         return spec
+
+
+def spec_with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, Any]:
+    """*spec* with Crew's default servers added, for a read-only check; see :func:`_with_default_crew_servers`."""
+    return _with_default_crew_servers(agent, spec)
 
 
 def kiro_cli_resolves() -> bool:
@@ -1034,8 +1097,10 @@ def claude_adapter_honours_session_options() -> bool:
 
     ``CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`` is where the adapter is verified to
     spread ``_meta.claudeCode.options`` into the session, which the read-only
-    shape of a Side Chat or thread-reply session depends on. A missing adapter, or
-    one whose version cannot be read, answers False. The spawn's own cached
+    shape of a Side Chat or thread-reply session depends on. The version is the
+    adapter's package.json, or for a wrapper script what it reported at its latest
+    handshake (``_claude_adapter_known_version``). A missing adapter, or one whose
+    version is not known, answers False. The spawn's own cached
     resolution is read first, as :func:`claude_adapter_cached_negative` does.
     Blocking (resolves the adapter and reads its package.json); call it off the loop.
     """
@@ -1047,7 +1112,7 @@ def claude_adapter_honours_session_options() -> bool:
     argv = resolution[0] if isinstance(resolution, tuple) else None
     if not argv:
         return False
-    version = _client._claude_adapter_installed_version(argv)
+    version = _client._claude_adapter_known_version(argv)
     if _client._claude_adapter_honours_setting_sources(version):
         return True
     logger.warning(
@@ -1064,15 +1129,48 @@ def claude_adapter_honours_session_options() -> bool:
 def codex_adapter_resolves() -> bool:
     """Whether the codex-acp adapter resolves to a runnable argv.
 
-    ONE component, unlike claude's two: codex-acp ships a compatible Codex binary
-    as an npm dependency and reads ``CODEX_PATH`` itself only to run a DIFFERENT
-    one, so there is no second executable Crew hands it and no half-install to
-    distinguish.
+    ONE component, unlike claude's two: Crew hands the adapter the host's
+    ``codex`` as ``CODEX_PATH`` when it is at least the version of the Codex
+    codex-acp bundles, and the adapter runs that bundled Codex otherwise, so a
+    missing host ``codex`` is not a half-install.
     """
     from kiro_crew.acp.client import _resolve_codex_acp_bin
 
     adapter_argv, _searched_path = _resolve_codex_acp_bin()
     return bool(adapter_argv)
+
+
+def codex_adapter_disk_install() -> tuple[str, str]:
+    """The codex-acp entry the spawn resolves, and its ``version`` from package.json.
+
+    ``("", "")`` when the adapter does not resolve. The version is ``""`` when the
+    manifest cannot be read. One resolution gives both values, so a caller never
+    shows the path of one install beside the version of another. The version is
+    read from the npm manifest, never by running the adapter: codex-acp takes no
+    flags and serves stdin on any argv. Blocking (small file reads).
+    """
+    from kiro_crew.acp.client import CODEX_ACP_NPM_PKG, _resolve_codex_acp_bin
+    from kiro_crew.acp.launch import _node_adapter_manifest_version
+
+    adapter_argv, _searched_path = _resolve_codex_acp_bin()
+    if not adapter_argv:
+        return "", ""
+    # The ladder puts the adapter entry last, after node when node wraps it. Only
+    # the entry is read, because node's own directory can hold another global copy.
+    entry = adapter_argv[-1]
+    return entry, _node_adapter_manifest_version([entry], CODEX_ACP_NPM_PKG)
+
+
+def codex_adapter_untested_version_notice(version: str) -> str:
+    """The new-session notice for a codex-acp *version* outside the tested range.
+
+    ``""`` inside the range, and for an empty or unparseable *version*: not knowing
+    the version is no evidence that it is untested.
+    """
+    from kiro_crew.acp.client_turn_control import untested_version_issue
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX
+
+    return untested_version_issue(ACP_BACKEND_CODEX, version)
 
 
 def codex_adapter_cached_negative() -> bool:
@@ -1247,6 +1345,7 @@ def pi_cached_negative() -> bool:
         try:
             found, _searched = cached  # type: ignore[misc]
         except Exception:
+            # A cache value that is not a (found, searched) pair is skipped.
             continue
         if not found:
             return True

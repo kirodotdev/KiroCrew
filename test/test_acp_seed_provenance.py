@@ -41,7 +41,7 @@ from acp_seed_provenance_helpers import (
 from kiro_crew import model_registry as mr
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import seed_provenance as sp
-from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.client import AcpClient, ClaudeAcpClient
 
 
 class TestProvenanceRecord:
@@ -963,8 +963,8 @@ class TestCrossSessionAdoption:
 
     def test_without_a_record_an_orphan_is_left_untouched(self, tmp_path, monkeypatch):
         # Provenance, not the path: an identical file Crew cannot vouch for gets the
-        # same treatment as the user's own. This is the pre-fix behaviour, kept for
-        # every case the record does not cover (another install, a copied repo).
+        # same treatment as the user's own. That holds for every case the record
+        # does not cover (another install, a copied repo).
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         first = _client(tmp_path)
         first._write_claude_local_settings()
@@ -1141,7 +1141,7 @@ class TestPostCaptureModelResolution:
         )
         assert rode_along in source
 
-        method = textwrap.dedent(inspect.getsource(AcpClient._reseed_after_capture))
+        method = textwrap.dedent(inspect.getsource(ClaudeAcpClient._reseed_after_capture))
         assert "if not self._seeds_local_settings:\n        return" in method
 
     @pytest.mark.asyncio
@@ -1150,7 +1150,7 @@ class TestPostCaptureModelResolution:
     ):
         """The in-method gate is the one that actually has to hold."""
         client = _client(tmp_path)
-        monkeypatch.setattr(AcpClient, "_seeds_local_settings", property(lambda self: False))
+        monkeypatch.setattr(ClaudeAcpClient, "_seeds_local_settings", False)
         calls: list[int] = []
         monkeypatch.setattr(client, "_write_claude_local_settings", lambda: calls.append(1))
         await client._reseed_after_capture()
@@ -1207,7 +1207,7 @@ class TestPostCaptureModelResolution:
         # The payload is rendered by ``_render_claude_settings_payload`` (split out
         # so the shared-reader check can compare bytes before deciding to write);
         # the fold lives there, on the write path itself either way.
-        source = inspect.getsource(AcpClient._render_claude_settings_payload)
+        source = inspect.getsource(ClaudeAcpClient._render_claude_settings_payload)
         assert 'data["model"] = self._model' not in source
         assert "resolve_wire_model_id" in source
 

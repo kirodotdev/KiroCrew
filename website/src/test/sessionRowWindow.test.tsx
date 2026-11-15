@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, act, screen, fireEvent, waitFor } from '@testing-library/react'
 import {
   SessionRowWindowContext, WindowedSessionRow, useSessionRowWindowRoot,
-  SESSION_ROW_STUB_DEFAULT_PX, SESSION_ROW_WINDOW_MARGIN_PX, SESSION_ROW_INITIAL_MOUNT_BUDGET, _resetSessionRowWindowHeights,
+  SESSION_ROW_STUB_DEFAULT_PX, SESSION_ROW_WINDOW_MARGIN_PX, sessionRowInitialMountBudget, _resetSessionRowWindowHeights,
 } from '../pages/chat/sessionRowWindow'
 
 type Cb = (entries: Array<Partial<IntersectionObserverEntry>>) => void
@@ -192,8 +192,9 @@ describe('WindowedSessionRow', () => {
     expect(screen.queryByTestId('real-f')).toBeNull()
   })
 
-  it('mounts SESSION_ROW_INITIAL_MOUNT_BUDGET rows by default', () => {
-    const ids = Array.from({ length: SESSION_ROW_INITIAL_MOUNT_BUDGET + 3 }, (_, i) => `r${i}`)
+  it('mounts one viewport of rows by default', () => {
+    const budget = sessionRowInitialMountBudget()
+    const ids = Array.from({ length: budget + 3 }, (_, i) => `r${i}`)
     function DefaultLane() {
       const { rowWindow, setRoot } = useSessionRowWindowRoot()
       return (
@@ -207,9 +208,15 @@ describe('WindowedSessionRow', () => {
       )
     }
     render(<DefaultLane />)
-    expect(mounts).toBe(SESSION_ROW_INITIAL_MOUNT_BUDGET)
-    expect(screen.getByTestId(`real-r${SESSION_ROW_INITIAL_MOUNT_BUDGET - 1}`)).toBeTruthy()
-    expect(screen.queryByTestId(`real-r${SESSION_ROW_INITIAL_MOUNT_BUDGET}`)).toBeNull()
+    expect(mounts).toBe(budget)
+    expect(screen.getByTestId(`real-r${budget - 1}`)).toBeTruthy()
+    expect(screen.queryByTestId(`real-r${budget}`)).toBeNull()
+  })
+
+  it('sizes the default budget to the viewport, at the shortest common row', () => {
+    expect(sessionRowInitialMountBudget(900)).toBe(19)
+    expect(sessionRowInitialMountBudget(1440)).toBe(29)
+    expect(sessionRowInitialMountBudget(0)).toBe(1)
   })
 
   it('spends one budget position per row under StrictMode\'s double-invoked initializers', () => {

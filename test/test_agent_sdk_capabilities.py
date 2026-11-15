@@ -81,11 +81,13 @@ CAPABILITY_FIELDS = (
     "crew_fires_spec_hooks",
     "crew_fires_spec_observer_hooks",
     "supports_native_todos",
+    "keeps_own_checklist",
     "runs_own_slash_commands",
     "honors_zero_tool_ban",
     "acp_client_spawnable",
     "honors_remote_mcp_oauth",
     "native_workflows",
+    "refines_tool_call_titles",
 )
 
 
@@ -349,6 +351,7 @@ def test_known_membership_is_unchanged_by_the_move() -> None:
         "deepseek",
         "goose",
         "kas",
+        "mimocode",
         "opencode",
         "pi",
         "strands",
@@ -712,6 +715,7 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
                 )
                 and backend not in sdk_backends.ACP_BACKENDS_ACP_RUNTIME
                 and backend not in reads_unasked
+                and backend not in sdk_backends.ACP_BACKENDS_UNASKED_NATIVE_TOOLS
             )
         )
         actual = backend in sdk_backends.ACP_BACKENDS_HONOR_ZERO_TOOL_BAN
@@ -720,7 +724,8 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
             f"says {expected} (routing={routing}, enforced={routing in ENFORCED_ROUTINGS}, "
             f"mirrored={backend in MIRRORS}, "
             f"projection={projection_for(backend).kind.value}, "
-            f"acp_runtime={backend in sdk_backends.ACP_BACKENDS_ACP_RUNTIME})"
+            f"acp_runtime={backend in sdk_backends.ACP_BACKENDS_ACP_RUNTIME}, "
+            f"unasked={backend in sdk_backends.ACP_BACKENDS_UNASKED_NATIVE_TOOLS})"
         )
     assert sdk_backends.ACP_BACKENDS_HONOR_ZERO_TOOL_BAN == {
         sdk_backends.ACP_BACKEND_KIRO,
@@ -732,6 +737,18 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
         sdk_backends.ACP_BACKEND_PI,
         sdk_backends.ACP_BACKEND_STRANDS,
     }
+
+
+def test_a_harness_with_unasked_tools_is_trusted_with_no_permission_side_refusal() -> None:
+    """A tool that never asks escapes every refusal Crew applies at the request.
+
+    So a backend in ``ACP_BACKENDS_UNASKED_NATIVE_TOOLS`` can neither honour the
+    zero-tool ban nor have its spec hooks fired from the permission request.
+    """
+    unasked = sdk_backends.ACP_BACKENDS_UNASKED_NATIVE_TOOLS
+    assert not unasked & sdk_backends.ACP_BACKENDS_HONOR_ZERO_TOOL_BAN
+    assert not unasked & sdk_backends.ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
+    assert unasked == {sdk_backends.ACP_BACKEND_MIMOCODE}
 
 
 def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
@@ -746,6 +763,7 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_KIRO,
+        ACP_BACKEND_MIMOCODE,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
         ACP_BACKEND_STRANDS,
@@ -779,6 +797,9 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
         "channel for whichever member is new or missing deliberately, then "
         "update this pin"
     )
+    # MiMo Code is outside the pool: some of its own tools never ask, so the
+    # zero-tool ban does not hold there (ACP_BACKENDS_UNASKED_NATIVE_TOOLS).
+    assert ACP_BACKEND_MIMOCODE not in pool_safe_backends
     assert capabilities_for(ACP_BACKEND_KIRO).effort_via_config_option is False
     # claude carries effort as its ``effort`` config option.
     assert capabilities_for(ACP_BACKEND_CLAUDE).effort_via_config_option is True
@@ -797,6 +818,10 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
     # pool sends it none: neither the config option nor a slash command.
     assert capabilities_for(ACP_BACKEND_STRANDS).effort_via_config_option is False
     assert capabilities_for(ACP_BACKEND_STRANDS).effort_via_slash_command is False
+    # MiMo Code advertises a model's reasoning variants as further rows of its
+    # ``model`` select, not as an effort option, so the pool applies no effort there.
+    assert capabilities_for(ACP_BACKEND_MIMOCODE).effort_via_config_option is False
+    assert capabilities_for(ACP_BACKEND_MIMOCODE).effort_via_slash_command is False
 
 
 def test_effort_via_slash_command_membership_is_the_command_verb_set() -> None:

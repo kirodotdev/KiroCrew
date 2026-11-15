@@ -139,9 +139,9 @@ def work(monkeypatch) -> dict[str, int]:
         counts["digests"] += 1
         return real_digest(self, records)
 
-    def through(self, seq):
+    def through(self, seq, **kwargs):
         counts["digests"] += 1
-        return real_through(self, seq)
+        return real_through(self, seq, **kwargs)
 
     def walk(self, *args, **kwargs):
         for item in real_walk(self, *args, **kwargs):

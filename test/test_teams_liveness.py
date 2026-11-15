@@ -16,6 +16,7 @@ import asyncio
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.teams.approvals import TeamsApprovalDecider
 from kiro_crew.teams.client import TEAMS_MAX_TEXT, TeamsSendError
@@ -300,7 +301,8 @@ class TestOptionChipLiveness:
         await renderer.on_text_chunk("[OPTIONS: keep | drop]")
         await renderer.on_done()
 
-        await renderer.settle_options("AKIAIOSFODNN7EXAMPLE")
+        token = github_classic(seed=26)
+        await renderer.settle_options(token)
 
         _activity_id, settled = client.updated_cards[-1]
-        assert "AKIAIOSFODNN7EXAMPLE" not in str(settled)
+        assert token not in str(settled)

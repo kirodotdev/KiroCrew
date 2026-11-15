@@ -40,7 +40,8 @@ _FACADE = "kiro_crew.history_search"
 _QUERY = "kiro_crew.history_search_query"
 _MEMO = "kiro_crew.history_search_memo"
 _LISTING = "kiro_crew.history_search_listing"
-_OWNERS = (_QUERY, _MEMO, _LISTING)
+_RANK = "kiro_crew.history_search_rank"
+_OWNERS = (_QUERY, _MEMO, _LISTING, _RANK)
 _INVENTORY = Path(__file__).resolve().parent / "campaign_facade_inventories" / f"{_FACADE}.json"
 
 
@@ -300,12 +301,14 @@ def test_the_owner_import_scan_answers_both_ways() -> None:
         "from kiro_crew.history_search_query import parse_search_query\n"
         "from kiro_crew import history_search_memo, platform_compat\n"
         "import kiro_crew.history_search_listing\n"
+        "from kiro_crew.history_search_rank import WordWeights\n"
         "import kiro_crew.history_search\n"
     )
     assert _owner_imports(ast.parse(source)) == set(_OWNERS)
     relative = (
         "from ..history_search_query import SearchNeedle\nfrom .. import history_search_memo\n"
         "from ..history_search_listing import ListingRow\n"
+        "from ..history_search_rank import WordWeights\n"
     )
     assert _owner_imports(ast.parse(relative), "kiro_crew.dashboard") == set(_OWNERS)
     sibling = "from .history_search_query import SearchNeedle\n"
@@ -355,12 +358,18 @@ def test_only_the_family_imports_an_owner() -> None:
         "kiro_crew/history_search.py",
         "kiro_crew/history_search_memo.py",
         "kiro_crew/history_search_listing.py",
+        "kiro_crew/history_search_rank.py",
     }
     root = source_corpus.src_root().parent
     scanned: list[str] = []
     offenders: list[str] = []
     for path, _text, tree in source_corpus.parsed_candidates(
-        require_any=("history_search_query", "history_search_memo", "history_search_listing")
+        require_any=(
+            "history_search_query",
+            "history_search_memo",
+            "history_search_listing",
+            "history_search_rank",
+        )
     ):
         relative = path.relative_to(root).as_posix()
         package = ".".join(Path(relative).with_suffix("").parts[:-1])

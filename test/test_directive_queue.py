@@ -419,6 +419,30 @@ class TestEndpoint:
         assert args["message"] == "go" and "max_cycles" in args
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("wrote", [True, False])
+    async def test_the_reply_says_whether_the_session_s_turn_wrote_text(self, wrote):
+        import json
+
+        req = _request({"X-Session-Key": "dashboard_slot-a"}, self._body("nothing_to_do", {}))
+        slot = MagicMock()
+        slot._turn_wrote_text = wrote
+        state = MagicMock()
+        state.get_slot = lambda name: slot if name == "slot-a" else None
+        req.app = {"state": state}
+        resp = await api_session_directive(req)
+        assert resp.status == 200
+        assert json.loads(resp.text)["turn_wrote_text"] is wrote
+
+    @pytest.mark.asyncio
+    async def test_a_session_with_no_dashboard_tab_reports_no_text(self):
+        import json
+
+        req = _request({"X-Session-Key": "cron:job-1"}, self._body("nothing_to_do", {}))
+        resp = await api_session_directive(req)
+        assert resp.status == 200
+        assert json.loads(resp.text)["turn_wrote_text"] is False
+
+    @pytest.mark.asyncio
     async def test_a_caller_supplied_payload_is_ignored(self):
         """The substitution attack: pair a payload of the attacker's choosing with
         the key of a call the victim will make. The body's ``args``/``kind``/

@@ -53,6 +53,7 @@ from typing import (
 
 from kiro_crew import edition
 from kiro_crew.config.paths import config_dir  # noqa: F401 - re-export
+from kiro_crew.constants import ENV_TRUTHY  # noqa: F401 - re-export
 from kiro_crew.mcp_provenance import is_marked
 from kiro_crew.platform.admission import (  # noqa: F401 - re-export
     canonical_signing_bytes,
@@ -949,6 +950,37 @@ def may_grant_builtin_at_gate_now(ref: str) -> bool:
     return may_grant_builtin_at_gate(ref, ceiling)
 
 
+def mcp_scope_governed_now() -> bool:
+    """Whether the installed ceiling or any configured profile constrains ``mcp`` at all.
+
+    For a harness whose MCP calls reach the gate with NO server or tool identity --
+    an OpenCode-family harness sends a fused ``<server>_<tool>`` title and nothing
+    else -- the gate never asks the ``mcp`` scope about a call
+    (``GateFacts.governance_own_scopes`` is empty for it), so every ``mcp`` control
+    is one the gate cannot apply there: a deny of ``@ops/repo.delete`` as much as an
+    allow-mode list. Such a harness asks this BEFORE it mounts a server and refuses
+    the session when the answer is yes, which is the only place the control can
+    still hold. Scope-level on purpose: a pattern scan would answer "is this server
+    named", and the question here is "is there anything the fused title would hide".
+
+    Fails CLOSED, as :func:`may_skip_gate_now` does: an unreadable ceiling or an
+    unresolved profile store answers True. Reads the POLICY level through
+    :func:`policy_level_control`, so an LTS build's baseline counts.
+    """
+    try:
+        from kiro_crew.platform.context import current_context
+
+        ceiling = getattr(current_context(), "governance", None)
+        if _ruleset_has_an_opinion(policy_level_control(ceiling, "mcp")):
+            return True
+        from kiro_crew.platform.governance_profiles import any_configured_profile_constrains
+
+        return any_configured_profile_constrains("mcp")
+    except Exception:  # noqa: BLE001 -- cannot tell -> governed
+        logger.warning("cannot resolve the governance ceiling or profiles for the mcp scope")
+        return True
+
+
 def withheld_by_confirm_tools(ref: str) -> bool:
     """Whether ``hooks.confirm_tools``, and not the security policy, withholds ``ref``'s grant.
 
@@ -1251,6 +1283,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _AGENTCORE_POLICY_ONLY,
         _AGENTCORE_POSTURES,
         _AGENTCORE_SCOPE,
+        _POLICY_DISTRIBUTION_CACHE_ONLY_ENV,
         _POLICY_DISTRIBUTION_HEADERS_ENV,
         _POLICY_DISTRIBUTION_URL_ENV,
         _TELEMETRY_OTLP_ENDPOINT,
@@ -1336,6 +1369,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _match_path,
         _norm_item,
         _origin_form,
+        _UnmatchableCommand,
         _upper_drive,
         _url_host,
         _windows_glob,
@@ -1377,7 +1411,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         policy_signing_payload,
     )
     from kiro_crew.platform.governance_parts.tiers import (  # noqa: F401
-        _POLICY_DISTRIBUTION_CACHE_ONLY_ENV,
         _POLICY_ENV,
         _POLICY_HOME_LEAF,
         _SLACK_CHANNEL_LEAF,
@@ -1427,6 +1460,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _RUNNING_PREFIX,
         _TRUNCATED_SCAN_ITEM,
         _UNANCHORED_TARGET_ITEM,
+        _UNSPLITTABLE_COMMAND_ITEM,
         CU_CLASS_CONTROL,
         CU_CLASS_KEYBOARD,
         CU_CLASS_MUTATE,

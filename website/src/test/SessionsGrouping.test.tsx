@@ -56,18 +56,18 @@ describe('Sessions grouping labels the group, not its first member', () => {
     fireEvent.click(screen.getByRole('radio', { name: /channel/i }))
 
     await waitFor(() => {
-      // Two folds: slack (2 members) and cron (1).
-      expect(screen.getByText('slack')).toBeTruthy()
-      expect(screen.getByText('cron')).toBeTruthy()
+      // Two folds: Slack (2 members) and Cron (1), by their channel labels.
+      expect(screen.getByText('Slack')).toBeTruthy()
+      expect(screen.getByText('Cron')).toBeTruthy()
     })
 
     // Precise check: the GROUP row's own first cell must be the grouping value.
     // Asserting the members are absent would be wrong -- folds render expanded,
     // so "alpha session" legitimately appears as a member row below its group.
-    const slackCell = screen.getByText('slack')
+    const slackCell = screen.getByText('Slack')
     const groupRow = slackCell.closest('tr')!
     const firstCellText = groupRow.querySelector('td')!.textContent ?? ''
-    expect(firstCellText).toContain('slack')
+    expect(firstCellText).toContain('Slack')
     expect(firstCellText).not.toContain('alpha session')
   })
 })

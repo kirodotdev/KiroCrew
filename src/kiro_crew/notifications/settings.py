@@ -44,6 +44,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.loader import config_dir
 from kiro_crew.notifications.bridge import BRIDGE_TRANSPORTS, DELIVER_MIN_PRIORITIES
 from kiro_crew.notifications.bus import MONITOR_CHANNEL, PRIORITIES
@@ -142,7 +143,33 @@ def _read_stored_strict() -> dict[str, dict[str, Any]]:
     raw = data.get("channel_settings", {})
     if not isinstance(raw, dict):
         return {}
-    return {ch: dict(entry) for ch, entry in raw.items() if isinstance(entry, dict)}
+    return {ch: _with_bool_mute(ch, entry) for ch, entry in raw.items() if isinstance(entry, dict)}
+
+
+def _with_bool_mute(channel: str, entry: dict[str, Any]) -> dict[str, Any]:
+    """*entry* with a hand-written non-boolean ``muted`` read as the boolean it means.
+
+    The writers store only ``true`` (unmuted is the key's absence), but the file is
+    user-editable, and ``"false"`` would otherwise read as muted. The value is read
+    by the config's own hand-edit reader (:func:`_coerce_bool`), falling back to its
+    truthiness. Nothing is refused: the value is read and a warning names it.
+    """
+    entry = dict(entry)
+    value = entry.get("muted")
+    if "muted" not in entry or isinstance(value, bool):
+        return entry
+    muted = _coerce_bool(value, bool(value))
+    logger.warning(
+        "Notification settings: %s has a non-boolean muted value %r; read as %s",
+        channel,
+        value,
+        "muted" if muted else "unmuted",
+    )
+    if muted:
+        entry["muted"] = True
+    else:
+        entry.pop("muted")
+    return entry
 
 
 def _read_stored() -> dict[str, dict[str, Any]] | None:

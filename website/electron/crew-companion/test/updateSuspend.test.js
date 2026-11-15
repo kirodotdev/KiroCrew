@@ -160,3 +160,43 @@ test("a reconcile already in flight when suspend fires does not reopen the overl
 
   mod.shutdownCrewCompanion();
 });
+
+test("a reconcile already in flight when shutdown fires does not reopen the overlay", async () => {
+  // Quit runs shutdownCrewCompanion while a tick may be awaiting the gateway.
+  // status: [init, the in-flight tick]. Both probe "enabled".
+  const mod = loadCompanion({ status: [200, 200] });
+  mod.initCrewCompanion({
+    backendUrl: "http://127.0.0.1:5476",
+    fetchGatewayAuth: async () => ({ value: "tok" }),
+    glog: () => {},
+  });
+  await settle();
+  assert.equal(mod.__calls.open, 1, "init opened the overlay");
+
+  const inFlight = mod.reconcileOnce();
+  mod.shutdownCrewCompanion();
+  await inFlight;
+  await settle();
+
+  assert.equal(mod.__calls.closePet, 1, "shutdown closed the overlay");
+  assert.equal(mod.__calls.open, 1, "the in-flight tick must NOT reopen it after shutdown");
+});
+
+test("init after a shutdown starts the loop unlatched", async () => {
+  // status: [first init, second init]. The second init must open again.
+  const mod = loadCompanion({ status: [200, 200] });
+  const deps = {
+    backendUrl: "http://127.0.0.1:5476",
+    fetchGatewayAuth: async () => ({ value: "tok" }),
+    glog: () => {},
+  };
+  mod.initCrewCompanion(deps);
+  await settle();
+  mod.shutdownCrewCompanion();
+
+  mod.initCrewCompanion(deps);
+  await settle();
+  assert.equal(mod.__calls.open, 2, "a fresh init reopens the overlay");
+
+  mod.shutdownCrewCompanion();
+});

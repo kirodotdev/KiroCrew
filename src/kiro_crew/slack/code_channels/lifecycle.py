@@ -24,6 +24,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from kiro_crew.platform import current_context
@@ -105,18 +107,72 @@ async def handle_lifecycle_event(payload: dict[str, Any], event: dict[str, Any])
     channel, _new_name = _channel_of(event)
     if not channel:
         return False
+    async with _channel_lock(channel):
+        return await _handle(payload, event)
+
+
+@asynccontextmanager
+async def _channel_lock(channel: str) -> AsyncIterator[None]:
+    """The one lock this channel's events (and a reconcile) take, in arrival order."""
     lock = _channel_locks.get(channel)
     if lock is None:
         lock = _channel_locks[channel] = asyncio.Lock()
     _lock_users[channel] = _lock_users.get(channel, 0) + 1
     try:
         async with lock:
-            return await _handle(payload, event)
+            yield
     finally:
         _lock_users[channel] -= 1
         if not _lock_users[channel]:
             del _lock_users[channel]
             _channel_locks.pop(channel, None)
+
+
+async def reconcile_archived(binding: Binding) -> bool | None:
+    """Slack's own archived state for *binding*'s channel, as a missed event would record it.
+
+    An archive made while the gateway was offline sends no event this process
+    sees, so the stored stamp still reads "live". Asked of Slack
+    (``conversations.info``) under the channel's event lock: archived (True) is
+    fenced for this process at once and stamped on the binding as the archive
+    event would have been, so every later check reads it (the fence is lifted
+    once the stamp is stored, and kept if it could not be); unarchived is False;
+    an answer that cannot be had (no client, a failed or unclear read) is
+    ``None``, which callers read as "do not act". Never clears a stamp: only an
+    unarchive event does.
+    """
+    from kiro_crew.slack.code_channels import surface
+
+    channel = binding.channel_id
+    resources = f"channel={channel} event=reconcile"
+    async with _channel_lock(channel):
+        client = surface.client()
+        if client is None:
+            return None
+        try:
+            archived = await client.archived_in_slack(channel)
+        except Exception:
+            logger.info("code channel %s: archived state unreadable", channel, exc_info=True)
+            return None
+        if archived is not True:
+            return archived
+        # Fenced before the stamp, and unfenced once the stamp is stored: from then
+        # on the binding is the answer, so a later unarchive event clears both.
+        surface.fence_archived(channel)
+        try:
+            current = await asyncio.to_thread(store().get_binding, channel)
+            if current is not None and not current.archived_at:
+                current = await asyncio.to_thread(_apply, current, {"archived_at": time.time()})
+                _audit("slack", "allowed", resources)
+                _push_slots()
+        except Exception as exc:
+            # The fence above still holds for this process.
+            logger.warning("code channel %s: missed archive not recorded: %s", channel, exc)
+            _audit("slack", "error", resources, type(exc).__name__)
+            return True
+        if current is not None and current.archived_at:
+            surface.unfence(channel)
+        return True
 
 
 #: One lock per channel with events in flight; dropped when the last one ends.

@@ -52,7 +52,10 @@ def test_current_rules_are_a_clean_row(zone_data, capsys) -> None:
     issues: list[str] = []
     install._doctor_tz_data(issues)
     out = capsys.readouterr().out
-    assert out == "  tz data:     ✅ current (America/Vancouver stays UTC-7 in winter)\n"
+    assert out == (
+        "  tz data:     ✅ current (IANA tzdb 2026b or later)\n"
+        "               Sample check on America/Vancouver, not your configured zone.\n"
+    )
     assert issues == []
     assert zone_data.calls == ["America/Vancouver"]
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense, type ReactNode } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Bot, ScrollText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Wrench, MessageCircleQuestionMark, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, CircleMinus, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
@@ -7,6 +7,7 @@ import { isBenignSupersededRetry, isTerminalApprovalRefusal, noPendingApprovalEr
 import { LogViewer } from '../LogsPage'
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
 import type { SubagentActivity, ToolActivity, Artifact } from '../../types'
 import { countDiffStats } from '../../utils/diffLineCounts'
 import { toApiDecision } from '../../utils/approvalDecision'
@@ -25,20 +26,33 @@ import SegmentedControl from '../../components/SegmentedControl'
 import { Btn, PanelSectionHeader, ContentSkeleton } from '../../components/ui'
 import SideChat from './SideChat'
 import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
-import { runBelongsToSlot } from '../../apps/workflows/runModel'
+import { runBelongsToSlot } from '../../components/workflows/runModel'
 import { workflowRunsPollInterval } from './workflowRunsPoll'
 
 import { ContextBreakdownTab } from '../ContextBreakdownPanel'
-import ErrorBoundary from '../../components/ErrorBoundary'
+import { lazyRetry } from '../../components/lazyRetry'
 import { slotRowByKey } from '../../store/slotIndex'
 
 // The crew log is a drill-in: six fold sections, their own i18n copy and the table
 // that draws each one, on a tab most sessions never open. Fetched on first open
 // rather than riding in the dashboard shell, the same shape `CapabilitiesPage` uses
-// for its templates tab and `DeveloperPanel` for the memory graph.
-const CrewLogTab = lazy(() => import('./CrewLogPanel').then(m => ({ default: m.CrewLogTab })))
-// Remote-environment sessions only.
-const RemoteGitPanel = lazy(() => import('./RemoteGitPanel'))
+// for its templates tab and `DeveloperPanel` for the memory graph. A chunk that
+// fails to load (a stale chunk after a deploy) shows its notice in the tab, with
+// Try Again, and the rest of the dashboard stays up.
+const CrewLogTab = lazyRetry(() => import('./CrewLogPanel'), {
+  layout: 'page',
+  title: () => i18nT('pages.chat.crewLog.tab_load_failed'),
+  scope: 'crew-log',
+})
+// Remote-environment sessions only. A chunk that fails to load shows its notice
+// in the Git tab, with Try Again.
+// No hand-off: the chat composer and open files may hold unsaved drafts.
+const RemoteGitPanel = lazyRetry(() => import('./RemoteGitPanel'), {
+  layout: 'page',
+  title: () => i18nT('sessionEnvironments.remoteGit.panelLoadFailed'),
+  scope: 'remote-git',
+  askAgent: false,
+})
 import SessionSummaryTab from './SessionSummaryTab'
 import { i18nT } from '../../i18n/t'
 import { isNeverStarted, neverStartedKind, queuedWaitText } from './subagentQueuedReason'
@@ -214,8 +228,9 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   const dispatch = useAppDispatch()
   // Outcome of the last approve / reject / cancel round-trip that FAILED. The
   // Redux flags only roll back the busy state, which left a refused decision
-  // indistinguishable from one that never happened.
-  const [actionError, setActionError] = useState<string | null>(null)
+  // indistinguishable from one that never happened. `gone` marks the refusal
+  // that found the approval gone: status, not an error.
+  const [actionError, setActionError] = useState<{ message: string; gone: boolean } | null>(null)
   // WHICH approval is gone, not merely that one was: keyed by the request's
   // target (`approvalGoneKey`), so a later live request here, even one that
   // reuses the recurring id, is never suppressed by it. Kept beside the store
@@ -254,7 +269,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
       // Nothing live to decide, so nothing is sent: the same gone verdict a
       // refused press records, settled by the spawn inventory.
       setGoneFor(approvalGoneKey(a.approval_id, null))
-      setActionError(i18nT('components.approvalCard.approval_no_longer_pending'))
+      setActionError({ gone: true, message: i18nT('components.approvalCard.approval_no_longer_pending') })
       dispatch(markSubagentApprovalGone({ id: a.id, approval_id: a.approval_id, target: null }))
       checkLiveness(a.approval_id)
       return
@@ -279,11 +294,11 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
         checkLiveness(a.approval_id)
       }
       const reason = e instanceof Error ? e.message : ''
-      setActionError(gone
+      setActionError({ gone, message: gone
         ? i18nT('components.approvalCard.approval_no_longer_pending')
         : reason
           ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
-          : i18nT('components.approvalCard.decision_failed'))
+          : i18nT('components.approvalCard.decision_failed') })
     })
   }, [a.approval_id, a.approval_target, a.id, slot, dispatch, checkLiveness])
 
@@ -323,7 +338,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
     setActionError(null)
     // The card converges through the spawn/done stream on success; a refused
     // delete leaves it running, so say so instead of letting the press vanish.
-    api.spawnDelete(a.id).catch(() => setActionError(i18nT('pages.chat.activityViewer.cancel_failed')))
+    api.spawnDelete(a.id).catch(() => setActionError({ gone: false, message: i18nT('pages.chat.activityViewer.cancel_failed') }))
   }, [a.id])
 
   // What the header calls this agent. An entry recovered from an incremental
@@ -491,7 +506,9 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
           Cancel on a running card. */}
       {shownError && (
         <div className="px-3 pb-2">
-          <ErrorNotice variant="inline" message={shownError} askAgent />
+          {shownError.gone
+            ? <StatusNotice tone="info" message={shownError.message} />
+            : <ErrorNotice variant="inline" message={shownError.message} askAgent />}
         </div>
       )}
       {shownLivenessError && (
@@ -603,10 +620,12 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
       )}
       {acting && <div className="px-3 pb-2 text-[12px] text-muted/50">{i18nT('pages.chat.activityViewer.resolving')}</div>}
       {/* Approval card in the activity panel: no draft → hand-off on. A
-          refused decide, the gone refusal included, renders here. */}
+          refused decide renders here; a gone one as status. */}
       {actionError && (
         <div className="px-3 pb-2">
-          <ErrorNotice variant="inline" message={actionError} askAgent />
+          {gone
+            ? <StatusNotice tone="info" message={actionError} />
+            : <ErrorNotice variant="inline" message={actionError} askAgent />}
         </div>
       )}
     </div>
@@ -1089,12 +1108,14 @@ function ArtifactListRow({ row, busy, onOpen, onSave }: {
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, onFileOpen, onArtifactOpen, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, onDismissSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, pins, pinsLoading, onJumpToPin, onUnpin, slotTitle, chatMode, remoteEnvironmentName }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, onFileOpen, onFolderOpen, onArtifactOpen, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, onDismissSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, pins, pinsLoading, onJumpToPin, onPutPinInComposer, onUnpin, slotTitle, chatMode, remoteEnvironmentName }: {
   /** Set when the session runs on a remote environment: the Git view then
    *  shows the guest's checkout instead of the gateway's local one. */
   remoteEnvironmentName?: string
   subagents: Record<string, SubagentActivity>; toolLog: ToolActivity[]; open: boolean; onToggle: () => void; slot: string
   onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void
+  /** Side Chat's folder opener: a folder a side reply names opens as a panel tab. */
+  onFolderOpen?: (path: string) => void
   navLinks?: ExtractedLink[]; navResolving?: boolean
   sources?: PullRequestLink[]; selectedSourceUrl?: string; onSelectSource?: (url: string) => void; onReconcileSource?: (url: string) => void; onDismissSource?: (url: string) => void; onAddToChat?: (text: string) => void
   /** Issue links mentioned in this session, plus the Issues tab's own selection. */
@@ -1106,6 +1127,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   pins?: ChatPin[]
   pinsLoading?: boolean
   onJumpToPin?: (messageTs: string, mid?: string) => void
+  onPutPinInComposer?: (messageTs: string, mid?: string) => void
   onUnpin?: (id: string) => void
   slotTitle?: string
   chatMode?: string
@@ -1318,9 +1340,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
         <div className="flex-1 min-h-0 overflow-hidden">
           {remoteEnvironmentName && slot ? (
             // A remote session's working tree is in its guest workspace.
-            <Suspense fallback={<ContentSkeleton rows={6} />}>
-              <RemoteGitPanel slot={slot} name={remoteEnvironmentName} />
-            </Suspense>
+            <RemoteGitPanel slot={slot} name={remoteEnvironmentName} loading={<ContentSkeleton rows={6} />} />
           ) : (
             <GitReposPanel slotKey={slot} onFileOpen={onFileOpen} />
           )}
@@ -1481,16 +1501,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           beside Logs and Context for the same reason they sit together: all
           three answer "what actually happened in THIS session", this one from
           the record the gateway wrote rather than from live client state. */}
-      {/* ErrorBoundary around the lazy chunk, matching CapabilitiesPage: a stale chunk
-          request after a deploy rejects, and without a local boundary that rejection
-          would replace the whole dashboard with the app-shell error screen. */}
-      {effectiveTab === 'crewlog' && (
-        <ErrorBoundary>
-          <Suspense fallback={<ContentSkeleton rows={6} />}>
-            <CrewLogTab key={slot} slot={slot} />
-          </Suspense>
-        </ErrorBoundary>
-      )}
+      {effectiveTab === 'crewlog' && <CrewLogTab key={slot} slot={slot} loading={<ContentSkeleton rows={6} />} />}
 
       {/* Session summary — the goal-level view of this session, so returning to
           it does not mean re-reading the transcript. */}
@@ -1509,12 +1520,13 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
             slotTitle={slotTitle}
             mode={chatMode}
             onJumpToMessage={onJumpToPin ?? (() => {})}
+            onPutInComposer={onPutPinInComposer}
             onUnpin={onUnpin ?? (() => {})}
           />
         </div>
       )}
 
-      {effectiveTab === 'side' && <SideChat slot={slot} onFileOpen={onFileOpen} onArtifactOpen={onArtifactOpen} />}
+      {effectiveTab === 'side' && <SideChat slot={slot} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} onArtifactOpen={onArtifactOpen} />}
 
       {/* Scroll to bottom button (tools tab only) */}
     </div>

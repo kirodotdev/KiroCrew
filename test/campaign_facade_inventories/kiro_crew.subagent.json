@@ -255,8 +255,8 @@
   "SubagentInfo": "kiro_crew.subagent_parts.run_record",
   "SubagentManager": "kiro_crew.subagent_parts.manager",
   "ToolApprovalCallback": "kiro_crew.subagent_parts.delivery",
-  "UNADVERTISED_AGENTS": "kiro_crew.subagent_parts.agent_policy",
-  "agent_matches_allowlist": "kiro_crew.subagent_parts.agent_policy",
+  "UNADVERTISED_AGENTS": "kiro_crew.subagent_parts.spawn_allowlists",
+  "agent_matches_allowlist": "kiro_crew.subagent_parts.spawn_allowlists",
   "check_memory_available": "kiro_crew.subagent_parts.host_memory",
   "compute_max_subagents": "kiro_crew.subagent_parts.host_memory",
   "compute_memory_sized_parallel_cap": "kiro_crew.subagent_parts.host_memory",
@@ -266,15 +266,15 @@
   "effort_pending_note": "kiro_crew.subagent_parts.model_choice",
   "format_subagent_usage": "kiro_crew.subagent_parts.run_output",
   "parent_project_dirs": "kiro_crew.subagent_parts.agent_policy",
-  "parent_spawn_allowlists": "kiro_crew.subagent_parts.agent_policy",
+  "parent_spawn_allowlists": "kiro_crew.subagent_parts.spawn_allowlists",
   "parent_spawn_policy": "kiro_crew.subagent_parts.agent_policy",
   "parent_template_allowlists": "kiro_crew.subagent_parts.agent_policy",
   "pop_memory_check_cause": "kiro_crew.subagent_parts.host_memory",
   "resolve_max_subagents": "kiro_crew.subagent_parts.host_memory",
   "set_parent_project_resolver": "kiro_crew.subagent_parts.agent_policy",
-  "spawn_allowlist": "kiro_crew.subagent_parts.agent_policy",
+  "spawn_allowlist": "kiro_crew.subagent_parts.spawn_allowlists",
   "subagent_count_ceiling": "kiro_crew.subagent_parts.host_memory",
   "validate_cwd": "kiro_crew.subagent_parts.agent_policy",
-  "visible_agent_names": "kiro_crew.subagent_parts.agent_policy"
+  "visible_agent_names": "kiro_crew.subagent_parts.spawn_allowlists"
  }
 }

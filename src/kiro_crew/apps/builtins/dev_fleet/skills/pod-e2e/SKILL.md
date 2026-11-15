@@ -54,11 +54,21 @@ denies you the bus.
 ```
 pod_up     {"worktree": "<wt>"}   -> prose: port, base_url, checkout, token (+ its two limits)
            (+ optional "memory": "16G", "cpu": "800%"; defaults 4G / 200%)
+           (+ optional "env": ["KIROCREW_KIRO_BIN=/abs/fake-kiro-cli"])
 pod_restart {"worktree": "<wt>"}  -> same handle, HOME KEPT (apps, config, models)
 pod_status {"worktree": "<wt>"}   -> status + port + health
 pod_ls     {}                     -> every pod active on this host
 pod_down   {"worktree": "<wt>"}   -> stopped, HOME reclaimed
 ```
+
+**Reproducing an agent error state.** A pod starts from the service manager's
+clean environment, so a `KIROCREW_KIRO_BIN` you export never reaches it. To see
+how the UI shows a broken kiro-cli (say one that prints `error: unexpected
+argument '--auth-method' found`), write a small executable script that prints that
+line to stderr and exits 2, then `pod_up` with `"env": ["KIROCREW_KIRO_BIN=<its
+absolute path>"]` (CLI: `kirocrew pod up <wt> --env KIROCREW_KIRO_BIN=<path>`).
+The pod boots even though that child cannot start, and the journal says so. Only
+`KIROCREW_KIRO_BIN` is accepted. The next `pod_up` without `env` clears it.
 
 Provisioning is not one of them: a cold venv plus an SPA build is minutes of work,
 and a single blocking tool call for that dies to any timeout with no way to learn

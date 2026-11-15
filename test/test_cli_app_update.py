@@ -77,6 +77,20 @@ class TestCliUpdate:
         assert "Uninstall first. " in err
         assert ".." not in err
 
+    def test_a_refusal_names_the_update_control_not_the_toggle(self, monkeypatch, capsys):
+        import kiro_crew.app_lifecycle_client as client
+        from kiro_crew.cli_commands_app import _handle_app
+
+        def _refuse(*a, **k):
+            raise client.AppGatewayError("app 'my-app' is busy")
+
+        monkeypatch.setattr(client, "toggle_app", _refuse)
+        with pytest.raises(SystemExit):
+            _handle_app(types.SimpleNamespace(app_action="update", name="my-app"))
+        err = capsys.readouterr().err
+        assert "Press Update (or Sync) on the app's page in the dashboard instead." in err
+        assert "Toggle" not in err
+
     def test_the_parser_accepts_the_verb(self):
         from kiro_crew.cli_parser_agent import register_app_parser
 

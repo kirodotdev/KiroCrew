@@ -114,6 +114,84 @@ async def test_script_exception_becomes_run_failed_exec() -> None:
     assert res.events[-1].data["where"] == "exec"
 
 
+async def test_a_script_base_exception_fails_the_background_run() -> None:
+    from kiro_crew.testing.wait import await_until
+    from kiro_crew.workflows.registry import RunRegistry
+
+    script = (
+        'META = {"name": "boom"}\n'
+        "async def workflow(ctx):\n"
+        "    await ctx.agent('step 1')\n"
+        "    raise BaseException('script gave up')\n"
+    )
+    registry = RunRegistry()
+    rid = await _runner().run_background(script, registry=registry, run_id="wf_be", now=NOW)
+    handle = registry.get(rid)
+    assert handle is not None and handle.task is not None
+    escaped: BaseException | None = None
+    try:
+        await await_until(handle.task, what="the driver task to end")
+    except BaseException as exc:  # noqa: BLE001 - the driver must not die with it
+        escaped = exc
+    assert escaped is None, f"the driver task died with {escaped!r}"
+    snap = registry.status(rid, include_events=True)
+    assert snap["status"] == "failed", snap["status"]
+    assert snap["events"][-1]["type"] == "run_failed"
+    assert snap["events"][-1]["data"]["where"] == "exec"
+    assert "script gave up" in snap["error"]
+    assert await registry.cancel(rid) is False  # nothing left to cancel
+
+
+async def test_a_cancel_still_cancels_the_background_run() -> None:
+    from kiro_crew.testing.wait import await_until
+    from kiro_crew.workflows.registry import RunRegistry
+
+    started = asyncio.Event()
+    never = asyncio.Event()
+
+    async def _hang(prompt: str, opts: dict):
+        started.set()
+        await never.wait()
+        return "never"
+
+    script = (
+        'META = {"name": "slow"}\n'
+        "async def workflow(ctx):\n"
+        "    await ctx.agent('hang')\n"
+        "    raise BaseException('not reached')\n"
+    )
+    registry = RunRegistry()
+    runner = _runner(agent_fn=_hang)
+    rid = await runner.run_background(script, registry=registry, run_id="wf_cx", now=NOW)
+    await await_until(started, what="the agent call to start")
+    assert await registry.cancel(rid) is True
+    handle = registry.get(rid)
+    assert handle is not None and handle.task is not None
+    with contextlib.suppress(asyncio.CancelledError):
+        await await_until(handle.task, what="the driver task to end")
+    snap = registry.status(rid, include_events=True)
+    assert snap["status"] == "cancelled", snap["status"]
+    assert snap["events"][-1]["type"] == "run_cancelled"
+
+
+async def test_a_script_editing_ctx_args_leaves_the_launch_args_alone() -> None:
+    script = (
+        'META = {"name": "pager"}\n'
+        "async def workflow(ctx):\n"
+        "    seen = ctx.args['page']\n"
+        "    ctx.args['page'] = seen + 10\n"
+        "    ctx.args['seen'] = [seen]\n"
+        "    return ctx.args['page']\n"
+    )
+    launched = {"page": 1}
+    res = await _runner().run(script, run_id="wf_args", now=NOW, args=launched)
+    assert res.ok is True, res.error
+    assert res.result == 11  # the script still edits its own copy
+    assert launched == {"page": 1}
+    started = [e for e in res.events if e.type == "run_started"][0]
+    assert started.data["args"] == {"page": 1}
+
+
 # --------------------------------------------------------------------------- #
 # B5 — wall-clock timeout
 # --------------------------------------------------------------------------- #
@@ -570,6 +648,28 @@ async def test_failed_agent_resolves_to_none_not_run_failure() -> None:
     # not tell a throttle from a bad prompt from a crashed backend.
     assert finished.data["error"] == "RuntimeError: agent died"
     assert res.agent_errors == {0: "RuntimeError: agent died"}
+
+
+async def test_a_non_string_prompt_reaches_the_agent_and_starts_a_labelled_call() -> None:
+    seen: list = []
+
+    async def _agent(prompt, opts):
+        seen.append(prompt)
+        return f"row {prompt['id']}"
+
+    script = (
+        'META = {"name": "rows"}\n'
+        "async def workflow(ctx):\n"
+        "    return await ctx.agent({'id': 7})\n"
+    )
+    res = await _runner(agent_fn=_agent).run(script, run_id="wf_row", now=NOW)
+    assert res.ok is True, res.error
+    assert res.result == "row 7"
+    assert seen == [{"id": 7}]
+    started = [e for e in res.events if e.type == "agent_started"][0]
+    assert started.data["label"] == "{'id': 7}"
+    finished = [e for e in res.events if e.type == "agent_finished"][0]
+    assert finished.data["ok"] is True
 
 
 # --------------------------------------------------------------------------- #

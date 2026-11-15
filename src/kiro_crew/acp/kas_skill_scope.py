@@ -686,6 +686,46 @@ def _matched_files(globs: list[str]) -> list[Path]:
     return files
 
 
+def _kept_files(globs: list[str]) -> list[Path]:
+    """:func:`_matched_files`, matched once per session start (``build_reuse``)."""
+    from kiro_crew.build_reuse import reuse
+
+    return list(
+        reuse(
+            ("skill-files", tuple(globs)),
+            lambda: tuple(_matched_files(globs)),
+            weight=lambda files: sum(map(len, globs)) + sum(len(str(f)) for f in files),
+        )
+    )
+
+
+def _kept_skill_read(path: Path) -> tuple[int, str, dict[str, Any] | None, str] | None:
+    """*path*'s size, text and KAS reading (:func:`_kas_front_matter`), read once per
+    session start (``build_reuse``); ``None`` when the screened read refuses it.
+
+    A copy's text reaches the model, as a file:// prompt does, so the file actually
+    opened must pass the prompt fence too.
+    """
+    from kiro_crew.build_reuse import reuse
+    from kiro_crew.hooks import safe_read_prefix
+
+    def read() -> tuple[int, str, dict[str, Any] | None, str] | None:
+        raw = safe_read_prefix(str(path), _MAX_COPY_BYTES + 1, refuse=_unsafe_to_copy)
+        if raw is None:
+            return None
+        text = raw.decode("utf-8", errors="replace")
+        front, body = _kas_front_matter(text)
+        return len(raw), text, front, body
+
+    # The body and the front matter are both read out of the text (no YAML alias
+    # is accepted), so three times the text bounds all three.
+    return reuse(
+        ("skill-read", str(path)),
+        read,
+        weight=lambda kept: len(str(path)) + (3 * len(kept[1]) if kept else 0),
+    )
+
+
 def _unsafe_to_copy(opened: str) -> bool:
     """Whether the kernel path of an opened skill file is one a prompt may not carry."""
     from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path
@@ -714,28 +754,25 @@ def refused_skill_copies(
     written gets no copy and stays dropped, as before.
     """
     from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.build_reuse import reuse
     from kiro_crew.config import paths
-    from kiro_crew.hooks import safe_read_prefix
 
-    native = set(_matched_files(_default_tree_globs(work_dir)))
-    resource = set(_matched_files(_resource_globs(spec, agents_dir / f"{agent}.json", work_dir)))
-    in_scope = sorted(native) if globs is None else _matched_files(globs)
+    native = set(_kept_files(_default_tree_globs(work_dir)))
+    resource = set(_kept_files(_resource_globs(spec, agents_dir / f"{agent}.json", work_dir)))
+    in_scope = sorted(native) if globs is None else _kept_files(globs)
     taken: set[str] = set()
     refused: list[tuple[Path, dict[str, Any] | None, str, str]] = []
     for path in sorted(native | resource | set(in_scope)):
-        # A copy's text reaches the model, as a file:// prompt does, so the
-        # file actually opened must pass the prompt fence too.
-        raw = safe_read_prefix(str(path), _MAX_COPY_BYTES + 1, refuse=_unsafe_to_copy)
-        if raw is None:
+        read = _kept_skill_read(path)
+        if read is None:
             continue
-        text = raw.decode("utf-8", errors="replace")
-        front, body = _kas_front_matter(text)
+        size, text, front, body = read
         loads = (path in native and _kas_loads(front, native=True)) or (
             path in resource and _kas_loads(front, native=False)
         )
         if loads:
             taken.add(str((front or {})["name"]))
-        elif path in in_scope and len(raw) <= _MAX_COPY_BYTES:
+        elif path in in_scope and size <= _MAX_COPY_BYTES:
             refused.append((path, front, body, text))
     copies: list[SkillCopy] = []
     root = paths.data_home() / COPY_DIR_NAME
@@ -762,9 +799,16 @@ def refused_skill_copies(
         target = root / digest / "SKILL.md"
         try:
             # ``restrict_to_owner`` refuses a link planted in the parent chain, so
-            # the gateway never writes where a sandboxed agent pointed it.
-            atomic_write(
-                target, _copy_text(path, front, body, name), newline="", restrict_to_owner=True
+            # the gateway never writes where a sandboxed agent pointed it. Two
+            # targets of one start that copy one skill under one name write it once.
+            copy_text = _copy_text(path, front, body, name)
+            written = hashlib.sha256(copy_text.encode("utf-8")).hexdigest()
+            reuse(
+                ("skill-copy", str(target), written),
+                functools.partial(
+                    atomic_write, target, copy_text, newline="", restrict_to_owner=True
+                ),
+                weight=lambda _: len(str(target)) + len(written),
             )
         except OSError:
             logger.warning("KAS skill copy of %s could not be written", path, exc_info=True)

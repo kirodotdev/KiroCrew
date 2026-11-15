@@ -105,6 +105,22 @@ export interface AppInfo {
    * Also absent on hosts that predate this field.
    */
   update?: AppUpdate
+  /**
+   * The chat session this host surface is bound to: the same key the scoped
+   * client sends as `X-Session-Key`. Present when the host binds a session (a
+   * `contributes.panelTabs` side-panel tab, a session control); ABSENT on a
+   * routed `ui.pages` page, which is not session-scoped. A side-panel tab uses
+   * it to show the data that belongs to its own chat.
+   */
+  session?: AppSession
+}
+
+/** The session key a routed `ui.pages` page sends (InstalledAppSurface); not a chat. */
+const ROUTED_PAGE_SESSION_KEY = 'dashboard:ui'
+
+export interface AppSession {
+  /** Session key, e.g. `dashboard:chat-2-1787502679`. */
+  sessionKey: string
 }
 
 export interface AppSdkContextValue {
@@ -126,13 +142,22 @@ export function useCtx(): AppSdkContextValue {
 }
 
 
+/** The leading mark of an entry that names one path and no child (`=/api/apps`),
+ *  as `token_auth_app_scope.EXACT_API_ENTRY_MARK`. Seam level 7. */
+const EXACT_API_ENTRY_MARK = '='
+
 /** Whether a NORMALIZED pathname matches one of the declared API patterns.
  *  Mirrors token_auth._api_pattern_matches: only declared trailing wildcards
- *  are interpreted, and there are no implicit feature grants. */
+ *  are interpreted, an entry marked exact matches only itself, and there are
+ *  no implicit feature grants. */
 function matchesDeclared(allowedPaths: readonly string[], normalized: string): boolean {
   return allowedPaths.some(entry => {
     const pattern = entry.trim()
     if (!pattern) return false
+    if (pattern.startsWith(EXACT_API_ENTRY_MARK)) {
+      const exact = pattern.slice(EXACT_API_ENTRY_MARK.length)
+      return exact !== '' && normalized === exact
+    }
     if (pattern.endsWith('/*')) {
       const base = pattern.slice(0, -2)
       return normalized === base || normalized.startsWith(base + '/')
@@ -154,6 +179,13 @@ export function apiPathAllowed(allowedPaths: readonly string[], path: string): b
   return matchesDeclared(allowedPaths, new URL(path, 'http://localhost').pathname)
 }
 
+/** The refusal for a path the app's `permissions.api` does not admit: the
+ *  developer diagnostic names the path to declare and what is declared. One
+ *  spelling for every SDK surface that checks a path before it sends. */
+export function permissionDenied(appName: string, path: string, allowedPaths: readonly string[], appLabel: string): AppApiPermissionError {
+  return new AppApiPermissionError(`[app-sdk] App "${appName}" not permitted to access ${path}. Declared: [${allowedPaths.join(', ')}]`, appLabel)
+}
+
 function createScopedApi(allowedPaths: string[], appName: string, sessionKey: string | undefined, appLabel: string): AppApi {
   const check = (path: string): string => {
     // Reject absolute and protocol-relative URLs to prevent SSRF. Backslashes
@@ -168,7 +200,7 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey: st
     const parsed = new URL(path, 'http://localhost')
     const normalized = parsed.pathname
     if (!matchesDeclared(allowedPaths, normalized)) {
-      throw new AppApiPermissionError(`[app-sdk] App "${appName}" not permitted to access ${normalized}. Declared: [${allowedPaths.join(', ')}]`, appLabel)
+      throw permissionDenied(appName, normalized, allowedPaths, appLabel)
     }
     return normalized + parsed.search
   }
@@ -239,11 +271,21 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey: st
     })
   }
 
+  // A session this app's page creates names the app (`embed_app`), the way the
+  // embed's own send does: the request carries the person's session, so only
+  // this client knows which app asks. The gateway records it on a conversation
+  // the create begins, so uninstalling the app resets that conversation.
+  const namingApp = (path: string, body: unknown): unknown => {
+    const plain = body == null || (typeof body === 'object' && !Array.isArray(body))
+    const creates = new URL(path, 'http://localhost').pathname === '/api/chat/slots'
+    return plain && creates ? { ...((body ?? {}) as Record<string, unknown>), embed_app: appName } : body
+  }
+
   return {
     raw: rawFetch,
     request: (path, init) => jsonFetch(path, init),
     get: (path, init) => jsonFetch(path, { ...init, method: 'GET' }),
-    post: (path, body, init) => jsonRequest(path, 'POST', body, init),
+    post: (path, body, init) => jsonRequest(path, 'POST', namingApp(path, body), init),
     put: (path, body, init) => jsonRequest(path, 'PUT', body, init),
     patch: (path, body, init) => jsonRequest(path, 'PATCH', body, init),
     del: (path, init) => jsonFetch(path, { ...init, method: 'DELETE' }),
@@ -361,6 +403,11 @@ export function AppScopedApiProvider({
       // from "consulted, nothing newer", which is the distinction the field
       // exists to carry.
       ...(appUpdate ? { update: appUpdate } : {}),
+      // Absent, not undefined, on a surface with no session binding, for the
+      // same `'session' in info` reading as `update`. A routed page passes the
+      // dashboard's own request identity (InstalledAppSurface), which is not a
+      // chat: it still goes out as X-Session-Key but is not published here.
+      ...(sessionKey && sessionKey !== ROUTED_PAGE_SESSION_KEY ? { session: { sessionKey } } : {}),
     },
     subscribe: subscribeFn,
     navigate: navigateFn,

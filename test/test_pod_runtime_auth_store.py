@@ -350,10 +350,10 @@ def test_a_store_with_more_levels_than_descriptors_stages_completely(
 def test_the_mapping_set_is_derived_from_the_store_table(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Pinned to its source. The earlier revision named the two POSIX
-    # .local/share paths literally, so a macOS host -- or one with a redirected
-    # XDG_DATA_HOME -- staged NOTHING, and the viability probe then ACCEPTED the
-    # signed-out pod that produced, because signed-out is a legitimate boot state.
+    # Pinned to its source. Naming the two POSIX .local/share paths literally
+    # would make a macOS host -- or one with a redirected XDG_DATA_HOME -- stage
+    # NOTHING, and the viability probe would ACCEPT the signed-out pod that
+    # produces, because signed-out is a legitimate boot state.
     home = Path("/home/user")
     monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
 

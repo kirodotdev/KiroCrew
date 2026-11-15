@@ -135,7 +135,7 @@ async def test_reconcile_preserves_disk_window_len(tmp_path, monkeypatch):
         # Simulate the periodic flush having persisted the slot (clears dirty).
         slot._dirty = False
 
-        # Write directly to disk.
+        # Append to the on-disk log behind the slot's back.
         log.append("dashboard:s1", "assistant", "reply1")
         log.append("dashboard:s1", "user", "msg2")
 

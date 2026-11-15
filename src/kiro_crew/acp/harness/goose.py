@@ -6,7 +6,7 @@ things make its launch its own: the builtin extension it is told to load beside
 Crew's servers, and where its permission route comes from -- goose resolves
 ``GOOSE_MODE`` out of its own ENVIRONMENT, above its config file, so the mode is
 seeded on the session's environment here and read back off the very response that
-opens or restores the session (``AcpClient._verify_goose_routing``), not by a
+opens or restores the session (``GooseAcpClient._verify_goose_routing``), not by a
 read-back child of its own.
 
 A Side Chat session (``side_read_only``) also gets a goose home of its own
@@ -159,6 +159,7 @@ class GooseLaunch(ProcessAdapter):
     backend = ACP_BACKEND_GOOSE
 
     def __init__(self) -> None:
+        super().__init__()
         # Set by resolve_spawn; read by prepare_spawn_env for the same spawn.
         self._side_scratch: Callable[[], Path | None] | None = None
 

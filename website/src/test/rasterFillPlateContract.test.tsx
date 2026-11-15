@@ -86,7 +86,7 @@ describe('rasterFill plate contract', () => {
     } as unknown as RegistryApp
     const noop = () => {}
     render(
-      <FeaturedSpotlight type="app" apps={[lead]} onOpenApp={noop} onGet={noop} onEnable={noop} />,
+      <FeaturedSpotlight connected type="app" apps={[lead]} onOpenApp={noop} onGet={noop} onEnable={noop} />,
     )
     const img = [...document.querySelectorAll('img')].find(i => i.getAttribute('src') === RASTER)
     expect(img).toBeTruthy()

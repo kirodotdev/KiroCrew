@@ -314,11 +314,11 @@ def add_entity(self: KnowledgeStore, name, entity_type, description=None, aliase
         self.db.execute("RELEASE add_entity")
         raise
     # Hold ``_graph_lock`` across BOTH the commit and the in-memory add, as one
-    # critical section. ``_load_graph`` -- which every delete / merge /
-    # import path runs after its own COMMIT -- takes this same lock for its whole
-    # rebuild-and-swap, so serializing commit+add here means a concurrent rebuild
-    # can never land BETWEEN this commit and this add. Without that, a source
-    # deletion that removes this entity's rows could rebuild and swap in the
+    # critical section. ``_load_graph`` and ``mark_graph_stale`` -- which the
+    # import and the delete / merge paths run after their own COMMIT -- take this
+    # same lock for their whole swap, so serializing commit+add here means a
+    # concurrent swap can never land BETWEEN this commit and this add. Without
+    # that, a source deletion that removes this entity's rows could swap in the
     # window, and this late add would re-inject the deleted entity into the
     # published graph when SQLite has already dropped it. Whichever of the two paths
     # acquires last leaves the in-memory graph agreeing with the committed rows.
@@ -540,26 +540,105 @@ def entity_identity_candidates(
                 yield dict(row), 3, bridge
 
 
+def _string_aliases(text: object) -> list[str]:
+    """The string elements of a stored alias list; a damaged legacy value has none.
+
+    Libraries that predate the writer validation can hold either shape, which the
+    alias fill tolerates too (``_ensure_entity_alias_index``).
+    """
+    try:
+        parsed = json.loads(text) if text else []  # type: ignore[arg-type]
+    except (TypeError, ValueError, RecursionError):
+        return []
+    return [a for a in parsed if isinstance(a, str)] if isinstance(parsed, list) else []
+
+
+def split_entity_candidates(self: KnowledgeStore):
+    """Yield ``(keeper, target, bridge)`` for every stored alias naming another entity.
+
+    The keeper carries ``bridge`` as an alias and the target's canonical name
+    equals it under ``str.casefold()``, the key ``entity_aliases`` holds. Yields
+    nothing until the alias fill has completed, since a partial table could hide
+    a second entity claiming the same name. Ordered by the keeper's row. Each
+    entity carries its stored ``aliases``.
+    """
+    if not self.entity_alias_index_ready():
+        return
+    self.db.create_function("casefold", 1, str.casefold, deterministic=True)
+    rows = self.db.execute(
+        "SELECT a.alias_key, k.id AS keep_id, k.name AS keep_name, "
+        "k.entity_type AS keep_type, k.aliases AS keep_aliases, m.id AS target_id, "
+        "m.name AS target_name, m.entity_type AS target_type, m.aliases AS target_aliases "
+        "FROM entities m JOIN entity_aliases a ON a.alias_key = casefold(m.name) "
+        "AND a.entity_id <> m.id JOIN entities k ON k.id = a.entity_id "
+        "ORDER BY k.rowid, m.rowid"
+    ).fetchall()
+    for row in rows:
+        keep_aliases = _string_aliases(row["keep_aliases"])
+        keeper = {
+            "id": row["keep_id"],
+            "name": row["keep_name"],
+            "entity_type": row["keep_type"],
+            "aliases": keep_aliases,
+        }
+        target = {
+            "id": row["target_id"],
+            "name": row["target_name"],
+            "entity_type": row["target_type"],
+            "aliases": _string_aliases(row["target_aliases"]),
+        }
+        for alias in keep_aliases:
+            if alias.casefold() == row["alias_key"]:
+                yield keeper, target, alias
+                break
+
+
 def merge_entities(self: KnowledgeStore, keep_id, merge_id):
-    self.db.execute(
-        "UPDATE entity_relations SET source_id = ? WHERE source_id = ?", (keep_id, merge_id)
-    )
-    self.db.execute(
-        "UPDATE entity_relations SET target_id = ? WHERE target_id = ?", (keep_id, merge_id)
-    )
-    # Remove self-loops created by the merge
-    self.db.execute(
-        "DELETE FROM entity_relations WHERE source_id = ? AND target_id = ?", (keep_id, keep_id)
-    )
-    # Delete mentions that would conflict, then update the rest
-    self.db.execute(
-        "DELETE FROM mentions WHERE entity_id = ? AND item_id IN (SELECT item_id FROM mentions WHERE entity_id = ?)",
-        (merge_id, keep_id),
-    )
-    self.db.execute("UPDATE mentions SET entity_id = ? WHERE entity_id = ?", (keep_id, merge_id))
-    self.db.execute("DELETE FROM entities WHERE id = ?", (merge_id,))
-    self.db.commit()
-    self._load_graph()
+    """Fold ``merge_id`` into ``keep_id`` in one write transaction, then mark the graph stale.
+
+    Relations and mentions move to the kept entity, which also keeps the merged
+    row's description after its own, and the merged row is deleted (its alias
+    rows go with it, by trigger). The graph is marked stale
+    rather than rebuilt, as a delete does, so a boot-time sweep that merges
+    never holds the whole graph in memory.
+    """
+    self.db.execute("BEGIN IMMEDIATE")
+    try:
+        kept, merged = self.db.execute(
+            "SELECT k.description, m.description FROM entities k, entities m "
+            "WHERE k.id = ? AND m.id = ?",
+            (keep_id, merge_id),
+        ).fetchone()
+        if merged and merged != kept:
+            self.db.execute(
+                "UPDATE entities SET description = ? WHERE id = ?",
+                (f"{kept}\n{merged}" if kept else merged, keep_id),
+            )
+        self.db.execute(
+            "UPDATE entity_relations SET source_id = ? WHERE source_id = ?", (keep_id, merge_id)
+        )
+        self.db.execute(
+            "UPDATE entity_relations SET target_id = ? WHERE target_id = ?", (keep_id, merge_id)
+        )
+        # Remove self-loops created by the merge
+        self.db.execute(
+            "DELETE FROM entity_relations WHERE source_id = ? AND target_id = ?",
+            (keep_id, keep_id),
+        )
+        # Delete mentions that would conflict, then update the rest
+        self.db.execute(
+            "DELETE FROM mentions WHERE entity_id = ? AND item_id IN (SELECT item_id FROM mentions WHERE entity_id = ?)",
+            (merge_id, keep_id),
+        )
+        self.db.execute(
+            "UPDATE mentions SET entity_id = ? WHERE entity_id = ?", (keep_id, merge_id)
+        )
+        self.db.execute("DELETE FROM entities WHERE id = ?", (merge_id,))
+        self.db.execute("COMMIT")
+    except BaseException:
+        self.db.execute("ROLLBACK")
+        raise
+    self.mark_graph_stale()
 
 
 def add_entity_relation(

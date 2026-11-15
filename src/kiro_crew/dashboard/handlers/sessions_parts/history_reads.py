@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Iterable
+from collections.abc import Set as AbstractSet
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -26,6 +28,7 @@ if TYPE_CHECKING:
 # fail mid-cycle. `import ... as` binds via sys.modules and defers attribute access to
 # call time, which also keeps tests' patches of ``handlers.<name>`` effective.
 import kiro_crew.dashboard.handlers as _h
+from kiro_crew.context import RECALL_ROLES
 from kiro_crew.dashboard.handlers._shared import (
     SESSION_SEARCH_TEXT_FIELDS,
     guard_owner_surface_routes,
@@ -213,16 +216,29 @@ def _has_user_content(log: object, row: dict, *, indexed: bool = False) -> bool:
         return True
 
 
-def _is_user_listed_row(log: object, row: dict, *, indexed: bool = False) -> bool:
+def _is_user_listed_row(
+    log: object, row: dict, *, indexed: bool = False, hidden: AbstractSet[str] = frozenset()
+) -> bool:
     """True when the ``user_only`` listing shows *row*.
 
     ONE predicate, shared by ``GET /api/sessions?user_only=1`` and the
     ``user_only`` bulk clear, so the Older Sessions "Delete all" removes only
     rows the reader could see in that pane. Both pass ``indexed=True`` for rows
-    from ``list_sessions_indexed``, so both read the same answer.
+    from ``list_sessions_indexed``, so both read the same answer. *hidden* is
+    :func:`user_hidden_modes` of the same rows: a chat whose mode names an app that
+    keeps its chats out of the lists is not shown.
     """
     key = row.get("key", "")
+    if row.get("mode") in hidden:
+        return False
     return not _is_machine_only_session(key) and _has_user_content(log, row, indexed=indexed)
+
+
+def user_hidden_modes(rows: Iterable[dict]) -> frozenset[str]:
+    """The modes among *rows* whose app keeps its chats out of the lists. Blocking I/O."""
+    from kiro_crew.apps.hidden_sessions import hidden_modes
+
+    return hidden_modes(row.get("mode") for row in rows)
 
 
 _SHORT_SLOT_NAME_RE = re.compile(r"chat-\d+")
@@ -370,7 +386,8 @@ async def api_sessions(request: web.Request) -> web.Response:
                     except HistoryLockTimeout:
                         continue
                 return owned
-            return [s for s in sessions if _is_user_listed_row(log, s, indexed=True)]
+            hidden = user_hidden_modes(sessions)
+            return [s for s in sessions if _is_user_listed_row(log, s, indexed=True, hidden=hidden)]
 
         all_sessions = await asyncio.to_thread(_user_rows, all_sessions)
     # Count AFTER the exclusion so the page, ``total`` and ``has_more`` describe
@@ -567,6 +584,25 @@ def _wants_incognito_excluded(request: web.Request) -> bool:
     return request.query.get("exclude_incognito") in ("1", "true", "yes")
 
 
+#: The most rows a guarded transcript read answers when the caller names a count:
+#: the ceiling ``get_chat_session`` and the hub's ``/api/crew-sessions/read`` share.
+_GUARDED_TAIL_MAX_MESSAGES = 200
+
+
+def _guarded_tail_wanted(request: web.Request) -> int:
+    """How many of the newest recall rows a guarded read asked for; 0 for all of them.
+
+    ``max_messages`` is what the hub's crew read sends, since it keeps only that
+    many. A value that is absent or not a positive integer reads as "the whole
+    transcript", which is what a hub from before the parameter gets.
+    """
+    try:
+        wanted = int(request.query.get("max_messages", "0"))
+    except (TypeError, ValueError):
+        return 0
+    return min(wanted, _GUARDED_TAIL_MAX_MESSAGES) if wanted > 0 else 0
+
+
 def _search_excluding_incognito(log: ConversationLog, q: str, limit: int) -> SearchRows:
     """Ranked search rows with every restricted session excluded, judged under lock.
 
@@ -627,7 +663,13 @@ async def api_session_detail(request: web.Request) -> web.Response:
     get_chat_session also refuses (EB-7b). The dashboard's own click-through does
     NOT set it, so its behavior is unchanged.
 
-    That arm reads through the DERIVATION seam (``derive_messages``), like the
+    With ``max_messages=N`` that arm answers only the newest N rows a recall reads
+    (``RECALL_ROLES``, role and content), which is all the hub's crew read keeps.
+    It is then the read the local get_chat_session makes (``derive_recent``), so a
+    long transcript costs its last rows and not its whole length.
+
+    That arm reads through the DERIVATION seam (``derive_messages``, or
+    ``derive_recent`` for a counted read), like the
     local get_chat_session: the on-disk line is validated with the rows under one
     lock hold, so a writer tightening the line cannot land between the check and
     the read, and a restricted line answers ``[]``. A busy transcript lock, and a
@@ -662,8 +704,15 @@ async def api_session_detail(request: web.Request) -> web.Response:
         # all blocking file IO, and every other conversation_log read in this
         # module is already wrapped. Doing it inline stalled every other request
         # for the duration — on the one path a remote agent can reach.
+        tail = _guarded_tail_wanted(request)
         try:
-            guarded = await asyncio.to_thread(log.derive_messages, key)
+            if tail:
+                # The read the local get_chat_session makes: the newest recall rows
+                # from the end of the file, so the cost follows the count asked
+                # for and not the transcript's size.
+                guarded = await asyncio.to_thread(log.derive_recent, key, tail, RECALL_ROLES)
+            else:
+                guarded = await asyncio.to_thread(log.derive_messages, key)
         except TranscriptBusy:
             # Before TranscriptWithheld: Busy is its subclass, and a busy lock is
             # "cannot vouch right now", not a refusal.

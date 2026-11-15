@@ -28,6 +28,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import _s
 from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _audit,
     _err,
+    _is_agent_call,
     _json_response,
     _non_owner_refusal,
     _notify_artifact_update,
@@ -472,8 +473,7 @@ async def api_artifact_record_event(request: web.Request) -> web.Response:
             "use POST /api/artifacts (create), PATCH /api/artifacts/{slug} "
             "(update / iterate / revert) for content-mutating events"
         )
-    is_mcp = request.headers.get("X-Internal-Secret") is not None
-    actor = "agent" if is_mcp else "user"
+    actor = "agent" if _is_agent_call(request) else "user"
     session_id_hdr = request.headers.get("X-Session-Key")
     if session_id_hdr == "dashboard:ui":
         session_id_hdr = None
@@ -599,7 +599,10 @@ async def api_artifact_relocate(request: web.Request) -> web.Response:
             strip_extended_length_prefix,
         )
 
-        resolved_path = await asyncio.to_thread(Path(os.path.expanduser(source_path)).resolve)
+        try:
+            resolved_path = await asyncio.to_thread(Path(os.path.expanduser(source_path)).resolve)
+        except ValueError:  # a NUL byte or a lone surrogate in the path
+            return _err(f"path does not exist: {source_path}", status=400)
         # The folded path is what gets stat'ed and stored, so a name only the
         # ``\\?\`` spelling can reach (a trailing dot, a DOS device) is refused:
         # its plain spelling names a different file.
@@ -672,13 +675,14 @@ async def api_artifact_relocate(request: web.Request) -> web.Response:
         # Blocking store read/write (meta.json + up to 25 MiB current.html) —
         # offload off the event loop.
         await _run_off_loop(lambda: store.get(slug))
-    except ArtifactNotFoundError as exc:
+        await _run_off_loop(lambda: store.relocate(slug, source_path))
+        # Reload the full artifact (with content from the new source_path) so the
+        # response carries the live file bytes rather than content: null.
+        art = await _run_off_loop(lambda: store.get(slug))
+    except ArtifactNotFoundError as exc:  # also a delete racing the relocate
         return _err(str(exc), status=404)
-
-    await _run_off_loop(lambda: store.relocate(slug, source_path))
-    # Reload the full artifact (with content from the new source_path) so the
-    # response carries the live file bytes rather than content: null.
-    art = await _run_off_loop(lambda: store.get(slug))
+    except ArtifactValidationError as exc:  # a malformed slug, or a refused relocate
+        return _err(str(exc))
 
     _audit(
         tool="artifact_relocate",

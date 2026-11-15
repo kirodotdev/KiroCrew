@@ -37,6 +37,10 @@ KIND_CHAT = "chat"  # turn_id, attempt
 KIND_USER_PROMPT = "user.prompt"  # turn_id, attempt
 KIND_TURN_COMPLETE = "turn.complete"  # turn_id, attempt
 KIND_TOOL = "tool"  # acp_session_id, tool_call_id
+KIND_STEP = "step"  # turn_id, attempt, n (the turn's n-th derived model-call step)
+KIND_COMPACTION = "compaction"  # turn_id, attempt, n
+KIND_STEER = "steer"  # turn_id, attempt, n
+KIND_APPROVAL = "approval"  # acp_session_id (subagent id for a spawn), tool_call_id or request id
 
 _HEX_DIGITS = frozenset("0123456789abcdef")
 _ZERO16 = "0" * 16
@@ -72,11 +76,12 @@ def trace_id(ns: str, kind: str, *parts: object) -> str:
 
 
 def turn_trace_id(ns: str, turn_id: str) -> str:
-    """A turn's trace id: the turn id itself when it is 32 lowercase hex.
+    """A turn's trace id: the turn id itself, lowercased, when it is 32 hex digits
+    and not all zero.
 
     The dashboard mints ``uuid4().hex``, which is already a valid, random trace
-    id, and hook records carry the same value raw. Any other spelling
-    is hashed into one.
+    id, and hook records carry the same value raw. Any other value is hashed
+    into one.
     """
     value = str(turn_id).lower()
     if is_hex32(value) and value != _ZERO32:

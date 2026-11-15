@@ -63,11 +63,13 @@ export type {
   McpServer,
   McpApplyChange,
   McpGlobalScope,
+  McpUnreadableFile,
 } from './index.capabilities'
 export type {
   TodoTask,
   TodoList,
   McpSessionReport,
+  McpSessionStates,
   CodeChannelInfo,
   WorkAggregate,
   SessionLink,
@@ -102,6 +104,7 @@ export type {
   CrewPause,
   CrewWorkFacts,
   CrewWorkItemFacts,
+  ConductorModeRun,
   CrewTimeline,
   CrewTimelineHandoff,
   CrewTimelineLane,
@@ -122,6 +125,11 @@ export type {
   IssueLinkedChange,
   IssueReactions,
   IssueSource,
+  IssueSearchProvider,
+  IssueSearchRequest,
+  IssuePerson,
+  IssueSummary,
+  IssueSearchResponse,
   AppContributor,
   PullRequestSource,
 } from './index.sources'

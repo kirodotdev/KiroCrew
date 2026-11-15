@@ -24,6 +24,7 @@ const ROOT = path.join(__dirname, "..");
  *  string literal from reading as the start of a line comment. */
 function code(file) {
   return fs.readFileSync(path.join(ROOT, file), "utf8")
+    .replace(/\r\n/g, "\n")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
@@ -52,7 +53,7 @@ const IDENTITY_PROBE = "probeGatewayPortOwner";
 // `switch` writes `case "none":` and an array writes a bare `"none"`, so a guard
 // that only understood `===` would let exactly the shapes it exists to catch
 // through.
-const SENTINELS = ["free", "bound", "none", "unknown", "kirocrew", "service", "foreign"];
+const SENTINELS = ["free", "bound", "none", "unknown", "unidentified", "kirocrew", "service", "foreign"];
 
 // THE FOUR OCCUPANCY DECISIONS. Each entry is the exact source text and the
 // exact number of times it appears, so a site that is reworded stops matching
@@ -93,6 +94,16 @@ const OCCUPANCY_SITES = [
     code: 'if ((await probeGatewayPortBinding(PORT)) !== "bound") return "spawn";',
     times: 1,
   },
+  {
+    what: "client-only launch fallback: open the app's own forward only on a port nothing listens on",
+    code: 'if ((await probeGatewayPortBinding(PORT)) !== "free") return;',
+    times: 1,
+  },
+  {
+    what: "the exported primary-port probe hands the occupancy reading to the IPC gate",
+    code: 'probePrimaryPortBinding: () => probeGatewayPortBinding(PORT),',
+    times: 1,
+  },
 ];
 
 // The identity judgements. These MAY rest on the holder's command line -- that
@@ -121,7 +132,7 @@ const IDENTITY_SITES = [
   },
   {
     what: "restart handoff: the probe could not look, and refusing is the safer answer",
-    code: 'if (owner === "unknown") {',
+    code: 'if (owner === "unknown" || owner === "unidentified") {',
     times: 1,
   },
   {
@@ -145,6 +156,11 @@ const IDENTITY_SITES = [
     times: 1,
   },
   {
+    what: "boot: a Windows gateway proven by this home's lock is adopted as a plain local one",
+    code: 'const PROVEN_HOME_OWNER = "kirocrew";',
+    times: 1,
+  },
+  {
     what: "unresponsive holder: probe who holds the port that failed its health check",
     code: 'const localOwner = await probeGatewayPortOwner(PORT);',
     times: 1,
@@ -160,8 +176,8 @@ const IDENTITY_SITES = [
     times: 1,
   },
   {
-    what: "boot: refuse to adopt a holder this app did not start with no remote crew configured",
-    code: 'if (decision.action === "reuse" && localOwner === "foreign" && !remoteHost) {',
+    what: "boot: refuse to adopt a holder this app did not start, or one it could not name, with no remote crew configured",
+    code: 'if (decision.action === "reuse" && (localOwner === "foreign" || localOwner === "unidentified") && !remoteHost) {',
     times: 1,
   },
   {
@@ -197,6 +213,11 @@ const NON_PORT_SITES = [
   {
     what: "the HTTP readiness probe's own timeout result",
     code: 'req.on("timeout", () => { req.destroy(); resolve("unknown"); });',
+    times: 1,
+  },
+  {
+    what: "the HTTP readiness probe's result for a body cut off mid-read",
+    code: 'res.on("error", () => resolve("unknown"));',
     times: 1,
   },
   {

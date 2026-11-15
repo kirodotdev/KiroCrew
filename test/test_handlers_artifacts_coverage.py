@@ -28,6 +28,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from body_stream_helpers import attach_json_body
+from redaction_structured_cases import github_classic
 
 from kiro_crew import artifacts as art_mod
 from kiro_crew import publish_provider
@@ -1473,8 +1474,9 @@ class TestRedactRemoteResponseDepthCap:
         assert self._leaf_of(out) == []
 
     def test_string_past_the_cap_is_still_redacted(self) -> None:
-        out = _redact_remote_response(self._at_boundary("AKIAIOSFODNN7EXAMPLE"))
-        assert self._leaf_of(out) != "AKIAIOSFODNN7EXAMPLE"
+        token = github_classic(seed=33)
+        out = _redact_remote_response(self._at_boundary(token))
+        assert self._leaf_of(out) != token
 
     def test_non_string_scalar_past_the_cap_survives(self) -> None:
         out = _redact_remote_response(self._at_boundary(7))
@@ -1485,15 +1487,17 @@ class TestRedactRemoteResponseDepthCap:
         assert self._leaf_of(out) == ""
 
     def test_already_redacted_top_level_key_is_not_rescanned(self) -> None:
-        payload = {"content": "AKIAIOSFODNN7EXAMPLE", "title": "AKIAIOSFODNN7EXAMPLE"}
+        token = github_classic(seed=34)
+        payload = {"content": token, "title": token}
         out = _redact_remote_response(payload, already_redacted=frozenset({"content"}))
-        assert out["content"] == "AKIAIOSFODNN7EXAMPLE"
-        assert out["title"] != "AKIAIOSFODNN7EXAMPLE"
+        # Synthetic token, expected visible: this path deliberately skips redaction.
+        assert out["content"] == token
+        assert out["title"] != token
 
     def test_external_id_keeps_benign_high_entropy_value(self) -> None:
         out = _redact_remote_response({"external_id": "9f8e7d6c5b4a39281706"})
         assert out["external_id"] == "9f8e7d6c5b4a39281706"
 
     def test_external_id_with_hard_credential_is_replaced(self) -> None:
-        out = _redact_remote_response({"external_id": "AKIAIOSFODNN7EXAMPLE"})
+        out = _redact_remote_response({"external_id": github_classic(seed=35)})
         assert out["external_id"] == art_handlers._REMOTE_ID_CRED_TAG

@@ -76,14 +76,23 @@ async def _fire(
     file_present: bool = True,
     user_spec: str = "",
     on_record: bool = True,
+    bound_agent: str = "",
+    user_doc: str = "",
 ):
     write_member_home(config_dir(), "alpha")
-    if owns_file:
+    if owns_file or bound_agent:
         # A crewmate owns its file when its binding names it (``mate_file_for_member``).
         path = config_dir() / "config.json"
         doc = json.loads(path.read_text(encoding="utf-8"))
-        doc["agents"]["alpha"]["kiro_agent"] = "alpha"
+        doc["agents"]["alpha"]["kiro_agent"] = "alpha" if owns_file else bound_agent
         path.write_text(json.dumps(doc), encoding="utf-8")
+    if bound_agent:
+        # The member's shared template: an installed user-level agent.
+        user = paths_mod.kiro_agents_dir()
+        user.mkdir(parents=True, exist_ok=True)
+        (user / f"{bound_agent}.json").write_text(
+            json.dumps({"name": bound_agent, "prompt": ""}), encoding="utf-8"
+        )
     loader._invalidate_config_cache()
     cfg = KiroCrewConfig.load()
     mates = paths_mod.mate_agents_dir()
@@ -101,7 +110,9 @@ async def _fire(
         # An installed agent: the user-level folder declares "alpha" under this file.
         user = paths_mod.kiro_agents_dir()
         user.mkdir(parents=True, exist_ok=True)
-        (user / user_spec).write_text(json.dumps({"name": "alpha", "prompt": ""}), encoding="utf-8")
+        (user / user_spec).write_text(
+            user_doc or json.dumps({"name": "alpha", "prompt": ""}), encoding="utf-8"
+        )
     monkeypatch.setattr(mate_worker, "globally_disabled_refs", lambda names: [])
     gw, callback = await _cron_callback(monkeypatch, cfg)
     # The 1.0 capture: a member selection on the shared template.
@@ -144,7 +155,7 @@ async def test_a_cron_of_a_crewmate_without_its_own_file_is_unchanged(monkeypatc
 
     assert call.kwargs["agent"] != MATE_WORKER_AGENT
     assert call.kwargs["crew_agent"] == "alpha"
-    assert read_session_execution("cron:hourly") == captured
+    _same_member_run(read_session_execution("cron:hourly"), captured, call.kwargs["agent"])
 
 
 @pytest.mark.asyncio
@@ -162,6 +173,101 @@ async def test_a_crewmate_whose_own_file_was_deleted_fails_closed_on_its_worker(
         mate_worker.worker_session_spec(base, "cron:hourly")
 
 
+def _same_member_run(record, captured, dispatched):
+    """*record* is *captured*'s member run, naming the agent the fire dispatched."""
+    assert (record.member_id, record.store, record.memory_mode, record.selection_kind) == (
+        captured.member_id,
+        captured.store,
+        captured.memory_mode,
+        captured.selection_kind,
+    )
+    assert record.template_id == dispatched
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fire",
+    [
+        {"owns_file": False, "bound_agent": "helper"},
+        {"owns_file": True, "file_present": True, "user_spec": "alpha.json"},
+    ],
+    ids=["member-route", "shadowing-template-route"],
+)
+async def test_the_spawn_gate_reads_the_agent_a_member_cron_dispatches(monkeypatch, fire):
+    """The 1.0 capture names ``kirocrew``; the fire dispatches the Bot's own
+    agent. A ``spawn_run`` from the turn is vetted against the agent's allowlist,
+    on the record-reading gate and on ``/api/spawn``'s scheduler capture."""
+    from kiro_crew import agent_discovery
+    from kiro_crew.subagent_parts.agent_policy import (
+        _parent_template_for_spawn,
+        _vet_parent_available_agents,
+        parent_spawn_policy,
+        parent_template_spawn_policy,
+        with_cron_dispatched_policy,
+    )
+
+    call, captured = await _fire(monkeypatch, **fire)
+
+    dispatched = call.kwargs["agent"]
+    assert dispatched and dispatched != captured.template_id
+    assert _parent_template_for_spawn("cron:hourly") == dispatched
+    spec = {"name": dispatched, "prompt": ""}
+    spec["toolsSettings"] = {"subagent": {"availableAgents": ["scout"]}}
+    (paths_mod.kiro_agents_dir() / f"{dispatched}.json").write_text(
+        json.dumps(spec), encoding="utf-8"
+    )
+    agent_discovery.clear_list_agents_cache()
+    scheduler = parent_template_spawn_policy("cron:hourly", captured.template_id)
+    for policy in (
+        parent_spawn_policy("cron:hourly"),
+        with_cron_dispatched_policy("cron:hourly", captured, scheduler),
+    ):
+        assert _vet_parent_available_agents(policy, "other")
+        assert _vet_parent_available_agents(policy, "scout") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("file_present", [True, False])
+async def test_a_crewmate_shadowed_by_a_user_level_template_runs_its_cron_there(
+    monkeypatch, file_present
+):
+    """A Bot on record whose name a user-level template also declares. Its chats
+    run on that template (``member_chat_agent``), so its cron turn keeps the same
+    member route instead of the worker, which refuses a shadowed file."""
+    call, captured = await _fire(
+        monkeypatch, owns_file=True, file_present=file_present, user_spec="alpha.json"
+    )
+
+    assert call.kwargs["agent"] != MATE_WORKER_AGENT
+    assert call.kwargs["crew_agent"] == "alpha"
+    _same_member_run(read_session_execution("cron:hourly"), captured, call.kwargs["agent"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("file_present", [True, False])
+@pytest.mark.parametrize(
+    "user_doc",
+    [json.dumps({"name": "beta", "prompt": ""}), "{not json"],
+    ids=["misnamed", "unparseable"],
+)
+async def test_a_same_stem_file_that_does_not_declare_the_bot_keeps_its_worker(
+    monkeypatch, file_present, user_doc
+):
+    """A user-level ``alpha.json`` that names another agent, or does not parse, does
+    not answer ``alpha``: the turn stays on the worker, which refuses a shadowed or
+    missing own file rather than the conductor running it without the Bot's limits."""
+    call, _ = await _fire(
+        monkeypatch,
+        owns_file=True,
+        file_present=file_present,
+        user_spec="alpha.json",
+        user_doc=user_doc,
+    )
+
+    assert call.kwargs["agent"] == MATE_WORKER_AGENT
+    assert mate_worker.is_own_worker_execution(read_session_execution("cron:hourly"))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("user_spec", ["alpha.json", "someapp--alpha.json"])
 async def test_an_installed_agent_named_like_its_member_keeps_its_cron(monkeypatch, user_spec):
@@ -173,7 +279,7 @@ async def test_an_installed_agent_named_like_its_member_keeps_its_cron(monkeypat
 
     assert call.kwargs["agent"] != MATE_WORKER_AGENT
     assert call.kwargs["crew_agent"] == "alpha"
-    assert read_session_execution("cron:hourly") == captured
+    _same_member_run(read_session_execution("cron:hourly"), captured, call.kwargs["agent"])
 
 
 @pytest.mark.asyncio
@@ -192,7 +298,7 @@ async def test_a_self_named_binding_that_never_had_a_crewmate_file_keeps_its_cro
     call, captured = await _fire(monkeypatch, owns_file=True, file_present=False, on_record=False)
 
     assert call.kwargs["agent"] != MATE_WORKER_AGENT
-    assert read_session_execution("cron:hourly") == captured
+    _same_member_run(read_session_execution("cron:hourly"), captured, call.kwargs["agent"])
 
 
 @pytest.mark.asyncio
@@ -209,7 +315,7 @@ async def test_another_instances_deleted_crewmate_does_not_refuse_this_ones_cron
     call, captured = await _fire(monkeypatch, owns_file=True, file_present=False, on_record=False)
 
     assert call.kwargs["agent"] != MATE_WORKER_AGENT
-    assert read_session_execution("cron:hourly") == captured
+    _same_member_run(read_session_execution("cron:hourly"), captured, call.kwargs["agent"])
 
 
 @pytest.mark.asyncio

@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
 
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.secrets_mediation.provenance import (
     REQUEST_POLICY_DIRNAME,
     SIGNATURE_FIELD,
@@ -191,7 +192,7 @@ def load_authorization(config_dir: str | Path, secret_name: str) -> SecretAuthor
         # signature verification, so a planted oversized (or sparse) policy cannot
         # exhaust the gateway's memory. Read cap+1 and refuse on overflow.
         with open(path, "rb") as fh:
-            raw_bytes = fh.read(_MAX_POLICY_BYTES + 1)
+            raw_bytes = bounded_read(fh, _MAX_POLICY_BYTES + 1)
     except FileNotFoundError:
         raise PolicyError(
             "No mediated-request authorizations are configured. The owner must authorize this "

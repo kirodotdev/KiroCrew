@@ -28,8 +28,8 @@ MAX_LONG_STRING = 50_000  # task specs, inline content
 # audit write, and for a steer an RPC that suspends -- so an unbounded audience is
 # a way to occupy the event loop for as long as the caller likes.
 #
-# The VALUE is tied to ``dashboard.state.MAX_SLOTS_PER_CREATOR`` (50) and must
-# never fall below it. The broadcast's `all: true` audience is "every live session
+# The VALUE is tied to ``dashboard.state.MAX_SLOTS_PER_CREATOR`` (50, the default
+# per-creator slot cap) and must never fall below it. The broadcast's `all: true` audience is "every live session
 # this caller created" (``broadcast_audience``), and that set is bounded by the
 # per-creator slot cap and by nothing else -- so a cap under it makes the
 # documented default path refuse itself with ``too_many_targets`` as soon as a
@@ -37,6 +37,12 @@ MAX_LONG_STRING = 50_000  # task specs, inline content
 # act on: it did not name those targets, the fence did. Sitting at the per-creator
 # cap makes the default audience structurally unable to exceed this bound instead
 # of merely unlikely to.
+#
+# shortcut: this bound does not follow ``session.max_per_creator``. An owner who
+# raises that setting above 50 lets one creator hold more sessions than one
+# broadcast reaches, so its `all: true` then answers ``too_many_targets`` and the
+# caller sends to named subsets of up to this many. Upgrade when a creator that
+# large needs one-call fan-out: the request budget below must grow with it.
 #
 # It is a literal rather than an import because ``kiro_crew.dashboard.state``
 # imports this module (a derived value here would be a cycle), so the relation is

@@ -475,6 +475,24 @@ async def test_a_target_configuring_a_pooled_server_differently_is_not_registere
 
 
 @pytest.mark.asyncio
+async def test_a_server_the_session_agent_leaves_out_of_tools_refuses_a_target_declaring_it(
+    agents_dir, files_pooled
+):
+    # The session's stub for a server its ``tools`` leaves out starts nothing
+    # (``rewriter_spec._refusing_stub_entry``), so it never launches the target's copy.
+    _write(agents_dir, {**_delegator("helper"), "mcpServers": _files("/a")})
+    _write(agents_dir, {**_SLACK, "name": "helper", "tools": ["*"], "mcpServers": _files("/a")})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator"]
+    assert (
+        "helper (it sets up its own files, and every agent in this chat gets the copy "
+        "this chat's own agent loads)"
+    ) in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "target, excluded",
     [
@@ -1023,3 +1041,31 @@ async def test_a_target_server_gets_the_ssh_agent_the_session_may_forward(
     parent, target = extras.custom_agents
     assert (kas_env_shim.SHIM_MODULE in parent["mcpServers"]["own-git"]["args"]) is forwarded
     assert (kas_env_shim.SHIM_MODULE in target["mcpServers"]["git"]["args"]) is forwarded
+
+
+@pytest.mark.asyncio
+async def test_the_session_and_its_targets_answer_from_one_scope_reading(agents_dir, monkeypatch):
+    """One session projection reads the MCP config scopes once, its sub-agent
+    targets included, and a scope's mute still reaches the target."""
+    from kiro_crew import mcp_cleanup
+
+    reads: list[int] = []
+
+    def scope_muted():
+        reads.append(1)
+        return frozenset({"muted"})
+
+    monkeypatch.setattr(mcp_cleanup, "mcp_scope_muted_aliases", scope_muted)
+    # The projection reads the user's skill tree; give it an empty one.
+    monkeypatch.setenv("KIRO_HOME", str(agents_dir.parent / "kiro"))
+    servers = {"kept": {"command": "k"}, "muted": {"command": "m"}}
+    _write(agents_dir, {**_delegator("helper", tools=("*",)), "mcpServers": servers})
+    _write(agents_dir, {**_SLACK, "name": "helper", "tools": ["*"], "mcpServers": servers})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", "helper"]
+    for agent in extras.custom_agents:
+        declared = agent.get("mcpServers") or {}
+        assert "kept" in declared and "muted" not in declared, agent["id"]
+    assert len(reads) == 1

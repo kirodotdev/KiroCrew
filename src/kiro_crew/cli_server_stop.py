@@ -190,7 +190,7 @@ def _verified_loopback_gateway_pids(port: int) -> list[int]:
     return [pid]
 
 
-def _gateway_pid() -> None:
+def _gateway_pid(port: int | None = None) -> None:
     """Print this home's gateway-lock holder as one line of JSON, then exit 0.
 
     Read-only. Resolves the incumbent through :func:`gateway_lock.lock_holder`,
@@ -222,17 +222,31 @@ def _gateway_pid() -> None:
     -- it prints ``{"holder": "indeterminate", "reason": "..."}`` and exits 2:
     waiting has no end, so the caller must NOT spawn and must not wait
     unbounded -- it surfaces the terminal error.
+
+    Given *port* (``--port``), a positively held lock whose holder is
+    unnameable is named from the gateway's own run record for that port
+    instead (:func:`_recorded_gateway_pid`: ``run/gateway-<port>.pid`` whose
+    start token still matches the live pid), as ``source: "run_record"`` --
+    the fallback ``stop`` already takes. No record, or a stale one, still
+    prints ``held``.
     """
     try:
         holder = lock_holder(config_dir())
     except LockProbeError as exc:
         if exc.held:
-            # Positively held, holder unnameable: a live gateway (likely still
-            # draining). Name it as held so the caller waits for release.
-            print(json.dumps({"holder": "held", "reason": str(exc)}))
-            return
-        print(json.dumps({"holder": "indeterminate", "reason": str(exc)}))
-        sys.exit(2)
+            recorded = _recorded_gateway_pid(port) if port is not None else None
+            if recorded is not None:
+                # The same fallback _config_dir_owner takes for `stop`: the
+                # gateway's own fresh run record for this port names the holder.
+                holder = LockHolder(pid=recorded, alive=True, source="run_record")
+            else:
+                # Positively held, holder unnameable: a live gateway (likely still
+                # draining). Name it as held so the caller waits for release.
+                print(json.dumps({"holder": "held", "reason": str(exc)}))
+                return
+        else:
+            print(json.dumps({"holder": "indeterminate", "reason": str(exc)}))
+            sys.exit(2)
     if holder.pid is None or not holder.alive:
         print(json.dumps({"holder": "nobody"}))
         return
@@ -785,9 +799,14 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
             source="cli",
             resources=f"pids={denied} port={port}",
         )
-        print(
-            f"❌ No permission to stop pid {', '.join(str(p) for p in denied)} — try: sudo kirocrew stop"
+        # Windows has no sudo: taskkill is denied across an elevation
+        # boundary, so the remedy is an elevated terminal.
+        remedy = (
+            "run it again from an Administrator terminal"
+            if platform_compat.IS_WINDOWS
+            else "try: sudo kirocrew stop"
         )
+        print(f"❌ No permission to stop pid {', '.join(str(p) for p in denied)} — {remedy}")
         sys.exit(1)
     if not sent:
         sel().log_api_access(
@@ -806,6 +825,17 @@ def _manual_stop_command(pid: int) -> str:
     if platform_compat.IS_WINDOWS:
         return f"taskkill /PID {pid} /T"
     return f"kill -TERM {pid}"
+
+
+def _force_stop_command(pids: list[int], *, posix_sep: str = " ") -> str:
+    """The command an operator runs to force-kill *pids* on this platform.
+
+    POSIX keeps each caller's existing ``kill -9`` text, pid separator
+    included, so only the Windows wording differs.
+    """
+    if platform_compat.IS_WINDOWS:
+        return "taskkill " + " ".join(f"/PID {pid}" for pid in pids) + " /T /F"
+    return "kill -9 " + posix_sep.join(str(pid) for pid in pids)
 
 
 def _refuse_if_lock_held(operation: str, port: int) -> None:

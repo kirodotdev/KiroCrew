@@ -467,7 +467,10 @@ credential and exfiltration-URL chain before reaching the dashboard or MCP calle
   its own. It withholds the trailing run of credential-class characters until a
   non-credential terminator arrives or the stream ends, emitting only the
   confirmed-safe prefix, with a bounded hold-back so latency and memory stay
-  bounded on a pathologically long unbroken run.
+  bounded on a pathologically long unbroken run. The dashboard lets one kind of
+  held run go at once: a plain word ending a sentence, which no later text can
+  make part of a credential (security.md, "When the dashboard lets a held tail
+  go").
 
 Two ordering rules generalize beyond this layer and are worth stating once:
 **screen after decode, not before** (screening an encoded form and then writing

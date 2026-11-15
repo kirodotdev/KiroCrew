@@ -117,7 +117,7 @@ async def _catalog_rows(request: web.Request) -> list[dict[str, Any]]:
     log = getattr(state, "conversation_log", None) if state is not None else None
     if log is None:
         return []
-    return await asyncio.to_thread(log.list_sessions)
+    return await asyncio.to_thread(log.list_sessions_indexed)
 
 
 def _machine_only(key: str) -> bool:

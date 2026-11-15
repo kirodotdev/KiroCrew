@@ -19,9 +19,11 @@ import shutil
 from pathlib import Path
 
 from kiro_crew import platform_compat
-from kiro_crew.apps import credential_masks, protected_app_state
+from kiro_crew.apps import agent_readonly_dirs, credential_masks, protected_app_state
+from kiro_crew.apps.builtin_fold import carry_folded_switch
 from kiro_crew.apps.host_exec_grants import revoke_host_exec
 from kiro_crew.apps.manager_builtins import (
+    folded_switch_state,
     invalidate_orphan_cache,
     migrated_builtin_cleanup_applies,
 )
@@ -96,6 +98,18 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         return AppResult(
             ok=False, name=name, error="not a migrated builtin", error_code="not_orphaned"
         )
+    if retired_builtin:
+        # A folded app's record is the only copy of its on/off state; the boot
+        # cleanup carries it the same way before retiring the record.
+        try:
+            carry_folded_switch(name, folded_switch_state(name, meta))
+        except Exception as exc:  # noqa: BLE001
+            return AppResult(
+                ok=False,
+                name=name,
+                error=f"failed to save the setting that replaces this app: {exc}",
+                error_code="io_error",
+            )
     if meta.lifecycle == "locked" and not retired_builtin:
         return AppResult(
             ok=False,
@@ -183,8 +197,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         if keep_data:
             # The manifest leaves with the app directory and the data stays: its
             # credential masks must stand in the record first (apps.credential_masks),
-            # and a record that cannot be written refuses the uninstall.
+            # and a record that cannot be written refuses the uninstall. The same holds for
+            # its read-only directories (apps.agent_readonly_dirs).
             credential_masks.remember_declaration(name)
+            agent_readonly_dirs.remember_declaration(name)
             # ONE string for the pin below and every path-based step after it,
             # or verify() guards a path the renames and deletes do not use.
             dest = _pinned_ancestors(dest)
@@ -479,6 +495,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         protected_app_state.set_owner_disabled(name, False)
     except (OSError, ValueError):
         logger.warning("could not clear an uninstalled app's disable record", exc_info=True)
+    try:
+        protected_app_state.forget_deleted_app_crons(name)
+    except (OSError, ValueError):
+        logger.warning("could not clear an uninstalled app's deleted cron jobs", exc_info=True)
     refresh_app_config_keys()
     logger.info("Uninstalled app %s (keep_data=%s)", name, keep_data)
 
@@ -549,6 +569,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
     # The orphan set may have named this app; a successor installed under the
     # same name must not inherit its stale `orphaned` flag.
     invalidate_orphan_cache()
+    # An uninstalled app hides none of its open chats.
+    from kiro_crew.apps.hidden_sessions import request_hiding_refresh
+
+    request_hiding_refresh()
     return AppResult(ok=True, name=name, message=f"uninstalled {name}{residual}")
 
 

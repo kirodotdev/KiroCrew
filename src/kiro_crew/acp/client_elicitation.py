@@ -149,6 +149,9 @@ async def _handle_elicitation_request(self: AcpClient, msg: JsonRpcMessage) -> A
         )
         return None
     self._pending_elicitations[request.request_id] = request
+    # A Stop on the card of the native child that asks settles it
+    # (``client_native_children``).
+    self._note_native_child_request(msg)
     logger.info(
         "elicitation: asking the person [mode=%s tool_call=%s req=%s session=%s]",
         request.mode,

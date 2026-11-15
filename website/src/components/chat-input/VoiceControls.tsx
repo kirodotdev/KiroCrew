@@ -125,7 +125,7 @@ export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, draftZone = false,
            keyboard hint stays suppressed for exactly the drain the finger
            just committed — and stays SHOWN for a keyboard-binding capture,
            where Esc/Enter genuinely work. */
-        <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} streaming={voiceStreaming} gestureDriven={voiceHoldMode || touchPtt.bar === 'settling'} submitOnRelease={draftZone} download={voiceDownload} />
+        <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} streaming={voiceStreaming} gestureDriven={voiceHoldMode || touchPtt.bar === 'settling'} submitOnRelease={draftZone} download={voiceDownload} captureEnded={voiceDrainCancellable} />
       ) : (
         <VoiceStatusBar
           recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} error={voiceError} keptRecording={voiceKeptRecording} onDismissError={onClearVoiceError} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} download={voiceDownload}

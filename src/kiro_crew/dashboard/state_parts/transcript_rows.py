@@ -12,7 +12,8 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.system_notices import is_system_notice
+from kiro_crew.dashboard.system_notices import is_harness_advisory_row, is_system_notice
+from kiro_crew.history_schema import transcript_sort_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -419,6 +420,9 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
     # A drained sub-agent completion (role ``subagent``) opens a turn of its own,
     # so a refused-model card older than it settles only its own turn.
     saw_later_opener = False
+    # A harness's advisory of the newest turn answers it as an assistant row does,
+    # whichever side of an error row the runner landed it on.
+    saw_advisory = False
     for m in reversed(messages):
         role = m.get("role")
         meta = m.get("meta") or {}
@@ -458,15 +462,18 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
                 saw_compaction_result = True
             continue
         if role == "inject" and m.get("content") and _is_turn_inject(meta):
-            return True
+            return saw_trailing_error if saw_advisory else True
         if role == "subagent":
             saw_later_opener = True
         # A monitor loop's cycle row always dispatches a turn; unanswered, it
         # is the same shape as an unanswered user row.
         if role == "nudge" and m.get("content"):
-            return True
+            return saw_trailing_error if saw_advisory else True
+        if is_harness_advisory_row(m) and m.get("content"):
+            saw_advisory = True
+            continue
         if role in ("user", "assistant") and m.get("content"):
-            if role != "user":
+            if role != "user" or saw_advisory:
                 return saw_trailing_error
             # A ``/compact`` answered by its compaction notice is a FINISHED
             # turn -- unless an error row trails the notice, which is the same
@@ -495,6 +502,32 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
     # the assistant branch above honors -- the turn ended in it and nothing
     # newer proves completion -- so it decides the same way.
     return saw_trailing_error
+
+
+#: How long an interrupted turn stays on offer to the bulk Resume: a week, the
+#: same window an ``[OPTIONS:]`` ending keeps its session in Waiting. A
+#: transcript is restored with its tail on every boot, so a turn cut short once
+#: would otherwise be offered for as long as the session exists.
+INTERRUPTED_BULK_RESUME_MAX_AGE_SECS = 7 * 24 * 3600
+
+
+def is_interruption_stale(messages: list[dict], now: float) -> bool:
+    """True when the newest durable row is older than the bulk-Resume window.
+
+    Only the bulk Resume (the sidebar's "Resume N sessions" row and
+    ``POST /api/chat/slots/resume-all``) reads this. The session still counts as
+    interrupted everywhere else, so its own composer keeps offering Resume.
+
+    The newest durable row is the same row the sidebar sorts by (``last_ts``):
+    a session someone touched since the turn was cut short is not stale. An
+    unreadable stamp is never stale, so the session stays on offer as before.
+    """
+    for m in reversed(messages):
+        if m.get("role") in _TRANSIENT_ROLES:
+            continue
+        bucket, at = transcript_sort_key(m.get("ts") or "")
+        return bucket == 0 and now - at > INTERRUPTED_BULK_RESUME_MAX_AGE_SECS
+    return False
 
 
 def _mark_permission_resolved(

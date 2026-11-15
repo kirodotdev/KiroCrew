@@ -170,7 +170,7 @@ async def test_a_429_without_a_usable_retry_after_keeps_the_linear_backoff(heade
     gw.slack.open_dm.side_effect = [_rate_limited(headers), "D123"]
     mock_sleep, sleeping = _recorded_sleep()
     with sleeping:
-        await gw._open_dm_with_retry("U1", "job1")
+        assert await gw._open_dm_with_retry("U1", "job1") == "D123"
     mock_sleep.assert_awaited_once_with(1.0)
 
 
@@ -180,7 +180,7 @@ async def test_a_short_retry_after_never_shortens_the_linear_backoff():
     gw.slack.open_dm.side_effect = [_slack_error(500), _rate_limited({"Retry-After": "0"}), "D1"]
     mock_sleep, sleeping = _recorded_sleep()
     with sleeping:
-        await gw._open_dm_with_retry("U1", "job1", max_attempts=3)
+        assert await gw._open_dm_with_retry("U1", "job1", max_attempts=3) == "D1"
     assert [c.args[0] for c in mock_sleep.await_args_list] == [1.0, 2.0]
 
 
@@ -193,5 +193,5 @@ async def test_a_5xx_ignores_a_retry_after_header():
     gw.slack.open_dm.side_effect = [SlackApiError(message="down", response=resp), "D1"]
     mock_sleep, sleeping = _recorded_sleep()
     with sleeping:
-        await gw._open_dm_with_retry("U1", "job1")
+        assert await gw._open_dm_with_retry("U1", "job1") == "D1"
     mock_sleep.assert_awaited_once_with(1.0)

@@ -64,7 +64,8 @@ class TestReplaceSavesEveryTreeBeforeReplacingAny:
         recoverable even though the databases have already moved.
 
         Built from a manual `kirocrew-snapshot-` payload, with the failure injected at
-        `shutil.rmtree`, which `_do_replace_mutations` uses to clear a live tree.
+        `shutil.rmtree`, which `_do_replace_mutations` reaches through `_rmtree_or_raise` to
+        clear a live tree.
         """
         home = tmp_path / "home"
         home.mkdir()

@@ -7,11 +7,11 @@
  *  transcript's stream and turn boundaries here. */
 import { useMemo, useRef } from 'react'
 import { store, type AppDispatch } from '../../store'
-import { setVoicePlaying, setVoicePreparing, setVoiceAudio, selectSlotMessages } from '../../store/chatSlice'
+import { setVoicePlaying, setVoicePreparing, setVoicePaused, setVoiceAudio, selectSlotMessages } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { VoicePcmPlayer, voiceBoundary, createVoiceRequestId } from '../../lib/voicePlayback'
 import { reportVoiceFailure } from '../../lib/voiceFailure'
-import { speakOnClient, stopClientSpeech, clientSpeechAvailable } from '../../lib/clientSpeech'
+import { speakOnClient, stopClientSpeech, pauseClientSpeech, resumeClientSpeech, clientSpeechAvailable } from '../../lib/clientSpeech'
 import { opensTurn } from '../../pages/chat/RecoveryCard'
 import type { ChatMessage } from '../../types'
 import type { FrameData } from './frames'
@@ -23,6 +23,17 @@ type VoiceProgress = {
   slot: string
   messageId: string
   spokenLen: number
+}
+
+/** One synthesis request of the current playback context, kept so Restart can
+ *  speak the context again from its first sentence. `clientFallback` marks a
+ *  manual Read aloud that may be spoken on the client when the gateway cannot
+ *  synthesize. */
+type VoiceRequest = {
+  slot: string
+  text: string
+  request_id: string
+  clientFallback: boolean
 }
 
 const isAssistantRow = (m: ChatMessage): boolean => m.role === 'assistant'
@@ -99,17 +110,24 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
   const clientSpeakingRef = useRef(false)
   // Active-slot requests that have not delivered audio yet, behind `voicePreparing`.
   const awaitingAudioRef = useRef(new Set<string>())
-  const pendingVoiceRef = useRef<{ slot: string; text: string; request_id: string } | null>(null)
+  const pendingVoiceRef = useRef<VoiceRequest | null>(null)
   const activeAudioRef = useRef<HTMLAudioElement | null>(null)
+  const playAttemptRef = useRef(0)
   const autoSpeakRef = useRef(false)
   // Speech offsets belong to one concrete message. A segment for another slot
   // must not reset the active message, and a new post-tool segment must start
   // from zero even while the previous message remains in the transcript.
   const voiceProgressRef = useRef<VoiceProgress | null>(null)
   const voiceMutedRef = useRef(false)  // suppress incoming chunks after interrupt
+  // The requests of the current playback context in the order they were
+  // spoken, for Restart. A new context (Stop, a new turn, a new manual Read
+  // aloud, a slot change) empties it through `stopVoice`.
+  const spokenRef = useRef<VoiceRequest[]>([])
   const synthChainRef = useRef<Promise<unknown>>(Promise.resolve())  // serialize TTS calls
 
   return useMemo<VoicePlayback>(() => {
+    const isVoicePaused = () => store.getState().chat.voicePaused
+
     const awaitAudio = (requestId: string) => {
       const wasPreparing = awaitingAudioRef.current.size > 0
       awaitingAudioRef.current.add(requestId)
@@ -129,7 +147,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
     // `reportVoiceFailure`. Rejects a stale request — Stop or a new turn bumped
     // the epoch — so a cancelled reply never starts speaking late, and only
     // fires when client speech is actually available (else the notice stands).
-    const tryClientFallback = (requestId: string, slot: string, code: string | undefined, speakable?: string): boolean => {
+    const tryClientFallback = (requestId: string, slot: string, code: string | undefined, speakable?: string, wasPaused = false): boolean => {
       if (code !== 'voice_unavailable' && code !== 'voice_polly_rejected') return false
       const entry = fallbackRef.current.get(requestId)
       fallbackRef.current.delete(requestId)
@@ -154,13 +172,24 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
         },
         onError: failCode => reportVoiceFailure({ slot, code: failCode }),
       })
-      if (started) clientSpeakingRef.current = true
+      if (started) {
+        clientSpeakingRef.current = true
+        // Settling the failed request can clear the pause (nothing left to
+        // resume), so the caller reports whether the listener had paused.
+        if (wasPaused || isVoicePaused()) {
+          dispatch(setVoicePaused(true))
+          pauseClientSpeech()
+        }
+      }
       return started
     }
 
-    const stopVoice = () => {
+    // Tears down all output and in-flight requests, leaving the playback
+    // context (spoken requests, speech progress) intact.
+    const silenceVoice = () => {
       voiceMutedRef.current = true
       voiceEpochRef.current++
+      playAttemptRef.current++
       // Any client-side fallback speech shares the one output channel, so Stop,
       // a new manual request, and a new turn must silence it too.
       stopClientSpeech()
@@ -190,6 +219,11 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
       dispatch(setVoicePlaying(false))
     }
 
+    const stopVoice = () => {
+      silenceVoice()
+      spokenRef.current = []
+    }
+
     const releaseVoiceOnSocketLoss = () => {
       // Client-side fallback speech does not use the socket — a dropped socket
       // (common on the remote SSH gateways this fallback targets) must not cut
@@ -213,6 +247,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
           // Cancel synthesis so later chunks cannot repeatedly raise the same error.
           stopVoice()
         },
+        isVoicePaused,
       )
       return pcmPlayerRef.current
     }
@@ -229,25 +264,29 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
       return current
     }
 
-    const enqueueVoiceSynthesis = (slot: string, text: string) => {
+    // `replay` re-submits a saved request on its own, keeping the request
+    // boundaries it was first spoken with.
+    const enqueueVoiceSynthesis = (slot: string, text: string, replay?: { clientFallback: boolean }) => {
       // The first sentence starts immediately. While it synthesizes, combine
       // completed sentences into the next request to amortize local model startup.
       const pending = pendingVoiceRef.current
-      if (pending?.slot === slot && pending.text.length + text.length < 4000) {
+      if (!replay && pending && !pending.clientFallback && pending.slot === slot && pending.text.length + text.length < 4000) {
         pending.text += '\n' + text
         return
       }
       const epoch = voiceEpochRef.current
       const request_id = createVoiceRequestId()
-      const request = { slot, text, request_id }
+      const clientFallback = replay?.clientFallback ?? false
+      const request = { slot, text, request_id, clientFallback }
       pendingVoiceRef.current = request
+      spokenRef.current.push(request)
       voiceRequestsRef.current.set(request_id, slot)
       awaitAudio(request_id)
       synthChainRef.current = synthChainRef.current.then(async () => {
         if (pendingVoiceRef.current === request) pendingVoiceRef.current = null
         if (epoch !== voiceEpochRef.current || voiceMutedRef.current) return
         try {
-          await api.voiceSynthesize(slot, request.text, { request_id })
+          await api.voiceSynthesize(slot, request.text, { request_id, clientFallback })
         } catch {
           if (!voiceRequestsRef.current.delete(request_id)) return
           audioSettled(request_id)
@@ -256,6 +295,20 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
           }
         }
       })
+    }
+
+    // Speaks the current playback context again from its first sentence. The
+    // speech progress stays, so a reply that is still streaming under
+    // auto-speak continues after the replayed sentences.
+    const restartVoice = () => {
+      const saved = spokenRef.current.filter(request => request.slot === storeFocusedSlot())
+      if (!saved.length) return
+      silenceVoice()
+      voiceMutedRef.current = false
+      spokenRef.current = []
+      for (const { slot, text, clientFallback } of saved) {
+        enqueueVoiceSynthesis(slot, text, { clientFallback })
+      }
     }
 
     const flushVoiceTail = (slot: string, message: ChatMessage) => {
@@ -268,8 +321,20 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
       if (remaining) enqueueVoiceSynthesis(slot, remaining)
     }
 
+    const playActiveAudio = (audio: HTMLAudioElement) => {
+      const attempt = ++playAttemptRef.current
+      audio.play().catch(error => {
+        if (activeAudioRef.current !== audio || attempt !== playAttemptRef.current) return
+        reportVoiceFailure({
+          slot: storeFocusedSlot(),
+          code: error?.name === 'NotAllowedError' ? 'voice_playback_blocked' : 'voice_playback_failed',
+        })
+        stopVoice()
+      })
+    }
+
     const playNextVoiceChunk = () => {
-      if (voicePlayingRef.current || voiceQueueRef.current.length === 0) return
+      if (isVoicePaused() || voicePlayingRef.current || voiceQueueRef.current.length === 0) return
       voicePlayingRef.current = true
       const url = voiceQueueRef.current.shift()!
       const audio = new Audio(url)
@@ -290,14 +355,26 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
         reportVoiceFailure({ slot: storeFocusedSlot(), code: 'voice_playback_failed' })
         stopVoice()
       }
-      audio.play().catch(error => {
-        if (activeAudioRef.current !== audio) return
-        reportVoiceFailure({
-          slot: storeFocusedSlot(),
-          code: error?.name === 'NotAllowedError' ? 'voice_playback_blocked' : 'voice_playback_failed',
-        })
-        stopVoice()
-      })
+      playActiveAudio(audio)
+    }
+
+    const pauseVoice = () => {
+      const { voicePlaying, voicePreparing } = store.getState().chat
+      if ((!voicePlaying && !voicePreparing) || isVoicePaused()) return
+      dispatch(setVoicePaused(true))
+      pcmPlayerRef.current?.pause()
+      playAttemptRef.current++
+      activeAudioRef.current?.pause()
+      pauseClientSpeech()
+    }
+
+    const resumeVoice = () => {
+      if (!isVoicePaused()) return
+      dispatch(setVoicePaused(false))
+      pcmPlayerRef.current?.resume()
+      if (activeAudioRef.current) playActiveAudio(activeAudioRef.current)
+      else playNextVoiceChunk()
+      resumeClientSpeech()
     }
 
     const refreshAutoSpeak = () => {
@@ -388,6 +465,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
       onVoiceError(data) {
         const { request_id, code, speakable } = data as { request_id?: string; code?: string; speakable?: string }
         if (!request_id || !voiceRequestsRef.current.delete(request_id)) return
+        const wasPaused = isVoicePaused()
         audioSettled(request_id)
         if (voiceMutedRef.current || data.slot !== storeFocusedSlot() || code === 'voice_cancelled') return
         // A gateway that cannot synthesize at all: speak on the client instead
@@ -395,7 +473,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
         // broadcast BEFORE the HTTP 502 reaches the client, so owning the
         // outcome here is what stops a "Read aloud failed" notice showing while
         // the reply plays locally. `speakable` is the gateway's cleaned text.
-        if (tryClientFallback(request_id, data.slot, code, speakable)) return
+        if (tryClientFallback(request_id, data.slot, code, speakable, wasPaused)) return
         reportVoiceFailure({ slot: data.slot, request_id, code: code || 'voice_synthesis_failed' })
       },
       attachWindowEvents() {
@@ -403,11 +481,20 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
           stopVoice()
           if (autoSpeakRef.current && typeof AudioContext !== 'undefined') getPcmPlayer().unlock()
         }
+        const onVoiceRestart = () => {
+          restartVoice()
+          if (typeof AudioContext !== 'undefined') getPcmPlayer().unlock()
+        }
         const onVoiceStart = (event: Event) => {
           const { slot, request_id, clientFallback, text } = (event as CustomEvent<{ slot: string; request_id: string; clientFallback?: boolean; text?: string }>).detail
+          const requestedHere = voiceRequestsRef.current.has(request_id)
           voiceRequestsRef.current.set(request_id, slot)
           if (slot === storeFocusedSlot()) {
             voiceMutedRef.current = false
+            // A request this hook did not submit is a manual Read aloud.
+            if (!requestedHere && typeof text === 'string') {
+              spokenRef.current.push({ slot, text, request_id, clientFallback: !!clientFallback })
+            }
             // Pin the fallback eligibility and the current epoch now, so a later
             // Stop / new turn (which bumps the epoch) invalidates it and a
             // cancelled reply cannot start speaking on the client afterwards.
@@ -421,13 +508,14 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
         const onVoiceFailed = (event: Event) => {
           const detail = (event as CustomEvent<{ slot: string; request_id: string; code: string; speakable?: string }>).detail
           if (!voiceRequestsRef.current.delete(detail.request_id)) return
+          const wasPaused = isVoicePaused()
           audioSettled(detail.request_id)
           if (!voiceMutedRef.current && detail.slot === storeFocusedSlot()) {
             // The HTTP failure can be the first (or only) signal for a path that
             // does not broadcast a WS voice_error frame, so the same fallback
             // decision is made here. tryClientFallback deletes the entry, so the
             // two signals never both speak.
-            if (tryClientFallback(detail.request_id, detail.slot, detail.code, detail.speakable)) return
+            if (tryClientFallback(detail.request_id, detail.slot, detail.code, detail.speakable, wasPaused)) return
             reportVoiceFailure(detail)
           }
         }
@@ -437,11 +525,17 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
           if (!autoSpeakRef.current) stopVoice()
         }
         window.addEventListener('voice-stop', onVoiceStop)
+        window.addEventListener('voice-pause', pauseVoice)
+        window.addEventListener('voice-resume', resumeVoice)
+        window.addEventListener('voice-restart', onVoiceRestart)
         window.addEventListener('voice-synthesis-start', onVoiceStart)
         window.addEventListener('voice-synthesis-failed', onVoiceFailed)
         window.addEventListener('voice-config-changed', onVoiceConfigChanged)
         return () => {
           window.removeEventListener('voice-stop', onVoiceStop)
+          window.removeEventListener('voice-pause', pauseVoice)
+          window.removeEventListener('voice-resume', resumeVoice)
+          window.removeEventListener('voice-restart', onVoiceRestart)
           window.removeEventListener('voice-synthesis-start', onVoiceStart)
           window.removeEventListener('voice-synthesis-failed', onVoiceFailed)
           window.removeEventListener('voice-config-changed', onVoiceConfigChanged)

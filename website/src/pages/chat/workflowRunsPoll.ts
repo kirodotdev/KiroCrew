@@ -9,7 +9,7 @@
  *  healer uses, which still converges the Workflows tab badge. A hidden tab
  *  makes no request either way: the query sets `refetchIntervalInBackground:
  *  false`, so react-query skips every tick while the page is not visible. */
-import { runBelongsToSlot } from '../../apps/workflows/runModel'
+import { runBelongsToSlot } from '../../components/workflows/runModel'
 
 /** Foreground cadence: the Workflows view is open or a run is live. */
 export const WORKFLOW_RUNS_FAST_POLL_MS = 2500

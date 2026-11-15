@@ -1,8 +1,9 @@
 import React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen } from '@testing-library/react'
+import { act, screen } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { sseDisconnected } from '../store/dashboardSlice'
 
 /**
  * The composer hint is long (`Message Kiro Crew… (/command · @file · $skill)`)
@@ -36,7 +37,9 @@ describe('ChatInput placeholder stays on one line', () => {
   })
 
   it('lets a status placeholder wrap instead', () => {
-    renderWithProviders(<ChatInput {...defaultProps} connected={false} />)
+    const { store } = renderWithProviders(<ChatInput {...defaultProps} connected={false} />)
+    // An outage, not the page's first socket still opening (#34947).
+    act(() => { store.dispatch(sseDisconnected()) })
     const textarea = screen.getByPlaceholderText(/will not send/i)
     for (const token of ONE_LINE) expect(textarea.className).not.toContain(token)
   })

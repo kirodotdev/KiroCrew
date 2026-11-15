@@ -116,6 +116,26 @@ def is_assistant_member(name: object, entry: object) -> bool:
     return name == ASSISTANT_MEMBER_NAME
 
 
+def member_label(name: object, entry: object) -> str:
+    """The label a crew member is shown by: its ``display_name``, else its key.
+
+    The first crewmate is the exception: its key is ``mate``, an internal id
+    nobody chose, so with no ``display_name`` it reads
+    :data:`ASSISTANT_DEFAULT_DISPLAY_NAME`. Every surface that labels a member
+    calls this, which is what keeps the key out of one of them while the rest
+    say "Bot".
+
+    *entry* is the member's config row. A missing ``display_name``, an empty one
+    and one that is only spaces all read the same, so no surface can show a
+    label made of whitespace. The label is presentation only -- ``name`` stays
+    the identity every per-member route and binding is keyed on.
+    """
+    display = str(getattr(entry, "display_name", "") or "").strip()
+    if display:
+        return display
+    return ASSISTANT_DEFAULT_DISPLAY_NAME if is_assistant_member(name, entry) else str(name)
+
+
 # Collective allowlists — the EXACT filenames KiroCrew owns in each dir. Used by
 # the Playwright convergence sweep (browser/setup.py) so it rewrites only files
 # KiroCrew generates, never a user's own agent config that happens to share a

@@ -67,7 +67,8 @@ const SILENCED: Record<string, string> = {
  *  the same file rendering the same value, not the toast. Each entry is the file and that value. */
 const SIBLING_LIVE: Record<string, string> = {
   // The top bar's offline notice; the connection dot's sr-only status span announces the cause.
-  'shell/topbar/shellHeader.tsx': 'gatewayStatusMsg',
+  // `gatewayStatusAnnounce` is the cause, blank only while a relay Crew window's centre view speaks.
+  'shell/topbar/shellHeader.tsx': 'gatewayStatusAnnounce',
 }
 
 describe('nothing sets a silenced in-place error except through the helper', () => {

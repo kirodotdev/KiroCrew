@@ -5,13 +5,24 @@
    data-mode (light/dark hint, owned by the theme system).
 
    Scope: ONLY the chat surface. Topbar, main nav, sessions sidebar, and the
-   right activity panel are LEFT UNTOUCHED. Every selector below is anchored
-   to `[style*="--mc-content-width"]` — the chat pane's inline CSS-var which
-   ChatPage.tsx (and the App SDK ChatEmbed via ChatMessageList) sets only on
-   chat surfaces. This anchor prevents `.msg-content` rules leaking into
-   NotificationsPage, ArtifactDetailPage, MarkdownPanel, ContentRenderer,
-   and prevents `[data-testid="input-wrapper"]` rules leaking into
-   WelcomeView's chat input or any embedded ChatInput outside a chat pane.
+   right activity panel are LEFT UNTOUCHED. Every descendant selector below is
+   anchored to `[data-chat-scope]`, which ChatPage.tsx and ChatPane.tsx set on
+   the chat pane root, ChatMessageList on each transcript row (so the App SDK
+   ChatEmbed is covered), and ContentRenderer and ArtifactDetailPageBody on
+   their reading-width wrappers. Every element whose inline style names `--mc-content-width` and
+   holds content these rules style sits inside one of them, so the anchor
+   covers every chat surface that names that variable. This anchor
+   prevents `.msg-content` rules leaking into NotificationsPage, and prevents
+   `[data-testid="input-wrapper"]` rules leaking into WelcomeView's chat input
+   or any embedded ChatInput outside a chat pane.
+
+   The anchor is an attribute of its own, never a `[style*=…]` match, when a
+   selector continues past it. Chrome turns `[style*=…] .x` into an
+   invalidation set on the `style` attribute, so EVERY inline style write on
+   ANY element, in every UI mode, would restyle that element's whole subtree:
+   each frame of a drawer drag would restyle ~590 sidebar elements. The two
+   rules that end at a `[style*=…]` match only restyle the element that
+   changed, which it needs anyway.
 
    Accessibility: user vs assistant messages are distinguished by BOTH a
    colored left-bar AND a distinct border-style (solid for user, double for
@@ -26,7 +37,8 @@
      [data-composer-input]              — chat input (textarea, or the Lexical
                                           div under Style Markdown While Typing)
      [data-composer-placeholder]        — Lexical composer's placeholder overlay
-     [style*="--mc-content-width"]     — chat pane root (scope anchor)
+     [data-chat-scope]                 — chat pane root and transcript rows (scope anchor)
+     [style*="--mc-content-width"]     — elements that set or read the width var
      [style*="var(--mc-content-width"] — per-message row wrappers
    ───────────────────────────────────────────────────────────────────────── */
 
@@ -61,7 +73,7 @@
 /* Neutralise items-end ONLY on flex containers that wrap a user message —
    :has() scopes precisely so ToolDetails badge alignment and SideChat
    layout are unaffected. */
-[data-ui="cli"] [style*="--mc-content-width"] .items-end:has([data-role="user"]) {
+[data-ui="cli"] [data-chat-scope] .items-end:has([data-role="user"]) {
   align-items: flex-start !important;
   text-align: left !important;
 }
@@ -70,7 +82,7 @@
    `.msg-content` direct descendant. Editing-state UserMessage has a
    textarea instead, so its flex layout for the Save/Cancel button row is
    preserved. */
-[data-ui="cli"] [style*="--mc-content-width"] [data-role="user"]:has(.msg-content) {
+[data-ui="cli"] [data-chat-scope] [data-role="user"]:has(.msg-content) {
   display: block !important;
   text-align: left !important;
   max-width: none !important;
@@ -86,7 +98,7 @@
    UserMessage). CLI mode lifts the cap on the root and on `.msg-content`
    above, so this middle box must be lifted too or a long steered message
    stays capped while normal ones run full-width. */
-[data-ui="cli"] [style*="--mc-content-width"] [data-role="user"]:has(.msg-content) > .relative {
+[data-ui="cli"] [data-chat-scope] [data-role="user"]:has(.msg-content) > .relative {
   max-width: none !important;
   width: auto !important;
 }
@@ -99,14 +111,14 @@
    row so it keeps its own line. Direct-child only: the badge's inner
    animate-pulse span and the InfoTip stay untouched, and the hover footer
    uses `flex` (not `inline-flex`) so it never matches. */
-[data-ui="cli"] [style*="--mc-content-width"] [data-role="user"]:has(.msg-content) > .inline-flex {
+[data-ui="cli"] [data-chat-scope] [data-role="user"]:has(.msg-content) > .inline-flex {
   display: flex !important;
 }
 
 /* The user-message card chrome: drop bg, border, rounding. Keep a faint
    background on the text only — Kiro CLI's "the words look slightly
    highlighted" effect. */
-[data-ui="cli"] [style*="--mc-content-width"] [data-role="user"] .msg-content {
+[data-ui="cli"] [data-chat-scope] [data-role="user"] .msg-content {
   background: var(--bg-elevated) !important;
   color: var(--text) !important;
   border: none !important;
@@ -136,7 +148,7 @@
    outside a chat pane are untouched. `margin-left: 8px` is the bubble's own
    bar + padding (4px + 10px) minus the button's `px-1.5` (6px), so the faces
    share a left edge with the message text and the hover row's timestamp. */
-[data-ui="cli"] [style*="--mc-content-width"] .items-end:has([data-role="user"]) > [data-testid="thread-footer"] {
+[data-ui="cli"] [data-chat-scope] .items-end:has([data-role="user"]) > [data-testid="thread-footer"] {
   align-self: flex-start !important;
   margin-left: 8px !important;
   margin-right: 0 !important;
@@ -150,7 +162,7 @@
    puts its faces on that same edge. Measured, not derived: see
    `scripts/capture-thread-footer-cli-align.mjs`, which asserts the offset for
    both sides. */
-[data-ui="cli"] [style*="--mc-content-width"] :has(> [data-role="assistant"]) > [data-testid="thread-footer"] {
+[data-ui="cli"] [data-chat-scope] :has(> [data-role="assistant"]) > [data-testid="thread-footer"] {
   margin-left: 10px !important;
 }
 
@@ -159,14 +171,14 @@
 
 /* `border-left-style: double` renders two parallel lines — distinct from
    the user's solid bar even for users with colour-vision deficiency. */
-[data-ui="cli"] [style*="--mc-content-width"] [data-role="assistant"] {
+[data-ui="cli"] [data-chat-scope] [data-role="assistant"] {
   border-left: 6px double var(--cli-assistant-bar);
   padding-left: 10px;
   margin: 8px 0 6px 0;
   position: relative;
 }
 
-[data-ui="cli"] [style*="--mc-content-width"] [data-role="assistant"] .msg-content {
+[data-ui="cli"] [data-chat-scope] [data-role="assistant"] .msg-content {
   background: transparent !important;
   border: none !important;
   border-radius: 0 !important;
@@ -180,14 +192,14 @@
 
 /* ── Code blocks inside chat-pane messages — terminal style ─────────────── */
 
-[data-ui="cli"] [style*="--mc-content-width"] .msg-content :not(pre) > code {
+[data-ui="cli"] [data-chat-scope] .msg-content :not(pre) > code {
   background: var(--bg-hover);
   border: none;
   padding: 0 4px;
   border-radius: 2px;
   font-family: var(--mono);
 }
-[data-ui="cli"] [style*="--mc-content-width"] .msg-content pre {
+[data-ui="cli"] [data-chat-scope] .msg-content pre {
   background: transparent !important;
   border: 1px solid var(--border);
   border-radius: 2px;
@@ -206,7 +218,7 @@
 
 /* Scoped to chat-pane descendants so WelcomeView's input or any embedded
    ChatInput outside the chat pane keeps its rounded chrome. */
-[data-ui="cli"] [style*="--mc-content-width"] [data-testid="input-wrapper"] {
+[data-ui="cli"] [data-chat-scope] [data-testid="input-wrapper"] {
   border-radius: 0 !important;
   border-top: 1px solid var(--border) !important;
   border-left: none !important;
@@ -218,7 +230,7 @@
 }
 
 /* `> ` prompt glyph at the left edge of the textarea. */
-[data-ui="cli"] [style*="--mc-content-width"] [data-testid="input-wrapper"]::before {
+[data-ui="cli"] [data-chat-scope] [data-testid="input-wrapper"]::before {
   content: ">";
   position: absolute;
   left: 8px;
@@ -237,11 +249,11 @@
    Style Markdown While Typing) and the textarea's paste-chip mirror
    (PasteHighlightLayer): they must share the same text box, or each chip
    background sits 8px left of its token text. */
-[data-ui="cli"] [style*="--mc-content-width"] :is([data-composer-input], [data-composer-typo][aria-hidden]) {
+[data-ui="cli"] [data-chat-scope] :is([data-composer-input], [data-composer-typo][aria-hidden]) {
   padding-left: 24px !important;
 }
 
-[data-ui="cli"] [style*="--mc-content-width"] [data-composer-input] {
+[data-ui="cli"] [data-chat-scope] [data-composer-input] {
   caret-color: var(--accent);
   /* font-family + font-size inherit from body; useZoom auto-resolves
      --font-body to mono in CLI mode by default. */
@@ -249,6 +261,6 @@
 
 /* The Lexical composer's placeholder is an overlay beside the editor, not a
    native ::placeholder, so it needs the same indent to clear the > glyph. */
-[data-ui="cli"] [style*="--mc-content-width"] [data-composer-placeholder] {
+[data-ui="cli"] [data-chat-scope] [data-composer-placeholder] {
   padding-left: 24px !important;
 }

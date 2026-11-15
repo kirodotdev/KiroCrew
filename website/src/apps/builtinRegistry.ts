@@ -56,7 +56,6 @@ export interface BuiltinAppEntry {
  */
 export const BUILTIN_COMPONENT_REGISTRY: Record<string, BuiltinAppEntry> = {
   '/worlds': { component: lazy(() => import('../pages/WorldsPage')), appId: 'agent-worlds' },
-  '/channels': { component: lazy(() => import('../pages/ChannelPage')), appId: 'channels' },
   '/auto-improvement': { component: lazy(() => import('./auto-improvement/AutoImprovementPage')), appId: 'auto-improvement' },
   '/auto-research': { component: lazy(() => import('./auto-research/ResearchLabPage')), appId: 'auto-research' },
   '/aws-control': { component: lazy(() => import('./aws-control/AwsControlPage')), appId: 'aws-control' },
@@ -71,7 +70,6 @@ export const BUILTIN_COMPONENT_REGISTRY: Record<string, BuiltinAppEntry> = {
   '/ops-mission-control': { component: lazy(() => import('./ops-mission-control/OpsMissionControlPage')), appId: 'ops-mission-control' },
   '/design-critique': { component: lazy(() => import('./design-critique/DesignCritiquePage')), appId: 'design-critique' },
   '/crew-companion': { component: lazy(() => import('./crew-companion/CrewCompanionPage')), appId: 'crew-companion' },
-  '/projects': { component: lazy(() => import('../pages/ProjectsPage')), appId: 'projects' },
   '/md-notebook': { component: lazy(() => import('./md-notebook/MdNotebookPage')), appId: 'md-notebook' },
   '/mochi': { component: lazy(() => import('./mochi/MochiPage')), appId: 'mochi' },
   '/spec-builder': { component: lazy(() => import('./spec-builder/SpecBuilderPage')), appId: 'spec-builder' },

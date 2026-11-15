@@ -210,9 +210,9 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
                 if active is None:
                     active = await rehydrate_slot_from_history_async(state, origin_slot_key)
     elif session_key.startswith(_SUBAGENT_SESSION_PREFIX):
-        # A sub-agent has no tab of its own, so route its card to the PARENT slot
-        # — the same destination its completion injection and its ``subagent_*`` WS
-        # frames already use. Only the dedicated-process arm arrives here: a
+        # A sub-agent has no tab of its own, so route its card to the slot its
+        # ``subagent_*`` WS frames draw in: its PARENT's, or for a nested run the
+        # root chat's. Only the dedicated-process arm arrives here: a
         # shared-runtime sub-agent's MCP stub carries the parent's own key and is
         # resolved by the branch below. An unknown run or a parent with no open tab
         # yields "" and falls through to suppression — never into an unrelated

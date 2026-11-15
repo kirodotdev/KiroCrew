@@ -18,7 +18,7 @@
  * off disk, so compiling an unsaved buffer would silently typeset the previous
  * revision. That is why `saveAndCompile` awaits the save before it compiles.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, ArrowDownToLine, ArrowLeft, ArrowUpFromLine, FileDown, Loader2, MessageSquare, Play, Sparkles, TerminalSquare, ChevronDown, ChevronRight, ChevronUp } from 'lucide-react'
@@ -26,6 +26,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
+import { useTextPrompt } from '../../components/TextPromptDialog'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import SearchableSelect from '../../components/SearchableSelect'
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -151,12 +152,20 @@ const isFlushAbort = (err: Error): boolean => err.message === FLUSH_FAILED
  */
 
 export default function PapyrusPage() {
-  const { confirm, confirmDialog } = useConfirm()
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
+  const { textPrompt, textPromptDialog } = useTextPrompt()
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
 
   const [project, setProject] = useState<string | null>(loadLastProject)
+  // A fresh scope prevents late results from touching a reopened paper's view.
+  const projectScope = useMemo(() => ({ project }), [project])
+  const activeProjectScope = useRef<typeof projectScope | null>(null)
+  useLayoutEffect(() => {
+    activeProjectScope.current = projectScope
+    return () => { activeProjectScope.current = null }
+  }, [projectScope])
   const [currentFile, setCurrentFile] = useState('')
   const [buffer, setBuffer] = useState('')
   const [dirty, setDirty] = useState(false)
@@ -643,33 +652,42 @@ export default function PapyrusPage() {
     setCurrentFile(path)
   }, [project, flushBuffer, isMobile])
 
+  // A failure is always reported. After the user has left the paper, it names the
+  // paper so the message does not read as belonging to the one now open.
+  const reportOperationFailure = (err: Error, vars: { project: string; scope: typeof projectScope }) => {
+    if (isFlushAbort(err)) return
+    setError(activeProjectScope.current === vars.scope ? err.message : `${vars.project}: ${err.message}`)
+  }
+
   const createFileMutation = useMutation({
-    // Flush FIRST: on success this switches `currentFile` to the new file, which
-    // abandons the outgoing buffer exactly the way `openFile` is careful not to.
-    // A failed flush aborts the create rather than trading the user's text for a
-    // new empty file.
-    mutationFn: async (path: string) => {
-      if (!(await flushBuffer())) throw new Error(FLUSH_FAILED)
-      return papyrusApi.createFile(project as string, path)
+    // Opening the new file abandons the outgoing buffer, so a failed flush
+    // aborts creation. After leaving a paper, the buffer belongs to another view.
+    mutationFn: async (vars: { project: string; path: string; scope: typeof projectScope }) => {
+      if (activeProjectScope.current === vars.scope && !(await flushBuffer())) throw new Error(FLUSH_FAILED)
+      return papyrusApi.createFile(vars.project, vars.path)
     },
-    onSuccess: async (result) => {
-      await invalidateFiles()
+    onSuccess: async (result, vars) => {
+      await queryClient.invalidateQueries({ queryKey: projectQueryKey(vars.project) })
+      if (activeProjectScope.current !== vars.scope) return
       setDirty(false)
       setCurrentFile(result.path)
     },
-    onError: (err: Error) => { if (!isFlushAbort(err)) setError(err.message) },
+    onError: reportOperationFailure,
   })
 
   const deleteFileMutation = useMutation({
-    mutationFn: (path: string) => papyrusApi.deleteFile(project as string, path),
-    onSuccess: async (_result, path) => {
-      await invalidateFiles()
-      if (path === bufferFileRef.current) {
+    mutationFn: (vars: { project: string; path: string; mainFile: string; scope: typeof projectScope }) =>
+      papyrusApi.deleteFile(vars.project, vars.path),
+    onSuccess: async (_result, vars) => {
+      await queryClient.invalidateQueries({ queryKey: projectQueryKey(vars.project) })
+      // The same paper reopened still shows the deleted file, so it is matched by paper, not scope.
+      if (activeProjectScope.current?.project !== vars.project) return
+      if (vars.path === bufferFileRef.current) {
         setDirty(false)
-        setCurrentFile(mainFile)
+        setCurrentFile(vars.mainFile)
       }
     },
-    onError: (err: Error) => setError(err.message),
+    onError: reportOperationFailure,
   })
 
   const setMainMutation = useMutation({
@@ -736,30 +754,36 @@ export default function PapyrusPage() {
   // canned message hid that: "Push" read as "publish what I already committed",
   // and there was no field, no preview and no way to describe the change.
   const pushMutation = useMutation({
-    mutationFn: async (message: string) => {
-      // Same guard as every other transition: committing a snapshot the user has
-      // already typed past would push the wrong revision AND lose the newer text.
-      if (!(await flushBuffer())) throw new Error(FLUSH_FAILED)
+    mutationFn: async (vars: { project: string; message: string; scope: typeof projectScope }) => {
+      // Flush to commit the current revision without losing newer text.
+      // After leaving a paper, the buffer belongs to another view.
+      if (activeProjectScope.current === vars.scope && !(await flushBuffer())) throw new Error(FLUSH_FAILED)
       // An empty message is deliberately forwarded as `""` rather than filled in
       // here: the backend owns the fallback (`gitops.DEFAULT_COMMIT_MESSAGE`), and
       // a commit message is repository content read by collaborators and CI — not
       // UI chrome — so it must not come from a translated catalog. It used to, so
       // a German dashboard wrote German subjects into a shared history.
-      await papyrusApi.gitCommit(project as string, message)
-      return papyrusApi.gitPush(project as string)
+      await papyrusApi.gitCommit(vars.project, vars.message)
+      return papyrusApi.gitPush(vars.project)
     },
-    onSuccess: () => invalidateGit(),
-    onError: (err: Error) => { if (!isFlushAbort(err)) setError(err.message) },
+    onSuccess: (_result, vars) =>
+      queryClient.invalidateQueries({ queryKey: ['papyrus', 'git', vars.project] }),
+    onError: reportOperationFailure,
   })
 
-  const onCommitAndPushClick = useCallback(() => {
-    // Same one-field prompt as "new file" — the right weight for one line of
-    // text, and it is what makes the `add -A` scope visible before it happens.
-    const message = window.prompt(i18nT('apps.papyrus.workspace.commit_message_prompt'))
+  const onCommitAndPushClick = useCallback(async () => {
+    if (!project) return
+    const target = { project, scope: projectScope }
+    const message = await textPrompt({
+      title: i18nT('apps.papyrus.workspace.commit_and_push'),
+      body: i18nT('apps.papyrus.workspace.commit_message_prompt'),
+      confirmLabel: i18nT('apps.papyrus.workspace.commit_and_push'),
+      allowEmpty: true,
+    })
     // `null` is Cancel and must abort; an empty string is "use the default".
     if (message === null) return
-    pushMutation.mutate(message.trim())
-  }, [pushMutation])
+    pushMutation.mutate({ ...target, message: message.trim() })
+  }, [project, projectScope, pushMutation, textPrompt])
 
   // ── Co-author session ─────────────────────────────────────────────────────
 
@@ -999,23 +1023,34 @@ export default function PapyrusPage() {
     setCompileMs(null)
   }, [])
 
-  const onCreateFileClick = useCallback(() => {
-    // A one-field prompt is the right weight for "name a new file"; a modal would
-    // be more chrome than the action deserves.
-    const name = window.prompt(i18nT('apps.papyrus.workspace.new_file_prompt'))
-    const trimmed = name?.trim()
-    if (trimmed) createFileMutation.mutate(trimmed)
-  }, [createFileMutation])
+  const onCreateFileClick = useCallback(async () => {
+    if (!project) return
+    const target = { project, scope: projectScope }
+    const name = await textPrompt({
+      title: i18nT('apps.papyrus.fileTree.new_file'),
+      body: i18nT('apps.papyrus.workspace.new_file_prompt'),
+      confirmLabel: i18nT('apps.papyrus.fileTree.new_file'),
+      requiredMessage: i18nT('apps.papyrus.workspace.new_file_name_required'),
+    })
+    if (name !== null) createFileMutation.mutate({ ...target, path: name.trim() })
+  }, [createFileMutation, project, projectScope, textPrompt])
 
-  const onDeleteFileClick = useCallback((path: string) => {
-    if (window.confirm(i18nT('apps.papyrus.workspace.delete_file_confirm', { file: path }))) {
-      deleteFileMutation.mutate(path)
-    }
-  }, [deleteFileMutation])
+  const onDeleteFileClick = useCallback(async (path: string) => {
+    if (!project || confirmOpen) return
+    const target = { project, path, mainFile, scope: projectScope }
+    if (!(await confirm({
+      title: i18nT('apps.papyrus.fileTree.delete_file_button'),
+      body: i18nT('apps.papyrus.workspace.delete_file_confirm', { file: path }),
+      confirmLabel: i18nT('apps.papyrus.fileTree.delete_file_button'),
+    }))) return
+    deleteFileMutation.mutate(target)
+  }, [confirm, confirmOpen, deleteFileMutation, mainFile, project, projectScope])
 
   if (!project) {
     return (
       <>
+        {confirmDialog}
+        {textPromptDialog}
         {/* No hand-off: the project list below holds the unsaved new-paper name and
             clone-URL inputs, which the navigation would discard. */}
         <ErrorNotice className="mx-6 mt-2 animate-rise" message={error} onDismiss={() => setError('')} />
@@ -1437,6 +1472,7 @@ export default function PapyrusPage() {
         </AnimatePresence>
       </div>
       {confirmDialog}
+      {textPromptDialog}
     </div>
   )
 }

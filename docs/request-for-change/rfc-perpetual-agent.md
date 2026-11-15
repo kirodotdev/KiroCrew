@@ -15,8 +15,9 @@ superseded-by: []
 # RFC: Perpetual agents — self-scheduled, goal-driven, supervised
 
 - Status: accepted — the product decision is the owner-controlled Perpetual
-  mode in §Accepted decision. Its implementation is tracked in
-  [#11582](https://github.com/kirodotdev/KiroCrew/pull/11582). Line numbers
+  mode in §Accepted decision. Its implementation was tracked in
+  [#11582](https://github.com/kirodotdev/KiroCrew/pull/11582), closed unmerged
+  on 2026-10-29; no Perpetual switch is on main. Line numbers
   and file sizes in the research sections below are as read at the commits this
   document names for them, not live pointers.
 - **Revision 4 (2026-09-28): accepted one narrow product shape.** An owner may
@@ -376,7 +377,7 @@ job record and returns.
 
 This is the opposite of `wait` in every dimension that matters:
 
-| | `wait` (`mcp_core.py:758`, dispatch `:4517`) | `agent_sleep` |
+| | `wait` (`mcp_tools/control.py`, `wait`) | `agent_sleep` |
 |---|---|---|
 | Turn | stays open — the tool call blocks | ends |
 | Mechanism | in-process loop to a `time.monotonic()` deadline, pinging `/api/session-keepalive` every `WAIT_PING_SECS` (5s) so the gateway does not reap the ACP subprocess | writes `at_ts` to `crons.json`; nothing runs in between |

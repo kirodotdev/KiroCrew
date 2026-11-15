@@ -22,15 +22,6 @@ from kiro_crew.history_cache import FileStamp
 #: decode is followed by a shape check, as in ``read_file_change_messages``.
 _HISTORY_LOGGER = logging.getLogger("kiro_crew.history")
 
-#: What :meth:`TranscriptReadProjection.metadata_line_state` answers about a
-#: transcript's first line. ``get_metadata_status`` folds the last two into
-#: ``readable=False``, which suits readers. Writers need the split: a
-#: ``transient`` failure (open or UTF-8 decode failed after retries) clears on its
-#: own, so the write is deferred, but a ``corrupt`` line never does, and a writer
-#: deferring on it would never persist another row.
-METADATA_LINE_READABLE = "readable"
-METADATA_LINE_TRANSIENT = "transient"
-METADATA_LINE_CORRUPT = "corrupt"
 
 #: Rows drawn for the person reading a transcript that are not conversation. No
 #: model-bound reader carries one: :meth:`TranscriptReadProjection.recent_with_provenance`

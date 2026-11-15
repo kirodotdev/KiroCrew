@@ -219,7 +219,7 @@ class TestTelegramSessionPicker:
             reads += 1
             return []
 
-        monkeypatch.setattr(log, "list_sessions", _read)
+        monkeypatch.setattr(log, "list_sessions_indexed", _read)
         dispatcher, _, _, _ = _dispatcher(tmp_path, log=log)
 
         await dispatcher.handle_message(message)
@@ -232,7 +232,7 @@ class TestTelegramSessionPicker:
     ) -> None:
         log = _log(tmp_path)
         read = AsyncMock()
-        monkeypatch.setattr(log, "list_sessions", read)
+        monkeypatch.setattr(log, "list_sessions_indexed", read)
         dispatcher, client, _, _ = _dispatcher(tmp_path, allowed={7, 8}, log=log)
 
         await dispatcher.handle_message(_dm("/sessions"))

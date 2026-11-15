@@ -33,11 +33,32 @@ export function stopClientSpeech(): void {
   activeUtterance = null
   try {
     window.speechSynthesis.cancel()
+    // Some engines keep a cancelled-while-paused queue paused, which would
+    // hold the next utterance silent.
+    if (window.speechSynthesis.paused) window.speechSynthesis.resume()
   } catch {
     /* a webview that exposes the API but refuses cancel() is still stopped from
      * our side: we have dropped the utterance reference, so onend/onerror below
      * will no-op. */
   }
+}
+
+/** Hold the client speech where it is. Does nothing when this module has no
+ * utterance in flight, so a pause aimed at another engine never touches the
+ * browser's shared speech queue. */
+export function pauseClientSpeech(): void {
+  if (!clientSpeechAvailable() || !activeUtterance) return
+  try {
+    window.speechSynthesis.pause()
+  } catch { /* an engine that refuses pause() keeps speaking */ }
+}
+
+/** Continue client speech held by `pauseClientSpeech`. */
+export function resumeClientSpeech(): void {
+  if (!clientSpeechAvailable() || !activeUtterance) return
+  try {
+    window.speechSynthesis.resume()
+  } catch { /* an engine that refuses resume() is stopped from the bar */ }
 }
 
 /** Speak *text* on the client. `onPlaying` brackets the audible span (true at

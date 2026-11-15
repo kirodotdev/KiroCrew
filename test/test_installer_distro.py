@@ -1552,6 +1552,7 @@ def test_a_stop_during_a_failure_branch_restore_keeps_the_venv(
             _cli_sh_function("_venv_rollback_on_exit"),
             _cli_sh_function("_venv_restore_after_failure"),
             _cli_sh_function("_tolerate"),
+            _cli_sh_function("_report_disk_full"),
             _cli_sh_function("_report_pip_failure"),
             _cli_sh_function("_rs_interrupt"),
             _cli_sh_function("_run_step"),

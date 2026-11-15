@@ -13,6 +13,7 @@ import socket
 import pytest
 
 from kiro_crew.dashboard import port_reclaim as pr
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 
 @pytest.fixture(autouse=True)
@@ -20,6 +21,10 @@ def _fabricated_holders_are_old(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """The pids these cases fabricate may name a real young process on the host;
     read every holder as long-lived unless a case says otherwise."""
     _floor_monkeypatch.setattr(pr, "_holder_age_secs", lambda _pid: 3600.0)
+    # No real lsof: a fabricated pid holds no socket the ::1 probe could reach.
+    _floor_monkeypatch.setattr(
+        pr.platform_compat, "probe_port_listeners", lambda _port: ([], True)
+    )
 
 # ---------------------------------------------------------------------------
 # reclaim_stale_gateway_port — outcome matrix (all collaborators injected)
@@ -118,6 +123,102 @@ async def test_healthy_peer_is_never_killed() -> None:
         terminate=_terminate,
     )
     assert outcome == pr.HEALTHY_PEER
+    assert terminate_called is False
+
+
+@pytest.mark.asyncio
+async def test_a_healthy_peer_bound_to_the_v6_wildcard_is_never_killed() -> None:
+    """A gateway bound to ``::`` (IPv6 only, no IPv4 secondary) answers on
+    ``::1`` alone. Its own socket takes that probe, so it is a healthy peer."""
+    terminate_called = False
+
+    async def _terminate(_pids: list[int]) -> bool:
+        nonlocal terminate_called
+        terminate_called = True
+        return True
+
+    outcome = await pr.reclaim_stale_gateway_port(
+        5476,
+        list_listeners=lambda _p: [1234],
+        is_kirocrew=lambda _pid: True,
+        probe_healthy=_unhealthy,  # nothing on 127.0.0.1
+        probe_v6_healthy=_healthy,
+        holder_reaches_v6=lambda _port, pids: pids == [1234],
+        terminate=_terminate,
+    )
+    assert outcome == pr.HEALTHY_PEER
+    assert terminate_called is False
+
+
+@pytest.mark.asyncio
+async def test_another_program_on_v6_loopback_cannot_vouch_for_a_stale_holder() -> None:
+    """When the holder's own sockets do not take ``::1``, whatever answers there
+    is someone else, and the stale holder is still reclaimed."""
+    v6_probed = False
+
+    async def _v6(_port: int, _timeout: float) -> bool:
+        nonlocal v6_probed
+        v6_probed = True
+        return True
+
+    async def _terminate(_pids: list[int]) -> bool:
+        return True
+
+    outcome = await pr.reclaim_stale_gateway_port(
+        5476,
+        list_listeners=lambda _p: [1234],
+        is_kirocrew=lambda _pid: True,
+        probe_healthy=_unhealthy,
+        probe_v6_healthy=_v6,
+        holder_reaches_v6=lambda _port, _pids: False,
+        terminate=_terminate,
+    )
+    assert outcome == pr.RECLAIMED
+    assert v6_probed is False
+
+
+@pytest.mark.parametrize(
+    ("listeners", "completed", "expected"),
+    [
+        ([pr.platform_compat.PortListener(1234, "::", "6")], True, True),
+        ([pr.platform_compat.PortListener(1234, "::1", "6")], True, True),
+        ([pr.platform_compat.PortListener(1234, "*", "6")], True, True),
+        ([pr.platform_compat.PortListener(1234, "127.0.0.1", "4")], True, False),
+        ([pr.platform_compat.PortListener(9999, "::1", "6")], True, False),  # not the holder
+        ([], True, False),
+        ([], False, None),  # lookup failed: unknown, never "not on ::1"
+    ],
+    ids=["v6-wildcard", "v6-loopback", "lsof-v6-star", "v4-only", "other-pid", "none", "failed"],
+)
+def test_holder_reaches_v6_loopback_only_through_its_own_socket(
+    _floor_monkeypatch: pytest.MonkeyPatch, listeners: list, completed: bool, expected: object
+) -> None:
+    _floor_monkeypatch.setattr(
+        pr.platform_compat, "probe_port_listeners", lambda _port: (listeners, completed)
+    )
+    assert pr._holder_reaches_v6_loopback(5476, [1234]) is expected
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_listener_lookup_never_kills_the_holder() -> None:
+    """When the holder's addresses cannot be read, a healthy v6-only holder
+    cannot be told from a stale one, so the reclaim falls back to wait/retry."""
+    terminate_called = False
+
+    async def _terminate(_pids: list[int]) -> bool:
+        nonlocal terminate_called
+        terminate_called = True
+        return True
+
+    outcome = await pr.reclaim_stale_gateway_port(
+        5476,
+        list_listeners=lambda _p: [1234],
+        is_kirocrew=lambda _pid: True,
+        probe_healthy=_unhealthy,
+        holder_reaches_v6=lambda _port, _pids: None,
+        terminate=_terminate,
+    )
+    assert outcome == pr.UNAVAILABLE
     assert terminate_called is False
 
 
@@ -255,6 +356,35 @@ async def test_reclaim_failed_when_terminate_returns_false() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("windows", "hint"), [(True, "taskkill /PID 1234 /T /F"), (False, "kill -9 1234")]
+)
+async def test_reclaim_failed_names_the_platform_s_own_force_kill(
+    monkeypatch: pytest.MonkeyPatch, windows: bool, hint: str
+) -> None:
+    """Windows reaches this path too (netstat lookup, taskkill terminate), so
+    the manual remedy must not be a POSIX-only ``kill -9`` there."""
+    from unittest.mock import MagicMock
+
+    async def _terminate(_pids: list[int]) -> bool:
+        return False
+
+    monkeypatch.setattr(pr.platform_compat, "IS_WINDOWS", windows)
+    log = MagicMock()
+    outcome = await pr.reclaim_stale_gateway_port(
+        5476,
+        list_listeners=lambda _p: [1234],
+        is_kirocrew=lambda _pid: True,
+        probe_healthy=_unhealthy,
+        terminate=_terminate,
+        log=log,
+    )
+    assert outcome == pr.RECLAIM_FAILED
+    fmt, *args = log.error.call_args.args
+    assert hint in fmt % tuple(args)
+
+
+@pytest.mark.asyncio
 async def test_slow_identity_check_times_out_to_unavailable() -> None:
     """A wedged ps (slow identity check) degrades to UNAVAILABLE, never hangs."""
     import time as _time
@@ -319,6 +449,73 @@ async def test_probe_healthy_true_for_responsive_server() -> None:
     port = server.sockets[0].getsockname()[1]
     async with server:
         assert await pr._probe_gateway_healthy(port, timeout=2.0) is True
+
+
+@pytest.mark.asyncio
+async def test_probe_healthy_true_for_ipv6_only_responsive_server() -> None:
+    """A live gateway bound to ``::`` (IPv6 only, as ``_bind_once`` binds it)
+    answers on ``::1`` alone, and must not read as stale."""
+    if not socket.has_ipv6:
+        pytest.skip("no IPv6")
+
+    async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.read(1024)
+        writer.write(b"HTTP/1.0 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    try:
+        server = await asyncio.start_server(_handle, "::1", 0)
+    except OSError:
+        pytest.skip("cannot bind ::1")
+    port = server.sockets[0].getsockname()[1]
+    async with server:
+        assert await pr._probe_v6_loopback_healthy(port, timeout=FALLBACK_TIMEOUT_SECS) is True
+
+
+@pytest.mark.asyncio
+async def test_reclaim_leaves_a_live_v6_only_gateway_alone(
+    _floor_monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Through the public entry point with its default health probe: a real
+    HTTP server listening on ``::1`` only (as a ``::``-bound gateway does, with
+    no IPv4 secondary) is a healthy peer, never terminated. The listener lookup
+    reports that holder's own ``::1`` socket, as lsof does."""
+    if not socket.has_ipv6:
+        pytest.skip("no IPv6")
+
+    async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.read(1024)
+        writer.write(b"HTTP/1.0 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    try:
+        server = await asyncio.start_server(_handle, "::1", 0)
+    except OSError:
+        pytest.skip("cannot bind ::1")
+    port = server.sockets[0].getsockname()[1]
+    holder = 1234
+    _floor_monkeypatch.setattr(
+        pr.platform_compat,
+        "probe_port_listeners",
+        lambda _port: ([pr.platform_compat.PortListener(holder, "::1", "6")], True),
+    )
+    terminated: list[list[int]] = []
+
+    async def _terminate(pids: list[int]) -> bool:
+        terminated.append(pids)
+        return True
+
+    async with server:
+        outcome = await pr.reclaim_stale_gateway_port(
+            port,
+            list_listeners=lambda _p: [holder],
+            is_kirocrew=lambda _pid: True,
+            terminate=_terminate,
+        )
+    assert outcome == pr.HEALTHY_PEER
+    assert terminated == []
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from redaction_structured_cases import github_classic
 from subagent_persistence_helpers import (  # noqa: F401 -- the fixture is requested by name
     agent_root_fixture,
 )
@@ -213,7 +214,7 @@ class TestOrphanReconciliation:
         # straddles the 80-char boundary would otherwise be cut into a fragment too
         # short for the PAT rule, which the later whole-message redaction cannot
         # match, and its prefix would ship in the notice and the digest DM.
-        token = "ghp_" + "a" * 40
+        token = github_classic(seed=25)
         with patch.object(
             manager, "_try_inject_orphan_notification", AsyncMock(return_value=False)
         ):

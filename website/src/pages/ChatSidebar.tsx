@@ -11,11 +11,13 @@ import { useStore } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../store'
 import type { RootState } from '../store'
 import { useConnected } from '../hooks/useConnected'
-import { fetchHistory, deleteHistorySession, switchSlot, resumeFromHistory, clearHistorySessions } from '../store/chatSlice'
+import { fetchHistory, deleteHistorySession, switchSlot, resumeFromHistory, clearHistorySessions, requestFolderReveal } from '../store/chatSlice'
 import { CreatorFilterBar, CreatorFilteredSessions, useSharedCrewListView } from './chat-sidebar/CreatorFilter'
-import { sharedCrewKeys } from '../hooks/sharedCrew/sharedCrewSocket'
+import { PEOPLE_POLL_ID, PEOPLE_REFRESH_MS, sharedCrewKeys } from '../hooks/sharedCrew/sharedCrewSocket'
+import { requestRefresh } from '../lib/pollRule'
 import { SharedCrewBylineContext } from './chat-sidebar/SessionCreatorByline'
-import { api } from '../api/client'
+import { api, SEARCH_MIN_CHARS } from '../api/client'
+import { folderNameText, orderFoldersWithPaths } from '../utils/folderTree'
 import { computeRecentRank, clampTintCount } from '../utils/recencyTint'
 import { useDndSensors } from '../hooks/useDndSensors'
 import { useSessionPalette } from '../hooks/useSessionPalette'
@@ -47,11 +49,12 @@ import { compareText } from '../i18n/format'
 export { sidebarCollision, isFolderNestBand } from './chat-sidebar/dnd/collision'
 export { boardSidebarWidth } from './chat-sidebar/board'
 import { useSessionFilterState, useSessionStatusFilters } from './chat-sidebar/filters'
-import { useDebouncedSessionSearch, useSearchMatches } from './chat-sidebar/search'
+import { sidebarSearchHits, useDebouncedSessionSearchState, useSearchMatches } from './chat-sidebar/search'
+import { makeSidebarSearchView, SearchFailedNotice, SearchFolderHits, SearchPendingLine, SearchResultsHeader, SidebarSearchContext } from './chat-sidebar/searchHits'
 import { openCrewWindow, useCrewWindow } from './chat/crew-window/crewWindowStore'
 import { useStableCallbackProps } from './chat/useStableCallbackProps'
 import { isPeerRow, sessionRowIdentity } from './chat-sidebar/rowIdentity'
-import { normalizeRunSessionKey } from '../apps/workflows/runModel'
+import { normalizeRunSessionKey } from '../components/workflows/runModel'
 import { buildSidebarRows, guideStepOnRowControl, opensElsewhereOf, type RowScene, type RowShell, type SidebarRows } from './chat-sidebar/rows'
 import { useSessionSources } from './chat-sidebar/sessionSources'
 import { crewSpaceChain, useCollapsedCrews, useCollapsedCrewSpaces, useCrewEnable } from './chat-sidebar/CrewGroups'
@@ -63,7 +66,8 @@ import { usePinnedSessionOrder, usePinnedOrderAuthority, usePinnedKeyboardReorde
 import { useManualSessionOrder, useManualKeyboardReorder } from './chat-sidebar/manualOrder'
 import { useRowAnimSettled } from './chat-sidebar/rowAnimSettle'
 import { useStaleCollapse, useStaleMoveWatcher, useStaleNarrowBridge } from './chat-sidebar/stale'
-import { useFolderSort, useFolderVisibility, useFolderFilterReveal, useFolderFilterRows, useFolderMutations, useFolderTree, useRootFolderLanes } from './chat-sidebar/folders'
+import { useFolderSort, useFolderVisibility, useFolderFilterReveal, useFolderFilterRows, useFolderMutations, useFolderTree, useRootFolderLanes, useUnfiledAboveFolders } from './chat-sidebar/folders'
+import { unreadFolderLatest, unreadFirstComparator } from './chat-sidebar/unreadFolderFloat'
 import FolderCleanupPanel from './chat-sidebar/FolderCleanupPanel'
 import { useSidebarResize } from './chat-sidebar/resize'
 import { useSidebarScrollPeek, useFullTitlesOnScrollSetting } from './chat-sidebar/scrollPeek'
@@ -152,7 +156,7 @@ function ChatSidebar({
   // the mate threads are read off the full store, which this prop no longer holds.
   const mateHidden = useMateSessionsHidden()
   const mateThreads = useAppSelector(selectLiveMateThreads)
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode and mateHidden stand for the previews crewModeView reads
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode and mateHidden stand for the reads crewModeView makes
   const localSlots = useMemo(() => crewModeView(slotsProp, false, mateThreads), [slotsProp, crewMode, mateHidden, mateThreads])
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
@@ -262,20 +266,10 @@ function ChatSidebar({
   // `filteredSlots` can ORDER matches by the backend's ranking (title matches
   // carry a strong field boost server-side) rather than re-sorting them by
   // date, which buries a title match below every fresher session that merely
-  // mentions the query in its body. First-wins on canonical-key collisions so
-  // a duplicate file cannot demote the better-ranked entry.
-  const slotSearchRanks = useDebouncedSessionSearch(
-    slotFilter,
-    sessions => {
-      const ranks = new Map<string, number>()
-      sessions.forEach((s, i) => {
-        const key = s.key.replace(/^dashboard_/, '')
-        if (!ranks.has(key)) ranks.set(key, i)
-      })
-      return ranks
-    },
-    slotTitleDigest,
-  )
+  // mentions the query in its body. The reply's snippets and scan note ride
+  // along for the search lane (./chat-sidebar/searchHits).
+  const { result: slotSearch, failed: slotSearchFailed } = useDebouncedSessionSearchState(slotFilter, sidebarSearchHits, slotTitleDigest)
+  const slotSearchRanks = slotSearch?.ranks ?? null
   const {
     renamingSlot, renameScope, renameValue, renameError, setRenameError, renameInputRef,
     suppressMenuRestore, disarmMenuRestore, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit, renameAnnouncement, slotRenameEnterRef,
@@ -298,10 +292,10 @@ function ChatSidebar({
   const flatView = lane === 'flat'
   const conductorView = lane === 'conductor'
   const {
-    activeFilters, filtersPaused, setAllFiltersPaused, clearAllFilters,
+    activeFilters, pausedFilters, filtersPaused, setAllFiltersPaused, toggleFilterPaused, clearAllFilters,
     filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter, unhideFolderChain,
     showAllFolders, filterTagIds, toggleTagFilter, clearTagFilter, foldersShelved, setFoldersShelved,
-    toggleFoldersShelved, toggleFilter, disableFilter, enableFilter, groupByKind, toggleGroupByKind,
+    toggleFoldersShelved, foldersUnreadFirst, toggleFoldersUnreadFirst, toggleFilter, disableFilter, enableFilter, groupByKind, toggleGroupByKind,
     hiddenFilters, toggleHideFilter, clearHiddenFilters,
     filterModelKeys, filterModelsExcluded, toggleModelFilter, setModelFilterExcluded, clearModelFilter,
   } = useSessionFilterState()
@@ -309,7 +303,7 @@ function ChatSidebar({
     slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentStartedCounts, subagentApprovalCounts, unreadSet,
     recentWindowMs, recentAmountDraft, setRecentAmountDraft, recentUnitDraft, selectRecentPreset,
     commitRecentAmount, changeRecentUnit, runningSet, recentSet,
-  } = useSessionStatusFilters({ unreadSlots, activeFilters, filtersPaused, enableFilter, localSlots, disableFilter })
+  } = useSessionStatusFilters({ unreadSlots, activeFilters, pausedFilters, enableFilter, localSlots, disableFilter })
   const creatingSlot = useAppSelector(s => s.chat.creatingSlot)
   const connected = useConnected()
   // Shared Crew creator filter: server-side, so a non-All value swaps the lanes
@@ -323,7 +317,7 @@ function ChatSidebar({
     // Catalog writes and live slot/history updates affect every creator page,
     // including cached filters that are not currently mounted.
     void queryClient.invalidateQueries({ queryKey: sharedCrewKeys.sessionsAll })
-    void queryClient.invalidateQueries({ queryKey: sharedCrewKeys.people })
+    requestRefresh(queryClient, PEOPLE_POLL_ID, sharedCrewKeys.people, PEOPLE_REFRESH_MS)
   }, [queryClient, localSlots, history, refreshTrigger])
   // An offline refusal stops being true once the gateway is back, so retire it on
   // the disconnected -> connected transition only.
@@ -375,9 +369,10 @@ function ChatSidebar({
   const showUnreadDot = mcCfg?.dashboard?.show_unread_dot !== false
 
   const {
-    folderSortRead, folderSortMode, folderCompare, folderReorderable, folderDragWithheld, folderReorderHint,
-    folderReorderHintRef, showFolderReorderHint, hideFolderReorderHint, folderSortMut,
+    folderSortRead, folderSortMode, folderCompare: folderModeCompare, folderReorderable: folderModeReorderable,
+    folderDragWithheld, folderReorderHint, folderReorderHintRef, showFolderReorderHint, hideFolderReorderHint, folderSortMut,
   } = useFolderSort({ queryClient, mcCfg, mcCfgStatus, mcCfgError, mcCfgErrorUpdatedAt, setFolderActionError })
+  const { unfiledAboveFolders, toggleUnfiledAboveFolders, unfiledAboveFoldersError, dismissUnfiledAboveFoldersError } = useUnfiledAboveFolders({ queryClient, mcCfg })
 
   const {
     folderEditInputRef, folderCancelEscapeRef, editingId, setEditingId, editScope, setEditScope, editName, setEditName,
@@ -447,6 +442,33 @@ function ChatSidebar({
 
   useStaleMoveWatcher({ foldersLoaded, localSlots, slotFolders, setStaleRecentlyMoved })
 
+  // The drawn folder order: the mode's order, with unread folders first when the
+  // person turned that on. While it is on, a sibling drag would be judged against
+  // an order that is not the stored one, so reordering (and its hint) is off.
+  // While a drag is in flight the row model keeps the filtered list it had when the
+  // drag started, so the lanes hold still under the pointer.
+  const [dragFrozen, setDragFrozen] = useState(false)
+  // Its native counterpart: the board card in flight, which no DndContext sees.
+  const { nativeSessionDrag, startNativeSessionDrag, endNativeSessionDrag } = useNativeSessionDrag()
+  const liveUnreadLatest = useMemo(
+    () => (foldersUnreadFirst ? unreadFolderLatest(folders, localSlots, slotFolders, unreadSet) : null),
+    [foldersUnreadFirst, folders, localSlots, slotFolders, unreadSet])
+  // Whether the pointer is over the sessions list (set by the list root below).
+  const [listHovered, setListHovered] = useState(false)
+  // A chat turning unread must not re-sort the folders under the pointer, while
+  // the pointer is over the list or a dnd-kit / native board-card drag runs: keep
+  // the snapshot taken when that began and pick up the live one once it ends.
+  // Turning the option on or off is never held back.
+  const unreadFrozen = listHovered || dragFrozen || nativeSessionDrag !== null
+  const frozenUnreadRef = useRef(liveUnreadLatest)
+  if (!unreadFrozen || (frozenUnreadRef.current === null) !== (liveUnreadLatest === null)) frozenUnreadRef.current = liveUnreadLatest
+  const unreadLatest = unreadFrozen ? frozenUnreadRef.current : liveUnreadLatest
+  const folderCompare = useMemo(
+    () => (unreadLatest ? unreadFirstComparator(folderModeCompare, unreadLatest) : folderModeCompare),
+    [unreadLatest, folderModeCompare])
+  const folderReorderable = folderModeReorderable && !foldersUnreadFirst
+  const reorderHintShown = useCallback(() => { if (!foldersUnreadFirst) showFolderReorderHint() }, [foldersUnreadFirst, showFolderReorderHint])
+
   const {
     searchRanked, folderNameMatchIds,
   } = useSearchMatches({ slotFilter, slotSearchRanks, folders, isFolderHidden })
@@ -456,9 +478,6 @@ function ChatSidebar({
   // end. Everything that consults the filter routes through this flag.
   const folderFilterActive = slotFilter.trim() === '' && filterHiddenFolders.size > 0
 
-  // While a drag is in flight the row model keeps the filtered list it had when the
-  // drag started, so the lanes hold still under the pointer.
-  const [dragFrozen, setDragFrozen] = useState(false)
   // Layout-projection budget: every enrolled session row belongs to one
   // LayoutGroup, and Framer measures getBoundingClientRect for each enrolled
   // node on a commit. renderSessionRow therefore enrolls only the first
@@ -499,7 +518,7 @@ function ChatSidebar({
       tags: { resolved: activeTagIds, raw: filterTagIds },
       models: { passes: modelFilterPasses, active: activeModelKeys.size > 0 },
       search: { text: slotFilter, folderMatches: folderNameMatchIds },
-      status: { active: activeFilters, hidden: hiddenFilters, paused: filtersPaused, recentWindowMs },
+      status: { active: activeFilters, hidden: hiddenFilters, paused: pausedFilters, recentWindowMs },
       folders: { hiddenSubtree: filterHiddenSubtree, pinnedSubtree: pinnedFolderSubtree, active: folderFilterActive },
     },
     clears: { tags: clearTagFilter, models: clearModelFilter, search: clearSearch, status: clearAllFilters, folder: clearFolderHide, hides: clearHiddenFilters },
@@ -565,15 +584,27 @@ function ChatSidebar({
   // button is not drawn at all, and an ungated lane would render a layout the user has
   // no control to leave. The folder filter applies to the flat lane and the tree, NOT
   // to the board.
-  const shownLane = renderedLane({ lane, boardColumns: orderedColumns.length, folders: folders.length, lineageAvailable })
+  // Only once the server has answered (or failed): before the first reply the list
+  // has no ranks or snippets yet, so the chosen lane stays, narrowed locally as it
+  // always was, instead of a ranked lane that reads "0 matches" for a moment.
+  const searchSent = slotFilter.trim().length >= SEARCH_MIN_CHARS
+  const searchActive = searchSent && (slotSearch !== null || slotSearchFailed)
+  const shownLane = renderedLane({ lane, boardColumns: orderedColumns.length, folders: folders.length, lineageAvailable, searching: searchActive })
   const boardLaneActive = shownLane === 'board' || shownLane === 'board-flat'
   const flatLaneActive = shownLane === 'flat'
   const conductorLaneActive = shownLane === 'conductor'
-  // Whether any folder ROW is on screen to drag: the tree, and the board unless
+  // The search lane: a list lane drawn for an active query, in relevance order -- the
+  // flat lane in place of the tree (see `renderedLane`), or the conductor lane, which
+  // flattens itself for a query.
+  const searchLaneActive = searchActive && (flatLaneActive || conductorLaneActive)
+  // Whether the shown lane draws folder rows: the tree, and the board unless
   // flat view empties its columns of folders (`relevantFolders`). The flat lane
   // explodes chats out of their folders and the conductor lane nests by lineage.
-  // Gates only the copy about DRAGGING (the menu's reorder note) -- the folder
-  // order itself is read and offered in every lane.
+  // A tree with no folders yet counts, because a folder row appears there the
+  // moment one is created. Gates the menu's copy about dragging folders (the
+  // reorder note) and the unfiled-placement checkbox row, which has no effect
+  // where no folder is drawn. The folder order itself is read and offered in
+  // every lane.
   const folderRowsDrawn = shownLane === 'tree' || shownLane === 'board'
 
   // Scroll memory for the session lane. Collapsing the sessions sidebar (or
@@ -598,9 +629,24 @@ function ChatSidebar({
     setLaneRowWindowRoot(el)
   }, [setLaneRowWindowRoot])
   const laneScrollMemory = useLaneScrollMemory(
-    boardLaneActive ? null : `chat-sidebar-lane:${conductorLaneActive ? 'conductor' : flatLaneActive ? 'flat' : 'tree'}`,
+    // The search lane remembers nothing: a search neither lands on a lane's
+    // remembered row nor moves it, so clearing the query restores the lane the
+    // person was browsing at the row they left.
+    boardLaneActive || searchLaneActive ? null : `chat-sidebar-lane:${conductorLaneActive ? 'conductor' : flatLaneActive ? 'flat' : 'tree'}`,
     laneScrollRef,
   )
+  // Each query opens at the top, where its best match and the count line are. The
+  // lane element stays mounted across queries, so its scroll would carry over.
+  const searchQuery = slotFilter.trim()
+  useEffect(() => {
+    if (searchLaneActive && laneScrollRef.current) laneScrollRef.current.scrollTop = 0
+  }, [searchLaneActive, searchQuery])
+  // What a search-lane row shows: its snippet and its folder (./chat-sidebar/searchHits).
+  const searchSnippets = slotSearch?.snippets
+  const searchView = useMemo(() => (searchLaneActive
+    ? makeSidebarSearchView(slotFilter, searchSnippets, slotFolders,
+      new Map(orderFoldersWithPaths(folders, folderSortMode).map(o => [o.folder.id, typeof o.path === 'string' ? o.path : folderNameText(o.folder)])))
+    : null), [searchLaneActive, slotFilter, searchSnippets, slotFolders, folders, folderSortMode])
 
   useHoverPinLiveness({ hoverPinRef, releaseHoverPin, filteredSlots: laneSlots, boardLaneActive, flatLaneActive, conductorLaneActive, orderedColumns })
 
@@ -614,7 +660,7 @@ function ChatSidebar({
   const {
     isFolderFilteredOut, revealedContainers, toggleReveal, hiddenByContainer, allHiddenFolders,
     hiddenFolderCount,
-  } = useFolderFilterReveal({ folderFilterActive, effectiveHiddenFolders, folders, isFolderHidden, folderCompare, boardLaneActive })
+  } = useFolderFilterReveal({ folderFilterActive, effectiveHiddenFolders, folders, isFolderHidden, folderCompare: folderModeCompare, boardFoldersDrawn: shownLane === 'board' })
   const {
     citedCreatorExists, conductorRows, conductorMatching, lineage, conductorExpanded, toggleConductorExpanded,
     expandConductorAncestors, openConductor,
@@ -663,7 +709,7 @@ function ChatSidebar({
 
   const {
     folderFilterRows,
-  } = useFolderFilterRows({ folderTree: sidebarRows.folderTree, folders, folderCompare, filterHiddenFolders, filterHiddenSubtree, pinnedFolderSubtree, pinnedFolderAncestors })
+  } = useFolderFilterRows({ folderTree: sidebarRows.folderTree, folders, folderCompare: folderModeCompare, filterHiddenFolders, filterHiddenSubtree, pinnedFolderSubtree, pinnedFolderAncestors })
 
   const {
     createFolderMutation, deleteFolderMutation, updateFolderMutation, toggleCollapse, collapseAllFolders,
@@ -696,8 +742,6 @@ function ChatSidebar({
   const dndSensors = useDndSensors({ distance: 5, keyboard: true })
   // Tracks the item currently being dragged, for the DragOverlay preview.
   const [activeDrag, setActiveDrag] = useState<{ type: string; id: string } | null>(null)
-  // Its native counterpart: the board card in flight, which no DndContext sees.
-  const { nativeSessionDrag, startNativeSessionDrag, endNativeSessionDrag } = useNativeSessionDrag()
   // The derived lane a session card hovers right now. Such a lane refuses the
   // drop, and its header's hover title is out of sight mid-drag, so the lane
   // says why in a visible line instead. It shows only while `nativeSessionDrag`
@@ -764,7 +808,7 @@ function ChatSidebar({
   const {
     handleSidebarDragStart, reportDndActive, handleSidebarDragEnd, handleSidebarDragCancel,
     handleSidebarDragOver,
-  } = useSidebarDragHandlers({ releaseHoverPin, setDragFrozen, hideFolderReorderHint, setActiveDrag, activeDrag, dragFrozen, folderReorderable, folderSortRead, showFolderReorderHint, moveFolderByDrag, reorderFolders, searchRanked, pinned, reorderPinned, reorderManual: reorderManualShown, localSlots, activeSlot, onDropSessionRef, moveByDrag, folders, boardFolderCollapsed, updateFolderMutation, clearBoardCollapse })
+  } = useSidebarDragHandlers({ releaseHoverPin, setDragFrozen, hideFolderReorderHint, setActiveDrag, activeDrag, dragFrozen, folderReorderable, folderSortRead, showFolderReorderHint: reorderHintShown, moveFolderByDrag, reorderFolders, searchRanked, pinned, reorderPinned, reorderManual: reorderManualShown, localSlots, activeSlot, onDropSessionRef, moveByDrag, folders, boardFolderCollapsed, updateFolderMutation, clearBoardCollapse })
   const {
     folderCreateError, setFolderCreateError, createChatInFolder, refuseCreateOffline,
   } = useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation, onOpenSlotInNewTab, onSelectSlot, updateFolderMutation, clearBoardCollapse, connected, setFolderOfflineNotice })
@@ -871,7 +915,7 @@ function ChatSidebar({
   // What this render shows rows with. The row model reads the local-only members
   // for a local row alone.
   // A worker in the pane is not listed, so its root's row is marked as its parent.
-  // Through the preview-gated read (`crewMode` above re-renders on a flip).
+  // Through the conductor mode read (`crewMode` above re-renders on the edition lock).
   const crewParent = (crewMode && activeSlot && crewRootOf(slotsProp.find(s => s.key === activeSlot))) || null
   const rowScene: RowScene = {
     activeSlot, crewWindow, crewParent, shell: rowShell,
@@ -933,9 +977,32 @@ function ChatSidebar({
     }).then(ok => { if (ok) dispatch(deleteHistorySession(key)) })
   }
 
+  // Above the search lane's rows: the match count (every row drawn, crew groups
+  // included), "Clear filters" while a filter narrows the list (the query stays), and
+  // why the list may be short. The folder filter is not among them: it is inert
+  // while the box holds text.
+  // Then the folders the query named, which the lane draws no blocks for.
+  const searchHeader = searchLaneActive ? (
+    <>
+      <SearchResultsHeader
+        count={flatSlots.length + shownCrewRowCount}
+        filtersOn={sidebarRows.filtersNarrowing}
+        onClearFilters={() => { clearAllFilters(); clearHiddenFilters(); clearTagFilter(); clearModelFilter() }}
+        failed={slotSearchFailed}
+        scan={slotSearch?.scan ?? null}
+      />
+      <SearchFolderHits
+        folders={folders} sortMode={folderSortMode} query={slotFilter} matchIds={folderNameMatchIds} isFolderHidden={isFolderHidden}
+        // Every drawn result, crew-group rows included; `folderOf` refuses peer rows.
+        rows={sidebarRows.filteredSlots} folderOf={sidebarRows.folderOf}
+        onOpen={id => { setSlotFilter(''); dispatch(requestFolderReveal(id)) }}
+      />
+    </>
+  ) : null
+
   // Everything the render owners draw from, built after the last hook call. The
   // factories run once per render, so the row stamps belong to this pass.
-  const scope: SidebarScope = { activeDrag, activeFilters, activeModelKeys, activeModelRows, activeSlot,
+  const scope: SidebarScope = { searchHeader, searchLaneActive, activeDrag, activeFilters, activeModelKeys, activeModelRows, activeSlot,
     activeTagIds, activeTagNames, addColumnAfterMutation, allHiddenFolders, armHold, attachStripEdges,
     autoTitleError, availableLanes, boardError, boardFolderCollapsed, boardLaneActive, boardPeerCount,
     broadcastOpen, bulkModel, changeRecentUnit, chatDropTarget, citedCreatorExists, cleanupOpen,
@@ -945,13 +1012,13 @@ function ChatSidebar({
     conductorExpanded, conductorMatching, conductorRows, conductorView, connected, createChatInFolder,
     createChatMutation, createEphemeralChatMutation, createFolderMutation, createRemoteChatMutation,
     creatingSlot, crewEnable, cycleLane, defaultAgent, deleteColumnWithConfirm,
-    deleteFolderWithConfirm, deleteHistorySessionWithConfirm, derivedHintCol, disarmHold, dismissSortError, dispatch,
+    deleteFolderWithConfirm, deleteHistorySessionWithConfirm, derivedHintCol, disarmHold, dismissSortError, dismissUnfiledAboveFoldersError, dispatch,
     dndSensors, dropSlotMutation, editingId, editName, editScope, filterCounts, filterHiddenFolders,
-    filterSortOpen, filtersPaused, flatLaneActive, flatSlots, flatView, folderActionError, folderCleanupOpen, folderOfflineNotice,
+    filterSortOpen, filtersPaused, pausedFilters, flatLaneActive, flatSlots, flatView, folderActionError, folderCleanupOpen, folderOfflineNotice,
     folderCompare, folderConductorPin, countSubfolderContents, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef,
-    folderFilterRows, folderNameMatchIds, folderReorderable, folderReorderHint, folderReorderHintRef,
+    folderFilterRows, folderModeCompare, folderNameMatchIds, folderReorderable, folderReorderHint, folderReorderHintRef,
     folderRowsDrawn, folders, foldersError, foldersFailed, folderSortMode, folderSortMut, folderSortRead,
-    foldersShelved, groupByKind, kindSections, toggleGroupByKind, folderSubtrees, foldersWithActiveSubtree, pinnedFolderSubtree, pinnedFolderAncestors, handleSidebarDragCancel, handleSidebarDragEnd,
+    foldersShelved, foldersUnreadFirst, groupByKind, kindSections, toggleGroupByKind, folderSubtrees, foldersWithActiveSubtree, pinnedFolderSubtree, pinnedFolderAncestors, handleSidebarDragCancel, handleSidebarDragEnd,
     handleSidebarDragOver, handleSidebarDragStart, hasRemoteExecutedRow, heldDisplacedRef, heldLane,
     hiddenByContainer, hiddenFilters, hiddenFolderCount, hideEmptyFolderBody, history, historyDragging,
     historyFilter, historyHasMore, historyHeight, historyOpen, historyResize, historySearchFailed, historySearchResults,
@@ -965,7 +1032,7 @@ function ChatSidebar({
     remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId, remoteSessionsError, renameCommit,
     renameError, reorderColumnsMutation, reportDndActive, restorePreBoardWidth, resumeAll, revealedContainers,
     revealFlash, rootFolderIds, rootFolders, rowActions, rowAnimEnabled, rowMotionHeld: !rowAnimSettled, rowViews, searchRanked, seedError,
-    seedStateLanesMutation, selectInstance, selectRecentPreset, sessionCleanup, setAllFiltersPaused,
+    seedStateLanesMutation, selectInstance, selectRecentPreset, sessionCleanup, setAllFiltersPaused, toggleFilterPaused,
     setAutoTitleError, setBoardError, setCleanupOpen, setCollapsedHistoryGroups, setColumnEditId,
     setDerivedHintCol, setEditingId, setEditName, setEditScope, setFilterSortOpen, setFlatView,
     setFolderActionError, setFolderCleanupOpen, setFolderCleanupRoot, setFolderOfflineNotice, refuseCreateOffline, setFolderCreateError, setFolderModal, setFoldersShelved,
@@ -977,9 +1044,10 @@ function ChatSidebar({
     sortError, sortKey, staleCollapseMs, staleExpanded, startsAutomaticSection, staticRows, stripEdges,
     subagentApprovalCounts, suppressMenuRestore, tagById, tagColumnsEnabled, tagFilterRows, tagsData,
     tagsQueryFailed, tintAgents, toggleCollapse, toggleColumnCollapse, toggleCrewCollapsed, toggleFilter,
-    toggleFolderFilter, toggleFoldersShelved, toggleHideFilter, toggleModelFilter, toggleReveal,
-    toggleSaveFailed, toggleSpaceCollapsed, toggleTagFilter, ungroupedSlots, unreadSet, updateColumnMutation,
+    toggleFolderFilter, toggleFoldersShelved, toggleFoldersUnreadFirst, toggleHideFilter, toggleModelFilter, toggleReveal,
+    toggleSaveFailed, toggleSpaceCollapsed, toggleTagFilter, toggleUnfiledAboveFolders, unfiledAboveFolders, unfiledAboveFoldersError, ungroupedSlots, unreadSet, updateColumnMutation,
     updateFolderMutation, visibleRootFolders, warmCrews }
+  const searchDock = renderSearchDock(scope)
   const laneRows = createLaneRows(scope)
   const folderBlocks = createFolderBlocks({ ...scope, ...laneRows })
   const lanes = createListLanes({ ...scope, ...laneRows, ...folderBlocks })
@@ -993,7 +1061,7 @@ function ChatSidebar({
     <>
       <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="slot-rename-status">{renameAnnouncement}</span>
       <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="folder-rename-status">{folderRenameAnnouncement}</span>
-      <div role="region" aria-label={i18nT('pages.chatSidebar.sessions')} {...uiLocation('sessions.list', sidebarRootRef)} data-row-anim={rowAnimSettled ? 'settled' : 'holding'} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={rootStyle}>
+      <div role="region" aria-label={i18nT('pages.chatSidebar.sessions')} {...uiLocation('sessions.list', sidebarRootRef)} data-row-anim={rowAnimSettled ? 'settled' : 'holding'} onPointerOver={onRootPointerOver} onPointerEnter={() => setListHovered(true)} onPointerLeave={() => { releaseHoverPin(); setListHovered(false) }} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={rootStyle}>
       {/* Scroll peek: full titles in a floating, click-through layer. The
           card itself keeps `sidebarWidth`. */}
       <ScrollPeekLayer titles={peekTitles} />
@@ -1088,7 +1156,11 @@ function ChatSidebar({
       {/* The floating dock (components/ListDock): the glass search capsule, the
           filter chips and the list-level notices hover over the lanes, and
           every lane's scroller pads its top by the dock's live height. */}
-      <ListDock {...renderSearchDock(scope)}>
+      <ListDock {...searchDock} shelf={<>
+        {searchDock.shelf}
+        {searchSent && !searchActive && !creatorFilterOn && <SearchPendingLine />}
+        {searchSent && slotSearchFailed && !creatorFilterOn && <SearchFailedNotice />}
+      </>}>
       {creatorFilterOn ? (
         <CreatorFilteredSessions
           key={`${creatorFilter}\u0000${slotFilter.trim()}`}
@@ -1101,9 +1173,9 @@ function ChatSidebar({
       ) : (
       <LayoutGroup id="chat-slots">
         {conductorLaneActive ? (
-          lanes.renderConductorLane()
+          <SidebarSearchContext.Provider value={searchView}>{lanes.renderConductorLane()}</SidebarSearchContext.Provider>
         ) : flatLaneActive ? (
-          lanes.renderFlatLane()
+          <SidebarSearchContext.Provider value={searchView}>{lanes.renderFlatLane()}</SidebarSearchContext.Provider>
         ) : orderedColumns.length === 0 ? (
           lanes.renderTreeLane()
         ) : (

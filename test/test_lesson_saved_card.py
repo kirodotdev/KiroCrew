@@ -88,7 +88,7 @@ class TestRecordLessonSaved:
 
     def test_the_rule_is_redacted_before_the_browser_draws_it(self) -> None:
         slot = _Slot()
-        secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+        secret = "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" + "Jf1Lb5Gs0Ye9Ua2WkE"
         chat_cards.record_lesson_saved(_State(slot), SLOT, f"deploy with key {secret}", "inserted")
 
         (row,) = slot.messages

@@ -38,9 +38,11 @@ LOCKED_BY_POLICY = "locked by policy"
 UNKEYED_LOCKS: Dict[str, str] = {
     "tunnel": "tunnel.enabled and tunnel.relay_enabled are ignored; no tunnel or relay is started",
     "telemetry.otlp_hosts": (
-        "telemetry.otlp_endpoint and telemetry.otlp_endpoints are ignored; "
-        "only endpoints this build ships or the policy names "
-        "(capabilities.telemetry.otlp_endpoint) may receive metrics"
+        "telemetry.otlp_endpoint, telemetry.otlp_endpoints and the traces OTLP "
+        "endpoint and headers (config and OTEL_EXPORTER_OTLP_* variables) are "
+        "ignored; only endpoints this build ships or the policy names "
+        "(capabilities.telemetry.otlp_endpoint) may receive metrics, and no "
+        "spans leave the host"
     ),
     # Named for the RFC "developer_mode" policy term; the key that replaces this row
     # is separate work.
@@ -62,6 +64,9 @@ CONFIG_PATH_LOCKS: Dict[str, str] = {
     "slack.use_tunnel_url": "tunnel",
     "telemetry.otlp_endpoint": "telemetry.otlp_hosts",
     "telemetry.otlp_endpoints": "telemetry.otlp_hosts",
+    "telemetry.traces_otlp_endpoint": "telemetry.otlp_hosts",
+    "telemetry.traces_otlp_headers_secret": "telemetry.otlp_hosts",
+    "telemetry.traces_otlp_headers_env": "telemetry.otlp_hosts",
 }
 
 _logged: "set[str]" = set()

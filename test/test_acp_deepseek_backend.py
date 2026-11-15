@@ -13,6 +13,7 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import threading
 from unittest.mock import AsyncMock
 
@@ -22,6 +23,7 @@ from acp_deepseek_backend_helpers import (  # noqa: F401 -- fixtures are used by
     _fixture_frames,
     _pinned_kiro_cli_version,
 )
+from spawn_test_helpers import await_gone, await_pids, kill_leftovers
 
 from conftest import make_dir_link
 from kiro_crew.acp import launch as launch_mod
@@ -222,6 +224,7 @@ class _FakeProbeProcess:
         self.stdin = io.BytesIO()
         self.returncode: int | None = None
         self.killed = False
+        self.tree_killed = False
         self.stdin_closed_after_marker: bool | None = None
         _FakeProbeProcess.instances.append(self)
         marker_writer(marker_path)
@@ -245,6 +248,10 @@ class _FakeProbeProcess:
         self.killed = True
         self.returncode = -9
 
+    def kill_tree(self) -> None:
+        self.tree_killed = True
+        self.kill()
+
 
 def _deepseek_gate_verifier(tmp_path, monkeypatch, marker_writer, *, names: tuple[str, ...] = ()):
     """Return a verifier closure whose fake probe places the requested marker shape.
@@ -261,6 +268,10 @@ def _deepseek_gate_verifier(tmp_path, monkeypatch, marker_writer, *, names: tupl
         return _FakeProbeProcess(argv, marker_writer, marker_path, **kwargs)
 
     monkeypatch.setattr(deepseek_mod.subprocess_mod, "Popen", fake_popen)
+    # The fake has no pid for the tree kill to signal: record the tree kill on it instead.
+    monkeypatch.setattr(
+        deepseek_mod.platform_compat, "kill_popen_tree", _FakeProbeProcess.kill_tree
+    )
     # The probe waits for the marker up to the read-back budget; a fake that never
     # writes one must fail in test time rather than in a minute.
     monkeypatch.setattr(deepseek_mod, "_DSH_GATE_READBACK_TIMEOUT_S", 0.5)
@@ -332,6 +343,63 @@ def test_a_probe_whose_plugin_never_writes_a_marker_is_refused_and_ended(
     assert remedy
     probe = probe_process()
     assert probe.killed, "a harness that produced no marker in time must be ended"
+    assert probe.tree_killed, "the harness must be ended with everything it started"
+
+
+#: A ``dsh`` stand-in that starts a worker, publishes the gate's marker and then
+#: ignores stdin closing. It writes "<own pid> <worker pid>" before the marker, so
+#: the pids are there once the probe has seen the marker.
+_DSH_THAT_STAYS_UP = (
+    "import os, subprocess, sys, time\n"
+    "kid = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+    "open(sys.argv[1] + '.tmp', 'w').write(f'{os.getpid()} {kid.pid}')\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    f"open(os.environ[{deepseek_mod._ENV_DSH_GATE_MARKER!r}], 'w').write('{{}}')\n"
+    "time.sleep(120)\n"
+)
+
+
+def test_a_probe_that_will_not_exit_is_killed_with_everything_it_started(
+    tmp_path, monkeypatch
+) -> None:
+    """The kill takes the harness's worker too, not only the harness."""
+    # The harness ignores stdin closing, so a zero exit budget sends the probe straight
+    # to its kill instead of waiting out the production one.
+    monkeypatch.setattr(deepseek_mod, "_DSH_GATE_PROBE_EXIT_S", 0)
+    pidfile = tmp_path / "pids"
+
+    try:
+        deepseek_mod._verify_deepseek_gate(
+            AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_DEEPSEEK),
+            ACP_BACKEND_DEEPSEEK,
+            [sys.executable, "-c", _DSH_THAT_STAYS_UP, str(pidfile)],
+            str(_gate_extension_path(tmp_path)),
+            str(tmp_path / "gate-marker.json"),
+            "n1",
+        )
+        pids = await_pids(pidfile)
+        alive = [pid for pid in pids if not await_gone(pid)]
+    finally:
+        kill_leftovers(await_pids(pidfile) if pidfile.exists() else ())
+    assert alive == [], f"the probe's kill left {alive} of {pids} running"
+
+
+def test_a_failure_while_the_probe_runs_ends_it_with_everything_it_started(
+    tmp_path, monkeypatch
+) -> None:
+    """The error path stops the harness with the same tree kill as the timeout path."""
+    verify, _marker_path, probe_process = _deepseek_gate_verifier(
+        tmp_path, monkeypatch, lambda path: None
+    )
+
+    def poll_fails(self):
+        raise OSError("poll failed")
+
+    monkeypatch.setattr(_FakeProbeProcess, "poll", poll_fails)
+
+    issue, _remedy = verify()
+    assert "could not be read back" in issue
+    assert probe_process().tree_killed
 
 
 def test_the_probe_hands_the_plugin_a_canary_under_each_vault_fed_name_and_never_the_key(

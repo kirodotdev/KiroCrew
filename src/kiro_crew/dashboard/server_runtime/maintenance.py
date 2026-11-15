@@ -201,7 +201,7 @@ def _kick_session_search_index(state: DashboardState) -> None:
     # The child's own pass cadence lives with the loop that honours it, in
     # ``history_index_worker``. Blocking calls (``Process.start`` costs a fresh
     # interpreter, ``stop`` waits on a signal) go through ``to_thread`` so the
-    # event loop this change exists to protect is never the thing that waits.
+    # event loop is never the thing that waits.
     def _migrate_index_schema() -> None:
         """Bring the index schema to the current version from ONE process.
 
@@ -276,14 +276,14 @@ def _kick_session_search_index(state: DashboardState) -> None:
         supervisor = SessionIndexWorkerSupervisor(log._dir)
         try:
             await asyncio.to_thread(_migrate_index_schema)
-            # A failed FIRST spawn is not treated differently from a child that
-            # dies later: both fall into the poll loop, which retries with backoff
-            # and eventually gives up for good. Returning here instead would let a
-            # transient failure at boot -- memory pressure, an fd limit, the very
-            # conditions this change exists to ease -- leave search scanning
-            # transcripts for the whole life of the gateway. A refusal that cannot
-            # improve by retrying, such as a transcript directory that is not
-            # there, sets ``gave_up`` inside ``start`` and so exits immediately.
+            # A failed FIRST spawn is not treated differently from a child that dies
+            # later: both fall into the poll loop, which retries with backoff and
+            # eventually gives up for good. Returning here instead would let a
+            # transient failure at boot -- memory pressure or an fd limit -- leave
+            # search scanning transcripts for the whole life of the gateway. A
+            # refusal that cannot improve by retrying, such as a transcript
+            # directory that is not there, sets ``gave_up`` inside ``start`` and so
+            # exits immediately.
             await asyncio.to_thread(supervisor.start)
             await asyncio.to_thread(_warm_search)
             while not supervisor.gave_up:
@@ -295,8 +295,7 @@ def _kick_session_search_index(state: DashboardState) -> None:
             logger.warning("Session search index supervisor failed", exc_info=True)
         finally:
             # The child is reaped OFF this loop. ``terminate`` and ``join``
-            # block, and a shutdown that freezes the loop for seconds is the
-            # exact failure this change exists to remove
+            # block, and a shutdown must not freeze the loop for seconds
             # (no-blocking-call-on-event-loop).
             #
             # ``request_stop`` is the non-blocking half — one ``waitpid`` and one
@@ -372,6 +371,11 @@ def _kick_knowledge_orphan_reclaim(state: DashboardState) -> None:
                 # KnowledgeStore.reclaim_agent_source_residue). Running it here
                 # means it only ever sees fully-settled ingests.
                 store.reclaim_agent_source_residue()
+                # Entity pairs a later ingest's alias now bridges, merged with
+                # ingestion held off so no mention lands on the merged row.
+                from kiro_crew.knowledge.entity_resolution import merge_split_entities
+
+                merge_split_entities(store)
         if not quiescent:
             # The store never drained. A window that did not drain yields while
             # still holding the gate's condition lock, and ingestion releases
@@ -491,7 +495,7 @@ def _kick_otel_crew_log_subscriber(state: DashboardState) -> None:
     the same shape as the ``_kick_*`` calls above it, and nothing is awaited in front
     of the publish.
 
-    A no-op for an unopted host (``telemetry.enabled`` off, the default): the consent
+    A no-op for a host with recording off (``telemetry.enabled`` false): the consent
     read returns, the thread finds nothing to subscribe, and the task ends. The bus
     subscription the install registers is a process-global write guarded by the bus's
     own lock, not loop-bound, so it is safe off the loop; a fold delivered before the

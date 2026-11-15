@@ -16,6 +16,7 @@ import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.dashboard.handlers.cron import api_crons
@@ -23,7 +24,9 @@ from kiro_crew.dashboard.handlers.cron_board import _job_snapshot
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.security.redaction_switch import owner_view
 
-SECRET = "deploy key AKIAIOSFODNN7EXAMPLE here"
+# A GitHub token with a valid checksum: redacted wherever it appears.
+_TOKEN = github_classic(seed=161)
+SECRET = f"deploy key {_TOKEN} here"
 
 
 def _truth(text: str) -> str:
@@ -95,7 +98,7 @@ class TestApiCrons:
 
         assert resp.content_type == "application/json"
         row = body["jobs"][0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in row["last_result"]
+        assert _TOKEN not in row["last_result"]
         assert row["last_result"] == _truth(f"{SECRET} run 1")
         assert row["is_running"] is True
         assert row["running_since"] == 123.0

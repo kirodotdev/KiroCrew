@@ -705,7 +705,7 @@ detail; this table is only an index.
 | ACP client (JSON-RPC transport to kiro-cli) | `src/kiro_crew/acp/` | [acp-client.md](../system-specs/modules/acp-client.md) |
 | App Kit platform contracts | `src/kiro_crew/apps/` | [app-kit-platform.md](../system-specs/modules/app-kit-platform.md) |
 | Artifacts (persisted generated UI) | `src/kiro_crew/artifacts.py` (and its `artifacts_*` owner modules), `artifact_store/` | [artifacts.md](../system-specs/modules/artifacts.md) |
-| Browser automation auth layer | `src/kiro_crew/browser/` | [browser.md](../system-specs/modules/browser.md) |
+| Browser automation (Browser Harness driver, live card) | `src/kiro_crew/browser_harness/` | [browser.md](../system-specs/modules/browser.md) |
 | Channel history buffer | `src/kiro_crew/channel_history.py` | [channel-history.md](../system-specs/modules/channel-history.md) |
 | CLI surface | `src/kiro_crew/cli.py` | [cli.md](../system-specs/modules/cli.md) |
 | Cloud launcher (own EC2 instance) | `src/kiro_crew/cloud/` | [cloud.md](../system-specs/modules/cloud.md) |

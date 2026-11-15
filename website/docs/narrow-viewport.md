@@ -357,10 +357,12 @@ metrics, credits) is not rendered on the phone at all: a phone user does not act
 a resource readout, and the bar's right side holds two controls (bell + overflow
 menu) by the max-two-buttons-per-row rule. The capsule's one generic job -- the
 connection glyph switching to an unplugged plug (the capsule also tinting danger) on a transport drop -- is taken by `mobile-offline-strip`: a 24px
-`Gateway offline -- reconnecting` strip hanging off the bar (absolute, so the
+`Gateway offline -- reconnecting` strip, an announced inline `ErrorNotice`, hanging off the bar (absolute, so the
 header's three-child invariant holds), rendered while `isMobile && !connected &&
-!authRequired`, `pointer-events-none` because it hangs over the top 24px of whatever
-`<main>` paints. Auth expiry keeps its own banner from `api/client.ts`, so the strip
+!gatewayConnecting && !authRequired`, `pointer-events-none` because it hangs over the top 24px of whatever
+`<main>` paints. `gatewayConnecting` (`useGatewayConnecting`) is the page's first socket
+still opening: nothing has failed yet, so neither the strip nor the desktop capsule reports
+an outage then. Auth expiry keeps its own banner from `api/client.ts`, so the strip
 stays quiet then rather than pointing at the transport when pasting a token is the
 fix -- visibly: the banner has no live region and the capsule's sr-only carrier is not
 rendered on the phone, so an sr-only `role="status"` span (`mobile-offline-sr`) announces
@@ -646,7 +648,16 @@ start, a pinch (`ctrlKey`), a run over content that can still scroll that way, a
 direction with nothing to do are all left alone; a new run during a settle grabs the
 panel where it is presenting it and follows from there, as a phone's drag can; anything else is cancelled event by event, with
 `overscroll-behavior-x: contain` on the document root while it runs, so macOS's
-back/forward swipe does not start under it. The drag is released only on a real
+back/forward swipe does not start under it. A leftward run from rest (the host's
+`reveals`: a closed panel, or the panel on another tab) is read like a drag but moves
+nothing until the fingers' own travel, its tail never counted, reaches
+`SWIPE_THRESHOLD_PX` (80px), the distance a reduced-motion swipe needs; the drag starts
+there and follows from that point, and a lift-off or a recognised tail before it ends the
+run unstarted. The fingers' moves before the start are kept for the release speed, so a
+flick that just passes 80px still opens the panel. Under reduced motion it is not asked: nothing moves there, and a clear swipe
+already needs the same 80px. The start distance is there for a mouse's thumb wheel, which turns a little
+when the mouse is held or moved and sends runs of 1-2px steps that sum to a few dozen px:
+a run that short never moves a closed panel, and neither does a flick that short. The drag is released only on a real
 lift-off: a 100ms gap (read from the events' own timestamps, so a slow frame is not a
 lift), or the momentum tail's signature, three steps in a row each smaller than the last
 by a near-constant ratio, or a creeping tail: three steps in a row of 4px or less after
@@ -702,7 +713,8 @@ on the main thread so the column reads every frame. The swipe is bound on the
 shell grid, which holds both the chat and the column, so a run keeps going when
 the panel arrives under the pointer. It is off for a bottom-docked panel, while
 the find pane holds the dock, and in embed frames. The exact lift-off from the desktop app reaches it
-through the same reader. An artifact frame in the panel (`ArtifactBodyIframe`
+through the same reader, and so does the start distance: a closed panel moves only once a
+leftward run has travelled 80px. An artifact frame in the panel (`ArtifactBodyIframe`
 with `relayWheel`, set only for the side panel) relays the runs its own content
 cannot scroll, on both pages: a frame with sideways scroll room left keeps its
 scroll, and one with none hands a rightward run to the page, which drags the

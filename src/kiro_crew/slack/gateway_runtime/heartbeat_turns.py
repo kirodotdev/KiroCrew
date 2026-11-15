@@ -125,7 +125,11 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
     # once-at-init snapshot would let a heartbeat session keep enforcing a
     # just-disabled rule — or skip a just-added one — until restart.
     assert self.ctx_builder is not None
+    # Imported here: this module's functions run on the gateway's globals (see the
+    # module docstring), so a module-level import would not be in scope.
+    from kiro_crew.tracing import surfaces as trace_surfaces
 
+    @trace_surfaces.rooted(trace_surfaces.TRIGGER_HEARTBEAT)
     async def _heartbeat_task(task_text: str, deliver: str) -> str | None:
         assert self.sessions is not None
         assert self.ctx_builder is not None

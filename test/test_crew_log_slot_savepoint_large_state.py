@@ -80,7 +80,7 @@ def _hex(seed: str, chars: int) -> str:
     """Deterministic text that zlib cannot shrink to nothing (hex compresses about 2x)."""
     out = []
     block = seed.encode()
-    while sum(len(x) for x in out) < chars:
+    for _ in range(-(-chars // 64)):  # each sha256 digest is 64 hex characters
         block = hashlib.sha256(block).digest()
         out.append(block.hex())
     return "".join(out)[:chars]
@@ -120,15 +120,23 @@ def _restart_reads() -> "tuple[dict[str, int], Any]":
     return read, state
 
 
+#: Filler entries per grouped write.
+_FILLER_GROUP = 300
+
+
 def _switch_agent(old: str, new: str, filler: int) -> None:
     """A big board in *old* plus *filler* entries of its own traffic, then the slot moves to
     *new* (an agent switch: a new unit opens and records)."""
     _open(old)
     _big_board(old)
-    for n in range(filler):
-        _handles[old].append(
-            "turn/started", {"turn": n + 1, "actor": "user", "depth": 0}, src="gateway"
-        )
+    # The same entries an append each would write, in groups of one write and one fsync:
+    # what is under test is the read after the switch, not the cost of building the unit.
+    turns = [
+        {"type": "turn/started", "data": {"turn": n + 1, "actor": "user", "depth": 0}}
+        for n in range(filler)
+    ]
+    for start in range(0, filler, _FILLER_GROUP):
+        _handles[old].append_many(turns[start : start + _FILLER_GROUP], src="gateway")
     _read()
     _open(new)
     _work(new, "after-switch")

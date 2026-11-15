@@ -34,6 +34,8 @@ import { __resetPanelTabs } from '../../hooks/usePanelTabs'
 vi.mock('../../api/client', () => ({
   api: {
     members: vi.fn(),
+    // The owner check behind Import from file (`useViewerIsNotOwner`): the owner.
+    viewerOwnerOk: vi.fn(() => Promise.resolve(true)),
     teams: { list: vi.fn(() => Promise.resolve({ teams: [] })) },
     // The warm greeting's read of the crewmate's work ledger. No ledger is the
     // state every case not about the greeting wants: the chat opens bare.
@@ -324,6 +326,33 @@ describe('MembersPage Profile card Schedules tab', () => {
     // No `0` anywhere — not on the rail, not in the list.
     expect(screen.queryByTestId('member-schedules-count')).toBeNull()
     expect(within(screen.getByTestId('crew-profile-tabs')).queryByText('0')).toBeNull()
+  })
+
+  it.each([
+    ['a daily goal check-in', { daily: true }, 'Goals tab', true],
+    ['a weekly goal check-in', { weekly: true }, 'Goals tab', true],
+    ['a monthly goal check-in', { monthly: true }, 'Goals tab', true],
+    // Starts with the same words as the check-ins line: only the Goals tab mention tells them apart.
+    ['the Heartbeat', { heartbeat: true }, 'No schedules yet.', false],
+  ])('neither the tab nor the New schedule page says nothing wakes the mate while %s is on', async (_label, on, line, mentionsGoals) => {
+    // The check-ins and the Heartbeat wake the mate without being a row here.
+    vi.mocked(api.crons).mockResolvedValue({ jobs: [] } as never)
+    vi.mocked(api.memberGoals.get).mockResolvedValue({
+      slug: 'oncall', member: 'oncall', goals: [], key_results: [], reports: [], removed_goal: null, removed_key_result: null,
+      schedules: { time: '09:00', timezone: '', daily: false, weekly: false, weekday: 1, monthly: false, month_day: 1, heartbeat: false, interval: 60, ...on },
+      limits: { goal_text_max_chars: 2000, key_result_text_max_chars: 200, key_result_value_max_chars: 40, key_result_reading_max_chars: 120 },
+    } as never)
+    onTestFinished(() => { vi.mocked(api.memberGoals.get).mockReset() })
+    await openCrewmate()
+    const list = await openSchedulesTab()
+    await waitFor(() => expect(within(list).getByTestId('crew-schedule-empty')).toHaveTextContent(line))
+    expect(list).not.toHaveTextContent(/Nothing wakes/)
+    expect(within(list).getByTestId('crew-schedule-empty').textContent).toSatisfy((text: string) => text.includes('Goals tab') === mentionsGoals)
+    fireEvent.click(screen.getByTestId('crew-schedule-create'))
+    const page = await screen.findByTestId('crew-profile-page-new-schedule')
+    await waitFor(() => expect(within(page).getByTestId('member-schedules')).toHaveTextContent(line))
+    expect(page).not.toHaveTextContent(/Nothing wakes/)
+    expect(within(page).getByTestId('member-schedules').textContent).toSatisfy((text: string) => text.includes('Goals tab') === mentionsGoals)
   })
 
   it('reads the list without asking which crew is the default', async () => {
@@ -1092,11 +1121,17 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
       expect(holdsDocument()).toBe(false)
     } else {
       const notice = await screen.findByTestId(status === 'refused' ? 'crew-goals-new-goal-error' : 'crew-goals-new-goal-unconfirmed')
-      if (status !== 'refused') expect(notice).toHaveTextContent('check the conversation above before sending it again')
-      // The modal stays open over the card, for another try.
+      if (status !== 'refused') expect(notice).toHaveTextContent('open the chat and check the conversation before sending it again')
+      // The modal stays open over the card: a refusal for another try, an
+      // unconfirmed delivery with Open chat in place of Send.
       expect(screen.getByRole('dialog', { name: 'New goal' })).toContainElement(notice)
       expect(screen.getByTestId('crew-profile-modal')).toBeInTheDocument()
-      expect(screen.getByTestId('crew-goals-new-goal-send')).toBeEnabled()
+      expect(screen.getByTestId(status === 'refused' ? 'crew-goals-new-goal-send' : 'crew-goals-new-goal-open-chat')).toBeEnabled()
+      if (status !== 'refused') {
+        // Open chat sends nothing and, floating over the thread, closes the card.
+        fireEvent.click(screen.getByTestId('crew-goals-new-goal-open-chat'))
+        await waitFor(() => expect(screen.queryByTestId('crew-profile-panel')).toBeNull())
+      }
     }
     expect(api.sendChat).toHaveBeenCalledTimes(1)
     const [message, slot] = vi.mocked(api.sendChat).mock.calls[0]

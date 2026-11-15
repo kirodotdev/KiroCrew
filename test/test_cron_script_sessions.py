@@ -14,14 +14,17 @@ import urllib.error
 from types import SimpleNamespace
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import cron_script
 from kiro_crew.cron_script import ScriptContext
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 _JOB = "nightly-dispatch"
-# Assembled at runtime so the source never holds a credential-shaped literal.
-_FAKE_KEY = "AKIA" + "1234567890123456"
+# Assembled at runtime so the source never holds a credential-shaped literal: a
+# GitHub token with a valid checksum, which is redacted wherever it appears.
+_FAKE_KEY = github_classic(seed=11)
 
 
 class _Resp:
@@ -346,11 +349,19 @@ class TestCrewLogAppend:
         decode error instead of sending the record. The shape survives, nested strings
         are still scrubbed, and non-string scalars pass through untouched."""
         gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
-        secret = "wJalrXUtnFEMI/K7MDENG/" + "bPxRfiCY" + "EXAMPLEKEY"
-        # The serialized blob of this record is what the redactor turns into non-JSON.
+        secret = SAMPLE_AWS_SECRET
+        # The serialized blob of this record is what pass 1 alone turns into non-JSON;
+        # the structured detectors keep the delimiter, so the premise reads pass 1.
         blob = json.dumps({"creds": {"aws_secret_access_key": secret}})
-        with pytest.raises(json.JSONDecodeError):
-            json.loads(cron_script.redact(blob))
+        from kiro_crew.security.redaction_structured import compat
+
+        before = compat.use_rule_table()
+        compat.publish_use_rule_table(False)
+        try:
+            with pytest.raises(json.JSONDecodeError):
+                json.loads(cron_script.redact(blob))
+        finally:
+            compat.publish_use_rule_table(before)
 
         ctx.crew_log_append(
             "stock_check",
@@ -393,8 +404,8 @@ class TestCrewLogAppend:
         assert sent["list"] == [bearer]
 
     def test_a_value_with_two_tokens_loses_both(self, ctx, gateway):
-        """The keyed judgement runs on the cleaned value, so a header carrying an access
-        key the bare scrub catches AND a bearer only its key reveals keeps neither."""
+        """The keyed judgement runs on the cleaned value, so a header carrying a token
+        the bare scrub catches AND a bearer only its key reveals keeps neither."""
         gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
         bearer = "Bearer " + "abcdefghijklmnopqrstuvwxyz0123"
 
@@ -407,8 +418,8 @@ class TestCrewLogAppend:
 
     def test_two_keys_that_redact_alike_both_survive(self, ctx, gateway):
         gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
-        first = "AKIA" + "AAAAAAAAAAAAAAAA"
-        second = "AKIA" + "BBBBBBBBBBBBBBBB"
+        first = github_classic(seed=21)
+        second = github_classic(seed=22)
 
         ctx.crew_log_append("stock_check", {first: 1, second: 2})
 

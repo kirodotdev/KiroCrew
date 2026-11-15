@@ -21,7 +21,8 @@ _WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
 
 def _paths_filter_jobs():
-    yaml = pytest.importorskip("yaml")
+    import yaml
+
     for path in sorted(_WORKFLOWS.glob("*.yml")):
         doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         for job_id, job in (doc.get("jobs") or {}).items():

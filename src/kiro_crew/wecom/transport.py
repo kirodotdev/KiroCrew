@@ -51,6 +51,7 @@ from dataclasses import replace
 from typing import Any
 
 from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile, upload_filename
+from kiro_crew.messaging.split import truncate_utf8
 from kiro_crew.messaging.tables import TABLE_POLICY_OFF
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
@@ -69,6 +70,22 @@ from kiro_crew.wecom.client import (
 from kiro_crew.wecom.media_upload import MAX_BYTES_BY_TYPE
 
 logger = logging.getLogger(__name__)
+
+
+def _cut_caption(caption: str) -> str:
+    """Fit a file caption into one WeCom text push, logging when it was cut.
+
+    The client would cut an over-cap push silently at ``WECOM_MAX_REPLY_BYTES``.
+    Cutting here instead lands on the last whole UTF-8 character, adds a trailing
+    ``…`` so the reader can see the text was cut, and logs it.
+    """
+    size = len(caption.encode("utf-8"))
+    if size <= WECOM_MAX_REPLY_BYTES:
+        return caption
+    ellipsis = "…"
+    cut = truncate_utf8(caption, WECOM_MAX_REPLY_BYTES - len(ellipsis.encode("utf-8")))
+    logger.info("wecom send_document: caption cut from %d to %d bytes", size, WECOM_MAX_REPLY_BYTES)
+    return cut + ellipsis
 
 
 # Upper bound on the number of LEARNED (non-roster) warm peers kept in
@@ -443,6 +460,7 @@ class WeComTransport(MessagingTransport):
             if not self._may_push(conversation_id):
                 logger.warning("wecom send_document: conversation deauthorized before caption")
             else:
+                caption = _cut_caption(caption)
                 try:
                     if not await self._client.send_proactive(conversation_id, caption):
                         logger.warning("wecom send_document: caption push not acknowledged")

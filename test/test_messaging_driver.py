@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from redaction_structured_cases import aws_secret, github_classic
 
 from kiro_crew import session_directive
 from kiro_crew.acp.types import (
@@ -42,6 +43,8 @@ from kiro_crew.messaging.renderer import Renderer
 from kiro_crew.monitoring.completion import MonitorCompletionHook
 from kiro_crew.monitoring.models import MonitorActionCompletion, MonitorActionDisposition
 from kiro_crew.testing.wait import await_until, finished
+
+SECRET = github_classic(seed=142)
 
 
 class _RecordingRenderer(Renderer):
@@ -421,14 +424,7 @@ class TestTurnDriverTranslation:
 
     def test_steering_summary_is_redacted_before_structured_event(self):
         r = _RecordingRenderer()
-        # Split literal on purpose: Semgrep's detected-aws-access-key-id-value
-        # rule matches an AKIA-shaped STRING LITERAL and cannot tell a synthetic
-        # test fixture from a real leaked credential, so a one-piece literal
-        # fails the SAST gate. Concatenating keeps the runtime value identical --
-        # the test still proves an AWS-key-shaped secret is redacted -- while the
-        # scanner sees no hardcoded key. Do not "simplify" this back to one
-        # literal; it will break CI, not the test.
-        secret = "AKIA" + "1234567890ABCDEF"
+        secret = SECRET
         p = _ScriptedProvider(
             [
                 AcpEvent(
@@ -1001,16 +997,16 @@ class TestAutoApproveTool:
 class TestRedaction:
     def test_credentials_redacted_in_text(self):
         r = _RecordingRenderer()
-        secret = "aws_secret_access_key=AKIAIOSFODNN7EXAMPLE1234567890abcdEXAMPLEKEY"
+        value = aws_secret(seed=142)
         p = _ScriptedProvider(
             [
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text=secret),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"aws_secret_access_key={value}"),
                 AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
             ]
         )
         out = _run(p, r)
         # The raw secret value must not survive into the emitted/accumulated text.
-        assert "AKIAIOSFODNN7EXAMPLE1234567890abcdEXAMPLEKEY" not in out
+        assert value not in out
 
 
 class TestStreamCredentialRedaction:
@@ -1020,24 +1016,25 @@ class TestStreamCredentialRedaction:
 
     def test_credential_split_across_chunks_is_redacted(self):
         r = _RecordingRenderer()
-        # AKIA + 16 chars = a 20-char access-key-id, split down the middle.
+        # A 40-char GitHub token, split down the middle.
+        half = len(SECRET) // 2
         p = _ScriptedProvider(
             [
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="prefix AKIA1234567890"),
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="ABCDEX suffix"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"prefix {SECRET[:half]}"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"{SECRET[half:]} suffix"),
                 AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
             ]
         )
         out = _run(p, r)
-        # The full key spanned two chunks; neither the whole nor the leading
+        # The full token spanned two chunks; neither the whole nor the leading
         # half may survive, and the redaction marker must be present.
-        assert "AKIA1234567890ABCDEX" not in out
-        assert "AKIA1234567890" not in out
+        assert SECRET not in out
+        assert SECRET[:half] not in out
         assert "[REDACTED: credential]" in out
         # What the renderer actually emitted (what reaches Slack) is clean too,
         # and equals the accumulated return (single redaction pipeline).
         emitted = "".join(e[1] for e in r.events if e[0] == "text_chunk")
-        assert "AKIA" not in emitted
+        assert SECRET[:half] not in emitted
         assert emitted == out
 
     def test_credential_straddling_steering_frame_never_reassembles(self):
@@ -1075,7 +1072,7 @@ class TestStreamCredentialRedaction:
         r = _RecordingRenderer()
         p = _ScriptedProvider(
             [
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="tail AKIA1234567890ABCDEX"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"tail {SECRET}"),
                 AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
             ]
         )
@@ -1083,7 +1080,7 @@ class TestStreamCredentialRedaction:
         kinds = [e[0] for e in r.events]
         assert kinds[-1] == "done"
         assert "text_chunk" in kinds  # flushed tail emitted before done
-        assert "AKIA1234567890ABCDEX" not in out
+        assert SECRET not in out
         assert "[REDACTED: credential]" in out
 
 
@@ -1161,9 +1158,7 @@ class TestTextAcrossAToolCall:
         # Both sides of this join are non-whitespace, so the break rule fires.
         # The redactor must still see the key joined: a break fed in between
         # would let each half pass the scan alone and show both.
-        # Split literal on purpose so Semgrep does not mistake the synthetic
-        # fixture for a hardcoded AWS access key.
-        secret = "AKIA" + "1234567890ABCDEF"
+        secret = SECRET
         joined, _ = _turn_across_tool([f"key {secret[:14]}"], [f"{secret[14:]} end"])
         assert secret[:14] not in joined
         assert secret[14:] not in joined
@@ -1172,7 +1167,7 @@ class TestTextAcrossAToolCall:
     def test_no_break_once_a_redaction_has_changed_the_output(self):
         # Residual, pinned: once the output differs from the raw text there is
         # no held text to anchor the break on, so the join stays glued.
-        secret = "AKIA" + "1234567890ABCDEF"
+        secret = SECRET
         joined, _ = _turn_across_tool([f"key {secret} then that time."], ["No logs."])
         assert "[REDACTED: credential]" in joined
         assert joined.endswith("time.No logs.")
@@ -1250,7 +1245,7 @@ class TestHeldRunEndsThePreCallText:
     def test_a_redaction_across_the_join_closes_the_run_empty(self):
         # The run cannot be told apart once a redaction spans it, so the
         # earlier text ends as it stands and the redacted text goes after.
-        secret = "AKIA" + "1234567890ABCDEF"
+        secret = SECRET
         events = _segments([_text(f"key {secret[:14]}"), _tool("a"), _text(f"{secret[14:]} end")])
         assert ("continuation", "") in events
         after = "".join(e[1] for e in events if e[0] == "text_chunk")
@@ -1559,13 +1554,13 @@ class TestPromptChoiceNamesItsOwnTool:
                 AcpEvent(
                     kind=EVENT_PERMISSION_REQUEST,
                     request_id="rq1",
-                    title="curl AKIAIOSFODNN7EXAMPLE",
+                    title=f"curl {SECRET}",
                     options=[{"id": "approve"}],
                 ),
                 AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
             ]
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in prompts[0][3]
+        assert SECRET not in prompts[0][3]
 
 
 def _drain_text(*chunks: str) -> tuple[str, list[str]]:

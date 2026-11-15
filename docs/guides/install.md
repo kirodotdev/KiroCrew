@@ -91,8 +91,11 @@ hatches exist for mirrored or airgapped installs:
 - `KIROCREW_EMBED_MODEL_PATH` (or `memory.embed_model_path`) runs a local GGUF
   of your own instead. In that mode the default model is never downloaded.
 
-`memory.embedding_provider` accepts only `llama_cpp`; any other value in an old
-config is coerced to it on load.
+`memory.embedding_provider` accepts `llama_cpp` (the default, in-process) and
+`ollama_http`, which sends memory and knowledge text to the Ollama server at
+`memory.ollama_url` (set `memory.ollama_model` and `memory.embedding_dim` to
+match its model). Any other value in an old config, `ollama` and `none`
+included, is coerced to `llama_cpp` on load.
 
 Global V1 retains its existing session-start memory retrieval. Crew Member V2
 injects current persona, permanent rules and admitted project guides every turn;
@@ -227,6 +230,14 @@ home (`~/.kiro/crew-venv`, override with `KIROCREW_VENV`) and symlinks
 data home, so no whole-home operation can ever delete the live interpreter. The
 selected channel is recorded to `~/.kiro/crew/channel`.
 
+Before it downloads anything, the installer checks free space. It stops, naming
+the directory, when the disk beside the data home (where the managed venv and
+Python go) has less than about 500 MB free or the temp directory has less than
+about 100 MB (set `TMPDIR` to use another). A step that still runs out of space
+says so in plain words, and a failed first install removes the managed venv it
+started. The Python it downloaded to `~/.kiro/crew-python` stays, so a re-run
+does not fetch it again.
+
 Updates to a managed venv (`kirocrew update`, an approved in-app update, and the
 gateway's automatic update) build each new version as its own tree beside it,
 `crew-venv-<version>` (about 350 MiB with its dependencies), and switch the
@@ -256,7 +267,8 @@ binary (an installed `uv` on `PATH` is deliberately never executed -- `PATH`
 commonly leads with agent-writable directories), then installs a
 [python-build-standalone](https://github.com/astral-sh/python-build-standalone)
 CPython 3.12 into a user-owned directory beside the data home
-(`~/.kiro/crew-python`, override with `KIROCREW_PYTHON_DIR`). No package
+(`~/.kiro/crew-python`, override with `KIROCREW_PYTHON_DIR`), with no
+`python3.12` link added to `~/.local/bin` (`uv python install --no-bin`). No package
 manager, no sudo, and the prebuilt interpreter runs on old-glibc distros
 (CentOS 7) whose base repos never reach 3.10. Pass `--system-python` (or set
 `KIROCREW_MANAGED_PYTHON=0`) to run on a system Python 3.12+ instead — the
@@ -334,9 +346,11 @@ checkout, such as a release tag, is on no branch: `kirocrew update` moves it to
 the first of `main`, `mainline` and `master` that `origin` has, and refuses <!-- wokeignore:rule=master -->
 when `origin` has none of them. After the reset the update rebuilds the
 dashboard (`npm ci` + `npm run build` in `website/`) and writes that output to
-`logs/frontend-build.log` in the data home. If the build fails, the update still
-installs the new revision's dependencies, then stops before restarting, names
-that file, and the gateway keeps running its current version: a restart would
+`logs/frontend-build.log` in the data home; on Windows no log is written, so
+that output is not kept. If the build fails, the update still installs the new
+revision's dependencies, then stops before restarting, names that file (or, with
+no log, says so: run `npm ci` and `npm run build` in `website/` to see the
+output), and the gateway keeps running its current version: a restart would
 pair the new backend with the previous dashboard bundle. The checkout already
 holds the new revision, so a second update reports it up to date: fix the cause
 the log names, then run the frontend and stage steps below before restarting. A clone with no `website/` or no `npm` skips the build and keeps its
@@ -642,7 +656,7 @@ Linux, `.\make.ps1 <target>` on Windows.
 | `make backend` | Backend only: `.venv` + editable install with the `dev` extra |
 | `make wheel` | Self-contained pip wheel with the dashboard bundled, into `dist/` |
 | `make backend-bin` | Frozen standalone backend binary (host arch only) |
-| `make desktop` | Full desktop app: DMG on macOS, AppImage on Linux, NSIS installer on Windows |
+| `make desktop` | Full desktop app: DMG on macOS, AppImage plus `.deb` and `.rpm` on Linux, NSIS installer on Windows |
 | `make test` | Build, then run the `pytest` suite |
 | `make clean` | Remove build artifacts, dists, and caches |
 
@@ -669,6 +683,9 @@ After any install, the desktop app included, install Kiro CLI from
 ```bash
 kiro-cli login
 ```
+
+On Linux the Kiro CLI installer needs `unzip`; the one-line install (`cli.sh`)
+says so before its next steps when the host has neither `unzip` nor `kiro-cli`.
 
 The desktop app does not carry its own kiro-cli: it detects the one you
 installed, and the **Set up Kiro** page shows the install and sign-in commands
@@ -783,7 +800,7 @@ it. Details: [browser module spec](../system-specs/modules/browser.md).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `KIROCREW_HOME` | `~/.kiro/crew` | Data directory (config, credentials, databases) |
+| `KIROCREW_HOME` | `~/.kiro/crew` | Data directory (config, credentials, databases). Some folders stay under `~/.kiro` whatever it is set to (see [Folders beside the data home](#folders-beside-the-data-home)) |
 | `KIROCREW_PORT` | `5476` | Port the gateway / dashboard listens on |
 | `KIROCREW_EMBED_MODEL_URL` | CDN default | Mirror for the embedding model download |
 | `KIROCREW_EMBED_MODEL_PATH` | unset | Run a local GGUF instead of the bundled model |
@@ -1597,9 +1614,18 @@ the Kiro Crew home, which lives outside the install directory. Each signed Windo
 installer must pass an install, create-sentinel-under-`~/.kiro/crew`,
 uninstall, verify-sentinel smoke test before release. A separate Kiro-family
 uninstaller could remove the parent `~/.kiro/` directory; it must exclude
-`~/.kiro/crew` or prompt explicitly. That release-blocking cross-product
-sign-off is tracked in
-[issue #355](https://github.com/kirodotdev/KiroCrew/issues/355).
+`~/.kiro/crew` or prompt explicitly. Kiro Crew cannot enforce that on another
+product, so it is a documented accepted risk, not a release gate
+(UNINSTALLER-EXCLUDE-CREW in
+[config](../system-specs/modules/config.md#data-home-location)). To keep your
+data home out of reach of such a removal, set `KIROCREW_HOME` to a folder
+outside `~/.kiro/` (Kiro Crew starts a new data home there; it does not move an
+existing one). That does not move your crewmates' agent files in
+`~/.kiro/mates` (see [Folders beside the data home](#folders-beside-the-data-home)),
+so back that folder up separately. To keep your snapshots out of its reach
+too, set `snapshot_dir` in `config.json` to a folder outside `~/.kiro/`: by
+default `kirocrew snapshot` writes into the data home's `snapshots/` folder. A
+snapshot is not a full backup; see [Removing user data](#removing-user-data).
 
 ## Next steps
 

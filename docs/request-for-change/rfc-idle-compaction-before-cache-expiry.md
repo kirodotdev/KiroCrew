@@ -1,19 +1,23 @@
 ---
 title: Idle compaction before prompt-cache expiry, an opt-in session setting
-status: in-progress
+status: partial
 author: Pearcekieser, with Kiro
 created: 2026-10-19
-last-audited: 2026-10-26
-audited-at: 5483f68961
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: 22149
-implementation-prs: []
+implementation-prs: [24384]
 tracking-issues: [22148]
 supersedes: []
 superseded-by: []
 ---
 # RFC: Idle compaction before prompt-cache expiry, an opt-in session setting
 
-- Status: in-progress. Phase 1 is in flight in its implementation pull request; nothing is on main.
+- Status: partial. Phase 1 (backend and config key) is on main from
+  [#24384](https://github.com/kirodotdev/KiroCrew/pull/24384): `session.idle_compaction`
+  is read in `config/loader_builders.py` and the per-backend delay is
+  `idle_compaction_delay_secs` in `agent_sdk/backends_turns.py`. Phase 2, the
+  Settings UI control, is not built: `website/src/` has no `idle_compaction` hit.
 - Author: Pearcekieser, with Kiro
 - Created: 2026-10-19
 - Measured at: `cea787cbd5`

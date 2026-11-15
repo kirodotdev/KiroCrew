@@ -371,9 +371,11 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
 /**
  * Structural provenance stamped on an `inject` row's `meta` by the gateway.
  *
- * Kept in sync with the `injectKind` values written at the append sites in
- * `src/kiro_crew/dashboard/chat_runner.py`, `dashboard/handlers/messaging.py`
- * and `slack/gateway.py`.
+ * Kept in sync with the `injectKind` values the gateway writes: the queue
+ * drain's `_inject_meta` in `src/kiro_crew/dashboard/chat_turn/queue_drain.py`,
+ * `_run_pending_synthesis` in `dashboard/chat_turn/queue_cycle.py`,
+ * `enqueue_or_run_prompt` in `dashboard/state_parts/chat_slot.py`, and the row
+ * builders in `dashboard/chat_utils_injected_rows.py` and `dashboard/session_deliver.py`.
  *
  * Why this exists rather than more prefix matching: `meta` is persisted and
  * restored, whereas an `inject` row's `cls` is NOT (chat_persistence keeps `cls`

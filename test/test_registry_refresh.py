@@ -23,6 +23,7 @@ Three contracts, asserted separately because they fail differently:
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -58,7 +59,10 @@ class TestForgetCache:
 
     def test_missing_cache_is_a_no_op(self, mod, monkeypatch, tmp_path):
         monkeypatch.setattr(mod, "_cache_path", lambda: tmp_path / "absent.json")
+        neighbour = tmp_path / "other.json"
+        neighbour.write_text("{}", encoding="utf-8")
         mod.forget_cache()  # must not raise
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["other.json"]
 
     def test_an_unlink_error_never_raises(self, mod, monkeypatch, tmp_path):
         # Same degrade-don't-500 contract as every other disk touch in these
@@ -80,7 +84,18 @@ class TestForgetCache:
 
 
 class _FakeRequest:
-    """Minimal stand-in: neither handler reads anything off the request."""
+    """Minimal stand-in: the listing reads only ``app`` (no ``state``) off the request."""
+
+    app: dict[str, Any] = {}
+
+
+class _OwnerRequest(dict):
+    """The dashboard owner's request: the refresh is owner-only."""
+
+    app: dict[str, Any] = {"state": SimpleNamespace(owner_id="owner")}
+
+    def __init__(self) -> None:
+        super().__init__(user="owner", app="")
 
 
 @pytest.fixture()
@@ -120,7 +135,7 @@ def _body(resp: Any) -> dict[str, Any]:
 @pytest.mark.asyncio
 class TestRegistryRefreshEndpoint:
     async def test_refresh_drops_all_three_document_caches(self, _forget_counter):
-        resp = await routes.handle_registry_refresh(_FakeRequest())  # type: ignore[arg-type]
+        resp = await routes.handle_registry_refresh(_OwnerRequest())  # type: ignore[arg-type]
         assert resp.status == 200
         assert _body(resp) == {"ok": True}
         assert sorted(_forget_counter) == ["catalog", "editorial", "order"]

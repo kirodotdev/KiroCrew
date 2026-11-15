@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from config_pending_helpers import dashboard_refusal_layer, make_config_json_pending
 
 from kiro_crew.dashboard import handlers
 from kiro_crew.onboarding_sources import gemini as gemini_source
@@ -1359,6 +1360,34 @@ async def test_state_failure_code_equals_the_audited_error(monkeypatch) -> None:
     assert response.status == 500
     assert response_body["code"] == "state_failed"
     assert audit.events[-1]["error"] == "state_failed"
+
+
+@pytest.mark.asyncio
+async def test_state_of_a_pending_config_json_answers_the_pending_code(monkeypatch) -> None:
+    """config.json has a change pending owner review: the refusal is audited and
+    reaches the dashboard chain, which answers 409 with the code the UI translates
+    instead of the route's own 500."""
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    module = _handler_module()
+    audit = _AuditLog()
+    monkeypatch.setattr(module, "_sel", lambda: audit)
+    KiroCrewConfig().save()
+    make_config_json_pending(monkeypatch)
+    app = _make_app(module)
+    app.middlewares.insert(0, dashboard_refusal_layer())
+
+    async with TestClient(TestServer(app)) as client:
+        response = await client.put(
+            "/api/onboarding/import/state",
+            json={"completed": True},
+            headers={"X-Test-User": "owner"},
+        )
+        response_body = await response.json()
+
+    assert response.status == 409
+    assert response_body["code"] == "file_pending_review"
+    assert audit.events[-1]["error"] == "file_pending_review"
 
 
 @pytest.mark.asyncio

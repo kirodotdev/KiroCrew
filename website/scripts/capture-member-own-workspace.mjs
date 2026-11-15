@@ -10,7 +10,8 @@
  *                       the own-workspace option, selected, above the existing
  *                       workspaces
  *   03-profile-<theme>  a created crewmate's Profile card: the Workspace tile
- *                       reads the generated `member-radar` name
+ *                       reads "Radar" for the generated `member-radar`, which
+ *                       is its tooltip
  *
  * Real components against stubbed /api (Vite + Playwright); the backend is
  * exercised by CI only. Reuses the Crewmates page harness
@@ -51,10 +52,10 @@ function check(name, ok, detail) {
 async function newPage(theme, scene, viewport = { width: 1440, height: 1100 }) {
   const page = await browser.newPage({ viewport, deviceScaleFactor: 1 })
   const members = scene === 'done' ? [RADAR] : []
-  await page.route(u => new URL(u).pathname.startsWith('/api/'), route => {
+  await page.route(u => /^\/api\/|^\/v1\/crew\/owner\/bots$/.test(new URL(u).pathname), route => {
     const path = new URL(route.request().url()).pathname
     const json = (body) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-    if (path === '/api/members') return json({ members, default_agent: 'kirocrew' })
+    if (path === '/api/members' || path === '/v1/crew/owner/bots') return json({ members, default_agent: 'kirocrew' })
     if (path === '/api/agents' && route.request().method() === 'POST') return json({ ok: true })
     if (path === '/api/crons') return json({ jobs: [] })
     if (path === '/api/webhooks') return json({ tokens: [] })
@@ -156,7 +157,7 @@ for (const theme of ['dark', 'light']) {
     const tile = page.getByTestId('crew-profile-workspace')
     await tile.waitFor({ state: 'visible', timeout: 10000 })
     await page.waitForTimeout(700)
-    check(`03-profile-${theme} workspace tile`, (await tile.innerText()).includes('member-radar'), `tile="${(await tile.innerText()).replace(/\s+/g, ' ').trim()}"`)
+    check(`03-profile-${theme} workspace tile`, (await tile.innerText()).includes('Radar') && (await tile.locator('[title]').getAttribute('title')) === 'member-radar', `tile="${(await tile.innerText()).replace(/\s+/g, ' ').trim()}"`)
     await assertTheme(page, theme, `03-profile-${theme}`)
     await page.screenshot({ path: `${OUT}/03-profile-${theme}.png` })
     await page.close()

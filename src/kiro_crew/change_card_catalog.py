@@ -525,6 +525,9 @@ def describe_manual_change(
         segments = set(guide_catalog._SEGMENT_SPLIT.split(path.lower()))
         if segments & {"token", "secret", "password", "key", "credential", "credentials"}:
             return f"changed config {s(path)}"
+        if b.get("unset") is True:
+            # The leaf is removed, not set to null: the key reads its default again.
+            return f"reset config {s(path)} to its default"
         return f"changed config {s(path)} {s(before)}→{s(b.get('value'))}"
     if route == ("PUT", "/api/members/{slug}/goals/key-results"):
         raw_items = b.get("items")
@@ -857,9 +860,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import mate_capability_catalog as _mate_catalog  # noqa: F401
+    from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES  # noqa: F401
     from kiro_crew.config.sections import (  # noqa: F401
         DEFAULT_MODEL,
         FEATURE_PREVIEW_FLAGS,
+        MAX_PER_CREATOR_MAX,
+        MAX_PER_CREATOR_MIN,
         MEMBER_APPROVAL_MODES,
         effective_pin_scope,
         normalize_agent_model,

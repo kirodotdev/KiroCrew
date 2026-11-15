@@ -44,6 +44,9 @@ class _FakeLog:
     def list_sessions(self) -> list[dict[str, Any]]:
         return [{"key": k, "title": "", "modified": 0.0} for k in self._keys]
 
+    def list_sessions_indexed(self) -> list[dict[str, Any]]:
+        return self.list_sessions()
+
     def list_sessions_status(self) -> tuple[list[dict[str, Any]], bool]:
         # Routed through list_sessions so the subclass override below still
         # drives the reconciler's listing.

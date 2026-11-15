@@ -73,6 +73,12 @@ def seeded(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture
+def full_reads(monkeypatch):
+    """Load every window by the full chained read, the path these tests time and fault."""
+    monkeypatch.setattr(cp._window_tail, "read_window_tail", lambda *_args: None)
+
+
 def _restore(tmp_path):
     state = _make_state(tmp_path / "sessions")
     restored = asyncio.run(cp.restore_open_slots_async(state))
@@ -227,7 +233,7 @@ def test_a_row_appended_to_a_pending_row_lands_after_its_history(seeded):
     assert after == [*before, "a new question"]
 
 
-def test_a_failed_load_fails_closed_and_retries(seeded, monkeypatch):
+def test_a_failed_load_fails_closed_and_retries(seeded, full_reads, monkeypatch):
     state, _ = _restore(seeded)
     slot = next(s for s in state._slots.values() if s.window_pending)
     real = state.conversation_log.read_messages_chained
@@ -263,7 +269,7 @@ def test_a_window_snapshot_taken_before_the_load_stays_as_it_was(seeded):
     assert slot.messages
 
 
-def test_a_reader_on_another_thread_waits_for_the_whole_window(seeded, monkeypatch):
+def test_a_reader_on_another_thread_waits_for_the_whole_window(seeded, full_reads, monkeypatch):
     state, _ = _restore(seeded)
     key = _pending_key(state)
     slot = state._slots[key]
@@ -317,7 +323,9 @@ def test_a_reader_on_another_thread_waits_for_the_whole_window(seeded, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_a_load_on_another_thread_never_holds_the_loop_behind_its_read(seeded, monkeypatch):
+async def test_a_load_on_another_thread_never_holds_the_loop_behind_its_read(
+    seeded, full_reads, monkeypatch
+):
     state = await _restore_on_loop(seeded)
     slow_key, other_key = [k for k in _KEYS if state._slots[k].window_pending]
     conv_log = state.conversation_log
@@ -351,6 +359,66 @@ async def test_a_load_on_another_thread_never_holds_the_loop_behind_its_read(see
     assert not state._slots[slow_key].window_pending
 
 
+def _big_seed(tmp_path, key: str, turns: int, extra: list[dict] | None = None) -> None:
+    seed_state = _make_state(tmp_path / "sessions")
+    _seed(seed_state, key, turns)
+    for row in extra or ():
+        seed_state.conversation_log.append(_history_key_for(key), row["role"], row["content"])
+
+
+def _window_fields(slot) -> tuple:
+    rows = [(m["role"], m["content"]) for m in slot.messages]
+    return rows, slot._disk_older_count, slot._disk_older_durable_count, slot._disk_window_len
+
+
+def test_a_window_through_the_page_index_matches_the_full_read(tmp_path, monkeypatch):
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    monkeypatch.setattr(cp, "EAGER_WINDOW_RESTORES", 0)
+    key = "chat-7-long"
+    _big_seed(tmp_path, key, 400)
+    _write_snapshot(tmp_path, [key])
+
+    paged, _ = _restore(tmp_path)
+    reads = _count_full_reads(monkeypatch, paged.conversation_log)
+    paged_fields = _window_fields(paged._slots[key])
+    assert reads == [], "the window was built from a full read"
+
+    monkeypatch.setattr(cp._window_tail, "read_window_tail", lambda *_args: None)
+    full, _ = _restore(tmp_path)
+    assert _window_fields(full._slots[key]) == paged_fields
+    assert paged_fields[1] == 300 and len(paged_fields[0]) == 500
+
+
+@pytest.mark.parametrize(
+    "path_breaks",
+    ["transient", "page_error"],
+)
+def test_a_window_the_page_index_cannot_prove_takes_the_full_read(
+    tmp_path, monkeypatch, path_breaks
+):
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    monkeypatch.setattr(cp, "EAGER_WINDOW_RESTORES", 0)
+    key = "chat-8-odd"
+    transient = [{"role": "queued", "content": "held"}] if path_breaks == "transient" else []
+    _big_seed(tmp_path, key, 300, transient)
+    _write_snapshot(tmp_path, [key])
+    state, _ = _restore(tmp_path)
+    if path_breaks == "page_error":
+
+        def _boom(*_args, **_kwargs):
+            raise ValueError("unindexable")
+
+        monkeypatch.setattr(state.conversation_log, "read_messages_chained_page", _boom)
+    reads = _count_full_reads(monkeypatch, state.conversation_log)
+
+    slot = state._slots[key]
+    assert slot.messages
+    assert reads == [_history_key_for(key)]
+    full = state.conversation_log.read_messages_chained(_history_key_for(key))
+    assert slot._disk_older_count == len(full) - 500
+    assert slot._disk_older_durable_count == cp.durable_row_count(full[: len(full) - 500])
+
+
 @pytest.mark.parametrize(
     ("meta", "can_wait"),
     [
@@ -360,7 +428,9 @@ async def test_a_load_on_another_thread_never_holds_the_loop_behind_its_read(see
         ({"turn_in_flight_generation": 3}, False),
         ({"linked_session_key": "cron:job-1"}, False),
         ({"app": "spec-builder"}, False),
-        ({"created_by": "dashboard:chat-9"}, False),
+        # A session another session created waits too: every delivery into it
+        # (session_send, retry, read) loads the window off the loop first.
+        ({"created_by": "dashboard:chat-9"}, True),
         ({"remote_slot": "peer-chat-1"}, False),
         ({"origin": "cron"}, False),
         ({"origin": "system"}, False),
@@ -429,6 +499,52 @@ async def test_a_per_slot_route_loads_the_window_off_the_loop(seeded, caplog):
     assert not _loads_on_loop(caplog)
 
 
+_PAGE_FIELDS = ("total", "has_more", "next_before")
+
+
+def _page(body: dict) -> tuple:
+    return [(m["role"], m["content"]) for m in body["messages"]], *(
+        body.get(f) for f in _PAGE_FIELDS
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["limit=3", "limit=2&before=4"])
+async def test_a_bounded_open_reads_the_page_and_leaves_the_window_unloaded(seeded, caplog, query):
+    state = await _restore_on_loop(seeded)
+    key = _pending_key(state)
+
+    with caplog.at_level(logging.WARNING):
+        async with TestClient(TestServer(_make_app(state))) as client:
+            lazy = await client.get(f"/api/chat/slots/{key}?{query}")
+            assert lazy.status == 200
+            lazy_page = _page(await lazy.json())
+            assert state._slots[key].window_pending, "a bounded page must not load the window"
+
+            await load_window_off_loop(state._slots[key])
+            loaded = await client.get(f"/api/chat/slots/{key}?{query}")
+            assert loaded.status == 200
+            assert lazy_page == _page(await loaded.json())
+
+    assert lazy_page[0], "the page holds rows"
+    assert not _loads_on_loop(caplog)
+
+
+@pytest.mark.asyncio
+async def test_a_pending_row_with_a_transient_row_on_disk_loads_its_window(seeded, caplog):
+    state = await _restore_on_loop(seeded)
+    key = _pending_key(state)
+    state.conversation_log.append(_history_key_for(key), "queued", "held message")
+
+    with caplog.at_level(logging.WARNING):
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get(f"/api/chat/slots/{key}?limit=3")
+            assert resp.status == 200
+
+    assert not state._slots[key].window_pending
+    assert not _loads_on_loop(caplog)
+
+
 @pytest.mark.asyncio
 async def test_a_send_to_a_pending_row_loads_it_off_the_loop(seeded, caplog, monkeypatch):
     state = await _restore_on_loop(seeded)
@@ -477,7 +593,9 @@ async def test_a_bulk_model_switch_loads_a_pending_row_off_the_loop(seeded, capl
 
 
 @pytest.mark.asyncio
-async def test_bulk_model_switch_survives_an_unreadable_pending_window(seeded, caplog, monkeypatch):
+async def test_bulk_model_switch_survives_an_unreadable_pending_window(
+    seeded, full_reads, caplog, monkeypatch
+):
     from kiro_crew.dashboard.chat import api_chat_slots_model
     from kiro_crew.dashboard.system_notices import SESSION_SWITCH_KIND
 
@@ -640,6 +758,66 @@ async def test_a_session_control_target_loads_off_the_loop(seeded, caplog):
     assert not _loads_on_loop(caplog)
 
 
+@pytest.mark.asyncio
+async def test_a_message_to_a_pending_tab_another_session_created_has_its_full_history(
+    seeded, caplog, monkeypatch
+):
+    """session_send into a created tab past the eager budget: the turn sees every row.
+
+    The tab restores as a sidebar row; the send loads its window off the loop
+    before the turn runs, so the prompt lands after the whole history.
+    """
+    from session_control_helpers import _key
+
+    monkeypatch.setattr(sc, "session_control_enabled", lambda: True)
+    caller_key = "chat-9-caller"
+    seed_state = _make_state(seeded / "sessions")
+    _seed(seed_state, caller_key, 1)
+
+    def _claim_created_by() -> None:
+        for key in _KEYS:
+            seed_state.conversation_log.update_metadata(
+                _history_key_for(key), {"created_by": f"dashboard:{caller_key}"}
+            )
+
+    await asyncio.to_thread(_claim_created_by)
+    _write_snapshot(seeded, [caller_key, *_KEYS])
+    # Confirm the claim so the restore keeps it, as the crew log's creation record would.
+    monkeypatch.setattr(
+        sc, "_creation_parent", lambda key: f"dashboard:{caller_key}" if key in _KEYS else ""
+    )
+    state = await _restore_on_loop(seeded)
+    target = _pending_key(state)
+    assert state._slots[target]._created_by == f"dashboard:{caller_key}"
+
+    seen: dict[str, list[str]] = {}
+    ran = asyncio.Event()
+
+    async def _fake_run_chat(_state, slot, prompt):
+        seen["rows"] = [m["content"] for m in slot.messages]
+        seen["prompt"] = prompt
+        ran.set()
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
+
+    with caplog.at_level(logging.WARNING):
+        out = await sc.send_to_target(
+            state,
+            caller_session_key=_key(state._slots[caller_key]),
+            target=target,
+            message="pick this up",
+        )
+        await asyncio.wait_for(ran.wait(), timeout=60)
+
+    assert out["ok"] is True and out["started"] is True
+    turns = _KEYS.index(target) + 3
+    history = [r for i in range(turns) for r in (f"{target} question {i}", f"{target} answer {i}")]
+    assert seen["rows"][: len(history)] == history
+    assert seen["rows"][-1].endswith("pick this up")
+    assert seen["prompt"].endswith("pick this up")
+    assert not _loads_on_loop(caplog)
+
+
 class _Stop(Exception):
     pass
 
@@ -685,6 +863,29 @@ async def test_the_read_verb_loads_its_target_before_its_gate(tmp_path, monkeypa
         await sc_handlers.api_session_control_read(request)
 
     assert calls == [(state, "chat-x")]
+
+
+@pytest.mark.asyncio
+async def test_the_generate_title_verb_loads_its_target_before_its_gate(tmp_path, monkeypatch):
+    """The title is built from the target's rows, and a session another session
+    created can now restore as a sidebar row, so the window loads off the loop."""
+    from kiro_crew.dashboard.handlers import session_control as sc_handlers
+
+    calls: list = []
+    monkeypatch.setattr(sc, "load_target_window", _stopping_spy(calls))
+    monkeypatch.setattr(sc_handlers, "_require_internal", AsyncMock(return_value=None))
+    monkeypatch.setattr(sc_handlers, "_body", AsyncMock(return_value={"target": "chat-x"}))
+    generate = AsyncMock()
+    monkeypatch.setattr(sc, "generate_title_target", generate)
+    app = web.Application()
+    app["state"] = state = _make_state(tmp_path)
+    request = make_mocked_request("POST", "/api/session-control/generate-title", app=app)
+
+    with pytest.raises(_Stop):
+        await sc_handlers.api_session_control_generate_title(request)
+
+    assert calls == [(state, "chat-x")]
+    generate.assert_not_awaited()
 
 
 @pytest.mark.asyncio

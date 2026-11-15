@@ -219,7 +219,7 @@ deliberately **not** treated as a failure:
 
 ### Dashboard
 
-`POST /api/chat/slots/{slot}/stop` (`dashboard/chat_handlers.py`), with an optional
+`POST /api/chat/slots/{slot}/stop` (`dashboard/chat_api/turn_stop.py`), with an optional
 `?force=true`.
 
 **First press** sets `slot._stop_state = "soft_pending"`, inserts a `stop_event`

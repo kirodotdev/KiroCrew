@@ -27,6 +27,7 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (
     STOP_CLASS_STALLED,
     STOP_RECOVERY_MAX_RETRIES,
     classify_stop_reason,
+    continue_timed_out_calls,
 )
 from kiro_crew.agent_sdk.mcp_problems import (
     UNATTENDED_MCP_WAIT_SECS,
@@ -96,6 +97,7 @@ from kiro_crew.task_models import (
 )
 from kiro_crew.task_planner import group_parallel_tasks
 from kiro_crew.task_status_file import fail_on_declared_failure
+from kiro_crew.tracing import surfaces as trace_surfaces
 
 if TYPE_CHECKING:
     from kiro_crew.name_grant import Refusal as NameRefusal
@@ -715,6 +717,7 @@ def _step_permission_policy(
     )
 
 
+@trace_surfaces.rooted(trace_surfaces.TRIGGER_TASK)
 async def execute_task(
     run: Project,
     task: Task,
@@ -945,7 +948,10 @@ async def execute_task(
             # build and episodic-query embed above are turn setup, not the turn,
             # and this loop re-runs per attempt so each row measures its own turn.
             _turn_t0 = _time.monotonic()
-            async for event in client.stream(full_prompt):
+            # A call whose own silence timer ends the prompt is handed back to the
+            # model on this session (``acp.timed_out_continuation``), so the step
+            # goes on with what it already did instead of re-running from the top.
+            async for event in continue_timed_out_calls(client.stream, full_prompt):
                 if event.kind == EVENT_TEXT_CHUNK:
                     _attempt_emitted = True
                     result_text += event.text
@@ -1546,6 +1552,7 @@ async def build_task_prompt(run: Project, task: Task, attempt: int, work_dir: Pa
             if git_ctx:
                 parts.append(git_ctx + "\n")
         except Exception:
+            # The prompt is built without git context when it cannot be read.
             pass
 
     memory_text = run.memory.summary()
@@ -1648,6 +1655,7 @@ async def check_context(session_key: str, sessions: "SessionManager") -> None:
         logger.debug("Context check failed", exc_info=True)
 
 
+@trace_surfaces.rooted(trace_surfaces.TRIGGER_TASK)
 async def self_review(
     run: Project,
     task: Task,
@@ -1800,6 +1808,7 @@ async def _reap_process_group(proc: asyncio.subprocess.Process) -> None:
         await asyncio.wait_for(proc.wait(), timeout=_TEST_KILL_GRACE)
         return
     except Exception:
+        # The wait timed out or failed: escalate to SIGKILL below.
         pass
     try:
         await platform_compat.kill_process_tree_async(pid, platform_compat.SIGKILL)
@@ -1808,6 +1817,7 @@ async def _reap_process_group(proc: asyncio.subprocess.Process) -> None:
     try:
         await asyncio.wait_for(proc.wait(), timeout=_TEST_KILL_GRACE)
     except Exception:
+        # The tree is already SIGKILLed; there is nothing more to do here.
         pass
 
 

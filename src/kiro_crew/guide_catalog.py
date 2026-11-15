@@ -484,7 +484,7 @@ ACTIONS: dict[str, ActionDef] = {
                     "maxLength": _FIND_ROUTE_MAX_CHARS,
                     "description": (
                         "The page, as find_ui returns it (e.g. '/schedule' or "
-                        "'/capabilities?tab=mcp'). Omit for a control on every page."
+                        "'/settings/connections'). Omit for a control on every page."
                     ),
                 },
                 "label": {
@@ -909,12 +909,14 @@ def ui_auto_tier() -> UiAutoTier:
     well-formed single-step plan are kept; ``search-only`` and ``deny`` ones are
     never guidable.
     """
+    from kiro_crew.ui_index_load import parse_index_text
+
     empty = UiAutoTier("", {}, {})
     try:
         if _UI_AUTO_INDEX_PATH.stat().st_size > _UI_AUTO_MAX_BYTES:
             return empty
         raw = json.loads(_UI_AUTO_INDEX_PATH.read_text(encoding="utf-8"))
-        base = json.loads(_UI_INDEX_PATH.read_text(encoding="utf-8"))
+        base = parse_index_text(_UI_INDEX_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return empty
     if not isinstance(raw, dict) or not isinstance(base, dict) or raw.get("artifact") != "auto":
@@ -1061,7 +1063,7 @@ def _route_pathname(route: str) -> str:
     return route.split("?", 1)[0].split("#", 1)[0]
 
 
-# Query parameters that choose which page a path shows (``/capabilities?tab=mcp``).
+# Query parameters that choose which page a path shows (``/capabilities?tab=skills``).
 _PAGE_IDENTITY_PARAMS = ("tab",)
 
 
@@ -1070,7 +1072,7 @@ def _route_compatible(asked: str, other: str) -> bool:
 
     The paths match (trailing slashes aside) and every page-identity query
     parameter *asked* sets has the same value in *other*: ``/capabilities``
-    with ``?tab=crews`` is another page than with ``?tab=mcp``. A parameter
+    with ``?tab=crews`` is another page than with ``?tab=skills``. A parameter
     *asked* leaves out does not tell pages apart.
     """
     if _route_pathname(asked).rstrip("/") != _route_pathname(other).rstrip("/"):

@@ -324,8 +324,12 @@ def _doctor_path_launcher() -> None:
     Read-only: it resolves and compares paths, and never writes or relinks.
     """
     from kiro_crew.agent import _resolve_kirocrew_bin
+    from kiro_crew.env_own_kirocrew import forwarder_target
 
     on_path = shutil.which("kirocrew")
+    if on_path:
+        # An agent shell on Windows finds the crew home's forwarder first.
+        on_path = forwarder_target(on_path) or on_path
     if not on_path:
         # Not an error on its own: the desktop app runs its bundled backend
         # directly, and a user who never wanted a terminal command is fine.
@@ -759,7 +763,8 @@ def _doctor_tz_data(issues: list[str]) -> None:
         issues.append("timezone data missing")
         return
     if offset == _TZ_PROBE_OFFSET:
-        print("  tz data:     ✅ current (America/Vancouver stays UTC-7 in winter)")
+        print("  tz data:     ✅ current (IANA tzdb 2026b or later)")
+        print("               Sample check on America/Vancouver, not your configured zone.")
         return
     print("  tz data:     ⚠️  out of date (older than IANA tzdb 2026b)")
     print("               It still moves America/Vancouver back to UTC-8 on")

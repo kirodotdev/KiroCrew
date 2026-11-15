@@ -55,6 +55,7 @@ from governance_distribution_helpers import (
     _write_policy,
     pd_format_exc,
 )
+from redaction_structured_cases import aws_secret
 
 from kiro_crew import security
 from kiro_crew.platform import governance
@@ -62,6 +63,10 @@ from kiro_crew.platform import governance_health as health
 from kiro_crew.platform import governance_profiles as gp
 from kiro_crew.platform import policy_distribution as pd
 from kiro_crew.platform.context import PlatformCompositionError, current_context
+
+# A synthetic AWS secret key, which the plan redacts. An AWS key ID stays
+# visible as an identifier, so it cannot show that a value is redacted.
+_AWS_SECRET = aws_secret(seed=39)
 
 # ──────────────────────────────────────────────────────────────────────────
 # The parsed declaration
@@ -1299,9 +1304,9 @@ class TestTheDetailNeverNamesTheEndpoint:
         """The exception text is the ENDPOINT's, not ours: an error page, or a proxy echoing
         the request back, can carry the credential. ``_redact_source`` only knows the
         configured source, so the reason has to go through the full sanitiser."""
-        leaked = "AKIAIOSFODNN7EXAMPLE"
+        leaked = _AWS_SECRET
         source = transport(
-            _failing_fetcher(TimeoutError(f"upstream said: aws_access_key_id={leaked}"))
+            _failing_fetcher(TimeoutError(f"upstream said: aws_secret_access_key={leaked}"))
         )
         # The per-window cooldown would otherwise divert the second call to a different
         # reason ("already attempted"), which never carries the endpoint's text at all.

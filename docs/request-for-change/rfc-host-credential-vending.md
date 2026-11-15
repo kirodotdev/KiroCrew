@@ -56,7 +56,7 @@ no `.aws` hole and gets no grant. The last row is the adapter mask. A harness wh
 routing is in `ENFORCED_ROUTINGS` (`agent_sdk/tool_gate.py`) is one whose passive
 reads never reach the tool gate, so `adapter_hidden_credential_dirs` projects the
 whole `_SENSITIVE_HOME_DIRS` floor onto its child. `ACP_BACKEND_ROUTING` in
-`agent_sdk/backends.py` puts five harnesses there today. One file comes back for
+`agent_sdk/backends_routing.py` (split out of `agent_sdk/backends.py` by #21616) puts five harnesses there today. One file comes back for
 `codex`, read-only: `ADAPTER_EXPOSED_CREDENTIAL_LEAVES` re-exposes `~/.aws/config`.
 
 That leaves the child holding a config file and nothing the config points at:

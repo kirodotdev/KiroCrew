@@ -313,6 +313,30 @@ class TestLogin:
         assert cli_kas.kas_cmd(_parse("login", "--provider", "idc")) == 2
         assert fake_service.begun == []
 
+    def test_a_start_url_without_idc_warns_and_signs_in_as_builder_id(
+        self, home_store, fake_service, capsys
+    ):
+        # main accepts this line: begin_device hardcodes the Builder ID URL and
+        # signs in as Builder ID, dropping the start URL. Keep that (exit 0), but
+        # say the start URL was ignored rather than dropping it silently.
+        fake_service.polls = [{"status": "authorized", "provider": "BuilderId"}]
+        args = _parse("login", "--start-url", "https://acme.awsapps.com/start")
+        assert cli_kas.kas_cmd(args) == 0
+        err = capsys.readouterr().err
+        assert "ignoring --start-url" in err
+        # The sign-in still ran, as builder_id.
+        assert fake_service.begun[0]["provider"] == "builder_id"
+
+    def test_a_region_with_a_social_provider_warns_and_proceeds(
+        self, home_store, fake_service, capsys
+    ):
+        fake_service.polls = [{"status": "authorized", "provider": "Google"}]
+        args = _parse("login", "--provider", "google", "--region", "us-west-2")
+        assert cli_kas.kas_cmd(args) == 0
+        err = capsys.readouterr().err
+        assert "ignoring --region" in err
+        assert fake_service.begun[0]["provider"] == "google"
+
     def test_a_live_sign_in_answers_already_signed_in(self, home_store, fake_service, capsys):
         """kiro-cli ignores a login over a live session; so does this, in words the
         cloud sign-in reads as ``already_logged_in`` and then verifies the identity of."""

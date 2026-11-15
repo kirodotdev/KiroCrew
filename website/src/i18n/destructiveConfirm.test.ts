@@ -238,6 +238,10 @@ export const EXEMPT_CONFIRM_PLACEHOLDER_NAMES = new Set([
  * kind-word form and record that decision.
  */
 export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
+  'settings.advanced.reset_confirm':
+    'the {{value}} operand is the setting\'s current value, printed after its own '
+    + '"Current:" label at the end of the line, so the label already marks where it starts '
+    + 'and nothing follows it to blur where it ends',
   'pages.membersPage.dashboard_download_confirm_body':
     'kind-word form: the {{name}} operand is the bot\'s display name, joined to its kind '
     + 'word ("{{name}}\'s Dashboard"), in a confirm for a download, which removes nothing',

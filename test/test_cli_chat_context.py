@@ -15,11 +15,16 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import cli_chat
+from kiro_crew.acp.mcp_session_report import McpSessionReport
+from kiro_crew.acp.session_handle_mcp import turn_is_told
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    METHOD_KAS_MCP_STATUS,
     PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_CODEX,
+    JsonRpcMessage,
 )
+from kiro_crew.agent_sdk.mcp_problems import session_mcp_states
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import KiroCrewAgentConfig
 from kiro_crew.config.paths import kiro_agents_dir
@@ -268,6 +273,49 @@ async def test_a_kiro_harness_gets_the_typed_text_as_before(monkeypatch, tmp_pat
     await cli_chat._chat(None, None, agent="pirate")
 
     assert provider.sent == ["say hello", "one", "two"]
+
+
+class _KasSessionStillStartingAServer(_KiroHarnessSession):
+    """A KAS session whose start left the user's ``github`` server to its first turn."""
+
+    def __init__(self) -> None:
+        super().__init__("is_kas_backend")
+        self.report = McpSessionReport()
+        self.report.begin_session([])
+        self.report.fold_frame(
+            JsonRpcMessage(
+                method=METHOD_KAS_MCP_STATUS,
+                params={"sessionId": "s", "servers": [{"name": "github", "status": "connecting"}]},
+            )
+        )
+        self.report.left_to_turn = ("github",)
+
+    def mcp_session_report(self) -> McpSessionReport:
+        return self.report
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", ["say hello", None], ids=["one-message", "interactive"])
+async def test_a_cli_turn_is_not_told_of_a_server_still_starting_so_its_prompt_holds(
+    monkeypatch, tmp_path, message
+) -> None:
+    """``kirocrew chat`` and ``kirocrew chat -m`` send the typed text on KAS: no build
+    reads the session's servers and no ``[MCP SERVERS]`` block is sent. The report
+    therefore stays untold, which is what makes the session hold that first prompt
+    for the servers its start skipped (``session_handle_mcp.hold_untold_first_turn``)."""
+    _pirate_agent(tmp_path / "agent-skills")
+    provider = _KasSessionStillStartingAServer()
+    _run_on(monkeypatch, provider)
+    if message is None:
+        _type(monkeypatch, "say hello")
+
+    await cli_chat._chat(message, None, agent="pirate")
+
+    assert provider.sent == ["say hello"]
+    assert provider.report.left_to_turn == ("github",)
+    assert provider.report.turn_told == ("", frozenset())
+    assert not turn_is_told(provider.report, "say hello")
+    assert session_mcp_states(provider) == {"connecting": ("github",)}
 
 
 @pytest.mark.asyncio

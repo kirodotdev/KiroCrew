@@ -1,7 +1,8 @@
 # Oncall Watchtower — Full Example Source
 
 Illustrates a Kiro Crew UI page, agent, skill, five-minute cron declaration,
-real-time event subscription, and navigation badge.
+real-time event subscription, navigation badge, and the SDK's issue list
+([issues guide](../../issues-guide.md)).
 
 This directory is a source fixture, not a directly runnable app. Its `ui/`
 directory contains only `src/App.tsx`: there is no `package.json`, Vite config,

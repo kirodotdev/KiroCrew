@@ -131,22 +131,17 @@ def register_routes(ctx):
 
         import kiro_crew.apps.module_loader as ml
 
-        # The deploy_web builtin ships a backend module; loading it must not warn.
-        builtins = ml._BUILTINS_DIR
-        app_dir = builtins / "deploy_web"
-        if not (app_dir / "handlers.py").is_file():
-            pytest.skip("deploy_web builtin layout changed")
-        ml._warned_third_party_apps.discard("deploy-web")
+        # The crew_companion builtin ships a backend module; loading it must not warn.
+        app_dir = ml._BUILTINS_DIR / "crew_companion"
+        ml._warned_third_party_apps.discard("crew-companion")
         with caplog.at_level(logging.WARNING, logger=ml.logger.name):
-            try:
-                load_app_module("deploy-web", app_dir, "handlers:register_routes")
-            except ImportError:
-                pass  # callable name may differ; we only assert on warnings
+            func = load_app_module("crew-companion", app_dir, "backend.routes:register_routes")
+        assert callable(func)
         assert not [
             r for r in caplog.records
             if r.levelno == logging.WARNING and "third-party" in r.getMessage()
         ]
-        unload_app_modules("deploy-web")
+        unload_app_modules("crew-companion")
 
 
 # ---------------------------------------------------------------------------
@@ -199,16 +194,11 @@ def register_routes(ctx):
         monkeypatch.setattr(
             "kiro_crew.apps.execution.third_party_execution_allowed", lambda: False
         )
-        app_dir = ml._BUILTINS_DIR / "deploy_web"
-        if not (app_dir / "handlers.py").is_file():
-            pytest.skip("deploy_web builtin layout changed")
-        ml._warned_third_party_apps.discard("deploy-web")
-        try:
-            load_app_module("deploy-web", app_dir, "handlers:register_routes")
-        except ImportError as exc:
-            # A missing callable is fine; the gate's ImportError is NOT.
-            assert "apps_allow_third_party" not in str(exc)
-        unload_app_modules("deploy-web")
+        app_dir = ml._BUILTINS_DIR / "crew_companion"
+        ml._warned_third_party_apps.discard("crew-companion")
+        func = load_app_module("crew-companion", app_dir, "backend.routes:register_routes")
+        assert callable(func)
+        unload_app_modules("crew-companion")
 
 
 # ---------------------------------------------------------------------------

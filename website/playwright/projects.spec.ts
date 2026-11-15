@@ -163,8 +163,8 @@ test.describe('Projects (Task Runner) Page', () => {
       await expect(headerName).toBeVisible({ timeout: 5000 })
       await expect(headerName).toHaveText(taskName)
 
-      // Status badge shows "planned" (use exact: true to avoid sidebar substring match)
-      await expect(page.getByText('planned', { exact: true })).toBeVisible()
+      // Status badge shows the "Planned" label (exact: true to avoid the sidebar row's substring match)
+      await expect(page.getByText('Planned', { exact: true })).toBeVisible()
 
       // Execute button is present for planned runs
       await expect(page.getByRole('button', { name: /Execute/i })).toBeVisible()

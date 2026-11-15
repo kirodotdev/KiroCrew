@@ -175,6 +175,25 @@ describe('switchSlot.rejected — a gone target restores the pre-switch selectio
     expect(s.slotLoading).toBe(false)
   })
 
+  it('a transient failure keeps the run state live frames gave the selected chat, so its Stop stays (#34428)', async () => {
+    const store = await primedStore()
+    store.dispatch(sseChatMessage({ slot: 'flaky', role: 'chunk', content: 'x' }))
+    expect(store.getState().chat.slotRun['flaky'].state).toBe('streaming')
+    let rejectFlaky!: (e: unknown) => void
+    detail.mockImplementation((key: string) => key === 'flaky'
+      ? new Promise((_resolve, reject) => { rejectFlaky = reject })
+      : Promise.resolve(PAGES[key] ?? PAGES.C))
+    const inflight = store.dispatch(switchSlot('flaky'))
+    // A frame landing during the read moves only the mirror; the keyed entry still says streaming.
+    store.dispatch(sseChatMessage({ slot: 'flaky', role: 'tool', content: '🔧 bash', meta: { tool_call_id: 'tc-1' } }))
+    rejectFlaky(apiError(500, 'gateway hiccup'))
+    await inflight
+    const s = store.getState().chat
+    expect(s.activeSlot).toBe('flaky')
+    expect(s.slotRun['flaky'].state).toBe('streaming')
+    expect([s.slotState, s.slotRunning, s.slotStopping]).toEqual(['tool_running', true, false])
+  })
+
   it('a 404 landing after the user already switched on does not yank the selection', async () => {
     let rejectGone!: (e: unknown) => void
     detail.mockImplementation((key: string) => {

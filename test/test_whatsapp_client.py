@@ -679,6 +679,26 @@ def test_send_typing_swallows_errors(monkeypatch):
     asyncio.run(c.send_typing("447700900000@s.whatsapp.net", True))  # must not raise
 
 
+def test_edit_text_hands_the_edits_own_id_to_on_sent(monkeypatch):
+    # An edit is a fresh send with its own id, and its echo carries the new
+    # text with ``from_me`` set: in the self-chat an untracked one is answered
+    # as if the operator had typed the agent's own reply.
+    c = WhatsAppClient("/tmp/none.db")
+
+    class Fake:
+        async def edit_message(self, chat, message_id, new_message):
+            return SimpleNamespace(ID="EDIT1")
+
+    c._client = Fake()
+    _install_fake_jid(monkeypatch)
+    seen: list[str] = []
+    ok = asyncio.run(
+        c.edit_text("447700900000@s.whatsapp.net", "ORIG1", "new", on_sent=seen.append)
+    )
+    assert ok is True
+    assert seen == ["EDIT1"]
+
+
 # ── outbound: list_groups ───────────────────────────────────────────────────
 def test_list_groups_empty_without_client():
     c = WhatsAppClient("/tmp/none.db")

@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpBackendShortName, configuredAcpBackend, DEFAULT_ACP_BACKEND, isKiroBackend, kasInUse, mcpServerDeny, mcpWholeServerDeny, reportsCredits, isKiroHarness } from './acpBackend'
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpBackendShortName, configuredAcpBackend, DEFAULT_ACP_BACKEND, isKiroBackend, kasInUse, mcpServerDeny, mcpWholeServerDeny, reportsCredits, reportsDollars, isKiroHarness } from './acpBackend'
 import type { AcpBackendProbe } from './client/config'
 
 describe('isKiroBackend', () => {
@@ -54,6 +54,19 @@ describe('reportsCredits', () => {
   it('is false for a harness that bills in tokens or dollars', () => {
     for (const backend of ['claude', 'codex', 'opencode', 'pi', 'goose', 'deepseek', 'some-future-harness']) {
       expect(reportsCredits({ agent: { acp_backend: backend } }), backend).toBe(false)
+    }
+  })
+})
+
+describe('reportsDollars', () => {
+  it('is true only for a loaded config naming a harness that records a dollar cost', () => {
+    expect(reportsDollars({ agent: { acp_backend: 'claude' } })).toBe(true)
+    expect(reportsDollars(undefined)).toBe(false)
+  })
+
+  it('is false for a credit harness and for one that reports no cost', () => {
+    for (const backend of ['', 'kiro', 'kas', 'codex', 'pi', 'deepseek', 'copilot', 'strands', 'some-future-harness']) {
+      expect(reportsDollars({ agent: { acp_backend: backend } }), backend).toBe(false)
     }
   })
 })

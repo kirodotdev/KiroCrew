@@ -115,7 +115,7 @@ describe('TelemetryPanel bucket generations', () => {
     }))
     await waitFor(() => expect(screen.getByText('1,090 startups recorded')).toBeInTheDocument())
     expect(screen.getByText(CAVEAT)).toBeInTheDocument()
-    expect(screen.getByText(/Showing 1090 of 1730 samples/i)).toBeInTheDocument()
+    expect(screen.getByText(/Showing 1,090 of 1,730 samples/i)).toBeInTheDocument()
   })
 
   it('keeps the latency caveat a marker in the cell, with the sentence in the tooltip', async () => {

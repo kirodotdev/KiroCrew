@@ -125,7 +125,9 @@ so nothing re-endorses a tampered `enabled: true`; while the keystone is pending
 ordinary save of it is refused (`file_pending_review`) until the owner applies or discards. Where the
 sandbox seals the keystone, a copy that cannot be written aborts the save, and an
 unreadable copy reads as an unreadable keystone (disabled). A keystone with no endorsed copy
-yet is read as written until the gateway's first save of it endorses it. A keystone that
+yet is endorsed as it is by the gateway's next start (`adopt_unendorsed`, a JSON object stored
+as Kiro Crew writes one); any other is read as written until the gateway's first save of it
+endorses it or a later start adopts it. A keystone that
 differs from its copy (a hand edit, or an in-sandbox write) is PENDING: `is_enabled()` keeps
 reading the endorsed copy until the dashboard owner applies or discards the change in
 Settings > Security (owner-gated, CSRF-guarded, never an agent or MCP tool), so writing
@@ -853,6 +855,13 @@ On it the parent probe is skipped, and the bundle, `Contents` and `Contents/MacO
 judged by ownership as well as mode (`_file_is_replaceable`), because a directory's owner
 can `chmod` it at will. A root-owned bundle there launches; one this user owns is still
 refused. Any other parent, or a `stat` that fails, keeps the parent probe.
+
+**The check and the launch are separate steps.** `spawn_detached` launches by the PATH
+`resolve_target` verified, so on a stock `/Applications` an admin user can rename the verified
+bundle aside and put another at the same path between the checks and LaunchServices reading
+it; nothing re-checks the bundle at the spawn. This window is accepted and recorded as a
+`shortcut:` in `spawn_detached`; closing it means launching by a file reference held from the
+check to the spawn, not adding a refusal on top of the path launch.
 
 **Every level, not just the endpoints.** Write access to any single directory on that path
 is enough to control what executes, and `Contents` is the one an endpoints-only check
@@ -1623,6 +1632,18 @@ refusal above exists to protect (reviewer finding). `type_text` and `press_key` 
 return a failed `DriverResult` naming what did *not* happen ("the keystrokes were
 NOT sent"), because a model told only "focus failed" would assume the input landed
 and go verify a change that never occurred.
+
+**A Cmd shortcut to a background app is sent with a caveat on macOS.** macOS hands a
+Cmd shortcut to the frontmost app's menu bar and key window, so one posted to a
+background app can do nothing while a bare "sent" reads as success. Measured: Cmd+A
+posted to a background TextEdit left the selection unchanged, pressing Edit > Select
+All through `AXPress` did nothing either, and the same Cmd+A selected all the text
+once TextEdit was frontmost. Other apps and shortcuts were not measured, and the key
+goes to the target app's pid either way, so it is never delivered to the wrong app.
+So the macOS driver still posts the key, then reads the app's `AXFrontmost` for any
+key carrying the Cmd modifier and, when it is not `true` (an unreadable value counts
+as background), keeps `ok=True` but says macOS may have ignored it and names the
+element routes. Plain keys get no caveat.
 
 ### Threading
 
@@ -2561,9 +2582,14 @@ The lock matters because the rebuild READS the keystone and WRITES the spec. Out
 it, two overlapping PUTs interleave: an enable's slower rebuild can land its spec
 *after* a later disable's, leaving a spec that mounts — and therefore spawns — the
 server the keystone now forbids. Holding `_get_config_lock()` makes read-decide-write
-atomic against every keystone writer, so whichever rebuild finishes last is the one
-that read the final state. It is a plain reacquisition: the write block has already
-exited its own, and `rebuild_agent_config` never takes this lock.
+atomic against every keystone writer in the gateway, so whichever rebuild finishes last
+is the one that read the final state. It is a plain reacquisition: the write block has
+already exited its own, and `rebuild_agent_config` never takes this lock.
+`kirocrew config pending` writes the keystone from another process and asks for a
+restart instead of rebuilding. The PUT's write (`_write_state`) refuses a pending
+keystone before it reads it, so it cannot publish a stale copy over that command's
+Apply; what remains is the window `refuse_save_if_pending` documents, an outside edit
+and its Apply both landing inside one save.
 
 App agents are rewritten in the same step, after the host rebuild and before the
 reset. An app agent that references `@kirocrew-computer` gets the entry in its

@@ -274,7 +274,7 @@ class TestPwshProcessControl:
 
 class TestOtherReadersAgree:
     def test_the_spawn_gate_reads_the_alias_kiro_cli_keeps(self):
-        from kiro_crew.subagent_parts.agent_policy import spawn_allowlist
+        from kiro_crew.subagent_parts.spawn_allowlists import spawn_allowlist
 
         assert spawn_allowlist({"toolsSettings": {"crew": {"availableAgents": []}}}) == ()
         both = {"crew": {"availableAgents": []}, "subagent": {"availableAgents": ["*"]}}
@@ -328,7 +328,7 @@ class TestOtherReadersAgree:
 
     def test_the_notice_never_calls_an_enforced_use_subagent_list_unapplied(self):
         from kiro_crew.agent_sdk.tools_settings_reach import tools_settings_unapplied
-        from kiro_crew.subagent_parts.agent_policy import spawn_allowlist
+        from kiro_crew.subagent_parts.spawn_allowlists import spawn_allowlist
 
         only = {"use_subagent": {"availableAgents": ["reviewer"]}}
         assert spawn_allowlist({"toolsSettings": only}) == ("reviewer",)

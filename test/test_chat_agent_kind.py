@@ -258,3 +258,32 @@ async def test_slot_projection_carries_the_selection_namespace(tmp_path, monkeyp
     slots = rows if isinstance(rows, list) else rows.get("slots", rows)
     row = next(s for s in slots if s["key"] == "projected")
     assert row["agent_kind"] == "template"
+
+
+@pytest.mark.asyncio
+async def test_memory_switch_recreate_resolves_a_project_folder_agent(tmp_path, monkeypatch):
+    """A recreate names the chat it replaces, whose project holds the agent."""
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        "kiro_crew.config.loader._materialized_kiro_agent",
+        lambda name, project_dir=None: (
+            name if name == "project-only" and project_dir == str(project) else ""
+        ),
+    )
+    state = _turn_state(tmp_path, monkeypatch)
+    source = state.get_or_create_slot("source-chat")
+    source.project = str(project)
+    app = _make_app_with_agent_routes(state)
+    request = {"agent": "project-only", "agent_kind": "template", "memory_mode": "temporary"}
+    async with TestClient(TestServer(as_owner(app))) as client:
+        # Without the source chat there is no project to look in.
+        refused = await client.post("/api/chat/slots", json=request)
+        assert refused.status == 409, await refused.text()
+        response = await client.post(
+            "/api/chat/slots", json={**request, "project_from_slot": "source-chat"}
+        )
+        assert response.status == 200, await response.text()
+        body = await response.json()
+    assert body["agent"] == "project-only"
+    assert state._slots[body["key"]].project == str(project)

@@ -109,7 +109,7 @@ class TestProgramNames:
         ["PATH=/writable/bin", "LD_PRELOAD=/tmp/eve.so", "BASH_ENV=/tmp/rc", "IFS=x"],
     )
     def test_execution_affecting_assignment_refuses(self, assignment):
-        # GPT 5.6 round-10: `PATH=/writable/bin head file` decides which `head`
+        # `PATH=/writable/bin head file` decides which `head`
         # runs, and the loader variables decide what code runs inside it. A
         # leading assignment must not be skipped to vouch for the system `head`.
         assert name_grant.program_names(f"{assignment} head file") is None
@@ -134,7 +134,7 @@ class TestProgramNames:
         ],
     )
     def test_code_injecting_assignment_refuses(self, command):
-        # Opus 4.8 round-18. The base program really is the trusted system one,
+        # The base program really is the trusted system one,
         # so resolving its name answers nothing: `GIT_SSH_COMMAND=/writable/evil
         # git fetch` vouched for `/usr/bin/git` and ran the planted file. Same
         # shape as `LD_PRELOAD`, arriving through a tool's or interpreter's own
@@ -157,7 +157,7 @@ class TestProgramNames:
         ["PATH+=:.", "PATH+=:/writable", "A[0]=x", "=bare"],
     )
     def test_non_plain_assignment_token_refuses(self, token):
-        # GPT 5.6 round-14: only a strict `NAME=value` prefix is a benign
+        # Only a strict `NAME=value` prefix is a benign
         # assignment. A compound (`PATH+=:.`) or an array element is a state
         # change this walk cannot evaluate, and skipping it left the program after
         # it unchecked.
@@ -173,9 +173,9 @@ class TestProgramNames:
         assert name_grant.program_names("head x 2>&1") == ["head"]
 
     def test_leading_redirect_does_not_hide_the_program(self):
-        # GPT 5.6's round-2 finding: a redirect may PRECEDE the program, and the
-        # fd prefix arrives as its own token, so a position-closing rule made the
-        # real program invisible.
+        # A redirect may PRECEDE the program, and the
+        # fd prefix arrives as its own token, so a position-closing rule would make
+        # the real program invisible.
         assert name_grant.program_names("2>/dev/null head README.md") == ["head"]
         assert name_grant.program_names("2>&1 head x") == ["head"]
         assert name_grant.program_names(">out head x") == ["head"]
@@ -195,7 +195,7 @@ class TestProgramNames:
     @pytest.mark.parametrize(
         "command",
         [
-            "head x | { evil; }",  # GPT 5.6 round-3: `{` read as the program
+            "head x | { evil; }",  # `{` read as the program
             "if true; then evil; fi",
             "for f in a b; do evil; done",
             "while true; do evil; done",
@@ -211,9 +211,9 @@ class TestProgramNames:
         assert name_grant.program_names(command) is None
 
     def test_newline_is_a_command_separator(self):
-        # GPT 5.6 round-4: shlex treats a newline as ordinary whitespace, so
-        # `head file\npayload` handed back ['head', 'file', 'payload'] and the
-        # second command sat in operand position, invisible.
+        # shlex treats a newline as ordinary whitespace, so
+        # `head file\npayload` hands back ['head', 'file', 'payload'] and the
+        # second command sits in operand position, invisible.
         assert name_grant.program_names("head file\npayload") == ["head", "payload"]
         assert name_grant.program_names("head a\r\ngrep b\rwc c") == ["head", "grep", "wc"]
 
@@ -225,7 +225,7 @@ class TestProgramNames:
     @pytest.mark.parametrize(
         "command",
         [
-            "head x;(payload)",  # GPT 5.6 round-5: `;(` arrives as ONE token
+            "head x;(payload)",  # `;(` arrives as ONE token
             "head x&&(payload)",
             "head x|(payload)",
             "head x;>out payload",
@@ -252,8 +252,7 @@ class TestLoopSafety:
         # Every rung on every surface reaches this check through ONE off-loop
         # entry point, and that entry point is what hands it to a worker
         # thread. Pinning both facts here is what keeps a future edit from
-        # calling it straight from the loop -- the shape GPT flagged when the
-        # hook layer did exactly that.
+        # calling it straight from the loop.
         import inspect
 
         entry = name_grant.refusal_for_command_off_loop
@@ -506,10 +505,10 @@ class TestPathFormPrograms:
 
     def test_a_nul_bearing_path_refuses_instead_of_raising(
         self, world
-    ):  # GPT 5.6 round-18. A NUL byte makes the filesystem calls raise
+    ):  # A NUL byte makes the filesystem calls raise
         # ValueError, NOT OSError -- `shlex` hands the token through intact, so
-        # an OSError-only guard let it escape and abort the whole chat turn with
-        # an error card in place of the approval. This module's contract is that
+        # an OSError-only guard would let it escape and abort the whole chat turn
+        # with an error card in place of the approval. This module's contract is that
         # it RETURNS a refusal and never raises at its callers, so every
         # inspection site fails closed on both.
         refusal = name_grant.name_grant_refusal("/tmp/a\x00b --version")
@@ -540,11 +539,11 @@ class TestPathFormPrograms:
         assert name_grant.program_names(command) == expected_names
 
     def test_an_alias_for_a_dispatcher_is_refused(self, world, monkeypatch):
-        # GPT 5.6 round-19. The dispatcher rule read the name as WRITTEN, so an
-        # ALIAS for one slipped past it: plant `runner -> env`, have a human
-        # approve `runner` once (which pins it), and every later
-        # `runner <payload>` auto-approves while `env` runs the payload. The rule
-        # is about the FILE's behaviour, so it is now asked of the resolved file.
+        # A dispatcher rule that reads the name as WRITTEN lets an ALIAS for one
+        # slip past it: plant `runner -> env`, have a human approve `runner` once
+        # (which pins it), and every later `runner <payload>` auto-approves while
+        # `env` runs the payload. The rule is about the FILE's behaviour, so it
+        # is asked of the resolved file.
         system_dir, user_dir = world
         env = _program(system_dir, "env")
         alias = user_dir / "runner"
@@ -650,7 +649,7 @@ class TestNonRegularFiles:
     """A program name that resolves to something unreadable must never be read."""
 
     def test_a_planted_fifo_is_refused_without_opening_it(self, world):
-        # Opus 4.8: a FIFO passes every test a PATH lookup applies -- it exists,
+        # A FIFO passes every test a PATH lookup applies -- it exists,
         # it carries the execute bit, it is not a directory -- so `which` returns
         # it and the digest would open() it O_RDONLY, blocking in the kernel until
         # a writer appears. On a worker thread that leak is permanent, and
@@ -688,7 +687,7 @@ class TestIdentityPin:
     """A non-system program is vouched for only on the file a human approved."""
 
     def test_unwitnessed_program_is_refused(self, world):
-        # GPT 5.6's round-2 finding: pinning on first SIGHT would bless whatever
+        # Pinning on first SIGHT would bless whatever
         # is there when a tier first looks -- and a tier looks precisely when it
         # is about to auto-approve without asking anyone.
         _, user_dir = world
@@ -766,7 +765,7 @@ class TestIdentityPin:
         assert name_grant.name_grant_refusal("toolx run") is None
 
     def test_same_size_rewrite_with_restored_mtime_is_refused(self, world):
-        # GPT 5.6 round-3: mtime and size are both under the writer's control, so
+        # mtime and size are both under the writer's control, so
         # a same-size in-place rewrite plus os.utime restores them exactly. No
         # sleep here on purpose -- the rewrite lands inside the same ctime tick as
         # the pin, so the metadata alone (including the kernel-set ctime) is
@@ -789,11 +788,10 @@ class TestIdentityPin:
         assert refusal.code == name_grant.IDENTITY_CHANGED
 
     def test_a_large_file_is_digested_whole_including_its_middle(self, world):
-        # GPT 5.6 round-14: an earlier version hashed only a large file's head and
-        # tail, so a MIDDLE-only rewrite that preserved the size and landed in one
-        # ctime tick kept the identity equal. Refusing large files instead would
-        # have killed witnessing for `node`, `gh` and `docker`, so the digest now
-        # covers every byte.
+        # Hashing only a large file's head and tail would let a MIDDLE-only
+        # rewrite that preserves the size and lands in one ctime tick keep the
+        # identity equal. Refusing large files instead would kill witnessing for
+        # `node`, `gh` and `docker`, so the digest covers every byte.
         _, user_dir = world
         big = user_dir / "toolbig"
         payload = bytearray(b"A" * (3 * name_grant._DIGEST_CHUNK))
@@ -812,7 +810,7 @@ class TestIdentityPin:
         assert refusal.code == name_grant.IDENTITY_CHANGED
 
     def test_lost_pin_during_the_touch_refuses_instead_of_raising(self, world, monkeypatch):
-        # GPT 5.6 round-5: a concurrent insert can evict the key between the read
+        # A concurrent insert can evict the key between the read
         # and the LRU touch. `_PIN_LOCK` makes that unreachable through this
         # module's own paths, so the race cannot be reproduced by timing -- this
         # injects the failure directly, because what matters is the consequence:
@@ -927,7 +925,7 @@ class TestSearchPath:
     """What the check resolves against must be what the child will search."""
 
     def test_relative_entry_refuses_everything(self, world, monkeypatch):
-        # GPT 5.6 round-8, correcting round-6: dropping `.` from the search path
+        # Dropping `.` from the search path
         # is not enough. The CHILD still has it, so the check would resolve
         # `/usr/bin/head` and vouch while the child ran a planted `./head` from
         # its own directory. Neither keeping nor dropping the entry answers the
@@ -959,7 +957,7 @@ class TestDispatchers:
 
     @pytest.mark.parametrize("wrapper", ["env", "sudo", "nohup", "timeout", "xargs", "command"])
     def test_dispatcher_is_refused(self, world, wrapper):
-        # GPT 5.6 round-8: `env head file` is ONE program with two operands as far
+        # `env head file` is ONE program with two operands as far
         # as the walk can tell, so it would vouch for `/usr/bin/env` while `head`
         # is resolved from PATH at exec time.
         system_dir, _ = world
@@ -971,7 +969,7 @@ class TestDispatchers:
 
     @pytest.mark.parametrize("builtin", ["exec", "eval", "builtin", "source", "."])
     def test_dispatching_builtin_is_refused(self, world, builtin):
-        # GPT 5.6 round-9: a builtin is invisible to `which`, and an unresolvable
+        # A builtin is invisible to `which`, and an unresolvable
         # name is otherwise "nothing to shadow, nothing to vouch for" -- so
         # `exec head file` passed while `head` came from PATH at exec time. No
         # program file is created for these on purpose: not being resolvable is
@@ -991,7 +989,7 @@ class TestDispatchers:
 
     @pytest.mark.parametrize("shell", ["sh", "bash", "zsh", "dash", "fish"])
     def test_command_shell_is_refused(self, world, shell):
-        # GPT 5.6 round-12: `sh -c 'head file'` runs an arbitrary command string,
+        # `sh -c 'head file'` runs an arbitrary command string,
         # so vouching for `/bin/sh` says nothing about what executes: a grant
         # naming a shell is a grant to run
         # anything, which belongs on the approval card.
@@ -1003,7 +1001,7 @@ class TestDispatchers:
 
     @pytest.mark.parametrize("builtin", ["export", "hash", "alias", "declare", "set"])
     def test_resolution_mutating_builtin_is_refused(self, world, builtin):
-        # GPT 5.6 round-13: `export PATH=/agent/bin:$PATH && head file` re-points
+        # `export PATH=/agent/bin:$PATH && head file` re-points
         # the lookup for every command after it, so the resolution this check
         # performs describes the PREVIOUS state. `hash` and `alias` re-point one
         # name directly. No program file is created: like the dispatching
@@ -1016,7 +1014,7 @@ class TestDispatchers:
 
     @pytest.mark.parametrize("builtin", ["printf", "read", "mapfile", "let"])
     def test_variable_writing_builtin_is_refused(self, world, builtin):
-        # GPT 5.6 round-14: `printf -v PATH /writable; payload` sets PATH with no
+        # `printf -v PATH /writable; payload` sets PATH with no
         # assignment token at all, so the walk checked `payload` against the
         # previous search path.
         system_dir, _ = world
@@ -1032,7 +1030,7 @@ class TestDispatchers:
         ],
     )
     def test_code_installing_builtin_is_refused(self, world, command):
-        # GPT 5.6 round-15. `trap` installs a body that runs before every later
+        # `trap` installs a body that runs before every later
         # command; `enable -f` loads a shared object AS a builtin. Neither is a
         # file on the search path, so `shutil.which` cannot see either one.
         system_dir, _ = world
@@ -1042,12 +1040,11 @@ class TestDispatchers:
         assert refusal.code == name_grant.UNKNOWN_COMMAND
 
     def test_a_hash_inside_a_word_does_not_hide_a_later_command(self, world):
-        # GPT 5.6 round-16, and the sharpest finding on this PR because it is the
-        # PR's own thesis turned against it. `shlex` discards the rest of the line
-        # after `#`; bash does NOT (a `#` only opens a comment at the start of a
-        # word). Measured: `bash -c 'echo A file#x; echo B ran'` prints BOTH
-        # halves, while the default lexer handed this walk ['head', 'file'] and
-        # the second command was never checked.
+        # `shlex` discards the rest of the line after `#`; bash does NOT (a `#`
+        # only opens a comment at the start of a word). Measured:
+        # `bash -c 'echo A file#x; echo B ran'` prints BOTH halves, while the
+        # default lexer hands this walk ['head', 'file'] and the second command
+        # is never checked.
         system_dir, user_dir = world
         _program(system_dir, "head")
         _program(system_dir, "cat")
@@ -1067,7 +1064,7 @@ class TestDispatchers:
 
     @pytest.mark.parametrize("var", ["BASH_ENV", "SHELLOPTS", "BASHOPTS"])
     def test_inherited_preload_variable_refuses(self, world, var, monkeypatch):
-        # GPT 5.6 round-16. `BASH_ENV=/writable/rc` holding `head() { payload; }`
+        # `BASH_ENV=/writable/rc` holding `head() { payload; }`
         # means `bash -c 'head file'` runs the FUNCTION, while the name still
         # resolves to /usr/bin/head. Same threat as the command-line prefix
         # `_EXEC_ENV_VARS` already refuses, arriving through the environment.
@@ -1088,7 +1085,7 @@ class TestDispatchers:
         ],
     )
     def test_an_exported_shell_function_refuses(self, world, key, monkeypatch):
-        # GPT 5.6 round-17. An exported function shadows the name with no writable
+        # An exported function shadows the name with no writable
         # file anywhere: bash re-imports `BASH_FUNC_head%%` in the child, so
         # `head file` runs the payload while the name still resolves to
         # /usr/bin/head. Matched on the `BASH_FUNC_` PREFIX so a build that spells
@@ -1255,7 +1252,7 @@ class TestInterpreterChain:
     """A pinned script binds its bytes; its interpreter must face the same rules."""
 
     def test_env_shebang_interpreter_is_checked(self, world):
-        # GPT 5.6 round-6: `#!/usr/bin/env node` resolves `node` from PATH at exec
+        # `#!/usr/bin/env node` resolves `node` from PATH at exec
         # time, so the script can stay byte-identical while the program that
         # actually runs is replaced underneath it.
         system_dir, user_dir = world
@@ -1292,7 +1289,7 @@ class TestInterpreterChain:
         assert refusal.code == name_grant.SHADOWED
 
     def test_complex_env_shebang_is_refused(self, world):
-        # GPT 5.6 round-10: `env`'s options take operands, so picking the first
+        # `env`'s options take operands, so picking the first
         # non-flag token read `UNUSED` as the interpreter -- validating the wrong
         # file while vouching for the command. Only the bare one-name form is read.
         system_dir, user_dir = world
@@ -1312,12 +1309,12 @@ class TestInterpreterChain:
             assert refusal.code == name_grant.UNENUMERABLE, line
 
     def test_a_shebang_env_that_is_not_the_system_env_is_refused(self, world):
-        # GPT 5.6 round-21. `env` was matched by BASENAME, so the path was read
-        # for the name after it and then forgotten -- `#!<planted>/env node`
-        # validated `node` while the planted `env` is what the kernel actually
-        # runs. A pin binds the SCRIPT's bytes, so the script keeps matching
-        # while the file behind its shebang is swapped underneath it. The env
-        # binary now has to BE the system one, not merely be spelled like it.
+        # Matching `env` by BASENAME reads the path for the name after it and then
+        # forgets it -- `#!<planted>/env node` validates `node` while the planted
+        # `env` is what the kernel actually runs. A pin binds the SCRIPT's bytes,
+        # so the script keeps matching while the file behind its shebang is
+        # swapped underneath it. The env binary has to BE the system one, not
+        # merely be spelled like it.
         system_dir, user_dir = world
         _program(system_dir, "node")
         planted_env = _program(user_dir, "env")

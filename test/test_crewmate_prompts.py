@@ -145,7 +145,7 @@ def test_no_sentence_of_a_piece_is_left_as_a_literal(rel: str) -> None:
 
 #: The server modules whose tools only a crewmate is given.
 _CREWMATE_SERVERS: tuple[str, ...] = (
-    "mcp_mate.py",
+    "mcp_mate_tool_list.py",
     "mcp_panel.py",
     "mcp_crew_log.py",
     "mcp_work.py",
@@ -167,6 +167,7 @@ _EXEMPT: dict[str, str] = {
     "work_report": "a worker's tool (mcp_work.WORKER_TOOLS), never the conductor's",
     "work_ledger_rebuild": "repairs a damaged or missing ledger, not part of the ordinary loop",
     "accept_eval": "named by the act-by-status rule, rendered only with the ledger (see below)",
+    "work_ask_record": "named by the act-by-status rule, rendered only with the ledger (see below)",
     "offer_dashboard_page": (
         "named by its per-turn note (dashboard/page_offer.py), which is the only time "
         "the crewmate may call it"
@@ -324,7 +325,7 @@ def test_the_worker_hands_a_blocked_command_back_for_the_user() -> None:
 #: What the patrol text must name, and what a render without the ledger must not.
 _PATROL_MARKS = (
     'watch="work-ledger"',
-    "300..900",
+    "every 300 seconds",
     "7-day runaway backstop",
     "ONE final report",
 )
@@ -356,7 +357,7 @@ def test_the_patrol_piece_names_the_gated_ledger_watch_band_and_renewal() -> Non
 
 
 def test_both_conductors_send_one_final_report_before_they_stop_the_patrol() -> None:
-    """Bot and Ultra Mode end a patrol the same way: the final report first, the stop
+    """Bot and conductor mode end a patrol the same way: the final report first, the stop
     in a later step, and no bound for the model to pick (rfc-permanent-patrol.md)."""
     from kiro_crew import agent
     from kiro_crew.context_assembly import member
@@ -368,7 +369,7 @@ def test_both_conductors_send_one_final_report_before_they_stop_the_patrol() -> 
         stop = text.index("Then, in a later step, stop the loop with `autonudge_stop`")
         assert report < stop
         assert "The final report is your last message to the user." in text
-        assert "Pass no `max_cycles` and no `max_runtime_secs`" in text
+        assert "Pass no `interval_secs`, no `max_cycles` and no `max_runtime_secs`" in text
         assert "mode=renew" not in text
     assert "stop the loop with monitor_stop" not in bot
 
@@ -463,6 +464,37 @@ def test_a_render_without_the_ledger_is_the_text_every_crewmate_had(
     assert member.operating_mode_block("Atlas") == crewmate_prompts.fill(
         "conductor.operating_mode", agent_label="Atlas"
     )
+
+
+@pytest.mark.parametrize("mounted, backend_can_dispatch", [(False, True), (None, False)])
+def test_a_turn_without_the_dispatch_tools_is_not_told_to_track_its_hand_offs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mounted: bool | None,
+    backend_can_dispatch: bool,
+) -> None:
+    """The ledger is mounted but the operating-mode block is withheld (this session
+    lacks the ``session_*`` mount, or the backend cannot mount it): the tracking
+    sentence is the plain one, not the one about tasks handed to workers."""
+    from types import SimpleNamespace
+
+    from kiro_crew import context as ctx
+    from kiro_crew import member_mate_tools
+    from kiro_crew.context_assembly import member
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    cfg = ctx.KiroCrewConfig()
+    cfg.agents["Atlas"] = SimpleNamespace(
+        description="", triggers="", kiro_agent="", workspace="", member_id=""
+    )
+    monkeypatch.setattr(ctx.KiroCrewConfig, "load", staticmethod(lambda *a, **k: cfg))
+    monkeypatch.setattr(member_mate_tools, "binding_has_ledger_tools", lambda _b: True)
+    monkeypatch.setattr(ctx, "_member_backend_can_dispatch", lambda *_a: backend_can_dispatch)
+    text = member.build_member_section("Atlas", include_briefing=False, dispatch_mounted=mounted)
+    assert crewmate_prompts.text("conductor.tracking") in text
+    assert crewmate_prompts.text("conductor.tracking_ledger") not in text
+    held = member.build_member_section("Atlas", include_briefing=False, dispatch_mounted=True)
+    assert crewmate_prompts.text("conductor.tracking_ledger") in held
 
 
 # -- which spec counts as having the ledger ---------------------------------- #

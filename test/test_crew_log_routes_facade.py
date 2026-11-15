@@ -10,10 +10,10 @@ into every module holding the name.
 ``test/test_facade_mirror_guards.py`` holds every mirrored facade to the shared rules (one object
 per name, the manifest, owners never importing their facade, every name the test trees patch
 reaching every owner that binds it). These tests pin what is particular to this facade: the owners
-are exactly the ``crew_log_*.py`` siblings beside it, in layer order; a name the facade serves
-from outside the family stays visible to type checkers; the owners log under the facade's name;
-the routes stay the facade's own guarded objects; and a patch through the facade reaches the
-owner that reads the name.
+are exactly the ``crew_log_*.py`` siblings beside it, in layer order; no module outside the family
+imports an owner; a name the facade serves from outside the family stays visible to type checkers;
+the owners log under the facade's name; the routes stay the facade's own guarded objects; and a
+patch through the facade reaches the owner that reads the name.
 """
 
 from __future__ import annotations
@@ -23,7 +23,9 @@ import inspect
 import sys
 from pathlib import Path
 
+import owner_import_scan
 import pytest
+import source_corpus
 
 from kiro_crew import _facade_mirror
 from kiro_crew.dashboard.handlers import crew_log
@@ -59,6 +61,24 @@ def test_the_owners_are_every_crew_log_sibling_in_layer_order() -> None:
     for position, owner in enumerate(_OWNERS):
         path = Path(sys.modules[owner].__file__)
         assert _family_imports(path) <= set(_OWNERS[:position]), owner
+
+
+def test_only_the_family_imports_an_owner() -> None:
+    """A module outside the family that imported an owner would hold bindings the
+    facade's mirror never indexes, so a patch through the facade would miss it."""
+    owners = frozenset(_index().owners)
+    family = {
+        f"{name.removeprefix('kiro_crew.').replace('.', '/')}.py" for name in (FACADE, *owners)
+    }
+    sources = source_corpus.iter_candidate_sources(
+        require_any=tuple(name.rpartition(".")[2] for name in owners)
+    )
+    importers = owner_import_scan.owner_importers(
+        sources, source_corpus.src_root(), lambda name: name in owners
+    )
+    # The facade importing its one owner proves the scan reads real imports.
+    assert "dashboard/handlers/crew_log.py" in importers
+    assert importers - family == set()
 
 
 def _home_imports() -> dict[str, tuple[str, str]]:

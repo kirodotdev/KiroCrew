@@ -22,11 +22,13 @@ from builtin_adoption_helpers import (
     seed_agent,
     write_builtin_record,
 )
+from config_pending_helpers import make_config_json_pending
 
 from kiro_crew.apps import builtin_adoption as adoption
 from kiro_crew.apps import builtin_adoption_apply as apply_mod
 from kiro_crew.apps import manager
 from kiro_crew.apps.builtin_adoption_state import read_adoption_markers, read_ledger
+from kiro_crew.config import loosening_provenance as lp
 from kiro_crew.config.loader import _invalidate_config_cache, config_local_path
 from kiro_crew.sandbox import SandboxUnavailableError
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
@@ -221,6 +223,13 @@ async def test_an_approved_set_narrower_than_the_pin_is_widening(world):
                 "api": [f"/api/apps/{NAME}", f"/api/apps/{NAME}/*"],
                 "storage": True,
                 "sessionApproval": True,
+            }
+        },
+        {
+            "permissions": {
+                "api": [f"/api/apps/{NAME}", f"/api/apps/{NAME}/*"],
+                "storage": True,
+                "chatSlots": True,
             }
         },
     ],
@@ -426,6 +435,57 @@ async def test_a_transient_config_failure_at_apply_is_retried_at_the_next_boot(w
     assert await _stage() == {NAME: "staged"}
     assert await _boot() == {NAME: "applied"}
     assert len(calls) == 2
+
+
+def _discard_pending_config(path) -> None:
+    """What Discard leaves: the endorsed bytes back on disk, nothing pending."""
+    path.write_bytes(lp.endorsed_bytes(lp.LEAF_CONFIG))
+    assert not lp.leaf_pending(lp.LEAF_CONFIG)
+    _invalidate_config_cache()
+
+
+async def test_a_pending_outside_edit_logs_one_warning_and_adopts_once_resolved(
+    world, monkeypatch, caplog
+):
+    """The trust write is refused while config.json waits for review: an expected
+    state, so one warning naming the file with no trace, the built-in untouched and
+    the ledger still staged for the next boot."""
+    await _stage()
+    seed_agent(world.home, {"bot_name": "Crew"})
+    path = make_config_json_pending(monkeypatch)
+    with caplog.at_level(logging.DEBUG, logger=apply_mod.logger.name):
+        assert await _boot() == {NAME: "waiting_for_review"}
+
+    ours = [r for r in caplog.records if r.name == apply_mod.logger.name]
+    [warning] = [r for r in ours if r.levelno >= logging.WARNING]
+    assert warning.levelno == logging.WARNING
+    assert warning.exc_info is None
+    assert NAME in warning.getMessage() and lp.LEAF_CONFIG in warning.getMessage()
+    assert any(r.levelno == logging.DEBUG and r.exc_info for r in ours)
+    ledger = read_ledger(NAME)
+    assert (ledger.state, ledger.attempts) == ("staged", 0)
+    assert manager.builtin_owns_installed(NAME)
+    assert NAME not in read_adoption_markers()
+
+    _discard_pending_config(path)
+    assert await _boot() == {NAME: "applied"}
+
+
+async def test_a_pending_outside_edit_records_no_nav_and_logs_no_warning(
+    world, monkeypatch, caplog
+):
+    await _stage()
+    assert await _boot() == {NAME: "applied"}
+    recorded = agent_section(world.home)["apps_builtin_adoption_nav"]
+    _drop_recorded_nav(world.home)
+    path = make_config_json_pending(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger=apply_mod.logger.name):
+        assert await _boot() == {}
+    assert not [r for r in caplog.records if r.name == apply_mod.logger.name]
+
+    _discard_pending_config(path)
+    assert await _boot() == {}
+    assert agent_section(world.home)["apps_builtin_adoption_nav"] == recorded
 
 
 async def test_an_overlay_owned_trust_key_blocks_then_adopts_once_removed(world):
@@ -838,6 +898,85 @@ async def test_data_in_two_places_is_never_adopted(world):
     assert manager.builtin_owns_installed(NAME)
     assert (tmp_data / "store.txt").read_text(encoding="utf-8") == "preserved by a killed swap"
     assert (dest / "data" / "store.txt").read_text(encoding="utf-8") == "kept"
+
+
+async def test_a_file_beside_the_manifest_is_never_retired_by_the_swap(world, caplog):
+    """The swap keeps only ``data/``, so state beside ``app.json`` holds the built-in."""
+    await _stage()
+    dest = manager.app_dir(NAME)
+    (dest / "state.db").write_bytes(b"rows")
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.builtin_adoption"):
+        assert await _boot() == {}
+    assert manager.builtin_owns_installed(NAME)
+    assert (dest / "state.db").read_bytes() == b"rows"
+    assert any("state.db beside app.json" in r.getMessage() for r in caplog.records)
+    # Once the built-in keeps it in data/, the next start adopts and carries it.
+    (dest / "state.db").replace(dest / "data" / "state.db")
+    assert await _boot() == {NAME: "applied"}
+    assert (dest / "data" / "state.db").read_bytes() == b"rows"
+
+
+async def test_a_crash_surviving_grant_is_rolled_back_while_state_holds_the_swap(
+    world, monkeypatch
+):
+    await _stage()
+    await _crash_after_the_grant(monkeypatch)
+    (manager.app_dir(NAME) / "state.db").write_bytes(b"rows")
+    assert await _boot() == {}
+    assert NAME not in read_adoption_markers()
+    assert NAME not in agent_section(world.home).get("apps_trusted", [])
+    assert manager.builtin_owns_installed(NAME)
+    assert (manager.app_dir(NAME) / "state.db").read_bytes() == b"rows"
+
+
+async def test_a_directory_beside_the_manifest_holds_the_built_in_too(world):
+    await _stage()
+    dest = manager.app_dir(NAME)
+    (dest / "cache").mkdir()
+    (dest / "cache" / "entry").write_text("kept", encoding="utf-8")
+    assert await _boot() == {}
+    assert (dest / "cache" / "entry").read_text(encoding="utf-8") == "kept"
+
+
+def test_the_gateway_s_own_files_do_not_hold_the_swap(world):
+    """The record, the manifest copy, the secret, ``data/``, the imported grants file
+    and the cron manifest the next registration rewrites."""
+    dest = manager.app_dir(NAME)
+    (dest / manager.APPROVED_GRANTS_FILENAME).write_text("{}", encoding="utf-8")
+    (dest / "app-crons.json").write_text("[]", encoding="utf-8")
+    assert sorted(p.name for p in dest.iterdir()) == [
+        ".app_secret",
+        "app-crons.json",
+        "app.json",
+        manager.APPROVED_GRANTS_FILENAME,
+        "data",
+        "installed.json",
+    ]
+    assert apply_mod._nothing_beside_the_manifest(NAME, world.tree) is True
+
+
+async def test_what_the_pinned_tree_ships_beside_the_manifest_does_not_hold_the_swap(
+    tmp_path, monkeypatch, audit
+):
+    """An app that renders ``agents/`` and ``prompts/`` from its own package beside
+    ``app.json`` adopts when its pinned tree ships both: the swap replaces them, as
+    an update does, and only what nothing ships holds it."""
+    shipped = {"agents/deck.json": "{}", "prompts/deck.md": "pinned"}
+    build_world(tmp_path, monkeypatch, tree_files=shipped)
+    write_builtin_record()
+    _invalidate_config_cache()
+    dest = manager.app_dir(NAME)
+    for rel in ("agents/deck.json", "prompts/deck.md", "prompts/rendered.md"):
+        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+        (dest / rel).write_text("rendered", encoding="utf-8")
+    (dest / "notes.txt").write_text("mine", encoding="utf-8")
+    await _stage()
+    assert await _boot() == {}
+    assert manager.builtin_owns_installed(NAME)
+    (dest / "notes.txt").replace(dest / "data" / "notes.txt")
+    assert await _boot() == {NAME: "applied"}
+    assert (dest / "prompts" / "deck.md").read_text(encoding="utf-8") == "pinned"
+    assert (dest / "data" / "notes.txt").read_text(encoding="utf-8") == "mine"
 
 
 # --------------------------------------------------------------------------- #

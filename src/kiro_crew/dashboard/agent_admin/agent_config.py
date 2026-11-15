@@ -13,6 +13,7 @@ if TYPE_CHECKING:
         AGENT_FILENAME,
         AppOwnershipUnreadable,
         ConfigReadError,
+        PendingEditBlocksSave,
         _agent_file_lock,
         _drop_unbacked_app_entries,
         _err500,
@@ -519,6 +520,9 @@ async def api_agent_config(request: web.Request) -> web.Response:
             # Restart kiro-cli sessions so new config takes effect
             await _h._reset_all_sessions(request)
             return web.json_response({"ok": True, "applied": True})
+        except PendingEditBlocksSave:
+            # A pending config.json change: the dashboard chain answers it 409.
+            raise
         except Exception as exc:
             return _err500(exc)
     # GET

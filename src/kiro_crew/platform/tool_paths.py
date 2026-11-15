@@ -591,6 +591,19 @@ _EACH_ITEM = "[]"
 _MCP_QUALIFIER_SEPARATOR_RE = re.compile(r"_{2,}")
 
 
+def strip_server_qualifier(tool_name: str, mcp_server_name: str) -> str | None:
+    """*tool_name* without a qualifier that names *mcp_server_name*, else ``None``.
+
+    ``<server>___<tool>`` and ``mcp__<server>__<tool>`` resolve to ``<tool>`` only
+    when the qualifier is that same server; a bare name, or a qualifier naming
+    another server, gives ``None``.
+    """
+    parts = _MCP_QUALIFIER_SEPARATOR_RE.split(tool_name)
+    if len(parts) >= 2 and parts[-2] == mcp_server_name:
+        return parts[-1]
+    return None
+
+
 def mcp_document_body_keys(
     tool_name: str | None,
     mcp_server_name: str | None,
@@ -615,9 +628,9 @@ def mcp_document_body_keys(
     bare = tool_name
     keys = MCP_DOCUMENT_BODY_FIELDS.get((mcp_server_name, tool_name))
     if keys is None:
-        parts = _MCP_QUALIFIER_SEPARATOR_RE.split(tool_name)
-        if len(parts) >= 2 and parts[-2] == mcp_server_name:
-            bare = parts[-1]
+        stripped = strip_server_qualifier(tool_name, mcp_server_name)
+        if stripped is not None:
+            bare = stripped
             keys = MCP_DOCUMENT_BODY_FIELDS.get((mcp_server_name, bare))
     if not keys:
         return frozenset()

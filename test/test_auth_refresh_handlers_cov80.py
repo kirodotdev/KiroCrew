@@ -835,6 +835,32 @@ async def test_rotation_carries_the_boot_binding_onto_both_new_cookies(
 
 
 @pytest.mark.asyncio
+async def test_rotation_carries_the_embed_parent_port_onto_both_new_cookies(
+    state: RefreshStateManager, audit: list
+) -> None:
+    """A framed remote pane keeps its CSP parent after a refresh.
+
+    The embedding dashboard's port is what ``frame-ancestors`` allows; a rotated
+    access token without it answers the pane's next load with bare ``'self'``.
+    """
+    from kiro_crew.dashboard.refresh_tokens import refresh_token_embed_parent_port
+    from kiro_crew.dashboard.token_auth_tokens import token_embed_parent_port
+
+    token, _chain, _jti, _exp = generate_refresh_token("alice", embed_parent_port="5476")
+    response = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): token}))
+    assert response.status == 200
+
+    cookies = {morsel.key: morsel.value for morsel in response.cookies.values()}
+    assert token_embed_parent_port(cookies[f"mc_token_{PORT}"]) == 5476
+    assert refresh_token_embed_parent_port(cookies[refresh_cookie_name(str(PORT))]) == "5476"
+
+    # A chain opened without the claim stays without it.
+    plain, *_ = generate_refresh_token("alice")
+    assert refresh_token_embed_parent_port(plain) == ""
+    assert refresh_token_embed_parent_port("not-a-token") == ""
+
+
+@pytest.mark.asyncio
 async def test_a_boot_bound_rotation_keeps_its_address_pin(
     state: RefreshStateManager, audit: list
 ) -> None:
@@ -1100,18 +1126,24 @@ async def test_logout_records_a_noop_when_the_access_cookie_was_not_revocable(
 
 @pytest.mark.asyncio
 async def test_logout_revokes_on_unavailable_state_even_if_the_store_reads_again(
-    audit: list, monkeypatch: pytest.MonkeyPatch
+    state: RefreshStateManager, audit: list, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The revoke follows the validation's own answer, not a second look at the store."""
+    """The revoke follows the validation's own answer, not a second look at the store.
+
+    The validation reported the store unavailable, while the real store reads fine
+    again by the time the handler acts: the chain must still end up revoked on disk.
+    """
     unavailable = (False, "alice", "refresh state unavailable (x)", "chain-1", "j", 1.0)
     monkeypatch.setattr(h, "validate_refresh_token", lambda _t: unavailable)
-    fake = MagicMock()
-    fake.degraded_reason.return_value = ""  # the file read again in between
-    fake.revoke_chain.return_value = True
-    monkeypatch.setattr(h, "_get_state", lambda: fake)
+    assert state.degraded_reason() == ""
     request = _mk("POST", "/api/auth/logout", cookies={refresh_cookie_name(str(PORT)): "tok"})
-    await h.api_auth_logout(request)
-    assert fake.revoke_chain.call_args.args[0] == "chain-1"
+    response = await h.api_auth_logout(request)
+    assert _body(response) == {"logged_out": True}
+    assert state.is_chain_revoked("chain-1")
+    # Persisted, so a restart cannot bring the chain back.
+    reloaded = RefreshStateManager(state_path=tmp_path / "refresh_chains.json")
+    assert reloaded.is_chain_revoked("chain-1")
+    assert ("alice", "refresh_token_logout", "ok", "chain-1") in audit
 
 
 @pytest.mark.asyncio

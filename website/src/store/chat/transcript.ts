@@ -510,16 +510,15 @@ export function preserveSettledStopState(existing: ChatMessage[], merged: ChatMe
   return changed ? result : merged
 }
 
-/** Tail window (rows) for a backward `sendId` scan. Shared by the echo
- *  reconcile and the response-confirm path so the two cannot drift into
- *  disagreeing about which bubbles are still addressable by their send id. */
-export const RECONCILE_WINDOW = 50
-
 /** Reconcile a server echo (carrying both `sendId` and `mid`) against the
  *  optimistic user bubble that was appended client-side at send time.
  *
- *  Scans the bounded tail for an exact `sendId` match, including past newer
- *  steers that may have been appended before this echo arrived.
+ *  Scans the WHOLE transcript backward for an exact `sendId` match, including
+ *  past newer steers that may have been appended before this echo arrived. No
+ *  tail window: any number of rows (a tool burst) can land before the echo,
+ *  and a bubble pushed past a window would be duplicated. `sendId` is unique
+ *  per send, so a full scan cannot mis-hit; the confirm, unconfirmed and steer
+ *  reducers in `messages.ts` scan the same way so all paths agree.
  *  A matching optimistic steer can have raced onto a new turn; the ordinary
  *  user echo then also clears its provisional steer flag.
  *  On match: updates ts/meta and clears the `optimistic` flag. Keep `sendId`
@@ -539,8 +538,7 @@ export function reconcileOptimisticEcho(
   meta: Record<string, unknown>,
   ts?: string,
 ): boolean {
-  const reconcileFloor = Math.max(0, msgs.length - RECONCILE_WINDOW)
-  for (let i = msgs.length - 1; i >= reconcileFloor; i--) {
+  for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
     if (m.role === 'queued' && m.meta?.responsiveSend && m.meta?.sendId === echoSendId) {
       // A crewmate send that waits behind a running turn has its row written

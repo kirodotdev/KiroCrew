@@ -343,6 +343,20 @@ class TestReapplyEffortAfterLiveSwitch:
 
         assert await ch._reapply_effort_after_live_switch("s1", slot, provider) is False
 
+    @pytest.mark.asyncio
+    async def test_a_level_kiro_cli_refuses_keeps_the_live_session(self):
+        from kiro_crew.acp.command_refused import AcpCommandRefused
+
+        slot = _ChatSlot("s1")
+        slot.reasoning_effort = "max"
+        refused = AcpCommandRefused("invalid effort level 'max'")
+        provider = _acp(
+            supports_effort=MagicMock(return_value=True),
+            change_effort=AsyncMock(side_effect=refused),
+        )
+
+        assert await ch._reapply_effort_after_live_switch("s1", slot, provider) is True
+
 
 # ── _try_live_model_switch ───────────────────────────────────────────────────
 

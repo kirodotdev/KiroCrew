@@ -28,6 +28,7 @@ from meetings_helpers import (  # noqa: F401 — fixtures are used by name
     reset_module_state_fixture,
     root_fixture,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
@@ -258,15 +259,17 @@ class TestDrain:
 
     @pytest.mark.asyncio
     async def test_model_output_is_redacted(self, root: Path):
+        key = github_classic(seed=1)
+
         async def runner(_prompt: str) -> str:
-            return "token AKIAIOSFODNN7EXAMPLE here"
+            return f"token {key} here"
 
         queue = _queue(root, runner=runner)
         queue.enqueue("A real sentence here.")
         await queue.drain()
 
         text = store.read_translations("m1", root)["lines"][0]["text"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in text
+        assert key not in text
 
     @pytest.mark.asyncio
     async def test_clear_drops_pending_work(self, root: Path):

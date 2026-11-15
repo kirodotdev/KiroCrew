@@ -259,6 +259,10 @@ function harness(opts: {
       for (let i = 0; i < 20; i++) await Promise.resolve()
       return { fetched, events, beforeBody, label }
     },
+    /** The entry module and its static imports ran, as main.tsx records. */
+    entryRan() {
+      ;(win as Record<string, unknown>).__kcBootEntryRan = true
+    },
     /** Whether the shell registered an unhandledrejection listener at all. */
     hasRejectionListener: () => rejectionListener !== null,
     /** The app finally mounts, and every live watcher gets a chance to notice. */
@@ -658,6 +662,18 @@ describe('the shell reloads by itself when a boot module fails to load', () => {
     const h = harness({ rootHasChildren: false, embedded: false, storage })
     h.domContentLoaded()
     h.failModule()
+    expect(h.reloads()).toBe(0)
+    expect(storage.data.size).toBe(0)
+  })
+
+  it('stays put when the entry ran despite a module-script error', () => {
+    // Safari as an installed home-screen app reports a module-script error on a
+    // load that boots anyway; reloading it only repeats the same load.
+    const storage = memoryStorage()
+    const h = harness({ rootHasChildren: false, embedded: false, storage })
+    h.entryRan()
+    h.failModule()
+    h.domContentLoaded()
     expect(h.reloads()).toBe(0)
     expect(storage.data.size).toBe(0)
   })

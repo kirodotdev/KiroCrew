@@ -9,6 +9,12 @@
       "description": "Downloads new versions in the background and installs them the next time you quit the app."
     },
     {
+      "id": "about.release-notes",
+      "label": "Release notes",
+      "tab": "about",
+      "route": "/settings/about?release=notes&highlight=about.release-notes"
+    },
+    {
       "id": "about.update-channel",
       "label": "Update channel",
       "tab": "about",
@@ -19,8 +25,22 @@
       "label": "Update the gateway automatically",
       "tab": "about",
       "route": "/settings/about?highlight=key%3Aauto_update",
-      "description": "Restarts the gateway to install a new release once no work is running. When off, it stays on its current version.",
+      "description": "Updates are downloaded automatically and take effect the next time you restart Kiro Crew. Nothing restarts by itself. When off, it stays on its current version.",
       "configKey": "auto_update"
+    },
+    {
+      "id": "about.version",
+      "label": "Version",
+      "tab": "about",
+      "route": "/settings/about?highlight=about.version",
+      "description": "Version, update channel, check for updates, and license"
+    },
+    {
+      "id": "advanced.all-settings",
+      "label": "All settings",
+      "tab": "advanced",
+      "route": "/settings/advanced?highlight=advanced.all-settings",
+      "description": "Each change is checked before it saves. Change a setting here, or follow its link to the page where it lives. A read-only row says why."
     },
     {
       "id": "agent.kiro-sign-in",
@@ -397,6 +417,14 @@
       "label": "How the agent joins in (WhatsApp)",
       "tab": "channels",
       "route": "/settings/channels/whatsapp?highlight=channels.how-the-agent-joins-in-whatsapp"
+    },
+    {
+      "id": "channels.let-code-channels-start-helper-agents-slack",
+      "label": "Let code channels start helper agents (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.code_channel_dispatch",
+      "description": "Helpers work in the code channel's folder and ask you before changing files, unless that channel is set to approve automatically (Trust).",
+      "configKey": "slack.code_channel_dispatch"
     },
     {
       "id": "channels.messages-database-path-imessage",
@@ -888,6 +916,14 @@
       "hint": "How many lines the latest-message preview can use before it is cut off"
     },
     {
+      "id": "chat.project-tags",
+      "label": "Project tags",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.project_tags_enabled",
+      "description": "Tags each new session in the sidebar with the name of its project folder, like \"my-app\".",
+      "configKey": "dashboard.project_tags_enabled"
+    },
+    {
       "id": "chat.quick-reply-card-on-hover",
       "label": "Quick Reply Card on Hover",
       "tab": "chat",
@@ -899,6 +935,13 @@
       "label": "Quick Send",
       "tab": "chat",
       "route": "/settings/chat/composer?highlight=chat.quick-send"
+    },
+    {
+      "id": "chat.reasoning-starts-expanded",
+      "label": "Reasoning starts expanded",
+      "tab": "chat",
+      "route": "/settings/chat/transcript?highlight=chat.reasoning-starts-expanded",
+      "hint": "Open reasoning rows with their text showing, instead of collapsed. Rows you open or close by hand keep your choice."
     },
     {
       "id": "chat.recall-sent-messages-with-arrow-keys",
@@ -963,6 +1006,15 @@
       "route": "/settings/chat/sessions?highlight=chat.session-summaries",
       "description": "Uses tokens on turns that change the session.",
       "hint": "Summarize each session by intent."
+    },
+    {
+      "id": "chat.sessions-per-creator",
+      "label": "Sessions per creator",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Asession.max_per_creator",
+      "description": "The most sessions one Bot or agent can keep open at once. 10 to 450. Default 50.",
+      "hint": "A creator is a Bot, or any chat whose agent opens other sessions. A creator at this limit cannot open another session until it closes one. Chats you open yourself do not count. All sessions together still stop at 500. Applies from the next new session.",
+      "configKey": "session.max_per_creator"
     },
     {
       "id": "chat.show-context-percentage",
@@ -1048,11 +1100,11 @@
       "route": "/settings/chat/sessions?highlight=chat.split-view-session-grid"
     },
     {
-      "id": "chat.start-new-chats-in-ultra-mode",
-      "label": "Start New Chats in Ultra Mode",
+      "id": "chat.start-new-chats-in-conductor-mode",
+      "label": "Start New Chats in conductor mode",
       "tab": "chat",
       "route": "/settings/chat/sessions?highlight=key%3Adashboard.new_chat_crew_mode",
-      "description": "Ultra Mode runs each task in its own chat and reports back on the new chat's Board. You can turn it off on any new chat before the first message.",
+      "description": "Conductor mode runs each task in its own chat and reports back on the new chat's Board. You can turn it off on any new chat before the first message.",
       "hint": "Not for Incognito or Temporary chats, or chats on another agent.",
       "configKey": "dashboard.new_chat_crew_mode"
     },
@@ -1123,8 +1175,9 @@
       "id": "chat.topic-tags",
       "label": "Topic tags",
       "tab": "chat",
-      "route": "/settings/chat/sessions?highlight=chat.topic-tags",
-      "description": "Tags each new session in the sidebar with up to two topics, like \"debugging\". Uses one background-model call per new session."
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.topic_tags_enabled",
+      "description": "Tags each new session in the sidebar with up to two topics, like \"debugging\". Uses one background-model call per new session.",
+      "configKey": "dashboard.topic_tags_enabled"
     },
     {
       "id": "chat.turn-time-limit-seconds",
@@ -1193,24 +1246,6 @@
       "hint": "Draw a cursor that glides to each target and pulses when it clicks, so you can follow along on screen. Purely visual — it changes nothing about what the agent is allowed to do, and it only appears for clicks that move the real pointer."
     },
     {
-      "id": "connections.client-id",
-      "label": "Client ID",
-      "tab": "connections",
-      "route": "/settings/connections?highlight=connections.client-id"
-    },
-    {
-      "id": "connections.client-secret",
-      "label": "Client secret",
-      "tab": "connections",
-      "route": "/settings/connections?highlight=connections.client-secret"
-    },
-    {
-      "id": "connections.client-secret-2",
-      "label": "Client secret",
-      "tab": "connections",
-      "route": "/settings/connections?highlight=connections.client-secret-2"
-    },
-    {
       "id": "connections.oauth-client-github",
       "label": "OAuth app",
       "tab": "connections",
@@ -1225,46 +1260,19 @@
       "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
     },
     {
-      "id": "connections.oauth-client-gmail",
+      "id": "connections.oauth-client-google",
       "label": "OAuth app",
       "tab": "connections",
-      "route": "/settings/connections?highlight=connections.oauth-client-gmail",
-      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+      "route": "/settings/connections?highlight=connections.oauth-client-google",
+      "description": "One Google OAuth client for Gmail, Drive, Calendar, Sheets, Docs and Slides"
     },
     {
-      "id": "connections.oauth-client-google-drive",
-      "label": "OAuth app",
-      "tab": "connections",
-      "route": "/settings/connections?highlight=connections.oauth-client-google-drive",
-      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
-    },
-    {
-      "id": "connections.oauth-client-google-calendar",
-      "label": "OAuth app",
-      "tab": "connections",
-      "route": "/settings/connections?highlight=connections.oauth-client-google-calendar",
-      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
-    },
-    {
-      "id": "connections.oauth-client-google-sheets",
-      "label": "OAuth app",
-      "tab": "connections",
-      "route": "/settings/connections?highlight=connections.oauth-client-google-sheets",
-      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
-    },
-    {
-      "id": "connections.oauth-client-google-docs",
-      "label": "OAuth app",
-      "tab": "connections",
-      "route": "/settings/connections?highlight=connections.oauth-client-google-docs",
-      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
-    },
-    {
-      "id": "connections.oauth-client-google-slides",
-      "label": "OAuth app",
-      "tab": "connections",
-      "route": "/settings/connections?highlight=connections.oauth-client-google-slides",
-      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+      "id": "developer.acp-runtime-sharing",
+      "label": "ACP runtime sharing",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.acp-runtime-sharing",
+      "description": "Saves computer memory by running several chats in one background program. You choose which kinds of chat share it. They reply at the same time and can't see each other's messages. Turn it off and each new chat gets its own program again.",
+      "hint": "Chats whose harness switch below is on share one background program and reply at the same time, so a long reply in one chat never makes the others wait. If the shared program stops, every chat in it restarts. Chats never see each other's messages. One program runs up to 10 chats by default. Kiro CLI chats, KAS chats on an older engine, and chats whose switch is off keep a program each. Applies to chats you start after changing it. Turned off, each new chat starts its own program, which uses more memory."
     },
     {
       "id": "developer.agent-harness-for-worker-chats",
@@ -1284,24 +1292,24 @@
     },
     {
       "id": "developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",
-      "label": "Also send snippets of recalled memories so Jev can drop the ones that do not help",
+      "label": "Also send snippets of recalled memories so the decision model can drop the ones that do not help",
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",
-      "description": "When the assistant asks its own memory a question, the entries closest in wording come back. This also sends each one's id and the first 200 characters of its text to Jev, which then says which ones to keep. It can only remove them — never add one, never reorder them — and if it is slow or unreachable they all come back as before. Passwords and keys are replaced before anything is sent. Off until you turn it on, even if the switch above is already on."
+      "description": "When the assistant asks its own memory a question, the entries closest in wording come back. This also sends each one's id and the first 200 characters of its text to the decision model, which then says which ones to keep. It can only remove them, never add one or reorder them, and if it is slow or unreachable they all come back as before. Passwords and keys are replaced before anything is sent. Off until you turn it on, even if the switch above is already on."
     },
     {
       "id": "developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
-      "label": "Also send the conversation and tool-call inputs so Jev can score compaction",
+      "label": "Also send the conversation and tool-call inputs so the decision model can score compaction",
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
-      "description": "Every time context fills up and {{productName}} compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. It is wider than sending one tool call's arguments — a whole session's conversation goes, not one call — so it is off until you turn it on, whatever else you have already agreed to."
+      "description": "Every time context fills up and Kiro Crew compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to the decision model, and asks which ones would have been worth keeping. Tool OUTPUT is never sent, only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever the decision model answers, and the answer appears as one line on the compaction notice. It is wider than sending one tool call's arguments (a whole session's conversation goes, not one call), so it is off until you turn it on, whatever else you have already agreed to."
     },
     {
       "id": "developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
-      "label": "Also send tool-call arguments so Jev can flag risky calls",
+      "label": "Also send tool-call arguments so the decision model can flag risky calls",
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
-      "description": "In a session that approves its own tool calls, this also sends the name and arguments of each call to Jev, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
+      "description": "In a session that approves its own tool calls, this also sends the name and arguments of each call to the decision model, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
     },
     {
       "id": "developer.artifact-deploy",
@@ -1344,10 +1352,10 @@
       "hint": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch."
     },
     {
-      "id": "developer.decisions-jev",
-      "label": "Decisions (Jev)",
+      "id": "developer.decisions",
+      "label": "Decisions",
       "tab": "developer",
-      "route": "/settings/developer/feature-previews?highlight=developer.decisions-jev",
+      "route": "/settings/developer/feature-previews?highlight=developer.decisions",
       "hint": "A small, fast model makes quick calls for Kiro Crew, such as which of your skills fits your message. Pick the model below. If it is slow or does not answer, the built-in rule decides instead, so your reply is never held up."
     },
     {
@@ -1356,7 +1364,7 @@
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.earlier-conversation-one-decision-may-carry-in-characters",
       "description": "A larger number sends more of the conversation off this machine.",
-      "hint": "Earlier messages of yours and of the agent go with the question, newest first, up to this many characters. Tool output is never sent. Zero sends the message on its own, which is what the main Jev switch was agreed for, so a larger number sends more off the machine."
+      "hint": "Earlier messages of yours and of the agent go with the question, newest first, up to this many characters. Tool output is never sent. Zero sends the message on its own, which is what the main decision model switch was agreed for, so a larger number sends more off the machine."
     },
     {
       "id": "developer.explore",
@@ -1375,14 +1383,6 @@
       "hint": "Lifts the chat that started a folder's other chats to the top of that folder: an accent bar down its left edge and a small conductor tag beside the agent name. This changes the order of the Sessions list, so the list stays as it is until you turn it on. The folder menu's chat item is always there."
     },
     {
-      "id": "developer.github-sign-in-by-kiro-crew",
-      "label": "GitHub sign-in by Kiro Crew",
-      "tab": "developer",
-      "route": "/settings/developer/feature-previews?highlight=developer.github-sign-in-by-kiro-crew",
-      "description": "Lets Kiro Agent chats use your GitHub profile, orgs and public repos. Turn it on, then connect GitHub in Customize > Connections.",
-      "hint": "Kiro Crew signs in to GitHub itself. Disconnect GitHub on Connections to remove access."
-    },
-    {
       "id": "developer.jev-api-key",
       "label": "Jev API key",
       "tab": "developer",
@@ -1398,6 +1398,14 @@
       "hint": "When a bot has not rewritten a field it writes on its Dashboard page for a day (or the field's own limit), the page marks that field with how long ago it was updated, and the bot is reminded to write it again in its next turn and check-in."
     },
     {
+      "id": "developer.mcp-sign-in-by-kiro-crew",
+      "label": "MCP sign-in by Kiro Crew",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.mcp-sign-in-by-kiro-crew",
+      "description": "Lets chats use MCP servers that Kiro Crew signs in to, such as GitHub, Asana, Google and servers you add. Turn it on, then connect them in Settings > Connections.",
+      "hint": "Kiro Crew signs in to MCP servers itself and passes the sign-in to chats on a harness it supports, such as Kiro Agent, Claude or Codex. kiro-cli chats sign in as before. Disconnect a server on Connections to remove access."
+    },
+    {
       "id": "developer.model-for-the-small-model-judge",
       "label": "Model for the small-model judge",
       "tab": "developer",
@@ -1405,12 +1413,20 @@
       "hint": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
     },
     {
+      "id": "developer.quick-worker-check-before-a-hard-choice",
+      "label": "Quick worker check before a hard choice",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.quick-worker-check-before-a-hard-choice",
+      "description": "Two or three workers test a high-stakes choice and hand you a short brief.",
+      "hint": "When a conductor meets a choice with two paths and a wrong pick is hard to undo, it offers to let two or three workers talk it through first, instead of a 45-minute debate. They check the facts themselves and finish with a short brief: the answer, why, and what they picked for you. Not happy with it? Start another one."
+    },
+    {
       "id": "developer.remote-dispatch",
       "label": "Remote dispatch",
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=key%3Awork_ledger.remote_dispatch",
-      "description": "Runs Ultra Mode tasks on connected machines.",
-      "hint": "Lets Ultra Mode chats run tasks on machines you've connected under Remote Crew. Nothing is sent until a machine is connected.",
+      "description": "Runs conductor mode tasks on connected machines.",
+      "hint": "Lets conductor mode chats run tasks on machines you've connected under Remote Crew. Nothing is sent until a machine is connected.",
       "configKey": "work_ledger.remote_dispatch"
     },
     {
@@ -1436,6 +1452,13 @@
       "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Agent Harness. Takes effect when Kiro Crew restarts."
     },
     {
+      "id": "developer.secrets-vault-redesign",
+      "label": "Secrets vault redesign",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.secrets-vault-redesign",
+      "description": "Shows Secrets as a list beside the open item, and lets you save logins and notes."
+    },
+    {
       "id": "developer.send-pending-approvals-to-chat-apps",
       "label": "Send pending approvals to chat apps",
       "tab": "developer",
@@ -1457,14 +1480,6 @@
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.shared-crew",
       "description": "People tab, invites and shared sessions"
-    },
-    {
-      "id": "developer.ultra-mode",
-      "label": "Ultra Mode",
-      "tab": "developer",
-      "route": "/settings/developer/feature-previews?highlight=developer.ultra-mode",
-      "description": "Hands a chat's tasks to a crew.",
-      "hint": "Lets a chat hand tasks to a crew and track them on a Board."
     },
     {
       "id": "developer.wake-bots-to-update-out-of-date-fields",
@@ -1661,11 +1676,27 @@
       "configKey": "dashboard.terminal.reuse_current"
     },
     {
+      "id": "display.show-channels",
+      "label": "Show Channels",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=key%3Adashboard.channels_enabled",
+      "description": "Off takes Channels off the left rail and out of Search Everywhere. Nothing is deleted or stopped: your channels and the agents working in them are kept.",
+      "configKey": "dashboard.channels_enabled"
+    },
+    {
       "id": "display.show-search-in-the-top-bar",
       "label": "Show search in the top bar",
       "tab": "display",
       "route": "/settings/display/view?highlight=display.show-search-in-the-top-bar",
       "hint": "Show the search box in the middle of the top bar. Off, the controls on either side get its space, so the CPU, MEM and DSK readings stay visible in narrower windows. The search shortcut still opens search. While keyboard shortcuts are off, the box stays shown."
+    },
+    {
+      "id": "display.show-task-runner",
+      "label": "Show Task Runner",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=key%3Ataskrunner.enabled",
+      "description": "Off takes Task Runner off the left rail and out of Search Everywhere and stops new task runs. Nothing is deleted: your plans, past runs and runs already going are kept.",
+      "configKey": "taskrunner.enabled"
     },
     {
       "id": "display.show-tray-icon",
@@ -1708,6 +1739,14 @@
       "tab": "display",
       "route": "/settings/display/view?highlight=display.translucent-panels",
       "hint": "Show the top bar, the tab bar, the message box, the suggestion chips and the search fields as frosted glass over the content that scrolls under them. Off, they are solid cards."
+    },
+    {
+      "id": "display.use-command-bar",
+      "label": "Use Command Bar",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=key%3Adashboard.command_bar_enabled",
+      "description": "Cmd+K or Ctrl+K opens the Command Bar: type a command to jump to an app, a setting or a session. Off, the shortcut opens the search palette, which also searches knowledge, skills and prompts.",
+      "configKey": "dashboard.command_bar_enabled"
     },
     {
       "id": "display.zoom-level",
@@ -1800,6 +1839,13 @@
       "hint": "Shows a system notification naming the chat that finished, but only while this window is minimized or behind another app."
     },
     {
+      "id": "notifications.only-notify-for-longer-turns",
+      "label": "Only notify for longer turns",
+      "tab": "notifications",
+      "route": "/settings/notifications/alerts?highlight=notifications.only-notify-for-longer-turns",
+      "hint": "Skips the notification for a turn that finishes faster than this, so quick replies do not ping you. A turn that stops to ask you something or fails still notifies."
+    },
+    {
       "id": "notifications.play-sound-on-new-notifications",
       "label": "Play sound on new notifications",
       "tab": "notifications",
@@ -1890,6 +1936,14 @@
       "description": "Authenticates coding-activity sync when WakaTime is enabled."
     },
     {
+      "id": "security.ask-me-before-running-tools-an-mcp-server-pre-approves",
+      "label": "Ask me before running tools an MCP server pre-approves",
+      "tab": "security",
+      "route": "/settings/security/safety?highlight=key%3Amcp.honour_auto_approve",
+      "description": "Tools you set to Always allow still run without asking.",
+      "configKey": "mcp.honour_auto_approve"
+    },
+    {
       "id": "security.denied-commands",
       "label": "Denied Commands",
       "tab": "security",
@@ -1902,11 +1956,25 @@
       "route": "/settings/security/governance?highlight=security.governance-policy"
     },
     {
+      "id": "security.hide-credentials-from-the-ai-model-and-server-logs",
+      "label": "Hide credentials from the AI model and server logs",
+      "tab": "security",
+      "route": "/settings/security/redaction?highlight=security.hide-credentials-from-the-ai-model-and-server-logs",
+      "description": "Turn off to let the agent read a credential you gave it earlier in the chat; the AI model then receives it and the app's own log files on this computer can show it. Chats, Slack and values on the Secrets page stay protected either way."
+    },
+    {
       "id": "security.how-long-auto-approve-stays-on",
       "label": "How long auto-approve stays on",
       "tab": "security",
       "route": "/settings/security/approval?highlight=key%3Aagent.yolo_duration",
       "configKey": "agent.yolo_duration"
+    },
+    {
+      "id": "security.keep-ids-readable",
+      "label": "Keep IDs readable",
+      "tab": "security",
+      "route": "/settings/security/redaction?highlight=security.keep-ids-readable",
+      "description": "On: keeps IDs readable, such as an AWS key ID (AKIA…, not a secret) or a 40-character commit hash. Off: AWS key IDs and commit hashes are hidden like secrets. This setting doesn't change whether secrets are hidden."
     },
     {
       "id": "security.live-security-posture",
@@ -1923,10 +1991,18 @@
     },
     {
       "id": "security.config-pending",
-      "label": "Settings files changed outside {{productName}}",
+      "label": "Settings files changed outside Kiro Crew",
       "tab": "security",
       "route": "/settings/security/posture?highlight=security.config-pending",
-      "description": "Review edits made to settings files outside {{productName}}, then apply or discard them."
+      "description": "Review edits made to settings files outside Kiro Crew, then apply or discard them."
+    },
+    {
+      "id": "security.stop-the-agent-from-editing-its-own-permission-rules",
+      "label": "Stop the agent from editing its own permission rules",
+      "tab": "security",
+      "route": "/settings/security/safety?highlight=key%3Amcp.protect_kiro_permission_rules",
+      "description": "On: the agent's file-editing tools can't change the rules that let tools run without asking you. Off: they can. Commands the agent runs in a terminal can change these rules either way.",
+      "configKey": "mcp.protect_kiro_permission_rules"
     },
     {
       "id": "security.trust-every-third-party-app",
@@ -1946,7 +2022,7 @@
       "label": "Your custom denies",
       "tab": "security",
       "route": "/settings/security/rules?highlight=security.your-custom-denies",
-      "description": "Add your own deny patterns (Python-compatible regex). These are enforced at {{productName}}'s PreToolUse gate alongside the built-in rules."
+      "description": "Add your own deny patterns (Python-compatible regex). These are enforced at Kiro Crew's PreToolUse gate alongside the built-in rules."
     },
     {
       "id": "session-environments.coder-url",

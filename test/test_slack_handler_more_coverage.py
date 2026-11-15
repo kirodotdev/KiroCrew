@@ -1391,6 +1391,7 @@ class _Slot:
         self.key = "slot-1"
         self.running = running
         self.task = None
+        self._deferred_notes: list[dict] = []
         self.appended: list[tuple[str, str]] = []
         self.queued: list[str] = []
 

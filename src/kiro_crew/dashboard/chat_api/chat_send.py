@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
-from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import turn_timing
 
@@ -40,12 +39,14 @@ if TYPE_CHECKING:
         _emit_agent_assignment,
         _forwards_harness_command,
         _history_key_for,
+        _loading_refusal,
         _maybe_auto_title,
         _normalize_slot_key,
         _person_crew_worker_root,
         _record_explicit_agent_selection,
         _redact_meta,
         _run_chat,
+        _send_writes_persona,
         _start_next_queued_turn,
         _wake_pending_reset_retry,
         app_slot_is_local_user_session,
@@ -141,15 +142,6 @@ def _sweep_stale_permissions(slot: "_ChatSlot") -> None:
 def _send_binds_agent(agent: str, slot: Any) -> bool:
     """Whether a ``POST /api/chat`` naming *agent* writes it onto *slot*."""
     return bool(agent) and slot.agent in (None, "")
-
-
-def _send_writes_persona(body: dict) -> bool:
-    """Whether a ``POST /api/chat`` body writes the slot's persona fields.
-
-    ``color_theme`` carries the write; ``theme_consent`` and
-    ``theme_consent_sha`` are applied with it and never alone.
-    """
-    return "color_theme" in body
 
 
 async def _send_harness_command(message: str, state: DashboardState, slot: _ChatSlot) -> str:
@@ -284,8 +276,9 @@ async def _settle_send_race(
     None means the claim is granted and stored on the request: the branch that
     records the send commits it, and the claim is given back when the request's
     handler task ends without recording it (``send_race.Claim.owner``). A
-    lost race answers 409 ``send_race`` naming the winner; a retry of a send this
-    principal already won with answers that send and accepts nothing.
+    lost race answers 409 ``send_race`` naming the winner (``send_pending`` with
+    no winner past the settle wait); a retry of a send this principal already
+    won with answers that send and accepts nothing.
     """
     from kiro_crew.shared_crew import admission_entry, send_race
     from kiro_crew.shared_crew.identity import actor_of
@@ -402,13 +395,17 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     # Whether a PERSON typed this send. An app token never did, and neither did a
     # hub conductor's send marked agent-origin (`agent_origin`), whose turn is
-    # the `crew` actor's. Every
-    # person-only grant below reads `_person_send`; the app-scope checks keep
-    # reading `request_app` as before.
-    from kiro_crew.dashboard.agent_origin import send_is_agent_origin
+    # the `crew` actor's. Every person-only grant below reads `_person_send`; the
+    # app-scope checks keep reading `request_app` as before.
+    from kiro_crew.dashboard.agent_origin import note_person_send, send_is_agent_origin
 
     _agent_origin = send_is_agent_origin(body)
     _person_send = not request.get("app", "") and not _agent_origin
+    note_person_send(state, _person_send)
+    from kiro_crew.embeddings_shared import warm_embedder_for_person_soon as _warm  # no focus frame
+
+    if _person_send:  # a person's send: the model loads before this build asks for a vector
+        _warm()
     message = body.get("message", "")
     not_string = string_field_error("message", message)
     if not_string is not None:
@@ -528,6 +525,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         )
         if denied is not None:
             return denied
+    if _requested_key and (_refused := await _loading_refusal(request, state, _requested_key)):
+        return _refused
     # A tab restored as a sidebar row loads its window here, with the transcript
     # read off the loop, before anything below reads its rows. The live slot is
     # read again after the await, so a close or a replacement during the load is
@@ -1036,7 +1035,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
 
     # First submit wins (Shared Crew): settle this send against the session's
     # send revision before any branch can queue, steer or start it. A loser is
-    # refused here with the winner named, and its tab keeps the draft.
+    # refused here with the winner named (none past the settle wait), and its
+    # tab keeps the draft.
     from kiro_crew.shared_crew import send_race as _send_race
 
     _race_answer = await _settle_send_race(request, state, slot, body, message)
@@ -1056,7 +1056,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     from kiro_crew import crew_pause
     from kiro_crew.dashboard import responsive_chat
 
-    # Ultra Mode "Pause all" holds this session: a send is queued, not started,
+    # Conductor mode "Pause all" holds this session: a send is queued, not started,
     # and waits for Resume all (or the session's own Continue).
     _crew_paused = crew_pause.holds_slot(slot)
     _responsive_eligible = False
@@ -1572,6 +1572,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
 
     # Until the runner is spawned, every exit still owes the accepted work a settlement.
     turn_dispatched = False
+    _user_row: dict[str, Any] | None = None
     _reserve_turn_admission = _person_send
     try:
         # A slot created by this send binds to its member's private store BEFORE
@@ -1740,7 +1741,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
 
         # Note: untitled slots display as "New Session…" via _ChatSlot.display_title
         # (serialization layer), so there's no bare chat-N flash to patch here. The
-        # LLM titling is kicked off below, before _run_chat.
+        # LLM titling is kicked off once the turn is dispatched.
 
         # ── AutoNudge: user input cancels any pending nudge timer (user wins). ──
         responsive_chat.notify_user_input(
@@ -1757,31 +1758,6 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         if _restored_frames and not turn_scoped_stream:
             slot._pending[:0] = _restored_frames
             slot.event.set()
-
-        # Kick off LLM titling now, from the first user message, so the title lands
-        # *during* the first turn instead of waiting for the whole response to
-        # finish (chat_done). Runs on an isolated background kiro-cli session
-        # concurrent with the turn. No-ops once titled / in-flight; the instant
-        # 60-char provisional stays as the fallback if the LLM SKIPs or errors.
-        # Not from an app's text on a user's session: the user's own turns name it.
-        if may_configure and not slot._titled and not slot._title_in_flight:
-            _tt = asyncio.create_task(_maybe_auto_title(state, slot))
-            # Expose the handle so chat_done's chained title→refresh pass can wait
-            # for this attempt to settle (see title_then_refresh in chat_title).
-            slot._title_task = _tt
-            state._background_tasks.add(_tt)
-            _tt.add_done_callback(state._background_tasks.discard)
-        elif _user_row_meta.get(HUMAN_TURN_META_KEY) is True and fork_title_pending(slot):
-            # A fork child keeps its "Fork of <parent>" name until the person
-            # sends it a message; this one names it.
-            schedule_fork_title(state, slot)
-
-        # Auto-tag: derive a tag from the session's project directory (deterministic,
-        # no LLM). Fire-and-forget, same pattern as auto-title.
-        if not getattr(slot, "_auto_tagged", False):
-            _at = asyncio.create_task(maybe_auto_tag(state, slot))
-            state._background_tasks.add(_at)
-            _at.add_done_callback(state._background_tasks.discard)
 
         if _reserve_turn_admission:
             slot._turn_admission_reserved = True
@@ -1921,6 +1897,30 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             if not turn_dispatched:
                 slot._has_reader = False
                 await turn_admission.abandon()
+            if _user_row is not None:
+                # LLM titling from the first user message, so the title lands
+                # *during* the first turn, and auto-tagging. Started only here, with
+                # the turn's task published (or known not to come): both wait for
+                # that turn's prompt handoff before they use the background kiro-cli
+                # session. No-ops once titled / in-flight; the instant 60-char
+                # provisional stays as the fallback if the LLM SKIPs or errors. Not
+                # from an app's text on a user's session: the user's turns name it.
+                if may_configure and not slot._titled and not slot._title_in_flight:
+                    _tt = asyncio.create_task(_maybe_auto_title(state, slot))
+                    # The handle lets chat_done's chained title→refresh pass wait
+                    # for this attempt to settle (see title_then_refresh).
+                    slot._title_task = _tt
+                    state._background_tasks.add(_tt)
+                    _tt.add_done_callback(state._background_tasks.discard)
+                elif _user_row_meta.get(HUMAN_TURN_META_KEY) is True and fork_title_pending(slot):
+                    # A fork child keeps its "Fork of <parent>" name until the
+                    # person sends it a message; this one names it.
+                    schedule_fork_title(state, slot)
+                # The project directory's tag (no LLM), then optional topic tags.
+                if not getattr(slot, "_auto_tagged", False):
+                    _at = asyncio.create_task(maybe_auto_tag(state, slot))
+                    state._background_tasks.add(_at)
+                    _at.add_done_callback(state._background_tasks.discard)
         finally:
             if _reserve_turn_admission:
                 slot._turn_admission_reserved = False
@@ -1990,7 +1990,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                     await asyncio.wait_for(slot.event.wait(), timeout=30)
                 except asyncio.TimeoutError:
                     await write_sse_or_abort(request, resp, b": keepalive\n\n")
-        except (ConnectionResetError, ClientConnectionResetError, asyncio.CancelledError):
+        except (ConnectionResetError, asyncio.CancelledError):
             pass
         finally:
             slot.drain()

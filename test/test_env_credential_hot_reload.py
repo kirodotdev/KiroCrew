@@ -306,7 +306,7 @@ class TestLoaderCredentialHelpers:
         )
         assert os.environ["DISCORD_BOT_TOKEN"] == "from-systemd"
 
-        # Case 3 (the GPT finding): an inherited value that EQUALS the .env line.
+        # Case 3: an inherited value that EQUALS the .env line.
         # Value-equality would wrongly pop it; ownership keeps it because boot's
         # setdefault never wrote it, so .env does not own it.
         monkeypatch.setenv("WEBEX_BOT_TOKEN", "same-value")
@@ -480,7 +480,7 @@ class TestLoaderCredentialHelpers:
 
         # TWO owned keys, so the serialised marker joins them -- a NUL separator
         # would make os.environ reject the whole value and silently lose the
-        # record (the GPT/Opus multi-key finding); a comma separator is legal.
+        # record; a comma separator is legal.
         monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
         monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
         marker = loader._ENV_OWNED_KEYS_REEXEC_MARKER
@@ -604,7 +604,12 @@ class TestLoaderCredentialHelpers:
             rel = path.relative_to(src).as_posix()
             if rel in allow:
                 continue
-            for lineno in _propagating_calls(ast.parse(path.read_text(encoding="utf-8"))):
+            text = path.read_text(encoding="utf-8")
+            # Both shapes above name the attribute literally, so a file without
+            # the word cannot hold one; skipping it saves parsing the whole tree.
+            if "load_credentials" not in text:
+                continue
+            for lineno in _propagating_calls(ast.parse(text)):
                 offenders.append(f"{rel}:{lineno}")
         assert offenders == [], (
             "a post-boot credential read must pass propagate=False to load_credentials "

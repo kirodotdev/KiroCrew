@@ -31,13 +31,14 @@ from kiro_crew.acp.harness.base import (
     SpawnPlan,
     TeardownPolicy,
 )
-from kiro_crew.acp.harness.claude import ClaudeLaunch
+from kiro_crew.acp.harness.claude import ClaudeHarness, ClaudeLaunch
 from kiro_crew.acp.harness.codex import CodexHarness
 from kiro_crew.acp.harness.copilot import CopilotLaunch
 from kiro_crew.acp.harness.deepseek import DeepseekLaunch
 from kiro_crew.acp.harness.goose import GooseLaunch
 from kiro_crew.acp.harness.kas import KasHarness
 from kiro_crew.acp.harness.kiro import KiroHarness
+from kiro_crew.acp.harness.mimocode import MimoCodeLaunch
 from kiro_crew.acp.harness.opencode import OpencodeLaunch
 from kiro_crew.acp.harness.pi import PiLaunch
 from kiro_crew.acp.harness.strands import StrandsLaunch
@@ -49,12 +50,14 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
 )
 
 __all__ = [
+    "ClaudeHarness",
     "ClaudeLaunch",
     "CodexHarness",
     "CopilotLaunch",
@@ -64,6 +67,7 @@ __all__ = [
     "KasHarness",
     "KiroHarness",
     "LaunchAdapter",
+    "MimoCodeLaunch",
     "NotificationAliases",
     "OpencodeLaunch",
     "PiLaunch",
@@ -90,6 +94,10 @@ _HARNESSES: dict[str, type[HarnessAdapter]] = {
     # a harness unreachable to its own tests, and would leave the runtime resolving
     # one that exists on disk but not in the table.
     ACP_BACKEND_CODEX: CodexHarness,
+    # Registered ahead of routing, for the reason above: no session is routed to
+    # the shared runtime for claude yet, and a process-per-session client still
+    # launches it through ``ClaudeLaunch`` below.
+    ACP_BACKEND_CLAUDE: ClaudeHarness,
 }
 
 
@@ -122,6 +130,7 @@ _PROCESS_ADAPTERS: dict[str, type[ProcessAdapter]] = {
     ACP_BACKEND_DEEPSEEK: DeepseekLaunch,
     ACP_BACKEND_COPILOT: CopilotLaunch,
     ACP_BACKEND_STRANDS: StrandsLaunch,
+    ACP_BACKEND_MIMOCODE: MimoCodeLaunch,
 }
 
 

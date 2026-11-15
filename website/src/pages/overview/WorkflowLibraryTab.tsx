@@ -34,8 +34,8 @@ import { activeLocale, fmtDateTime } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { reportForError } from '../../utils/errorReport'
 import SegmentedControl from '../../components/SegmentedControl'
-import WorkflowSourceCode from '../../apps/workflows/WorkflowSourceCode'
-import WorkflowsRuns from '../../apps/workflows/WorkflowsRuns'
+import WorkflowSourceCode from '../../components/workflows/WorkflowSourceCode'
+import WorkflowsRuns from '../../components/workflows/WorkflowsRuns'
 import { queryReadFailed } from '../../utils/queryReadFailed'
 
 interface EditorState {

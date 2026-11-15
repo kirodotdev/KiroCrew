@@ -425,6 +425,19 @@ def env_credentials_hint() -> str:
     return ""
 
 
+def configured_region(profile: str) -> str:
+    """The Region the AWS config file sets for *profile*, or "" when it sets none.
+
+    ``aws configure get`` reads only the config file, so this is the profile's own
+    setting, never ``AWS_REGION``. An agent session may not run it and gets "".
+    """
+    try:
+        rc, out, _err = run_aws(["configure", "get", "region"], profile)
+    except CloudActionDenied:
+        return ""
+    return out.strip() if rc == 0 else ""
+
+
 def is_access_denied(stderr: str) -> bool:
     """True if the stderr text is an authorization (not client-side) error."""
     return any(marker in stderr for marker in _AUTH_DENIED_MARKERS)

@@ -87,8 +87,9 @@ def _readable_frontmatter(
     ``_cached_frontmatter`` raises rather than guessing. A reader has the
     opposite duty -- the index it is building, or the turn it is serving, must
     not die on one file -- so every reader on the per-turn path takes its
-    metadata through here: the listing, the trigger matcher, and the two
-    renderers of its matches. A SKILL.md that is not UTF-8 (a UTF-16 file
+    metadata through here: the listing, the trigger matcher, the two
+    renderers of its matches, the always-on lister and the auto-skill dedupe.
+    A SKILL.md that is not UTF-8 (a UTF-16 file
     PowerShell wrote, say) or that cannot be opened costs its own row, with one
     warning naming the file and the problem, and the caller skips it. A
     confined row never raises here (its reader already degrades), so the call

@@ -31,7 +31,10 @@ name: Internal Content Scan Gate
 on:
   merge_group:
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
+  # Push stays main-only: the scan's cloud role is only known to trust a push
+  # to main, so a push to a release branch would fail at role assumption. A
+  # release branch's changes are scanned on their pull request instead.
   push:
     branches: [main]
 

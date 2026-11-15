@@ -1190,6 +1190,39 @@ def test_run_aws_passes_the_widened_spawn_env_to_the_child(monkeypatch, tmp_path
     assert str(pkg) in env["PATH"].split(os.pathsep)
 
 
+def test_run_aws_child_gets_no_python_interpreter_settings(monkeypatch):
+    """aws-cli v1 is Python: the gateway's PYTHONPATH/PYTHONHOME must not reach it.
+
+    Everything else ``aws_spawn_env`` builds, the widened PATH included, still does.
+    """
+    captured: dict[str, object] = {}
+
+    def fake_run_limited(argv, **kwargs):  # noqa: ANN001
+        captured["env"] = kwargs.get("env")
+
+        class _P:
+            returncode = 0
+            stdout = "{}"
+            stderr = ""
+
+        return _P()
+
+    spawn_env = {
+        "PATH": "<widened>",
+        "PYTHONPATH": "<gw>",
+        "PYTHONHOME": "<gw>",
+        "AWS_PROFILE": "k",
+    }
+    monkeypatch.setattr(engine, "wrap_argv", lambda argv, **kw: (list(argv), None))
+    monkeypatch.setattr(engine, "cgroup_scope_argv", lambda argv: argv)
+    monkeypatch.setattr(engine, "run_limited", fake_run_limited)
+    monkeypatch.setattr(engine, "aws_spawn_env", lambda head: dict(spawn_env))
+
+    engine.run_aws(["sts", "get-caller-identity"], "kauai")
+
+    assert captured["env"] == {"PATH": "<widened>", "AWS_PROFILE": "k"}
+
+
 def test_random_bucket_name_format():
     name = engine.random_bucket_name()
     assert name.startswith("kirocrew-web-")

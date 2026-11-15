@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.channel_prompt import PROMPT_ON_CHANNEL_META_KEY
+from kiro_crew.tracing import steps as trace_steps
 
 if TYPE_CHECKING:
     from kiro_crew.subagent import SubagentDelivery
@@ -130,10 +131,29 @@ def source_channels_of(item: Any) -> tuple[str, ...]:
 #: never emits it, so a restart forgets the choice and the card waits again.
 RESTORED_SEND_CHOSEN_KEY = "_restored_send_chosen"
 
+#: Marks a restored entry :func:`drain_restored_parked_sends` accepted to send: its
+#: durable parked work row proves it was admitted, so the startup drain starts it
+#: once memory is ready. Process-local like the keys above, and dropped when that
+#: drain's attempt ends (:func:`_release_boot_acceptance`).
+RESTORED_BOOT_ACCEPTED_KEY = "_restored_boot_accepted"
+
+
+def is_held_queue_entry(item: dict[str, Any]) -> bool:
+    """Whether *item* waits for a person: a restored card nobody chose, and not a
+    parked send the startup drain accepted. The slot frame's ``queue_held_depth``
+    and the session status count these as no work coming."""
+    return bool(item.get(RESTORED_QUEUE_KEY)) and not (
+        item.get(RESTORED_SEND_CHOSEN_KEY) or item.get(RESTORED_BOOT_ACCEPTED_KEY)
+    )
+
+
 _DURABLE_QUEUE_KEYS: tuple[str, ...] = (
     "id",
     "content",
     "meta",
+    # A tab can hold a card at its last revision across a restart; restoring the
+    # counter keeps the next edit above it, so the tab's ordering guard accepts it.
+    "edit_rev",
 )
 
 
@@ -453,13 +473,16 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # empty kind is what keeps them out of the system-injection paths.
             "kind": "",
             # PROCESS-LOCAL, and never round-trips: the writer admits only
-            # ``_DURABLE_QUEUE_KEYS`` (id, content, meta), so this key cannot be
+            # ``_DURABLE_QUEUE_KEYS`` (id, content, meta, edit_rev), so this key cannot be
             # set by editing the line -- which is the whole point of having it.
             # It records that this entry's provenance was established by a
             # previous process and cannot be vouched for by this one, which is
             # what :data:`RESTORED_QUEUE_KEY` is read for.
             RESTORED_QUEUE_KEY: True,
         }
+        edit_rev = item.get("edit_rev")
+        if isinstance(edit_rev, int) and not isinstance(edit_rev, bool) and edit_rev > 0:
+            entry["edit_rev"] = edit_rev
         restriction = _restored_source_channels(item)
         if restriction:
             entry[SOURCE_CHANNELS_KEY] = restriction
@@ -572,6 +595,7 @@ async def drain_restored_parked_sends(state: Any) -> None:
     await service.ensure_ready()
     await host_hooks.deliver_owed_notes(state)
     accepted: dict[str, frozenset[str]] = {}
+    marked: list[dict[str, Any]] = []
     for slot in list(state._slots.values()):
         queue_ids: set[str] = set()
         for entry in list(slot._queue):
@@ -588,9 +612,13 @@ async def drain_restored_parked_sends(state: Any) -> None:
                     and work.reason in (None, ReasonCode.CANCELLED_BY_USER)
                 ):
                     queue_ids.add(entry["id"])
+                    marked.append(entry)
                     break
         if queue_ids:
             accepted[slot.key] = frozenset(queue_ids)
+    # Marked once the scan is done: a store read that raises part-way leaves no mark behind.
+    for entry in marked:
+        entry[RESTORED_BOOT_ACCEPTED_KEY] = True
     from kiro_crew.dashboard.chat_runner import _RESTORED_DRAIN_IDS
     from kiro_crew.memory_startup import memory_startup_preparing
 
@@ -605,10 +633,27 @@ async def drain_restored_parked_sends(state: Any) -> None:
             task = asyncio.create_task(_drain_after_memory_task_publication(state, keys))
             state._background_tasks.add(task)
             task.add_done_callback(state._background_tasks.discard)
+            task.add_done_callback(lambda _done: _release_boot_acceptance(state, keys))
         else:
-            await _drain_parked_queues(state, keys)
+            try:
+                await _drain_parked_queues(state, keys)
+            finally:
+                _release_boot_acceptance(state, keys)
     finally:
         _RESTORED_DRAIN_IDS.reset(token)
+
+
+def _release_boot_acceptance(state: Any, keys: list[str]) -> None:
+    """End the startup drain's attempt: an accepted card it did not start waits
+    for a person like any other restored card, so readers stop counting it as
+    work coming. A started card's successor is picked by id, not by this mark."""
+    released = False
+    for key in keys:
+        slot = state._slots.get(key)
+        for item in slot._queue if slot is not None else ():
+            released = item.pop(RESTORED_BOOT_ACCEPTED_KEY, False) or released
+    if released:
+        state.push_slots_update()
 
 
 # Startup publishes the memory task after restoring slots; there is no event for that assignment.
@@ -825,6 +870,8 @@ class SlotQueueRepository:
             item["_directive_owner_origin"] = True
         owner._queue.append(item)
         owner._note_enqueue()
+        # Its queue wait starts now, timed beside the entry for the reason note_enqueue gives.
+        trace_steps.note_queued(queue_id)
         return queue_id
 
     def note_enqueue(self, owner: Any) -> None:
@@ -999,6 +1046,7 @@ class SlotQueueRepository:
                 item["meta"].pop("slack_sender", None)
                 # Nor are the editor's words in the linked thread, so they echo.
                 item["meta"].pop(PROMPT_ON_CHANNEL_META_KEY, None)
+            item["edit_rev"] = int(item.get("edit_rev") or 0) + 1
             if directive_user_origin:
                 item["_directive_user_origin"] = True
             else:

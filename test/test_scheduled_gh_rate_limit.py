@@ -203,6 +203,13 @@ EVENT_WRAPPED: dict[tuple[str, str], str] = {
         "sensitive-change-review.yml",
         "sensitive-change-review",
     ): "./base/.github/actions/gh-rate-limit",
+    # The same-repo AI review lanes: a red one holds PR Readiness red until a
+    # hand re-run after the reset. Their model steps are read-only.
+    ("claude-review.yml", "claude-review"): ACTION_REF,
+    ("codex-review.yml", "codex-review"): ACTION_REF,
+    ("design-review.yml", "design-review"): ACTION_REF,
+    ("first-principles-review.yml", "first-principles-review"): ACTION_REF,
+    ("ux-review.yml", "ux-review"): ACTION_REF,
 }
 
 

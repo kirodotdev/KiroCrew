@@ -79,6 +79,7 @@ def test_stable_tag_resolves_candidate_and_never_enters_build_jobs() -> None:
     assert jobs["resolve-promotion"]["if"] == "needs.version.outputs.promote_mode == 'true'"
     assert jobs["resolve-promotion"]["permissions"] == {
         "actions": "read",
+        "checks": "read",
         "contents": "read",
     }
     # The build lanes stay off the PROMOTION path. They gain exactly one extra

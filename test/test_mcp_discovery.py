@@ -18,6 +18,7 @@ from mcp_discovery_helpers import (  # noqa: F401 -- the autouse fixture registe
     _passthrough_sandbox,
     _stub_remote_probe_ssrf_vet,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew import mcp_cleanup
 from kiro_crew.mcp_discovery import (
@@ -379,6 +380,7 @@ class TestListServers:
         store.write_text(json.dumps({"mcpServers": {}}))
         shared_mcp = tmp_path / "shared.json"
         huge = {"k" + str(i): "v" * 40 for i in range(20)}
+        token = github_classic(seed=147)
         shared_mcp.write_text(
             json.dumps(
                 {
@@ -388,9 +390,7 @@ class TestListServers:
                         "flood": {"command": huge, "disabled": True},
                         "fine": {"command": "npx", "disabled": True},
                         "leaky": {
-                            "command": {
-                                "headers": {"Authorization": "Bearer AKIAIOSFODNN7EXAMPLE"}
-                            },
+                            "command": {"headers": {"Authorization": f"Bearer {token}"}},
                             "disabled": True,
                         },
                     }
@@ -419,8 +419,8 @@ class TestListServers:
         # An object can carry what a string never did in this field: the text is
         # run through the site-wide scanners before it is shown (or cut).
         leaky = by_name["leaky"].command
-        assert "AKIAIOSFODNN7EXAMPLE" not in leaky, leaky
-        assert "AKIAIOSFODNN7EXAMPLE" not in by_name["leaky"].to_dict()["command"]
+        assert token not in leaky, leaky
+        assert token not in by_name["leaky"].to_dict()["command"]
         assert "headers" in leaky
 
     @staticmethod

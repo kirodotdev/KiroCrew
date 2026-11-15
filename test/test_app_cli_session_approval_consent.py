@@ -134,7 +134,10 @@ def test_refusal_names_the_member_threads_only_when_the_manifest_widens_to_them(
     # Chats entry, aligned under its text and with no label of its own.
     lines = err.splitlines()
     chats = next(i for i, line in enumerate(lines) if line.startswith("   Chats:"))
-    assert lines[chats + 1] == "              This includes your own chats with your Bots."
+    assert lines[chats + 1] == (
+        "              This includes your own chats with your Bots. "
+        "The app can send your Bots messages in your name."
+    )
     assert _state() == (False, True)
 
 

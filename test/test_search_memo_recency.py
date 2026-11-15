@@ -296,4 +296,7 @@ def test_warm_search_reads_the_window_metadata(tmp_path, monkeypatch):
 
 
 def test_warm_search_on_a_missing_directory_is_a_no_op(tmp_path):
-    ConversationLog(base_dir=tmp_path / "absent").warm_search()
+    log = ConversationLog(base_dir=tmp_path / "absent")
+    log.warm_search()
+    assert not (tmp_path / "absent").exists()
+    assert log.search_sessions("deployment", 50) == []

@@ -42,9 +42,8 @@ _ALIAS_TO_CANONICAL: dict[str, str] = {
 
 #: Mid-turn routing directives. These are PREFIXES carrying a message body, not
 #: standalone commands: ``/queue what time is it`` queues that text. A bare
-#: directive with no body is answered with usage rather than handed to the model,
-#: which would otherwise reply to the literal string ``/queue`` and be
-#: indistinguishable to the user from the feature not existing.
+#: directive gets a usage reply; sent to the model, ``/queue`` alone would get
+#: an answer that looks like the feature does not exist.
 _QUEUE_ALIASES = frozenset({"/queue"})
 _STEER_ALIASES = frozenset({"/steer"})
 

@@ -26,6 +26,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, within, waitFor, fireEvent, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 import type { AppsData } from '../pages/apps/useAppsData'
 
@@ -128,16 +130,18 @@ function PathProbe() {
 function discoverUi(initialPath: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[initialPath]}>
-        <PathProbe />
-        <Routes>
-          <Route path="/apps" element={<DiscoverPage />} />
-          <Route path="/apps/-/updates" element={<DiscoverPage />} />
-          <Route path="/apps/library" element={<div data-testid="library-route" />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
+    <Provider store={createConnectedTestStore()}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={[initialPath]}>
+          <PathProbe />
+          <Routes>
+            <Route path="/apps" element={<DiscoverPage />} />
+            <Route path="/apps/-/updates" element={<DiscoverPage />} />
+            <Route path="/apps/library" element={<div data-testid="library-route" />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>
   )
 }
 

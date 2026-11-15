@@ -79,6 +79,20 @@ describe('stale pre-owner session re-auth prompt', () => {
     expect(refreshCalls.length).toBe(0)
   })
 
+  it('prompts re-auth when the app install stream is refused before it opens', async () => {
+    fetchMock.mockResolvedValue(staleDenial())
+
+    const err = await api.installFromRegistryStream('demo', () => {}).then(
+      () => null,
+      (e: unknown) => e,
+    )
+
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).status).toBe(401)
+    expect(bannerEl()).not.toBeNull()
+    expect(bannerEl()!.textContent).toContain('predates the configured owner')
+  })
+
   it('does NOT prompt on a generic 403 (existing handling untouched)', async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ error: 'forbidden' }), {

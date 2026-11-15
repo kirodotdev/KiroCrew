@@ -1,19 +1,23 @@
 ---
 title: Interactive actions for the Notification Bridge (B4) — act on a bridged approval, question or mute from the chat transport
-status: accepted
+status: partial
 author: rohnkum
 created: 2026-11-08
-last-audited: 2026-11-09
-audited-at: 6264d9ef0f
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: 32917
-implementation-prs: []
+implementation-prs: [33749, 33815, 34064, 34474, 34565, 34822, 36050, 36336]
 tracking-issues: [32902]
 supersedes: []
 superseded-by: []
 ---
 # RFC: Interactive actions for the Notification Bridge (B4)
 
-> **Nothing here is built.** This document designs Phase B4 of the accepted
+> **Partly built (audited at `1d08e941b3`).** B4a, B4b, B4p, B4c, B4e and the
+> Telegram, Discord and Webex reply paths of B4d/B4g are on main behind the
+> default-off `bridge_approvals` preview (`notifications/bridge_actions.py`,
+> `bridge_reply.py`, `bridge_action_audit.py`); B4f and B4h are not.
+> This document designs Phase B4 of the accepted
 > Notification Bridge ([rfc-notification-bridge.md](rfc-notification-bridge.md)),
 > which that RFC lists as "future, separate proposal" (its §Migration plan,
 > Phase B4) and as a non-goal of its own scope. The bridge egress half that B4
@@ -409,7 +413,9 @@ transport's sink is extended it stays read-only.
   dashboard" link for free-form questions.
 - **B4f — mute the source channel:** the mute action, reusing `ChannelSettings`
   the bridge already writes, so a mute from chat and a mute from the dashboard are
-  the same write.
+  the same write. *Dropped:* every note that carries a decision is on
+  `system.approval`, which `ChannelSettings` refuses to mute, so no bridged note
+  can offer a mute.
 - **B4g — remaining transports:** Discord, Telegram, Webex sinks extended to the
   affordances their SDKs carry; WeCom/weixin stay read-only.
 - **B4h — preview flag off → on (separate PR, gated on sign-off):** flip the

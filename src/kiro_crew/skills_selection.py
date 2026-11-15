@@ -161,7 +161,11 @@ def get_always_skills(self, project_dir: str | Path | None = None) -> list[str]:
     """
     result: list[str] = []
     for name, skill_file, _within in self._iter_visible(project_dir):
-        meta = self._cached_frontmatter(skill_file, within=_within)
+        # A reader: one SKILL.md that is not UTF-8 costs its own row, never the
+        # whole always-on list (rationale on the helper).
+        meta = self._readable_frontmatter(skill_file, within=_within)
+        if meta is None:
+            continue
         if meta.get("always", "").strip().lower() == "true":
             # Stripped so a whitespace-only value means "no scope" here exactly as it
             # does at the other two gate call sites. The guard below tests this

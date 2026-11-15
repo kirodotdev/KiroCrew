@@ -12,6 +12,7 @@ from collections.abc import Mapping, MutableMapping
 from datetime import datetime, timezone
 
 from kiro_crew import platform_compat
+from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES
 from kiro_crew.agent_spec_pins import coerce_spec_pins
 from kiro_crew.config import sections as _sections
 from kiro_crew.config.loader_document import (
@@ -260,6 +261,9 @@ def _session_sort_from(raw: object, default: str) -> str:
 # the same reason: 0 is its documented "use the default" sentinel, which the
 # manager normalizes, so a MIN floor in the generic loop would turn it into a
 # 60-second deadline. Only out-of-range values are altered.
+# The dashboard's generic write rule for a listed key with no `_EDITABLE_CONFIG`
+# rule reads this table (`config_all_settings._security_bounds`), so a save from
+# Settings -> Advanced stays inside the same range and never trips the clamp.
 _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
     ("agent", "subagent_auto_max", 3, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "max_subagents", 0, SUBAGENT_AUTO_MAX_CEILING),
@@ -302,6 +306,15 @@ _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
     # dashboard's write gate. The floor is 0 because 0 is this field's OFF value, so
     # a negative clamps toward observe-only rather than toward killing.
     ("session", "reconcile_max_kills", 0, _sections.RECONCILE_MAX_KILLS_MAX),
+    # How many live sessions one creator may hold. The value bounds what one
+    # automated creator can take from the shared live-session ceiling, and a
+    # hand-edited config.json never passes the dashboard's write gate.
+    (
+        "session",
+        "max_per_creator",
+        _sections.MAX_PER_CREATOR_MIN,
+        _sections.MAX_PER_CREATOR_MAX,
+    ),
 )
 
 
@@ -595,7 +608,7 @@ def _note_member_fallback(inherited: str, used: str) -> None:
     logger.warning(
         "agent.acp_backend is %r, which Crew bots cannot run on (no saved spec, dispatch "
         "tools or worker kit there); Crew bot chats and their workers run on %r instead. "
-        "Pin a harness per Crew bot or set agent.member_acp_backend to choose another.",
+        "Pin a harness in a Crew bot's settings to choose another.",
         inherited,
         used,
     )
@@ -790,6 +803,9 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         kas_refuse_plain_http_mcp_headers=section.read(
             "kas_refuse_plain_http_mcp_headers", _safe_bool
         ),
+        kas_fail_closed_web_fetch_blocked=section.read(
+            "kas_fail_closed_web_fetch_blocked", _safe_bool
+        ),
         kas_bundle_url=_sections.coerce_kas_bundle_url(section.get("kas_bundle_url")),
         native_skill_projection=section.read("native_skill_projection", _safe_bool),
         default_agent=section.get("default_agent"),
@@ -816,6 +832,9 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
             )
         ),
         apps_allow_third_party=section.read("apps_allow_third_party", _safe_bool),
+        apps_never_adopt_backend_listener=section.read(
+            "apps_never_adopt_backend_listener", _safe_bool
+        ),
         sandbox_readonly_paths=(
             [p for p in _ro_paths if isinstance(p, str) and p]
             if isinstance(_ro_paths := section.get("sandbox_readonly_paths"), list)
@@ -864,6 +883,12 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         tool_search_min_pct=section.read("tool_search_min_pct", _safe_int),
         tool_search_min_tokens=section.read("tool_search_min_tokens", _safe_int),
         session_sharing=bool(section.get("session_sharing")),
+        chat_runtime_sharing_max_sessions=section.read(
+            "chat_runtime_sharing_max_sessions", _safe_int, 1, 64
+        ),
+        chat_runtime_sharing_harnesses=_chat_runtime_sharing_harnesses(
+            section.get("chat_runtime_sharing_harnesses")
+        ),
         agent_started_turns=bool(section.get("agent_started_turns")),
         max_subagents=section.read("max_subagents", _safe_int, 0, SUBAGENT_AUTO_MAX_CEILING),
         max_stop_hook_nudges=section.read("max_stop_hook_nudges", _safe_int, 0),
@@ -883,6 +908,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
             TOOL_APPROVAL_TIMEOUT_MIN,
             TOOL_APPROVAL_TIMEOUT_MAX,
         ),
+        deny_override=section.read("deny_override", _safe_bool),
         # Absent means ON. The grant that decides who may reach a peer
         # session is the AGENT CONFIG, not this switch: the tools come
         # from the `kirocrew-dashboard` MCP server, so an agent that does
@@ -923,6 +949,8 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
             "subagent_auto_max", _safe_int, 3, SUBAGENT_AUTO_MAX_CEILING
         ),
         subagent_spawn_stagger_secs=section.read("subagent_spawn_stagger_secs", _safe_float),
+        windows_background_qos=section.read("windows_background_qos", _safe_bool),
+        subagent_light_tier=section.read("subagent_light_tier", _safe_bool),
         spawn_min_memory_gb=section.read("spawn_min_memory_gb", _safe_float),
         resource_pressure_gb=section.read("resource_pressure_gb", _safe_float),
         resource_critical_gb=section.read("resource_critical_gb", _safe_float),
@@ -1189,6 +1217,15 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         reconcile_max_kills=section.read(
             "reconcile_max_kills", _safe_int, 0, _sections.RECONCILE_MAX_KILLS_MAX
         ),
+        # Clamped here as well as in the sweep, as ``reconcile_max_kills`` is: a
+        # numeric string passes the sweep and coerces here, and a value that is
+        # not a number loads as the default.
+        max_per_creator=section.read(
+            "max_per_creator",
+            _safe_int,
+            _sections.MAX_PER_CREATOR_MIN,
+            _sections.MAX_PER_CREATOR_MAX,
+        ),
     )
 
 
@@ -1207,10 +1244,42 @@ def _otlp_endpoint_rows(value: object, default: list) -> list:
     return [dict(row) if isinstance(row, dict) else row for row in value]
 
 
+def _percent_list(value: object, default: list) -> list:
+    """``telemetry.plan_alert_pcts`` as sorted distinct numbers in (0, 1000], else *default*.
+
+    A non-list reads as *default* (off). Inside a list, a bool, a non-number, a
+    non-finite number and anything outside the range is dropped, so one typo does
+    not discard the percentages beside it.
+    """
+    if not isinstance(value, list):
+        return default
+    kept = {
+        float(v)
+        for v in value
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v <= 1000
+    }
+    return sorted(kept)
+
+
+def _dict_or_default(value: object, default: dict) -> dict:
+    """A copy of *value* when it is a dict, else *default*."""
+    return dict(value) if isinstance(value, dict) else default
+
+
 def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
     section = _sections.SectionReader(TelemetryConfig, telemetry_data)
+    enabled = bool(section.get("enabled"))
+    # An install that turned the heartbeat off and never set ``enabled`` has
+    # already said no to telemetry, so recording follows it instead of the
+    # field default. A rule at load time: no config file is rewritten.
+    if "enabled" not in telemetry_data and telemetry_data.get("beacon_enabled") is False:
+        enabled = False
+    # A stored ``0`` disk cap is read as written, even where an older build's
+    # whole-document save put it there: 0 is the documented "no limit", so a
+    # stored 0 and an untouched old default are the same bytes and only the user
+    # can say which one it is. ``superseded_defaults`` reports both caps instead.
     return TelemetryConfig(
-        enabled=bool(section.get("enabled")),
+        enabled=enabled,
         local_dir=str(section.get("local_dir")),
         export_interval_seconds=section.read("export_interval_seconds", _safe_int),
         retention_days=section.read("retention_days", _safe_int),
@@ -1221,8 +1290,17 @@ def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
         # which skips a bad one with a warning rather than failing the load.
         otlp_endpoints=section.read("otlp_endpoints", _otlp_endpoint_rows),
         traces_enabled=bool(section.get("traces_enabled")),
+        traces_otlp_endpoint=str(section.get("traces_otlp_endpoint")),
+        # Shape only: a non-object never reaches here (the load-time schema check
+        # drops it with a masked warning, so no header is sent); tracing/otlp.py
+        # checks each pair and turns export off, with a warning, for one it
+        # cannot use.
+        traces_otlp_headers_secret=section.read("traces_otlp_headers_secret", _dict_or_default),
+        traces_otlp_headers_env=section.read("traces_otlp_headers_env", _dict_or_default),
+        traces_conductor_mode=str(section.get("traces_conductor_mode")),
         beacon_enabled=bool(section.get("beacon_enabled")),
         beacon_endpoint=str(section.get("beacon_endpoint")),
+        plan_alert_pcts=section.read("plan_alert_pcts", _percent_list),
     )
 
 
@@ -1256,6 +1334,21 @@ def _default_session_folder_or_empty(value: object) -> str:
     folder store, so a value that names none reads as unfiled there.
     """
     return value.strip() if isinstance(value, str) else ""
+
+
+def _chat_runtime_sharing_harnesses(value: object) -> dict:
+    """``agent.chat_runtime_sharing_harnesses`` as ``{harness: bool}`` over the table.
+
+    Every harness in ``CHAT_RUNTIME_SHARING_HARNESSES`` is present, at its stored
+    value when that is a literal ``true``/``false`` and at its default otherwise. A
+    name the table does not hold is dropped, so a hand edit cannot switch on a
+    harness that is not safe to share.
+    """
+    stored = value if isinstance(value, dict) else {}
+    return {
+        name: stored[name] if isinstance(stored.get(name), bool) else default
+        for name, default in CHAT_RUNTIME_SHARING_HARNESSES.items()
+    }
 
 
 def _feature_previews(value: object, default: dict) -> dict:
@@ -1392,8 +1485,11 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             "recent_tint_count", _safe_int, RECENT_TINT_COUNT_MIN, RECENT_TINT_COUNT_MAX
         ),
         show_unread_dot=section.read("show_unread_dot", _safe_bool),
+        command_bar_enabled=section.read("command_bar_enabled", _safe_bool),
+        channels_enabled=section.read("channels_enabled", _safe_bool),
         folder_sort=section.read("folder_sort", _folder_sort_from),
         session_sort=section.read("session_sort", _session_sort_from),
+        unfiled_sessions_above_folders=section.read("unfiled_sessions_above_folders", _safe_bool),
         update_nudge=(
             nudge
             if isinstance(nudge := section.get("update_nudge"), dict)
@@ -1426,6 +1522,9 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         privacy_ack_version=section.read(
             "privacy_ack_version", _safe_int, 0, _sections.PRIVACY_ACK_VERSION_MAX
         ),
+        kiro_telemetry_ack_version=section.read(
+            "kiro_telemetry_ack_version", _safe_int, 0, _sections.PRIVACY_ACK_VERSION_MAX
+        ),
         crewmates_onboarded=section.read("crewmates_onboarded", _safe_bool),
         user_role=str(section.get("user_role")),
         user_role_other=str(section.get("user_role_other")),
@@ -1437,6 +1536,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         ),
         milestones_enabled=section.read("milestones_enabled", _safe_bool),
         folder_suggestions_enabled=bool(section.get("folder_suggestions_enabled")),
+        project_tags_enabled=section.read("project_tags_enabled", _safe_bool),
         topic_tags_enabled=section.read("topic_tags_enabled", _safe_bool),
         tips_cadence_hours=section.read("tips_cadence_hours", _safe_float, lo=0.0),
         tips_snooze_hours=section.read("tips_snooze_hours", _safe_float, lo=0.0),

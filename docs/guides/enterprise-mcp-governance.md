@@ -105,18 +105,19 @@ personal account.
 
 Kiro Crew ships eleven servers (`_MANAGED_MCP_SERVERS` in `src/kiro_crew/agent.py`
 is the authoritative map), and the registry filter applies to every one of them.
-Five are emitted on every install; the other six are assignable sets an agent
+Five are emitted for every agent (`kirocrew-computer` only once Computer Use is
+on and the host has a driver); the other six are assignable sets an agent
 carries only when granted them — but any agent that IS granted one loses it the
 same way if the registry omits it. They must appear in the registry file under
 **exactly** these names:
 
-Always emitted, on every install:
+Emitted for every agent:
 
 | Server | What is lost without it |
 |---|---|
 | `kirocrew-core` | `spawn_run`, `learn_add`, artifacts, knowledge, monitoring — the bulk of the product |
 | `kirocrew-cron` | every scheduled job (`cron_add` and the whole cron surface) |
-| `kirocrew-computer` | desktop automation on supported macOS and Windows hosts (inert unless separately enabled, but still filtered) |
+| `kirocrew-computer` | desktop automation on supported macOS and Windows hosts (left out of the spec until Computer Use is turned on; once it is, filtered like the rest) |
 | `kirocrew-guide` | the platform guide set: where-is answers (`find_ui`), the packaged docs (`search_docs`), dashboard guides and change cards |
 | `kirocrew-mate` | a Bot's tools over its own record (name, description, face; goal and tools asked through a change card) |
 
@@ -365,6 +366,12 @@ identity_unattestable ... This host is MCP registry-governed (agent.mcp_registry
 and the admin's MCP registry is blocking Kiro Crew's own tools ...
 ```
 
+This field requires Kiro Crew **0.13.0** or later. Kiro Crew 0.12.1 and
+earlier reject `mcp_registry_local_control_plane` as an unknown governed key,
+and with `boot.fail_closed` set Kiro Crew then does not start. On those
+releases, leave the field out. Run `kirocrew policy validate` before you
+restart.
+
 To enable session identity, set one field at the top level of the security policy
 (`~/.kiro/crew/security_policy.json`, or your centrally distributed document) and
 restart Kiro Crew:
@@ -444,6 +451,11 @@ Enforcement in the V2 TUI arrived in **2.2.2**, and **2.6.0** made personal
 live in an agent spec (`~/.kiro/agents/kirocrew.json`), not in personal
 `mcp.json`, so that last change does not exempt them.
 
+The `mcp_registry_local_control_plane` security policy field
+([session identity](#session-identity-for-kiro-crews-own-tools-an-admin-opt-in-off-by-default))
+requires Kiro Crew **0.13.0** or later. Earlier releases reject it as an
+unknown governed key, and with `boot.fail_closed` set they do not start.
+
 ## Central policy distribution: one security policy, every host
 
 `security_policy.json` is Kiro Crew's **enterprise ceiling**: the trust-root
@@ -474,9 +486,8 @@ Two properties to internalise before you design a rollout:
   locally does not quietly lose that tightening at its next successful poll.
 - **The fetched document outranks every local file.** A local policy — including one
   named by `KIROCREW_SECURITY_POLICY` — can only *tighten* what you published; it
-  cannot loosen a single clause. That reverses the older behaviour, where a local
-  file beat the central one and the fleet ceiling was therefore advisory: anyone who
-  could set an environment variable could point it at a permissive file. It is the
+  cannot loosen a single clause, so anyone who can set an environment variable
+  still cannot point it at a permissive file. It is the
   top rung: no local file can override rather than narrow — there is no such channel.
   Recovery from a bad push is by republishing a good document at the source; see
   [Rolling back a bad push](#rolling-back-a-bad-push).

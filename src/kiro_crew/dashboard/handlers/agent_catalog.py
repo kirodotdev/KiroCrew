@@ -308,7 +308,7 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
         # resets a default agent whose template is gone -- rides the same
         # executor call, and the config is read AFTER it so the response names
         # the default the user will actually get. The gate skips the scan while
-        # nothing it reads has moved (:class:`_RefreshGate`), so a removal is
+        # nothing it reads has moved (:func:`refresh_materialized_agents`), so a removal is
         # still noticed on the first fetch after it.
         def _refreshed_templates() -> tuple[list[AgentInfo], frozenset[str]]:
             _refresh_for_catalog(owner=owner)

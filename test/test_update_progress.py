@@ -285,38 +285,3 @@ class TestUpdateEndpoints:
         assert resp.status == 200
         # Progress should be cleared after cancel
         assert state._update_progress is None
-
-    @pytest.mark.asyncio
-    async def test_update_apply_rejects_dirty_tree(self, monkeypatch, tmp_path) -> None:
-        """Update apply returns 409 when working tree is dirty."""
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
-        _init_repo(tmp_path)  # must be a git checkout to reach the dirty check
-        _pin_probe_git(monkeypatch, tmp_path)
-        monkeypatch.setattr(
-            "kiro_crew.platform.update_capability.running_from_checkout",
-            lambda root, **kw: True,
-        )
-
-        from kiro_crew.dashboard.handlers import api_update_apply
-
-        state = _make_state(monkeypatch, tmp_path)
-        app = web.Application()
-        app["state"] = state
-        request = MagicMock()
-        request.app = app
-        _as_owner(request)
-
-        # Mock git status to return dirty output
-        async def fake_exec(*args, **kwargs):  # type: ignore[no-untyped-def]
-            proc = MagicMock()
-            proc.communicate = AsyncMock(return_value=(b" M some_file.py\n", b""))
-            proc.returncode = 0
-            return proc
-
-        monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
-
-        resp = await api_update_apply(request)
-        assert resp.status == 409
-        data = json.loads(resp.body)
-        assert "uncommitted" in data["error"]

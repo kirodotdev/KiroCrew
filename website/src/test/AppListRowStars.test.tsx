@@ -23,6 +23,7 @@ const noop = () => {}
 function renderRow(app: Partial<RegistryApp>) {
   return render(
     <AppListRow
+      connected
       app={{ name: 'demo-app', displayName: 'Demo App', description: '', version: '1.0.0', author: 'acme', tags: [], ...app } as RegistryApp}
       onOpen={noop}
       onGet={noop}

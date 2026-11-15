@@ -9,13 +9,14 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 from test_snapshot import unpinnable_argv
 
 from kiro_crew import pinned_fs
 from kiro_crew import snapshot as snap
 from kiro_crew import snapshot_redact as redact
 
-KEY = "AKIAIOSFODNN7EXAMPLE"
+KEY = github_classic(seed=146)
 
 
 class TestMergeNeverOverwrites:

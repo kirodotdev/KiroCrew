@@ -87,5 +87,5 @@ Write-Host '   Authorized redirect URIs (one per Google card):'
 foreach ($uri in $RedirectUris) { Write-Host "     $uri" }
 Write-Host '   Click Create and copy the Client ID and Client secret.'
 Write-Host ''
-Write-Host 'Last: Kiro Crew -> Settings -> OAuth Apps -> any Google card. Paste both once and Save;'
+Write-Host 'Last: Kiro Crew -> Settings -> Connections -> Google. Paste both once and Save;'
 Write-Host "'Also save on ...' (on by default) fills the other five."

@@ -123,7 +123,7 @@ class TestReachabilityProbe:
         if not self.real_env_file:
             monkeypatch.setattr(kiro_cli, "_data_home_api_key_may_be_set", lambda: False)
         monkeypatch.setattr(login_target, "pin_kiro_cli", lambda: (self.pin[0], False))
-        monkeypatch.setattr(login_target, "discover_local_identity", fake_whoami)
+        monkeypatch.setattr(login_target, "_sandboxed_whoami", fake_whoami)
         monkeypatch.setattr(kiro_cli, "_sign_in_fingerprint", lambda: self.fingerprint[0])
         return real_probe(), calls
 
@@ -269,7 +269,7 @@ class TestProbeOnEventLoop:
         _floor_monkeypatch.setattr(kiro_cli, "_data_home_api_key_may_be_set", lambda: False)
         _floor_monkeypatch.setattr(kiro_cli, "_sign_in_fingerprint", lambda: self.fingerprint[0])
         _floor_monkeypatch.setattr(login_target, "pin_kiro_cli", lambda: (PINNED, False))
-        _floor_monkeypatch.setattr(login_target, "discover_local_identity", fake_whoami)
+        _floor_monkeypatch.setattr(login_target, "_sandboxed_whoami", fake_whoami)
         yield
         self._join_warm()
 

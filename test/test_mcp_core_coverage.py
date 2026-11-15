@@ -27,6 +27,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import mcp_core
 from kiro_crew.history import INCOGNITO_MEMORY_MODES
@@ -111,7 +112,7 @@ class TestHttpErrorBody:
         assert "HTTP Error 500" in _http_error_body(err)["error"]
 
     def test_credentials_in_error_body_are_redacted(self):
-        secret = "AKIA" + "I" * 16
+        secret = github_classic(seed=151)
         err = _http_error(400, json.dumps({"error": f"bad key {secret}"}).encode())
         assert secret not in _http_error_body(err)["error"]
 
@@ -287,6 +288,15 @@ class TestExtractHistorySnippet:
     def test_blank_needle_returns_empty(self):
         assert _extract_history_snippet([{"role": "user", "content": "hi"}], "   ") == ""
 
+    def test_a_short_term_inside_an_earlier_word_does_not_take_the_snippet(self):
+        msgs = [
+            {"role": "user", "content": "please maintain the release notes"},
+            {"role": "assistant", "content": "we started tracking ai usage per team"},
+        ]
+        out = _extract_history_snippet(msgs, "ai usage tracking")
+        assert "<<<usage>>>" in out
+        assert "maintain" not in out
+
     def test_tool_roles_are_skipped(self):
         msgs = [
             {"role": "tool", "content": "needle in a tool trace"},
@@ -321,7 +331,7 @@ class TestExtractHistorySnippet:
         assert len(out) <= mcp_core._SNIPPET_MAX_LEN
 
     def test_credentials_inside_the_snippet_are_redacted(self):
-        secret = "AKIA" + "J" * 16
+        secret = github_classic(seed=152)
         content = f"deploy needle with {secret} attached"
         out = _extract_history_snippet([{"role": "user", "content": content}], "needle")
         assert secret not in out
@@ -621,7 +631,7 @@ class TestWorkflowAuthor:
         assert "ctx.agent()" in out
 
     def test_authored_source_is_redacted(self):
-        secret = "AKIA" + "K" * 16
+        secret = github_classic(seed=153)
         resp = {"ok": True, "source": f"token = '{secret}'"}
         with patch.object(mcp_core, "_post", return_value=resp):
             out = _call_tool("workflow_author", {"intent": "do a thing"})
@@ -888,7 +898,7 @@ class TestWorkflowStatusAndResult:
         assert payload["result"] == "ok"
 
     def test_result_redacts_credentials_in_keys_and_values(self):
-        secret = "AKIA" + "L" * 16
+        secret = github_classic(seed=154)
         snap = {
             "run_id": "r1",
             "status": "finished",
@@ -1251,7 +1261,7 @@ class TestRegisterHook:
 
 class TestReadSlackProfile:
     def test_profile_values_are_redacted_but_id_is_preserved(self):
-        secret = "AKIA" + "M" * 16
+        secret = github_classic(seed=155)
         resp = {"profile": {"id": "U123", "title": f"owner {secret}", "tz": "UTC"}}
         with patch.object(mcp_core, "_post", return_value=resp) as m:
             out = _call_tool("read_slack_profile", {"user": "U123"})
@@ -1321,7 +1331,7 @@ class TestKnowledgeDedup:
 
     def test_output_is_redacted(self, monkeypatch: pytest.MonkeyPatch):
         self._db()
-        secret = "AKIA" + "N" * 16
+        secret = github_classic(seed=156)
         self._patch_store(
             monkeypatch,
             [{"loser": f"{secret}.md", "winner": "b.md", "items_deleted": 1, "reason": "dup"}],
@@ -1422,6 +1432,46 @@ class TestFileSend:
             out = _call_tool("file_send", {"path": str(src)})
         assert out == "File sent: report.txt (Slack upload failed: not in channel)"
 
+    def test_slack_leg_forwards_description_into_upload_body(self, tmp_path):
+        # The ``description`` the caller supplies is redacted then placed in the
+        # Slack upload body, where the endpoint posts it as the file's
+        # ``initial_comment`` — the one-chat-item shape the report job wants.
+        src = tmp_path / "report.txt"
+        src.write_text("ok")
+        slack_bodies: list[dict] = []
+
+        def _post(path: str, body: dict | None = None, **_kw: object) -> dict:
+            if path == "/api/slack/upload-file":
+                assert body.get("description") == "Review before launch"
+                slack_bodies.append(body or {})
+            return {"ok": True}
+
+        with patch.object(mcp_core, "_post", side_effect=_post):
+            out = _call_tool(
+                "file_send",
+                {"path": str(src), "description": "Review before launch"},
+            )
+        assert out == "File sent: report.txt (Review before launch) (delivered to Slack)"
+        assert len(slack_bodies) == 1
+
+    def test_no_description_forwards_none_to_slack_body(self, tmp_path):
+        # No description -> the body carries an empty/absent description, so the
+        # endpoint forwards an omitted ``initial_comment``: the legacy voice-reply
+        # upload, undisturbed by the new feature.
+        src = tmp_path / "report.txt"
+        src.write_text("ok")
+        slack_bodies: list[dict] = []
+
+        def _post(path: str, body: dict | None = None, **_kw: object) -> dict:
+            if path == "/api/slack/upload-file":
+                assert not (body or {}).get("description")
+                slack_bodies.append(body or {})
+            return {"ok": True}
+
+        with patch.object(mcp_core, "_post", side_effect=_post):
+            _call_tool("file_send", {"path": str(src)})
+        assert len(slack_bodies) == 1
+
     def test_channel_delivery_takes_precedence_over_slack(self, tmp_path, monkeypatch):
         # A caller linked to a Telegram chat or Discord DM gets the file THERE;
         # the Slack owner-DM leg is the fallback, not a second copy.
@@ -1438,6 +1488,88 @@ class TestFileSend:
             out = _call_tool("file_send", {"path": str(src)})
         assert out == "File sent: report.txt (delivered to telegram)"
         assert all(c[0][0] != "/api/slack/upload-file" for c in m.call_args_list)
+
+    _TG_REFUSAL = "description exceeds the telegram caption cap of 1024 UTF-16 units"
+    _SLACK_REFUSAL = "description exceeds the slack caption cap of 3900 characters"
+
+    @staticmethod
+    def _refuse_captions(path: str, refusal: str, *, always: bool = False):
+        """A fake ``_post``: *path* refuses any non-empty description (every call
+        when *always*) with ``too_long_for_channel``; every other route says ok."""
+
+        def _post(p: str, body: dict | None = None, **_kw: object) -> dict:
+            if p == path and (always or (body or {}).get("description")):
+                return {"error": refusal, "code": "too_long_for_channel"}
+            if p == "/api/channel/upload-file":
+                return {"ok": True, "delivered": True, "channel_type": "telegram"}
+            return {"ok": True}
+
+        return _post
+
+    def test_a_preamble_too_long_for_the_linked_chat_ships_the_file_without_it(
+        self, tmp_path, monkeypatch
+    ):
+        # The reader is in the linked chat, so the file goes there once, without the
+        # caption: one outbox copy and one card, no Slack upload the reader never
+        # sees, and no invitation to resend (each resend would add a copy and a card).
+        from kiro_crew.mcp_tools.catalog.messaging import schemas
+
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-1")
+        src = tmp_path / "report.txt"
+        src.write_text("ok")
+        fake = self._refuse_captions("/api/channel/upload-file", self._TG_REFUSAL)
+        with patch.object(mcp_core, "_post", side_effect=fake) as m:
+            out = _call_tool("file_send", {"path": str(src), "description": "x" * 1500})
+        paths = [c[0][0] for c in m.call_args_list]
+        assert [p.name for p in mcp_core.outbox_dir().iterdir()] == ["report.txt"]
+        assert paths.count("/api/outbox/notify") == 1
+        assert "/api/slack/upload-file" not in paths
+        legs = [c[0][1] for c in m.call_args_list if c[0][0] == "/api/channel/upload-file"]
+        assert [b["description"] for b in legs] == ["x" * 1500, ""]
+        assert "(delivered to telegram)" in out
+        assert f"(description not sent: {self._TG_REFUSAL}; send the note with send_message)" in out
+        assert "call file_send again" not in out and not out.startswith("Error")
+        spec = next(s for s in schemas() if s["name"] == "file_send")
+        doc = spec["inputSchema"]["properties"]["description"]["description"]
+        assert "call again" not in doc and "send_message" in doc
+
+    def test_a_preamble_too_long_for_slack_ships_the_file_without_it(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: None)
+        src = tmp_path / "report.txt"
+        src.write_text("ok")
+        fake = self._refuse_captions("/api/slack/upload-file", self._SLACK_REFUSAL)
+        with patch.object(mcp_core, "_post", side_effect=fake) as m:
+            out = _call_tool("file_send", {"path": str(src), "description": "x" * 3901})
+        paths = [c[0][0] for c in m.call_args_list]
+        assert [p.name for p in mcp_core.outbox_dir().iterdir()] == ["report.txt"]
+        assert paths.count("/api/outbox/notify") == 1
+        legs = [c[0][1] for c in m.call_args_list if c[0][0] == "/api/slack/upload-file"]
+        assert [b["description"] for b in legs] == ["x" * 3901, ""]
+        assert out.endswith(
+            f"(delivered to Slack) (description not sent: {self._SLACK_REFUSAL}; "
+            "send the note with send_message)"
+        )
+
+    def test_a_refused_caption_is_resent_without_it_at_most_once(self, tmp_path, monkeypatch):
+        # A leg that refuses even the caption-less upload gets its error back as it
+        # is, after exactly one retry: no loop, and no fall-through to Slack.
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-1")
+        src = tmp_path / "report.txt"
+        src.write_text("ok")
+        fake = self._refuse_captions("/api/channel/upload-file", self._TG_REFUSAL, always=True)
+        with patch.object(mcp_core, "_post", side_effect=fake) as m:
+            out = _call_tool("file_send", {"path": str(src), "description": "x" * 1500})
+        paths = [c[0][0] for c in m.call_args_list]
+        assert out == f"Error: {self._TG_REFUSAL}"
+        assert paths.count("/api/channel/upload-file") == 2
+        assert "/api/slack/upload-file" not in paths
+
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: None)
+        fake = self._refuse_captions("/api/slack/upload-file", self._SLACK_REFUSAL, always=True)
+        with patch.object(mcp_core, "_post", side_effect=fake) as m:
+            out = _call_tool("file_send", {"path": str(src), "description": "x" * 3901})
+        assert [c[0][0] for c in m.call_args_list].count("/api/slack/upload-file") == 2
+        assert out.endswith(f"(Slack upload failed: {self._SLACK_REFUSAL})")
 
     def test_channel_skip_leaves_the_slack_leg_unchanged(self, tmp_path, monkeypatch):
         monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-1")
@@ -1559,6 +1691,20 @@ class TestValidateArgs:
 
         with pytest.raises(ValidationError):
             _validate_args("workflow_status", {"run_id": "bad id/../etc"})
+
+    def test_file_send_accepts_a_long_preamble_up_to_the_floor(self):
+        # The schema caps ``description`` at a generous floor (MAX_MEDIUM_STRING =
+        # 5000), not at any leg's ceiling: a real preamble (a paragraph, a
+        # signature, a request to review) must pass the boundary. The per-leg
+        # ceiling is enforced at the endpoint, not here.
+        _validate_args("file_send", {"path": "report.txt", "description": "x" * 5000})
+
+    def test_file_send_rejects_a_preamble_over_the_floor(self):
+        # Only a preamble above the generous floor is refused up front.
+        from kiro_crew.validation import ValidationError
+
+        with pytest.raises(ValidationError):
+            _validate_args("file_send", {"path": "report.txt", "description": "x" * 5001})
 
     def test_call_tool_surfaces_validation_errors_as_text(self):
         out = _call_tool("workflow_status", {"run_id": "bad id/../etc"})

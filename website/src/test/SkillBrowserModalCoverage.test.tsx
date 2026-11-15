@@ -550,6 +550,34 @@ describe('SkillBrowserModal', () => {
     expect(mockApi.installDiscoveredSkill).not.toHaveBeenCalled()
   })
 
+  it('the preview of an already-installed skill offers Reinstall, which overwrites it', async () => {
+    mockApi.discoverSkills.mockResolvedValue({
+      results: [aSkill({ installed: true })],
+      providers: ['skillsh'],
+    })
+    mockApi.installDiscoveredSkill.mockResolvedValue(anInstall({ kind: 'updated' }))
+    renderModal()
+    await search('widget')
+
+    const row = await screen.findByRole('option', { name: 'widget-wrangler' })
+    // The row keeps the compact badge; the action lives in the preview.
+    expect(within(row).queryByRole('button', { name: 'Reinstall' })).not.toBeInTheDocument()
+    fireEvent.click(row)
+
+    const reinstall = await screen.findByRole('button', { name: 'Reinstall' })
+    // The button says, before the click, that it replaces the local copy.
+    expect(reinstall).toHaveAccessibleDescription(
+      'Reinstall replaces your local copy with the latest from skills.sh, including any edits you made.')
+    fireEvent.click(reinstall)
+    await waitFor(() => expect(mockApi.installDiscoveredSkill)
+      .toHaveBeenCalledWith('skillsh', 'acme/widget-wrangler', { overwrite: true }))
+    // The done state differs from the badge shown before the click.
+    expect(await screen.findAllByText('Reinstalled')).not.toHaveLength(0)
+    expect(screen.queryByText(/Reinstall replaces your local copy/)).not.toBeInTheDocument()
+    // Reinstalling does not navigate away: the row stays selected.
+    expect(row).toHaveAttribute('aria-selected', 'true')
+  })
+
   it('keyboard: ArrowDown selects the first row and Enter installs it', async () => {
     mockApi.discoverSkills.mockResolvedValue({
       results: [aSkill(), aSkill({ id: 'acme/gadget-gardener', name: 'gadget-gardener' })],

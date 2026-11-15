@@ -183,7 +183,7 @@ property of the launch, not of whichever `kiro-cli login` happens to run:
   through the same organization portal — you are asked for the **Identity Center
   region** (the AWS Region your Identity Center instance lives in, *not* the EC2
   region the crew runs in) because `whoami` does not report it. Builder ID users
-  get the Builder ID flow, exactly as before.
+  get the Builder ID flow.
 - **Overridable.** `kirocrew cloud launch --identity-provider https://example.awsapps.com/start --license pro --idp-region us-east-1`
   names the identity explicitly; `--no-inherit-identity` forces Builder ID. The
   dashboard form offers the same choice. If `kiro-cli whoami` fails to run on the
@@ -195,7 +195,7 @@ property of the launch, not of whichever `kiro-cli login` happens to run:
   *and* resume of the device flow, so a gateway restart or an expired device code
   never falls back to Builder ID. An Identity Center sign-in that cannot produce a
   device code fails visibly rather than degrading to a different identity.
-- **Verified.** "Already signed in" now means signed in *as the intended identity*.
+- **Verified.** "Already signed in" means signed in *as the intended identity*.
   A valid session for the wrong account (a Builder ID session on a crew that should
   be on your organization's Identity Center) is reported as a mismatch with the
   `cloud logout` / `cloud login` commands to switch — not as success.

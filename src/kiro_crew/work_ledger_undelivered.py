@@ -176,8 +176,8 @@ def clear_undelivered(worker_slot_key: str) -> None:
     the worker's turn ran on. While a note of an earlier failure is still in flight,
     the clear also takes a number, which fences that note off (see
     :func:`note_undelivered`). With no record and no note in flight, which is every
-    session that never failed and every harness but KAS, it writes nothing and
-    takes no file lock. Never raises (cancellation aside).
+    session that never failed and every harness the watch knows no answer for, it
+    writes nothing and takes no file lock. Never raises (cancellation aside).
     """
     try:
         key = ledger_key(worker_slot_key)

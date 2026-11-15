@@ -47,9 +47,16 @@ export default function UpdatePill({ variant = 'pill', showLabel = false }: { va
   const guardedLeave = useGuardedLeave()
   const target = settingsPath({ tab: 'about' })
   const openAbout = () => guardedLeave(() => navigate(target), target)
+  // `update_restart_ready`: an update is installed, or the served bundle is gone,
+  // and only a restart a person chooses is left (the gateway never restarts
+  // itself). It lights the pill even when no newer build is on offer.
+  const restartReady = useAppSelector(s => s.dashboard.status?.update_restart_ready === true)
+  // The person armed an update: it applies at the next start, never while the
+  // gateway runs (`update_armed_version`).
+  const armed = useAppSelector(s => !!s.dashboard.status?.update_armed_version)
   const updateAvailable = useAppSelector(
     s => s.dashboard.status?.update_available === true || s.dashboard.desktopUpdateAvailable
-  )
+  ) || restartReady || armed
   const { data: desktop } = useQuery<UpdateState | null>({
     queryKey: ['update-state'],
     queryFn: () => null,
@@ -70,8 +77,11 @@ export default function UpdatePill({ variant = 'pill', showLabel = false }: { va
     label = pct === null
       ? i18nT('components.updatePill.downloading')
       : i18nT('components.updatePill.downloading_percent', { percent: pct })
-  } else if (desktop?.state === 'downloaded') {
+  } else if (desktop?.state === 'downloaded' || restartReady) {
     label = i18nT('components.updatePill.update_ready')
+    Icon = RefreshCw
+  } else if (armed) {
+    label = i18nT('components.updatePill.update_when_i_restart')
     Icon = RefreshCw
   }
 

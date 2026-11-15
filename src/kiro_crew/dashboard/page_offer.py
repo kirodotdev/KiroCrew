@@ -62,8 +62,13 @@ def read_record(slug: str) -> dict[str, Any] | None:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        logger.warning("page offer record for %s is unreadable; treated as asked", slug)
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "page offer record for %s is unreadable (%s: %s); treated as asked",
+            slug,
+            type(exc).__name__,
+            exc,
+        )
         return {}
     return data if isinstance(data, dict) else {}
 

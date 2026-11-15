@@ -577,6 +577,23 @@ are seen too. An option's VALUE goes with it (`nice -n 5 git push` must not leav
 like the command), and the recursion budget REFUSES on exhaustion — for a denylist, "gave up"
 must not mean "allowed".
 
+`eval` and `script -c` / `script --command` run a script too, so their script is re-analyzed
+the same way, and `watch` runs its joined arguments through `sh -c`. Two splits find the
+commands. A quote-aware split walks the characters with quote state and splits only on
+UNQUOTED separators, so `sh -c 'git push; true'` still yields `git push` while quoted data
+(`printf '%s\n' ';' curl`, `rg -F '$(curl' src`) runs nothing. Main's quote-blind split
+always runs as well, so anything it refuses stays refused. When the quote-aware split cannot
+read the text (an unclosed quote, an apostrophe in a heredoc body), only the quote-blind
+split runs, as on main; no command is refused for being unreadable.
+The walk reads bash's `$'...'` / `$"..."` as an ordinary quote opening at the `$`, so the
+script inside is re-analyzed: `eval $'gh pr ready 1'` is refused because the command is
+found, and `bash -c "printf $'a\n'"` stays allowed.
+The walk follows bash's comment rule: an unquoted `#` at the start of a word comments out
+the rest of the line, so an apostrophe in `# it's` never pairs with a quote on another
+line. A `#` inside a word (`echo a#b`) is not a comment. Heredoc bodies are not tracked:
+quotes in a body can still pair up across lines, as on main.
+A redirect target is a file name, so `echo hi > ./curl` stays allowed.
+
 Reaching the subcommand also means skipping GLOBAL OPTIONS correctly. A valueless option must not
 swallow the verb: `git --no-pager push`, `--paginate`, `--bare`, `--literal-pathspecs` and
 `--no-replace-objects` must be refused like a bare `git push`. Value-taking global options are
@@ -607,6 +624,7 @@ pushing) and `exec pytest -q` stay allowed. A dedicated test pins that non-over-
 - Value-taking global options are enumerated per binary (`_VALUE_TAKING_OPTIONS`) and everything else is valueless, so `git --no-pager push` is refused like `git push`; `--exec-path` is excluded because its value is optional. (D-63)
 - Value-taking wrapper long options (`_WRAPPER_VALUE_TAKING_LONG_OPTIONS`, such as `env --unset`) consume their value, so the command behind them is inspected. (D-117)
 - A bare `&` splits commands like `;`, and `(` and `)` split too, so `true & gh pr comment …` and `echo $(gh pr ready)` are refused; a benign trailing `& true` passes. (D-128)
+- `eval`, `script -c` and `watch` scripts are re-analyzed; a quoted separator stays in its word, while main's quote-blind split still runs; text the quote-aware split cannot read gets only the quote-blind split, as on main, and is never refused for that alone; `$'...'` / `$"..."` opens a quote at the `$`, so `eval $'gh pr ready 1'` is refused and `bash -c "printf $'a\n'"` passes; an unquoted word-initial `#` comments out the line, so comment apostrophes cannot hide `sh -c "true;gh pr ready"` on the next line, while `eval 'echo hi' # it's`, `echo a#b` and `printf '%s\n' ';' curl` pass. (D-143)
 
 ### Why the protected-branch denylist normalizes before it matches
 
@@ -746,7 +764,7 @@ rather than starting two threads and hoping, so it is deterministic.
 - `POST /setup-clone` re-checks `_run_is_active()` inside `clone_lock` and answers 409 `run_in_progress`. (D-95)
 - `PUT /config` takes `clone_lock` and re-checks `_run_is_active()` inside it; a structural test asserts both workspace-mutating handlers do. (D-96)
 - The draft and commit routes re-check the run status inside `clone_lock`; a structural guard asserts all four clone-mutating handlers do. (D-115)
-- `POST /run` admits under `app_lifecycle_lock` and answers 403 `app_disabled` when `is_app_enabled` is false at admission; otherwise it records `RunSupervisor.stop_seq()` and passes it to `start` as `admitted_at`, which `start` re-checks after `_build_driver` and raises `RuntimeError` ("the run was stopped before it started", mapped to 409 `session_conflict`) when a `stop` or the disable hook landed meanwhile, so a run cannot launch into an app disabled or stopped while its driver was being built (`test_run_start_honors_stop`, `test_start_is_refused_once_the_app_is_disabled`).
+- `POST /run` admits under `app_lifecycle_lock` and answers 403 `app_disabled` when `is_app_enabled` is false at admission; otherwise it records `RunSupervisor.stop_seq()` and passes it to `start` as `admitted_at`, which `start` re-checks after `_build_driver` and raises `RuntimeError` ("the run was stopped before it started", mapped to 409 `session_conflict`) when a `stop` or the disable hook landed meanwhile, so a run cannot launch into an app disabled or stopped while its driver was being built (`test_start_is_refused_once_the_app_is_disabled`).
 
 ### Why the manual draft path materializes its own diff
 
@@ -1385,8 +1403,22 @@ redaction helpers), never the other way round, so it fills no seam in
 core records and the drawer renders without knowing it. Some of those imports are
 private core names (`llm_helpers._steer_host_deny`, `llm_helpers._extract_json_of_type`,
 `agent_discovery._read_agent_spec`, `config.loader._session_work_dir`,
-`workflows.registry._await_owned`); the app's own repository has to reach them through a
-public surface before it can build against an installed Kiro Crew.
+`workflows.registry._await_owned`); the app's own repository resolves each by name from
+the running gateway through a host shim of its own, failing closed when one is missing,
+until a public surface replaces it. Such a name blocks deleting the wheel copy, not
+pinning it (driver decision 4 in #26967, comment 6729725443).
+
+**Adopted onto its own repository.** The wheel pins the app (`apps/adoption-pins.json`,
+[app-kit-platform.md § 33](app-kit-platform.md#33-former-built-in-adoption)) at
+`KiroCrewCaptain/kirocrew-app-auto-improvement` with `minAppSdkLevel` 2, the level of the
+`ctx.lifecycle` admission its run start uses, so a host whose record is builtin-owned
+swaps it in place onto that tree at a restart, keeping `data/`, `.app_secret`, the
+approved grants and `enabled`; the rail keeps `/auto-improvement` and the `Brain` glyph.
+The repository's `app.json` declares the same `permissions`, `agents` and `skills` as the
+wheel copy, and its one MCP server keeps its name and `autoApprove` list, launched by
+`python3` from a launcher file in the adopted tree instead of `-m` on the wheel package
+(the stdio shape § 33 carries). A fix to the app lands in that repository first; a change
+to the wheel copy needs its `App repo:` line.
 
 `test/test_core_auto_improvement_decoupling.py` is the gate, on the shared
 `test/core_app_independence.py` scanner. The core strings left naming the app are a

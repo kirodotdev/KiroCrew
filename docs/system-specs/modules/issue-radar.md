@@ -95,6 +95,17 @@ the app-named `test/test_issue_radar_crew_close_race.py`,
 `src/apps/issue-radar/`, only the `/issue-radar` row of `apps/builtinRegistry.ts` imports
 from it, and the app's frontend tests live beside it.
 
+**Adopted onto its own repository.** The wheel pins the app (`apps/adoption-pins.json`,
+[app-kit-platform.md § 33](app-kit-platform.md#33-former-built-in-adoption)) at
+`KiroCrewCaptain/kirocrew-app-issue-radar` with `minAppSdkLevel` 2, the level of
+`ctx.auto_approve` and `agentTools`, so a host whose record is builtin-owned swaps it in
+place onto that tree at a restart, keeping `data/`, `.app_secret`, the approved grants and
+`enabled`; the rail keeps `/issue-radar` and the `Radar` glyph. The repository's
+`app.json` declares the same `permissions` (`workerAutoApprove` included) and the same
+three `agentTools` as the wheel copy, so nothing is held back and the adopted record keeps
+listing the tools (§ 33, "Agent tools through adoption"). A fix to the app lands in that
+repository first; a change to the wheel copy needs its `App repo:` line.
+
 ## Providers
 
 Three providers are supported, and each is a plain MODULE that mirrors the others
@@ -1362,6 +1373,21 @@ the first route or tool that needs them.
 Unchanged on GitLab: `enable_auto_merge` / `disable_auto_merge` and `REQUEST_CHANGES`
 stay refused (no safe verb), the host allowlist and `glab` transport are untouched, and
 no token scope beyond `api` is needed.
+
+**A GitLab crew never arms auto-merge.** A crew runs `glab` from its own shell, so the
+client's refusal does not reach it; only its prompt does. The crew's `auto_merge`
+setting decides the merge clause of the nudge's `Never` block through
+`crew_runtime_prompt.may_arm_auto_merge(crew, key)`: the setting, never on GitLab (the
+same reason `gitlab_client.enable_auto_merge` refuses), and never without a key.
+`build_snapshot` carries the result as `arm_auto_merge`. True: arm the forge's own
+auto-merge on a green, mergeable PR, never merge directly. False (the toggle off, or
+any GitLab crew): never merge and never arm, naming `merge_when_pipeline_succeeds` on
+GitLab, and leave the MR for a person. The brief's two re-arm lines defer to that
+clause. A `PUT /crew` that changes `auto_merge` recomposes the armed loop's cached
+prompt, as an `extra_prompt` edit does. The setting governs only what the crew arms
+from then on: turning it off does not cancel an auto-merge already armed on a PR. The
+crew editor shows the toggle off and disabled on GitLab, with the reason, and saves a
+new GitLab crew with it off.
 
 The Pipeline tab (`pipeline_routes.py`) is unchanged and still github.com-only: its files
 are keyed on `owner/repo` alone by the GitHub jobs that write them, so serving another

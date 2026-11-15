@@ -226,7 +226,9 @@ class TestAppProxyNeverForwardsARelayHeader:
         app_dir = home / "apps" / "proxy-app"
         app_dir.mkdir(parents=True)
         _floor_monkeypatch.setenv("KIROCREW_HOME", str(home))
-        (app_dir / ".app_secret").write_text(self._SECRET)
+        from kiro_crew.dashboard.token_auth import write_app_secret
+
+        write_app_secret("proxy-app", self._SECRET)
         (app_dir / "installed.json").write_text(
             json.dumps(
                 {

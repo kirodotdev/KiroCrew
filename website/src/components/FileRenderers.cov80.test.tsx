@@ -10,6 +10,7 @@ import {
   PdfViewer,
 } from './FileRenderers'
 import { i18nT } from '../i18n/t'
+import { fmtNumber } from '../i18n/format'
 import { svgShadow } from '../test/svgShadow'
 
 describe('ImageViewer', () => {
@@ -89,7 +90,7 @@ describe('JsonViewer', () => {
     render(<JsonViewer content={'{"deep":{"deeper":{"leaf":1}}}'} />)
     // depth >= 2 starts collapsed, so the leaf is hidden behind a count summary
     expect(screen.queryByText('1')).not.toBeInTheDocument()
-    const collapsed = screen.getByText(new RegExp(i18nT('components.fileRenderers.items_count', { count: 1 })))
+    const collapsed = screen.getByText(new RegExp(i18nT('components.fileRenderers.items_count', { count: 1, n: '1' })))
     fireEvent.click(collapsed.closest('button')!)
     expect(screen.getByText('1')).toBeInTheDocument()
   })
@@ -99,7 +100,7 @@ describe('JsonViewer', () => {
     expect(screen.getByText('199')).toBeInTheDocument()
     expect(screen.queryByText('200')).not.toBeInTheDocument()
     expect(
-      screen.getByText(new RegExp(i18nT('components.fileRenderers.more_count', { count: 31 }))),
+      screen.getByText(new RegExp(i18nT('components.fileRenderers.more_count', { count: 31, n: '31' }))),
     ).toBeInTheDocument()
   })
 
@@ -115,8 +116,8 @@ describe('JsonViewer', () => {
     render(<JsonViewer content={'{'.repeat(2400)} />)
     const shown = screen.getByText(
       i18nT('components.fileRenderers.showing_raw_content_truncated_count', {
-        count: 2400,
-        shown: 2000,
+        count: fmtNumber(2400),
+        shown: fmtNumber(2000),
       }),
     )
     expect(shown).toBeInTheDocument()
@@ -163,7 +164,7 @@ describe('JsonlViewer', () => {
     const { container } = render(<JsonlViewer content={jsonl(3)} />)
     const scroller = container.firstChild as HTMLDivElement
     fireEvent.scroll(scroller)
-    expect(screen.getByText(i18nT('components.fileRenderers.lines_count', { count: 3 }))).toBeInTheDocument()
+    expect(screen.getByText(i18nT('components.fileRenderers.lines_count', { count: 3, n: '3' }))).toBeInTheDocument()
   })
 })
 

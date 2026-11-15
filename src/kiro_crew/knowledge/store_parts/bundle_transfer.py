@@ -706,10 +706,13 @@ def import_bundle(self: KnowledgeStore, bundle: dict) -> dict:
                 items_imported += 1
                 inserted_items.add(item["id"])
                 row = self.db.execute(
-                    "SELECT rowid FROM items WHERE id = ?", (item["id"],)
+                    "SELECT rowid, title, content, tags FROM items WHERE id = ?", (item["id"],)
                 ).fetchone()
                 if row:
-                    self._fts_index(row[0], item["title"], item["content"], item.get("tags", "[]"))
+                    # The stored columns, not the bundle's raw values: a TEXT
+                    # column keeps a non-string value as text, and the index has
+                    # to hold the same text the row's later unindex reads back.
+                    self._fts_index(row[0], row[1], row[2], row[3])
         for ent in bundle.get("entities", []):
             aliases_text = _validated_aliases(ent.get("aliases"))
             cursor = self.db.execute(

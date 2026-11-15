@@ -7,7 +7,7 @@
  * press "Download" and "Restart & Update". Rather than add a test-only
  * auto-consent hook to shipped code, this drives the REAL renderer over the
  * Chrome DevTools Protocol and calls the SAME preload-exposed API a click
- * calls (window.updateAPI.download / .install). The code path under test is
+ * calls (window.updateAPI.download / .install / .relaunch). The code path under test is
  * therefore identical to the one users hit.
  *
  * Requires: the app launched with --remote-debugging-port=<port>, a local feed
@@ -19,7 +19,7 @@
  *   node scripts/ota-drive.js --cdp 9222 --expect 1.0.1 [--timeout 180]
  *
  * Exit 0 only if the updater reached the "downloaded" state and install was
- * dispatched. Verifying the BUNDLE actually swapped is the caller's job (read
+ * armed and the quit that installs it was dispatched. Verifying the BUNDLE actually swapped is the caller's job (read
  * CFBundleShortVersionString afterwards) -- this script deliberately does not
  * conflate "install dispatched" with "install succeeded".
  */
@@ -173,12 +173,19 @@ async function waitForState(wsUrl, wanted, deadline) {
   const downloaded = await waitForState(ws, "downloaded", deadline);
   log(`DOWNLOAD ok -> staged ${downloaded.version}`);
 
-  log("dispatching install -> updateAPI.install() (app will quit + swap)");
-  await evaluate(ws, "window.updateAPI.install()").catch((e) => {
+  // install() only ARMS: an update is applied on the app's own quit, never while
+  // it runs. So arm it, then quit the way the Restart now button does
+  // (updateAPI.relaunch(): a plain quit whose quit-time install swaps the bundle
+  // and brings the app back). That keeps the real quit-time install under test.
+  log("arming the install -> updateAPI.install() (nothing quits yet)");
+  await evaluate(ws, "window.updateAPI.install()");
+
+  log("quitting the way Restart now does -> updateAPI.relaunch() (the quit installs, then the app returns)");
+  await evaluate(ws, "window.updateAPI.relaunch()").catch((e) => {
     // The app quits mid-call, so a dropped socket here is expected/normal.
-    log(`install dispatched (socket closed as the app quit: ${e.message})`);
+    log(`quit dispatched (socket closed as the app quit: ${e.message})`);
   });
-  log("OK: discovery -> consent -> download -> install dispatched");
+  log("OK: discovery -> consent -> download -> armed -> quit dispatched");
   process.exit(0);
 })().catch((e) => {
   console.error("[ota-drive] FAIL:", e.message);

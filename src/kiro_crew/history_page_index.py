@@ -43,7 +43,7 @@ from kiro_crew.history_projection import (
 #: Where a transcript's row-index base is persisted, under the transcripts' own
 #: directory: a dot-directory, so no ``*.jsonl`` glob over that directory sees it.
 PAGE_INDEX_DIR = ".page-index"
-_VERSION = 2
+_VERSION = 3
 #: A transcript shorter than this is cheap to frame from byte 0 and gets no sidecar;
 #: past it, the base is persisted, and re-persisted once it has grown by this much,
 #: so a new process resumes from at most this many unscanned bytes.
@@ -151,6 +151,7 @@ def relocate(handle: IO[bytes], base: _TranscriptIndexBase) -> _TranscriptIndexB
         return None
     if not shift:
         return base
+    # A moved head leaves the clean prefix unproven; the next search covers the file again.
     return _TranscriptIndexBase(new_head, end, base.digest, base.row_count, checkpoints)
 
 
@@ -169,9 +170,12 @@ def load(path: Path) -> _TranscriptIndexBase | None:
         if not isinstance(raw, dict) or raw.get("v") != _VERSION:
             return None
         head, end, rows = raw["head"], raw["end"], raw["rows"]
+        clean = raw["clean"]
         digest = bytes.fromhex(raw["digest"])
         points = raw["cps"]
-        if not all(isinstance(v, int) and v >= 0 for v in (head, end, rows)):
+        if not all(isinstance(v, int) and v >= 0 for v in (head, end, rows, clean)):
+            return None
+        if clean > end:
             return None
         if len(digest) != 16 or not isinstance(points, list):
             return None
@@ -191,7 +195,7 @@ def load(path: Path) -> _TranscriptIndexBase | None:
             return None
     except (KeyError, TypeError, ValueError):
         return None
-    return _TranscriptIndexBase(head, end, digest, rows, tuple(checkpoints))
+    return _TranscriptIndexBase(head, end, digest, rows, tuple(checkpoints), clean)
 
 
 def _extends(seen: _TranscriptIndexBase, base: _TranscriptIndexBase) -> bool:
@@ -232,6 +236,7 @@ def persist(path: Path, base: _TranscriptIndexBase, *, force: bool) -> None:
         "digest": base.digest.hex(),
         "rows": base.row_count,
         "cps": [list(point) for point in base.checkpoints],
+        "clean": base.clean_end,
     }
     sidecar = sidecar_path(path)
     try:

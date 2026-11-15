@@ -475,7 +475,7 @@ class TestOnLoopKeepWriteAgainstACancelledRunsWorker:
         assert state.get("keep") is True, (
             "the on-loop keep write was rolled back by a detached worker's stale "
             "whole-file rewrite -- retention is lost, so the tombstone pruner "
-            "deletes session files the conversation needs (#6298)"
+            "deletes session files the conversation needs"
         )
         # The worker's own field still landed: the drain waits for it, it is not
         # discarded.

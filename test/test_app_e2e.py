@@ -1,7 +1,7 @@
 """End-to-end integration tests for the app platform.
 
 Tests the full lifecycle: manifest parsing → install → register → enable →
-disable → deregister → uninstall. Also validates OncallWatchTower's actual
+disable → deregister → uninstall. Also validates every shipped builtin's
 app.json manifest.
 """
 
@@ -166,84 +166,24 @@ class TestFullLifecycle:
         assert list_apps() == []
 
 
-# OncallWatchTower manifest validation
+# Shipped builtin manifest validation
+
+_BUILTIN_MANIFESTS = sorted(
+    (Path(__file__).parent.parent / "src/kiro_crew/apps/builtins").glob("*/app.json")
+)
 
 
-class TestOncallWatchTowerManifest:
-    """Validate OncallWatchTower's actual app.json against our manifest parser."""
+def test_builtin_manifests_found():
+    assert _BUILTIN_MANIFESTS, "no shipped builtin app.json found -- the layout moved"
 
-    @pytest.fixture()
-    def owt_manifest_path(self):
-        # Navigate from test dir to the OncallWatchTower package
-        candidates = [
-            Path(__file__).parent.parent.parent / "OncallWatchTower" / "app.json",
-            Path(__file__).parent.parent.parent.parent / "OncallWatchTower" / "app.json",
-        ]
-        for p in candidates:
-            if p.is_file():
-                return p
-        pytest.skip("OncallWatchTower app.json not found in workspace")
 
-    def test_parse_manifest(self, owt_manifest_path):
-        m = AppManifest.from_json_file(owt_manifest_path)
-        assert m.name == "oncall-watchtower"
-        assert m.version == "0.2.0"
-        assert m.displayName == "Oncall Watch Tower"
-
-    def test_validate_manifest(self, owt_manifest_path):
-        m = AppManifest.from_json_file(owt_manifest_path)
-        errors = m.validate()
-        assert errors == [], f"Validation errors: {errors}"
-
-    def test_agents_declared(self, owt_manifest_path):
-        m = AppManifest.from_json_file(owt_manifest_path)
-        assert len(m.agents) >= 10  # OWT has 13 agents
-        assert any("ticket-analyst" in a for a in m.agents)
-        assert any("pipeline-analyst" in a for a in m.agents)
-
-    def test_skills_declared(self, owt_manifest_path):
-        m = AppManifest.from_json_file(owt_manifest_path)
-        assert len(m.skills) >= 20  # OWT has 24 skills
-        assert any("ticket-triage" in s for s in m.skills)
-
-    def test_crons_declared(self, owt_manifest_path):
-        m = AppManifest.from_json_file(owt_manifest_path)
-        assert len(m.crons) == 3
-        names = {c.name for c in m.crons}
-        assert "refresh-pipelines" in names
-        assert "refresh-tickets" in names
-        assert "refresh-reviews" in names
-
-    def test_ui_pages_declared(self, owt_manifest_path):
-        m = AppManifest.from_json_file(owt_manifest_path)
-        assert len(m.ui.pages) == 3
-        routes = {p.route for p in m.ui.pages}
-        assert "/apps/oncall-watchtower" in routes
-
-    def test_backend_declared(self, owt_manifest_path):
-        m = AppManifest.from_json_file(owt_manifest_path)
-        assert m.backend.entryPoint == "src/backend/app.py"
-        assert m.backend.healthCheck == "/api/version"
-
-    def test_permissions_declared(self, owt_manifest_path):
-        m = AppManifest.from_json_file(owt_manifest_path)
-        assert m.permissions.storage is True
-        assert m.permissions.cron is True
-        assert len(m.permissions.mcpTools) >= 5
-
-    def test_permissions_validation(self, owt_manifest_path):
-        m = AppManifest.from_json_file(owt_manifest_path)
-        check = validate_permissions(m)
-        assert check.allowed is True
-        assert check.denied == []
-
-    def test_round_trip(self, owt_manifest_path):
-        m = AppManifest.from_json_file(owt_manifest_path)
-        serialized = json.loads(m.to_json())
-        m2 = AppManifest.from_dict(serialized)
-        assert m2.to_dict() == m.to_dict()
-
-    def test_tags_and_job_families(self, owt_manifest_path):
-        m = AppManifest.from_json_file(owt_manifest_path)
-        assert "oncall" in m.tags
-        assert "SDE" in m.jobFamilies
+@pytest.mark.parametrize("manifest_path", _BUILTIN_MANIFESTS, ids=lambda p: p.parent.name)
+def test_shipped_builtin_manifest_parses_validates_and_round_trips(manifest_path):
+    """Each real shipped app.json goes through the parser, validator and permission check."""
+    m = AppManifest.from_json_file(manifest_path)
+    assert m.validate() == []
+    check = validate_permissions(m)
+    assert check.allowed is True
+    assert check.denied == []
+    m2 = AppManifest.from_dict(json.loads(m.to_json()))
+    assert m2.to_dict() == m.to_dict()

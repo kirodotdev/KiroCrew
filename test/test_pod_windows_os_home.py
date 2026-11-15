@@ -367,7 +367,7 @@ def test_pod_up_boots_end_to_end_under_the_windows_branches(cfg, tmp_path, monke
     # This test owns boot sequencing through the mocked supervisor, not external
     # kiro-cli viability. Dedicated real-spawn coverage lives in
     # test_pod_child_viability.py; do not let a host install decide this fixture.
-    monkeypatch.setattr(rt, "_probe_pod_child_bootstrap", lambda _env: None)
+    monkeypatch.setattr(rt, "_probe_pod_child_bootstrap", lambda _env, **_kw: None)
 
     checkout = tmp_path / "worktree"
     bin_dir = checkout / ".venv" / "Scripts"
@@ -433,7 +433,7 @@ def test_pod_up_boots_end_to_end_with_a_seeded_scenario(cfg, tmp_path, monkeypat
     # This test owns boot sequencing through the mocked supervisor, not external
     # kiro-cli viability. Dedicated real-spawn coverage lives in
     # test_pod_child_viability.py; do not let a host install decide this fixture.
-    monkeypatch.setattr(rt, "_probe_pod_child_bootstrap", lambda _env: None)
+    monkeypatch.setattr(rt, "_probe_pod_child_bootstrap", lambda _env, **_kw: None)
 
     checkout = tmp_path / "worktree"
     bin_dir = checkout / ".venv" / "Scripts"

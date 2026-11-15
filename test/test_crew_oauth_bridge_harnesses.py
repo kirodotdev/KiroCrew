@@ -191,6 +191,7 @@ def _client_with_array(monkeypatch, tmp_path, backend: str) -> AcpClient:
         unhonoured_servers=(),
         harness_deny_rules=(),
         zero_tools=False,
+        builtin_tools=None,
         derived_spec_snapshot=None,
         restricted_servers=frozenset(),
         disabled_servers=frozenset(),

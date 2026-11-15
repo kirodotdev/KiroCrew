@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         persistence_lost_exit_code,
         platform_compat,
         registry,
+        run_pre_exec_stops,
         shutdown_event,
         shutdown_exit_code,
         subprocess_executor,
@@ -73,12 +74,8 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
     # alongside the steps below, which do not touch the install, and is
     # awaited before the handler and service teardown, bounded by
     # UPDATE_INSTALLER_STOP_SECS.
-    # A policy apply the dashboard started (``POST /api/update``) is the same
-    # installer shape, so it is stopped and awaited here with the coordinator,
-    # inside the same budget: aiohttp cancels its request handler only after
-    # its own shutdown timeout, which the graceful cap exits ahead of.
     update_task = self._update_check_task
-    installer_tasks: set[asyncio.Task[Any]] = set(self._dashboard_policy_applies())
+    installer_tasks: set[asyncio.Task[Any]] = set()
     if update_task is not None:
         installer_tasks.add(update_task)
     installer_tasks = {task for task in installer_tasks if not task.done()}
@@ -702,6 +699,20 @@ async def _shutdown_and_exit(
         logger.warning("Graceful shutdown timed out — force exiting")
     await _sign_in_drain
     await _env_stop
+    # The app backends this gateway spawned. The dashboard's cleanup hook stops
+    # them, but the web server runs that hook only after its in-flight requests
+    # drain, so a graceful shutdown that ran out of time may never have reached
+    # it, and os._exit below would leave each backend and its sandbox tree
+    # running. A sweep that already ran left nothing tracked, so this returns at
+    # once. Bounded by the sweep's own budget. Imported here, not at module
+    # scope: AUTOSDE's no-new-work-on-gateway-boot-path rule asks for an
+    # optional subsystem's import to be gated.
+    try:
+        from kiro_crew.apps.hooks_integration import stop_spawned_backends_at_exit
+
+        await stop_spawned_backends_at_exit()
+    except Exception:  # noqa: BLE001 - shutdown must not raise
+        logger.warning("stopping app backends at exit failed", exc_info=True)
 
     print("👻 Goodbye!")
     # Kill any kiro-cli processes that survived graceful shutdown.
@@ -721,6 +732,15 @@ async def _shutdown_and_exit(
         await asyncio.wait_for(shutdown_cleanup(), timeout=6.0)
     except Exception:  # noqa: BLE001 - shutdown must not raise
         logger.debug("shared crew slice release at exit failed", exc_info=True)
+    # The supervised children a dashboard cleanup hook stops: the browser harness
+    # daemon with its browser and worker, the instance tunnels, the sleep
+    # inhibitor. A graceful shutdown that ran out of time never reached those
+    # hooks, and os._exit below would leave each child running under PID 1. Each
+    # owner registers the same stop with the pre-exec seam at startup and
+    # unregisters it once its cleanup hook has stopped the child, so after a
+    # shutdown that did reach the hooks only stops that are safe to repeat are
+    # left. Bounded inside the seam, which never raises.
+    await run_pre_exec_stops(occasion="exit")
     # The skill-usage ledgers debounce their writes to one per 60 s, and their
     # flush thread is a daemon: a hit accepted inside that window lives only in
     # memory, and os._exit below kills it. Flush them here, off-loop and

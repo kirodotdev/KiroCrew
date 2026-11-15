@@ -315,9 +315,9 @@ class TestRunMethod:
             write_started.set()
             # Held until the finally below releases it, so the shutdown finds the
             # write in flight however long the boot before it takes. No timeout on
-            # purpose: any bound here is a wall-clock bound on run()'s boot, which is
-            # the race this replaced (the old 5 s stall ended on its own under a
-            # slow boot), and the finally always releases it.
+            # purpose: any bound here is a wall-clock bound on run()'s boot, which
+            # races a slow boot (a fixed 5 s stall can end before the shutdown
+            # arrives), and the finally always releases it.
             # flake-ok: pre-existing unbounded stall the finally always releases, moved verbatim; tracked for a de-flake pass
             stall.wait()
             original_write_marker(port)  # late write republishes the marker
@@ -1106,7 +1106,7 @@ class TestBgSessionDashboardBranch:
     """run() -> dashboard URL announcement and the probe-gated session warm."""
 
     @pytest.mark.asyncio
-    async def test_bg_session_prints_dashboard_url(self):
+    async def test_bg_session_prints_dashboard_url(self, capsys):
         """_start_bg_session still warms the session pool behind the probe."""
         orch = _make_orchestrator(no_dashboard=False, no_open=True)
 
@@ -1177,6 +1177,7 @@ class TestBgSessionDashboardBranch:
                                                             await asyncio.sleep(0)
 
         orch.sessions.start_pool.assert_awaited_once_with(blocking=False)
+        assert "url-line-1\nurl-line-2\n" in capsys.readouterr().out
 
     @pytest.mark.asyncio
     async def test_dashboard_url_is_printed_before_the_mcp_probe_is_awaited(self):

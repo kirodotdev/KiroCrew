@@ -15,6 +15,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.chat_handlers import api_chat_slot_approve
 from kiro_crew.dashboard.chat_runner import (
@@ -449,7 +450,7 @@ def test_display_redaction_touches_labels_and_taints_values() -> None:
     """Titles, descriptions and option labels are redacted for display; a
     credential in an option value or a default cannot be rewritten (the answer
     would then fail the schema), so the request is reported tainted."""
-    secret = "AKIAIOSFODNN7EXAMPLE1234"
+    secret = github_classic(seed=171)
     fields = [
         {
             "name": "a",
@@ -874,6 +875,6 @@ async def test_a_tainted_user_input_option_is_answered_with_text(state, audited)
     """An option value display redaction would change is refused unshown; the
     model hears that nobody could answer, not that the person declined."""
     body = await _ask_user_input_through_the_card(
-        state, lambda *a: None, option="AKIAIOSFODNN7EXAMPLE1234"
+        state, lambda *a: None, option=github_classic(seed=31)
     )
     assert body["action"] == "answered" and "No person" in body["answer"]

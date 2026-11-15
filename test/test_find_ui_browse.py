@@ -27,6 +27,7 @@ from typing import Any
 import pytest
 
 from kiro_crew import mcp_guide, ui_index
+from kiro_crew.ui_index_load import parse_index_text
 from kiro_crew.validation import ValidationError
 
 
@@ -240,7 +241,7 @@ TASK_LOCATION: dict[str, str] = {
     "Uninstall app": "apps.detail.uninstall",
     "Slack connection": "settings.sub.channels.slack",
     "Add MCP server": "mcp.add-server",
-    "MCP server status": "connections.mcp-servers-tab",
+    "MCP server status": "mcp.servers-view",
     "Telegram connection": "settings.sub.channels.telegram",
     "UI language": "setting:display.language",
     "Theme": "setting:display.mode",
@@ -476,7 +477,7 @@ def test_related_areas_and_area_titles_name_real_things() -> None:
 
 def _auto_file(tmp_path: Path) -> Path:
     """A build-time auto tier against the REAL committed index: two Sessions-page entries."""
-    real = json.loads(ui_index.INDEX_PATH.read_text(encoding="utf-8"))
+    real = parse_index_text(ui_index.INDEX_PATH.read_text(encoding="utf-8"))
     labels = {"k.t.reindex": "Reindex sources", "k.t.back": "Back"}
     zh = {"k.t.reindex": "重新索引来源", "k.t.back": "返回"}
     auto = {
@@ -537,7 +538,7 @@ def test_auto_entries_come_last_marked_and_one_word_ones_are_counted_out(tmp_pat
 def _settings_tab_auto_file(tmp_path: Path) -> Path:
     """A build-time auto tier against the REAL committed index: one one-word
     auto control ("Save") on the Settings > Chat tab."""
-    real = json.loads(ui_index.INDEX_PATH.read_text(encoding="utf-8"))
+    real = parse_index_text(ui_index.INDEX_PATH.read_text(encoding="utf-8"))
     labels = {"k.t.save": "Save"}
     auto = {
         "schema_version": 1,

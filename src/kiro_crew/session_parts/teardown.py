@@ -47,6 +47,7 @@ async def reset(
     clear_conversation: bool = False,
     ends_conversation: bool = False,
     stop_shared_children: bool = False,
+    forget_unused_start: bool = False,
     scope: Any | None = None,
 ) -> bool:
     """Reset a live session while preserving its persistence entry.
@@ -71,6 +72,7 @@ async def reset(
             clear_conversation=clear_conversation,
             ends_conversation=ends_conversation,
             stop_shared_children=stop_shared_children,
+            forget_unused_start=forget_unused_start,
             scope=opened,
         )
 
@@ -340,6 +342,11 @@ def open_replay_gap(self: SessionManager, key: str) -> None:
     self._lifecycle_boundary().open_replay_gap(key)
 
 
+def has_open_replay_gap(self: SessionManager, key: str) -> bool:
+    """Whether *key* is in a reset-to-reacquire window (session popped)."""
+    return self._lifecycle_boundary().has_open_replay_gap(key)
+
+
 def close_replay_gap(self: SessionManager, key: str) -> None:
     """End the window :meth:`open_replay_gap` opened."""
     self._lifecycle_boundary().close_replay_gap(key)
@@ -360,6 +367,6 @@ async def _eager_respawn(self: SessionManager, key: str) -> None:
     await self._lifecycle_boundary()._eager_respawn(key)
 
 
-async def drain_all_providers(self: SessionManager) -> list:
-    """Pop all registered sessions and return their providers."""
-    return await self._lifecycle_boundary().drain_all_providers()
+async def drain_all_providers(self: SessionManager, *, keep_busy: bool = False) -> list:
+    """Pop registered sessions and return their providers (``keep_busy`` skips a held one)."""
+    return await self._lifecycle_boundary().drain_all_providers(keep_busy=keep_busy)

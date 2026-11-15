@@ -94,6 +94,25 @@ class TestParseUsage:
     def test_no_bonus_fields_without_section(self):
         assert "bonus_credits" not in _parse_usage(SAMPLE_USAGE)
 
+    def test_parses_the_current_kiro_cli_bonus_format(self):
+        # kiro-cli's current /usage: a header with no colon, and
+        # "name: used/total credits used, expires in N days".
+        raw = (
+            "Estimated Usage | resets on 2026-12-01 | KIRO FREE\n"
+            "Bonus credits\n"
+            "kiroween-2026: 100.54/4000 credits used, expires in 49 days\n"
+            "Credits (0.00 of 50 covered in plan), 0.0%\n"
+        )
+        r = _parse_usage(raw)
+        assert r["credits_plan"] == 50.0
+        assert r["bonus_credits"] == [
+            {"name": "kiroween-2026", "used": 100.54, "total": 4000.0, "days_left": 49}
+        ]
+
+    def test_a_line_that_only_mentions_bonus_credits_is_not_the_header(self):
+        raw = "Estimated Usage\nYou have no bonus credits this month\n"
+        assert "bonus_credits" not in _parse_usage(raw)
+
     def test_parses_every_bounded_bonus_grant_in_dash_format(self):
         assert _parse_usage(SAMPLE_USAGE_WITH_BONUS)["bonus_credits"] == [
             {"name": "Welcome bonus", "used": 500.0, "total": 500.0, "days_left": 13},
@@ -288,11 +307,10 @@ class TestFetchUsageBg:
 
     @pytest.mark.asyncio
     async def test_text_scrape_does_not_clobber_richer_api_value(self):
-        # Regression: on a refresh where the API call transiently fails and we
-        # fall back to the overage-blind text scrape, the scrape must NOT
-        # overwrite a fresher, richer API value for THE SAME account — the bug
-        # that flipped the pill from the true 41,336/10,000 (413%) to a
-        # misleading 10,000/10,000 (100%, overage hidden). Seed an API value
+        # On a refresh where the API call transiently fails and we fall back to
+        # the overage-blind text scrape, the scrape must NOT overwrite a fresher,
+        # richer API value for THE SAME account -- that would flip the pill from
+        # the true 41,336/10,000 (413%) to 10,000/10,000 (100%, overage hidden). Seed an API value
         # that shows overage and carries this account's email, then run a
         # refresh that falls through to the scrape (fixture stubs the API to
         # return None); whoami reports the SAME email. SAMPLE_USAGE scrapes to

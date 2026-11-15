@@ -2,10 +2,11 @@
 // spec/YAML file uploads, the refine round trip, the sessionStorage planning
 // recovery poll, the ?applied / ?autoRun deep link, and every per-status button
 // in the selected-run header (planned / planning / running / paused / completed).
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
-import ProjectsPage from '../pages/ProjectsPage'
+import ProjectsPage, { runStatusLabel } from '../pages/ProjectsPage'
+import { i18next } from '../i18n/all'
 import { api } from '../api/client'
 import type { ProjectRun, RunStatus } from '../types'
 
@@ -347,6 +348,25 @@ describe('ProjectsPage — planning lifecycle', () => {
     await waitFor(() => expect(api.cancelPlan).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(screen.queryByText(/Generating execution plan/)).not.toBeInTheDocument())
     expect(sessionStorage.getItem('tr-planning')).toBeNull()
+  })
+
+  it('keeps the planning banner and says why when the cancel is refused', async () => {
+    sessionStorage.setItem('tr-planning', '1')
+    vi.mocked(api.cancelPlan).mockRejectedValueOnce(new Error('zz-cancel-refused'))
+    renderWithProviders(<ProjectsPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByText(/zz-cancel-refused/)).toBeInTheDocument()
+    expect(await screen.findByText(/Generating execution plan/)).toBeInTheDocument()
+    expect(sessionStorage.getItem('tr-planning')).toBe('1')
+  })
+
+  it('keeps the planning banner when the cancel answers not ok', async () => {
+    sessionStorage.setItem('tr-planning', '1')
+    vi.mocked(api.cancelPlan).mockResolvedValueOnce({ ok: false, error: 'zz-no-cancel' })
+    renderWithProviders(<ProjectsPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByText(/zz-no-cancel/)).toBeInTheDocument()
+    expect(await screen.findByText(/Generating execution plan/)).toBeInTheDocument()
   })
 
   it('ticks the planning banner dots', async () => {
@@ -771,5 +791,25 @@ describe('ProjectsPage — header actions by run status', () => {
     const header = await openRun()
     fireEvent.click(within(header).getByRole('button', { name: 'Restart' }))
     await waitFor(() => expect(api.retryTaskRun).toHaveBeenCalledWith('run-1', 1))
+  })
+})
+
+describe('run status label', () => {
+  it('names a finished run in the app language in the run rail', async () => {
+    // Restored even when the test times out, which skips a `finally`.
+    onTestFinished(async () => { await i18next.changeLanguage('en') })
+    await i18next.changeLanguage('de')
+    resetApi([mkRun({ name: 'Existing', status: 'failed' })])
+    renderWithProviders(<ProjectsPage />)
+    const row = await screen.findByRole('button', { name: /Existing/ })
+    // Count and state come first in an element that wraps rather than
+    // truncates, so a narrow rail cuts only the id after them.
+    expect(within(row).getByText(/^1\/2 · Fehlgeschlagen$/)).not.toHaveClass('truncate')
+    expect(row.textContent).not.toContain('failed')
+  })
+
+  it('keeps an unknown status visible verbatim', () => {
+    expect(runStatusLabel({ running: false, status: 'archived' as RunStatus })).toBe('archived')
+    expect(runStatusLabel({ running: true, status: 'completed' })).toBe('Running')
   })
 })

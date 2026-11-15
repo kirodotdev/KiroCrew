@@ -3,7 +3,8 @@
 Each key parses with the catalog's matcher; a list that names X permits X and
 denies Y; a gate pinned off denies every item; no policy, or no list, permits as
 before. The call sites each key gates are tested in
-``test_governance_list_otlp_hosts.py`` and ``test_governance_list_share_sites.py``.
+``test_governance_list_otlp_hosts.py``, ``test_governance_list_share_sites.py``,
+``test_governance_list_decisions.py`` and ``test_governance_list_feature_video_hosts.py``.
 """
 
 from __future__ import annotations
@@ -22,6 +23,16 @@ _CASES = (
         "evil.example",
     ),
     ("capabilities.social_share", "sites", "identifier", "linkedin", "x"),
+    ("capabilities.decisions", "models", "identifier", "jev-1", "other-model"),
+    ("capabilities.decisions", "points", "identifier", "skills.select", "tool.risk"),
+    ("capabilities.decisions", "endpoints", "host", "jev.corp.example", "api.example"),
+    (
+        "capabilities.feature_videos_download",
+        "hosts",
+        "host",
+        "mirror.corp.example",
+        "d3j0sthz5doyui.cloudfront.net",
+    ),
 )
 _IDS = [f"{scope}.{key}" for scope, key, *_ in _CASES]
 

@@ -268,7 +268,9 @@ class TestTeardownsProceedWithoutASiblingTurn:
         _finished(alias_b)
         status, body = await _post(state, _RELOAD)
         assert status == 200, body
-        state.sessions.reset.assert_awaited_once_with(_SHARED_SESSION_KEY, skip_if_busy=True)
+        state.sessions.reset.assert_awaited_once_with(
+            _SHARED_SESSION_KEY, skip_if_busy=True, forget_unused_start=True
+        )
         _isolate.assert_called_once()
 
     @pytest.mark.asyncio

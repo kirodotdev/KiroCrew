@@ -2,11 +2,9 @@
 
 from pathlib import Path
 
-import pytest
+import docx
 
 from kiro_crew.knowledge.readers import FileReader
-
-docx = pytest.importorskip("docx")
 
 
 def test_table_only_document_retains_cell_text(tmp_path: Path) -> None:

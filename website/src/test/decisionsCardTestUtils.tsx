@@ -13,15 +13,17 @@ import { FeaturePreviewsSection } from '../pages/settings/FeaturePreviewsSection
 /** Rendered through the whole section, because that is where the card ships. */
 export function renderSection() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+  const view = render(
     <QueryClientProvider client={client}>
       <MemoryRouter><FeaturePreviewsSection /></MemoryRouter>
     </QueryClientProvider>,
   )
+  // The client too, so a test can play a live policy change through its reads.
+  return Object.assign(view, { client })
 }
 
 /** The card's own switch. Named in full so "Decisions" cannot match another row. */
-export const decisionsSwitch = () => screen.getByRole('switch', { name: 'Decisions (Jev)' })
+export const decisionsSwitch = () => screen.getByRole('switch', { name: 'Decisions' })
 
 export const ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
 
@@ -127,11 +129,11 @@ export const openPoint = (name: string) => pointRow(name).click()
 
 /** The accessible name of each scope's consent switch, as the card labels it. */
 export const SCOPE_SWITCH: Record<string, string> = {
-  tool_args: 'Also send tool-call arguments so Jev can flag risky calls',
-  compaction: 'Also send the conversation and tool-call inputs so Jev can score compaction',
+  tool_args: 'Also send tool-call arguments so the decision model can flag risky calls',
+  compaction: 'Also send the conversation and tool-call inputs so the decision model can score compaction',
   memory_text:
-    'Also send snippets of recalled memories so Jev can drop the ones that do not help',
-  nudge_evidence: 'Also send what a watching loop has found so Jev can skip a turn',
+    'Also send snippets of recalled memories so the decision model can drop the ones that do not help',
+  nudge_evidence: 'Also send what a watching loop has found so the decision model can skip a turn',
   browser: "Send outlines of the agent's browser tab",
   browser_images: "Also send screenshots of the agent's browser tab",
 }
@@ -144,7 +146,8 @@ export const toolArgsSwitch = () => screen.getByRole('switch', { name: SCOPE_SWI
  * drawn, the keystone (or a rejection), and the config's bucket.
  *
  * `decisions_enabled: true` is the ungoverned default every case assumes —
- * a case that wants the withdrawn state passes `governed: false` and gets no card.
+ * a case that wants the withdrawn state passes `decisions_enabled: false` and gets the
+ * administrator's notice in place of the card's controls.
  */
 export function stubGateway(
   consent: DecisionsConsentData | (Partial<DecisionsConsentData> & { enabled: boolean }) | Error,
@@ -184,3 +187,20 @@ export function stubGateway(
     vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue(full)
   }
 }
+
+/**
+ * The hosted provider configured and allowed, so the picker opens its entry and draws
+ * the API key field inside it (`DecisionsHostedKeyField`).
+ */
+export const stubHostedProvider = (overrides: Record<string, unknown> = {}) =>
+  vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
+    presets: [],
+    active: 'jev',
+    configured_endpoint: 'https://api.typesafe.ai/v1/systemone',
+    loopback: false,
+    hosted_permitted: true,
+    local_permitted: true,
+    sagemaker_available: true,
+    sagemaker_permitted: true,
+    ...overrides,
+  } as never)

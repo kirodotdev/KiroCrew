@@ -84,7 +84,7 @@ describe('NotificationDetailPanel approval decisions', () => {
     expect(screen.getByTestId('notif-approval-retired')).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
     expect(store.getState().notifications.decidingApprovals ?? {}).toEqual({})
   })
-  it('a 404 retires the row: buttons withdrawn, error notice, no DELETE, panel stays open', async () => {
+  it('a 404 retires the row: buttons withdrawn, status notice, no DELETE, panel stays open', async () => {
     vi.mocked(api.decideApproval).mockRejectedValue(notFound())
     const { store, onClose } = renderPanel()
     await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
@@ -92,8 +92,9 @@ describe('NotificationDetailPanel approval decisions', () => {
     expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull()
     expect(screen.queryByRole('button', { name: /Reject/ })).toBeNull()
     expect(store.getState().notifications.retiredApprovals).toEqual({ [approvalNote.ts]: true })
-    // The decide failed, so the sentence is an error notice, not muted status.
-    expect(screen.getByTestId('notif-approval-retired')).toHaveAttribute('role', 'alert')
+    // The approval is gone, so the sentence is status, not an error (#18203).
+    expect(screen.getByTestId('notif-approval-retired')).toHaveAttribute('role', 'status')
+    expect(screen.queryByRole('alert')).toBeNull()
     expect(api.deleteNotification).not.toHaveBeenCalled()
     expect(onClose).not.toHaveBeenCalled()
   })
@@ -356,9 +357,9 @@ describe('NotificationDetailPanel approval decisions', () => {
     expect(failed).toHaveLength(3)
     for (const el of failed) {
       // One sentence for one failure: the same copy as under a recorded
-      // decision, inline under "no longer pending".
+      // decision, boxed under the boxed "no longer pending" status.
       expect(el).toHaveTextContent(decidedClearFailedCopy())
-      expect(el.tagName).toBe('SPAN')
+      expect(el.tagName).toBe('DIV')
     }
     expect(screen.queryByTestId('notif-decision-recorded')).toBeNull()
   })

@@ -22,6 +22,7 @@ from enum import Enum
 from typing import Any
 
 from kiro_crew import name_grant, permission_floor
+from kiro_crew.agent_sdk.drivers.acp_vocab import continue_timed_out_calls
 from kiro_crew.approval_mode_policy import session_mode_permitted
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.channel_account_check import session_after_account_check
@@ -165,8 +166,8 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # Recoloring a session acts on a session the channel agent would name from
     # thread text other people wrote; same containment reason as stop.
     "session_set_color",
-    # Reload relaunches another session's agent process; same containment
-    # reason as stop.
+    "session_set_note",  # writes into another session's next turn; same reason as stop
+    # Reload relaunches another session's agent process; same reason as stop.
     "session_reload",
     # Renaming relabels a session in the person's sidebar, named from thread text
     # other people wrote; same containment reason as the tree verbs below.
@@ -182,6 +183,8 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # Reads another tracked channel's messages, which a channel agent would relay
     # into a thread other people read; same exfiltration reason.
     "read_slack_history",
+    # Reads and reorders a worker's queued instructions; same exfiltration reason.
+    "session_queue",
     # The fan-out verb, blocked for the reason `session_send` is and then some: one
     # call with `all: true` reaches every session the caller created, so a channel agent acting on
     # words from a thread other people are in would relay them into the user's
@@ -241,6 +244,7 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     "work_report",
     "work_ledger_read",
     "work_ledger_record",
+    "work_ask_record",
     "work_ledger_rebuild",
     "accept_eval",
 ) + CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS
@@ -1398,7 +1402,9 @@ async def _stream_task(
     try:
         # Read before anything streams, as a channel bot's turn reads it.
         spec = await turn_spec(client, agent.agent_name)
-        async for event in client.stream(message):
+        # A call whose own silence timer ends the prompt is handed back to the
+        # model inside this turn, on the same session (``acp.timed_out_continuation``).
+        async for event in continue_timed_out_calls(client.stream, message):
             if event.kind == EVENT_TEXT_CHUNK:
                 chunks.append(event.text)
 

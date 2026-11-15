@@ -45,6 +45,7 @@ def test_all_four_tools_are_advertised_to_every_caller():
         "work_report",
         "work_ledger_read",
         "work_ledger_record",
+        "work_ask_record",
         "work_ledger_rebuild",
         "accept_eval",
     }
@@ -64,6 +65,16 @@ def test_the_brief_tool_declares_an_empty_schema():
     assert definition["inputSchema"]["properties"] == {}
     assert "required" not in definition["inputSchema"]
     assert MCP_WORK_SCHEMAS["work_brief"].fields == []
+
+
+def test_the_brief_tool_says_what_not_bound_means():
+    """The same rule the worker prompt and the refusal carry, where a caller that
+    has only the tool list reads it."""
+    definition = next(t for t in mcp_work._list_tools() if t["name"] == "work_brief")
+    assert (
+        "Answers 'not_bound' when no item is bound to this session: the message you "
+        "were given is then your whole task." in definition["description"]
+    )
 
 
 def test_work_ledger_read_advertises_the_five_optional_filters():
@@ -185,7 +196,15 @@ def test_the_worker_report_tool_advertises_no_conductor_field():
     a field added to the inputSchema alone would be a promise the store refuses."""
     definition = next(t for t in mcp_work._list_tools() if t["name"] == "work_report")
     props = definition["inputSchema"]["properties"]
-    assert set(props) == {"status", "summary", "artifacts", "pr", "reason", "wake_at"}
+    assert set(props) == {
+        "status",
+        "summary",
+        "artifacts",
+        "pr",
+        "reason",
+        "wake_at",
+        "discussion",
+    }
     assert definition["inputSchema"]["required"] == ["status", "summary"]
 
 
@@ -195,7 +214,8 @@ def test_the_record_tool_advertises_the_seven_actions():
     assert set(actions) == set(mcp_work.__dict__.get("_RECORD_ACTIONS", set())) or True
     from kiro_crew.dashboard.handlers import work_ledger as routes
 
-    assert set(actions) == routes.RECORD_ACTIONS
+    # The route's ``ask`` write is its own deferred tool, ``work_ask_record``.
+    assert set(actions) | {"ask"} == routes.RECORD_ACTIONS
 
 
 def test_the_two_halves_are_enumerable_without_parsing_the_definitions():
@@ -204,6 +224,7 @@ def test_the_two_halves_are_enumerable_without_parsing_the_definitions():
     assert mcp_work.CONDUCTOR_TOOLS == (
         "work_ledger_read",
         "work_ledger_rebuild",
+        "work_ask_record",
         "work_ledger_record",
     )
     assert mcp_work.WORK_TOOLS == (
@@ -527,6 +548,29 @@ def test_the_record_tool_forwards_only_the_registered_fields(monkeypatch):
     )
     assert sent.pop("path") == mcp_work._RECORD_PATH
     assert set(sent) == {"action", "title", "acceptance"}
+
+
+def test_the_ask_tool_sends_the_record_routes_ask_write(monkeypatch):
+    """Its own tool, so it stays deferred; on the wire it is the route's ``ask``."""
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-x")
+    sent: dict[str, Any] = {}
+
+    def _fake_post(path: str, body: dict | None = None, **k: Any) -> dict:
+        sent["path"] = path
+        sent.update(body or {})
+        return {"ok": True, "action": "ask", "item": {"item_id": "it_00000001", "state": "open"}}
+
+    monkeypatch.setattr(mcp_work, "_post", _fake_post)
+    reply = mcp_work._call_tool(
+        "work_ask_record",
+        {"item_id": "it_00000001", "what": "Merge?", "why": "Only you can.",
+         "options": [{"label": "Merge", "outcome": "ships"}], "pick": "Merge",
+         "pick_why": "green"},
+    )  # fmt: skip
+    assert reply.startswith("Recorded ask. item=it_00000001")
+    assert sent.pop("path") == mcp_work._RECORD_PATH
+    assert sent.pop("action") == "ask"
+    assert set(sent) == {"item_id", "what", "why", "options", "pick", "pick_why"}
 
 
 def test_an_item_write_reports_the_committed_item(monkeypatch):

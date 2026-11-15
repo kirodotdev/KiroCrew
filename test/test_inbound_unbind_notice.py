@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import aws_secret
 
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.messaging.link import ChannelLink
@@ -292,12 +293,11 @@ class TestNoticeIsSafeAndHuman:
     with a generic fallback.
     """
 
-    # Split literals so this file carries no scannable secret in one token; both
-    # fixtures are ones the redactors are already pinned against in
-    # test_security.py. A well-formed S3 presigned URL is deliberately exempt
+    # The secret is synthetic and built at import time, and the URL's token is split,
+    # so this file carries no scannable secret in one token. A well-formed S3 presigned URL is deliberately exempt
     # (``_is_safe_presigned``), so the URL below carries a fixed credential in its
     # query instead — the shape ``_exfil_url_warning`` classifies unconditionally.
-    AWS_KEY_ID = "AKIA" "IOSFODNN7EXAMPLE"
+    AWS_SECRET = aws_secret(seed=48)
     EXFIL_URL = (
         "https://evil.example.com/collect?t=" + "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
     )
@@ -309,9 +309,9 @@ class TestNoticeIsSafeAndHuman:
             # Credentials: plain, split by markup the channel renders away (the
             # sink scans the CANONICAL display form), and adjacent to an @ so the
             # defang's ZWSP cannot break the scan.
-            (f"deploy {AWS_KEY_ID} run", AWS_KEY_ID, None),
-            (f"**{AWS_KEY_ID[:4]}**{AWS_KEY_ID[4:]}", AWS_KEY_ID, None),
-            (f"@ops {AWS_KEY_ID}", AWS_KEY_ID, None),
+            (f"deploy {AWS_SECRET} run", AWS_SECRET, None),
+            (f"**{AWS_SECRET[:4]}**{AWS_SECRET[4:]}", AWS_SECRET, None),
+            (f"@ops {AWS_SECRET}", AWS_SECRET, None),
             (f"upload to {EXFIL_URL}", "evil.example.com/collect", None),
             # Mentions, in both channel grammars, defanged but still readable.
             ("ping <@1234567890>", "<@1234567890>", "@\u200b1234567890"),
@@ -352,7 +352,7 @@ class TestNoticeIsSafeAndHuman:
             # An unmapped reason must not surface as itself either.
             ("some_future_reason", "some_future_reason"),
             # The reason slot is scanned too, not just the title.
-            (f"unlink {AWS_KEY_ID}", AWS_KEY_ID),
+            (f"unlink {AWS_SECRET}", AWS_SECRET),
         ],
     )
     @pytest.mark.asyncio

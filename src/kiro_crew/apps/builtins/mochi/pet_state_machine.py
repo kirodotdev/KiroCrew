@@ -11,9 +11,9 @@ visual expression (mood) is separate, driven by the ``set_pet_mood`` MCP tool.
     any → offline → idle (reconnect)
 
 The transition table was verified against the TypeScript exhaustively — all
-96 (state, event) pairs — at port time, and is pinned by
-``test/test_mochi_small_modules.py`` (the original's own table test carried
-over). Unknown states and unmapped events return the current state unchanged,
+96 (state, event) pairs — at port time. ``test/test_mochi_small_modules.py`` checks
+seven transitions and that every state, event and target is in the vocabulary; it
+does not pin all 96 pairs. Unknown states and unmapped events return the current state unchanged,
 matching the ``?? current`` fallback.
 """
 

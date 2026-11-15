@@ -88,6 +88,8 @@ interface MessageActionsOptions {
   setSidebarPinned: Dispatch<SetStateAction<boolean>>
   sidebarAutoHidden: MutableRefObject<boolean | null>
   sidebarWidth: number
+  /** The `/embed/chat` frame, its own document with no session sidebar (not a companion chat in the main window). */
+  embedChatFrame: boolean
   setRegenerating: Dispatch<SetStateAction<boolean>>
 }
 
@@ -101,7 +103,7 @@ interface MessageActionsOptions {
  */
 export function useMessageActions({
   dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, handleFileOpen, handleFolderOpen, search,
-  tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, setRegenerating,
+  tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, embedChatFrame, setRegenerating,
 }: MessageActionsOptions) {
   // Reads `messagesRef`, not `messages`: the array is new on every streamed
   // frame, and this callback feeds the transcript renderers memo, so a
@@ -244,7 +246,10 @@ export function useMessageActions({
   // sidebarWidth is the width ChatSidebar reports its root paints at, already
   // held to this view and this window (see sidebarPaintWidth); the stored
   // preference stays with the sidebar for a wider window or for board view.
-  const effectiveSidebarWidth = clampSidebarWidth({ stored: sidebarWidth, winW, railW: railWidth })
+  // The embed chat frame mounts no sidebar, so the shared stored width takes no
+  // room from its row (#37165). A companion chat keeps it: it sits in the main
+  // window, whose chrome is really beside it.
+  const effectiveSidebarWidth = embedChatFrame ? 0 : clampSidebarWidth({ stored: sidebarWidth, winW, railW: railWidth })
   const toggleAct = useCallback(() => {
     // Opening with no tabs shows the empty-state launcher grid (no seeded
     // default view) -- the user picks what to open.

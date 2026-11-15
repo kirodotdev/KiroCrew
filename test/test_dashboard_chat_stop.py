@@ -790,7 +790,7 @@ class TestStopDuringSessionPrep:
 
         assert stream_calls == [], (
             "the turn was dispatched despite a Stop during session prep — "
-            "the full response would stream behind a [Stopped] card (#5464)"
+            "the full response would stream behind a [Stopped] card"
         )
 
     @pytest.mark.asyncio
@@ -826,7 +826,7 @@ class TestStopDuringSessionPrep:
         assert stream_calls == []
 
     @pytest.mark.asyncio
-    async def test_an_ultra_mode_pause_during_prep_aborts_dispatch(
+    async def test_a_conductor_mode_pause_during_prep_aborts_dispatch(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Pause all lands while the turn is prepared: it never opens, on any path."""

@@ -138,7 +138,7 @@ class TestPeriodicCheckStatusRefresh:
 
         fake_ws = FakeWebSocket()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
 
@@ -227,7 +227,9 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "_gitlab_hosts_loaded_at", 0.0)
         monkeypatch.setattr(source_providers, "_gitlab_hosts_generation", 0)
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: FakeWebSocket())
+        monkeypatch.setattr(
+            dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: FakeWebSocket()
+        )
         monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", fake_ensure)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         # The governance watch also pushes slots when real profile files change,
@@ -341,7 +343,7 @@ class TestPeriodicCheckStatusRefresh:
 
         fake_ws = FakeWebSocket()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", fake_ensure)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 30)
 
@@ -413,7 +415,7 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(ws_event_scope, "get_app_manifest", lambda _name: None)
         monkeypatch.setattr(ws_event_scope, "_declared_cache", {})
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
         monkeypatch.setattr(source_providers, "schedule_visibility_refresh", MagicMock())
@@ -495,7 +497,7 @@ class TestPeriodicCheckStatusRefresh:
         hold = asyncio.Event()
         fake_ws = FakeWebSocket()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", check_refresh)
         monkeypatch.setattr(source_providers, "schedule_visibility_refresh", vis_refresh)
@@ -587,7 +589,7 @@ class TestPeriodicCheckStatusRefresh:
 
         fake_ws = FakeWebSocket()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_PENDING_MAX", 2)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
@@ -668,7 +670,7 @@ class TestPeriodicCheckStatusRefresh:
 
         fake_ws = FakeWebSocket()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
 

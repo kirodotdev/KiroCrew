@@ -634,6 +634,26 @@ class TestWarmPool:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_a_background_start_overtaken_by_a_reset_is_shut_down(self, cfg, monkeypatch):
+        """A reset of ``_bg`` while its cold start is in flight makes that start stale
+        (the ``kirocrew-lite`` repair resets ``_bg`` after rewriting its spec): the
+        provider is shut down instead of registered, so no later claimant can take it."""
+        gate = asyncio.Event()
+        factory, starts, started = self._gated_bg_factory(monkeypatch, [gate])
+        mgr = SessionManager(cfg, provider_factory=factory)
+        await mgr.start_pool()
+
+        start = asyncio.create_task(mgr._ensure_background())
+        await asyncio.wait_for(started[0].wait(), _HANG_CEILING_S)
+        await asyncio.wait_for(mgr.reset(BACKGROUND_KEY), _HANG_CEILING_S)
+        gate.set()
+        await asyncio.wait_for(start, _HANG_CEILING_S)
+
+        assert BACKGROUND_KEY not in mgr._sessions
+        starts[0].shutdown.assert_awaited_once()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_start_pool_keeps_the_boot_start_without_a_shared_runtime(self, cfg, monkeypatch):
         """Backends that route every background call through ``_bg`` start it at boot."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())

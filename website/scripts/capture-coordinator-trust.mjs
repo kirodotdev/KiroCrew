@@ -2,9 +2,10 @@
  * Frames for two composer approval states that only a live run shows (#16389):
  *   22-composer-native-trust: a chat runner's own request in the composer
  *       approval bar, with Trust beside Allow once and Reject.
- *   23-composer-coordinator-no-trust: a coordinator approval parked in the
- *       chat, decided one-shot by its own target: no Trust and no extra
- *       line, as for any unattended source. Read against frame 22.
+ *   23-composer-coordinator-trust-held: a coordinator approval parked in the
+ *       chat, decided one-shot by its own target: Trust disabled in its
+ *       place and no extra line, as for any unattended source. Read against
+ *       frame 22.
  *   30-composer-chat-refused: the same runner request after Allow once is
  *       refused as no longer pending (a 404): the bar is gone and the muted
  *       status row says why, in the sentence every approval surface uses.
@@ -57,10 +58,11 @@ for (const kind of ['native', 'coordinator']) {
   await page.waitForTimeout(400)
   const s = {
     trust: await page.getByRole('button', { name: /^Trust/ }).count(),
+    trustEnabled: await page.getByRole('button', { name: /^Trust/ }).isEnabled(),
     reason: (await page.getByTestId('approval-trust-unavailable').count()) ? await page.getByTestId('approval-trust-unavailable').innerText() : null,
   }
-  const name = kind === 'native' ? '22-composer-native-trust' : '23-composer-coordinator-no-trust'
-  const ok = kind === 'native' ? s.trust >= 1 && s.reason === null : s.trust === 0 && s.reason === null
+  const name = kind === 'native' ? '22-composer-native-trust' : '23-composer-coordinator-trust-held'
+  const ok = s.trust === 1 && s.trustEnabled === (kind === 'native') && s.reason === null
   if (check(name, ok, s)) await page.screenshot({ path: `${OUT}/${name}.png` })
   await page.close()
 }

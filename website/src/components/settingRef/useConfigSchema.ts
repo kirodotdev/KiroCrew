@@ -6,7 +6,7 @@
  * staleTime is Infinity — fetched once per page load.
  */
 import { useQuery } from '@tanstack/react-query'
-import type { SchemaEntry } from './resolveSettingRef'
+import type { AllSettingsRecord, SchemaEntry } from './resolveSettingRef'
 
 interface RawSchemaEntry {
   path: string
@@ -19,6 +19,7 @@ interface RawSchemaEntry {
   requiresRestart?: boolean
   /** The backend's reason string; present only on a path this build locks. */
   lockedByPolicy?: string
+  allSettings?: AllSettingsRecord
 }
 
 async function fetchConfigSchema(): Promise<Map<string, SchemaEntry>> {
@@ -40,6 +41,7 @@ async function fetchConfigSchema(): Promise<Map<string, SchemaEntry>> {
       requiresRestart: entry.requiresRestart === true ? true : undefined,
       // Any reason string means locked; the UI shows its own translated copy.
       lockedByPolicy: entry.lockedByPolicy ? true : undefined,
+      allSettings: entry.allSettings,
     })
   }
   return map

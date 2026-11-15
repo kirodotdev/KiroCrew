@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from kiro_crew.autonudge_judge import ending_phrase, screen_phrase
+from kiro_crew.autonudge_judge_phrases import ending_phrase, screen_phrase
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.mcp_tools._limits import _MONITOR_DEFAULT_MAX_CYCLES
 from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS, runtime_ceiling_secs
@@ -196,6 +196,21 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["seconds", "reason"],
+            },
+        },
+        {
+            "name": "mcp_server_wait",
+            # Short on purpose: it rides in every request of the agents that list
+            # it as a job tool (``agent_sdk.tool_search.JOB_TOOLS``). The turn's
+            # own ``[MCP SERVERS]`` block says when and how to use it.
+            "description": (
+                "Wait for one of this session's MCP servers that is still starting. "
+                "Returns when it is connected, or says why it will not be. Call once."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"server": {"type": "string"}},
+                "required": ["server"],
             },
         },
         {
@@ -746,9 +761,9 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "watch: it wakes you once to say so and stays armed for "
                             "the next item, until autonudge_stop, a person's stop or "
                             "the loop's own bounds. For a conductor patrolling "
-                            "dispatched workers this is the field to use, and it lets "
-                            "you set interval_secs in hours -- the timer becomes the "
-                            "liveness fallback, not the delivery path. Omit it and the "
+                            "dispatched workers this is the field to use, and it fixes "
+                            "interval_secs at the 300 s patrol interval -- the timer is "
+                            "the liveness fallback, not the delivery path. Omit it and the "
                             "subject is inferred from `message`, which is how a pull "
                             "request is named. Gating does not need `gate` as well: "
                             "naming a watch gates the loop on its own"

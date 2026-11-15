@@ -89,6 +89,7 @@ from kiro_crew.agent_spec_format import (
 )
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home, kiro_agents_dir, kiro_home, project_agents_dir
+from kiro_crew.file_uri import file_uri_path_text
 from kiro_crew.user_json import copy_json_document
 from kiro_crew.workspace_cli_settings import workspace_cli_settings_lock
 
@@ -377,7 +378,7 @@ def project_agent_view(
     _relaunch_reserved_servers(view)
     prompt = view.get("prompt")
     if isinstance(prompt, str) and prompt.startswith("file://"):
-        path = Path(prompt[7:]).expanduser()
+        path = Path(file_uri_path_text(prompt)).expanduser()
         if not path.is_absolute():
             view["prompt"] = "file://" + (source.parent / path).absolute().as_posix()
     return view, search, None

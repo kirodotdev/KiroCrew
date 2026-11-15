@@ -1412,6 +1412,11 @@ class TelegramClient:
             raise ConnectionError("getMe got no Bot API reply")
         if data.get("ok") and data.get("result"):
             return data["result"]
+        code = data.get("error_code")
+        if code == 429 or (isinstance(code, int) and code >= 500):
+            # Rate-limited, or Telegram's own server error: it never judged the
+            # token, so this is "unreachable for now", not a rejected token.
+            raise ConnectionError(f"Telegram getMe was not answered (HTTP {code})")
         # Telegram error descriptions are short fixed strings
         # ("Unauthorized") — token-free and safe to surface in settings.
         desc = str(data.get("description") or "")

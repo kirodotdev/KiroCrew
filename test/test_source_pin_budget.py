@@ -66,7 +66,6 @@ BUDGET: dict[str, int] = {
     "test/test_chat_runner_compose_binding.py": 2,
     "test/test_chat_runner_turn_plumbing.py": 2,
     # Other scopes' reads, frozen as measured; each may only fall.
-    "src/kiro_crew/apps/builtins/spec_builder/tests/test_routes_delete.py": 1,
     "test/metrics/test_context_trace.py": 2,
     "test/metrics/test_usage_turns.py": 1,
     "test/test_autonudge_banner.py": 1,

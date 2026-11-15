@@ -13,10 +13,11 @@ endpoint with **your** credentials. The dashboard keeps its own token
 authentication, messaging channels keep their own bot or channel credentials,
 and the kiro-cli sign-in remains for kiro-cli-specific features. Some
 agent-internal and background paths still run on the kiro-cli sign-in —
-crew-member DM threads follow `agent.member_acp_backend` (default `"kas"`)
-rather than `acp_backend`, and other internal pools may too; anything pinned
-to the kiro harness always does. Set `agent.member_acp_backend` as well if
-members should use your endpoint.
+crew-member DM threads follow a stored `agent.member_acp_backend` rather than
+`acp_backend` (with the field unset they follow `acp_backend`, so `claude`
+carries them too), and other internal pools may too; anything pinned to the
+kiro harness always does. If `agent.member_acp_backend` holds a value, set it
+to `"claude"` as well if members should use your endpoint.
 
 The contract this guide describes is
 [claude-code-provider.md](../system-specs/modules/claude-code-provider.md);
@@ -38,8 +39,9 @@ In `~/.kiro/crew/config.json`, under `agent`:
 ```
 
 `acp_backend` selects the harness *inside* the ACP provider — `agent.provider`
-stays `"acp"`. An unrecognized value degrades to the kiro harness
-(the empty string) at config load, so a typo cannot brick the gateway.
+stays `"acp"`. An unrecognized or unselectable value logs a warning at config
+load and degrades to the Kiro CLI floor (`"kiro"`), so a typo cannot brick the
+gateway.
 
 New chat sessions spawn `claude-agent-acp` as their subprocess. Background
 workers (title generation, suggestions, memory consolidation) follow the same

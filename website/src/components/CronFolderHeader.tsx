@@ -140,9 +140,11 @@ export default function CronFolderHeader({ folder, jobCount, collapsed, onToggle
           <TableCell colSpan={colSpan} className="px-4 py-2">
             <div className="flex items-center gap-3 text-sm">
               <span className="text-text">{i18nT('pages.schedulePage.cronFolders.confirm_delete_folder', { name: folder.name })}</span>
+              {/* The stock Btn is transparent, so on the danger tint it has no edge until hovered. */}
               <Btn
                 ref={confirmDeleteRef}
                 danger
+                className="border-border-strong bg-bg-elevated"
                 onClick={() => { onDelete(); setConfirmingDelete(false) }}
                 // Focus lands here while the Enter or Space that picked the menu
                 // item may still be held (the menu selects on keydown for both),
@@ -152,7 +154,7 @@ export default function CronFolderHeader({ folder, jobCount, collapsed, onToggle
               >
                 {i18nT('pages.schedulePage.cronFolders.delete_folder_named', { name: folder.name })}
               </Btn>
-              <Btn onClick={cancelDelete}>
+              <Btn onClick={cancelDelete} className="border-border-strong bg-bg-elevated">
                 {i18nT('pages.schedulePage.cancel')}
               </Btn>
             </div>

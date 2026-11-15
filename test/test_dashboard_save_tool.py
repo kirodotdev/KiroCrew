@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 from kiro_crew import platform_compat
 from kiro_crew.artifact_store.dashboard_package import DASHBOARD_KIND, parse_package
@@ -1146,10 +1147,9 @@ def test_the_page_is_run_over_the_read_the_tab_is_served(glue):
     assert not _STORE_SLUG.match(row["package_slug"])
 
 
-#: Assembled at runtime, like the credential-shaped values in ``test_member_dashboard_routes``:
-#: a literal of this shape in the diff is a finding against the PR whatever the code
-#: around it is for. Do not join these back up.
-_KEY = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+#: Built at runtime, like the credential-shaped values in ``test_member_dashboard_routes``:
+#: a synthetic GitHub classic token with a valid checksum, which the redactor rewrites.
+_KEY = github_classic(seed=141)
 
 
 def _keyed_package() -> dict[str, Any]:

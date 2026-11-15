@@ -30,7 +30,7 @@ import time
 import uuid
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Protocol, cast
 from urllib.request import url2pathname
 
 from kiro_crew import acp_tool_gate, agent_scratch, agent_sdk, platform_compat
@@ -39,6 +39,7 @@ from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
 from kiro_crew.acp.transport_errors import AcpToolGateUnroutable
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_DEEPSEEK
+from kiro_crew.bounded_read import bounded_read_fd
 from kiro_crew.config.paths import config_dir
 from kiro_crew.config.sections import AGENT_ENV_NAME_GRAMMAR
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
@@ -339,7 +340,12 @@ def _validate_deepseek_env_mapping(mapping: dict[str, str]) -> None:
                 "name the harness can resolve: its credential references are POSIX "
                 "shell identifiers, matching [A-Za-z_][A-Za-z0-9_]*."
             )
-        if key.startswith(_DEEPSEEK_ENV_RESERVED_PREFIXES) or key in _DEEPSEEK_ENV_CREW_OWNED_NAMES:
+        # Windows compares env names case-insensitively: judge the name as it does.
+        held = key.upper() if os.name == "nt" else key
+        if (
+            held.startswith(_DEEPSEEK_ENV_RESERVED_PREFIXES)
+            or held in _DEEPSEEK_ENV_CREW_OWNED_NAMES
+        ):
             raise ValueError(
                 f"agent.deepseek_env entry {key!r} names a variable Kiro Crew or the "
                 "harness sets on this child itself (the DSH_ and KIROCREW_ namespaces, "
@@ -440,7 +446,7 @@ def _read_deepseek_gate_marker(marker_path: str) -> object:
             or metadata.st_size > _DSH_GATE_MARKER_MAX_BYTES
         ):
             return None
-        payload = os.read(fd, metadata.st_size + 1)
+        payload = bounded_read_fd(fd, metadata.st_size + 1)
         if len(payload) != metadata.st_size:
             return None
     except OSError:
@@ -453,8 +459,19 @@ def _read_deepseek_gate_marker(marker_path: str) -> object:
         return None
 
 
+class DeepseekProcessSession(ProcessSession, Protocol):
+    """The DeepSeek Harness session :class:`DeepseekLaunch` launches: a
+    :class:`ProcessSession` that also carries the gate nonce its launch issued and the
+    READ_ONLY proof its read-back recorded, which the permission path reads.
+    ``DeepseekAcpClient`` is the production implementation.
+    """
+
+    _deepseek_gate_nonce: str
+    _deepseek_read_only_issue: str
+
+
 def _record_deepseek_read_only_proof(
-    session: ProcessSession, marker: dict[str, Any], extension_path: str
+    session: DeepseekProcessSession, marker: dict[str, Any], extension_path: str
 ) -> None:
     """Record on *session* whether its READ_ONLY turns may approve dsh's read tools.
 
@@ -491,7 +508,7 @@ def _same_spelling_entry(row: object) -> object:
 
 
 def _verify_deepseek_gate(
-    session: ProcessSession,
+    session: DeepseekProcessSession,
     backend: str,
     argv: list[str],
     extension_path: str,
@@ -572,6 +589,8 @@ def _verify_deepseek_gate(
             stdin=subprocess_mod.PIPE,
             stdout=subprocess_mod.DEVNULL,
             stderr=subprocess_mod.DEVNULL,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
     except (OSError, subprocess_mod.SubprocessError) as exc:
         # The boot itself failed, which is not the same finding as a boot that
@@ -598,12 +617,12 @@ def _verify_deepseek_gate(
         try:
             process.wait(timeout=_DSH_GATE_PROBE_EXIT_S if published else 0)
         except subprocess_mod.TimeoutExpired:
-            process.kill()
+            platform_compat.kill_popen_tree(process)
             with suppress(subprocess_mod.SubprocessError, OSError):
                 process.wait(timeout=_DSH_GATE_PROBE_EXIT_S)
     except (OSError, subprocess_mod.SubprocessError) as exc:
         with suppress(OSError, subprocess_mod.SubprocessError):
-            process.kill()
+            platform_compat.kill_popen_tree(process)
         return (
             f"the gate's load marker could not be read back ({exc})",
             acp_tool_gate.remediation_for(backend),
@@ -643,13 +662,14 @@ class DeepseekLaunch(ProcessAdapter):
     backend = ACP_BACKEND_DEEPSEEK
 
     def __init__(self) -> None:
+        super().__init__()
         # The nonce the probe issued, carried to the session's own child.
         self._nonce = ""
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
         """Resolve the binary, mask it, compose and seal the gate, and prove it loads."""
-        session = ctx.session
-        assert session is not None, "the DeepSeek Harness is launched for one session"
+        assert ctx.session is not None, "the DeepSeek Harness is launched for one session"
+        session = cast(DeepseekProcessSession, ctx.session)
         _deepseek_bin, argv, spawn_label, stderr_label = (
             await launch_mod.resolve_self_served_launch(self.backend)
         )

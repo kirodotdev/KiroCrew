@@ -24,6 +24,7 @@ from types import SimpleNamespace
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 
@@ -638,7 +639,7 @@ class TestAHarnessChangeReloadsTheLiveChat:
         state.sessions.get_provider = MagicMock(return_value=provider)
         order: list[str] = []
 
-        async def reset(key, *, skip_if_busy=False):
+        async def reset(key, *, skip_if_busy=False, forget_unused_start=False):
             order.append("reset")
             return not provider.turns[0]
 
@@ -716,7 +717,7 @@ class TestAHarnessChangeReloadsTheLiveChat:
         # the respawn that starts the new harness.
         assert chat.order == ["reset", "refresh:claude"]
         chat.state.sessions.reset.assert_awaited_once_with(
-            f"dashboard:{self.KEY}", skip_if_busy=True
+            f"dashboard:{self.KEY}", skip_if_busy=True, forget_unused_start=True
         )
         chat.eager.assert_called_once()
         assert chat.eager.call_args.kwargs.get("allow_resume") is True
@@ -854,7 +855,7 @@ class TestAHarnessChangeReloadsTheLiveChat:
 
     @pytest.mark.asyncio
     async def test_a_label_the_roster_would_mask_is_never_echoed(self, chat):
-        secret = "Atlas AKIAIOSFODNN7EXAMPLE"
+        secret = "Atlas " + github_classic(seed=20)  # a checksummed GitHub token
         cfg = KiroCrewConfig.load()
         cfg.agents["atlas"].display_name = secret
         cfg.save()

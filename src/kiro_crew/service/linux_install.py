@@ -380,7 +380,9 @@ def install() -> apparmor.ProfileOutcome:
         raise ServiceInstallError(
             "Failed to write the unit file. The sudo step is required because "
             f"{UNIT_PATH} is owned by root.\n"
-            f"   sudo install said: {(write_res.stderr or write_res.stdout).strip()}"
+            f"   sudo install said: {(write_res.stderr or write_res.stdout).strip()}\n"
+            "   Without sudo rights, keep `kirocrew gateway` running under tmux or\n"
+            "   screen instead, or ask an administrator for sudo access."
         )
 
     # Seed the operator-editable overrides file (create-if-absent), so a later

@@ -655,13 +655,10 @@ class TestApprovalNonceBindsThePress:
         # re-open the same window on the next request id the provider reuses.
         async def _go() -> bool:
             decider = TelegramApprovalDecider(session_key="telegram:1:0")
-            task = asyncio.ensure_future(decider(SimpleNamespace(request_id="rq5")))
-            # flake-ok: pre-existing 20 ms yield so the decider registers its prompt, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 20 ms yield so the decider registers its prompt, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.02)
             key = "telegram:1:0:rq5"
             nonce = "n1"
             TelegramApprovalDecider.arm(key, nonce)
+            task = asyncio.ensure_future(decider(SimpleNamespace(request_id="rq5")))
             TelegramApprovalDecider.resolve_global(key, True, nonce=nonce)
             # flake-ok: pre-existing unbounded await of the decider task the test resolves itself, moved verbatim; tracked for a de-flake pass
             await task

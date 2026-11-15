@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
-import { takePaneDraft, takePaneDraftSwap, writePaneDraft, mergePaneDraft, subscribePaneDraft } from '../utils/chatPaneDrafts'
+import { takePaneDraft, takePaneDraftSwap, takePaneDraftReply, writePaneDraft, mergePaneDraft, subscribePaneDraft } from '../utils/chatPaneDrafts'
+import { mergeReplyIntoDraft } from '../utils/chatDrafts'
 import { type PasteBlock, mergeCarriedDraft } from '../utils/pasteTokens'
 import { useComposerPastes } from '../chat-core/composer/composerPastes'
 import { parseDirTokens } from '../utils/fileTokens'
@@ -95,9 +96,13 @@ export function useChatPaneDraft(slotKey: string) {
       // A suggested prompt replacing the one it put here before, while the
       // composer still holds that one untouched (`swapPaneDraftText`).
       const swap = takePaneDraftSwap(slotKey)
+      // A dashboard page's reply, not added again when already a paragraph here.
+      const reply = takePaneDraftReply(slotKey)
       if (arrived.text) {
         const carried = carryIntoComposer(arrived.text, arrived.pastes)
-        setInput(cur => (swap !== undefined && cur.trim() === swap ? carried.text : mergeCarriedDraft(cur, carried)))
+        setInput(cur => (swap !== undefined && cur.trim() === swap ? carried.text
+          : reply !== undefined ? mergeReplyIntoDraft(cur, carried.text)
+            : mergeCarriedDraft(cur, carried)))
       }
       if (arrived.files.length) setPendingFiles(cur => [...cur, ...arrived.files.filter(f => !cur.includes(f))])
     })

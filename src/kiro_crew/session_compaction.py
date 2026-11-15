@@ -1389,7 +1389,7 @@ class CompactionCoordinator:
         session.turn_owner = asyncio.current_task()
         try:
 
-            async def _run() -> None:
+            async def _run_compaction() -> None:
                 nonlocal result_wait_used, reported
                 # Keep this lazy: importing the ACP package eagerly recreates
                 # the providers/session cycle avoided by this module boundary.
@@ -1428,7 +1428,7 @@ class CompactionCoordinator:
             # The inner status wait spends the full remainder; margin keeps its
             # graceful no-result diagnostic ahead of the outer backstop.
             await asyncio.wait_for(
-                _run(), timeout=timeout + self._deps.compact_result_wait_margin_secs
+                _run_compaction(), timeout=timeout + self._deps.compact_result_wait_margin_secs
             )
         except (Exception, asyncio.TimeoutError):
             if self._stop_generation(key) > stop_gen:
@@ -1456,6 +1456,12 @@ class CompactionCoordinator:
                 )
                 return "absent"
             if not idle:
+                if reported is None:
+                    # No status: the harness can still finish this /compact, and the
+                    # next turn's pre-turn drain drops the late frames only after
+                    # that turn's prompt was built. Both arms below can keep this
+                    # session; a restart that replaces it discards the flag with it.
+                    session.needs_context_reinjection = True
                 if (
                     _harness_managed_backend(session.provider) is not None
                     and self._owner._sessions.get(key) is session
@@ -1480,11 +1486,6 @@ class CompactionCoordinator:
                     self.state.cooldown_until[key] = (
                         time.monotonic() + self._deps.compact_failure_cooldown_secs
                     )
-                    if reported is None:
-                        # No status: the harness can still finish this /compact,
-                        # and the next turn's pre-turn drain drops the late frames
-                        # only after that turn's prompt was built.
-                        session.needs_context_reinjection = True
                     await self._owner._fire_compact_callback(key, pct, success=False)
                     return "failed"
                 return await self._restart_after_failure(

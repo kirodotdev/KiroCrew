@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew import agent_scratch as sc
+from kiro_crew import agent_scratch_trees as trees
 
 #: A pid no live process can own on any supported platform (above every pid_max),
 #: so a cleanup path that signals a fake reaches nothing on the runner.
@@ -38,8 +39,17 @@ _UNALLOCATABLE_PID = 99_999_999_999
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
 
-@pytest.fixture
-def scratch_root(monkeypatch, tmp_path: Path) -> Path:
+@pytest.fixture(autouse=True)
+def isolated_tree_bindings(_floor_monkeypatch) -> None:
+    _floor_monkeypatch.setattr(trees, "_TREE_INDEX_LIVE", {})
+    _floor_monkeypatch.setattr(trees, "_TREE_INDEX_TICKETS", {})
+    _floor_monkeypatch.setattr(trees, "_TREE_INDEX_UNPERSISTED", set(), raising=False)
+    _floor_monkeypatch.setattr(trees, "_TREE_INDEX_RETIRED_TICKET", -1, raising=False)
+    _floor_monkeypatch.setattr(trees, "_TREE_INDEX_DISK_SNAPSHOT", None, raising=False)
+
+
+@pytest.fixture(name="scratch_root")
+def scratch_root_fixture(monkeypatch, tmp_path: Path) -> Path:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(sc, "config_dir", lambda: home)
@@ -84,9 +94,9 @@ class TestSharedScratchWindow:
     def test_a_failed_refresh_refuses_only_a_tree_the_sweep_could_take(
         self, scratch_root: Path, monkeypatch
     ) -> None:
-        """Without the mtime hold a dead-owner tree can be swept under the mount,
-        so it is refused; a live-owner or unowned tree is never swept and is
-        still handed out."""
+        """Without the mtime hold a dead-owner tree can be swept, and an unowned
+        one moved into the quarantine, under the mount, so both are refused; a
+        live-owner tree is never swept, so it is still handed out."""
         dead = sc.allocate_scratch("runtime")
         sc.record_owner(dead, 1001)
         live = sc.allocate_scratch("runtime")
@@ -101,8 +111,8 @@ class TestSharedScratchWindow:
         monkeypatch.setattr(sc.os, "utime", refuse)
         assert sc.shared_scratch_window(dead) is None
         assert sc.shared_scratch_window(live) == live
-        assert sc.shared_scratch_window(unowned) == unowned
-        assert dead.exists()  # refused, not removed
+        assert sc.shared_scratch_window(unowned) is None
+        assert dead.exists() and unowned.exists()  # refused, not removed
 
     def test_a_file_at_the_name_is_refused(self, scratch_root: Path) -> None:
         scratch_root.mkdir(parents=True)
@@ -260,7 +270,7 @@ class TestAdoptOwner:
 
     def test_an_unowned_tree_stays_unowned_when_joined(self, scratch_root: Path) -> None:
         """A marker naming only the joiner would make the allocator's tree
-        reclaimable the hour after the joiner exits; unowned is never swept."""
+        reclaimable the hour after the joiner exits; unowned waits a week."""
         tree = sc.allocate_scratch("runtime")
         (tree / sc.OWNER_FILENAME).unlink()
         assert sc.adopt_owner(tree, 2002) == "recorded"
@@ -277,8 +287,8 @@ class TestAdoptOwner:
 
         monkeypatch.setattr(sc, "atomic_write", boom)
         assert sc.adopt_owner(tree, 2002) == "unwritable"
-        # Unowned is never swept; predecessor-only would be swept the hour
-        # after the predecessor exits, under the live successor.
+        # Unowned waits a week with no write; predecessor-only would be swept
+        # the hour after the predecessor exits, under the live successor.
         assert not (tree / sc.OWNER_FILENAME).exists()
 
     def test_the_sweep_still_reclaims_a_single_dead_owner(self, scratch_root: Path, monkeypatch):

@@ -87,6 +87,7 @@ import { MembersPageRosterColumn, useMembersPageRosterView } from './MembersPage
 import { MembersPageSidePanel, useMembersPageSidePanel } from './MembersPageSidePanel'
 import { MembersPageThreadColumn, useMembersPageThread, useMembersPageThreadView } from './MembersPageThread'
 import { wantsMateSessions } from '../../lib/crewMode'
+import { useViewerIsNotOwner } from '../../hooks/sharedCrew/useSharedCrew'
 import { MEMBER_PARAM, ROSTER_DRAWER_UNCOVERED_PX, type GoneNotice, type PostCreateFailure, type ProfileCardOpen } from './membersPageModel'
 import { useMembersPageCrewEditor } from './useMembersPageCrewEditor'
 import { useMembersPageDrawers, useMembersPageDrawerSwipes, useMembersPageTrackpadSwipe } from './useMembersPageDrawers'
@@ -420,6 +421,12 @@ export default function MembersPage() {
   // in flight NOW, not the one of the render that armed the callback.
   const followUpRef = useRef(followUp)
   followUpRef.current = followUp
+  // A team Crew teammate creates Bots as they start sessions, but Import from
+  // file stays the owner's (the server refuses anyone else): its change card
+  // writes rules, skills and schedules. A failed owner check holds it too (the
+  // roster says why), rather than offering a door the server may refuse.
+  const ownerCheck = useViewerIsNotOwner()
+  const importHeld = ownerCheck.notOwner || !!ownerCheck.error
   // The one reason every create door (header "+", both heroes) is held, or
   // `null` when creating is open. The failed-step record wins the wording:
   // it is the one with a retry the user can act on.
@@ -845,7 +852,7 @@ export default function MembersPage() {
         navigation={navigation} teamView={teamView} activeName={activeName}
         scrollActiveRowIntoView={scrollActiveRowIntoView} gone={gone} createOpen={createOpen}
         openAdvanced={openAdvanced} openQuick={openQuick} postCreateError={postCreateError}
-        createHeld={createHeld} slotKeyOf={slotKeyOf}
+        createHeld={createHeld} importHeld={importHeld} ownerCheckFailed={!!ownerCheck.error} slotKeyOf={slotKeyOf}
         faceOnStageFor={thread.entranceFaceHidden && active ? active.name : ''}
       />)}
 
@@ -859,7 +866,7 @@ export default function MembersPage() {
         editingCrew={editingCrew} profile={profile} gone={gone} openCreate={openCreate}
         openAdvanced={openAdvanced} openQuick={openQuick} threadColumnRef={threadColumnRef}
         postCreateError={postCreateError} setPostCreateError={setPostCreateError}
-        postCreateDismissable={postCreateDismissable} createHeld={createHeld} threadOutcome={threadOutcome}
+        postCreateDismissable={postCreateDismissable} createHeld={createHeld} importHeld={importHeld} ownerCheckFailed={!!ownerCheck.error} threadOutcome={threadOutcome}
         slotsLoaded={slotsLoaded} active={active} leftCreateFailure={leftCreateFailure}
         setLeftCreateFailure={setLeftCreateFailure} retryPostCreate={retryPostCreate}
       />

@@ -10,6 +10,7 @@ from __future__ import annotations
 import ctypes
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -116,6 +117,21 @@ class TestWindowsMcpProcessCount:
 
 
 class TestWindowsNetwork:
+    def test_speed_below_the_megabyte_rounding_step_is_reported(self) -> None:
+        mib = 1024**2
+        # A frozen clock: the helper's 2.0 s aging is then the whole interval.
+        frozen = SimpleNamespace(monotonic=lambda: 1000.0, time=time.time)
+        with patch.object(handlers_system, "time", frozen):
+            data, _ = _collect_on_windows(
+                rows=[],
+                octets=[(10 * mib, 4 * mib), (10 * mib + 20 * 1024, 4 * mib + 6 * 1024)],
+                samples=2,
+            )
+
+        assert data.get("net_rx_mb") == 10.0
+        assert data.get("net_rx_kbs") == 10.0
+        assert data.get("net_tx_kbs") == 3.0
+
     def test_reports_totals_and_speed_from_interface_counters(self) -> None:
         mib = 1024**2
         data, _ = _collect_on_windows(

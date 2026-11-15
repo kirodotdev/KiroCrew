@@ -266,6 +266,25 @@ describe('TeamsPanel save', () => {
     })
   })
 
+  it('keeps a field edited while the save was in flight', async () => {
+    let finish: (v: unknown) => void = () => {}
+    saveTeamsConfig.mockReturnValue(new Promise(res => { finish = res }))
+    getTeamsConfig.mockResolvedValueOnce({ ...BASE }).mockResolvedValue({ ...BASE, connected: true, configured: true })
+    renderPanel()
+    await heading()
+    fireEvent.change(screen.getByPlaceholderText(/client secret/i), { target: { value: 'zz-secret' } })
+    await act(async () => { fireEvent.click(saveBtn()) })
+    fireEvent.change(screen.getByLabelText('Tenant ID'), { target: { value: 'zz-typed-during-save' } })
+    await act(async () => { finish({ ok: true, restart_required: false }) })
+    await waitFor(() => expect(screen.getByText('Saved.')).toBeInTheDocument())
+    // The invalidation refetches a changed config (now connected, tenant_id '');
+    // the edit made during the save must stay.
+    await waitFor(() => expect(getTeamsConfig.mock.calls.length).toBeGreaterThan(1))
+    expect(await screen.findByText('Active')).toBeInTheDocument()
+    expect(screen.getByLabelText('Tenant ID')).toHaveValue('zz-typed-during-save')
+    expect(screen.getByPlaceholderText(/client secret/i)).toHaveValue('')
+  })
+
   it('asks for a restart when the backend says one is required', async () => {
     saveTeamsConfig.mockResolvedValue({ ok: true, restart_required: true })
     renderPanel()

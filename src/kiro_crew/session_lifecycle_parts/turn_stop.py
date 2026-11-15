@@ -110,6 +110,18 @@ def open_replay_gap(self: SessionLifecycleService, key: str) -> None:
         self.state.replay_gaps[gap_key] = _ReplayGap(owner=asyncio.current_task())
 
 
+def has_open_replay_gap(self: SessionLifecycleService, key: str) -> bool:
+    """Whether *key* is held in a reset-to-reacquire window right now.
+
+    While the gap is open the live session is popped, so ``is_busy`` reads
+    False even though a turn is mid-reprojection on the key. The dashboard
+    Stop probe reads this too, so a Stop pressed during the gap routes through
+    :meth:`stop_turn` (which records it via :meth:`note_stop`) instead of
+    returning idle and letting the re-claimed turn run.
+    """
+    return canonical_key(key) in self.state.replay_gaps
+
+
 def close_replay_gap(self: SessionLifecycleService, key: str) -> None:
     """End the window :meth:`open_replay_gap` opened. Idempotent.
 

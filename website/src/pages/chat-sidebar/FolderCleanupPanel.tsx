@@ -7,6 +7,7 @@ import { invalidateFoldersWhenIdle } from '../../api/chatFoldersWrite'
 import ErrorNotice from '../../components/ErrorNotice'
 import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { Btn, PanelSectionHeader } from '../../components/ui'
+import { joinSentences } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
 import { closeBusyReasons } from '../../lib/closeBusyGate'
@@ -16,6 +17,7 @@ import { deleteSlot } from '../../store/chatSlice'
 import { collectFolderSubtreeIds } from '../../utils/folderTree'
 import type { ChatFolder } from '../../types'
 import type { Slot } from './types'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 
 /** Why a previewed root stays, per the server's `root_kept`. */
 const ROOT_KEPT_LINE = {
@@ -85,7 +87,7 @@ export default function FolderCleanupPanel({ folders, root, slots = [], onClose 
     const tree = collectFolderSubtreeIds(folders, root.id)
     return slots.filter(s => s.folder_id && tree.has(s.folder_id))
   }, [root, folders, slots])
-  const busy = useAppSelector(state => toClose.map(s => closeBusyReasons(state, s.key).map(reasonLine).join(' ')), shallowEqual)
+  const busy = useAppSelector(state => toClose.map(s => joinSentences(closeBusyReasons(state, s.key).map(reasonLine))), shallowEqual)
   const cleanup = useMutation({
     mutationFn: async () => {
       // The open chat closes last, so its close lands outside this tree
@@ -136,7 +138,7 @@ export default function FolderCleanupPanel({ folders, root, slots = [], onClose 
           <div ref={attachSessions} className={`max-h-40 overflow-y-auto rounded-md border border-border bg-bg-elevated p-1.5 ${sessionEdges.bottom ? MORE_BELOW_MASK : ''}`} data-testid="folder-cleanup-sessions">
             <div ref={attachSessionsContent}>
             {toClose.map((s, i) => {
-              const path = `${folderPath(folders, s.folder_id ?? '')} / ${s.title && s.title !== s.key ? s.title : s.key}`
+              const path = `${folderPath(folders, s.folder_id ?? '')} / ${sessionDisplayTitle(s)}`
               return (
                 <div key={s.key} className="text-[12px] text-muted py-0.5 px-1">
                   <div className="truncate" title={path}>{path}</div>

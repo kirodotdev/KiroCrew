@@ -33,12 +33,15 @@ from meetings_helpers import (  # noqa: F401
     root_fixture,
 )
 from meetings_routes_helpers import BASE, _start, _start_and_get_session
+from redaction_structured_cases import github_classic
 
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
 from kiro_crew.apps.builtins.meetings.backend.domain import session as sess
 from kiro_crew.apps.builtins.meetings.backend.routes import _common
 from kiro_crew.testing.wait import await_until
+
+_KEY = github_classic(seed=19)  # a token the credential plan redacts
 
 # Repo-root anchor for tests that read a checked-in source file. A relative
 # literal resolves against the process CWD, which no test owns: another test
@@ -587,14 +590,14 @@ class TestAgentRoutes:
             await _start(client)
             resp = await client.post(
                 f"{BASE}/meetings/standup/dispatch",
-                json={"text": "rotate AKIAIOSFODNN7EXAMPLE today"},
+                json={"text": f"rotate {_KEY} today"},
             )
             assert resp.status == 200
             body = await resp.json()
             assert body["dispatched"] == 3
-            assert "AKIAIOSFODNN7EXAMPLE" not in body["text"]
+            assert _KEY not in body["text"]
             assert body["segment"]["source"] == k.TRANSCRIPT_SOURCE_SPEECH
-            assert "AKIAIOSFODNN7EXAMPLE" not in body["segment"]["text"]
+            assert _KEY not in body["segment"]["text"]
 
             transcript = await client.get(f"{BASE}/meetings/standup/transcript")
             assert transcript.status == 200
@@ -1161,15 +1164,15 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
             body = await (
                 await client.post(
                     f"{BASE}/meetings/standup/dispatch",
-                    json={"text": "rotate AKIAIOSFODNN7EXAMPLE today"},
+                    json={"text": f"rotate {_KEY} today"},
                 )
             ).json()
-            assert "AKIAIOSFODNN7EXAMPLE" not in body["text"]
-            assert "AKIAIOSFODNN7EXAMPLE" not in body["segment"]["text"]
+            assert _KEY not in body["text"]
+            assert _KEY not in body["segment"]["text"]
 
             session = _common.ACTIVE.get("standup")
             assert session is not None
-            assert not any("AKIAIOSFODNN7EXAMPLE" in line for line in _held_lines(session))
+            assert not any(_KEY in line for line in _held_lines(session))
 
             release.set()
             assert (await start).status == 200

@@ -23,12 +23,13 @@ const note = (over: Partial<Notification> = {}): Notification => ({
 describe('a gateway-written note', () => {
   afterEach(async () => { await i18next.changeLanguage('en') })
 
-  // The turn-limit and default-model notes.
-  it.each(['turn_limit', 'default_model_applied', 'default_model_failed'] as const)('renders the %s copy in the dashboard language', async (id) => {
+  // The turn-limit, default-model and folder Default agent notes.
+  it.each(['turn_limit', 'default_model_applied', 'default_model_failed', 'folder_agent_label'] as const)('renders the %s copy in the dashboard language', async (id) => {
     await i18next.changeLanguage('zh-CN')
-    renderWithProviders(<NotificationCard n={note({ i18n: { id, params: { surface: 'discord' } } })} />)
+    renderWithProviders(<NotificationCard n={note({ i18n: { id, params: { surface: 'discord', folders: 'Jira Tickets (jira-ticket)' } } })} />)
     const copy = zh.components.notifications.systemNote
     const body = copy[`${id}_body`].replace('{{surface}}', 'discord').replace('{{productName}}', 'Kiro Crew')
+      .replace('{{folders}}', 'Jira Tickets (jira-ticket)')
     expect(screen.getByText(copy[`${id}_title`])).toBeInTheDocument()
     expect(screen.getByText(body.slice(0, 140))).toBeInTheDocument()
   })
@@ -43,6 +44,23 @@ describe('a gateway-written note', () => {
     const copy = zh.components.notifications.systemNote
     expect(screen.getByText(copy.chat_stopped_title)).toBeInTheDocument()
     expect(screen.getByText(copy[`${id}_body`])).toBeInTheDocument()
+  })
+
+  // Tabs that left the sidebar for History: one shared title, a body per path, counted.
+  const history = { count: 3, days: 7, limit: 500 }
+  const fill = (text: string) => text.replace('{{count}}', '3').replace('{{days}}', '7').replace('{{limit}}', '500')
+
+  it.each(['moved_to_history_startup', 'moved_to_history_idle'] as const)('renders the %s copy in the dashboard language', async (id) => {
+    await i18next.changeLanguage('zh-CN')
+    renderWithProviders(<NotificationCard n={note({ title: 'Sessions moved to History', body: 'English body', i18n: { id, params: history } })} />)
+    const copy = zh.components.notifications.systemNote
+    expect(screen.getByText(copy.moved_to_history_title)).toBeInTheDocument()
+    expect(screen.getByText(fill(copy[`${id}_body_other`]).slice(0, 140))).toBeInTheDocument()
+  })
+
+  it('picks the form its count needs', () => {
+    renderWithProviders(<NotificationCard n={note({ title: 'Sessions moved to History', body: 'English body', i18n: { id: 'moved_to_history_idle', params: { ...history, count: 1 } } })} />)
+    expect(screen.getByText(/^Archived 1 session idle past the 7-day mark/)).toBeInTheDocument()
   })
 
   it.each(['not_a_copy', 'constructor'])('keeps the stored English for the id %s', async (id) => {

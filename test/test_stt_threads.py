@@ -264,7 +264,6 @@ def test_unusable_stored_threads_load_as_auto_with_a_warning(tmp_path, stored, c
 
 
 def test_validation_turns_auto_into_the_int_without_a_type_warning(caplog):
-    pytest.importorskip("jsonschema")
     data = {"stt": {"threads": "auto"}}
     with caplog.at_level(logging.WARNING):
         validated = validate_config_data(data)

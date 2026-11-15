@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from redaction_structured_cases import github_classic
 
 from kiro_crew import agent
 from kiro_crew import work_ledger as wl
@@ -30,7 +31,7 @@ from kiro_crew.agent_files import (
     PIPELINE_CONDUCTOR_AGENT_FILENAME,
     SECURITY_CONDUCTOR_AGENT_FILENAME,
 )
-from kiro_crew.agent_materialization import conductor_agents
+from kiro_crew.agent_materialization import auto_approve, conductor_agents
 from kiro_crew.crew_log import projection
 from kiro_crew.crew_log.entry_types import WORK_ENTRY_TYPE
 from kiro_crew.crew_log.schema import Entry
@@ -135,7 +136,11 @@ def test_every_conductor_prompt_states_the_ledger_flow_once(
     the goal conductor's charter already states the flow, so it is left as is and
     carries no second copy."""
     data = _install(tmp_path, monkeypatch, installer, filename)
-    prompt = data["prompt"]
+    # Every conductor auto-approves the create and not the send, so the governed
+    # tail closes its prompt with the one line that says so.
+    seed_rule = f"{auto_approve.SEED_AFTER_CREATE_RULE}\n"
+    assert data["prompt"].endswith(f"\n\n{seed_rule}")
+    prompt = data["prompt"].removesuffix(seed_rule)
     if charter == "_CONDUCTOR_SYSTEM_PROMPT":
         assert prompt == agent._CONDUCTOR_SYSTEM_PROMPT
         assert agent._CONDUCTOR_WORK_LEDGER_PROTOCOL not in prompt
@@ -494,7 +499,7 @@ async def test_a_session_send_hand_back_redacts_the_decision(tmp_path, monkeypat
     its crew-log entry hold the same redacted text, never the raw secret."""
     recorded: list[dict[str, Any]] = []
     item_id, slots = await _board_with_blocked_item(tmp_path, monkeypatch, recorded)
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = github_classic(seed=19)  # a checksummed GitHub token, redacted
 
     resp = await _session_send(
         monkeypatch, slots, caller=PIPELINE, target=WORKER, message=f"use key {secret}"

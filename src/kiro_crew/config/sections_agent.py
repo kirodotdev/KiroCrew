@@ -24,6 +24,7 @@ from kiro_crew.config.sections_agent_fields import (
     DEFAULT_CWD_ALLOWED_ROOTS,
     JAIL_MODE_AUTO,
     KAS_BUNDLE_DEFAULT_URL,
+    KAS_FAIL_CLOSED_WEB_FETCH_BLOCKED_HELP,
     KAS_REFUSE_PLAIN_HTTP_MCP_HEADERS_HELP,
     YOLO_UNTIL_SHUTDOWN,
     coerce_model_context_tokens,
@@ -79,6 +80,17 @@ def coerce_fallback_model(raw: object) -> str:
 _CREW_MODE_AGENT_DEFAULT = "kirocrew-team-lead"
 
 
+def _chat_runtime_sharing_harness_defaults() -> dict:
+    """``{harness: default}`` for ``agent.chat_runtime_sharing_harnesses``.
+
+    Imported here rather than at module level so this owner binds no new imported
+    name the sections facade would have to bind too.
+    """
+    from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES
+
+    return dict(CHAT_RUNTIME_SHARING_HARNESSES)
+
+
 @dataclass
 class AgentConfig:
     approval_mode: str = field(
@@ -105,8 +117,9 @@ class AgentConfig:
         metadata=_meta(
             "Per-role models",
             "Optional per-task-class model overrides. Keys: 'background' "
-            "(lite / heartbeat background workers) and 'subagent' (spawned "
-            "sub-agents). An empty value or 'auto' defers to the chat default "
+            "(lite / heartbeat background workers), 'subagent' (spawned "
+            "sub-agents) and 'subagent_light' (sub-agents a spawn marks "
+            "light, while Light Sub-agent Tier is on). An empty value or 'auto' defers to the chat default "
             "(agent.model) and then to the provider default, so an unpinned "
             "role stays usable on every subscription tier. Pin a cheaper model "
             "here to run background / sub-agent work on it without changing the "
@@ -121,7 +134,7 @@ class AgentConfig:
         metadata=_meta(
             "Per-role reasoning effort",
             "Optional per-task-class reasoning effort, paired with role_models "
-            "(keys: 'background', 'subagent'). Empty for a role inherits the chat "
+            "(keys: 'background', 'subagent', 'subagent_light'). Empty for a role inherits the chat "
             "default (agent.reasoning_effort) and then the provider/model default. "
             "Only applies on reasoning-capable models. Like a model pin, a "
             "'subagent' effort runs each spawned sub-agent in its own runtime "
@@ -356,6 +369,13 @@ class AgentConfig:
             "KAS: refuse MCP headers over plain http", KAS_REFUSE_PLAIN_HTTP_MCP_HEADERS_HELP
         ),
     )
+    kas_fail_closed_web_fetch_blocked: bool = field(
+        default=False,
+        metadata=_meta(
+            "KAS: refuse all fetches on an unapplied blocked entry",
+            KAS_FAIL_CLOSED_WEB_FETCH_BLOCKED_HELP,
+        ),
+    )
     kas_bundle_url: str = field(
         default=KAS_BUNDLE_DEFAULT_URL,
         metadata=_meta(
@@ -391,8 +411,8 @@ class AgentConfig:
     crew_mode_agent: str = field(
         default=_CREW_MODE_AGENT_DEFAULT,
         metadata=_meta(
-            "Ultra Mode agent",
-            "The agent template a chat runs when Ultra Mode is turned on. "
+            "Conductor mode agent",
+            "The agent template a chat runs when conductor mode is turned on. "
             "Empty falls back to the default. Takes effect live for new chats; "
             "no gateway restart.",
         ),
@@ -621,6 +641,17 @@ class AgentConfig:
             "apps_trusted, which grants the same admission to ONE named app.",
         ),
     )
+    apps_never_adopt_backend_listener: bool = field(
+        default=False,
+        metadata=_meta(
+            "Never Adopt App Backend Listener",
+            "When true, the gateway never adopts or re-binds a healthy app backend "
+            "listener that it did not start in this run, such as an uninstall survivor "
+            "or a backend an earlier gateway run started. A config that fails to "
+            "load still adopts, as when the setting is off. Defaults to false: any "
+            "healthy listener on the app's port is adopted.",
+        ),
+    )
     apps_trusted: list[str] = field(
         default_factory=list,
         metadata=_meta(
@@ -763,8 +794,13 @@ class AgentConfig:
             "Deferral only starts once the specs cross tool_search_min_pct or "
             "tool_search_min_tokens; disabling reverts to sending full tool "
             "specs. Crew's servers defer only when the spawn runs the pinned "
-            "kiro-cli install or its kiro-cli-chat, and both are >= 2.27.0; any "
-            "other executable, an older or unknown version keeps them resident. "
+            "kiro-cli install or its kiro-cli-chat, and both are >= 2.27.0, or "
+            "runs a KIROCREW_KIRO_BIN override or a kiro-cli found only on PATH "
+            "that is itself >= 2.27.0 (and, when named kiro-cli on macOS or "
+            "Linux, >= 3.0.0); a PATH install is checked inside the sandbox, "
+            "which Windows lacks. Any other executable, an older or unknown "
+            "version keeps them resident, and so does every spawn after a "
+            "request is refused for a changed tool list, until restart. "
             "On Kiro Crew's own KAS engine bundle they always defer: that engine "
             "keeps its tools array fixed when a tool loads. To override the "
             "never-defer list, set "
@@ -804,6 +840,33 @@ class AgentConfig:
             "eligible backends (kiro-cli and codex); every other ACP backend "
             "ignores it and runs a dedicated process per subagent. Set false to "
             "opt an eligible backend back onto per-subagent processes.",
+        ),
+    )
+    chat_runtime_sharing_max_sessions: int = field(
+        default=10,
+        metadata=_meta(
+            "Chat Runtime Sharing: max sessions per process",
+            "How many dashboard chat sessions one shared agent process may serve "
+            "before the next session starts another, while the chat_runtime_sharing "
+            "feature preview is on. This is the blast radius of one process dying: a "
+            "larger value pools more sessions onto one process and loses more of them "
+            "at once. Has no effect while the preview is off, which keeps one process "
+            "per session. Clamped to 1..64.",
+        ),
+    )
+    chat_runtime_sharing_harnesses: dict = field(
+        default_factory=_chat_runtime_sharing_harness_defaults,
+        metadata=_meta(
+            "Chat Runtime Sharing: harnesses",
+            "Which harnesses may share one agent process between dashboard chats "
+            "while the chat_runtime_sharing feature preview is on, by harness name, "
+            "each true or false. A harness switched off keeps one process per chat. "
+            "A harness that is absent takes its default (KAS: on, codex: off). Has no effect "
+            "while the preview is off. Applies to chats started after the change.",
+            properties={
+                name: {"type": "boolean", "default": default}
+                for name, default in _chat_runtime_sharing_harness_defaults().items()
+            },
         ),
     )
     agent_started_turns: bool = field(
@@ -1029,13 +1092,15 @@ class AgentConfig:
             "time is not charged to the start budget "
             "or the startup deadline, but a subagent start that stays queued past "
             "the start-queue cap ends as never started, unless its subagent "
-            "timeout ends it first. A fixed bound, not adaptive: the adaptive loop is the MCP gateway spawn "
+            "timeout ends it first. Not adaptive: the adaptive loop is the MCP gateway spawn "
             'gate and the execution-cap controller. "auto" (the default) sizes it '
-            "once at gateway start as min(cpus // 4, available GB // 3) clamped to "
-            "2..16, with cpus the affinity count capped by a cgroup cpu.max quota; "
-            "the gateway logs the value in force at boot, and kirocrew doctor "
+            "at gateway start as min(cpus // 4, available GB // 3) clamped to "
+            "2..16, with cpus the affinity count capped by a cgroup cpu.max quota, "
+            "and widens it when a later reading finds more memory available; it "
+            "never narrows and never passes what the cores give. "
+            "The gateway logs the value in force at boot and each time it widens, and kirocrew doctor "
             "shows what auto picks for the host now. An integer sets it "
-            "explicitly, clamped to 1..64.",
+            "explicitly, clamped to 1..64, and is fixed until a restart.",
             restart=True,
         ),
     )
@@ -1330,6 +1395,18 @@ class AgentConfig:
             "and additionally to 60s below the turn ceiling at load time.",
         ),
     )
+    deny_override: bool = field(
+        default=True,
+        metadata=_meta(
+            "Deny Rule Override Card",
+            "When a deny rule refuses the agent's shell command in a dashboard "
+            "session you drive, show a card that lets you allow it once or for the "
+            "session. Turn this off to refuse every such command at once, with no "
+            "card and no wait for an answer; session overrides granted earlier "
+            "stop applying while it is off and apply again if it is turned back on, "
+            "until that session ends. Read on each request, so no restart is needed.",
+        ),
+    )
     session_control: bool = field(
         default=True,
         metadata=_meta(
@@ -1413,7 +1490,7 @@ class AgentConfig:
         default=True,
         metadata=_meta(
             "Conductor Own-Child Sends",
-            "Let the Conductor and the Ultra Mode team lead send to and close a "
+            "Let the Conductor and the conductor mode team lead send to and close a "
             "session they created themselves without an approval prompt, the way a "
             "Bot already does. A send or close aimed at any other session still "
             "prompts, and the child keeps its own approval mode. Turn this off to "
@@ -1495,6 +1572,39 @@ class AgentConfig:
             "controller cuts the cap when admitted work fails (timeouts, slow "
             "starts, fd or process exhaustion), so this is a smoothing "
             "interval rather than the memory guard.",
+        ),
+    )
+    windows_background_qos: bool = field(
+        default=False,
+        metadata=_meta(
+            "Windows Background QoS",
+            "Windows only. Mark the separate processes that run a chat's task "
+            "runs, and its sub-agents when the chat cannot host them itself, as "
+            "background work when they start: below-normal priority (inherited by "
+            "the git, build and test processes they run), a lower Job object CPU "
+            "weight, and EcoQoS. Priority and weight only matter when the CPU is "
+            "busy; EcoQoS can slow that work even on an idle machine. Sub-agents "
+            "that share the chat's own process (the default while Session Sharing "
+            "is on) are not marked, because the chat runs in that process too. A "
+            "task run a person opened is not marked when it starts the process, "
+            "but one that reuses a process background work started runs marked. "
+            "Applies to processes started "
+            "after the change. Off by default; no effect on macOS or Linux.",
+        ),
+    )
+    subagent_light_tier: bool = field(
+        default=False,
+        metadata=_meta(
+            "Light Sub-agent Tier",
+            "Let a spawn mark a helper sub-agent (search, lookup, run-and-report, "
+            "summarize) as light. A light spawn runs on the model in "
+            "agent.role_models.subagent_light and the effort in "
+            "agent.role_efforts.subagent_light for whichever of the two its call "
+            "left unset; a model or effort the call names always wins. A spawn "
+            "that names an agent, a crew or a backend is not changed. A pinned "
+            "model or effort starts the sub-agent in its own process, as any "
+            "per-spawn pin does. Off by default: with it off every spawn picks the "
+            "model and effort it always has.",
         ),
     )
     subagent_max_turns: int = field(

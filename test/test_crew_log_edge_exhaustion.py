@@ -43,8 +43,8 @@ def _isolated_home(tmp_path, monkeypatch):
     # the drain: release rides the handle's refcount, so a lease still held here is
     # a retention, not a frame that has not finished unwinding. The table is
     # process-wide, so the key it names may belong to an EARLIER file on this
-    # worker (the macOS run of this PR caught ``test_crew_log_core_segments.py``'s
-    # chmod-refusal test that way); the path in the message says whose it is.
+    # worker (``test_crew_log_core_segments.py``'s chmod-refusal test, say); the
+    # path in the message says whose it is.
     assert not lease._held, f"a lease outlived its test on this worker: {sorted(lease._held)}"
 
 
@@ -322,9 +322,10 @@ def test_oversize_raw_entry_is_refused_immediately_not_retried(caplog):
     assert emit.dropped_writes() == 1
     assert emit.buffered_writes() == 0
 
-    # A good write after it still works.
+    # A good write after it still works, and the marker admitting the loss leads it.
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert _body()[-1]["type"] == "turn/completed"
+    assert_drained()
+    assert [e["type"] for e in _body()][-2:] == ["write/dropped", "turn/completed"]
 
 
 def test_oversize_body_is_chunked_not_refused():

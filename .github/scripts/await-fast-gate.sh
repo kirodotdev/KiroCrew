@@ -296,6 +296,30 @@ while :; do
            "this is not a verdict on the code -- re-run this job."
       exit 1
     fi
+    # A spent PRIMARY limit cannot clear in 10s, so retrying at that pace only
+    # repeats the failure until TOTAL_BUDGET. Read when the REST bucket resets
+    # (`/rate_limit` is not counted against the quota): wait for it when it
+    # falls inside the budget left, and fail at once naming it when it does not.
+    # A secondary limit, or a reset that cannot be read, keeps the 10s retry.
+    if printf '%s' "$read_err" | grep -qi 'rate limit'; then
+      reset="$(gh api --method GET rate_limit \
+        --jq '.resources.core | select(.remaining == 0) | .reset' 2>/dev/null || true)"
+      if [[ "$reset" =~ ^[0-9]+$ ]]; then
+        delay=$(( reset - $(now) + 5 ))
+        [ "$delay" -ge 10 ] || delay=10
+        left=$(( TOTAL_BUDGET - elapsed ))
+        if [ "$delay" -gt "$left" ]; then
+          echo "::error::The installation API rate limit is spent and resets in ${delay}s," \
+               "past the ${left}s left of this job's ${TOTAL_BUDGET}s budget. The gates" \
+               "were never judged, so the matrix is not cleared to run; this is not a" \
+               "verdict on the code -- re-run this job after the reset."
+          exit 1
+        fi
+        echo "::warning::The installation API rate limit is spent; waiting ${delay}s for the reset."
+        nap "$delay"
+        continue
+      fi
+    fi
     nap 10
     continue
   fi

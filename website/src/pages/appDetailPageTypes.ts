@@ -80,6 +80,8 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   workerAutoApproveGrant?: { approved: boolean; staged: boolean }
   /** `permissions.reachableByUserSessions` verbs the owner approved, and the ones an update holds back; absent when undeclared. */
   userSessionReachGrant?: { approved: string[]; staged: string[] }
+  /** `permissions.desktopCapabilities` the owner approved, and the ones an update holds back; absent when undeclared. */
+  desktopCapabilitiesGrant?: { approved: string[]; staged: string[] }
   managed?: string
   source?: string
   installedAt?: string
@@ -119,7 +121,11 @@ interface AppPermissions {
   sessionApproval?: boolean
   memberThreads?: boolean
   workerAutoApprove?: boolean
+  chatSlots?: boolean
+  hiddenSessions?: boolean
   reachableByUserSessions?: string[]
+  desktopCapabilities?: string[]
+  webhookSource?: boolean
   [key: string]: unknown
 }
 

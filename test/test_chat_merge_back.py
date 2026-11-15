@@ -66,7 +66,11 @@ from kiro_crew.dashboard.state import _normalize_slot_key
 from kiro_crew.history import TranscriptBusy, TranscriptWithheld
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.security import redact as baseline_redact
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until
+
+#: A synthetic GitHub classic token (valid checksum) the redactor removes.
+_KEY = github_classic(seed=110)
 
 
 class TestPlanMerge:
@@ -122,7 +126,7 @@ class TestPlanMerge:
         # Written before rows carried ids, so the parent's rows have none.
         parent = [
             {"role": "user", "content": "p1", "ts": "T1"},
-            {"role": "assistant", "content": "the key is AKIAIOSFODNN7EXAMPLE", "ts": "T2"},
+            {"role": "assistant", "content": f"the key is {_KEY}", "ts": "T2"},
             {"role": "user", "content": "p3", "ts": "T3"},
         ]
         # The fork route minted its copies ids and redacted the reply it copied.
@@ -1381,13 +1385,13 @@ class TestDraft:
 
     @pytest.mark.asyncio
     async def test_a_credential_in_the_note_is_redacted_before_it_is_returned(self, chats, model):
-        model.replies[0] = "Redis works with the key AKIAIOSFODNN7EXAMPLE."
+        model.replies[0] = f"Redis works with the key {_KEY}."
 
         async with _client(chats.state) as client:
             status, body = await _draft(client)
 
         assert status == 200, body
-        assert "AKIAIOSFODNN7EXAMPLE" not in body["summary"]
+        assert _KEY not in body["summary"]
         assert "[REDACTED: credential]" in body["summary"]
 
     @pytest.mark.asyncio

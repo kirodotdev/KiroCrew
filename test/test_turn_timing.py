@@ -122,9 +122,9 @@ async def test_runner_turn_logs_one_line_with_every_field(tmp_path, timing_on, m
     monkeypatch.setattr(turn_timing, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
     real_wait = memory_startup.wait_for_memory_preparation
 
-    async def held_wait(task):
+    async def held_wait(task, **kw):
         clock["now"] += 0.25
-        return await real_wait(task)
+        return await real_wait(task, **kw)
 
     monkeypatch.setattr(memory_startup, "wait_for_memory_preparation", held_wait)
     slot = _slot()
@@ -159,10 +159,10 @@ async def test_a_nested_prompts_get_turn_records_nothing_into_the_outer_line(
     log = logging.getLogger("test")
     real_wait = memory_startup_mod.wait_for_memory_preparation
 
-    async def nested_admission_wait(task):
+    async def nested_admission_wait(task, **kw):
         start_priority.notify_start_queue(log, None, 5000.0, start_priority.START_QUEUE_ADMISSION)
         turn_timing.phase("spawn_init", 6000.0)
-        return await real_wait(task)
+        return await real_wait(task, **kw)
 
     monkeypatch.setattr(memory_startup_mod, "wait_for_memory_preparation", nested_admission_wait)
 

@@ -322,10 +322,11 @@ describe('narrow-first layout baseline', () => {
     // from the art's, so a square box is what makes the ink fill it and start at the
     // box's own left edge -- i.e. what makes the sum below the whole story. A `w-5 h-6`
     // slip would centre the art inside the taller box and inset the ink silently, so
-    // the two edges are pinned EQUAL rather than pinned to a literal. The img lives in
-    // MobileNavGlyph and its className is a template literal (a visibility class is
-    // appended after the load-proof swap), so the match runs to the backtick.
-    const mark = app.match(/<img src=\{avatar\}[^\n]*className=\{?[`"]w-(\d+(?:\.\d+)?) h-(\d+(?:\.\d+)?) rounded-md/)
+    // the two edges are pinned EQUAL rather than pinned to a literal. The mark is
+    // MobileNavGlyph's PackLoaderImage and its className is a template literal (a
+    // visibility class is appended after the load-proof swap), so the match runs to
+    // the backtick.
+    const mark = app.match(/<PackLoaderImage src=\{avatar\}[^\n]*className=\{?[`"]w-(\d+(?:\.\d+)?) h-(\d+(?:\.\d+)?) rounded-md/)
     expect(mark, 'the nav button should render the branding avatar as the mark').toBeTruthy()
     expect(
       mark![1],

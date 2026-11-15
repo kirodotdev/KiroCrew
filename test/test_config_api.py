@@ -141,8 +141,7 @@ class TestSchemaApiEndpoint:
         async with TestClient(TestServer(_make_app())) as client:
             # Request with a known tag
             known_tags = _all_tags()
-            if not known_tags:
-                pytest.skip("No tags in registry")
+            assert known_tags, "the config registry carries no tags"
 
             tag = sorted(known_tags)[0]
             resp = await client.get(f"/api/config/schema?tags={tag}")

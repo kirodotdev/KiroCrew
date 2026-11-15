@@ -20,6 +20,21 @@ from kiro_crew.safety_override import reset_yolo_policy_state as _reset_yolo_pol
 
 
 @pytest.fixture(autouse=True)
+def _ledger_create_ignores_live_memory(_floor_monkeypatch):
+    """A work-ledger ``create`` never depends on this runner's free memory.
+
+    ``_create_item`` refuses ``host_memory_critical`` when the live admission
+    verdict refuses, and that verdict probes live memory, which a CI runner can
+    have at under 2 GB. So every create in the suite would pass or fail by runner.
+    The refusal is pinned off here; the refusal tests put the real one back.
+    """
+    from kiro_crew import work_ledger
+
+    # Through the facade, which writes the patch into every module holding the name.
+    _floor_monkeypatch.setattr(work_ledger, "_refuse_if_host_critical", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _small_default_host(_floor_monkeypatch):
     """Size every ``"auto"`` start limit from a fixed small host, not this machine.
 
@@ -174,6 +189,52 @@ def _drop_live_config_snapshot():
 
 
 @pytest.fixture(autouse=True)
+def _forget_tracing_switch():
+    """Give every test an unread tracing switch.
+
+    ``kiro_crew.tracing.provider`` resolves the switch once and serves the cached
+    answer until ``reset_for_testing()``. A test that boots the gateway services
+    (``service_boot`` calls ``watch_config``, which resolves it) leaves "off" cached,
+    so a later test on the same worker that writes its own config is told tracing
+    is off and exports nothing, with no log line. Measured: ``test_slack_gateway.py``'s
+    ``test_init_services_creates_all`` followed by ``test_tracing_otlp.py``'s
+    ``test_a_traced_turn_reaches_a_loopback_receiver_with_its_vault_header``.
+
+    Reset at setup, not teardown, so ``_no_leaked_telemetry_exporter`` still sees
+    (and reports) an exporter thread a test left running. A test that never
+    imported the module pays one dict lookup.
+    """
+    provider = sys.modules.get("kiro_crew.tracing.provider")
+    if provider is not None:
+        provider.reset_for_testing()
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _forget_gatewayd_telemetry_override():
+    """Give every test the platform-context telemetry provider, not gatewayd's.
+
+    ``gatewayd._prepare_telemetry`` (run by ``gatewayd.main()``) installs a
+    process-level provider factory through ``use_telemetry_provider`` and marks the
+    process as gatewayd. Nothing in production undoes that, so a test that drives
+    ``main()`` in process leaves it set, and every later test on the worker resolves
+    OTLP egress through gatewayd's provider instead of ``current_context().telemetry``.
+    A test that installs a raising provider with ``set_context`` is then answered
+    "no egress". Measured: ``test_mcp_gatewayd_coverage.py``'s
+    ``TestMain::test_exits_with_the_amain_return_code`` followed by
+    ``test_config_patch.py``'s
+    ``test_enable_is_refused_when_the_egress_posture_cannot_be_resolved`` (200, not 409).
+
+    Reset at setup, and only when the override is set, so a test that never reached
+    gatewayd pays one dict lookup and two attribute reads.
+    """
+    provider = sys.modules.get("kiro_crew.metrics.provider")
+    if provider is not None and (provider._provider_factory is not None or provider._is_gatewayd):
+        provider.reset_for_testing()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_env_boot_record_and_ownership():
     """Give every test an empty boot ``.env`` record and ``.env`` ownership set.
 
@@ -233,9 +294,12 @@ def _release_stt_engine():
     reading a different setting would silently get the earlier one.
     """
     yield
-    from kiro_crew.stt import engine as stt_engine
-
-    stt_engine._engine = None
+    # Read, never imported, here: this runs before the test's ``monkeypatch`` is
+    # undone, so a first import would execute the module (and numpy with it) under
+    # whatever ``sys.platform`` the test set. A module nobody imported holds no engine.
+    stt_engine = sys.modules.get("kiro_crew.stt.engine")
+    if stt_engine is not None:
+        stt_engine._engine = None
 
 
 @pytest.fixture(autouse=True)
@@ -474,6 +538,24 @@ def _fresh_aws_bin_dir_trust(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_hardlink_spec_warnings():
+    """Start each test with no hardlink refusal of an agent spec already warned about.
+
+    ``agent_discovery_parts.spec_reads._HARDLINK_WARNED`` holds the resolved paths
+    whose refusal this process logged at WARNING; a path an earlier test on the same
+    worker refused would turn this test's first WARNING into DEBUG. The facade and
+    its owner hold one set, so it is cleared in place. Only when already imported,
+    and read with ``getattr`` so a tree without the set (``prove.py``'s revert of the
+    fix) still runs its tests.
+    """
+    spec_reads = sys.modules.get("kiro_crew.agent_discovery_parts.spec_reads")
+    warned = getattr(spec_reads, "_HARDLINK_WARNED", None)
+    if warned is not None:
+        warned.clear()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_cjk_segmenter():
     """Forget session search's registered Chinese segmenter around each test.
 
@@ -491,6 +573,23 @@ def _reset_cjk_segmenter():
     module = sys.modules.get("kiro_crew.history_search")
     if module is not None:
         module.reset_cjk_segmenter_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _forget_app_turn_approver():
+    """Forget the gateway's app-turn approval prompt around each test.
+
+    ``agent_turn_sdk.set_turn_approver`` fills one process-global slot, and the
+    gateway boot fills it (``_init_task_runner``). A test that boots the gateway
+    would leave every later app turn in the worker asking that test's gateway.
+    """
+    module = sys.modules.get("kiro_crew.apps.agent_turn_sdk")
+    if module is not None:
+        module.set_turn_approver(None)
+    yield
+    module = sys.modules.get("kiro_crew.apps.agent_turn_sdk")
+    if module is not None:
+        module.set_turn_approver(None)
 
 
 @pytest.fixture(autouse=True)

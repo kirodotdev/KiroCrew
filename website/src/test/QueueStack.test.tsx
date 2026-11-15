@@ -730,3 +730,13 @@ describe('QueueStack durable verdict', () => {
     expect(labels[0].closest('[data-testid="queue-card"]')).toHaveTextContent('refused')
   })
 })
+
+describe('QueueStack restored card', () => {
+  it('stops the hourglass on a restored card, which waits for the person', () => {
+    const live = render(<QueueStack messages={[queued('live', 'q1')]} />)
+    expect(screen.getByTestId('queue-card-hourglass').className).toContain('animate-')
+    live.unmount()
+    render(<QueueStack messages={[{ ...queued('restored', 'r1'), meta: { queueId: 'r1', restored: true } }]} />)
+    expect(screen.getByTestId('queue-card-hourglass').className).not.toContain('animate-')
+  })
+})

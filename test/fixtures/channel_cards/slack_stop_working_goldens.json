@@ -1,0 +1,108 @@
+{
+  "session_key": "slack:C0123ABCD:1731400000.000100",
+  "payloads": {
+    "build_stopping_blocks": [
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": "⏹  *Stopping…*\nCooperative cancel in progress."
+        }
+      },
+      {
+        "type": "actions",
+        "block_id": "stop-actions-slack:C0123ABCD:1731400000.000100",
+        "elements": [
+          {
+            "type": "button",
+            "action_id": "stop_kill_now",
+            "style": "danger",
+            "text": {
+              "type": "plain_text",
+              "text": "Kill Now"
+            },
+            "value": "slack:C0123ABCD:1731400000.000100"
+          }
+        ]
+      }
+    ],
+    "build_stopped_blocks": [
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": "⏹  *[Stopped]*"
+        }
+      }
+    ],
+    "build_stop_failed_blocks": [
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": "⛔  *[Stop Failed, Session Reset]*"
+        }
+      }
+    ],
+    "build_working_blocks": [
+      {
+        "type": "context",
+        "elements": [
+          {
+            "type": "mrkdwn",
+            "text": "⏳ _Working…_"
+          }
+        ]
+      },
+      {
+        "type": "actions",
+        "elements": [
+          {
+            "type": "button",
+            "action_id": "mc_inline_stop_slack:C0123ABCD:1731400000.000100",
+            "text": {
+              "type": "plain_text",
+              "text": "⏹ Stop"
+            },
+            "value": "slack:C0123ABCD:1731400000.000100",
+            "style": "danger"
+          }
+        ]
+      }
+    ],
+    "build_working_blocks_with_dashboard_link": [
+      {
+        "type": "context",
+        "elements": [
+          {
+            "type": "mrkdwn",
+            "text": "⏳ _Working…_"
+          }
+        ]
+      },
+      {
+        "type": "actions",
+        "elements": [
+          {
+            "type": "button",
+            "action_id": "mc_inline_stop_slack:C0123ABCD:1731400000.000100",
+            "text": {
+              "type": "plain_text",
+              "text": "⏹ Stop"
+            },
+            "value": "slack:C0123ABCD:1731400000.000100",
+            "style": "danger"
+          },
+          {
+            "type": "button",
+            "text": {
+              "type": "plain_text",
+              "text": "Link to Dashboard"
+            },
+            "action_id": "mc_link_dashboard"
+          }
+        ]
+      }
+    ]
+  }
+}

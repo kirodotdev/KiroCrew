@@ -1307,6 +1307,7 @@ async def _handle_compact_command(
             try:
                 await slack.remove_reaction(channel, msg_ts, "recycle")
             except Exception:
+                # The 🔄 reaction is cosmetic; a failed removal changes nothing else.
                 pass
             return
 
@@ -1335,6 +1336,7 @@ async def _handle_compact_command(
         try:
             await slack.remove_reaction(channel, msg_ts, "recycle")
         except Exception:
+            # The 🔄 reaction is cosmetic; a failed removal changes nothing else.
             pass
     finally:
         sessions.release(session_key)

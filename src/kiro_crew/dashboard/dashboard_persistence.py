@@ -72,7 +72,7 @@ class DashboardPersistenceCoordinator:
         # Keyed on the path as well as the set: a test (or a home switch) can repoint
         # ``config_dir`` under a live coordinator, where an unchanged set must not
         # suppress the first write to the NEW file.
-        self._open_slots_written: tuple[Path, frozenset[str]] | None = None
+        self._open_slots_written: tuple[Path, frozenset[str], str, tuple[str, ...]] | None = None
         # Guards the whole sample-compare-rotate-write-publish sequence above. A
         # plain Lock rather than an RLock: nothing inside that sequence re-enters it,
         # and an RLock would quietly permit a future caller that does.
@@ -469,14 +469,33 @@ class DashboardPersistenceCoordinator:
             # the file to advance a timestamp nothing reads would make the skip
             # unreachable.
             written = frozenset(keys)
-            if self._open_slots_written == (path, written) and path.exists():
+            # The focus and visible keys order the next restore. They are part of the
+            # comparison so a focus change alone reaches the disk.
+            focus = str(getattr(owner, "last_focused_slot", "") or "")
+            visible = [str(k) for k in getattr(owner, "last_visible_slots", ())]
+            if not focus:
+                # No dashboard has reported a focus in this process (a flush before the
+                # restore, an unattended gateway, the shutdown flush): the saved focus
+                # stays until a live report replaces it.
+                from kiro_crew.dashboard.slot_persistence.restore_inputs import (
+                    read_open_slot_focus,
+                )
+
+                focus, visible = read_open_slot_focus(path.parent)
+            marker = (path, written, focus, tuple(visible))
+            if self._open_slots_written == marker and path.exists():
                 return
             # The generation about to be replaced becomes the fallback, BEFORE the
             # replacement starts. Ordered this way because the window the fallback
             # covers is the replacement itself.
             self._rotate_open_slots_generation(path)
             payload = self._json_codec_provider().dumps(
-                {"keys": keys, "ts": self._wall_time_provider()}
+                {
+                    "keys": keys,
+                    "ts": self._wall_time_provider(),
+                    "focus": focus,
+                    "visible": visible,
+                }
             )
             # The canonical writer uses a unique temporary file, which avoids
             # collisions between the periodic and shutdown flush threads.
@@ -492,7 +511,7 @@ class DashboardPersistenceCoordinator:
             # user's whole working set on the next flush.
             self._atomic_write_provider()(path, payload, mode=0o600, fsync=True)
             self._fsync_dir(path.parent)
-            self._open_slots_written = (path, written)
+            self._open_slots_written = marker
         except Exception:
             # Including a failed write: what landed is unknown, so forget what this
             # coordinator believes is on disk rather than letting the skip above

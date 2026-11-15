@@ -23,7 +23,6 @@ from kiro_crew.dashboard.handlers import updates
 from kiro_crew.gateway_restart import resolve_restart_launcher
 from kiro_crew.platform.bootstrap import build_default_context
 from kiro_crew.platform.context import PlatformCompositionError, set_context
-from kiro_crew.slack.gateway import GatewayOrchestrator
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
 
@@ -89,21 +88,6 @@ class TestLauncherContract:
             await updates._restart_gateway(state, resolver=Mock())
         state.sessions.close_all.assert_not_awaited()
         assert not state._gateway_restart_in_progress
-
-    @pytest.mark.asyncio
-    async def test_auto_restart_rejects_before_callback_fence(self, monkeypatch, tmp_path):
-        _compose(monkeypatch, str(tmp_path / "missing"))
-        orch = SimpleNamespace(
-            _pending_update_respawn=None,
-            dashboard_state=None,
-            sessions=SimpleNamespace(close_all=AsyncMock(), fence_update_restart=Mock()),
-            _drain_update_callback_work=AsyncMock(),
-        )
-        with pytest.raises(ValueError, match="Cannot restart"):
-            await GatewayOrchestrator._restart_after_update(orch, Mock())
-        orch._drain_update_callback_work.assert_not_awaited()
-        orch.sessions.fence_update_restart.assert_not_called()
-        orch.sessions.close_all.assert_not_awaited()
 
     @pytest.mark.parametrize("windows", [False, True])
     def test_exec_preserves_argv_environment_and_utf8(self, monkeypatch, tmp_path, windows):
@@ -236,30 +220,15 @@ if os.environ.pop("PROBE_FIRST", ""):
         return True
 
     async def run():
-        if MODE == "dashboard-update":
-            update_provider.apply_policy_update = apply
-            # The owner's dashboard claims: POST /api/update is owner-gated.
-            class _OwnerRequest(dict):
-                app = {"state": state}
-
-            await updates.api_update_apply(_OwnerRequest(app="", user="local-app"))
-        elif MODE == "automatic-update":
-            await apply()
-            orch = SimpleNamespace(_pending_update_respawn=None, dashboard_state=None,
-                sessions=None, _UPDATE_DRAIN_TIMEOUT_SECS=1,
-                _drain_update_callback_work=AsyncMock(return_value=True),
-                _stop_mcp_broker=AsyncMock())
-            await gateway.GatewayOrchestrator._restart_after_update(orch, lambda: sys.executable)
-        else:
-            await apply()
-            await updates._restart_gateway(state, resolver=lambda: sys.executable)
+        await apply()
+        await updates._restart_gateway(state, resolver=lambda: sys.executable)
         raise AssertionError("restart returned without replacing the probe")
     asyncio.run(run())
 """
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX basename-dispatched shell launcher fixture")
-@pytest.mark.parametrize("mode", ["manual", "dashboard-update", "automatic-update"])
+@pytest.mark.parametrize("mode", ["manual"])
 @pytest.mark.parametrize("remove_a", [False, True], ids=["A-retained", "A-removed"])
 def test_managed_bundle_switch(tmp_path, mode, remove_a):
     root = tmp_path / "managed install with spaces"

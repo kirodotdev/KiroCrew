@@ -72,7 +72,8 @@ class _ScratchHandoff:
     """Who removes the throwaway git dir when the fetch is cancelled mid-prepare.
 
     The prepare step runs on a worker thread that a cancel cannot stop, and the
-    dir carries no scratch owner record, so the scratch sweep never reclaims it.
+    dir carries no scratch owner record and no allocator's name, so the scratch
+    sweep never reclaims it.
     Under :attr:`lock`, the worker either sees :attr:`abandoned` and removes the
     dir itself, or records it in :attr:`scratch` for the cancelled caller to
     remove. Neither side waits on the other, so a cancel returns at once.
@@ -137,8 +138,9 @@ def _prepare_isolated_fetch(
             proj, remote, branch, url, objects_dir, object_format, scratch
         )
     except BaseException:
-        # The scratch sweep never deletes a directory with no owner record, and
-        # this one has none, so a dir left here would stay for good.
+        # The scratch sweep leaves a directory with no owner record and no
+        # allocator's name in place, and this one has neither, so a dir left
+        # here would stay for good.
         shutil.rmtree(scratch, ignore_errors=True)
         raise
     if prepared is None or handoff is None:

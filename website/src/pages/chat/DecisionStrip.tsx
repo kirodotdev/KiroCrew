@@ -197,7 +197,7 @@ function ModelRouteStrip({
 /**
  * The transcript's receipt for one skill-selection decision.
  *
- * The record on the row is the ONLY condition. The Decisions (Jev) switch is not
+ * The record on the row is the ONLY condition. The Decisions switch is not
  * read here, deliberately: a stamped record is history that already happened and
  * already sits on this machine, so drawing it sends nothing. The switch governs
  * whether a FUTURE turn may ask Jev. Gating the receipt on it instead would mean

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { renderHook } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
@@ -826,6 +826,18 @@ describe('PinnedMessagesPanel', () => {
     fireEvent.click(unpinBtns[0])
     expect(defaultProps.onUnpin).toHaveBeenCalledWith('pin-1')
     expect(defaultProps.onJumpToMessage).not.toHaveBeenCalled() // stopPropagation
+  })
+
+  it('offers Put in composer on the user pin only, outside the hover row, without the entry jump', () => {
+    const onPutInComposer = vi.fn()
+    render(<PinnedMessagesPanel {...defaultProps} onPutInComposer={onPutInComposer} />)
+    const [assistantEntry, userEntry] = screen.getAllByTestId('pin-entry')
+    expect(within(assistantEntry).queryByRole('button', { name: 'put_in_composer' })).toBeNull()
+    const button = within(userEntry).getByRole('button', { name: 'put_in_composer' })
+    expect(within(userEntry).getByTestId('pin-actions')).not.toContainElement(button)
+    fireEvent.click(button)
+    expect(onPutInComposer).toHaveBeenCalledWith(mockUserPin.message_ts, mockUserPin.mid)
+    expect(defaultProps.onJumpToMessage).not.toHaveBeenCalled()
   })
 
   it('renders no title row and no close button — the tab strip owns both', () => {

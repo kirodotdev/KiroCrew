@@ -46,9 +46,14 @@ describe('effectiveTtlHours — a TTL chosen elsewhere cannot survive onto a row
     expect(effectiveTtlHours(TTL_72, coreRow(false))).toBe(0)
   })
 
-  it('keeps a 72-hour choice on a row that does support expiration', () => {
+  it('keeps a 72-hour choice on a row whose publish carries a TTL', () => {
     expect(effectiveTtlHours(TTL_72, appRow())).toBe(72)
-    expect(effectiveTtlHours(TTL_72, coreRow(true))).toBe(72)
+  })
+
+  it('drops a 72-hour choice on any core row, since the core publish carries no TTL', () => {
+    // A core destination that declares supports_expiration still never receives
+    // ttl_hours, so the reaper's 72 hours would describe a lifetime nothing applies.
+    expect(effectiveTtlHours(TTL_72, coreRow(true))).toBe(0)
   })
 
   it('treats persistent as persistent everywhere', () => {
@@ -60,7 +65,7 @@ describe('effectiveTtlHours — a TTL chosen elsewhere cannot survive onto a row
     // The control's visibility and the value must read the SAME predicate, which is
     // what stops a hidden control from leaving a live choice behind it.
     expect(ttlSelectableFor(coreRow(false))).toBe(false)
-    expect(ttlSelectableFor(coreRow(true))).toBe(true)
+    expect(ttlSelectableFor(coreRow(true))).toBe(false)
     expect(ttlSelectableFor(appRow())).toBe(true)
     expect(ttlSelectableFor(undefined)).toBe(true)
   })
@@ -147,10 +152,12 @@ describe('PublishHub — the TTL control is absent where no TTL can apply', () =
     })
   })
 
-  it('shows it for a core row that can', async () => {
+  it('hides it for a core row that declares supports_expiration', async () => {
     mockCore(true)
     render(<PublishHub artifact={fakeArtifact} />, { wrapper })
     fireEvent.click(await screen.findByText('Public web (shared drive)'))
-    expect(await screen.findByLabelText(/time to live/i)).toBeTruthy()
+    // The visibility choice renders in the same pass as the TTL control would.
+    await screen.findByRole('radio', { name: /private/i })
+    expect(screen.queryByLabelText(/time to live/i)).toBeNull()
   })
 })

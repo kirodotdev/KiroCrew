@@ -193,6 +193,11 @@ export type AppsData = {
    */
   registriesUnknown: boolean
   /**
+   * True when the listing is the server's offline fallback because the official
+   * catalog could not be read: the shelf shows the bundled seed rows only.
+   */
+  catalogUnavailable: boolean
+  /**
    * The registries whose latest index fetch failed, as the listing reported
    * them: their apps are missing from the shelf, or shown as last synced.
    */
@@ -452,7 +457,8 @@ export async function registryQueryFn(): Promise<{
       apps: (rawApps as RegistryApp[]).map(normalizeRegistryApp),
       rawApps,
       // True when the server could not read the official catalog and answered
-      // with its offline listing; the store's refresh reports it.
+      // with its offline listing; the store's listing notice and its refresh
+      // report it.
       catalogUnavailable: res.catalogUnavailable === true,
       registryFetchFailures: normalizeRegistryFetchFailures(res.registryStatus),
       categoryOrder: publishedOrder,
@@ -477,6 +483,7 @@ export default function useAppsData(): AppsData {
 
   const { data: registryData, isLoading: registryLoading, error: registryError } = useQuery<{
     apps: RegistryApp[]
+    catalogUnavailable: boolean
     registryFetchFailures: RegistryFetchFailure[]
     categoryOrder: string[]
     editorialSections: EditorialBlock[]
@@ -724,6 +731,7 @@ export default function useAppsData(): AppsData {
     categories,
     sources,
     registriesUnknown: registriesData === undefined,
+    catalogUnavailable: registryData?.catalogUnavailable === true,
     registryFetchFailures: registryData?.registryFetchFailures ?? NO_FETCH_FAILURES,
     installedApps,
     updatables,

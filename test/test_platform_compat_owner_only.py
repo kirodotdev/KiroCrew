@@ -32,8 +32,11 @@ pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
 class TestChmodShims:
     def test_chmod_safe_noop_on_missing_is_safe(self):
         # chmod_safe logs + swallows on failure (POSIX) and is a no-op on
-        # Windows — a non-existent path must not raise either way.
-        pc.chmod_safe(os.path.join(tempfile.gettempdir(), "no-such-mc-file"), 0o600)
+        # Windows — a non-existent path must not raise either way, and must
+        # not be created with a mode the caller never chose.
+        missing = os.path.join(tempfile.gettempdir(), "no-such-mc-file")
+        pc.chmod_safe(missing, 0o600)
+        assert not os.path.exists(missing)
 
 
 class TestRestrictToOwnerArgvOnLinux:
@@ -380,8 +383,8 @@ class TestRestrictToOwner:
     A bare ``if IS_POSIX: os.chmod(...)`` guard would leave Windows with NO per-file
     owner-only restriction on the token signing key, per-app secrets, refresh-token
     state, snapshot tarball, and cron internal-secret temp file.
-    ``restrict_to_owner`` covers both: POSIX chmod 0o600,
-    Windows an owner-only DACL applied via icacls (S-1-3-4 = Owner Rights).
+    ``restrict_to_owner`` covers both: POSIX chmod 0o600, Windows an in-process
+    owner-only DACL granting Owner Rights (S-1-3-4) and the invoking user's SID.
     """
 
     def test_applies_owner_only_mode_on_posix(self, tmp_path):
@@ -679,7 +682,7 @@ class TestOwnerOnlyDaclIsIdempotent:
         assert written == [], "an unchanged DACL must not be re-applied"
 
     def test_a_mismatched_dacl_is_still_written(self, tmp_path, monkeypatch):
-        # Guards the failure mode that would make this change a security bug:
+        # Guards the failure mode that would make this helper a security bug:
         # the skip must never swallow a write that is actually needed.
         probed, written = self._capture(monkeypatch, matches=False)
         d = tmp_path / "home"

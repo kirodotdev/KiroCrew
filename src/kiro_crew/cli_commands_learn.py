@@ -128,6 +128,11 @@ def _learn(args: argparse.Namespace) -> None:
         _negative = getattr(args, "negative", None)
         if _negative is not None:
             _to_check["negative"] = _negative
+        # Sent only when stated, as the learn_add MCP tool sends it: an omitted
+        # tier leaves the row unstated rather than asserting one.
+        _applies = getattr(args, "applies", None)
+        if _applies:
+            _to_check["applies"] = _applies
         try:
             cleaned_add = validate_tool_args(_to_check, LEARN_ADD_SCHEMA)
         except ValidationError as exc:
@@ -169,6 +174,11 @@ def _learn(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    # No verb: print the usage line before the vector store below is built, since
+    # init() creates memory.db on a fresh data home.
+    if action not in ("add", "list", "remove"):
+        print("Usage: kirocrew learn {add|list|remove}")
+        return
     vs = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim, config=cfg)
     vs.init()
     try:
@@ -181,6 +191,35 @@ def _learn(args: argparse.Namespace) -> None:
             rule = cleaned_add["rule"]
             category = args.category
             negative = cleaned_add.get("negative")
+            # The lesson origin gate. A call from a shell inside an agent session
+            # has no chat turn to read, so it is gated as a learn_add no person
+            # triggered; a call from a person's own terminal carries none of the
+            # agent markers and is the person. ``off`` reads nothing.
+            from kiro_crew.config.memory_sections import lesson_origin_gate_mode_from
+
+            origin = None
+            source = "user_explicit"
+            # The stated tier, through the same origin gate POST /api/lessons
+            # runs it through; absent stays None (unstated).
+            applies = cleaned_add.get("applies") or None
+            origin_mode = lesson_origin_gate_mode_from(
+                getattr(cfg.memory, "lesson_origin_gate", None)
+            )
+            if origin_mode != "off":
+                from kiro_crew.cloud.aws import _in_agent_session
+                from kiro_crew.memory_origin_gate import (
+                    PATH_CLI_LEARN_ADD,
+                    TURN_AUTOMATIC,
+                    gate_learn_add_turn,
+                )
+
+                if _in_agent_session():
+                    origin = gate_learn_add_turn(
+                        applies, TURN_AUTOMATIC, origin_mode, rule=rule, path=PATH_CLI_LEARN_ADD
+                    )
+                    applies, source = origin.applies, origin.source
+                    if origin.drop_negative:
+                        negative = None
             # The reporting form, not the bool. Most falsy returns mean the lesson
             # is already stored exactly as submitted, so reading one as "the vector
             # store did not take it" and writing a second record into lessons.jsonl
@@ -196,7 +235,14 @@ def _learn(args: argparse.Namespace) -> None:
             # So there is no fallback here, not a narrowed one. There is no "vector
             # store unavailable" state to fall back from: ``vs`` is constructed and
             # ``init()``-ed unconditionally above.
-            result = vs.write_lesson(rule, category, negative)
+            if origin is None:
+                result = vs.write_lesson(rule, category, negative, applies=applies)
+            else:
+                result = vs.write_lesson(rule, category, negative, source, applies=applies)
+                if origin.gate.loggable:
+                    from kiro_crew.memory_origin_gate import record_origin_gate
+
+                    record_origin_gate(vs, origin.gate)
             neg = f" ({negative})" if negative else ""
             # What the save COST. The store's dedup rules tombstone a stored lesson
             # the submitted rule contains or heavily overlaps, and printing "Saved:"
@@ -257,9 +303,15 @@ def _learn(args: argparse.Namespace) -> None:
             # Anything else printing it would show a value the store may not have.
             # `learn list` is where stored values belong.
             if result.outcome is LessonWriteOutcome.INSERTED:
+                demoted = (
+                    "\n  Stored as an on_topic finding, not a standing rule: this ran inside an\n"
+                    "  agent session and memory.lesson_origin_gate is enforce."
+                    if origin is not None and origin.source != "user_explicit"
+                    else ""
+                )
                 print(
                     f"Saved: {rule}{neg} [{category}]\n{_LEARN_EMBED_NOTE}\n"
-                    f"{_LEARN_DEDUP_NOTE}{lost}"
+                    f"{_LEARN_DEDUP_NOTE}{lost}{demoted}"
                 )
             elif result.outcome is LessonWriteOutcome.ENRICHED:
                 # No _LEARN_DEDUP_NOTE here: an enrichment matched its existing row in
@@ -399,8 +451,5 @@ def _learn(args: argparse.Namespace) -> None:
             else:
                 print(f"No lessons match: {remove_query}", file=sys.stderr)
                 sys.exit(1)
-
-        else:
-            print("Usage: kirocrew learn {add|list|remove}")
     finally:
         vs.close()

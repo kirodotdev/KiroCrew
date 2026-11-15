@@ -47,6 +47,23 @@ describe('FolderPanel', () => {
     expect(screen.getByText('README.md')).toBeTruthy()
   })
 
+  it('shows the full folder path in the bubble on keyboard focus, never only in a native title', async () => {
+    vi.spyOn(api, 'browseFiles').mockResolvedValue(LISTING)
+    renderWithProviders(<FolderPanel path="/Users/me/ws" onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    // The header names the folder and the body line shows its whole path; both
+    // are cut off with an ellipsis in a narrow panel.
+    // `ws` is described by its path through a hidden copy, so pick the shown line.
+    const pathLine = screen.getAllByText('/Users/me/ws').find(el => !el.hidden)!
+    for (const line of [screen.getByText('ws'), pathLine]) {
+      expect(line).not.toHaveAttribute('title')
+      expect(line).toHaveAttribute('tabindex', '0')
+      fireEvent.focus(line)
+      expect(screen.getByRole('tooltip')).toHaveTextContent('/Users/me/ws')
+      fireEvent.blur(line)
+    }
+  })
+
   it('hands a file off to onFileOpen rather than handling it itself', async () => {
     vi.spyOn(api, 'browseFiles').mockResolvedValue(LISTING)
     const onFileOpen = vi.fn()

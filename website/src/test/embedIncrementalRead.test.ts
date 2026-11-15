@@ -10,6 +10,11 @@ describe('embedIncrementalRead', () => {
     expect(embedReadPath('s', 200, sent)).toBe(`/api/chat/slots/s?limit=200&from=4&since=7&digest=${digest}`)
   })
 
+  it('does not opt into the byte-bounded page: the embed never pages back with before', () => {
+    expect(embedReadPath('s', 200, null)).not.toContain('page_bytes')
+    expect(embedReadPath('s', 200, sent)).not.toContain('page_bytes')
+  })
+
   it('only echoes a well-formed cursor', () => {
     expect(isEmbedCursor(sent)).toBe(true)
     expect(isEmbedCursor({ from: 4, since: 3, digest })).toBe(false)

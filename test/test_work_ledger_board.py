@@ -23,6 +23,7 @@ from aiohttp.test_utils import make_mocked_request
 from kiro_crew import work_ledger as wl
 from kiro_crew.dashboard.handlers import work_ledger as wlh
 from kiro_crew.dashboard.handlers import work_ledger_board as board
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 CONDUCTOR = "chat-1-conductor"
 OTHER_CONDUCTOR = "chat-9-other-conductor"
@@ -237,6 +238,17 @@ def test_a_question_whose_ask_cannot_be_dated_is_left_outstanding():
     assert board._is_outstanding(item, events) is True
 
 
+def test_a_peer_stamp_without_an_offset_does_not_fail_the_board():
+    """A remote item's report stamp may carry no offset; an aware/naive compare
+    would raise and take the whole board GET down with it."""
+    item = wl.WorkItem(status="question", last_report_at="2000-01-01T00:00:00")
+    events = [{"ts": "2026-09-22T05:00:00+00:00", "kind": "decision", "status": None}]
+    assert board._is_outstanding(item, events) is False
+    naive_answer = [{"ts": "2000-01-01T00:00:00", "kind": "decision", "status": None}]
+    later = wl.WorkItem(status="question", last_report_at="2026-09-22T05:00:00Z")
+    assert board._is_outstanding(later, naive_answer) is True
+
+
 def test_only_a_question_status_can_be_outstanding():
     for status in ("progress", "done", "blocked"):
         item = wl.WorkItem(status=status)
@@ -326,6 +338,7 @@ async def test_an_unbound_item_is_closed_not_running():
 async def test_terminal_comes_from_the_store_s_own_property():
     open_id = _item(title="still open")
     closed_id = _item(title="finished")
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=closed_id, verdict="pass")
     wl.apply_conductor_action(
         CONDUCTOR, "close", item_id=closed_id, state="accepted", decision="looks right"
     )
@@ -797,6 +810,7 @@ async def test_a_non_orphaned_item_is_refused_409(_stop_calls):
 async def test_a_terminal_item_is_refused_because_it_is_not_orphaned(_stop_calls):
     """``is_orphaned`` is a conjunction: a closed item never qualifies."""
     item_id = _orphaned_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     body, response = await _act(_state({WORKER: _slot()}), CONDUCTOR, item_id, "stop")
     assert response.status == 409
@@ -866,11 +880,11 @@ async def test_a_credential_in_a_worker_summary_is_redacted():
     """
     item_id = _item()
     _bind(item_id)
-    _report(item_id, "progress", summary="pushed with AKIAIOSFODNN7EXAMPLE just now")
+    _report(item_id, "progress", summary=f"pushed with {SAMPLE_SLACK_BOT_TOKEN} just now")
     body, response = await _call(_state({WORKER: _slot()}), CONDUCTOR)
     raw = response.body.decode()
-    assert "AKIAIOSFODNN7EXAMPLE" not in raw
-    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(body)
+    assert SAMPLE_SLACK_BOT_TOKEN not in raw
+    assert SAMPLE_SLACK_BOT_TOKEN not in json.dumps(body)
 
 
 @pytest.mark.asyncio
@@ -881,10 +895,10 @@ async def test_redaction_reaches_nested_artifact_values():
     _report(
         item_id,
         "progress",
-        artifacts={"note": "token AKIAIOSFODNN7EXAMPLE in the branch name"},
+        artifacts={"note": f"token {SAMPLE_SLACK_BOT_TOKEN} in the branch name"},
     )
     _body, response = await _call(_state({WORKER: _slot()}), CONDUCTOR)
-    assert "AKIAIOSFODNN7EXAMPLE" not in response.body.decode()
+    assert SAMPLE_SLACK_BOT_TOKEN not in response.body.decode()
 
 
 @pytest.mark.asyncio
@@ -900,11 +914,11 @@ async def test_redaction_reaches_artifact_keys_not_only_values():
     _report(
         item_id,
         "progress",
-        artifacts={"AKIAIOSFODNN7EXAMPLE": "the branch"},
+        artifacts={SAMPLE_SLACK_BOT_TOKEN: "the branch"},
     )
     body, response = await _call(_state({WORKER: _slot()}), CONDUCTOR)
-    assert "AKIAIOSFODNN7EXAMPLE" not in response.body.decode()
-    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(body)
+    assert SAMPLE_SLACK_BOT_TOKEN not in response.body.decode()
+    assert SAMPLE_SLACK_BOT_TOKEN not in json.dumps(body)
 
 
 def test_two_keys_redacting_alike_both_survive(monkeypatch):
@@ -948,7 +962,7 @@ def _old_redact_deep(value):
 
 def _repetitive_board():
     """A board whose keys, states and prose repeat, with secrets among them."""
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = SAMPLE_SLACK_BOT_TOKEN
     items = []
     for n in range(40):
         items.append(
@@ -968,7 +982,7 @@ def test_redact_deep_output_matches_the_per_string_walk():
     payload = _repetitive_board()
     new = board._redact_deep(payload)
     assert json.dumps(new) == json.dumps(_old_redact_deep(payload))
-    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(new)
+    assert SAMPLE_SLACK_BOT_TOKEN not in json.dumps(new)
 
 
 def _distinct_strings(value, seen):

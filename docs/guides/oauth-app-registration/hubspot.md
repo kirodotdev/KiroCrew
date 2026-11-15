@@ -13,7 +13,7 @@ This runbook covers the **remote HubSpot MCP server** at `https://mcp.hubspot.co
 
 - A HubSpot account on the current Developer Platform. The remote MCP server is "available across all hubs and tiers" (HubSpot changelog, January 2026); no paid tier or developer test account is required. A free CRM account works.
 - Permission to create apps: the **Development** item in HubSpot's main navigation. HubSpot's OAuth guide says installers "must either be a Super Admin or have HubSpot Marketplace Access permissions"; assume the same for creating the app.
-- Kiro Crew installed and its dashboard reachable, so you can open **Settings → OAuth Apps**.
+- Kiro Crew installed and its dashboard reachable, so you can open **Settings → Connections**.
 - Facts you will need to type exactly:
   - Redirect URI: `http://localhost:48107/callback`
   - MCP endpoint: `https://mcp.hubspot.com` (HubSpot's inspector walkthrough writes it with a trailing slash, `https://mcp.hubspot.com/`; Kiro Crew handles this, you do not type it anywhere)
@@ -76,7 +76,7 @@ Because the classic CRM scope names (`crm.objects.contacts.read` and friends) ar
 
 ## 5. Enter the credentials in Kiro Crew
 
-1. Open the Kiro Crew dashboard and go to **Settings → OAuth Apps**.
+1. Open the Kiro Crew dashboard and go to **Settings → Connections**.
 2. Find the **HubSpot** card.
 3. Paste the **Client ID** from the MCP auth app details page into **Client ID**.
 4. Paste the **Client secret** into **Client secret**.
@@ -87,7 +87,7 @@ Container or CI alternative: set the environment variables `KIROCREW_CONNECTIONS
 
 ## 6. Verify the connection
 
-1. In the dashboard open **Customize → Connections**. The HubSpot card should have changed from "Needs configuration" to **Connect**.
+1. In the dashboard open **Settings → Connections**. The HubSpot card should have changed from "Needs configuration" to **Connect**.
 2. Click **Connect**. A browser tab opens HubSpot's authorization page. HubSpot describes the three steps you will see: "Select the HubSpot account to connect. Grant permissions to the app. Authorize the connection."
 3. Choose the account, review the permission list (untick write items if you want read-only), and authorize.
 4. If the gateway runs on the same machine as the browser, the tab lands on the loopback callback and the card shows **Connected**. If the gateway is remote, copy the landing URL from the address bar and paste it into the dashboard prompt.

@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import stat
 import threading
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 
@@ -35,26 +38,88 @@ _DECISIONS_PATH: Path | None = None
 def _decisions_path() -> Path:
     """Decisions this backend has already dispatched to an agent.
 
-    Under the security keystone's ``trust/`` directory, NOT in this app's own state
-    dir. Two reasons, and the second is why the leaf alone was not enough:
+    In this app's data directory, under ``trust/``, which ``app.json`` declares in
+    ``agentReadOnlyDirs``: agents may read the record and never write it. Two reasons it
+    needs that fence, and the second is why the leaf alone was not enough:
 
       * the index is agent-writable by design, and this record is the app's promise
         that a decision the user answered cannot be answered again -- so an agent
         able to edit it could erase an entry to re-open a settled decision, or forge
         one to lock a decision the user never answered;
-      * gating only the FILE left its parent replaceable. ``workspace/spec-builder``
-        is not itself a sensitive path, so one ``ln -s`` or ``mv`` naming the
-        directory redirected every read and write this backend makes -- it opens the
-        path directly, as keystone writers must. The whole ``trust`` directory is
-        gated (it is the SEL trust root), so the parent, the leaf and every shell
-        verb naming either are refused.
+      * gating only the FILE left its parent replaceable: one ``ln -s`` or ``mv`` naming
+        the directory redirected every read and write this backend makes, because it
+        opens the path directly. The declaration fences the whole directory: the agent's
+        file-edit tools are refused under it, every sandbox mode seals it read-only with
+        its parents guarded against rename, and a link at it or at a component below the
+        data home refuses the spawn.
 
-    This backend opens the path directly, which is how the keystone leaves are always
-    written (see the Notes vault registry and the Ops Mission Control policy leaf).
+    Not in the separate ``workspace/spec-builder`` state dir, whose specs and index
+    agents write.
     """
     if _DECISIONS_PATH is not None:
         return _DECISIONS_PATH
-    return config_dir() / "trust" / "spec-builder-decisions.json"
+    return config_dir() / "apps" / "spec-builder" / "data" / "trust" / _DECISIONS_LEAF
+
+
+#: The record's file name, at its location and at the one an earlier release used.
+_DECISIONS_LEAF = "spec-builder-decisions.json"
+
+
+def _legacy_decisions_path() -> Path | None:
+    """Where an earlier release kept the record (the data home's ``trust/``), or ``None``.
+
+    ``None`` while a test or caller has pointed :data:`_DECISIONS_PATH` elsewhere, so a
+    redirected record never reads the real host's.
+    """
+    if _DECISIONS_PATH is not None:
+        return None
+    return config_dir() / "trust" / _DECISIONS_LEAF
+
+
+def _move_legacy_decisions(path: Path) -> str | None:
+    """Settle the record at *path* once, while *path* is absent. BLOCKING, under the lock.
+
+    Moves an earlier release's record to *path*, or writes an empty record there when
+    there is none, so the old location is read at most until the first read that finds
+    *path* absent. Agents' shells can write the old ``trust/`` directory, so a file that
+    appears there afterwards must never be imported into the fenced record, and the old
+    record is read only as a regular file with one name: a link planted there would copy
+    its target, any file the gateway can read, into this agent-readable record.
+
+    Returns the earlier record's text, or ``None`` when there is none. The copy is
+    written first and the old file removed after, so a failure at either step keeps
+    every answer: a failed write leaves the old file to be read again next time, and a
+    failed removal leaves a stale copy nothing reads once the new one exists. Raises
+    ``OSError`` or ``UnicodeError`` when the old record cannot be read or is a link,
+    which the caller reports as an unusable store.
+    """
+    legacy = _legacy_decisions_path()
+    if legacy is None:
+        return None
+    raw: str | None = None
+    try:
+        fd = platform_compat.open_file_no_reparse(legacy, nonblocking=True)
+    except FileNotFoundError:
+        pass
+    else:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            os.close(fd)
+            raise OSError(f"{legacy} is not a regular file with one name")
+        with os.fdopen(fd, encoding="utf-8") as handle:
+            raw = handle.read()
+    try:
+        atomic_write(path, "{}" if raw is None else raw)
+    except OSError:
+        logger.warning("could not settle the decision record at %s", path)
+        return raw
+    if raw is None:
+        return None
+    try:
+        legacy.unlink()
+    except OSError:
+        logger.warning("could not remove the moved decision record at %s", legacy)
+    return raw
 
 
 async def _aload_index_with_decision_alias_status(
@@ -199,7 +264,14 @@ def _read_decisions() -> tuple[dict, bool]:
         # code page. Otherwise non-ASCII answers could be changed or rejected.
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return {}, True
+        try:
+            moved = _move_legacy_decisions(path)
+        except (OSError, UnicodeError):
+            logger.warning("could not read the earlier decision record", exc_info=True)
+            return {}, False
+        if moved is None:
+            return {}, True
+        raw = moved
     except (OSError, UnicodeError):
         # Decode errors are not OSError subclasses. Preserve the ``(store, usable)``
         # contract so malformed bytes are reported as an unusable store, not a 500.
@@ -220,8 +292,7 @@ def _save_decisions(store: dict) -> None:
     """Persist the decisions file. Atomic (temp + rename), like every writer here.
 
     No mkdir of its own: ``atomic_write`` creates the target's parent, which matters
-    because the ledger lives under the keystone's ``trust/`` root rather than this
-    app's state dir, and that directory may not exist yet on a fresh install.
+    because the ledger's ``trust/`` directory may not exist yet on a fresh install.
     """
     atomic_write(_decisions_path(), json.dumps(store, indent=2))
 

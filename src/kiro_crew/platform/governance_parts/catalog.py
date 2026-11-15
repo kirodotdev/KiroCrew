@@ -189,11 +189,12 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "agent_backend": ScopeSpec(RULESET, matcher="identifier"),
     # Which inbound webhook sources may start work (RFC crew-lts-edition,
     # appendix rows "Incoming webhooks" and Red "Webhooks by source"). Members are
-    # source ids: ``agent`` (``POST /api/hooks/agent``) and ``ops-mission-control``
-    # (that app's signal webhook), e.g. ``{"webhooks": {"mode": "allow", "allow":
-    # ["agent"]}}``. Asked by ``kiro_crew.webhook_sources.source_refusal`` at each
-    # source's entry, policy layer only (a request carries no session). An absent
-    # scope leaves each source to its own switch.
+    # source ids: ``agent`` (``POST /api/hooks/agent``) and the name of each app
+    # whose manifest declares ``permissions.webhookSource`` (that app's own inbound
+    # route), e.g. ``{"webhooks": {"mode": "allow", "allow": ["agent"]}}``. Asked by
+    # ``kiro_crew.webhook_sources.source_refusal`` at each source's entry, policy
+    # layer only (a request carries no session). An absent scope leaves each source
+    # to its own switch.
     "webhooks": ScopeSpec(RULESET, matcher="identifier"),
     # Capabilities (registered defaults — see the CAPABILITY-DEFAULT CONTRACT above):
     "capabilities.spawn": ScopeSpec(
@@ -216,9 +217,14 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # (RFC crew-lts-edition, appendix row "Hook trigger events"). Queried as
     # ``events:<event>`` by ``hook_runtime.governance_gate`` before a hook runs, and
     # for each event of the user's kiro hooks before they are installed. An unnamed
-    # ruleset permits every event.
+    # ruleset permits every event. Inner ``hooks`` ruleset (``identifier``): which
+    # hooks may run, by ``hook_event_governance.hook_policy_name`` -- an agent
+    # spec's hook as ``<agent>/<Event>/<n>``, a Hooks-page hook by its name.
+    # Queried as ``hooks:<name>``; an unnamed ruleset permits every hook.
     "capabilities.script_hooks": ScopeSpec(
-        CAPABILITY, capability_default=False, scope_matchers={"events": "identifier"}
+        CAPABILITY,
+        capability_default=False,
+        scope_matchers={"events": "identifier", "hooks": "identifier"},
     ),
     "capabilities.cron": ScopeSpec(CAPABILITY, capability_default=False),
     "capabilities.messaging": ScopeSpec(CAPABILITY, capability_default=False),
@@ -479,7 +485,8 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # consent PUT refuses to enable, and the gate's own consent read reports NOT
     # consented, so a keystone that already says ``true`` is inert rather than
     # carried over. ``GET /api/dashboard/config`` reports the answer as
-    # ``decisions_enabled`` so the Feature Previews card is not drawn at all.
+    # ``decisions_enabled``, and under a denial the Feature Previews card draws the
+    # administrator's notice in place of its controls.
     # Data row only -- CONTRACT_VERSION and the evaluator are untouched (mirrors
     # social_share).
     #
@@ -492,10 +499,22 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # runs on the session's own model provider, is asked about its point only.
     # They bind local presets too, because a ``capabilities.decisions`` answer
     # already does.
+    #
+    # A fourth, ``providers`` (``identifier``), is the per-model allow list: one
+    # entry per decision model the picker offers, by its picker id (``jev`` for the
+    # hosted provider, each local preset id, ``sagemaker``). ``capability.provider_id``
+    # names the configured one, and every check that reads this row for the configured
+    # provider asks it too, so a refused model is neither selectable nor used. ``none``
+    # is never asked, and neither is an endpoint the owner wrote by hand.
     "capabilities.decisions": ScopeSpec(
         CAPABILITY,
         capability_default=True,
-        scope_matchers={"models": "identifier", "points": "identifier", "endpoints": "host"},
+        scope_matchers={
+            "models": "identifier",
+            "points": "identifier",
+            "endpoints": "host",
+            "providers": "identifier",
+        },
     ),
     # The same seam answered by a LOCAL PRESET model on this machine
     # (``decisions/local_models.py``) instead of hosted Jev. Nothing leaves the
@@ -544,6 +563,10 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # lets the owner turn Files-view credential redaction off
     # (``redaction_switch.owner_may_disable``, policy layer only). Data row only.
     "capabilities.credential_redaction_off": ScopeSpec(CAPABILITY, capability_default=False),
+    # Opt-in, a row of its own: lets the owner turn off redaction for the agent's
+    # prompt and the server logs (``redaction_switch.owner_may_disable_seams``). The
+    # Files-view row above does not grant it. Data row only.
+    "capabilities.credential_redaction_seams_off": ScopeSpec(CAPABILITY, capability_default=False),
 }
 
 

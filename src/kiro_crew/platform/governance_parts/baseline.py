@@ -57,11 +57,10 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "capabilities.script_hooks": _CAPABILITY_OFF,
     "capabilities.messaging": _CAPABILITY_OFF,
     "capabilities.agentcore": _CAPABILITY_OFF,
-    # ``publish_provider.DEFAULT_PROVIDER``.
-    "capabilities.publish": {
-        "enabled": True,
-        "scopes": {"destinations": {"mode": "allow", "allow": ["default"]}, **_PUBLISH_LISTS_OFF},
-    },
+    # Kept off by the owner: artifact publishing will move to Kiro Space, under
+    # its own rule. ``BASELINE_INNER_LISTS`` still keeps the publish lists off
+    # when a remote policy turns this on.
+    "capabilities.publish": _CAPABILITY_OFF,
     "capabilities.theme_install": _CAPABILITY_OFF,
     "capabilities.telemetry": _CAPABILITY_OFF,
     "capabilities.tailnet_origin": _CAPABILITY_OFF,
@@ -82,6 +81,8 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "capabilities.kiro_cloud_sessions": _CAPABILITY_OFF,
     # Credential redaction stays on in the Files view.
     "capabilities.credential_redaction_off": _CAPABILITY_OFF,
+    # Credential redaction stays on for the agent's prompt and the server logs.
+    "capabilities.credential_redaction_seams_off": _CAPABILITY_OFF,
 }
 
 #: Inner lists of a capability that keep their baseline when the remote policy

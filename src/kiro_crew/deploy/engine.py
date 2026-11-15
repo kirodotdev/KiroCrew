@@ -29,7 +29,7 @@ import threading
 import time
 from typing import Any, NamedTuple, Optional
 
-from kiro_crew.sandbox import cgroup_scope_argv, run_limited, wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, run_limited, without_python_env, wrap_argv
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
@@ -470,8 +470,10 @@ def run_aws(
             # lookup succeed but never re-points one the child already resolves.
             # The CLI, not this module, picks the helper, so the provenance check
             # never sees it. The sandbox still scrubs ``AWS_SECRET*`` and
-            # ``AWS_SESSION*`` from this env in every mode.
-            env=aws_spawn_env(argv[0]),
+            # ``AWS_SESSION*`` from this env in every mode. aws-cli v1 is Python:
+            # the gateway's PYTHONPATH/PYTHONHOME would make it import the
+            # gateway's packages instead.
+            env=without_python_env(aws_spawn_env(argv[0])),
         )
     finally:
         if cleanup:

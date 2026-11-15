@@ -2,7 +2,7 @@
   "$comment": [
     "Conformance cases for the contributed-command contract, consumed by BOTH validators:",
     "  test/test_app_contribution_conformance.py  (Contributes.validate)",
-    "  website/src/apps/command-bar/contributedCommands.conformance.test.ts",
+    "  website/src/components/commandBar/contributedCommands.conformance.test.ts",
     "",
     "It exists because the two rulebooks are written twice, in two languages, and were",
     "mirrored only by comment -- which failed twice in review on the branch that added",

@@ -3,30 +3,34 @@
 ``/proc/meminfo`` and the native macOS and Windows readers, the cgroup v1/v2 headroom of
 the container and of the agents slice, process-subtree sampling for the reaper, and the
 auto or explicit ceiling ``resolve_max_subagents`` derives from them.
+
+This module also works on its own, before ``kiro_crew.subagent`` is loaded: it imports for
+real every name its functions read, from the module that defines each. A stdio MCP server
+names the ceiling in a tool description it writes before it has loaded the code that runs
+its tools (``kiro_crew.subagent_standalone``), and that code is where the facade loads.
+Once the facade is loaded these same functions run on its globals, like every owner's.
 """
 
 from __future__ import annotations
 
+import logging
+import math
 import os
 import threading
-from typing import TYPE_CHECKING
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Optional
 
-from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB
+from kiro_crew import platform_compat
+from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB, DEFAULT_SUBAGENT_COST_GB
+from kiro_crew.mcp_gateway import STUB_MODULE
+from kiro_crew.sandbox_slice import _agents_slice_cgroup_dir
+from kiro_crew.subagent_cost import read_cap_costs
 
 if TYPE_CHECKING:
-    from kiro_crew.subagent import (
-        DEFAULT_SUBAGENT_COST_GB,
-        STUB_MODULE,
-        KiroCrewConfig,
-        Optional,
-        Path,
-        PurePosixPath,
-        _agents_slice_cgroup_dir,
-        logger,
-        math,
-        platform_compat,
-        read_cap_costs,
-    )
+    from kiro_crew.subagent import KiroCrewConfig
+
+#: The facade's logger: a function here logs under one name whichever globals it runs on.
+logger = logging.getLogger("kiro_crew.subagent")
 
 
 #: Cause recorded when a finite cgroup memory limit is set but that level's
@@ -513,6 +517,19 @@ def _cgroup_available_gb(*, measured_only: bool = False) -> float:
 def _container_cgroup_available_gb(*, measured_only: bool = False) -> float:
     """Tightest visible cgroup headroom (GB), or -1.0 if unlimited/unknown.
 
+    The headroom half of :func:`_container_cgroup_reading`.
+    """
+    return _container_cgroup_reading(measured_only=measured_only)[1]
+
+
+def _container_cgroup_reading(*, measured_only: bool = False) -> tuple[int | None, float]:
+    """Tightest visible cgroup memory limit (bytes) and headroom (GB) under it.
+
+    ``(None, -1.0)`` when no level carries a finite limit. Spawn admission reads
+    the headroom (:func:`_container_cgroup_available_gb`); the dashboard shows the
+    limit and the headroom as its memory total and free figure, so the two
+    surfaces read one walk.
+
     Reads cgroup v2 (``memory.max``/``memory.current``) then v1
     (``memory.limit_in_bytes``/``memory.usage_in_bytes``) at the process's
     cgroup and its visible ancestors. Each limit is paired with usage at the
@@ -525,6 +542,7 @@ def _container_cgroup_available_gb(*, measured_only: bool = False) -> float:
     such a level out of the minimum instead, so the result is the tightest
     headroom that was measured (the cause is still recorded).
     """
+    tightest: int | None = None
     available = -1.0
     for leaf, mount, v2 in _cgroup_memory_roots():
         limit_name = "memory.max" if v2 else "memory.limit_in_bytes"
@@ -550,10 +568,11 @@ def _container_cgroup_available_gb(*, measured_only: bool = False) -> float:
                         _memory_check_cause.value = MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
                     if headroom >= 0:
                         available = headroom if available < 0 else min(available, headroom)
+                    tightest = limit if tightest is None else min(tightest, limit)
             if directory == mount:
                 break
             directory = directory.parent
-    return available
+    return tightest, available
 
 
 def _agents_slice_available_gb() -> float:

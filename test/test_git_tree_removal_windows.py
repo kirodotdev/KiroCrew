@@ -18,15 +18,18 @@ file back with ``windows_sim.unlink_sharing_violation``. Rule 3 reads the source
 from __future__ import annotations
 
 import ast
+import errno
 import os
 from pathlib import Path
 from typing import Iterator
 
 import pytest
+from snapshot_helpers import unpinnable_argv
 from windows_sim import readonly_unlink_refused, unlink_sharing_violation
 
 import kiro_crew
 from kiro_crew import platform_compat
+from kiro_crew import snapshot as snap
 from kiro_crew.apps import registry
 from kiro_crew.apps.builtins.auto_improvement.backend import pr_watchers as W
 
@@ -155,6 +158,66 @@ class TestRule1RemovingAGitTreeClearsTheReadOnlyBit:
         assert W._delete_clone_if_unowned(reg, orphan) is True
         assert not orphan.exists()
 
+    def test_a_replace_restore_replaces_a_live_checkout(
+        self, tmp_path: Path, read_only_objects: None
+    ) -> None:
+        # The mutation phase alone: the simulator reads every platform branch as Windows.
+        bundle = tmp_path / "bundle"
+        (bundle / "workspace" / "proj").mkdir(parents=True)
+        (bundle / "workspace" / "proj" / "notes.md").write_text("bundled", encoding="utf-8")
+        home = tmp_path / "home"
+        _plant_checkout(home / "workspace" / "proj")
+
+        snap._do_replace_mutations(
+            bundle,
+            home,
+            tmp_path / "rollback",
+            ["workspace"],
+            [],
+            set(),
+            allow_unpinned=bool(unpinnable_argv()),
+        )
+
+        assert sorted(p.name for p in (home / "workspace" / "proj").iterdir()) == ["notes.md"]
+
+    def test_a_rollback_removes_the_checkout_a_failed_restore_installed(
+        self, tmp_path: Path, read_only_objects: None
+    ) -> None:
+        backup = tmp_path / "rollback"
+        (backup / "workspace").mkdir(parents=True)
+        (backup / "workspace" / "note.md").write_text("saved", encoding="utf-8")
+        home = tmp_path / "home"
+        _plant_checkout(home / "workspace" / "proj")
+
+        failed = snap._restore_everything_from_rollback(
+            backup, home, ["workspace"], {"workspace"}, allow_unpinned=bool(unpinnable_argv())
+        )
+
+        assert failed == []
+        assert sorted(p.name for p in (home / "workspace").iterdir()) == ["note.md"]
+
+    @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="POSIX walks the tree by descriptor")
+    def test_a_posix_restore_removal_never_retries_a_refused_unlink_by_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A retry by full path resolves every component again, so a directory swapped for
+        # a symlink after the refusal would aim the unlink outside the tree.
+        root = tmp_path / "workspace"
+        (root / "proj").mkdir(parents=True)
+        (root / "proj" / "security_policy.json").write_text("{}", encoding="utf-8")
+        by_path: list[str] = []
+
+        def _refusing(path: str, *args: object, dir_fd: int | None = None, **kw: object) -> None:
+            if dir_fd is None:
+                by_path.append(os.fspath(path))
+            raise PermissionError(errno.EACCES, "refused", os.fspath(path))
+
+        monkeypatch.setattr(os, "unlink", _refusing)
+        with pytest.raises(PermissionError):
+            snap._rmtree_or_raise(root)
+
+        assert by_path == []
+
 
 class TestRule2TheRestoreLandsWhenTheReplacementSurvives:
     """A file another process holds open still refuses to unlink after the read-only bit
@@ -190,10 +253,11 @@ class TestRule2TheRestoreLandsWhenTheReplacementSurvives:
         assert any("Restored the previous checkout" in line for line in log)
 
 
-#: (file under src/kiro_crew, function, the tree it removes as written at the call).
+#: (file under src/kiro_crew, function, the tree it removes as written at the call, where
+#: ``str(x)`` is written ``x``).
 #: Each tree is one git produced: a clone, a ``--local`` clone, or a ``.git`` directory.
 _GIT_TREE_SITES = [
-    ("apps/builtins/md_notebook/server.py", "api_vault_clone", "str(clone_dir)"),
+    ("apps/builtins/md_notebook/server.py", "api_vault_clone", "clone_dir"),
     ("apps/registry_pipeline/recovery.py", "_sweep_stale_checkouts_sync", "child"),
     ("apps/registry_pipeline/install_rollback.py", "_unpoison_rejected_checkout", "pkg_dir"),
     ("apps/registry_pipeline/install_clone.py", "_clone_build_app_locked", "pkg_dir"),
@@ -211,9 +275,13 @@ _GIT_TREE_SITES = [
     ("apps/builtins/design_critique/backend/routes.py", "_sweep_clones", "child"),
     ("apps/builtins/design_critique/backend/routes.py", "_discover_repo_job", "target"),
     ("dashboard/handlers/themes.py", "_do_install", "tmp_root"),
+    # A restored component tree can hold a git checkout (`workspace/` usually does).
+    ("snapshot_restore.py", "_clear_store_directories", "entry"),
+    ("snapshot_restore.py", "_do_replace_mutations", "d"),
+    ("snapshot_restore.py", "_restore_everything_from_rollback", "target"),
 ]
 
-_HELPERS = frozenset({"rmtree_force", "_rmtree_force_settled"})
+_HELPERS = frozenset({"rmtree_force", "_rmtree_force_settled", "_rmtree_or_raise"})
 
 
 def _names(node: ast.AST, wanted: frozenset[str] | set[str]) -> bool:
@@ -239,6 +307,13 @@ def _find_function(tree: ast.AST, qualname: str) -> ast.AST | None:
     return walk(tree, "")
 
 
+def _tree(node: ast.expr) -> str:
+    """The tree a removal names: ``str(x)`` names the same one as ``x``."""
+    if isinstance(node, ast.Call) and _names(node.func, {"str"}) and len(node.args) == 1:
+        node = node.args[0]
+    return ast.unparse(node)
+
+
 def _removed_trees(scope: ast.AST) -> tuple[list[str], list[str]]:
     """(trees ``shutil.rmtree`` removes, trees the helper removes) written inside *scope*.
 
@@ -254,9 +329,9 @@ def _removed_trees(scope: ast.AST) -> tuple[list[str], list[str]]:
             if not rest:
                 continue
             if _names(reference, {"rmtree"}):
-                bare.append(ast.unparse(rest[0]))
+                bare.append(_tree(rest[0]))
             elif _names(reference, _HELPERS):
-                routed.append(ast.unparse(rest[0]))
+                routed.append(_tree(rest[0]))
     return bare, routed
 
 
@@ -280,11 +355,12 @@ class TestRule3EverySiteUsesTheOneHelper:
 
     def test_the_scan_sees_each_spelling(self) -> None:
         scope = ast.parse(
-            "async def f(a, b, c, d):\n"
+            "async def f(a, b, c, d, e):\n"
             "    shutil.rmtree(a, ignore_errors=True)\n"
             "    await asyncio.to_thread(shutil.rmtree, b, True)\n"
+            "    await asyncio.to_thread(shutil.rmtree, str(e))\n"
             "    platform_compat.rmtree_force(c)\n"
             "    await loop.run_in_executor(None, _rmtree_force_settled, d)\n"
         )
 
-        assert _removed_trees(scope) == (["a", "b"], ["c", "d"])
+        assert _removed_trees(scope) == (["a", "b", "e"], ["c", "d"])

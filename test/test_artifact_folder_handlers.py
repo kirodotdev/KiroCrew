@@ -806,3 +806,11 @@ class TestMixedInternalPathRegistration:
         # Confidence check: the prefix-match rule this guards against —
         # "/api/artifact-folders" is NOT covered by the "/api/artifacts" entry.
         assert not "/api/artifact-folders".startswith("/api/artifacts" + "/")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", [None, 123, True, ["a"], {"a": 1}], ids=repr)
+async def test_folder_create_refuses_a_non_string_name(stores, patch_restricted, name) -> None:
+    resp = await api_artifact_folder_create(_request(body={"name": name}))
+    assert resp.status == 400
+    assert _body(resp)["code"] == "invalid_field_type"

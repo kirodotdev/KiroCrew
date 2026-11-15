@@ -559,6 +559,7 @@ def test_a_credential_reference_gets_a_private_backend_instead_of_none(tmp_path:
     backend receives the whole declared env, which is where the gateway resolves it."""
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {"atl": {"command": sys.executable, "env": {"OAUTH_TOKEN": REF}}},
     }
     out, wrapped = _rewrite(
@@ -574,6 +575,7 @@ def test_a_withheld_plain_credential_still_runs_unwrapped(tmp_path: Path) -> Non
     """Unchanged for a literal credential: the session launches it with its env."""
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {"atl": {"command": sys.executable, "env": {"OAUTH_TOKEN": "x"}}},
     }
     out, wrapped = _rewrite(
@@ -639,6 +641,7 @@ class _RefuseAll:
 def _ref_spec(name: str = "atl", command: str = sys.executable, env: dict | None = None) -> dict:
     return {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {name: {"command": command, "env": env or {"API_KEY": REF}}},
     }
 
@@ -660,6 +663,7 @@ def test_the_routing_probe_lifts_the_rebuilds_withheld_mute(tmp_path: Path) -> N
     launch captured for approval), not passed through as the user's mute."""
     spec = _ref_spec()
     spec["mcpServers"]["atl"].update({"disabled": True, mcp_sources.WITHHELD_KEY: True})
+    spec["tools"] = []  # the rebuild strips a withheld server's refs
     out, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"atl"}))
     assert wrapped == 1
     assert out["mcpServers"]["atl"].get(_WRAPPER_MARKER) is True
@@ -915,7 +919,7 @@ def test_the_rebuild_and_the_rewriter_agree_on_routed(
     entry = {"command": sys.executable, "env": {"API_KEY": REF}}
     withheld = mcp_sources._unrouted_secret_reference(name, entry, lambda: frozenset(routed), dict)
     _, wrapped = _rewrite(
-        {"name": "agent-a", "mcpServers": {name: dict(entry)}},
+        {"name": "agent-a", "tools": ["*"], "mcpServers": {name: dict(entry)}},
         tmp_path,
         stub_servers=frozenset(routed),
     )
@@ -1149,7 +1153,7 @@ def test_a_routed_rewrite_honours_a_source_mute_on_a_formerly_withheld_server(
     )
     mcp_sources.sync_shared_server_refs(config, sources, {"atl": "atl"})
     out, wrapped = _rewrite(
-        {"name": "agent-a", "mcpServers": config["mcpServers"]},
+        {"name": "agent-a", "tools": ["*"], "mcpServers": config["mcpServers"]},
         tmp_path,
         stub_servers=frozenset({"atl"}),
     )

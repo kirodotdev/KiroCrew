@@ -43,15 +43,23 @@ export type RenderedLane = SidebarLane | 'board' | 'board-flat'
  *  the board needs a column, `conductor` an edge (no row carries a creator otherwise,
  *  and the lane would be the flat list with a chevron nowhere), and `flat` a folder to
  *  explode. A preference whose condition is missing falls back to the folder tree, the
- *  one lane that can always render. */
-export function renderedLane({ lane, boardColumns, folders, lineageAvailable }: {
+ *  one lane that can always render.
+ *
+ *  An active search (`searching`) draws the folder tree as the flat lane: one list in
+ *  relevance order, each row labelled with its folder, instead of folder blocks. The
+ *  conductor lane already flattens itself for a query, and the board keeps its
+ *  columns. The preference itself is untouched, so clearing the query brings the
+ *  chosen lane back. */
+export function renderedLane({ lane, boardColumns, folders, lineageAvailable, searching = false }: {
   lane: SidebarLane
   boardColumns: number
   folders: number
   lineageAvailable: boolean
+  searching?: boolean
 }): RenderedLane {
   if (boardColumns > 0) return lane === 'flat' ? 'board-flat' : 'board'
   if (lane === 'conductor' && lineageAvailable) return 'conductor'
+  if (searching) return 'flat'
   if (lane === 'flat' && folders > 0) return 'flat'
   return 'tree'
 }

@@ -15,10 +15,20 @@ from typing import Any
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from redaction_structured_cases import aws_secret
 
 from kiro_crew import crew_mode, crew_timeline
 
 T0 = datetime(2026, 10, 21, 3, 0, 0, tzinfo=timezone.utc)
+
+
+def _yielding(serialize):
+    """The state's ``serialize_slots_yielding`` over a stub's synchronous rows."""
+
+    async def serialize_slots_yielding(**kwargs):
+        return serialize(**kwargs)
+
+    return serialize_slots_yielding
 
 
 def _at(seconds: float) -> str:
@@ -375,7 +385,10 @@ def _state(
 
     slots = {key: SimpleNamespace(key=key, messages=msgs) for key, msgs in windows.items()}
     return SimpleNamespace(
-        serialize_slots=serialize_slots, get_slot=slots.get, conversation_log=log
+        serialize_slots=serialize_slots,
+        serialize_slots_yielding=_yielding(serialize_slots),
+        get_slot=slots.get,
+        conversation_log=log,
     )
 
 
@@ -513,7 +526,7 @@ async def test_the_route_pairs_hand_offs_off_the_event_loop(_route, monkeypatch)
 @pytest.mark.asyncio
 async def test_the_route_redacts_what_the_rows_carry(_route):
     """G4: a permission row with a key in it reaches the browser redacted."""
-    key = "AKIA" + "ABCDEFGHIJKLMNOP"
+    key = aws_secret(seed=71)  # a synthetic 40-char AWS secret
     rows = [_slot_row("root", agent="kirocrew-conductor")]
     windows = {
         "root": [

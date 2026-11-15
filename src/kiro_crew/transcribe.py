@@ -43,7 +43,14 @@ import sys as _sys
 import wave
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew import _facade_mirror, aws_consent, pinned_fs, platform_compat, stt  # noqa: F401
+from kiro_crew import (  # noqa: F401
+    _facade_mirror,
+    aws_consent,
+    pinned_fs,
+    platform_compat,
+    soffice_discovery,
+    stt,
+)
 from kiro_crew.extras import install_hint  # noqa: F401
 
 # The pinned-artifact table and the digest-verified decoder store live here. It

@@ -131,7 +131,9 @@ class WakaTimeAuthError(Exception):
     The message says which. A 401/403 is a rejected credential: a bad API key
     or, under OAuth, a rejected or expired bearer token. Unlike the plain read
     verbs, which degrade to an empty result, :meth:`verify` raises on each of
-    these, so a caller validating a credential gets a hard signal.
+    these, so a caller validating a credential gets a hard signal. The strict
+    ``fetch_*`` reads raise it too, on a 401/403 only, so a caller can ask the
+    user to reconnect; their other failures raise :class:`WakaTimeUnavailableError`.
     """
 
 
@@ -144,6 +146,11 @@ class WakaTimeUnavailableError(Exception):
     billing export, where an empty result is a real figure — uses the strict verb
     instead and gets this exception on failure rather than a silent ``[]``.
     """
+
+
+def _raise_if_rejected(status: int | None) -> None:
+    if status == 401 or status == 403:
+        raise WakaTimeAuthError(f"WakaTime rejected the read credential: http={status}")
 
 
 class WakaTimeClient:
@@ -181,6 +188,11 @@ class WakaTimeClient:
             token = base64.b64encode(f"{self._api_key}:".encode()).decode("ascii")
             auth = f"Basic {token}"
         return {"Authorization": auth, "User-Agent": _user_agent()}
+
+    @property
+    def api_base(self) -> str:
+        """The API base this client reads from, without a trailing slash."""
+        return self._api_base
 
     # ── Session lifecycle ──
 
@@ -225,6 +237,21 @@ class WakaTimeClient:
         Honors a single 429 ``Retry-After`` back-off, clamped, then gives up —
         mirroring WebexClient._api.
         """
+        body, _status = await self._api_with_status(
+            method, path, params=params, payload=payload, timeout=timeout
+        )
+        return body
+
+    async def _api_with_status(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, str] | None = None,
+        payload: Any | None = None,
+        timeout: int = _DEFAULT_TIMEOUT_SECS,
+    ) -> tuple[Any, int | None]:
+        """Like :meth:`_api`, plus the last HTTP status (None on a transport error)."""
         session = await self._ensure_session()
         url = f"{self._api_base}{path}"
         for attempt in range(2):
@@ -249,21 +276,21 @@ class WakaTimeClient:
                         continue
                     if 200 <= resp.status < 300:
                         if resp.status == 204:
-                            return {}
+                            return {}, resp.status
                         try:
-                            return await resp.json(content_type=None)
+                            return await resp.json(content_type=None), resp.status
                         except ValueError:
-                            return {}
+                            return {}, resp.status
                     # Never log the response body or the URL — either can carry
                     # the API key. Status only.
                     logger.warning("WakaTime API %s %s failed: http=%s", method, path, resp.status)
-                    return None
+                    return None, resp.status
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 logger.warning(
                     "WakaTime API %s %s transport error: %s", method, path, type(exc).__name__
                 )
-                return None
-        return None
+                return None, None
+        return None, None
 
     # ── Public verbs ──
 
@@ -356,7 +383,10 @@ class WakaTimeClient:
 
     async def _fetch_summary_days(self, params: dict[str, str]) -> list[dict]:
         """GET summaries for ``params``; raise unless the body has a data list."""
-        result = await self._api("GET", "/users/current/summaries", params=params)
+        result, status = await self._api_with_status(
+            "GET", "/users/current/summaries", params=params
+        )
+        _raise_if_rejected(status)
         data = result.get("data") if isinstance(result, dict) else None
         if not isinstance(data, list):
             raise WakaTimeUnavailableError("WakaTime summaries request failed or returned no data")
@@ -394,7 +424,10 @@ class WakaTimeClient:
             # day comes from summaries, folded into the stats shape.
             days = await self._fetch_summary_days({"range": summaries_range})
             return _stats_from_summaries(days)
-        result = await self._api("GET", f"/users/current/stats/{wakatime_range}")
+        result, status = await self._api_with_status(
+            "GET", f"/users/current/stats/{wakatime_range}"
+        )
+        _raise_if_rejected(status)
         data = result.get("data") if isinstance(result, dict) else None
         if not isinstance(data, dict):
             raise WakaTimeUnavailableError("WakaTime stats request failed or returned no data")

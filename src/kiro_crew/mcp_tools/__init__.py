@@ -76,11 +76,11 @@ def build_tool_list(*, names_only: bool = False) -> list[dict[str, Any]]:
     """
     tools: list[dict[str, Any]] = []
     for name in DOMAIN_MODULES:
-        # Imported here, not at module scope. Every domain module imports
-        # ``mcp_core``, and ``mcp_core`` imports this package -- so hoisting these
-        # to the top would close that loop and turn it into an import-time
-        # failure on the gateway boot path. The laziness is load-bearing.
-        module = importlib.import_module(f"{__name__}.{name}")
+        # The catalogue module, never the handler module of the same name: listing
+        # the tools must not import the code that runs them. Imported here, not at
+        # module scope, because ``app_tools`` reads this package back for the other
+        # domains' names.
+        module = importlib.import_module(f"{__name__}.catalog.{name}")
         # Only the two builders with a live-valued description accept the flag;
         # the rest build static descriptors cheaply and are called unchanged.
         schemas = module.schemas

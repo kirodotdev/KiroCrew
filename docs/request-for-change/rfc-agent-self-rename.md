@@ -1,6 +1,6 @@
 ---
 title: Agent self-rename — a core chat_rename directive for the calling session
-status: draft
+status: in-progress
 author: mohamed-youssef-bou
 created: 2026-11-04
 last-audited: 2026-11-10
@@ -431,11 +431,14 @@ thread keeps that name from then on.
 
 Two decisions, recorded separately:
 
-1. **The tool.** Accept `chat_rename` as designed here, for every spec that
-   mounts `@kirocrew-core`. A maintainer decides it.
-2. **Conductors.** Whether a conductor may reach `chat_rename` behind its
+1. **The tool: accepted 2026-11-10.** The maintainer Bolin Chen (@bolichen97)
+   accepted `chat_rename` as designed in the
+   [approving review of #33633](https://github.com/kirodotdev/KiroCrew/pull/33633#pullrequestreview-5846058182),
+   and settled open question 1 as proposed.
+2. **Conductors: open.** Whether a conductor may reach `chat_rename` behind its
    approval prompt. Under the 2026-11-04 conductor decision this is an explicit
-   owner decision, separate from item 1. Proposed answer: open question 2.
+   owner decision, separate from item 1, and the review above does not cover
+   it. Proposed answer: open question 2.
 
 ## Open questions
 
@@ -443,6 +446,7 @@ Two decisions, recorded separately:
    `user`, so a session an agent renamed through it is protected from
    `chat_rename`. Proposed: leave it, since it may rename other sessions and
    changing what it writes would widen this RFC. Consequences records the cost.
+   Settled as proposed on 2026-11-10 (Sign-off, item 1).
 2. **Conductors.** A conductor sees `chat_rename` behind an approval prompt, as
    it sees `chat_tag`. Proposed: keep it. That needs no new code, a patrol or
    wake turn is refused anyway because it is not a person's turn, and the tool

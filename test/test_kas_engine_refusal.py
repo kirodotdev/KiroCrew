@@ -21,7 +21,6 @@ from __future__ import annotations
 import importlib
 import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -849,10 +848,8 @@ def _executable(tmp_path: Path, body: str) -> str:
 def test_the_probe_reads_the_refusal_from_a_real_start(refusal, tmp_path, monkeypatch):
     monkeypatch.setattr(kiro_cli, "_kas_start_cache", {})
     count = tmp_path / "starts"
-    where = tmp_path / "cwd"
     script = [
         f'echo started >> "{count}"',
-        f'pwd > "{where}"',
         # stdin is closed: a healthy engine would read EOF here and exit.
         "cat >/dev/null",
         f'echo "{REFUSAL_LINE}" >&2',
@@ -865,35 +862,27 @@ def test_the_probe_reads_the_refusal_from_a_real_start(refusal, tmp_path, monkey
     # Cached per binary identity: the second answer spawns nothing.
     assert kiro_cli.kas_relay_start_output(binary, argv) == output
     assert count.read_text(encoding="utf-8").splitlines() == ["started"]
-    # It ran in a private directory of its own, removed once it was done.
-    ran_in = Path(where.read_text(encoding="utf-8").strip())
-    assert ran_in.name.startswith("kirocrew-kas-start-")
-    assert ran_in != Path.cwd()
-    assert not ran_in.exists()
 
 
-def test_a_start_that_never_exits_is_killed_with_its_group_and_unknown(tmp_path, monkeypatch):
-    from kiro_crew import platform_compat
+def test_a_start_that_never_exits_is_ended_by_the_runner_and_unknown(tmp_path, monkeypatch):
+    from kiro_crew import kiro_prerequisite
+    from kiro_crew.kiro_prerequisite_process import ProcessResult
 
     monkeypatch.setattr(kiro_cli, "_kas_start_cache", {})
     binary = tmp_path / "kiro-cli"
     binary.write_text("", encoding="utf-8")
-    proc = MagicMock()
-    proc.wait = MagicMock(side_effect=[subprocess.TimeoutExpired("kiro-cli", 30), 0])
-    popen = MagicMock(return_value=proc)
-    monkeypatch.setattr(kiro_cli.subprocess, "Popen", popen)
-    killed: list[object] = []
-    monkeypatch.setattr(platform_compat, "kill_popen_tree", killed.append)
+    binary.chmod(0o755)
+    calls: list[dict] = []
+
+    async def _timed_out(command, args, **kwargs):
+        calls.append(kwargs)
+        return ProcessResult(ok=False, timed_out=True, error="process timed out")
+
+    monkeypatch.setattr(kiro_prerequisite, "_run_process", _timed_out)
     assert kiro_cli.kas_relay_start_output(str(binary), ("acp",)) is None
-    # The engine the start launched leads no group of its own: the start's group
-    # is what the kill reaches.
-    assert killed == [proc]
-    kwargs = popen.call_args.kwargs
-    assert kwargs["start_new_session"] is platform_compat.IS_POSIX
-    assert kwargs["creationflags"] & platform_compat.CREATE_NEW_PROCESS_GROUP == (
-        platform_compat.CREATE_NEW_PROCESS_GROUP
-    )
-    assert Path(kwargs["cwd"]).name.startswith("kirocrew-kas-start-")
+    # The supervisor ends what the start left in its process group.
+    assert calls[0]["reap_survivors"] is True
+    assert calls[0]["timeout_secs"] == kiro_cli._KAS_START_PROBE_TIMEOUT_SECS
     assert kiro_cli._kas_start_cache == {}
 
 

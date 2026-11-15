@@ -20,11 +20,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterator
 
-from kiro_crew.apps import credential_masks, protected_app_state
+from kiro_crew.apps import agent_readonly_dirs, credential_masks, protected_app_state
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
 from kiro_crew.apps.manager_records import (
     APP_MANIFEST_FILENAME,
+    INSTALLED_META_FILENAME,
     AppResult,
     InstalledApp,
     _approved_grants_after_manifest_change,
@@ -240,6 +241,8 @@ def install_app(
     hold_app_record_lock(name)
     existing = _read_installed(name)
     if existing:
+        from kiro_crew.apps.market_source import MARKET_OVERWRITE_HINT, is_market_source
+
         sel().log_api_access(
             caller="app_install",
             operation="install",
@@ -251,8 +254,12 @@ def install_app(
             ok=False,
             name=name,
             error=f"app {name!r} is already installed (v{existing.version}). "
-            f"Update it in place instead (from the app's page, or "
-            f"`kirocrew app update {name}`), or uninstall first.",
+            + (
+                MARKET_OVERWRITE_HINT
+                if is_market_source(existing.source)
+                else f"Update it in place instead (from the app's page, or "
+                f"`kirocrew app update {name}`), or uninstall first."
+            ),
         )
 
     source_repository = _effective_source_repository(source_repository)
@@ -394,6 +401,12 @@ def install_app(
         refusal = gateway_data_dir_obstruction(dest)
         if refusal:
             raise InstalledTreeRefused(refusal)
+        # Created as soon as the tree is published, before any record write that can
+        # fail, so a tree never stays on disk without its data directory: the sandbox
+        # refuses every spawn while an app declaring a credential-mask directory has
+        # none (``sandbox_staging._materialize_declared_mask_dirs``). A failure here
+        # removes the tree below.
+        app_data_dir(name)
     except InstalledTreeRefused as exc:
         # Nothing preserved is inside `dest`: a restored `data/` IS a directory,
         # so the refusal only fires where none was put back.
@@ -453,17 +466,39 @@ def install_app(
     )
     # Installing is the consent moment for everything the manifest declares.
     # Written before the record, so no record ever sits beside a missing set.
-    _write_approved_grants(name, _declared_grant_entries(grant_source(manifest)))
-    _write_installed(name, meta)
+    #
+    # One unit: a failed write part-way through (disk full, permissions) must not
+    # leave a record with no secret, read as installed. Only what
+    # this block wrote is undone; the copied tree, with any preserved ``data/``,
+    # stays for the next install of this name to take over.
+    #
+    # The approved set is put back as it was rather than removed. An installed app
+    # was refused above, so no prior record exists to lose, but an approved set can
+    # outlive its record, and that set is restored byte for byte.
+    prior_grants_text = _approved_grants_snapshot(name)
+    try:
+        _write_approved_grants(name, _declared_grant_entries(grant_source(manifest)))
+        _write_installed(name, meta)
 
-    # Create data directory
-    app_data_dir(name)
+        # Generate and write app secret for token-based auth (App Kit §5.1)
+        # circular import: token_auth -> dashboard -> bridges -> manager
+        from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
 
-    # Generate and write app secret for token-based auth (App Kit §5.1)
-    # circular import: token_auth -> dashboard -> bridges -> manager
-    from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
-
-    write_app_secret(name, generate_app_secret())
+        write_app_secret(name, generate_app_secret())
+    except (OSError, ValueError) as exc:
+        try:
+            (dest / INSTALLED_META_FILENAME).unlink(missing_ok=True)
+            _restore_approved_grants(name, prior_grants_text)
+        except OSError as undo_exc:
+            logger.error("Failed to undo the install record of app %s: %s", name, undo_exc)
+        sel().log_api_access(
+            caller="app_install",
+            operation="install",
+            outcome="failed",
+            resources=f"name={name!r}",
+            error=f"install record: {exc}",
+        )
+        return AppResult(ok=False, name=name, error=f"failed to record the install: {exc}")
 
     # Audit successful install for all callers (CLI, registry, dashboard)
     sel().log_api_access(
@@ -569,6 +604,28 @@ def update_app(
     existing = _read_installed(name, manifest=old_manifest)
     if not existing:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
+
+    # A marketplace record's ``market:<ref>@<n>`` source and zip sha256 are its
+    # provenance and its trust coordinate; the record write below would replace
+    # them with the folder path. shortcut: refused outright until a marketplace
+    # update path (resolve, verify, re-confirm) exists; upgrade then.
+    from kiro_crew.apps.market_source import MARKET_OVERWRITE_HINT, is_market_source
+
+    if is_market_source(existing.source):
+        error = f"{name!r} cannot be updated from a folder. {MARKET_OVERWRITE_HINT}"
+        sel().log_api_access(
+            caller="app_update",
+            operation="provenance",
+            outcome="rejected",
+            resources=f"name={name!r}",
+            error=error,
+        )
+        return AppResult(
+            ok=False,
+            name=name,
+            error=error,
+            error_code="app_update_market_source",
+        )
 
     source_repository = _effective_source_repository(source_repository)
     trust_denied = repository_bound_grant_denied(name, repository=source_repository)
@@ -776,8 +833,10 @@ def update_app(
                 # puts the prior state back.
                 protected_app_state.set_owner_disabled(name, True)
             # The old manifest leaves with the old tree below while the data waits aside:
-            # its credential masks must stand in the record first (apps.credential_masks).
+            # its credential masks and read-only directories must stand in their records
+            # first (apps.credential_masks, apps.agent_readonly_dirs).
             credential_masks.remember_declaration(name)
+            agent_readonly_dirs.remember_declaration(name)
             if _owned_data_dir(data_dir):
                 shutil.move(str(data_dir), str(tmp_data))
                 preserved_data = True

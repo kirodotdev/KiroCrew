@@ -26,6 +26,7 @@ from kiro_crew.secrets_mediation.dispatch import (
 )
 from kiro_crew.secrets_mediation.policy import PolicyError, policy_path
 from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 CANARY = "sk-canary-3f9a2b7c1d8e-DO-NOT-LEAK"
 OPAQUE_CREDENTIAL = "opaque-7a9c2d4e6f8b1a3c5e7d9f0b2a4c6e8f"
@@ -272,7 +273,10 @@ async def test_authorized_but_unstored_secret_collapses(tmp_path, monkeypatch):
         ({"url": "https://[::1/x"}, MediationError),
         ({"method": "GET"}, MediationError),
         ({"timeout_s": float("nan")}, MediationError),
-        ({"json_body": {"note": "my key is AKIAIOSFODNN7EXAMPLE"}}, MediationError),
+        (
+            {"json_body": {"note": f"my key is {SAMPLE_AWS_SECRET}"}},
+            MediationError,
+        ),
         ({"url": f"{ORIGIN}/x?token=AKIAIOSFODNN7EXAMPLE"}, MediationError),
         ({"json_body": {"blob": "x" * 300_000}}, MediationError),
     ],

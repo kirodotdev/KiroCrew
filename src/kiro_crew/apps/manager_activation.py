@@ -420,18 +420,28 @@ def disable_app(name: str) -> AppResult:
         return AppResult(
             ok=False, name=name, error=f"could not record the disable of {name!r}: {exc}"
         )
+    # A disable removes every job the app owns, so the next enable registers all of
+    # them again, the ones the owner deleted included.
+    try:
+        protected_app_state.forget_deleted_app_crons(name)
+    except (OSError, ValueError):
+        logger.warning("could not clear the deleted cron jobs of %s", name, exc_info=True)
     if not meta.enabled:
         # Already disabled ON DISK -- which a sandboxed shell can forge by writing
         # enabled:false to the writable installed.json. This early return otherwise
         # skips the revoke the write path does, leaving a grant from a real earlier
         # enable live, so a pod still starts after the owner disabled the app. Revoke
-        # here too, and fail closed if the grant cannot be removed.
+        # here too, and fail closed if the grant cannot be removed. The record is
+        # written after the revoke, so the token cutoff moves to now and a token
+        # minted before this disable stays refused after a later enable.
         revoke_host_exec(name)
         revoke_worker_auto_approve(name)
         if host_exec_granted(name):
             return AppResult(
                 ok=False, name=name, error=f"could not revoke host-exec grant for {name!r}"
             )
+        meta.updatedAt = _now_iso()
+        _write_installed(name, meta)
         return AppResult(ok=True, name=name, message=f"{name} is already disabled")
 
     meta.enabled = False

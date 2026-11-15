@@ -59,6 +59,7 @@ import { fmtList } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { pullRequestErrorDetails } from '../utils/pullRequestErrors'
 import ErrorNotice from './ErrorNotice'
+import { useLatestMutationError } from '../utils/latestMutationError'
 const CHECK_POLL_BASE_MS = 10_000
 const CHECK_POLL_MAX_MS = 60_000
 /** How long an UNMOUNTED detail payload survives in the query cache. React
@@ -724,6 +725,9 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
     autoMergeMutation.reset()
   }
 
+  // A hook, so it runs before the early returns below.
+  const actionError = useLatestMutationError(readyMutation, autoMergeMutation)
+
   if (!pullRequestIsLive(source)) return null
   // Ready-for-review and auto-merge are writes. A provider whose gateway plugin
   // does not implement them must not get buttons that can only return
@@ -732,7 +736,7 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
   if (!(meta.capabilities.mergeActions ?? meta.capabilities.mergeState)) return null
   const showReady = source.draft
   const showAutoMerge = !source.draft && !source.autoMerge
-  const errorDetails = pullRequestErrorDetails(readyMutation.error || autoMergeMutation.error)
+  const errorDetails = pullRequestErrorDetails(actionError)
   // The immediate-merge refusal is rendered as its own confirmation prompt, so
   // repeating it as a failure would read as a dead end rather than a question.
   const error = immediateMergeWarning ? '' : errorDetails.message

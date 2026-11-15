@@ -411,6 +411,10 @@ def _display_redaction_cache_key(
     container is retained. A non-empty pass-4 token-parameter prefix set follows
     behind a ``\\x01`` separator (a host never contains one either); an empty set adds
     nothing, so the MAC input is the host-only form whenever no companion sets one.
+    Every key also takes the credential engine's mark (``display_verdicts.engine_mark``,
+    empty with the detectors off) last: a stored verdict outlives a switch change, and
+    the render memo reuses this key with or without a store; the salt-keyed process
+    caches are also emptied when the engine changes (:func:`_sync_cache_engine`).
     The length component constrains a digest collision.
     The digest is an HMAC under the per-process ``_DISPLAY_REDACTION_SALT``: one
     hash per lookup, so the cache stays cheaper than the battery it fronts.
@@ -427,6 +431,10 @@ def _display_redaction_cache_key(
         tail += b"\x01" + "\0".join(prefixes).encode("utf-8", errors="surrogatepass")
     if base is _NO_BASE:
         base = _display_verdicts.mac_base()
+    # Every key names the credential engine that judged it (empty with the detectors
+    # off): a stored verdict outlives a switch change, and the render memo keys its
+    # rows on this key with no store at all (Windows, or before the store is enabled).
+    tail += _display_verdicts.engine_mark()
     if base is None:
         digest = hmac.new(_DISPLAY_REDACTION_SALT, raw + b"\0" + tail, hashlib.sha256).digest()
     else:
@@ -445,11 +453,62 @@ def _display_redaction_cache_key(
     return (digest, len(raw)), len(raw)
 
 
+#: Moved by every reset of the display caches, so a memo keyed on
+#: :func:`display_redaction_stamp` is dropped whenever they are.
+_display_cache_epoch = 0
+
+
+def display_redaction_stamp() -> tuple[object, ...] | None:
+    """Everything besides the text that the display battery's answer depends on.
+
+    The same material :func:`_display_redaction_cache_key` folds into every
+    digest -- the exempt-host set, the token-parameter prefixes and the verdict
+    MAC base -- plus the cache epoch and the credential engine's mark. Equal
+    stamps mean ``_redact_for_display`` and ``_redacted_preview`` give the same
+    answer for the same text, so a caller may memo their outputs under it.
+    ``None`` inside a scope that changes the battery's answer, where nothing may
+    be memoized (:func:`_display_scope_changes_battery`). Read it once per pass:
+    it costs a few microseconds, the digest's set reads.
+    """
+    if _display_scope_changes_battery():
+        return None
+    hosts = _exempt_exact_hosts() | current_scoped_exempt_hosts()
+    base = _display_verdicts.mac_base()
+    engine = _display_verdicts.engine_mark()
+    return (_display_cache_epoch, engine, hosts, _token_param_exempt_prefixes(), base)
+
+
+#: The credential engine (``display_verdicts.engine_mark``) the process caches
+#: hold answers for. Read and moved only under ``_display_redaction_cache_lock``.
+_display_cache_engine: bytes = b""
+
+
+def _sync_cache_engine() -> bytes:
+    """Empty the process caches if the credential engine changed; return its mark.
+
+    The salt-keyed caches hold one engine's answers at a time, so a lookup made
+    after a switch change never finds an answer the other engine computed.
+    """
+    global _display_cache_engine
+    engine = _display_verdicts.engine_mark()
+    with _display_redaction_cache_lock:
+        if engine != _display_cache_engine:
+            _clear_display_redaction_cache()
+            _display_cache_engine = engine
+    return engine
+
+
+def _cache_engine_is(engine: bytes) -> bool:
+    """Whether the caches still hold *engine*'s answers; call under the cache lock."""
+    return _display_cache_engine == engine
+
+
 def _clear_display_redaction_cache() -> None:
     """Reset the process-local caches for deterministic tests."""
     global _display_redaction_cache_bytes, _display_clean_young, _display_clean_old
     global _display_preview_cache_bytes, _display_preview_by_object_chars
-    global _display_preview_by_object_context
+    global _display_preview_by_object_context, _display_cache_epoch
+    _display_cache_epoch += 1
     with _display_redaction_cache_lock:
         _display_redaction_cache.clear()
         _display_redaction_cache_bytes = 0
@@ -562,6 +621,8 @@ def _redact_for_display(text: str) -> str:
     would store one set's output under another set's key.
     """
     scoped = _display_scope_changes_battery()
+    generation = _display_verdicts.engine_generation()
+    engine = _sync_cache_engine()
     stored, base = (None, None) if scoped else _display_verdicts.active()
     hosts = _exempt_exact_hosts() | current_scoped_exempt_hosts()
     prefixes = _token_param_exempt_prefixes()
@@ -590,35 +651,49 @@ def _redact_for_display(text: str) -> str:
         verdict = stored.lookup(tag)
         if verdict is _display_verdicts.CLEAN:
             with _display_redaction_cache_lock:
-                _display_clean_add(ck)
+                if _cache_engine_is(engine):
+                    _display_clean_add(ck)
             return text
         if isinstance(verdict, str):
-            _remember_redacted(key, input_bytes, verdict)
+            _remember_redacted(key, input_bytes, verdict, engine=engine)
             return verdict
 
     redacted = display_battery(text, exempt_hosts=hosts, token_param_prefixes=prefixes)
     if scoped:
         return redacted
+    if _display_verdicts.engine_generation() != generation:
+        # The engine was published while the battery ran -- even back to the same
+        # one, which the mark alone cannot see -- so the key may name the other
+        # engine: this answer is neither cached nor stored.
+        return redacted
     if redacted == text:
         with _display_redaction_cache_lock:
-            _display_clean_add(ck)
+            if _cache_engine_is(engine):
+                _display_clean_add(ck)
         if stored is not None:
             stored.note(tag, _display_verdicts.CLEAN, from_memory=False)
         return text
     if stored is not None:
         stored.note(tag, redacted, from_memory=False)
-    _remember_redacted(key, input_bytes, redacted)
+    _remember_redacted(key, input_bytes, redacted, engine=engine)
     return redacted
 
 
-def _remember_redacted(key: _DisplayRedactionKey, input_bytes: int, redacted: str) -> None:
-    """File one changed string's output in the bounded output cache."""
+def _remember_redacted(
+    key: _DisplayRedactionKey, input_bytes: int, redacted: str, *, engine: bytes | None = None
+) -> None:
+    """File one changed string's output in the bounded output cache.
+
+    With *engine*, filed only while the caches still hold that engine's answers.
+    """
     global _display_redaction_cache_bytes
     entry_bytes = len(key[0]) + input_bytes + len(redacted.encode("utf-8", errors="surrogatepass"))
     if entry_bytes > _DISPLAY_REDACTION_CACHE_MAX_BYTES:
         return
 
     with _display_redaction_cache_lock:
+        if engine is not None and not _cache_engine_is(engine):
+            return
         cached = _display_redaction_cache.get(key)
         if cached is not None:
             _display_redaction_cache.move_to_end(key)
@@ -670,6 +745,8 @@ def _same_preview_context(held: tuple | None, context: tuple) -> bool:
         and held[0] == context[0]
         and held[1] == context[1]
         and held[2] is context[2]
+        and held[3] == context[3]
+        and held[4] == context[4]
     )
 
 
@@ -690,14 +767,17 @@ def _redacted_preview(text: str, limit: int) -> str:
     if _display_scope_changes_battery():
         # _redact_for_display runs the battery uncached here too.
         return _cut_preview(_redact_for_display(strip_markdown_preview(text)), limit)
+    _sync_cache_engine()
     # Every slots broadcast previews each tab's last message, and the same string
     # object comes back until that message changes. Matching on the object and on
     # the inputs the key folds in (exempt hosts, token-parameter prefixes, verdict
-    # base) answers it without hashing the whole text on the event loop again.
+    # base, credential engine) answers it without hashing the whole text on the event loop again.
     context = (
         _exempt_exact_hosts() | current_scoped_exempt_hosts(),
         _token_param_exempt_prefixes(),
         _display_verdicts.mac_base(),
+        _display_verdicts.engine_mark(),
+        _display_verdicts.engine_generation(),
     )
     with _display_redaction_cache_lock:
         if _same_preview_context(_display_preview_by_object_context, context):
@@ -709,6 +789,8 @@ def _redacted_preview(text: str, limit: int) -> str:
         _exempt_exact_hosts() | current_scoped_exempt_hosts(),
         _token_param_exempt_prefixes(),
         _display_verdicts.mac_base(),
+        _display_verdicts.engine_mark(),
+        _display_verdicts.engine_generation(),
     )
     # Remembered only when the inputs did not move while it was computed, the
     # same rule the digest-keyed cache applies before it files an entry.
@@ -743,6 +825,8 @@ def _redacted_preview_by_digest(text: str, limit: int) -> str:
     # Imported here so the chat_utils facade does not forward the strip as its own name.
     from kiro_crew.preview_text import strip_markdown_preview
 
+    generation = _display_verdicts.engine_generation()
+    engine = _sync_cache_engine()
     (digest, length), _ = _display_redaction_cache_key(text)
     key = (digest, length, limit)
     with _display_redaction_cache_lock:
@@ -752,16 +836,24 @@ def _redacted_preview_by_digest(text: str, limit: int) -> str:
             return cached[0]
     preview = _cut_preview(_redact_for_display(strip_markdown_preview(text)), limit)
     # Filed only when the sets the key folds in did not change while it was
-    # computed, so an entry never holds an answer from a context its key does not name.
-    if _display_redaction_cache_key(text)[0][0] == digest:
-        _remember_preview(key, preview)
+    # computed, nor the engine's publication (a round trip leaves the key the
+    # same), so an entry never holds an answer from a context its key does not name.
+    if (
+        _display_redaction_cache_key(text)[0][0] == digest
+        and _display_verdicts.engine_generation() == generation
+    ):
+        _remember_preview(key, preview, engine=engine)
     return preview
 
 
-def _remember_preview(key: _DisplayPreviewKey, preview: str) -> None:
+def _remember_preview(
+    key: _DisplayPreviewKey, preview: str, *, engine: bytes | None = None
+) -> None:
     global _display_preview_cache_bytes
     entry_bytes = len(key[0]) + len(preview.encode("utf-8", errors="surrogatepass"))
     with _display_redaction_cache_lock:
+        if engine is not None and not _cache_engine_is(engine):
+            return
         if key in _display_preview_cache:
             _display_preview_cache.move_to_end(key)
             return
@@ -939,7 +1031,27 @@ def _live_child_instance(state: "DashboardState", slot: "_ChatSlot") -> str:
         return ""
 
 
-def _broadcast_expired_oauth_banners(state: "DashboardState", slot: "_ChatSlot") -> None:
+def _open_oauth_banner_rows(slot: "_ChatSlot") -> list[dict]:
+    """*slot*'s ``mcp_oauth`` rows that still offer a link and record no outcome."""
+    return [
+        message
+        for message in list(slot.messages)
+        if message.get("role") == "mcp_oauth"
+        for meta in (message.get("meta") or {},)
+        if meta.get("oauth_url")
+        and not (meta.get("completed") or meta.get("failed") or meta.get("superseded"))
+    ]
+
+
+def _oauth_banner_row_key(message: dict) -> str:
+    """A stable name for one banner row: its ``mid``, else its ``ts``."""
+    meta = message.get("meta") or {}
+    return str(meta.get("mid") or message.get("ts") or "")
+
+
+def _broadcast_expired_oauth_banners(
+    state: "DashboardState", slot: "_ChatSlot", *, only: "set[str] | None" = None
+) -> None:
     """Push the read-time gate's current verdict on *slot*'s OAuth banners to open tabs.
 
     The gate in `_prepare_messages` runs only when a client FETCHES, so an
@@ -976,16 +1088,15 @@ def _broadcast_expired_oauth_banners(state: "DashboardState", slot: "_ChatSlot")
     # any tab in this process (opening the tab loads the window first), so no
     # tab shows one of its banners to withdraw; asking would load its whole
     # transcript on the loop for nothing.
+    #
+    # ``only`` limits the frames to the rows with those keys
+    # (:func:`_oauth_banner_row_key`), so a caller that already announced some
+    # rows does not send them again.
     if getattr(slot, "window_pending", False) is True:
         return
-    candidates = [
-        message
-        for message in slot.messages
-        if message.get("role") == "mcp_oauth"
-        for meta in (message.get("meta") or {},)
-        if meta.get("oauth_url")
-        and not (meta.get("completed") or meta.get("failed") or meta.get("superseded"))
-    ]
+    candidates = _open_oauth_banner_rows(slot)
+    if only is not None:
+        candidates = [m for m in candidates if _oauth_banner_row_key(m) in only]
     if not candidates:
         return
     live_child = _live_child_instance(state, slot)
@@ -1224,7 +1335,7 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
             # bound to that id (register_approval). Keep it for permission and
             # elicitation rows only (the two the approval registry binds, and
             # the two whose resolution frame names a `mid`), so every other
-            # row's wire meta stays exactly as before.
+            # row's wire meta is unchanged.
             if role in ("permission", "elicitation"):
                 meta = _carry_row_mid(meta, m)
             msg_out["meta"] = _expire_dead_child_oauth_meta(

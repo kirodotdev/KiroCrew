@@ -11,21 +11,22 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``,
 ``_can_load_session``, ``_child_pids``, ``_derived_spec_snapshot``, ``_exit_watch_task``,
-``_initialize_result``, ``_initialized``, ``_kas_host_auth``, ``_last_activity``, ``_launch_copy_spec``,
+``_initialize_result``, ``_initialized``, ``_kas_engine_bundle``, ``_kas_host_auth``,
+``_last_activity``, ``_launch_copy_spec``,
 ``_launch_cwd_roots``, ``_launch_process_cwd``, ``_max_age_secs``,
 ``_max_rss_depth``, ``_max_rss_mb``, ``_native_launch_resources``,
 ``_native_launch_sources``, ``_native_launch_view_alias``, ``_native_skill_projection``,
 ``_pid``, ``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_prompt_capabilities``, ``_reader_task``, ``_sandbox_cleanup``, ``_scope_unit``,
 ``_skill_projection_generation``, ``_spawn_agent_env``, ``_spawn_monotonic``,
-``_spawn_skill_projection``, ``_kas_telemetry_sent``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``,
+``_spawn_skill_projection``, ``_spawn_spec``, ``_kas_telemetry_sent``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``,
 ``_tool_search_wire``.
 
 ``_with_mcp_sign_in_storage`` (a plain function handed the runtime) also writes
 ``_mcp_secret_server``.
 
-Instance fields read: ``_acp_backend``, ``_extra_env``, ``_harness_pin``, ``_launch_agent``, ``_member_context``,
-``_model``, ``_native_skill_projection_enabled``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
+Instance fields read: ``_acp_backend``, ``_agent_env_override``, ``_background_qos``, ``_extra_env``, ``_kas_telemetry_override``, ``_forward_ssh_auth_sock_override``,
+``_harness_pin``, ``_launch_agent``, ``_member_context``, ``_model``, ``_native_skill_projection_enabled``, ``_record_tree_in_background``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
 ``_work_dir``.
 """
 
@@ -40,7 +41,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
-from kiro_crew import agent_scratch, member_essential_context, platform_compat
+from kiro_crew import agent_scratch, build_reuse, member_essential_context, platform_compat
 from kiro_crew.acp import kas_cli_settings, kas_secret_storage
 from kiro_crew.acp._dispatch import agent_version_from_init
 from kiro_crew.acp.agent_env import agent_env_overlay
@@ -53,7 +54,9 @@ from kiro_crew.acp.client import (
     apply_pod_bundle_spawn,
     finish_suspended_spawn,
 )
+from kiro_crew.acp.default_crew_servers import crew_added_servers
 from kiro_crew.acp.harness import SpawnContext, SpawnPlan
+from kiro_crew.acp.harness._common import operator_mandatory_mcps
 from kiro_crew.acp.launch import LaunchRequest, LaunchTools, launch
 from kiro_crew.acp.runtime_process_tree import ChildRecord, _kill_escaped_children
 from kiro_crew.acp.runtime_tree_kill import _prune_dead_descendants
@@ -69,6 +72,8 @@ from kiro_crew.agent import ensure_agent_materialized
 from kiro_crew.agent_sdk.backends import spawn_delegates_to_internal_sandbox
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.agent_sdk.tool_search import (
+    custom_agent_never_defer_ids,
+    job_tool_ids,
     kas_client_meta_settings,
     kas_never_defer_ids,
     spec_grants_tool_search,
@@ -373,6 +378,7 @@ async def _resolve_spawn_plan(self: AcpRuntime) -> SpawnPlan:
     except DerivedSpecStale as exc:
         raise AcpRuntimeError(str(exc)) from exc
     self._kas_host_auth = plan.host_auth
+    self._kas_engine_bundle = plan.engine_bundle
     self._native_launch_sources = dict(plan.native_context_documents)
     self._native_launch_view_alias = None
     self._native_launch_resources = None
@@ -699,8 +705,12 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
     # spec read is the generation the child will load. Every other host reads
     # its constant directly: no new await, no new step on that path.
     client_capabilities = self._harness.client_capabilities
-    # Set by the handshake below when it read agent.env; None lets launch read it.
-    self._spawn_agent_env = None
+    # The frozen snapshot a chat-sharing placement keyed on, else set by the
+    # handshake below when it read agent.env; None lets launch read it.
+    self._spawn_agent_env = getattr(self, "_agent_env_override", None)
+    # The spec the handshake below judges, for this spawn only: cleared here so a
+    # spawn whose handshake reads none never sees an earlier spawn's.
+    self._spawn_spec = None
     if self._harness.client_meta_settings:
         client_capabilities = await self._handshake_client_capabilities()
 
@@ -838,6 +848,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             internal_sandbox=internal_sandbox,
             pod_home_remap=self._harness.pod_home_remap,
             guard_scratch_hops=True,
+            forward_ssh_auth_sock_override=getattr(self, "_forward_ssh_auth_sock_override", None),
         ),
         _launch_tools(),
     )
@@ -886,6 +897,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
                     self._process,
                     self._pid,
                     label=f"{KIRO_CLI_BIN} acp",
+                    background=self._background_qos,
                 ),
             )
         )
@@ -950,11 +962,12 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
                 )
             if adopt_outcome != "recorded":
                 # "unwritable": the marker was discarded, so the tree is
-                # UNOWNED and never swept -- a leak a human can see rather
-                # than a deletion under a live runtime.
+                # UNOWNED: never deleted in place, and moved into the
+                # quarantine only after a week with no write.
                 logger.warning(
                     "agent-scratch: could not join the owner marker of %r (%s); the tree's "
-                    "work directory is left unowned and will not be swept",
+                    "work directory is left unowned and is moved into the quarantine only "
+                    "after a week with no write",
                     self._shared_scratch.name,
                     adopt_outcome,
                 )
@@ -1132,15 +1145,13 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             self._pid,
             self._scope_unit or "unnamed",
         )
-        # INSIDE the guard, which is what makes a cancelled scan safe. The
-        # runtime is already `_initialized` here and the caller does not hold
-        # it yet, so a CancelledError raised inside the scan -- an ordinary
-        # shutdown or a spawn-budget timeout during a /proc walk -- would
-        # otherwise leave a live process nobody owns. The guard's kill is the
-        # right answer to that, and it cannot fire for a merely FAILED scan:
-        # _snapshot_descendants swallows every Exception itself, so only a
-        # cancellation reaches this arm.
-        await self._snapshot_descendants(retry_when_empty=True)
+        # The handshake a caller is waiting on ends here, so the descendant
+        # pass runs beside the start instead of in front of it, and it never
+        # waits for a tree to appear: a pass that sees no descendant hands its
+        # one retry to a task of its own. Every kill waits for the pass
+        # (_record_tree_in_background), so nothing signals by a record it has
+        # not written, and a cancel of this task cannot land inside it.
+        self._record_tree_in_background(retry_when_empty=True)
     except BaseException:
         # One task this frame only WAITS on, so a cancellation cannot cut the
         # cleanup short. Two ordinary dashboard paths (a newer slot signal, a
@@ -1220,10 +1231,9 @@ async def _record_tree_before_failed_start_kill(self: AcpRuntime) -> dict[int, C
     runs it inside a shielded cleanup task, so the spawning task's
     cancellation never reaches it; a cancellation of the cleanup task itself
     (loop shutdown) is absorbed so the kill that follows still runs, leaving
-    the tree to the group kill alone.
+    the tree to the group kill alone. Where the walk cannot see a descendant
+    the scan is a no-op and this returns nothing.
     """
-    if platform_compat.IS_WINDOWS:
-        return {}
     try:
         await self._snapshot_descendants()
     except asyncio.CancelledError:
@@ -1280,7 +1290,11 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
     payload lists every MCP tool that spec can call there
     (``kas_never_defer_ids``, expanding whole-server grants from
     :func:`_known_server_tool_names`) and ``enabled`` goes out as an explicit
-    false. A spec that grants the loader is sent no ``neverDefer``.
+    false. A spec that grants the loader is sent the spawn agent's declared job
+    tools (``job_tool_ids``), so the calls that agent's prompt makes its
+    procedure cost no load round trip, and nothing when it declares none. An
+    operator who set their own never-defer list (``operator_mandatory_mcps``)
+    has decided what stays direct: Crew adds no job tool beside it.
     The spec judged is the one the KAS projection will PUT ON THE
     WIRE at session/new -- the freshness gate's snapshot for a derived agent,
     else the spec ``resolve_projected_spec`` resolves nearest-first, the same
@@ -1295,21 +1309,49 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
         # KAS takes the opt-out only at initialize. It is judged on the child's own
         # environment, in launch's order: the gateway's, agent.env, then extra_env.
         # The agent.env snapshot read here is the one launch applies.
-        self._spawn_agent_env = await asyncio.to_thread(agent_env_overlay)
-        telemetry_on = await asyncio.to_thread(
-            kas_cli_settings.kiro_cli_telemetry_enabled,
-            self._work_dir,
-            {**os.environ, **self._spawn_agent_env, **self._extra_env},
+        override = getattr(self, "_agent_env_override", None)
+        self._spawn_agent_env = (
+            dict(override) if override is not None else await asyncio.to_thread(agent_env_overlay)
         )
+        frozen_telemetry = getattr(self, "_kas_telemetry_override", None)
+        if frozen_telemetry is not None:
+            telemetry_on = bool(frozen_telemetry)
+        else:
+            telemetry_on = await asyncio.to_thread(
+                kas_cli_settings.kiro_cli_telemetry_enabled,
+                self._work_dir,
+                {**os.environ, **self._spawn_agent_env, **self._extra_env},
+            )
         base = kas_cli_settings.with_telemetry_opt_out(base, telemetry_on)
         self._kas_telemetry_sent = telemetry_on
     if self._tool_search is None:
         return base
-    spec = await asyncio.to_thread(self._projected_spawn_spec)
+
+    def spec_and_added() -> tuple[dict[str, Any] | None, tuple[str, ...]]:
+        # Only KAS reads this channel. There the Crew servers a custom agent was
+        # given, not its author's, stay behind KAS's loader (``crew_added_servers``).
+        spec = self._projected_spawn_spec()
+        if not self._harness.client_meta_settings or spec_grants_tool_search(spec):
+            return spec, ()
+        return spec, crew_added_servers(self._agent, spec)
+
+    # One block for both reads: the spec read and ``crew_added_servers`` each ask
+    # which installed app owns the agent, and the second reuses the first's reads.
+    spec, added = await asyncio.to_thread(build_reuse.in_one_build, spec_and_added)
+    self._spawn_spec = spec
     loader_granted = spec_grants_tool_search(spec)
     never_defer: list[str] = []
     if not loader_granted:
-        never_defer = await asyncio.to_thread(kas_never_defer_ids, spec, _known_server_tool_names)
+        if added:
+            never_defer = await asyncio.to_thread(
+                custom_agent_never_defer_ids, spec, _known_server_tool_names, added
+            )
+        else:
+            never_defer = await asyncio.to_thread(
+                kas_never_defer_ids, spec, _known_server_tool_names
+            )
+    elif operator_mandatory_mcps() is None:
+        never_defer = job_tool_ids(self._agent, spec)
     settings = kas_client_meta_settings(
         self._tool_search, loader_granted=loader_granted, never_defer=never_defer
     )
@@ -1369,8 +1411,13 @@ async def _send_mcp_off_if_toolless(runtime: AcpRuntime) -> None:
     """The KAS half of :func:`_switch_off_mcp_for_toolless_spawn`."""
     from kiro_crew.acp.client_mcp_array import spec_is_toolless
 
+    # Per spawn: only the process this toggle reached runs with MCP off.
+    runtime._mcp_switched_off = False
     try:
-        spec = await asyncio.to_thread(runtime._projected_spawn_spec)
+        # The spec this spawn's handshake judged, when it read one; else read here.
+        spec = getattr(runtime, "_spawn_spec", None) or await asyncio.to_thread(
+            runtime._projected_spawn_spec
+        )
     except Exception:
         logger.debug("AcpRuntime: spawn spec unreadable; MCP left on", exc_info=True)
         return
@@ -1381,6 +1428,7 @@ async def _send_mcp_off_if_toolless(runtime: AcpRuntime) -> None:
     except Exception:
         logger.warning("AcpRuntime: could not switch MCP off for a tool-less agent", exc_info=True)
         return
+    runtime._mcp_switched_off = True
     logger.info(
         "AcpRuntime: agent=%s mounts no tool; MCP servers are off for this process",
         runtime._agent or "<none>",

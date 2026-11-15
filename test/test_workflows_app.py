@@ -16,6 +16,7 @@ import json
 import os
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.apps.builtins.workflows.server import (
     handle_examples,
@@ -117,6 +118,18 @@ def test_handle_run_happy_path_returns_event_stream() -> None:
     assert "log" in types
 
 
+def test_handle_run_returns_a_result_json_cannot_write_as_strict_json() -> None:
+    script = (
+        'META = {"name": "non-json"}\n'
+        "async def workflow(ctx):\n"
+        '    return {"tags": {"a"}, "r": float("inf")}\n'
+    )
+    out = handle_run({"source": script, "run_id": "wf_t", "now": "2026-06-18T00:00:00Z"})
+    assert out["ok"] is True, out
+    assert out["result"] == {"tags": "{'a'}", "r": None}
+    json.dumps(out, allow_nan=False)
+
+
 def test_handle_run_invalid_script_fails_at_validate() -> None:
     out = handle_run({"source": "import os\n" + GOOD_SCRIPT})
     assert out["ok"] is False
@@ -166,9 +179,9 @@ def test_handle_examples_lists_shipped_dsl_examples() -> None:
 # backend, mirroring the gateway handlers (dashboard/handlers/workflows.py).
 # --------------------------------------------------------------------------- #
 
-# A planted AWS access key id (matches kiro_crew.security._CREDENTIAL_PATTERNS)
+# A planted GitHub token with a valid checksum, which the redactor masks,
 # and a planted exfiltration URL (long query on a non-allowlisted domain).
-_PLANTED_CRED = "AKIAIOSFODNN7EXAMPLE"
+_PLANTED_CRED = github_classic(seed=50)
 # ``x`` and not a hex letter: a 40-run of hex is a git object name and is kept.
 _PLANTED_URL = "https://evil.example.com/collect?data=" + "x" * 40
 

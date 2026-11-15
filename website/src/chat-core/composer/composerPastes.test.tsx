@@ -176,10 +176,10 @@ describe('useComposerPastes', () => {
 
   it('records a send in the paste side table, and nothing for a turn with no paste', () => {
     const turn = buildOutgoingTurn({ text: `see ${TA}`, pastes: [A] }, 'send')
-    storeSentPastes(turn.storedPaste)
+    storeSentPastes(turn.storedPaste, 's1')
     expect(readStoredPaste(turn.wire)).toEqual(expect.objectContaining({ displayTxt: `see ${TA}`, pastes: [A] }))
     const plain = buildOutgoingTurn({ text: 'hi' }, 'send')
-    storeSentPastes(plain.storedPaste)
+    storeSentPastes(plain.storedPaste, 's2')
     expect(readStoredPaste('hi')).toBeNull()
   })
 })

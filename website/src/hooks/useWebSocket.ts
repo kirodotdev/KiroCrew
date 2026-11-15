@@ -2,13 +2,13 @@ import { useEffect, useRef, useCallback } from 'react'
 import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
-import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, triggerCronRefresh, fetchSlots, remoteSlotRead } from '../store/dashboardSlice'
+import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, triggerLiveRefresh, triggerCronRefresh, fetchSlots, remoteSlotRead } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, applyNotificationDismiss, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
   fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, warmSlotCache, sseContextUsage, clearMessages, clearSlotCache, resolveElicitationRow, sseSubagentPending, setSubagentApprovalTarget, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, subagentReplayDone, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, sideClosedElsewhere, queueEntryAttachments, isTerminalWorkflowStatus,
   forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, readSideSteerSubmittedText,
-  takeSideQueueEditForClose,
+  takeSideQueueEditForClose, abortActiveOlderFetch,
 } from '../store/chatSlice'
 import { store } from '../store'
 import { TAB_ID } from '../api/tabId'
@@ -20,6 +20,7 @@ import { applyCardUpdate } from '../api/cards'
 import type { Notification, TodoList, McpSessionReport } from '../types'
 import { i18nT } from '../i18n/t'
 import { CONFIG_PENDING_QUERY_KEY } from '../pages/settings/configPendingQuery'
+import { MCP_GATEWAY_STATUS_QUERY_KEY } from '../pages/overview/mcpShareRefusedQuery'
 import { teamRoots } from '../pages/chat/command-center/model'
 import {
   applySessionProjection,
@@ -57,6 +58,7 @@ import { useBundleReload, handleUpdateProgress } from './websocket/bundleReload'
 import {
   handleArtifactUpdate,
   handleCredentialRedactionChanged,
+  handleCredentialRedactionSettingsChanged,
   handleDashboardMoved,
   handleMemberProjection,
   handleMembersSubscribed,
@@ -71,7 +73,7 @@ import { useChatStream } from './websocket/chatStream'
 import { useTurnCompletion } from './websocket/turnCompletion'
 import { attachFocusRelay, focusedSlotForCurrentSurface } from './websocket/attention'
 import { emitAppReload, emitChannelEvent, emitComputerUseFrame, emitCronHistory, emitResumeAllDone } from './websocket/browserEvents'
-import { runFirstConnect, runReconnectCatchUp } from './websocket/reconnectCatchUp'
+import { createReconnectSnapshotWait, runFirstConnect, runReconnectCatchUp, type ReconnectSnapshotWait } from './websocket/reconnectCatchUp'
 import { browserLiveStore } from './useBrowserLive'
 import { applySharedCrewFrame, onSharedCrewSocketOpen, setSharedCrewSender } from './sharedCrew/sharedCrewSocket'
 import { batchedUnlessOpen } from '../lib/streamBatch'
@@ -123,6 +125,8 @@ export {
 } from './websocket/slotProjection'
 
 export { ROW_STALL_MS, ROW_STALL_TICK_MS } from './websocket/rowDeliveryWatchdog'
+export { RECONNECT_HEALTHY_MS } from '../utils/reconnectBackoff'
+export { RECONNECT_SNAPSHOT_WAIT_MS } from './websocket/reconnectCatchUp'
 
 // The silence-watchdog timing constants are owned by the shared helper so the
 // dashboard socket and the two app sockets cannot drift. Re-exported here
@@ -151,6 +155,12 @@ export function useWebSocket() {
       onDead: () => silenceHostRef.current.onDead(),
     })
   }
+  // The reconnect catch-up window, closed by the new socket's connect snapshot.
+  const reconnectSnapshotRef = useRef<ReconnectSnapshotWait | null>(null)
+  if (reconnectSnapshotRef.current === null) {
+    reconnectSnapshotRef.current = createReconnectSnapshotWait(dispatch, reconnectingRef)
+  }
+  const reconnectSnapshot = reconnectSnapshotRef.current
   const voice = useVoicePlayback(dispatch)
   const automations = useAutomationSeed(dispatch, queryClient)
   // Prefer the gateway's runtime monitor kind list over the bundled snapshot so
@@ -203,7 +213,9 @@ export function useWebSocket() {
     if (!ws) return
 
     ws.onopen = () => {
-      socket.resetBackoff()
+      // Not a backoff reset: a socket that drops before it proves healthy keeps
+      // the backoff growing (see `RECONNECT_HEALTHY_MS`).
+      socket.noteOpen()
       silenceRef.current?.markOpen()
       slotList.resetForConnection()
       // A new socket starts unwatched; the gateway's hello re-sends the set.
@@ -223,6 +235,9 @@ export function useWebSocket() {
       // `config_pending_changed` is one-shot: a change while the socket was down
       // is only seen by re-reading.
       void queryClient.invalidateQueries({ queryKey: CONFIG_PENDING_QUERY_KEY }, { cancelRefetch: false })
+      // A refused share is recorded when the gateway starts, which this tab sees
+      // as a new connection: the waiting-share count on Customize re-reads it here.
+      void queryClient.invalidateQueries({ queryKey: MCP_GATEWAY_STATUS_QUERY_KEY }, { cancelRefetch: false })
       // The Context tab's usage revisions belong to the previous process too.
       resetContextTraceRefresh()
       // Cache auto-speak preference
@@ -241,6 +256,7 @@ export function useWebSocket() {
         syncPendingQuestions: cards.syncPendingQuestions,
         syncWorkflowRuns,
         focusedSlot: focusedSlotForCurrentSurface,
+        reconnectSnapshot,
       }
       if (socket.wasConnectedRef.current) {
         // No frame could arrive while the socket was down (a gateway restart is
@@ -291,6 +307,7 @@ export function useWebSocket() {
             break
           case 'slots':
             slotList.onSlots(msg, data, e.data as string)
+            if (socket.wsRef.current === ws) reconnectSnapshot.onSlots(data)
             break
           case 'shared_crew.presence':
           case 'shared_crew.work':
@@ -309,6 +326,9 @@ export function useWebSocket() {
             break
           case 'credential_redaction_changed':
             handleCredentialRedactionChanged(queryClient, msg.data as { enabled?: unknown; changed_at?: unknown } | undefined)
+            break
+          case 'credential_redaction_settings_changed':
+            handleCredentialRedactionSettingsChanged(queryClient, data)
             break
           case 'config_pending_changed':
             // Owner-only frame: a settings file edited outside the dashboard went
@@ -545,8 +565,11 @@ export function useWebSocket() {
             break
           case 'refresh': {
             const kinds: string[] = Array.isArray(data.kinds) ? data.kinds.filter((k: unknown): k is string => typeof k === 'string') : []
-            dispatch(triggerRefresh())
-            invalidateRefreshQueries(queryClient, kinds, () => dispatch(triggerCronRefresh()))
+            // A turn-end frame inside the window re-reads none of the config caches,
+            // but the page on screen still follows it (`liveRefreshTrigger`).
+            let othersNow = false
+            invalidateRefreshQueries(queryClient, kinds, () => dispatch(triggerCronRefresh()), () => { othersNow = true; dispatch(triggerRefresh()) })
+            if (!othersNow) dispatch(triggerLiveRefresh())
             if (kinds.includes('history')) dispatch(fetchHistory(false))
             break
           }
@@ -561,8 +584,11 @@ export function useWebSocket() {
             // next frame and resurrect discarded text into the just-cleared
             // pane. Keyed delete — other slots' in-flight buffers are theirs.
             buffers.dropSlotChunks(clearSlot)
-            if (clearSlot === store.getState().chat.activeSlot) dispatch(clearMessages())
-            else dispatch(clearSlotCache(clearSlot))
+            if (clearSlot === store.getState().chat.activeSlot) {
+              // An older page still loading would land the cleared rows back.
+              abortActiveOlderFetch()
+              dispatch(clearMessages())
+            } else dispatch(clearSlotCache(clearSlot))
             break
           }
           case 'slot_agent_switch': {
@@ -713,7 +739,7 @@ export function useWebSocket() {
             break
           }
           case 'subagent_tool':
-            dispatch(sseSubagentTool(data as { slot: string; id: string; tool: string; turns?: number; tool_count?: number; tool_call_id?: string }))
+            dispatch(sseSubagentTool(data as { slot: string; id: string; tool: string; turns?: number; tool_count?: number; tool_call_id?: string; is_update?: boolean }))
             break
           case 'subagent_stalled':
             dispatch(sseSubagentStalled(data as { slot: string; id: string; stalled: boolean; idle_secs?: number }))
@@ -1159,10 +1185,13 @@ export function useWebSocket() {
       } catch { /* ignore malformed */ }
     }
 
-    ws.onclose = (ev) => socket.handleClose(ws, dispatch, voice.releaseVoiceOnSocketLoss, connect, ev?.code)
+    ws.onclose = (ev) => {
+      if (socket.wsRef.current === ws) reconnectSnapshot.disarm()
+      socket.handleClose(ws, dispatch, voice.releaseVoiceOnSocketLoss, connect, ev?.code)
+    }
 
     ws.onerror = () => { /* onclose will fire */ }
-  }, [dispatch, queryClient, socket, reconnectingRef, voice, automations, approvals, cards, syncWorkflowRuns, buffers, slotList, bundle, chatStream, turnCompletion, syncPendingApprovals])
+  }, [dispatch, queryClient, socket, reconnectingRef, reconnectSnapshot, voice, automations, approvals, cards, syncWorkflowRuns, buffers, slotList, bundle, chatStream, turnCompletion, syncPendingApprovals])
 
   /** Replace the socket now (see `SocketConnection.forceReconnect`): the
    *  health probe's recovery path and the silence watchdog's remedy. */
@@ -1225,6 +1254,7 @@ export function useWebSocket() {
     })
     return () => {
       socket.beginClosing()
+      reconnectSnapshot.disarm()
       buffers.flushForUnmount()
       socket.closeForUnmount()
       voice.dispose()
@@ -1239,7 +1269,7 @@ export function useWebSocket() {
       chunkWatch.dispose()
       if (chunkWatchRef.current === chunkWatch) chunkWatchRef.current = null
     }
-  }, [socket, connect, voice, buffers, cards, queryClient])
+  }, [socket, connect, voice, buffers, cards, queryClient, reconnectSnapshot])
 
   return { subscribeLogs: socket.subscribeLogs, subscribeSubagents: socket.subscribeSubagents, forceReconnect }
 }

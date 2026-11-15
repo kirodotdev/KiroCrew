@@ -69,8 +69,7 @@ def _backend_exists(module: str | None) -> bool:
 def test_a_platform_with_a_backend_is_either_covered_or_explicitly_pending(runner: str) -> None:
     """No third option. A backend with neither a matrix entry nor a stated reason is
     a platform everyone believes is covered and nothing runs."""
-    if not _backend_exists(BACKEND_FOR_RUNNER[runner]):
-        pytest.skip(f"{runner} has no pod backend yet, so the matrix owes it nothing")
+    assert _backend_exists(BACKEND_FOR_RUNNER[runner]), f"{runner} names a missing pod backend"
 
     assert runner in _matrix_runners() or runner in PENDING_VALIDATION, (
         f"{runner} has a pod backend, so require_backend() succeeds there and the "

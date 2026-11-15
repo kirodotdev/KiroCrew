@@ -145,3 +145,33 @@ describe('OnboardingChapterShell embedded', () => {
     expect(container.contains(screen.getByRole('region', { name: 'Chapter' }))).toBe(true)
   })
 })
+
+describe('OnboardingShellHost', () => {
+  it('keeps one aside mounted when the next chapter brings its own copy', async () => {
+    const chapter = (id: string, headline: string) => (
+      <OnboardingChapterShell
+        key={id}
+        ariaLabel="Chapter"
+        panelHeadline={headline}
+        panelBody="Body"
+        panelFootnote=""
+        eyebrow="STEP"
+        dialogRef={createRef<HTMLDivElement>()}
+        header={null}
+      >
+        <p>Content</p>
+      </OnboardingChapterShell>
+    )
+    const { rerender } = render(<OnboardingShellHost>{chapter('import', 'First')}</OnboardingShellHost>)
+    const aside = (await screen.findByRole('heading', { name: 'First' })).closest('aside')
+    const mascot = aside?.querySelector('[aria-hidden="true"]')
+    expect(mascot).toBeTruthy()
+
+    rerender(<OnboardingShellHost>{chapter('privacy', 'Second')}</OnboardingShellHost>)
+
+    // A remounted mascot would replay its entrance; the same node does not.
+    const after = (await screen.findByRole('heading', { name: 'Second' })).closest('aside')
+    expect(after).toBe(aside)
+    expect(after?.querySelector('[aria-hidden="true"]')).toBe(mascot)
+  })
+})

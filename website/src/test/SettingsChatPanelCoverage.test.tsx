@@ -108,7 +108,6 @@ import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { MAX_MESSAGE_FONT_SIZE } from '../pages/chat/ChatSettings'
 import { DURABLE_PREF_KEYS } from '../lib/uiPrefs'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
-import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
 
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -463,6 +462,7 @@ describe('ChatPanel — Messages', () => {
     ['Pin the latest turn', 'pinLastPrompt', false],
     ['Simplified Tool Call Names', 'simplifiedToolNames', false],
     ['Tool calls start expanded', 'toolCallsStartExpanded', true],
+    ['Reasoning starts expanded', 'reasoningStartsExpanded', true],
     ['Show Context Percentage', 'showContextPct', true],
   ])('stores %s locally when flipped', async (label, key, expected) => {
     wrap()
@@ -554,19 +554,14 @@ describe('ChatPanel — Messages', () => {
     )
   })
 
-  it('offers Start New Chats in Ultra Mode only with the Ultra Mode preview on, and persists it', async () => {
-    const label = 'Start New Chats in Ultra Mode'
-    const view = wrap('sessions')
-    await settledSwitch('Restore Sessions')
-    expect(screen.queryByRole('switch', { name: label })).not.toBeInTheDocument()
-    view.unmount()
-    setPreviewFlag(PREVIEW_CREW_MODE, true)
+  it('offers Start New Chats in conductor mode with no preview turned on, and persists it', async () => {
+    const label = 'Start New Chats in conductor mode'
     wrap('sessions')
     const sw = await settledSwitch(label)
     expect(sw).toHaveAttribute('aria-checked', 'false')
-    // What Ultra Mode does is on the row itself, not only behind the "i" tooltip.
+    // What conductor mode does is on the row itself, not only behind the "i" tooltip.
     const row = document.querySelector('[data-setting-key="dashboard.new_chat_crew_mode"]') as HTMLElement
-    expect(within(row).getByText(/Ultra Mode runs each task in its own chat/)).toBeVisible()
+    expect(within(row).getByText(/Conductor mode runs each task in its own chat/)).toBeVisible()
     fireEvent.click(sw)
     await waitFor(() =>
       expect(updateDashboardConfigMock).toHaveBeenCalledWith({ new_chat_crew_mode: true })
@@ -608,6 +603,18 @@ describe('ChatPanel — Messages', () => {
     await waitFor(() =>
       expect(updateDashboardConfigMock).toHaveBeenCalledWith({
         folder_suggestions_enabled: false,
+      })
+    )
+  })
+
+  it('shows project tags on by default and persists turning them off', async () => {
+    wrap('sessions')
+    const sw = await settledSwitch('Project tags')
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({
+        project_tags_enabled: false,
       })
     )
   })

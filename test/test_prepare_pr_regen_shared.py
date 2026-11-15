@@ -332,6 +332,16 @@ def test_missing_base_and_non_repo_are_environment_errors(tmp_path: Path, repo: 
     assert rs.regen(str(plain), "main", [])[0] == 2
 
 
+def test_a_remote_ref_as_the_base_names_the_branch_to_pass(repo: Path) -> None:
+    """``upstream/main`` from a fork clone: the fetch hint cannot work, the branch name does."""
+    _git(repo, "update-ref", "refs/remotes/upstream/main", "HEAD")
+    code, lines = rs.regen(str(repo), "upstream/main", [])
+    assert code == 2
+    assert "pass the branch name instead: main" in lines[0]
+    assert "git fetch origin upstream/main" not in lines[0]
+    assert "run: git fetch origin release/1" in rs.regen(str(repo), "release/1", [])[1][0]
+
+
 def _cli(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-B", str(SCRIPT), *args],

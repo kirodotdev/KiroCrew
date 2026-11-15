@@ -177,8 +177,8 @@ def test_a_known_placement_answers_for_its_own_session_only(home, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_directive_replay_reads_placement_off_the_gateway_loop(home, monkeypatch):
-    # GPT 6.1 on 359b3eaa06: the gateway replays set_project on its event loop, and
-    # the remote-workspace guard read the choices store there, blocking every task.
+    # The gateway replays set_project on its event loop, so a remote-workspace guard
+    # that reads the choices store there blocks every task.
     import threading
     from unittest.mock import AsyncMock, MagicMock
 
@@ -478,7 +478,7 @@ delete_message deploy_artifact design_tweak_update_thread
 dismiss_notification get_chat_session issue_radar_crew_read issue_radar_crew_record
 issue_radar_record_investigation kiro_cli_logs knowledge_add_document knowledge_dedup
 knowledge_list_sources learn_add learn_list learn_remove learn_update list_sessions
-local_knowledge_search memory_recall monitor_inspect monitor_start monitor_stop
+local_knowledge_search mcp_server_wait memory_recall monitor_inspect monitor_start monitor_stop
 monitor_update monitor_watch nothing_to_do ops_mission_control_api pod_ls pod_status
 read_slack_history read_slack_profile register_hook reset_conversation resource_status route_crew
 search_chat_history select_crew send_message send_notification session_ledger_read

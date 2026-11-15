@@ -59,6 +59,7 @@ from kiro_crew.workflows.agent_exec import (
     StepStopWatch,
     WorkflowEffortInvalid,
     WorkflowSpawnRefused,
+    apply_step_effort,
     persist_step_usage_row,
     step_backend_kwargs,
     step_effort_kwargs,
@@ -334,18 +335,20 @@ class _WorkflowSessionWorker:
         Codex) pushes it only at cold start, so without this every reuse after the
         first would run at the backend default. ``change_effort`` answering False means the model takes no
         effort, which a cold start drops the same way; a raise sends the caller down
-        the hard reset, which cold-starts with the override.
+        the hard reset, which cold-starts with the override, except a level kiro-cli
+        refuses, which keeps the conversation as it runs.
         """
-        level = self._effort_kwargs.get("reasoning_effort_override")
-        change_effort = getattr(self._provider, "change_effort", None)
-        if not level or change_effort is None:
-            return
-        # A level this session does not advertise is dropped on a cold start too;
+        # A level this session does not advertise is skipped, as on a cold start;
         # pushing it would raise and turn every reuse into a respawn for nothing.
-        accepts = getattr(self._provider, "accepts_effort_level", None)
-        if accepts is not None and not accepts(level):
-            return
-        await change_effort(level)
+        try:
+            await apply_step_effort(
+                self._provider, self._effort_kwargs.get("reasoning_effort_override")
+            )
+        except Exception as exc:
+            if getattr(exc, "command_refused", False) is not True:
+                raise
+            # kiro-cli refused the level: a hard reset would only replay it.
+            logger.warning("workflow pool: %s keeps its effort: %s", self._key, exc)
 
     async def shutdown(self) -> None:
         # A pooled worker owns an ephemeral ``wf-pool:`` session that can never
@@ -484,16 +487,21 @@ def build_pooled_agent_fn(
             if named is not None:
                 key = memory_scope.worker_key(f"named:{named}")
             await memory_scope.prepare(context_builder, key)
+        effort_kwargs = step_effort_kwargs(opts)
         provider, is_new, _resumed = await sessions.get_or_create(
             key,
             agent=opts.get("agent") or default_agent,
             model=opts.get("model") or default_model,
             cwd=opts.get("cwd") or cwd,
             extra_env=extra_env,
-            **step_effort_kwargs(opts),
+            **effort_kwargs,
             **backend_kwargs,
         )
         try:
+            if named is not None and not is_new:
+                # A live named session keeps the effort it started with; push
+                # this step's effort onto it before the turn is sent.
+                await apply_step_effort(provider, effort_kwargs.get("reasoning_effort_override"))
             # Same identity publication as the pooled worker (see
             # _WorkflowSessionWorker.send_message): a named ``session=`` chain
             # and the identity-cap overflow session both run on their own
@@ -531,13 +539,11 @@ def build_pooled_agent_fn(
                 await memory_scope.validate()
             return result
         finally:
-            # Best-effort teardown. An exception raised from this ``finally``
-            # would REPLACE the step's real outcome: a successful ``result``
-            # would vanish behind a session error, and the body's own exception
-            # (provider failure, a scope ``validate()`` rejection) would be
-            # swallowed. So a teardown failure is logged and dropped; the body's
-            # outcome always wins. ``CancelledError`` is a BaseException and is
-            # deliberately NOT caught, so a cancel still propagates.
+            # Best-effort teardown: a raise from this ``finally`` would REPLACE
+            # the step's outcome (hide a good ``result`` or swallow the body's
+            # own exception). So a teardown failure is logged and dropped.
+            # ``CancelledError`` is a BaseException and is NOT caught, so a
+            # cancel still propagates.
             #
             # Log the exception TYPE only (no message, no traceback): session
             # error text can carry restricted conversation content.
@@ -637,6 +643,9 @@ def admitted_agent_fn(
     lane = lane_for(session_key, source)
 
     async def _admitted(prompt: str, opts: dict) -> Any:
+        # Measured before the lane slot is taken: a script may pass a non-string
+        # prompt, and a raise between ``admit`` and the call would hold the slot.
+        prompt_chars = len(str(prompt))
         n = next(call_no)
         row_id = workflow_task_id(run_id, n)
         rec = await admission.accept_async(
@@ -661,7 +670,7 @@ def admitted_agent_fn(
             session_key=session_key,
         )
         try:
-            marked = await handle.running_async({"call": n, "prompt_chars": len(prompt)})
+            marked = await handle.running_async({"call": n, "prompt_chars": prompt_chars})
         except asyncio.CancelledError:
             # Synchronous, like the call's own cancel arm below, which is not
             # reached yet: the handle already holds the lane slot and the row's

@@ -75,6 +75,18 @@ def driver_for(slack: Any) -> AgentSessionStatus | None:
     return driver
 
 
+def move_driver(old: Any, new: Any) -> None:
+    """Move *old*'s driver onto *new*, the client a reconnect published in its place.
+
+    Its records come along, so a turn that went ``processing`` before the
+    reconnect sends its turn-end ``active`` through *new*.
+    """
+    driver = getattr(old, _ATTR, None)
+    if isinstance(driver, AgentSessionStatus):
+        driver._client = new
+        setattr(new, _ATTR, driver)
+
+
 def set_slack_provider(provider: Callable[[], Any] | None) -> None:
     """Where status writes find the live Slack client (set by :func:`install`, tests)."""
     global _slack_provider

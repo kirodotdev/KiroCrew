@@ -428,21 +428,24 @@ async def _kas_mint_watcher(
     """Hold the process until the sign-in stores its tokens, ends, or the TTL passes.
 
     Whether the engine still holds the sign-in is read BEFORE the drain: the
-    server's connected status is queued before the engine answers the reset, so a
-    sign-in seen ended is judged on every frame it sent.
+    server's status is queued before the engine answers the reset, so a sign-in
+    seen ended is judged on every frame it sent. The engine answers the reset at
+    most 60 s in while the connect, and its callback listener, run on to the
+    server's ``timeout``, so an answered sign-in has ended only once the server
+    reports ``failed``; the consent URL's own frame keeps it ``awaiting_auth``.
     """
     try:
         deadline = time.monotonic() + _mint._MINT_TTL_SECONDS
         while time.monotonic() < deadline:
             await asyncio.sleep(_mint._MINT_GRANT_POLL_SECONDS)
             alive = process.is_process_alive()  # pid-owner-ok: the mint owns this engine
-            ended = not process.sign_in_in_flight(alias) or not alive
+            answered = not process.sign_in_in_flight(alias)
             await process.settle()
             if await _signed_in(process, alias, mcp_url, tokens_before):
                 await _end_row(slug, token, "granted")
                 logger.info("OAuth mint for %r completed on KAS (sign-in saved)", slug)
                 return
-            if ended:
+            if not alive or (answered and process.server_state(alias) == "failed"):
                 # The engine closed its callback listener with the attempt, so
                 # nothing can redeem the URL the row shows. No reason: the card
                 # reads a reasonless expiry as the sign-in window running out.
@@ -498,9 +501,13 @@ async def mint_on_kas(slug: str, mcp_url: str, token: str, entry: dict[str, Any]
             )
             if state == "ready":
                 break
-            if state == "failed":
-                raise _KasMintFailed("mint_server_failed")
             tokens_before = await asyncio.to_thread(mcp_grant_kas.kas_grant_presence, grant_url)
+            if state == "failed" and tokens_before is not True:
+                raise _KasMintFailed("mint_server_failed")
+            # A failed server with saved tokens is one whose refresh the vendor
+            # refused with an error the engine does not read as a lost grant: it
+            # keeps the dead tokens and asks for no sign-in. An explicit Connect
+            # replaces them, since the sign-in below resets every credential first.
             oauth_url = await asyncio.wait_for(
                 _consent_url(process, alias), timeout=_mint._MINT_READY_TIMEOUT_SECONDS
             )

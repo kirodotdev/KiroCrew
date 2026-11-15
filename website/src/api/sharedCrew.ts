@@ -226,6 +226,7 @@ export type ReasonCode =
   | 'invalid_transition'
   | 'not_found'
   | 'send_race'
+  | 'send_pending'
   | 'composer_locked'
 
 /** `AcceptedWork.to_public_dict`. */

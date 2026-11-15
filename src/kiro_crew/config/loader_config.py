@@ -52,6 +52,7 @@ from kiro_crew.config.loader_document import (
     _config_write_lock,
     _invalidate_config_cache,
     _notify_live_watch,
+    _raw_agent_section,
     read_config_for_update,
     stamp_config_meta,
     strip_undeclared_resolved_defaults,
@@ -128,7 +129,6 @@ from kiro_crew.config.sections import (
     coerce_effort,
 )
 from kiro_crew.effort import is_valid_effort, model_supports_effort
-from kiro_crew.mcp_gateway.rewriter import default_overlay_dir, default_socket_path
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -374,7 +374,8 @@ class KiroCrewConfig:
                             "(@server, @server/tool*, Running: @server/*, *), that always "
                             "ask before running. A matching MCP server stays mounted but "
                             "loses its blanket auto-approve grant, and a match outranks an "
-                            "auto_approve_tools grant at the gate. The gate follows a change "
+                            "auto_approve_tools or auto_approve_tool_identities grant at the "
+                            "gate. The gate follows a change "
                             "at once; a grant already in the agent spec is withdrawn at the "
                             "next restart, when the spec is rebuilt."
                         ),
@@ -463,9 +464,10 @@ class KiroCrewConfig:
         default=True,
         metadata=_meta(
             "Auto Update",
-            "Where the install can apply updates, true installs them once no work is "
-            "running and restarts; false only notifies. Elsewhere it has no effect. "
-            "On those same installs a policy minimum version applies regardless.",
+            "Where the install can apply updates, true downloads and prepares them "
+            "automatically and they take effect the next time you restart Kiro Crew; "
+            "nothing restarts by itself. False only notifies. Elsewhere it has no "
+            "effect. On those same installs a policy minimum version applies regardless.",
         ),
     )
     #: Opt-in for the Connections gallery, which is merged but held for a later
@@ -879,6 +881,24 @@ class KiroCrewConfig:
         # ``agent.kas_bundle`` is stripped the same way: undeclared, it resolves
         # through ``kas_bundle_build_default()`` (on in a nightly build only).
         strip_undeclared_resolved_defaults(d)
+        # Same rule for ``telemetry.enabled``: its absence is load-bearing too.
+        # The default is on, and ``metrics.provider.outbound_consented`` reads a
+        # WRITTEN ``true`` as the operator's own opt-in to recording, which also
+        # permits export. A whole-document save (the boot default-config write,
+        # a CLI one-shot) would otherwise freeze the default in as that opt-in.
+        # Absent stays absent until someone writes the key through a delta
+        # writer (Settings, the Privacy chapter, ``kirocrew telemetry``).
+        # The base file only: an overlay value is not in config.json, and keeping
+        # the snapshot's default there would invent an opt-in under the overlay.
+        # A stored value that is not a bool goes back as stored, so the next load
+        # reads it as false again rather than as a written ``true``.
+        base_telemetry = _raw_agent_section(config_path(), "telemetry") or {}
+        telemetry_section = d.get("telemetry")
+        if isinstance(telemetry_section, dict):
+            if "enabled" not in base_telemetry:
+                telemetry_section.pop("enabled", None)
+            elif not isinstance(base_telemetry["enabled"], bool):
+                telemetry_section["enabled"] = base_telemetry["enabled"]
         # The harness fields go back to disk exactly as ``config.json`` stores
         # them, never from the in-memory value, which is RESOLVED: "no choice"
         # (absent or "") reads as today's default, and a pick this deployment
@@ -1411,6 +1431,11 @@ class KiroCrewConfig:
         # backend is ACQUIRED, and on its own routes nothing.
         _gw = self.mcp_gateway
         if _gw.stub_servers:
+            # Imported on the one branch that reads it: the rewriter loads the gateway
+            # manager and the sandbox, which a process that only reads config (every
+            # stdio MCP server, most CLI commands) never uses.
+            from kiro_crew.mcp_gateway.rewriter import default_overlay_dir, default_socket_path
+
             _gw_overlay = _gw.overlay_dir or str(default_overlay_dir())
             _gw_socket = _gw.socket_path or str(default_socket_path())
         else:

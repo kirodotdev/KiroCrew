@@ -27,6 +27,7 @@ import PackAvatar from './appearancePacks/PackAvatar'
 import { useInvalidatePackDetail } from '../hooks/usePackDetail'
 import ErrorNotice from './ErrorNotice'
 import { api } from '../api/client'
+import { fmtList } from '../i18n/format'
 import {
   BUILTIN_PACK_ID,
   MAX_BUNDLE_BYTES,
@@ -279,7 +280,7 @@ export default function CrewAvatarLibraryTab({
         wearers?.length
           ? t('components.avatarBuilder.lib_in_use', {
               name: label,
-              crews: wearers.join(', '),
+              crews: fmtList(wearers, { style: 'narrow' }),
             })
           : wearers
             ? t('components.avatarBuilder.lib_in_use_unknown', { name: label })

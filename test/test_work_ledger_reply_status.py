@@ -195,6 +195,9 @@ async def test_on_a_reply_without_artifacts_is_admitted(tmp_path: Path):
 async def test_on_a_reply_on_a_closed_item_is_refused_item_closed(tmp_path: Path):
     _preview(tmp_path, True)
     item_id = await _dispatch(CONDUCTOR_A, WORKER_A, "item A", {"kind": "human_approval"})
+    assert (
+        await _record(CONDUCTOR_A, {"action": "verdict", "item_id": item_id, "verdict": "pass"})
+    )[0] == 200
     status, body = await _record(
         CONDUCTOR_A, {"action": "close", "item_id": item_id, "state": "accepted"}
     )
@@ -206,6 +209,7 @@ async def test_on_a_reply_on_a_closed_item_is_refused_item_closed(tmp_path: Path
 def test_on_the_store_refuses_reply_on_a_closed_item(tmp_path: Path):
     _preview(tmp_path, True)
     item_id = _item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     with pytest.raises(wl.WorkLedgerError) as refused:
         wl.apply_worker_report(CONDUCTOR, item_id, status="reply", summary="late")

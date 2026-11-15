@@ -55,8 +55,12 @@ export interface CronJob {
    * supplies, so it cannot be used to claim another app's jobs. Absent on an
    * older gateway. */
   app?: string | null
-  /** True only when the USER paused the job; execution never sets it. */
+  /** True when the USER paused the job, and also on a one-shot its own run
+   * parked (the store writes the same flags); `parked_after_run` tells them apart. */
   user_paused?: boolean
+  /** True when the pause is a fired one-shot's park, not the user's. Absent on an
+   * older gateway. */
+  parked_after_run?: boolean
   /** Operator-granted vault secrets injected into a script/command job's env at
    * fire time: env-var name -> vault secret NAME (values never leave the vault).
    * Absent/null when the job holds no grant. */

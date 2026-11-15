@@ -35,7 +35,7 @@ import { MemoryRouter } from 'react-router-dom'
 
 import { initI18n } from '../src/i18n/all'
 import { store } from '../src/store'
-import WorkflowSourcePanel from '../src/apps/workflows/WorkflowSourcePanel'
+import WorkflowSourcePanel from '../src/components/workflows/WorkflowSourcePanel'
 import WorkflowsPage from '../src/apps/workflows/WorkflowsPage'
 import WorkspacePicker from '../src/components/WorkspacePicker'
 import SkillBrowserModal from '../src/components/SkillBrowserModal'

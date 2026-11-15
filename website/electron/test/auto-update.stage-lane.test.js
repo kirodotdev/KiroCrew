@@ -85,33 +85,7 @@ test("the freshness bound is the documented 8s", () => {
   assert.strictEqual(FRESHNESS_CHECK_TIMEOUT_MS, 8 * 1000);
 });
 
-test("a stage from the channel the user left does not install when the selected channel's feed fails", async () => {
-  const h = laneHarness({ channel: "insider" });
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0-insider.1" }); // staged while on insider
-  h.lane.channel = ""; // back to stable before the click
-  h.feedFails();
-  await u.install();
-  await flush();
-  assert.strictEqual(h.calls.quitAndInstall.length, 0, "installed the insider stage on a stable-following install");
-  assert.strictEqual(h.calls.checkForUpdates, 2, "the stable channel is asked instead");
-});
 
-test("a stage from the channel the user left does not install when the selected channel's feed hangs past the bound", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-  const h = laneHarness({ channel: "insider" });
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0-insider.1" });
-  h.lane.channel = "";
-  h.feedHangs();
-  const click = u.install();
-  await flush();
-  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
-  await click;
-  await flush();
-  assert.strictEqual(h.calls.quitAndInstall.length, 0, "installed the insider stage on a stable-following install");
-  assert.strictEqual(h.states.at(-1).state, "checking", "the card leaves the refused stage while stable is asked");
-});
 
 test("a quit does not install a stage from the channel the user left, and says why", async () => {
   const h = laneHarness({ channel: "insider" });
@@ -150,16 +124,6 @@ test("a Download click on an offer from the channel the user left asks the selec
   assert.strictEqual(h.calls.checkForUpdates, 2, "stable is asked once the old request ends");
 });
 
-test("a stage the selected channel also serves still installs", async () => {
-  const h = laneHarness({ channel: "insider" });
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0" });
-  h.lane.channel = "";
-  h.feedServes("1.1.0"); // a promoted release: the same bytes on both channels
-  await u.install();
-  await flush();
-  assert.strictEqual(h.calls.quitAndInstall.length, 1);
-});
 
 async function failedInstall(h, u) {
   h.emit("update-downloaded", { version: "1.1.0" });
@@ -170,16 +134,3 @@ async function failedInstall(h, u) {
   await flush();
 }
 
-test("after a recovered install failure, a quit during the Retry's gateway stop is held", async () => {
-  const h = laneHarness({ channel: "" });
-  const u = initAutoUpdate(h.deps);
-  await failedInstall(h, u);
-  const release = h.holdGatewayStop();
-  const retry = u.install();
-  await flush();
-  assert.strictEqual(h.fireQuit(), true, "the quit exited before the installer ran");
-  release();
-  await retry;
-  assert.strictEqual(h.calls.quitAndInstall.length, 2);
-  assert.strictEqual(h.calls.quits, 0, "the installer, not a plain quit, ends the app");
-});

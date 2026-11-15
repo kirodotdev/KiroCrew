@@ -13,6 +13,8 @@ Pinned where each defect would live:
 - **HTTP endpoint** (``/api/chat/slots/{slot}/turn-timeout``): the global
   setting's range and unit, null clears, and the value is persisted before the
   slot runs under it.
+- **Alias slots** (two live slots on one transcript): they hold one limit, so a
+  limit set through one is what the other runs under and saves.
 - **Restore**: the metadata codec and the channel surfacing path read it back.
 """
 
@@ -330,8 +332,21 @@ _SAVE = "kiro_crew.dashboard.chat_handlers.save_slot_off_loop"
 
 async def _committing_save(*args, **kwargs):  # type: ignore[no-untyped-def]
     """A save whose write commits: it runs the commit hook, as the real one does."""
-    kwargs["after_commit_under_lock"]()
+    kwargs["after_commit_on_transcript"]()
     return True
+
+
+def _alias_state(key: str) -> tuple[_ChatSlot, _ChatSlot, DashboardState]:
+    """Two live slots on one transcript, joined the way every join site joins them."""
+    from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+    a = _ChatSlot("tab-a")
+    b = _ChatSlot("tab-b")
+    a.linked_session_key = key
+    b.linked_session_key = key
+    state = _mock_state(a, b)
+    bind_transcript(state, b)
+    return a, b, state
 
 
 _GLOBAL = "kiro_crew.dashboard.chat_handlers.chat_turn_timeout_secs"
@@ -363,7 +378,7 @@ class TestEndpoint:
             # While the write is in flight the live field still holds the
             # committed value: a turn dispatched now runs under the old limit.
             during_save.append((slot.turn_timeout_secs, td.resolve_turn_limit(slot)[0]))
-            kwargs["after_commit_under_lock"]()
+            kwargs["after_commit_on_transcript"]()
             return True
 
         with (
@@ -387,7 +402,7 @@ class TestEndpoint:
         assert {
             k: v
             for k, v in call.kwargs.items()
-            if k not in ("turn_timeout_override", "after_commit_under_lock")
+            if k not in ("turn_timeout_override", "after_commit_on_transcript")
         } == {
             "force": True,
             "best_effort": False,
@@ -502,50 +517,45 @@ class TestEndpoint:
         assert alias.turn_timeout_secs == 3600
 
     @pytest.mark.asyncio
-    async def test_a_committed_limit_reaches_alias_slots_of_the_same_transcript(self) -> None:
-        slot = _ChatSlot("test")
-        alias = _ChatSlot("alias")
-        state = _mock_state(slot, alias)
+    async def test_a_committed_limit_is_the_alias_slots_value(self) -> None:
+        a, b, state = _alias_state("channel:shared:1")
+        b.turn_timeout_secs = 3600  # the group's limit before the request
         with (
-            patch(
-                "kiro_crew.dashboard.chat_handlers.slot_history_key", return_value="one-transcript"
-            ),
             patch(_SAVE, new=AsyncMock(side_effect=_committing_save)),
             patch(_GLOBAL, return_value=14400.0),
         ):
             async with TestClient(TestServer(_make_app(state))) as client:
-                resp = await client.post("/api/chat/slots/test/turn-timeout", json={"secs": 7200})
+                resp = await client.post("/api/chat/slots/tab-a/turn-timeout", json={"secs": 7200})
                 assert resp.status == 200
-        assert slot.turn_timeout_secs == 7200
-        assert alias.turn_timeout_secs == 7200
+        assert a.turn_timeout_secs == b.turn_timeout_secs == 7200
 
     @pytest.mark.asyncio
     async def test_an_alias_bound_while_the_save_runs_gets_the_committed_limit(self) -> None:
-        # A second tab on the same transcript appears during the persist await,
-        # holding the old limit; the commit reaches it, so its next save cannot
-        # write the old value back.
+        # A second tab on the same transcript joins during the persist await; it
+        # holds the group's limit, so its next save cannot write an old one back.
+        from kiro_crew.dashboard.transcript_binding import bind_transcript
+
         slot = _ChatSlot("test")
+        slot.linked_session_key = "channel:shared:2"
         state = _mock_state(slot)
         late = _ChatSlot("late")
         late.turn_timeout_secs = 3600
 
         async def _alias_appears_then_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
             state._slots[late.key] = late
-            kwargs["after_commit_under_lock"]()
+            late.linked_session_key = "channel:shared:2"
+            bind_transcript(state, late)
+            kwargs["after_commit_on_transcript"]()
             return True
 
         with (
-            patch(
-                "kiro_crew.dashboard.chat_handlers.slot_history_key", return_value="one-transcript"
-            ),
             patch(_SAVE, new=AsyncMock(side_effect=_alias_appears_then_commit)),
             patch(_GLOBAL, return_value=14400.0),
         ):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post("/api/chat/slots/test/turn-timeout", json={"secs": 7200})
                 assert resp.status == 200
-        assert slot.turn_timeout_secs == 7200
-        assert late.turn_timeout_secs == 7200
+        assert slot.turn_timeout_secs == late.turn_timeout_secs == 7200
         assert late._turn_timeout_hydrated is True
 
     @pytest.mark.asyncio
@@ -560,7 +570,7 @@ class TestEndpoint:
         state = _mock_state(slot)
 
         async def _commit_then_rebind(*args, **kwargs):  # type: ignore[no-untyped-def]
-            kwargs["after_commit_under_lock"]()
+            kwargs["after_commit_on_transcript"]()
             slot.linked_session_key = "second"
             slot.turn_timeout_secs = 28800
             slot._turn_timeout_hydrated = True
@@ -577,7 +587,7 @@ class TestEndpoint:
         assert slot._turn_timeout_hydrated is True
 
     @pytest.mark.asyncio
-    async def test_the_commit_hook_does_not_publish_to_a_slot_already_rebound(self) -> None:
+    async def test_the_commit_does_not_reach_a_slot_already_rebound(self) -> None:
         slot = _ChatSlot("test")
         slot.linked_session_key = "first"
         state = _mock_state(slot)
@@ -585,7 +595,7 @@ class TestEndpoint:
         async def _rebind_then_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
             slot.linked_session_key = "second"
             slot.turn_timeout_secs = 28800
-            kwargs["after_commit_under_lock"]()
+            kwargs["after_commit_on_transcript"]()
             return True
 
         with (
@@ -738,12 +748,143 @@ class TestCronReopen:
         assert slot.turn_timeout_secs is None and slot._turn_timeout_hydrated is False
 
     def test_the_save_fold_prefers_a_staged_value_then_the_slot_once_read(self) -> None:
-        from kiro_crew.dashboard.slot_persistence.metadata_line import _turn_timeout_fold
+        from kiro_crew.dashboard.slot_persistence.metadata_line import turn_timeout_fold
 
         on_disk = {"turn_timeout_secs": 28800}
-        slot = MagicMock(_turn_timeout_hydrated=False)
-        assert _turn_timeout_fold(slot, None, on_disk) == (28800,)
-        assert _turn_timeout_fold(slot, (3600,), on_disk) == (3600,)
-        assert _turn_timeout_fold(slot, None, {"turn_timeout_secs": "x"}) == (None,)
+        slot = _ChatSlot("cron-j1")
+        slot.linked_session_key = "cron:j1"
+        slot._turn_timeout_hydrated = False
+        key, routed = slot_history_key(slot), slot._binding
+        assert turn_timeout_fold(slot, None, on_disk, routed, key) == (28800,)
+        assert turn_timeout_fold(slot, (3600,), on_disk, routed, key) == (3600,)
+        assert turn_timeout_fold(slot, None, {"turn_timeout_secs": "x"}, routed, key) == (None,)
+        slot.turn_timeout_secs = 600
         slot._turn_timeout_hydrated = True
-        assert _turn_timeout_fold(slot, None, on_disk) is None
+        assert turn_timeout_fold(slot, None, on_disk, routed, key) == (600,)
+
+
+class TestAliasSlotsShareOneLimit:
+    """Aliases hold the same binding, so the limit is one value for the whole group."""
+
+    def test_a_joining_slot_holds_and_saves_the_groups_limit(self) -> None:
+        from kiro_crew.dashboard.slot_persistence import metadata_codec as codec
+        from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+        a = _ChatSlot("tab-a")
+        a.linked_session_key = "channel:shared:3"
+        a.turn_timeout_secs = 28800
+        b = _ChatSlot("tab-b")  # a fresh tab with no limit of its own
+        state = _mock_state(a, b)
+        b.linked_session_key = "channel:shared:3"
+        bind_transcript(state, b)
+        assert b.turn_timeout_secs == 28800
+        folds = codec.SaveFolds(memory_mode="persistent")
+        assert codec.encode(b, folds=folds)["turn_timeout_secs"] == 28800
+
+    @pytest.mark.parametrize("seed", ["disk", "unread"])
+    def test_a_disk_seed_leaves_a_live_alias_limit(self, seed: str) -> None:
+        from kiro_crew.dashboard.transcript_binding import (
+            mark_turn_timeout_unread,
+            seed_turn_timeout_from_disk,
+        )
+
+        a, b, state = _alias_state("channel:shared:4")
+        a.turn_timeout_secs = 28800
+        if seed == "disk":
+            assert seed_turn_timeout_from_disk(state, b, 600) is False
+        else:
+            mark_turn_timeout_unread(state, b)
+        assert a.turn_timeout_secs == b.turn_timeout_secs == 28800
+        assert b._turn_timeout_hydrated is True
+
+    def test_a_disk_seed_fills_a_group_limit_nobody_read(self) -> None:
+        from kiro_crew.dashboard.transcript_binding import seed_turn_timeout_from_disk
+
+        a, b, state = _alias_state("channel:shared:5")
+        a._turn_timeout_hydrated = False
+        assert seed_turn_timeout_from_disk(state, b, 600) is True
+        assert a.turn_timeout_secs == 600 and a._turn_timeout_hydrated is True
+
+    def test_a_restored_slot_gives_its_limit_to_a_group_that_never_read_one(self) -> None:
+        from kiro_crew.dashboard.transcript_binding import (
+            TranscriptBinding,
+            bind_transcript,
+        )
+
+        fallback = _ChatSlot("workflow-wf-1")  # linked without reading the line
+        fallback.linked_session_key = "dashboard:parent"
+        restored = _ChatSlot("parent")
+        restored._binding = TranscriptBinding(turn_timeout_secs=28800, turn_timeout_hydrated=True)
+        state = _mock_state(fallback, restored)
+        restored.linked_session_key = "dashboard:parent"
+        bind_transcript(state, restored)
+        assert fallback.turn_timeout_secs == restored.turn_timeout_secs == 28800
+
+    def test_a_tab_linked_without_reading_its_limit_saves_the_stored_one(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from test_cleared_project_not_resurrected import _make_state
+
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        key = "dashboard:parent"
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.update_metadata(key, {"turn_timeout_secs": 28800, "folder_id": "f1"})
+        slot = state.get_or_create_slot("workflow-wf-1", linked_session_key=key)
+        slot.append("assistant", "the run's result", "")
+        assert _save_slot_to_history(state, slot, force=True)
+        assert log.get_metadata(key)["turn_timeout_secs"] == 28800
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", ["rebound", "line-less"])
+    async def test_a_queued_alias_save_writes_a_merges_commit(
+        self, tmp_path, monkeypatch, case: str
+    ) -> None:
+        """An alias save queued on the merge's lock writes the committed limit.
+
+        It runs as soon as the merge releases the lock, before the route publishes,
+        so it must write the committed value, not the old one the group still holds:
+        for a slot rebound mid-save, and for a transcript with no line yet, which the
+        alias's own save then creates.
+        """
+        from test_cleared_project_not_resurrected import _make_state
+
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+        from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+        key = "dashboard:shared"
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        if case == "rebound":
+            await asyncio.to_thread(log.update_metadata, key, {"folder_id": "f1"})
+        a = state.get_or_create_slot("a", linked_session_key=key)
+        b = state.get_or_create_slot("b", linked_session_key=key)
+        a.turn_timeout_secs = 3600
+        if case == "line-less":
+            b.messages.append({"role": "user", "content": "hi", "ts": 1.0})
+        real_update = log.update_metadata_if
+        merges: list = []
+
+        def _release_to_the_alias(*args, **kwargs):  # type: ignore[no-untyped-def]
+            if merges:
+                return real_update(*args, **kwargs)
+            merges.append(args[0])
+            if case == "rebound":
+                # After the save's routing read: the merge still writes the
+                # transcript the slot left.
+                a.linked_session_key = "dashboard:elsewhere"
+                bind_transcript(state, a)
+            applied = real_update(*args, **kwargs)
+            _save_slot_to_history(state, b, force=True)  # queued on the released lock
+            return applied
+
+        monkeypatch.setattr(log, "update_metadata_if", _release_to_the_alias)
+        with patch(_GLOBAL, return_value=14400.0):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/a/turn-timeout", json={"secs": 7200})
+                assert resp.status == (409 if case == "rebound" else 200)
+        assert merges == [key]
+        assert log._read_metadata(key).get("turn_timeout_secs") == b.turn_timeout_secs == 7200

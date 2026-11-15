@@ -1125,6 +1125,20 @@ def _drop_derived_indexes_absent_from_bundle(
         print(f"  ↩️  {rel} is not in the archive — moved aside so it can be rebuilt")
 
 
+def _rmtree_or_raise(path: Path) -> None:
+    """Remove a tree, read-only files included, and raise when any of it is left.
+
+    Windows refuses to unlink a read-only file, and git writes its objects that way;
+    ``rmtree_force`` clears the bit but never raises, so a surviving tree raises here.
+    POSIX keeps the descriptor-walking ``shutil.rmtree``: the mode never blocks an unlink
+    there, and the hook's retry by full path could follow a swapped symlink.
+    """
+    if platform_compat.IS_POSIX:
+        shutil.rmtree(path)
+    elif not platform_compat.rmtree_force(path):
+        raise OSError(f"could not remove {path}")
+
+
 def _clear_store_directories(root: Path) -> None:
     """Remove everything under ``memory_stores/`` that a bundle can carry, keep the rest.
 
@@ -1137,7 +1151,7 @@ def _clear_store_directories(root: Path) -> None:
         if is_host_local_store_state((MEMORY_STORES_DIR_NAME, entry.name)):
             continue
         if entry.is_dir() and not platform_compat.is_link_or_junction(entry):
-            shutil.rmtree(str(entry))
+            _rmtree_or_raise(entry)
         elif platform_compat.is_link_or_junction(entry) and not entry.is_symlink():
             platform_compat.unlink_link_or_junction(entry)
         else:
@@ -1221,7 +1235,7 @@ def _do_replace_mutations(
             if sd.is_dir():
                 installed.add(dirname)
                 if d.is_dir():
-                    shutil.rmtree(str(d))
+                    _rmtree_or_raise(d)
                 # Skips are fatal: the live tree is gone. `must_create` refuses a root
                 # recreated between the rmtree and the copy.
                 facade._copytree_safe(
@@ -1255,7 +1269,7 @@ def _do_replace_mutations(
                 # archive never carries those entries (`_never_ships`), so no collision.
                 _clear_store_directories(d)
             else:
-                shutil.rmtree(str(d))
+                _rmtree_or_raise(d)
         if sd.is_dir():
             installed.add(tree)
             # The pinned primitive needs the parent chain to exist (a fresh machine has no
@@ -1357,7 +1371,7 @@ def _restore_everything_from_rollback(
                 if platform_compat.is_link_or_junction(target):
                     platform_compat.unlink_link_or_junction(target)
                 elif target.is_dir():
-                    shutil.rmtree(str(target))
+                    _rmtree_or_raise(target)
                 elif target.exists():
                     target.unlink()
                 # MOVED back, not copied: the rollback holds the only copy, and a move also
@@ -1379,7 +1393,7 @@ def _restore_everything_from_rollback(
                     # the held lock inodes; neither may be removed during recovery.
                     _clear_store_directories(target)
                 elif target.is_dir():
-                    shutil.rmtree(str(target))
+                    _rmtree_or_raise(target)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 # The plain copy is lossless for TREES: `_backup_tree_or_refuse` refuses a
                 # link, so a saved tree is links-free. (Saved core files can be links; the
@@ -1435,7 +1449,7 @@ def _restore_everything_from_rollback(
                     if rel == MEMORY_STORES_DIR_NAME:
                         _clear_store_directories(target)
                         continue
-                    shutil.rmtree(str(target))
+                    _rmtree_or_raise(target)
                 else:
                     # Covers a link or junction as well as a plain file, so it goes through
                     # the helper: `Path.unlink` cannot remove a Windows junction, and the

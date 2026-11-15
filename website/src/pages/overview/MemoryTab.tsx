@@ -4,22 +4,24 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { XCircle, CheckCircle, RefreshCw, Hourglass, Check, BookOpen, SlidersHorizontal, X } from 'lucide-react'
 import { api } from '../../api/client'
+import { requestRefresh } from '../../lib/pollRule'
 import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, FilteredEmpty, SearchInput, Skeleton, IconButton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import SimpleSelect from '../../components/SimpleSelect'
-import { esc } from '../../api/helpers'
 import { findReport, parseErrorCode, parseErrorField } from '../../utils/errorReport'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import VectorMemoryCard, { SEMANTIC_CARD_ID } from './VectorMemoryCard'
 import EmbeddingModelCard from './EmbeddingModelCard'
 import MemoryStoreCard, {
   MEMORY_QUERY_PREFIXES,
+  MEMORY_STORES_KEY,
   MemoryScopeNotice,
   useMemoryStores,
 } from './MemoryStoreCard'
 import MemoryCarveCard from './MemoryCarveCard'
 import MemoryRetiredCard from './MemoryRetiredCard'
 import MemoryBackupsCard from './MemoryBackupsCard'
+import MemoryFailuresCard from './MemoryFailuresCard'
 import MemberMemoryPanel from './MemberMemoryPanel'
 import MemoryRecordsEditor from './MemoryRecordsEditor'
 import MemoryDocCard from './MemoryDocCard'
@@ -107,7 +109,7 @@ function sourceCell(lesson: Lesson) {
     case 'user_explicit': return i18nT('pages.overview.memoryTab.source_user_explicit')
     case 'consolidation': return i18nT('pages.overview.memoryTab.source_consolidation')
     case 'taskrunner': return i18nT('pages.overview.memoryTab.source_taskrunner')
-    default: return <span className="font-mono">{esc(lesson.source ?? '')}</span>
+    default: return <span className="font-mono">{lesson.source}</span>
   }
 }
 
@@ -129,21 +131,81 @@ function lessonKey(lesson: Lesson) {
 
 /** `?focus=` value that lands the global Memory view on its lessons. */
 export const MEMORY_FOCUS_LESSONS = 'lessons'
+/** `?focus=` value that lands the global Memory view on the Repeated failures
+ *  card: the link of the weekly repeated-failures bell note. */
+export const MEMORY_FOCUS_FAILURES = 'failures'
 /** The Lessons card, the landing spot for that focus when vector memory is off. */
 export const LESSONS_CARD_ID = 'memory-lessons-card'
 
-export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNavigate, focus }: { refreshTrigger: number; selectedStore?: string; onStoreNavigate?: (store: string) => void; focus?: string | null }) {
+/** `requestRefresh`'s id for the turn-end store-list read, and its gap: the
+ *  gateway sends at most one turn-end frame per 1.5 s. */
+const MEMORY_STORES_POLL_ID = 'memory-stores'
+const MEMORY_STORES_REFRESH_MS = 1_500
+
+export default function MemoryTab({ refreshTrigger, liveRefreshTrigger = 0, selectedStore, onStoreNavigate, focus }: {
+  /** Re-reads the whole view; at most once per window of turn ends. */
+  refreshTrigger: number
+  /** Moves on every turn end: re-reads the store list, and the whole view when it changed. */
+  liveRefreshTrigger?: number
+  selectedStore?: string; onStoreNavigate?: (store: string) => void; focus?: string | null
+}) {
   const stores = useMemoryStores()
   const navigate = useNavigate()
   const leave = useGuardedLeave()
   const queryClient = useQueryClient()
+  // Every turn end re-reads the store list alone, one request. Its counts move when
+  // a turn wrote memory, and only then does the rest of the view re-read at once;
+  // otherwise the rest waits for `refreshTrigger`, as the config caches do. Both
+  // only rise, so their sum is a new value whenever either moves.
+  const [storeChanges, setStoreChanges] = useState(0)
+  // A store-list read the turn-end path asked for, that has not shown a change yet:
+  // the `refreshTrigger` it was asked under, or null.
+  const liveRead = useRef<number | null>(null)
+  const refreshTriggerRef = useRef(refreshTrigger)
+  useEffect(() => { refreshTriggerRef.current = refreshTrigger }, [refreshTrigger])
+  const seenTriggers = useRef({ refreshTrigger, liveRefreshTrigger })
   useEffect(() => {
-    if (refreshTrigger) for (const prefix of MEMORY_QUERY_PREFIXES) void queryClient.invalidateQueries({ queryKey: prefix })
-  }, [refreshTrigger, queryClient])
+    const seen = seenTriggers.current
+    seenTriggers.current = { refreshTrigger, liveRefreshTrigger }
+    // A moved `refreshTrigger` re-reads everything in this commit already.
+    if (liveRefreshTrigger === seen.liveRefreshTrigger || refreshTrigger !== seen.refreshTrigger) return
+    liveRead.current = refreshTrigger
+    // One read at a time and never cancelled, none while the tab is hidden and
+    // one when it is shown again; frames during a read share one more read.
+    requestRefresh(queryClient, MEMORY_STORES_POLL_ID, MEMORY_STORES_KEY, MEMORY_STORES_REFRESH_MS)
+  }, [refreshTrigger, liveRefreshTrigger, queryClient])
+  // Structural sharing keeps the same object for an unchanged list, so a new
+  // one means memory was written. Only a read the turn-end path asked for counts:
+  // a full re-read, or a card's own re-read after a restore, re-reads what it needs.
+  // Keyed on each answer landing (`dataUpdatedAt`), not on the fetch ending: the
+  // read a frame owes can start before React sees the answer before it.
+  const seenStores = useRef({ data: stores.data, refreshTrigger })
+  useEffect(() => {
+    const seen = seenStores.current
+    const now = refreshTriggerRef.current
+    seenStores.current = { data: stores.data, refreshTrigger: now }
+    if (seen.refreshTrigger !== now) {
+      // A full re-read's answer covers a turn-end read asked before it, not one
+      // asked after it: that one is still owed and still counts.
+      if (liveRead.current !== now) liveRead.current = null
+      return
+    }
+    if (liveRead.current === null || seen.data === undefined || stores.data === undefined || seen.data === stores.data) return
+    liveRead.current = null
+    setStoreChanges(n => n + 1)
+  }, [stores.dataUpdatedAt, stores.data])
+  const trigger = refreshTrigger + storeChanges
   const [store, setStore] = useState(() => {
     const selected = new URLSearchParams(window.location.search).get('store') || ''
     return selected === 'default' ? '' : selected
   })
+  const storeRef = useRef(store)
+  useEffect(() => { storeRef.current = store }, [store])
+  // The global view re-reads these on the same trigger itself, and a second
+  // invalidation in the same commit cancels its read and sends another.
+  useEffect(() => {
+    if (trigger && storeRef.current) for (const prefix of MEMORY_QUERY_PREFIXES) void queryClient.invalidateQueries({ queryKey: prefix })
+  }, [trigger, queryClient])
   useEffect(() => {
     if (selectedStore !== undefined) setStore(selectedStore === 'default' ? '' : selectedStore)
   }, [selectedStore])
@@ -202,7 +264,7 @@ export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNaviga
           }}>{i18nT('pages.kiroCrewAgentsPage.open_crew_manager')}</Btn>
         </div>
       </>}
-    </Card> : <GlobalMemoryTab refreshTrigger={refreshTrigger} onDirtyChange={setDirty} focusLessons={focus === MEMORY_FOCUS_LESSONS} />}
+    </Card> : <GlobalMemoryTab refreshTrigger={trigger} onDirtyChange={setDirty} focusLessons={focus === MEMORY_FOCUS_LESSONS} focusFailures={focus === MEMORY_FOCUS_FAILURES} />}
     {pendingStore !== null && <Modal open title={i18nT('memoryV2.discard_title')} onClose={() => setPendingStore(null)}><div className="flex flex-col gap-3">
       <p className="text-[13px]">{i18nT('memoryV2.discard_explanation')}</p>
       <div className="flex flex-wrap gap-2">
@@ -213,7 +275,7 @@ export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNaviga
   </>
 }
 
-function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }: { refreshTrigger: number; onDirtyChange?: (dirty: boolean) => void; focusLessons?: boolean }) {
+function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false, focusFailures = false }: { refreshTrigger: number; onDirtyChange?: (dirty: boolean) => void; focusLessons?: boolean; focusFailures?: boolean }) {
   const queryClient = useQueryClient()
   // The failed-session link leaves this tab; through the same guard as the
   // outer tab's exits, since the drafts held here are what the guard protects.
@@ -274,6 +336,10 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
   const dirty = recordDirty || vectorDirty || embedDirty || Object.values(docDirty).some(Boolean) || rule.trim() !== '' || settingsUnsaved || editing !== null
   useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false) }, [dirty, onDirtyChange])
   const [lessonRequestError, setLessonRequestError] = useState<string | null>(null)
+  // The lessons list itself could not be read: on open and refresh (`load`),
+  // or right after an Add that was stored (`add`). Without it a failed read
+  // left the table on "No lessons yet" with nothing saying why.
+  const [lessonsLoadError, setLessonsLoadError] = useState<{ step: 'load' | 'add'; message: string } | null>(null)
   const [migrated, setMigrated] = useState(false)
   const [vectorActive, setVectorActive] = useState(false)
   // `vectorActive` reads false until the vector card's status answers, so the
@@ -323,7 +389,28 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
   // The tally's own clear timer, so a press that lands within four seconds of
   // the previous one cancels that one's clear instead of losing its tally to it.
   const consolidateClearRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const loadLessons = useCallback(async () => { const d = await api.lessons(); setLessons(d.lessons || []) }, [])
+  // Reads of the lessons list can overlap (a refresh during an Add). Only the
+  // newest one may set the list or its notice, so a slow older failure cannot
+  // land over a newer read that worked.
+  const lessonsReadSeq = useRef(0)
+  const loadLessons = useCallback(async () => {
+    const seq = ++lessonsReadSeq.current
+    const d = await api.lessons()
+    if (seq !== lessonsReadSeq.current) return
+    setLessons(d.lessons || [])
+    setLessonsLoadError(null)
+  }, [])
+  // A lesson saved from the Repeated failures card: with vector memory on, the
+  // list the page shows is the vector card's semantic browser, not `lessons`.
+  const reloadSavedLesson = useCallback(async () => {
+    await Promise.all([loadLessons(), queryClient.invalidateQueries({ queryKey: ['member-memory', 'default'] })])
+  }, [loadLessons, queryClient])
+  const showLessons = useCallback((step: 'load' | 'add') => {
+    const seq = lessonsReadSeq.current + 1
+    return loadLessons().catch((e: unknown) => {
+      if (seq === lessonsReadSeq.current) setLessonsLoadError({ step, message: (e instanceof Error && e.message) || String(e) })
+    })
+  }, [loadLessons])
   const { confirm, confirmDialog } = useConfirm()
   // Which step of a delete failed decides the banner's title: the request
   // itself (the row is still stored) or the list refresh after it succeeded
@@ -366,8 +453,8 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
     }
   }
   const lessonComparators = useMemo(() => ({
-    rule: (a: Lesson, b: Lesson) => a.rule.localeCompare(b.rule),
-    category: (a: Lesson, b: Lesson) => a.category.localeCompare(b.category),
+    rule: (a: Lesson, b: Lesson) => compareText(a.rule, b.rule),
+    category: (a: Lesson, b: Lesson) => compareText(a.category, b.category),
     repo_scope: (a: Lesson, b: Lesson) => compareText(a.repo_scope ?? '', b.repo_scope ?? ''),
     source: (a: Lesson, b: Lesson) => compareText(a.source ?? '', b.source ?? ''),
     ts: (a: Lesson, b: Lesson) => new Date(a.ts).getTime() - new Date(b.ts).getTime(),
@@ -396,17 +483,17 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
       if (!settingsEdited.current.days) setMaxDays(d.history_max_days ?? 90)
       setMigrated(d.migrated ?? false)
     }, (e: unknown) => setSettingsLoadError(e instanceof Error ? e.message : String(e)))
-    loadLessons()
-  }, [loadLessons])
-  // The page's own refresh signal. Invalidated by query-key PREFIX rather than
+  }, [])
+  // The page's own refresh signal, which also runs on mount and does the
+  // first lessons read. Invalidated by query-key PREFIX rather than
   // for the selected store only, so the rows cached for a store the user looked
   // at earlier cannot outlive the refresh and reappear on the next switch.
   useEffect(() => {
-    loadLessons()
+    void showLessons('load')
     for (const prefix of MEMORY_QUERY_PREFIXES) {
       queryClient.invalidateQueries({ queryKey: prefix })
     }
-  }, [refreshTrigger, loadLessons, queryClient])
+  }, [refreshTrigger, showLessons, queryClient])
   const consolidate = async () => {
     if (consolidateClearRef.current !== null) {
       clearTimeout(consolidateClearRef.current)
@@ -628,7 +715,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
     }
     if (result.outcome === 'inserted' || result.outcome === 'enriched') {
       setRule('')
-      await loadLessons()
+      await showLessons('add')
       return
     }
     if (result.outcome === 'unchanged') {
@@ -835,6 +922,13 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
     {storeReadable && <MemoryCarveCard key={`carve-${store}`} store={store} />}
     {storeReadable && <MemoryRetiredCard key={`retired-${store}`} store={store} />}
     <MemoryBackupsCard key={`backups-${store}`} store={store} />
+    {/* Its open draft joins the page's leave guards through `docDirty`. */}
+    <MemoryFailuresCard
+      refreshTrigger={refreshTrigger}
+      onLessonSaved={reloadSavedLesson}
+      focus={focusFailures}
+      onDirtyChange={d => setDocDirty(old => old.failures === d ? old : { ...old, failures: d })}
+    />
     {!vectorActive && (
       <Card id={LESSONS_CARD_ID}><CardTitle>{i18nT('pages.overview.memoryTab.lessons')} <InfoTip text={i18nT('pages.overview.memoryTab.persistent_lessons_injected_into_every_session_a')} /></CardTitle>
       <div className="flex gap-2 items-center flex-wrap mb-3">
@@ -881,6 +975,13 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
       {/* No agent hand-off: it navigates away, and the Add row above may hold
           an unsaved rule draft. */}
       <ErrorNotice
+        title={i18nT(lessonsLoadError?.step === 'add' ? 'pages.overview.memoryTab.lesson_added_refresh_failed' : 'pages.overview.memoryTab.lessons_load_failed')}
+        message={lessonsLoadError?.message}
+        /* Not dismissible: clearing it would let the empty state claim a list
+           the read never returned. A later successful read clears it. */
+        askAgent={false}
+      />
+      <ErrorNotice
         title={i18nT(deleteError?.step === 'refresh' ? 'pages.overview.memoryTab.lessons_refresh_failed' : 'pages.overview.memoryTab.delete_failed')}
         message={deleteError?.step === 'nothing' ? i18nT('pages.overview.memoryTab.delete_matched_nothing') : deleteError?.message}
         onDismiss={() => setDeleteError(null)}
@@ -898,11 +999,11 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
       {/* Scrolls sideways rather than clipping: five columns plus a long path
           fragment overrun a narrow viewport, and the card hides overflow. */}
       <div className="overflow-x-auto"><table className="w-full border-collapse table-striped"><thead><tr><SortableHeader label={i18nT('pages.overview.memoryTab.rule')} sortKey="rule" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.category')} sortKey="category" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.scope')} sortKey="repo_scope" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.source')} sortKey="source" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.when')} sortKey="ts" sort={lessonSort} onToggle={toggleLessonSort} /><th aria-label={i18nT('pages.overview.memoryTab.actions')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th></tr></thead>
-        <tbody>{lessons.length === 0 && editing === null ? <tr><td colSpan={6}><EmptyState icon={<BookOpen className="lucide-inline" />} title={i18nT('pages.overview.memoryTab.no_lessons_yet')} subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')} /></td></tr> : sortedLessons.length === 0 ? <tr><td colSpan={6}><FilteredEmpty query={lessonQuery} onClear={() => setLessonQuery('')} /></td></tr> : sortedLessons.map((l) => {
+        <tbody>{lessonsLoadError && lessons.length === 0 && editing === null ? null : lessons.length === 0 && editing === null ? <tr><td colSpan={6}><EmptyState icon={<BookOpen className="lucide-inline" />} title={i18nT('pages.overview.memoryTab.no_lessons_yet')} subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')} /></td></tr> : sortedLessons.length === 0 ? <tr><td colSpan={6}><FilteredEmpty query={lessonQuery} onClear={() => setLessonQuery('')} /></td></tr> : sortedLessons.map((l) => {
           const key = lessonKey(l)
           // The rule cell holds the same text as a box while editing.
           const draft = editing?.key === key ? editing.text : null
-          return <tr key={key} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{draft === null ? esc(l.rule) : <Input className="w-full" aria-label={i18nT('pages.overview.memoryTab.edit_rule')} autoFocus disabled={editing?.saving} value={draft} onChange={e => setEditing(old => old && { ...old, text: e.target.value })} />}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{scopeCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm">{sourceCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">{fmtDateTimeNumeric(l.ts)}</td>
+          return <tr key={key} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{draft === null ? l.rule : <Input className="w-full" aria-label={i18nT('pages.overview.memoryTab.edit_rule')} autoFocus disabled={editing?.saving} value={draft} onChange={e => setEditing(old => old && { ...old, text: e.target.value })} />}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{scopeCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm">{sourceCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">{fmtDateTimeNumeric(l.ts)}</td>
             <td className="px-2.5 py-2 border-b border-border text-sm"><div className="flex gap-1.5">{draft === null ? <>
               {/* Edit only on a JSONL row (one that names its file tier); vector lessons
                   are edited in the Semantic browser. No Edit where the scope cannot be

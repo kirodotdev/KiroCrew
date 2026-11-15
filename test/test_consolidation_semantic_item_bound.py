@@ -155,6 +155,12 @@ async def _run(
 
     async def fake_llm(prompt: str, *, memory_store: str = "", session_key: str = "") -> dict:
         prompts.append(prompt)
+        if prompt.startswith("Label stored memory items."):
+            # Kind routing's shadow label call: each item's own tag, by its index.
+            from kiro_crew.memory_kind_routing import route_semantic_by_kind
+
+            routed = route_semantic_by_kind({"semantic": list(items)}, "shadow").decisions
+            return {"kinds": {str(n): d.kind for n, d in enumerate(routed)}}
         if while_thinking is not None:
             while_thinking()
         return {"semantic": list(items)}
@@ -1258,7 +1264,9 @@ async def test_the_bound_screens_the_answer_routing_returned(
 ) -> None:
     from kiro_crew import memory_kind_routing
 
-    _route_as(monkeypatch, "shadow")
+    # Enforce: the mode whose routing hands the writers an answer of its own; under
+    # shadow they get the model's answer itself, as under off.
+    _route_as(monkeypatch, "enforce")
     store, c = _store_for(path, tmp_path, monkeypatch, opened)
     route = memory_kind_routing.route_semantic_by_kind
     routed: list[list] = []
@@ -1835,7 +1843,8 @@ def test_a_v1_pass_whose_only_routed_item_is_over_the_bound_is_committed_as_with
 ) -> None:
     from kiro_crew.history_consolidation import _RunCommitState
 
-    _route_as(monkeypatch, "shadow")
+    # Enforce: the mode whose log the V1 writer itself writes; a shadow log is the pass's.
+    _route_as(monkeypatch, "enforce")
     store, c = _store_for("v1", tmp_path, monkeypatch, opened)
     commit_state = _RunCommitState()
     item = _tagged("project.long_fact", _LARGE, "fact")
@@ -1847,8 +1856,7 @@ def test_a_v1_pass_whose_only_routed_item_is_over_the_bound_is_committed_as_with
     # value takes its write's turn, so the run is committed as it would be without the
     # bound. The value is still refused.
     log = _kind_log(store)
-    assert log["counts"] == {"shadow": {"fact": 1}}
-    assert [(s["key"], s["kind"]) for s in log["samples"]] == [("project.long_fact", "fact")]
+    assert log == {"counts": {"enforce": {"fact": 1}}}
     assert commit_state.committed
     assert _refusal_codes(caplog, "project.long_fact") == [_CODE]
     assert [r["memory_key"] for r in _audited(store)] == ["project.long_fact"]

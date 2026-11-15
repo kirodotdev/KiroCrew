@@ -143,6 +143,9 @@ def resolves_launcher(monkeypatch):
     # The host's own kiro-cli must not decide the argv: pinned at the release
     # floor, where a Crew-owned spawn names ``--auth-method client``.
     monkeypatch.setattr(kas_mod, "installed_kiro_cli_version", lambda: KAS_AUTH_CLIENT_MIN_KIRO_CLI)
+    # Nor does the host decide whether the spawned file is a standalone 3.x: unknown,
+    # which keeps the swap.
+    monkeypatch.setattr(kas_mod, "resolved_kiro_cli_version", lambda binary: None)
 
 
 @pytest.fixture
@@ -224,3 +227,41 @@ async def test_an_override_naming_a_different_binary_does_not_pin_this_one(
         _ctx(tmp_path, {"KIROCREW_KIRO_BIN": str(Path("/elsewhere/kiro-cli"))})
     )
     assert plan.argv[0] == CHAT
+
+
+@pytest.mark.asyncio
+async def test_a_standalone_kiro_cli_is_entered_as_itself_past_a_stale_chat_binary(
+    resolves_launcher, sibling_present, monkeypatch, tmp_path
+):
+    """From 3.0.0 ``kiro-cli`` is the chat binary itself. A ``kiro-cli-chat`` an older
+    install left beside it is never spawned with the flags chosen for 3.x."""
+    monkeypatch.setattr(kas_mod, "installed_kiro_cli_version", lambda: (3, 0, 0))
+    monkeypatch.setattr(kas_mod, "resolved_kiro_cli_version", lambda binary: (3, 0, 0))
+    monkeypatch.setattr(kas_mod, "vault_holds_identity_off_loop", _vault(True))
+    plan = await harness_for(ACP_BACKEND_KAS).resolve_spawn(_ctx(tmp_path))
+    assert plan.host_auth is True
+    assert plan.argv[0] == LAUNCHER
+    assert plan.argv[-2:] == [KAS_RELAY_AUTH_FLAG, KAS_RELAY_AUTH_CLIENT]
+
+
+@pytest.mark.asyncio
+async def test_a_path_only_standalone_kiro_cli_is_not_swapped_for_a_stale_chat_binary(
+    resolves_launcher, sibling_present, monkeypatch, tmp_path
+):
+    """No pinned install, so the pin's version is unknown; the spawned ``kiro-cli``
+    found through ``PATH`` is read as 3.x inside the sandbox. The swap asks that
+    file's version, as the route and doctor do, and keeps it."""
+    monkeypatch.setattr(kas_mod, "resolved_kiro_cli_version", kiro_cli.resolved_kiro_cli_version)
+    monkeypatch.setattr(kas_mod, "installed_kiro_cli_version", lambda: None)
+    monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (None, True))
+    monkeypatch.setattr(
+        kiro_cli, "kiro_cli_version_at", lambda b: pytest.fail("not the pin: sandboxed read only")
+    )
+    monkeypatch.setattr(
+        "kiro_crew.kiro_cli_path_probe.version_if_known",
+        lambda binary: (3, 0, 0) if binary == LAUNCHER else None,
+    )
+    monkeypatch.setattr(kas_mod, "vault_holds_identity_off_loop", _vault(True))
+    plan = await harness_for(ACP_BACKEND_KAS).resolve_spawn(_ctx(tmp_path))
+    assert plan.host_auth is True
+    assert plan.argv[0] == LAUNCHER

@@ -76,9 +76,10 @@ def _clones(spawn: AsyncMock) -> int:
 
 
 class _Request:
-    """Neither handler reads more off the request than its method."""
+    """Neither handler reads more off the request than its method and ``app`` (no ``state``)."""
 
     method = "GET"
+    app: dict[str, Any] = {}
 
 
 class TestTheCause:

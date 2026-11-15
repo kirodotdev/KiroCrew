@@ -129,7 +129,7 @@ Telegram and dashboard paths. Three rules:
 
 ### Registered providers
 
-A composed edition can add TTS providers through the `speech` slot on `PlatformContext` (`SpeechProviderRegistry.tts_providers()`; see `platform-context.md`). The default registry adds none, so a standalone install has exactly `VALID_PROVIDERS`. `voice_reply.valid_providers()` is the built-ins plus the registered names.
+A composed edition can add TTS providers through the `speech` slot on `PlatformContext` (`SpeechProviderRegistry.tts_providers()`; see `platform-context.md`). The default registry adds none, so a standalone install has exactly `VALID_PROVIDERS`. The built-in sets (`VALID_PROVIDERS`, `REMOVED_PROVIDERS`, `DEFAULT_PROVIDER`) are defined in `speech_providers` and served by `voice_reply`, so boot validates a registry against them without loading the synthesis code. `voice_reply.valid_providers()` is the built-ins plus the registered names.
 
 - **Collision rule.** A registered name may not be a built-in (`polly`, `system`) or a removed provider (`piper`), may not be blank and may not repeat. `speech_providers.validate_speech_registry` refuses any of these at boot with `PlatformCompositionError`, so an edition can add a provider but never replace one.
 - **Default precedence.** A stored provider always wins. Only an absent, null or empty value takes `voice_reply.default_provider()`: the edition's `default_tts()` when it names a selectable provider, else `DEFAULT_PROVIDER`. An invalid stored value still falls back to `DEFAULT_PROVIDER`, never to the edition default, for the same reason it never falls back to Polly.
@@ -316,6 +316,19 @@ auto-speak also stops current speech. Every accepted `voice_chunk`,
 active slot; clearing the known IDs makes late frames inert even after the
 muted flag is reset for another response.
 
+The playback bar's Read again button dispatches `voice-restart`. The playback
+owner keeps the synthesis requests of the current playback context in the order
+they were spoken (the merged sentence text of an auto-speak request, the whole
+reply of a manual Read aloud with its client-fallback flag), and `stopVoice()`
+empties that list, so Stop, a new turn, a new manual Read aloud and a slot
+change each start a context with nothing to replay. Restart tears down output
+and in-flight requests like Stop does, then unmutes, keeps the speech progress
+so a reply still streaming under auto-speak continues after the replayed
+sentences, and submits the saved requests again, each as its own request, in
+order. A request cancelled by the restart keeps its old `request_id`, so its
+late frames are inert. With nothing saved (before anything was spoken, after
+Stop) the event does nothing.
+
 The backend keys active synthesis by `(slot, request_id)` in an application-owned
 registry. `POST /api/voice/cancel` cancels the matching handler, which closes its
 provider stream and releases its child. A bounded, expiring cancellation record
@@ -323,6 +336,52 @@ also rejects a synthesis POST that arrives after its cancellation. Unknown IDs
 cannot cancel another request in the same slot. `register_voice_lifecycle()`
 cancels active work during dashboard shutdown, and the registry bounds concurrent
 synthesis so simultaneous local requests cannot load unbounded models.
+
+## Playback bar, Pause and Resume
+
+In a Sessions chat, `VoicePlaybackBar` sits above the composer while
+`voicePlaying` or `voicePreparing` is set. It shows "Preparing audio…" or
+"Reading aloud" in two rows inside one glass pane. The first row holds the
+status and two buttons: Pause reading / Resume reading, then Stop reading. The
+second row, set off by a hairline and aligned to the end, holds Read again alone,
+so no row has more than two buttons. Stop dispatches `voice-stop`, Read again
+dispatches `voice-restart` (see above). Pause dispatches `voice-pause`; the store flag
+`voicePaused` then turns the same button into Resume reading, which dispatches
+`voice-resume`, and the status text reads "Paused". The toggle is one element,
+so keyboard focus stays on it. The bar is a container: while it is narrower than
+680 px (a phone, or a narrow dock), the Pause / Resume and Stop labels hide
+visually and remain the buttons' accessible names, so the status text always has
+room, in every locale. Read again, alone on its row, keeps its label until the
+viewport is narrower than 360 px.
+
+`voicePaused` is the single source of truth. The playback owner sets it first
+and then holds every engine at its current position, so Resume continues from
+there instead of from sentence 1:
+
+- The PCM player suspends its `AudioContext`. Audio that arrives while paused is
+  decoded and scheduled on the frozen clock, skips the autoplay-resume wait, and
+  plays when Resume resumes the context.
+- The media-element path pauses the active element. A queued chunk is not
+  started while paused (`playNextVoiceChunk` returns early), and Resume plays the
+  active element again or starts the next queued chunk. Each `play()` captures
+  a play-attempt token. Pause, a newer play, and teardown invalidate that token,
+  so an older rejected promise cannot report a failure or stop resumed playback.
+  A rejection from the current attempt still reports the playback error.
+- Client fallback speech pauses and resumes the Web Speech engine, and speech
+  that starts while paused starts held. Stopping cancels the engine and releases
+  a paused queue so the next utterance is heard.
+
+Pause is ignored unless a reading is playing or preparing. Pausing during a gap
+between sentences keeps the bar and the button visible. The reducers for
+`setVoicePlaying` and `setVoicePreparing` clear `voicePaused` once both flags are
+false, so Stop, a new turn, a failed request and the end of playback all leave
+nothing held. Escape and the reply menu's Read aloud item keep meaning Stop.
+
+Read again while paused ends the pause and speaks from the first sentence.
+Restart's teardown (`silenceVoice`) stops the PCM sources, the media element and
+the Web Speech queue, and its final `setVoicePlaying(false)` clears
+`voicePaused`; the replayed requests then start on a running `AudioContext`
+(`VoicePcmPlayer.unlock()` resumes a suspended one now that the flag is clear).
 
 ## Configuration and API
 

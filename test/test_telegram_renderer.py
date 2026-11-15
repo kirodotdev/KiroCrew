@@ -243,9 +243,9 @@ class TestRenderer:
         assert "| a | b |" in sealed, "the table text survives inside the pre block"
 
     def test_the_degraded_path_keeps_prose_formatting_around_the_table(self) -> None:
-        # Regression: wrapping the WHOLE segment in <pre> made a prose+table
-        # reply render worse than before the feature existed -- every bold, link
-        # and inline-code span was lost and `**` markers showed up literally.
+        # Wrapping the WHOLE segment in <pre> would make a prose+table reply
+        # render worse than plain text -- every bold, link and inline-code span
+        # lost and `**` markers shown literally.
         # On a server without Rich Messages this is the permanent path, so it
         # must never be a downgrade. Only the table run may be monospace.
         text = "Here is the **summary**:\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\nSee `docs` too."
@@ -495,7 +495,7 @@ class TestRenderer:
         return cli
 
     def test_rotation_keeps_an_open_fence_open_in_the_retained_tail(self) -> None:
-        # Regression: mid-stream the source fence is still open (the model has
+        # Mid-stream the source fence is still open (the model has
         # not emitted its closing ``` yet). _split_markdown balances each chunk
         # with a synthetic closer, which is right for sealed chunks but wrong for
         # the tail we keep streaming into: later tokens would land after that
@@ -1329,10 +1329,8 @@ class TestApprovalDecider:
 
         async def _go() -> bool:
             d = TelegramApprovalDecider(session_key="telegram:1:0")
-            task = asyncio.ensure_future(d(SimpleNamespace(request_id="rq8")))
-            await _until_decider_waits(task, "telegram:1:0:rq8")
             assert TelegramApprovalDecider.resolve_global("telegram:1:0:rq8", True) is False
-            TelegramApprovalDecider._REGISTRY["telegram:1:0:rq8"].set_result(False)
+            task = asyncio.ensure_future(d(SimpleNamespace(request_id="rq8")))
             return await await_until(task, what="the approval decider's verdict")
 
         assert asyncio.run(_go()) is False
