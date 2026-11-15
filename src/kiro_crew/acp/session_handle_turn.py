@@ -12,7 +12,7 @@ Instance fields written: ``_abandoned_prompt_id``, ``_announced_subagent_roster`
 ``_cancel_ts``, ``_cancelled``, ``_compaction_terminal_seen``, ``_input_wait_emitted``,
 ``_kas_compact_turn``, ``_kas_subagent_roster``, ``_last_stop_reason``, ``_legacy_subagent_tool_ids``,
 ``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``,
-``_native_child_overflow``, ``_native_child_redactors``, ``_native_child_sids``,
+``_native_child_overflow``, ``_native_child_sids``,
 ``_native_child_tool_call_ids``, ``_parked_since``, ``_parked_total``, ``_pending_reject_notices``,
 ``_permission_gate_events``, ``_permission_options``, ``_prompt_starts``,
 ``_prompt_written``, ``_skill_reads``, ``_stale_eligible``, ``_stale_probe``,
@@ -27,7 +27,7 @@ Instance fields written: ``_abandoned_prompt_id``, ``_announced_subagent_roster`
 ``prompts_written``.
 
 Instance fields read: ``_abandoned_steering``, ``_awaited_responses``, ``_batch_window``,
-``_cloud_replayed_permissions``, ``_engine_fallback``, ``_mode_model_unjudged``,
+``_cloud_replayed_permissions``, ``_drained_child_events``, ``_engine_fallback``, ``_mode_model_unjudged``,
 ``_queue``, ``_runtime``, ``_sent_images``, ``_session_id``, ``_session_key``,
 ``_steering_cancel_tasks``.
 """
@@ -70,6 +70,10 @@ from kiro_crew.acp.prompt_blocks import (
 )
 from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
 from kiro_crew.acp.session_handle_mcp import hold_untold_first_turn
+from kiro_crew.acp.session_handle_native_children import (
+    _is_claude_subagent_update,
+    _keep_working_claude_redactors,
+)
 from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError, host_checks_sessions
 from kiro_crew.acp.session_handle_watchdog import _WORKING_NEVER_LOGGED
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
@@ -455,8 +459,12 @@ async def _run_turn(
     self._tool_output_seen.clear()
     self._status_rejected.clear()
     self._input_wait_emitted = False
-    self._native_child_sids.clear()
-    self._native_child_overflow = 0
+    if not self._claude_children_declared():
+        # Claude children are bounded for the session's life, as on the per-chat
+        # client: their ids gate rows that outlive the turn, and what the bound
+        # refused is said and cleared by ``_reset_claude_child_turn``.
+        self._native_child_sids.clear()
+        self._native_child_overflow = 0
     # Park state is per-turn: carrying it across would charge the previous
     # turn's consumer time to this one, and a permission left unanswered when
     # the last turn died would mask this turn's stalls forever.
@@ -495,8 +503,9 @@ async def _run_turn(
     # gets a fresh card instead of a resurrected one.
     self._announced_subagent_roster.clear()
     # Each child's redactor goes with its row. A tail still held here belongs
-    # to a card the last turn already closed, so it is dropped, never shown.
-    self._native_child_redactors.clear()
+    # to a card the last turn already closed, so it is dropped, never shown. A
+    # claude child still working outlives the turn, and keeps its own.
+    _keep_working_claude_redactors(self)
     self._legacy_subagent_tool_ids.clear()
 
     # Drain frames left over from a prior abandoned turn. The cancel-unacked
@@ -544,6 +553,8 @@ async def _run_turn(
     # _wait_for_response re-injects from its finally).
     _stale_dropped = 0
     _stale_owned_dropped = False
+    # Whether this drain started the turn's claude roster (a child's update read).
+    _claude_roster_reset = False
     _stale_terminals = 0
     _stale_reasons: list[str] = []
     _stale_owed: list[JsonRpcMessage] = []
@@ -722,6 +733,21 @@ async def _run_turn(
             # A compaction terminal can land between turns. It still pays an
             # unresolved idle-compaction debt before this drain discards it.
             consume_stale_compaction_status(self, stale)
+            # A claude child's lifecycle update between turns (it finished) still
+            # settles its row, as the per-chat client reads it in a later turn:
+            # its card shows it ended, a Stop does not name it, and its
+            # redactor goes. What that reading yields (the text the redactor
+            # held, the roster) is shown at the head of this turn's dispatch.
+            if stale is not None and _is_claude_subagent_update(self, stale):
+                if not _claude_roster_reset:
+                    # This turn's roster starts here, so the roster this update
+                    # yields names only children seen in this turn, not the
+                    # cards the last turn already closed.
+                    self._reset_claude_child_turn()
+                    _claude_roster_reset = True
+                _read = self._claude_child_events(stale)
+                if _read is not None:
+                    self._drained_child_events.extend(_read[0])
             if stale is not None and not stale.fanout_no_owner:
                 # Any frame of this session's that no turn read may have been
                 # the one that dropped its pictures (a late compaction or clear),
@@ -1018,8 +1044,12 @@ async def _run_turn(
                     # next turn resets the roster, so the text an announced
                     # child's redactor still holds goes onto its card now,
                     # whatever ended the turn (an end_turn, a timeout, a stale
-                    # recovery). Same choke point, same reason as above.
-                    for _held_text in self.flush_native_child_text():
+                    # recovery). Same choke point, same reason as above. A claude
+                    # child still working keeps its redactor through any ending
+                    # but a cancel, which stops its work too: it outlives this turn.
+                    for _held_text in self.flush_native_child_text(
+                        keep_working_claude=event.stop_reason != STOP_REASON_CANCELLED
+                    ):
                         yield _held_text
                     # Set BEFORE the yield: a consumer that closes the stream ON
                     # the terminal still received it, and marking it after would

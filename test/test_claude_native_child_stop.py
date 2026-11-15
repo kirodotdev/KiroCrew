@@ -22,7 +22,7 @@ import json
 from collections.abc import AsyncIterator, Callable, Sequence
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from dashboard_approval_helpers import (
@@ -460,13 +460,21 @@ async def test_a_workflow_agents_card_keeps_its_stop() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("runtime", [False, True], ids=["kiro-client", "runtime-provider"])
 async def test_a_kiro_native_card_closes_alone(runtime: bool) -> None:
-    """kiro-cli's runtime slot holds an ``AcpSessionProvider``, which offers no child cancel."""
+    """A kiro-cli card is closed alone: kiro-cli's client sends nothing, and the
+    ``AcpSessionProvider`` a runtime slot holds asks its handle, which grants no child
+    cancel off ``ACP_BACKENDS_NATIVE_CHILD_CANCEL``."""
     holder = MagicMock(spec=AcpSessionProvider) if runtime else _client(ACP_BACKEND_KIRO)
+    if runtime:
+        holder.cancel_native_child = AsyncMock(return_value=False)
     dashboard = _Dashboard(holder)
     row = {"sessionName": "summarize", "role": "worker", "initialQuery": "summarize the log"}
     dashboard.draw(_roster(CHILD, **row))
     await _stops_alone(dashboard)
-    assert not (holder.method_calls if runtime else _written(holder))
+    if runtime:
+        # Asked once and declined: nothing else is called on it.
+        assert holder.method_calls == [call.cancel_native_child(CHILD)]
+    else:
+        assert not _written(holder)
 
 
 # ── 5. A child stopped while a card of its waits on the person ─────────────────

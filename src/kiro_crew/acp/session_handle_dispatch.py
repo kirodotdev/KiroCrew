@@ -9,7 +9,7 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_awaiting_permission``, ``_codex_compaction_pending``,
-``_compaction_failed_at``, ``_input_wait_emitted``, ``_last_stop_reason``,
+``_compaction_failed_at``, ``_drained_child_events``, ``_input_wait_emitted``, ``_last_stop_reason``,
 ``_mcp_sign_in_completed``, ``_oauth_emitted_servers``, ``_prompt_or_tool_seen``,
 ``_stale_probe``, ``_tool_dispatched``, ``active_agent``, ``last_compaction_transient``.
 
@@ -173,6 +173,14 @@ async def _dispatch_events(
 
     _buffered: list[JsonRpcMessage] = []
     _last_yield = time.monotonic()
+    # This turn's claude children are listed as they are seen.
+    self._reset_claude_child_turn()
+    # What the pre-turn drain read from a claude child that ended between turns:
+    # the text its redactor held, then its roster, so its card gets both.
+    if self._drained_child_events:
+        _drained, self._drained_child_events = self._drained_child_events, []
+        for _drained_event in _drained:
+            yield _drained_event
     # Whether this is the dashboard turn that draws the session's background work.
     # The readers take the per-chat client; they read the fields this handle names alike.
     _raw_reader: Any = self
@@ -926,6 +934,9 @@ async def _dispatch_events(
                     if msg.id is not None:
                         await self._runtime.send_error(msg.id, -32600, "invalid request id")
                     continue
+                # A Stop on the card of the claude child that asks settles it
+                # (``session_handle_claude_children``).
+                self._note_native_child_request(msg)
                 # The request is its call's frame (a child's: its sub-agent's).
                 # The human wait that follows is a consumer park, which every
                 # clock subtracts, so the call's timer is paused while it lasts.
@@ -1012,6 +1023,8 @@ async def _dispatch_events(
                 _elicit_event = await self._handle_elicitation_request(msg)
                 if _elicit_event is None:
                     continue
+                # A Stop on the card of the claude child that asks settles it.
+                self._note_native_child_request(msg)
                 self._sync_silence_hold()
                 # Same park marking as a permission: the consumer waits on a
                 # human here too, and an observer must not read that as a stall.

@@ -300,6 +300,7 @@ _SESSION_HANDLE_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.session_handle_mcp",
     "kiro_crew.acp.session_handle_kas",
     "kiro_crew.acp.session_handle_native_children",
+    "kiro_crew.acp.session_handle_claude_children",
     "kiro_crew.acp.session_handle_model_selection",
     "kiro_crew.acp.session_handle_steering",
     "kiro_crew.acp.session_handle_lifecycle",

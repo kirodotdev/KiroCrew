@@ -3983,7 +3983,7 @@ opposed to `spawn_run` / `spawn_sub_agents` tasks Kiro Crew manages
 | kiro-cli (`ACP_BACKEND_KIRO`) `use_subagent` | yes — `_kiro.dev/subagent/list_update` roster (`sessionId`, `status`), and child-routed `session/update` / `_kiro.dev/session/update` frames carry the child `sessionId` (`AcpEvent.sub_session_id`) | attributable: child frames are parsed with the shared parser into origin-scoped caches and re-tagged `EVENT_SUBAGENT_ACTIVITY`; child approvals surface on the PARENT with `sub_session_id` set (`subagent_manager/run_turn.py` `_run_inner_impl` counts them separately) | parent only — `session/cancel` on the parent session takes every child | none independent of the parent | not a task row. `AcpSessionHandle.native_child_sessions` counts child ids seen this turn through `_note_native_child` at three execution-layer seams — the child-routed branch of `_handle_update`, the `_kiro.dev/session/update` child stream in `_dispatch_events`, and the `subagent_list` roster when this handle is its sole owner (`fanout_no_owner` False; a fanned-out roster is counted on nobody) — never from model text. No `HostBudget` charge, because a child lives inside the parent's already-charged runtime process; `report_native_children(budget)` reports the count as `uncharged["native_children"]`. Recovery boundary = the parent session. A child-routed `kirocrew/status` is rejected (`child_origin`), never re-attributed |
 | KAS (`ACP_BACKEND_KAS`) | yes — `_meta.kiro.agentSubtaskId` / `pipeline` on parent `tool_call` frames (`_handle_kas_subagent`), roster keyed by `agentSubtaskId` | child nested tool frames emit an activity prefix and populate the caches | parent only | none | same boundary as kiro-cli; every roster entry (individual `agent-subtask` frame or pipeline stage) is counted through the same `_note_native_child` seam |
 | Codex (`ACP_BACKEND_CODEX`) native subagents | yes, once the client declares `clientCapabilities.subagents` (`CODEX_CLIENT_CAPABILITIES`): each child is announced by a lifecycle `session/update` ON the session that spawned it -- `subagent_spawned` / `subagent_state_update`, keyed on `subagentSessionId` -- and streams its own work under its own `sessionId`. No other lifecycle shape is read until an adapter sends one. A continued child is announced again under `<id>:generation:N`. `_handle_announced_subagent` keeps the roster (`_announced_subagent_roster`, row shape of the KAS roster plus `parentSessionId` for a nested child) and emits it whole as `EVENT_SUBAGENT_LIST`. An adapter built on ACP SDK 1.x drops the declaration while parsing `initialize`, so codex-acp 2.2.2 and older still send only "Start/Complete subagent" tool rows; `_handle_legacy_codex_subagent` reads their `rawInput` (`agentThreadId`, `agentPath`, `activityKind`) into the same roster instead of rendering them, and such an adapter sends no child output | child frames reach the parent through the runtime's announced-child route and take the same child-routed branch of `_handle_update` as kiro-cli's | parent only | none independent of the parent; a continuation is a new generation id, so a new card | same boundary as kiro-cli; announced ids are counted through `_note_native_child` |
-| Claude backend (`ACP_BACKEND_CLAUDE`) | yes — `AcpClient` declares `subagents`, so claude-agent-acp announces each child on the parent (`subagent_update`: the child `sessionId`, title, description and state) and sends the delegated prompt (`session_message`, whose `messageId` is the Agent call's `toolCallId`) and the child's own frames under the child's sessionId; read by `client_native_children` into the same roster shape the cards take | attributable: a child's tool call yields an `EVENT_SUBAGENT_ACTIVITY` prefix and then continues to the ordinary tool path, as a kiro-cli child's does on `AcpClient`; a child's text becomes `EVENT_SUBAGENT_ACTIVITY`, never the parent's text; its other frames are dropped | parent, and one child at a person's Stop on its card when the adapter granted it `capabilities.cancel` (`AcpClient.cancel_native_child`) | none | same boundary; the child ids and Agent-call links are kept under `NATIVE_CHILD_ROSTER_CAP` with the overflow counted and logged at the next turn; a child past the cap gets no card, its text is dropped and its tool calls render as ordinary rows. They are not yet reported as uncharged residency, and a resume naming one misses as an unknown conversation. On a session that declares nothing, the Task tool is an ordinary `tool_call` on the parent and the liveness oracle bounds the parent turn identically (`test_claude_backend_counts_no_children_but_oracle_still_bounds_the_parent`, `test_claude_native_subagent_cards.py`) |
+| Claude backend (`ACP_BACKEND_CLAUDE`) | yes — `AcpClient` declares `subagents`, so claude-agent-acp announces each child on the parent (`subagent_update`: the child `sessionId`, title, description and state) and sends the delegated prompt (`session_message`, whose `messageId` is the Agent call's `toolCallId`) and the child's own frames under the child's sessionId; read by `client_native_children` into the same roster shape the cards take | attributable: a child's tool call yields an `EVENT_SUBAGENT_ACTIVITY` prefix and then continues to the ordinary tool path, as a kiro-cli child's does on `AcpClient`; a child's text becomes `EVENT_SUBAGENT_ACTIVITY`, never the parent's text; its other frames are dropped | parent, and one child at a person's Stop on its card when the adapter granted it `capabilities.cancel` (`AcpClient.cancel_native_child`) | none | same boundary; the child ids and Agent-call links are kept under `NATIVE_CHILD_ROSTER_CAP` with the overflow counted and logged at the next turn; a child past the cap gets no card, its text is dropped and its tool calls render as ordinary rows. On the shared runtime the session handle reads the same form (`session_handle_claude_children`, with the client's functions) and `report_native_children` reports this turn's claude children as `uncharged["native_children"]`; the ids outlive the turn, so the count reads the turn's roster, as on the client, and a working child keeps its redactor across parent turns until it ends or a cancel stops it. A resume naming one misses as an unknown conversation. On a session that declares nothing, the Task tool is an ordinary `tool_call` on the parent and the liveness oracle bounds the parent turn identically (`test_claude_backend_counts_no_children_but_oracle_still_bounds_the_parent`, `test_claude_native_subagent_cards.py`) |
 | `spawn_run` / `spawn_sub_agents` (all backends) | task rows (`taskq`) | yes | per task | per task (continuable) | full scheduling. A `spawn_run` child that itself uses `use_subagent` is the boundary for ITS native grandchildren: they are counted on the child's handle only, never on the grandparent |
 
 The minimal recovery boundary for every native subtask is therefore the parent
@@ -4102,23 +4102,37 @@ session: it is counted there, cancelled there, and recovered there. Concretely:
   the per-call silence timer reads both before it judges a native sub-agent call.
 - **A child announced ON a session routes to that session.** The runtime learns
   announced children only for a harness whose `client_capabilities` declares
-  `subagents` (today codex), and the handle's lifecycle intercept is gated on
-  `ACP_BACKEND_CODEX`. A Codex lifecycle
+  `subagents`: codex, from its `subagent_spawned` / `subagent_state_update`
+  lifecycle frames (the handle's lifecycle intercept is gated on
+  `ACP_BACKEND_CODEX`), and claude, from `subagent_update`, whose `sessionId` names
+  the child; a claude child's route is kept until its owner leaves, because an
+  idle claude child can still be messaged. A lifecycle
   frame names its owner, unlike the ownerless kiro-cli roster, so
   `AcpRuntime._note_announced_child` maps the child id to the registered session
   the frame arrived on (a nested child, announced on a child's id, maps to the
   same root owner) in `_announced_children`, before the frame itself is routed.
-  The child's `session/update` and `session/request_permission` frames then reach
+  The child's `session/update`, `session/request_permission` and
+  `elicitation/create` frames then reach
   that owner even while other sessions share the runtime, under the same
   governance as the roster route (`_route_owned_child_frame`: routed while the
-  owner's turn is active, a permission answered fail-closed and an update dropped
-  between turns). The first announcement wins, a registered session is never
+  owner's turn is active; between turns a permission is answered fail-closed, a
+  question is declined and an update dropped). A child's question no registered
+  session owns (a child past the announcement cap, or never announced) is declined
+  at once on every backend instead of left unanswered. Each decline waits on the
+  shared answer-task bound (`_wait_for_answer_capacity`) and is SEL-recorded under
+  `mcp_elicitation` with outcome `decline`, keyed on the owner (the child's own id
+  when there is none), naming the child and the reason (`owner_no_active_turn`, or
+  the roster-overflow / unregistered reason the permission answer uses). On the
+  claude handle, a child's `subagent_update` that a turn-start drain discards is
+  first applied to the child's row, so a child that ended between turns shows
+  ended. The first announcement wins, a registered session is never
   taken as a child, the map holds at most `NATIVE_CHILD_ROSTER_CAP` ids (refusals
   counted in `_announced_overflow`, which selects the overflow reject reason), a
   codex-acp 2.2.x terminal `subagent_state_update` releases that child's route,
   and the owner's ids leave with it on unregister. Pinned by
   `test_codex_native_subagent_cards.py`, whose fixtures are reduced live captures
-  of codex-acp 2.2.3-preview.23 and 2.2.2.
+  of codex-acp 2.2.3-preview.23 and 2.2.2, and, for claude and the question
+  declines, by `test_claude_shared_children.py`.
 
 The UI showing per-child cards (`_native_subagent_sync` in `chat_turn/native_cards.py`)
 never implies the scheduler can pause or restart one child; a backend that later

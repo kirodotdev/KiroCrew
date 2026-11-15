@@ -26,6 +26,7 @@ from kiro_crew.acp import session_provider_claim as _sp_claim
 from kiro_crew.acp import session_provider_context as _sp_context
 from kiro_crew.acp import session_provider_keepalive as _sp_keepalive
 from kiro_crew.acp import session_provider_mcp_reinject as _sp_mcp_reinject
+from kiro_crew.acp import session_provider_native_children as _sp_children
 from kiro_crew.acp import session_provider_shared as _sp_shared
 from kiro_crew.acp import stale_compaction
 from kiro_crew.acp.client import (
@@ -597,6 +598,10 @@ class AcpSessionProvider(LLMProvider):
     def work_scratch_dir(self) -> Path | None:
         """The session tree's ``$KIROCREW_SCRATCH`` directory (see ``AcpRuntime.work_scratch_dir``)."""
         return self._runtime.work_scratch_dir
+
+    # A native child card's Stop: ``kiro_crew.acp.session_provider_native_children``.
+    cancel_native_child = _sp_children.cancel_native_child
+    native_child_requests = _sp_children.native_child_requests
 
     def flush_native_child_text(self) -> list:
         """See AcpSessionHandle.flush_native_child_text (a turn cut short)."""
