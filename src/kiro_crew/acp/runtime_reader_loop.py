@@ -209,7 +209,11 @@ def _runtime_rpc_exception(error: object) -> AcpRuntimeError:
         match = _MODE_NOT_FOUND_RE.search(str(error.get("data", "") or ""))
         if match:
             return AcpModeNotFound(message, match.group("name"))
-    return AcpRuntimeError(message)
+    exc = AcpRuntimeError(message)
+    # The error frame itself, for a caller that reads more than the sentence (the
+    # model-substitution advisory a refused ``session/new`` carries).
+    exc.rpc_error = error
+    return exc
 
 
 #: The reason a child's question declined with no turn of its owner running is
@@ -299,8 +303,18 @@ async def _route_owned_child_frame(
     background child's request would sit unanswered -- the original hang with
     extra steps. It is answered fail-closed NOW instead. A child's question
     (an elicitation request) is declined then, for the same reason.
+
+    An owner whose queue reads turns the agent starts on its own (a watched
+    ``AgentTurnQueue``, claude) has a reader between turns too: the frame goes to
+    that queue, so a background child's request opens a turn and an approval card
+    there rather than being refused. Not while that queue can open no turn (a
+    prompt whose reader left before its terminal): the request is answered
+    fail-closed as for any owner with no reader.
     """
-    _owner_turn_active = owner in self._turn_active_sessions
+    opens_turn = getattr(self._session_queues.get(owner), "opens_turn", None)
+    _owner_turn_active = owner in self._turn_active_sessions or (
+        opens_turn is not None and opens_turn()
+    )
     # The child is working for its owner whatever happens to the frame below --
     # answered, routed or dropped between turns -- so it counts as the owner's
     # activity, which keeps the owner off the idle sweep.

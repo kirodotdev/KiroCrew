@@ -201,11 +201,11 @@ ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED: FrozenSet[str] = frozenset(
 
 # The same question for the shared runtime's ``AcpSessionHandle``
 # (``acp.session_handle_permissions._build_permission_event``): a frame under a
-# foreign ``sessionId``, or a native KAS sub-agent's call, told apart by the id its
-# ``agentSubtaskId`` frame recorded. It reads no Claude parent stamp, so Claude is
-# not a member here; kiro-cli and KAS are.
+# foreign ``sessionId``, a native KAS sub-agent's call, told apart by the id its
+# ``agentSubtaskId`` frame recorded, or a Claude child's call on the parent's
+# session, told apart by its ``parentToolUseId`` stamp, as the direct client reads it.
 ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED: FrozenSet[str] = frozenset(
-    {ACP_BACKEND_KIRO, ACP_BACKEND_KAS}
+    {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE}
 )
 
 # Backends whose child may ask THIS host for an access token over the

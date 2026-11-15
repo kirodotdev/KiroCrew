@@ -31,7 +31,7 @@ import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 from kiro_crew import session_head
 from kiro_crew.acp import kas_cli_settings, kas_env_launch, runtime_start
@@ -43,6 +43,7 @@ from kiro_crew.acp._dispatch import (
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
 from kiro_crew.acp.mcp_prune import prune_session_servers, record_pruned
+from kiro_crew.acp.runtime_models import _substitute_model_from_advisory
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
     _drop_withdrawn_stubs,
@@ -58,6 +59,7 @@ from kiro_crew.acp.session_handle import (
     _load_watchdog_settings,
     advertised_models_from_session,
 )
+from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.types import (
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -116,6 +118,56 @@ _ENTITLEMENT_PROBE_TIMEOUT = 30.0
 # chats revalidating at once) costs one round-trip, not one per rejection.
 _ENTITLEMENT_PROBE_TTL_SECS = 20.0
 
+#: Closes of ``session/new`` requests their caller abandoned (asyncio keeps only
+#: weak task references).
+_ABANDONED_NEW_CLOSES: set[asyncio.Task[Any]] = set()
+
+
+async def _kept_to_its_end(
+    runtime: AcpRuntime, request: Awaitable[dict[str, Any]], harness_state: Any
+) -> dict[str, Any]:
+    """Await *request*, a ``session/new``; on a per-session host, keep it to its end.
+
+    A start cancelled while the adapter works on it would otherwise leave a session
+    resident with no owner on a process other chats keep alive: the request is
+    shielded, and the session it answers with is closed once it arrives
+    (``terminate_session``), unless one of that id is registered by then. A timeout
+    the caller is still there for keeps the late-start collector's handling; one
+    raised after the caller left is closed as above when its late answer lands.
+    """
+    if harness_state is None:
+        return await request
+    pending = asyncio.ensure_future(request)
+    try:
+        return await asyncio.shield(pending)
+    except asyncio.CancelledError:
+        pending.add_done_callback(lambda done: _close_abandoned_new(runtime, done))
+        raise
+
+
+def _close_abandoned_new(runtime: AcpRuntime, request: asyncio.Future[Any]) -> None:
+    """Close the session an abandoned ``session/new`` created, once it answered.
+
+    A request that timed out after its caller left hands its late answer on
+    (``adopted_future``, as ``_send_and_await`` builds it for the start collector):
+    that answer is closed the same way when it lands.
+    """
+    if request.cancelled():
+        return
+    error = request.exception()
+    if error is not None:
+        adopted = getattr(error, "adopted_future", None)
+        if isinstance(adopted, asyncio.Future):
+            adopted.add_done_callback(lambda done: _close_abandoned_new(runtime, done))
+        return
+    answer = request.result()
+    session_id = str(answer.get("sessionId") or "") if isinstance(answer, dict) else ""
+    if not session_id or session_id in runtime._session_queues:
+        return
+    task = asyncio.ensure_future(runtime.terminate_session(session_id))
+    _ABANDONED_NEW_CLOSES.add(task)
+    task.add_done_callback(_ABANDONED_NEW_CLOSES.discard)
+
 
 async def create_session(
     self: AcpRuntime,
@@ -133,6 +185,7 @@ async def create_session(
     start_priority: StartPriority = StartPriority.BACKGROUND,
     bg_runtime_start: bool = False,
     member_context: bool | None = None,
+    harness_options: Mapping[str, Any] | None = None,
     harness_state: Any = None,
 ) -> AcpSessionHandle:
     """Create a new ACP session on this runtime. Returns a session handle.
@@ -202,6 +255,7 @@ async def create_session(
             on_gate_queued=on_gate_queued,
             start_priority=start_priority,
             bg_runtime_start=bg_runtime_start,
+            harness_options=harness_options,
         )
     agent = await self._source_agent(agent)
     if memory_mode != "persistent":
@@ -468,8 +522,14 @@ async def create_session(
         METHOD_SESSION_NEW, params, agent, agent_capabilities=self._agent_capabilities
     )
     if harness_state is not None:
+        # What this session enforces, from the spec its array was projected from.
+        await self._harness.adopt_session_spec(
+            harness_state, consumed_spec if isinstance(consumed_spec, dict) else None
+        )
         # This session's own envelope, built after the array it travels with.
-        meta = self._harness.session_meta(harness_state, wire_servers, zero_tools=zero_tools)
+        meta = self._harness.session_meta(
+            harness_state, wire_servers, zero_tools=zero_tools, stub_token=stub_token
+        )
         if meta is not None:
             params["_meta"] = {**(params.get("_meta") or {}), **meta}
 
@@ -524,7 +584,44 @@ async def create_session(
     # Wall time the request went out, for the session-open mount check.
     request_sent_at = time.time()
     try:
-        resp = await self._send_and_await(METHOD_SESSION_NEW, params, timeout=budget)
+        try:
+            resp = await _kept_to_its_end(
+                self,
+                self._send_and_await(METHOD_SESSION_NEW, params, timeout=budget),
+                harness_state,
+            )
+        except AcpRuntimeError as exc:
+            # An organization-policy advisory refused the model and named one it
+            # serves: a host that adopts it (claude) is asked once more, with this
+            # session's envelope rebuilt on the substitute. Any other error stands.
+            substitute = _substitute_model_from_advisory(getattr(exc, "rpc_error", None))
+            owned_before = harness_state is not None and self._harness.permission_surface_owned(
+                harness_state
+            )
+            if (
+                harness_state is None
+                or not substitute
+                or not await self._harness.adopt_substituted_model(harness_state, substitute)
+            ):
+                raise
+            if owned_before and not self._harness.permission_surface_owned(harness_state):
+                # The re-seed found Crew's settings file replaced: the array this
+                # start carries was authorized under a surface Crew does not govern
+                # now, so it is not sent again (as the per-chat client refuses a
+                # fresh conversation in this case).
+                raise AcpRuntimeError(
+                    "the session's settings file was replaced; start the chat again"
+                ) from exc
+            meta = self._harness.session_meta(
+                harness_state, wire_servers, zero_tools=zero_tools, stub_token=stub_token
+            )
+            if meta is not None:
+                params["_meta"] = {**(params.get("_meta") or {}), **meta}
+            resp = await _kept_to_its_end(
+                self,
+                self._send_and_await(METHOD_SESSION_NEW, params, timeout=budget),
+                harness_state,
+            )
         session_id = str(resp.get("sessionId") or "")
         permit.release()
         if not session_id:
@@ -644,6 +741,9 @@ async def create_session(
             report = self._mcp_reports().get(session_id)
             if report is not None:
                 record_pruned(report, pruned.pruned, pruned.omitted)
+        if harness_state is not None:
+            # What the host's own setup decided that the handle enforces.
+            self._harness.bind_session_handle(harness_state, handle)
         return handle
     except BaseException:
         if session_id in self._unclaimed_new_sessions:
@@ -673,6 +773,7 @@ async def _create_session_with_harness_state(self: AcpRuntime, **kwargs: Any) ->
         session_key=kwargs["session_key"],
         channel_id=kwargs["channel_id"],
         memory_mode=kwargs["memory_mode"],
+        options=kwargs.get("harness_options"),
     )
     try:
         return await self.create_session(**kwargs, harness_state=state)
@@ -885,7 +986,11 @@ async def _finish_create_session(
     # Register the session's queue, and its MCP report with it: no await in
     # between, so a frame that reaches the queue has reached the report.
     report = self._open_mcp_report(session_id, mcp_servers)
-    queue: asyncio.Queue[JsonRpcMessage | None] = asyncio.Queue()
+    # A host with per-session state (claude) can start a turn on its own; its
+    # queue tells the handle (``session_handle_agent_turns``). One flag read.
+    queue: asyncio.Queue[JsonRpcMessage | None] = (
+        AgentTurnQueue() if self._harness.per_session_state else asyncio.Queue()
+    )
     self._session_queues[session_id] = queue
     self._session_cwds[session_id] = str(session_work_dir)
     for msg in buffered_init:

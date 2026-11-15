@@ -942,7 +942,7 @@ class TestBackendAllowlist:
         direct = ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED
         shared = ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED
         assert direct == {ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE}
-        assert shared == {ACP_BACKEND_KIRO, ACP_BACKEND_KAS}
+        assert shared == {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE}
         for verified in (direct, shared):
             assert not child_calls_marked(ACP_BACKEND_CODEX, verified)
             # Unknown and unreadable backends fail closed.
@@ -951,7 +951,7 @@ class TestBackendAllowlist:
             assert not child_calls_marked(MagicMock(), verified)
 
     @pytest.mark.parametrize(
-        "backend, marked", [("", True), ("kas", True), ("codex", False), ("claude", False)]
+        "backend, marked", [("", True), ("kas", True), ("codex", False), ("claude", True)]
     )
     def test_the_shared_runtime_stamps_the_mark(self, backend, marked):
         handle = TestNativeKasChild._handle()

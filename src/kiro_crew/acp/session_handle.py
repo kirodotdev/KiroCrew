@@ -293,6 +293,7 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 #: Owner modules, lowest layer first: an owner imports only owners listed before it.
 _SESSION_HANDLE_OWNERS: tuple[str, ...] = (
+    "kiro_crew.acp.session_handle_agent_turns",
     "kiro_crew.acp.session_handle_harness_surfaces",
     "kiro_crew.acp.session_handle_runtime_contract",
     "kiro_crew.acp.session_handle_watchdog",

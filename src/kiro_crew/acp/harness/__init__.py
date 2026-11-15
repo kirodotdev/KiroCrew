@@ -96,9 +96,10 @@ _HARNESSES: dict[str, type[HarnessAdapter]] = {
     # a harness unreachable to its own tests, and would leave the runtime resolving
     # one that exists on disk but not in the table.
     ACP_BACKEND_CODEX: CodexHarness,
-    # Registered ahead of routing, for the reason above: no session is routed to
-    # the shared runtime for claude yet, and a process-per-session client still
-    # launches it through ``ClaudeLaunch`` below.
+    # Not in ``ACP_BACKENDS_ACP_RUNTIME``: only a dashboard chat that gets a shared
+    # placement takes the shared runtime for claude
+    # (``ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS``); every other claude session
+    # is a process-per-session client launched through ``ClaudeLaunch`` below.
     ACP_BACKEND_CLAUDE: ClaudeHarness,
     # The same: no goose session is routed to the shared runtime yet, and a
     # process-per-session client still launches goose through ``GooseLaunch``.

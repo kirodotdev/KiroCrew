@@ -1201,6 +1201,7 @@ class DeepseekHarness(MembershipHarness):
         session_key: str,
         channel_id: str,
         memory_mode: str,
+        options: Mapping[str, Any] | None = None,
     ) -> Any:
         """This session's own gate ledger."""
         return _DeepseekSession()

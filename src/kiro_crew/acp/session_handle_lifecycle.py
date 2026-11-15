@@ -37,6 +37,7 @@ from kiro_crew.acp.client import (
     registration_throttle_line,
 )
 from kiro_crew.acp.command_refused import AcpCommandRefused
+from kiro_crew.acp.session_handle_runtime_contract import host_checks_sessions
 from kiro_crew.acp.types import METHOD_CANCEL, METHOD_COMMANDS_EXECUTE, JsonRpcMessage
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.dashboard.chat_utils_awaits import drained_to_thread
@@ -526,3 +527,7 @@ async def _wait_for_response(
         self._awaited_responses.discard(req_id)
         for _m in buffered:
             self._queue.put_nowait(_m)
+        if not self._awaited_responses and host_checks_sessions(self._runtime):
+            # Frames that arrived after this response, while it was awaited, were
+            # shown to no agent-turn hook; look at them again now nothing waits.
+            self._rearm_agent_turn()

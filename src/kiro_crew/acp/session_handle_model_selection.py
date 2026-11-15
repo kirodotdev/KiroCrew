@@ -885,6 +885,40 @@ async def ensure_served_default(self: AcpSessionHandle, *, activated_model: str 
             )
         finally:
             self._model = intent
+    elif getattr(getattr(self._runtime, "_harness", None), "reasserts_reported_model", False):
+        # An inheriting session is sent the model its adapter reports, as the
+        # per-chat claude client does (``_reassert_adapter_resolved_model``):
+        # claude-agent-acp reports the settings model verbatim without passing it
+        # on, so a resumed session can run Claude Code's built-in default instead.
+        # Nothing is sent for a pinned session, for the head of the advertised list
+        # (the adapter's ``default``), or for an id the list does not carry. The
+        # write is inherited, not a pin: ``_model`` still reads "inherit". Best
+        # effort: a refused write leaves the adapter's own model.
+        advertised = self._advertised_model_ids()
+        reported = self._resolved_model_id or ""
+        if (
+            self._model not in ("", DEFAULT_MODEL)
+            or not advertised
+            or reported not in advertised
+            or reported == advertised[0]
+        ):
+            return
+        _reported_log = redact_log_via_context(reported)
+        try:
+            sent = await self._push_model_config_option(reported, strict=False)
+        except (AcpError, AcpRuntimeError) as exc:
+            logger.warning(
+                "ACP model %s reported by the backend could not be re-applied: %s",
+                _reported_log,
+                redact_log_via_context(str(exc)),
+            )
+            return
+        if sent:
+            self._resolved_model_id = sent
+            self.inherited_model = sent
+            logger.info(
+                "ACP model: re-applied %s, resolved by the backend's settings", _reported_log
+            )
 
 
 def _normalize_models(advertised: list[Any]) -> list[dict[str, str]]:

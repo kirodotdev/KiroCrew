@@ -454,12 +454,18 @@ class GooseHarness(MembershipHarness):
         session_key: str,
         channel_id: str,
         memory_mode: str,
+        options: Mapping[str, Any] | None = None,
     ) -> Any:
         """A marker for this session, so the runtime checks it after it starts."""
         return _GooseSession()
 
     def session_meta(
-        self, state: Any, mcp_servers: list[dict[str, Any]], *, zero_tools: bool = False
+        self,
+        state: Any,
+        mcp_servers: list[dict[str, Any]],
+        *,
+        zero_tools: bool = False,
+        stub_token: str = "",
     ) -> dict[str, Any] | None:
         """No envelope; record the servers this request places on the session.
 

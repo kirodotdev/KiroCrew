@@ -20,7 +20,7 @@ import logging
 import os
 import shutil
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -464,6 +464,37 @@ def _claude_spawn_plan(argv: list[str], **kwargs: Any) -> SpawnPlan:
     )
 
 
+def _bounded_command_list(session_id: str, msg: Any) -> Any:
+    """A copy of command list *msg* holding only what the slash menu reads, within
+    the bounds a registered session's list is kept to
+    (``client_transport.bounded_commands``)."""
+    from kiro_crew.acp.client_transport import bounded_commands
+    from kiro_crew.acp.types import UPDATE_AVAILABLE_COMMANDS, JsonRpcMessage
+
+    commands = ((msg.params or {}).get("update") or {}).get("availableCommands")
+    kept = bounded_commands(session_id, commands)
+    return JsonRpcMessage(
+        method=METHOD_SESSION_UPDATE,
+        params={
+            "sessionId": session_id,
+            "update": {"sessionUpdate": UPDATE_AVAILABLE_COMMANDS, "availableCommands": kept},
+        },
+    )
+
+
+def _is_command_list(msg: Any) -> bool:
+    """Whether *msg* is a ``session/update`` carrying an ``available_commands_update``."""
+    from kiro_crew.acp.types import UPDATE_AVAILABLE_COMMANDS
+
+    params = getattr(msg, "params", None)
+    update = params.get("update") if isinstance(params, dict) else None
+    return (
+        getattr(msg, "method", None) == METHOD_SESSION_UPDATE
+        and isinstance(update, dict)
+        and update.get("sessionUpdate") == UPDATE_AVAILABLE_COMMANDS
+    )
+
+
 def _apply_claude_env_defaults(env: dict[str, str], backend: str, work_dir: Path | None) -> None:
     """Set each variable this launch defaults, unless the environment names it.
 
@@ -536,6 +567,9 @@ class ClaudeHarness(MembershipHarness):
 
     per_session_state = True
 
+    #: The per-chat client's ``_reassert_adapter_resolved_model``, on the shared handle.
+    reasserts_reported_model = True
+
     #: The process's working directory, recorded by :meth:`resolve_spawn`.
     _work_dir: Path | None = None
 
@@ -550,6 +584,14 @@ class ClaudeHarness(MembershipHarness):
         if carried is None:
             carried = self.__dict__["_carried_raw_sdk_by_session"] = OrderedDict()
         return carried
+
+    def _early_command_lists(self) -> OrderedDict[str, Any]:
+        """Command lists that named a session before its state was registered, by
+        session id, newest last, at most ``_CARRIED_RAW_SDK_CAP``. Per instance."""
+        early = self.__dict__.get("_early_command_lists_by_session")
+        if early is None:
+            early = self.__dict__["_early_command_lists_by_session"] = OrderedDict()
+        return early
 
     # ── Seam 1: spawn ──
 
@@ -635,8 +677,12 @@ class ClaudeHarness(MembershipHarness):
         session_key: str,
         channel_id: str,
         memory_mode: str,
+        options: Mapping[str, Any] | None = None,
     ) -> Any:
         """Write THIS session's settings seed in its own folder, before its request.
+
+        *options* carry the chat's own ``permission_mode``, ``side_read_only`` and
+        ``include_memory``, the three a per-chat client takes at construction.
 
         On a process-per-session client the seed is written at spawn, which on a
         shared process would seed only the first session: a later one, in another
@@ -655,6 +701,7 @@ class ClaudeHarness(MembershipHarness):
             agent=agent,
             session_key=session_key,
             channel_id=channel_id,
+            **dict(options or {}),
         )
         state.memory_mode = memory_mode
         argv = await _resolve_claude_argv()
@@ -671,11 +718,32 @@ class ClaudeHarness(MembershipHarness):
         return bool(state is not None and state._permission_surface_governed)
 
     def session_meta(
-        self, state: Any, mcp_servers: list[dict[str, Any]], *, zero_tools: bool = False
+        self,
+        state: Any,
+        mcp_servers: list[dict[str, Any]],
+        *,
+        zero_tools: bool = False,
+        stub_token: str = "",
     ) -> dict[str, Any] | None:
-        """The ``_meta.claudeCode`` envelope the per-session client sends, for this session."""
+        """The ``_meta.claudeCode`` envelope the per-session client sends, for this session.
+
+        Plus this session's identity in ``options.env``. A per-chat client puts the
+        session key and its stub token on its process's environment, and the tools
+        Claude Code runs (a ``kirocrew`` call from Bash) read them there. On a shared
+        process that environment is the founding session's, so each session carries
+        its own here instead; the adapter spreads ``options.env`` over the process
+        environment for that session's ``claude`` child only.
+        """
         if state is None:
             return None
+        if not getattr(state, "_spec_allowlists_adopted", False):
+            from kiro_crew.acp.session_handle import AcpRuntimeError
+
+            # Fail closed: an envelope without the spec's allowlists would let the
+            # session's shell and write tools run unasked.
+            raise AcpRuntimeError(
+                "claude shared session: the spec's allowlists were not read before " "the envelope"
+            )
         # The spec's "tools": [] as the mirror's projection read it: a zero-tool
         # session whose array still mounts a server is refused here.
         state._spec_zero_tools = zero_tools
@@ -683,7 +751,15 @@ class ClaudeHarness(MembershipHarness):
         # session carrying Crew's tools from one with none (on the per-session
         # client, ``_begin_session_report`` records it).
         state._mcp_mount_servers = list(mcp_servers)
-        return state._harness_session_meta(mcp_servers)
+        # The same array as the session's own cache: the envelope's forced asks for
+        # Crew-owned Connection servers are read from it (``_bridged_server_asks``).
+        state._session_mcp_cache = list(mcp_servers)
+        meta = state._harness_session_meta(mcp_servers)
+        identity = state.session_identity_env(stub_token)
+        if identity:
+            options = meta.setdefault("claudeCode", {}).setdefault("options", {})
+            options["env"] = {**dict(options.get("env") or {}), **identity}
+        return meta
 
     async def after_session_start(
         self,
@@ -710,6 +786,13 @@ class ClaudeHarness(MembershipHarness):
             own.dashboard_turn = own.dashboard_turn or carried.dashboard_turn
             for card in carried.seen_cards:
                 own.seen_cards.setdefault(card, None)
+        # A command list that arrived before this session's state was registered.
+        early = self._early_command_lists().pop(session_id, None)
+        if early is not None:
+            try:
+                state._note_advertised_commands(early)
+            except Exception:  # noqa: BLE001 - a bad list must not fail the start
+                logger.debug("reading an early claude command list failed", exc_info=True)
         state.bind_started(
             session_id,
             agent_version,
@@ -758,12 +841,84 @@ class ClaudeHarness(MembershipHarness):
         frame is not taken.
         """
         if state is None:
+            # A command list can arrive in the same burst as ``session/new``'s
+            # answer, before the session's state is registered: kept by session
+            # id (bounded) and applied when the session starts
+            # (:meth:`after_session_start`).
+            if _is_command_list(msg):
+                from kiro_crew.acp.client_transport import (
+                    ADVERTISED_COMMANDS_SESSION_ID_MAX_CHARS,
+                )
+
+                early = self._early_command_lists()
+                session_id = str((msg.params or {}).get("sessionId") or "")
+                if session_id and len(session_id) <= ADVERTISED_COMMANDS_SESSION_ID_MAX_CHARS:
+                    early[session_id] = _bounded_command_list(session_id, msg)
+                    early.move_to_end(session_id)
+                    while len(early) > self._CARRIED_RAW_SDK_CAP:
+                        early.popitem(last=False)
             return False
+        try:
+            # The session's own command list, kept as the per-chat client keeps it
+            # and within the same bounds as an early one
+            # (``client_transport._note_advertised_commands``); the frame goes on.
+            state._note_advertised_commands(msg)
+        except Exception:  # noqa: BLE001 - one bad list must not stop the reader
+            logger.debug("reading a claude command list failed", exc_info=True)
         try:
             return raw_sdk_tasks.take(state, msg)
         except Exception:  # noqa: BLE001 - one bad message must not stop the reader
             logger.debug("reading a claude SDK message failed", exc_info=True)
             return getattr(msg, "method", None) == raw_sdk_tasks.METHOD_CLAUDE_SDK_MESSAGE
+
+    async def adopt_substituted_model(self, state: Any, substitute: str) -> bool:
+        """Adopt the model an organization-policy advisory names, and re-seed, once.
+
+        The advisory ("Model X is restricted ... Using Y instead.") answers
+        ``session/new`` with a ``-32603`` error and no session; the runtime parses
+        *substitute* out of it. The per-chat client pins the substitute and re-seeds
+        ``settings.local.json`` before re-issuing (``_retry_after_model_substitution``);
+        this does the same on the session's own state, so the runtime's one retry
+        starts on the model the gateway serves. A substitute already in use answers
+        False: the gateway refused it again.
+        """
+        if state is None or not substitute or substitute == state._model:
+            return False
+        # The name comes from the backend's advisory, so the log line does not
+        # carry it: the session's own model row shows which model it runs.
+        logger.warning(
+            "claude shared session: session/new named a substitute model; "
+            "adopting it and retrying once"
+        )
+        state._model = substitute
+        state._adopted_substitute_model = substitute
+        try:
+            await asyncio.to_thread(state._write_claude_local_settings)
+        except (OSError, ValueError, TypeError):
+            logger.warning(
+                "claude shared session: re-seed after substitution failed", exc_info=True
+            )
+        return True
+
+    async def adopt_session_spec(self, state: Any, spec: dict[str, Any] | None) -> None:
+        """Read the spec's shell and write allowlists from the spec the projection read
+        (``ClaudeSharedSession.adopt_allowlist_spec``), for the envelope's ask rules
+        and the handle's stamps alike."""
+        if state is not None:
+            await state.adopt_allowlist_spec(spec)
+
+    def bind_session_handle(self, state: Any, handle: Any) -> None:
+        """Stamp the spec's ``toolsSettings`` shell and write allowlists on the handle.
+
+        Claude never reads ``toolsSettings``; the per-chat client stamps these on its
+        own permission requests (``client_mcp_array``), and on the shared runtime the
+        session handle builds the requests, so it carries them instead.
+        """
+        if state is None:
+            return
+        handle.spec_shell_allowlist = getattr(state, "_spec_shell_allowlist", None)
+        handle.spec_write_allowlist = getattr(state, "_spec_write_allowlist", None)
+        handle.spec_write_cwd = str(getattr(state, "_spec_write_cwd", "") or "")
 
     # ── Seam 4: inbound requests the host answers ──
 

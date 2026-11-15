@@ -882,31 +882,87 @@ async def _read_message(
         return msg
 
 
+#: Bounds on a kept command list, every field it retains: the commands kept, each
+#: name and description, and the session id it is kept under. A description is cut
+#: to its bound; a command whose name is over its bound is dropped whole, since a
+#: cut name would send one the backend never advertised.
+ADVERTISED_COMMANDS_MAX = 256
+ADVERTISED_COMMAND_NAME_MAX_CHARS = 128
+ADVERTISED_COMMAND_DESCRIPTION_MAX_CHARS = 1024
+ADVERTISED_COMMANDS_SESSION_ID_MAX_CHARS = 256
+
+
+def bounded_commands(session_id: str, commands: Any) -> list[dict[str, str]]:
+    """The name and description of each command in *commands*, scrubbed, within the
+    bounds.
+
+    Both strings go to the dashboard, so they get the same two scrubs as every other
+    string the harness reports back (``client_permissions._scrub_observed``). What a
+    bound leaves out is counted and logged once per list.
+    """
+    kept: list[dict[str, str]] = []
+    omitted = 0
+    overlong = 0
+    for command in commands if isinstance(commands, list) else []:
+        name = command.get("name") if isinstance(command, dict) else None
+        if not isinstance(name, str) or not name:
+            continue
+        if len(name) > ADVERTISED_COMMAND_NAME_MAX_CHARS:
+            overlong += 1
+            continue
+        if len(kept) >= ADVERTISED_COMMANDS_MAX:
+            omitted += 1
+            continue
+        description = command.get("description")
+        text = description if isinstance(description, str) else ""
+        # Scrubbed whole, then cut: a credential the cut splits would pass the scrub.
+        kept.append(
+            {
+                "name": _scrubbed(name),
+                "description": _scrubbed(text)[:ADVERTISED_COMMAND_DESCRIPTION_MAX_CHARS],
+            }
+        )
+    if omitted:
+        logger.warning(
+            "session %s advertised %d command(s) past the %d kept; the slash menu omits them",
+            session_id[:ADVERTISED_COMMANDS_SESSION_ID_MAX_CHARS],
+            omitted,
+            ADVERTISED_COMMANDS_MAX,
+        )
+    if overlong:
+        logger.warning(
+            "session %s advertised %d command(s) with a name over %d characters; the "
+            "slash menu omits them",
+            session_id[:ADVERTISED_COMMANDS_SESSION_ID_MAX_CHARS],
+            overlong,
+            ADVERTISED_COMMAND_NAME_MAX_CHARS,
+        )
+    return kept
+
+
 def _note_advertised_commands(self: AcpClient, msg: JsonRpcMessage) -> None:
     """Keep the newest command list the agent advertised, with the session it names.
 
-    Each ``available_commands_update`` replaces the whole list. The session id rides
-    along because ``new_conversation`` swaps the session on this same process. Both
-    strings go to the dashboard, so they get the same scrub as every other string the
-    harness reports back (``_scrub_observed``).
+    Each ``available_commands_update`` replaces the whole list, scrubbed and kept
+    within the bounds of :func:`bounded_commands`. The session id rides along
+    because ``new_conversation`` swaps the session on this same process; a list
+    naming an id over its bound is not kept.
     """
     kind, update = _session_update_kind(msg)
     commands = update.get("availableCommands")
     if kind != UPDATE_AVAILABLE_COMMANDS or not isinstance(commands, list):
         return
-    rows = []
-    for command in commands:
-        name = command.get("name") if isinstance(command, dict) else None
-        if isinstance(name, str) and name:
-            description = command.get("description")
-            text = description if isinstance(description, str) else ""
-            rows.append(
-                {
-                    "name": str(self._scrub_observed(name)),
-                    "description": str(self._scrub_observed(text)),
-                }
-            )
-    self._advertised_commands = (str(msg.params.get("sessionId") or ""), tuple(rows))
+    session_id = str(msg.params.get("sessionId") or "")
+    if len(session_id) > ADVERTISED_COMMANDS_SESSION_ID_MAX_CHARS:
+        return
+    self._advertised_commands = (session_id, tuple(bounded_commands(session_id, commands)))
+
+
+def _scrubbed(text: str) -> str:
+    """*text* through the two scrubs a dashboard-bound harness string gets."""
+    text, _ = redact_exfiltration_urls(text)
+    text, _ = redact_credentials(text)
+    return text
 
 
 def advertised_commands(self: AcpClient) -> list[dict[str, str]]:

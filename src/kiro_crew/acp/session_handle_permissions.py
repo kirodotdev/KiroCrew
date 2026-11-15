@@ -45,7 +45,11 @@ from kiro_crew.acp._dispatch import (
     scoped_tool_cache_key,
 )
 from kiro_crew.acp.client import AcpError, AcpToolGateUnroutable, _loggable_request_id
-from kiro_crew.acp.client_permissions import once_for_always
+from kiro_crew.acp.client_permissions import (
+    _bridged_servers,
+    _is_child_permission_frame,
+    once_for_always,
+)
 from kiro_crew.acp.session_handle_runtime_contract import host_checks_sessions
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
@@ -59,6 +63,8 @@ from kiro_crew.acp.types import (
     rejection_reason_meta,
 )
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED,
     permission_value_for,
 )
@@ -793,6 +799,24 @@ def _is_native_child_call(handle: AcpSessionHandle, event: AcpEvent) -> bool:
     return scoped_tool_cache_key(handle._session_id, tool_call_id) in child_ids
 
 
+def _claude_mcp_identity_servers(
+    handle: AcpSessionHandle,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The placed and bridged server names of a claude session's own envelope.
+
+    Read live from the session's harness state (``ClaudeSharedSession``, a
+    ``ClaudeAcpClient``), with the per-chat client's own readers, so an MCP
+    re-send is seen. Empty for any other backend or a session with no state.
+    """
+    if handle._runtime.acp_backend not in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS:
+        return (), ()
+    states = getattr(handle._runtime, "_session_harness_states", None) or {}
+    state = states.get(handle._session_id)
+    if state is None:
+        return (), ()
+    return tuple(state._harness_mcp_server_names()), _bridged_servers(state)
+
+
 def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpEvent | None:
     """Build an AcpEvent for a permission request via the shared parser.
 
@@ -803,6 +827,7 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
     """
     _perm_params = msg.params if isinstance(msg.params, dict) else {}
     _remote = getattr(self._runtime, "_remote_workspace", None)
+    _placed, _bridged = _claude_mcp_identity_servers(self)
     event, recorded = build_permission_event(
         msg,
         tool_input_cache=self._tool_call_inputs,
@@ -826,6 +851,11 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
         # guest workdir its relative path arguments resolve in.
         remote_workspace_server=(WORKSPACE_SERVER_NAME if _remote is not None else ""),
         remote_workspace_root=_remote_workdir(_remote),
+        # The servers this session's claude envelope placed, and those reached
+        # through a Crew-owned Connection bridge, as the per-chat client hands
+        # them: a placed server's tool reads with its trusted (server, tool) name.
+        harness_mcp_servers=_placed,
+        bridged_mcp_servers=_bridged,
     )
     if event is None:
         return None
@@ -849,6 +879,15 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
     )
     if frame_sid and frame_sid != self._session_id:
         event.sub_session_id = frame_sid
+        if self._runtime.acp_backend == ACP_BACKEND_CLAUDE:
+            event.native_child_call = True
+    elif self._runtime.acp_backend == ACP_BACKEND_CLAUDE and _is_child_permission_frame(
+        msg, self._session_id
+    ):
+        # A claude child's call kept on the parent's session, stamped with the Agent
+        # call it serves: marked as the per-chat client marks it, so the dashboard
+        # keeps the parent's deny overrides away from it.
+        event.native_child_call = True
     elif self._runtime.acp_backend == ACP_BACKEND_KAS and _is_native_child_call(self, event):
         # A native KAS sub-agent's call carries this session's id, so mark it:
         # the dashboard keeps the parent's deny overrides away from it.
@@ -871,6 +910,15 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
         event.spec_shell_readonly = bool(getattr(self, "kas_spec_shell_readonly", False))
         event.spec_granted_paths = tuple(getattr(self, "kas_crew_answered_paths", ()))
         event.spec_granted_read_paths = tuple(getattr(self, "kas_crew_answered_read_paths", ()))
+    if self._runtime.acp_backend in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS:
+        # A harness that never reads ``toolsSettings`` (claude): the shell and write
+        # allowlists its own setup stamped on this handle
+        # (``HarnessAdapter.bind_session_handle``), as the per-chat client stamps them.
+        # A native sub-agent's request, under its own sessionId, carries them too:
+        # the child runs inside the parent's spec.
+        event.spec_shell_allowlist = self.spec_shell_allowlist
+        event.spec_write_allowlist = self.spec_write_allowlist
+        event.spec_write_cwd = self.spec_write_cwd
     return event
 
 

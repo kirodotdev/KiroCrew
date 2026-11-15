@@ -1187,6 +1187,7 @@ class TestNewConversation:
             agent="kirocrew",
             crew_agent=None,
             member_context=None,
+            harness_options=None,
             memory_mode="persistent",
             session_key="",
             member_session_key="",

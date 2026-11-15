@@ -56,7 +56,10 @@ from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.transport_errors import AcpDelegateLaunchFailed, delegate_launch_failed
 from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKENDS_HARNESS_OWNED_SESSIONS
 from kiro_crew.agent_sdk import host_auth
-from kiro_crew.agent_sdk.backends import model_registry_namespace
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS,
+    model_registry_namespace,
+)
 from kiro_crew.agent_sdk.tool_gate import (
     ADAPTER_EXPOSED_CREDENTIAL_LEAVES,
     adapter_expose_files,
@@ -463,6 +466,50 @@ def _member_session_key(self: AcpProvider) -> str:
     return ""
 
 
+def _harness_session_options(provider: AcpProvider) -> dict[str, Any]:
+    """The chat's own choices a per-session harness reads at each session start.
+
+    A per-chat client takes them at construction (``AcpClient`` keeps them on the
+    placeholder this start replaces); on the shared runtime they travel with each
+    session start instead (``HarnessAdapter.prepare_session``). A harness without
+    per-session state reads none of them.
+    """
+    client = getattr(provider, "_client", None)
+    return {
+        "permission_mode": getattr(client, "_permission_mode", None),
+        "side_read_only": bool(getattr(client, "_side_read_only", False)),
+        "include_memory": bool(getattr(client, "_include_memory", True)),
+    }
+
+
+async def resolve_prejoined_chat_share(provider: AcpProvider) -> bool:
+    """Resolve this start's chat-sharing placement ahead of the arm choice.
+
+    For a harness shared only for chats (``ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS``):
+    the same placement ``_start_kiro_runtime_impl`` resolves, from the same inputs,
+    kept on the provider for that start to use. False keeps the per-chat client.
+    """
+    from kiro_crew.providers.chat_share import resolve_chat_share
+
+    client = provider._client
+    share = await resolve_chat_share(
+        provider,
+        work_dir=client._work_dir,
+        agent=getattr(client, "_agent", None) or "kirocrew",
+        sandbox_mode=getattr(client, "_sandbox_mode", "auto"),
+        extra_env=getattr(client, "_extra_env", None) or {},
+        mcp_gateway_overlay=getattr(client, "_mcp_gateway_overlay", None),
+        mcp_gateway_socket=getattr(client, "_mcp_gateway_socket", None),
+        configured_model=getattr(client, "_model", "") or "",
+        launch_agent=_launch_agent(provider),
+        remote_workspace=False,
+    )
+    if share is None:
+        return False
+    provider._prejoined_chat_share = share
+    return True
+
+
 async def _load_session_with_retry(
     self: AcpProvider,
     runtime: AcpRuntime,
@@ -512,6 +559,7 @@ async def _load_session_with_retry(
             crew_agent=crew_agent,
             start_priority=start_priority,
             focus_resume=focus_resume,
+            harness_options=_harness_session_options(self),
         )
 
     swept = False
@@ -821,21 +869,33 @@ async def _start_kiro_runtime_impl(
             raise
 
     # Chat runtime sharing (the ``chat_runtime_sharing`` feature preview, off by
-    # default): ``None`` means this start spawns its own process as before.
-    from kiro_crew.providers.chat_share import resolve_chat_share
+    # default): ``None`` means this start spawns its own process as before. A harness
+    # shared only for chats had its placement resolved before this arm was chosen.
+    from kiro_crew.providers.chat_share import ChatSharePlacement, resolve_chat_share
 
-    share = await resolve_chat_share(
-        self,
-        work_dir=work_dir,
-        agent=agent or "kirocrew",
-        sandbox_mode=sandbox_mode,
-        extra_env=extra_env,
-        mcp_gateway_overlay=mcp_gateway_overlay,
-        mcp_gateway_socket=mcp_gateway_socket,
-        configured_model=configured_model,
-        launch_agent=_launch_agent(self),
-        remote_workspace=remote is not None,
-    )
+    # Only a placement this provider's arm choice resolved is taken.
+    prejoined = self._prejoined_chat_share
+    share = prejoined if isinstance(prejoined, ChatSharePlacement) else None
+    self._prejoined_chat_share = None
+    if share is None:
+        share = await resolve_chat_share(
+            self,
+            work_dir=work_dir,
+            agent=agent or "kirocrew",
+            sandbox_mode=sandbox_mode,
+            extra_env=extra_env,
+            mcp_gateway_overlay=mcp_gateway_overlay,
+            mcp_gateway_socket=mcp_gateway_socket,
+            configured_model=configured_model,
+            launch_agent=_launch_agent(self),
+            remote_workspace=remote is not None,
+        )
+    if share is None and self._client.backend in ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS:
+        # Never a process of its own on this arm: that is the per-chat client's.
+        raise AcpRuntimeError(
+            f"the {self._client.backend!r} chat lost its shared placement before it "
+            "started; start it again"
+        )
 
     async def _found_shared_runtime() -> AcpRuntime:
         """The registry's miss path for a shared placement: one fresh process."""
@@ -1080,6 +1140,7 @@ async def _start_kiro_runtime_impl(
                 handle = await runtime.create_session(
                     cwd=session_cwd,
                     agent=agent or None,
+                    harness_options=_harness_session_options(self),
                     member_session_key=self._member_session_key(),
                     # Per session: on a shared chat runtime the process's own
                     # crew identity is the founder's, not this chat's.
@@ -1301,6 +1362,9 @@ async def _start_kiro_runtime_impl(
             member_context=self.member_context,
         )
         provider.kas_default_model_notice = _default_model_notice
+        # The chat's own choices, for the session starts this provider makes later
+        # (a fresh conversation, a projection re-send) on a host that reads them.
+        provider._harness_options = _harness_session_options(self)
         provider.memory_mode = self.memory_mode
         if resumed:
             provider.resumed = True

@@ -83,7 +83,18 @@ async def steer(self: AcpSessionHandle, message: str) -> bool:
             # (``_meta.steering.supported: true``): nothing is sent, and the
             # caller queues the text as the next turn.
             return False
-        sent = await self._steer_via_steering_request(text)
+        # A session whose own harness state carries the per-chat client's steering
+        # floor (claude's ``ClaudeSharedSession``) is steered as that client steers.
+        claude = callable(getattr(_harness_state(self), "_steering_adapter_floor_met", None))
+        if claude and not _claude_steer_ready(self):
+            # As the per-chat client: below the adapter release that takes the
+            # request, or while a tool call of the turn is open (claude moves a
+            # running tool to the background on a steer and ends the turn early),
+            # nothing is sent and the caller queues the text as the next turn.
+            # shortcut: the per-chat client holds such a steer until the tool
+            # call ends; hold it here too if queueing proves too late.
+            return False
+        sent = await self._steer_via_steering_request(text, idle_prompt_required=claude)
         if sent:
             trace_steps.steered(trace_steps.STEER_INTERRUPT, source=self)
         return sent
@@ -149,8 +160,33 @@ async def clear_pending_steers(self: AcpSessionHandle) -> bool | None:
     return True
 
 
-async def _steer_via_steering_request(self: AcpSessionHandle, text: str) -> bool:
+def _harness_state(handle: AcpSessionHandle) -> Any:
+    """This session's own harness state on the shared runtime, or None."""
+    states = getattr(handle._runtime, "_session_harness_states", None) or {}
+    return states.get(handle._session_id)
+
+
+def _claude_steer_ready(handle: AcpSessionHandle) -> bool:
+    """Whether a claude session of the shared runtime takes a steer now.
+
+    Its adapter release takes ``_session/steering`` (the per-chat client's own
+    floor, read on the session's harness state), and no tool call of the turn
+    is open.
+    """
+    floor = getattr(_harness_state(handle), "_steering_adapter_floor_met", None)
+    if not callable(floor) or floor() is not True:
+        return False
+    return handle._tool_tracker.current is None and not handle._tool_dispatched
+
+
+async def _steer_via_steering_request(
+    self: AcpSessionHandle, text: str, *, idle_prompt_required: bool = False
+) -> bool:
     """Deliver a user steer over codex-acp's ``_session/steering`` request.
+
+    *idle_prompt_required* (claude) asks the adapter to answer ``promptRequired``,
+    and run nothing, when the steer reaches it after its turn settled, as the
+    per-chat client asks.
 
     See ``ACP_BACKENDS_STEERING_REQUEST`` for what was measured. The adapter
     sends no ``steering_consumed`` echo, so the request's own answer is the
@@ -241,10 +277,13 @@ async def _steer_via_steering_request(self: AcpSessionHandle, text: str) -> bool
         self._steering_settled.pop(entry[0][0], None)
 
     batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
+    params: dict[str, Any] = {"sessionId": session_id, "prompt": [{"type": "text", "text": text}]}
+    if idle_prompt_required:
+        params["_meta"] = {"steering": {"idleBehavior": "promptRequired"}}
     try:
         answer = await self._runtime.send_request_for_answer(
             METHOD_SESSION_STEERING,
-            {"sessionId": session_id, "prompt": [{"type": "text", "text": text}]},
+            params,
             on_registered=_register,
         )
     except BaseException as exc:

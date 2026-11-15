@@ -14,9 +14,10 @@ provider exists, and handed to ``AcpSessionProvider`` as ``runtime_lease``.
 
 Four inputs a running process cannot shed are read before the acquisition and
 RE-READ after it: the agent spec generation, the account era, the governed
-sandbox tier and the SSH_AUTH_SOCK-forwarding consent. On codex the account era is
-the codex credential file (:func:`codex_spawn_identity`), because codex-acp signs
-in on its own and never reads Kiro's sign-in. The acquisition is not
+sandbox tier and the SSH_AUTH_SOCK-forwarding consent. On codex and claude the
+account era is the harness's own sign-in (:func:`codex_spawn_identity`,
+:func:`claude_spawn_identity`), because each signs in on its own and never reads
+Kiro's sign-in. The acquisition is not
 instantaneous (a same-key arrival waits out a founding spawn), so a revocation, a
 sign-in to another account, a raised floor or a revoked consent landing in that
 window would otherwise place this session on a process started under the older
@@ -60,7 +61,7 @@ from kiro_crew.acp.chat_runtime_sharing import (
     share_tree_root_of,
 )
 from kiro_crew.acp.runtime import AcpRuntimeError
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KAS
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_KAS
 from kiro_crew.agent_sdk.codex_transcripts import codex_home
 from kiro_crew.metrics.chat_runtime_share import record_placed, record_refused
 from kiro_crew.runtime_ownership import CHAT_RUNTIME_CAP, RUNTIME_OWNERSHIP, Acquisition
@@ -156,6 +157,87 @@ def codex_spawn_identity(env_overrides: Mapping[str, str] | None = None) -> str:
     return "codex:" + token
 
 
+#: :func:`claude_spawn_identity`'s random token per sign-in seen by this process.
+#: shortcut: never pruned, as :data:`_CODEX_ERA_TOKENS`; prune if sign-ins churn.
+_CLAUDE_ERA_TOKENS: dict[str, str] = {}
+
+#: Prefixes of the environment variables that choose how a claude process signs in:
+#: Anthropic's API (``ANTHROPIC_*``), Claude Code's own switches and token
+#: (``CLAUDE_CODE_*``, ``CLAUDE_CODE_OAUTH_TOKEN`` among them, the namespace the
+#: sandbox passes to claude children), and Bedrock's AWS identity (``AWS_*``).
+_CLAUDE_CREDENTIAL_ENV_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_", "AWS_")
+#: Vertex AI's region and credential, which carry no common prefix.
+_CLAUDE_CREDENTIAL_ENV = ("CLOUD_ML_REGION", "GOOGLE_APPLICATION_CREDENTIALS")
+
+
+def claude_spawn_identity(
+    environ: Mapping[str, str] | None = None,
+    env_overrides: Mapping[str, str] | None = None,
+) -> str:
+    """The account era of a claude start: which Claude Code sign-in a new process uses.
+
+    claude-agent-acp signs in through Claude Code, never from Kiro's sign-in, so the
+    Kiro era says nothing about a claude process and is empty for a claude-only
+    operator. Claude Code records the signed-in account as ``oauthAccount`` in its
+    global config, ``.claude.json`` in ``$CLAUDE_CONFIG_DIR`` (``~/.claude.json``
+    when unset), on every platform, including macOS where the token itself sits in
+    the keychain. The era names that account's ids, so a sign-in to another account
+    founds a new process instead of joining one holding the old token.
+
+    Not ``.credentials.json``: Claude Code rewrites that file on every token refresh
+    and every MCP server sign-in, so its digest moved between two chats a few
+    seconds apart and no chat ever joined another.
+
+    The environment the process inherits is part of it: an API key, a token, a base
+    URL or a cloud provider and its identity (:data:`_CLAUDE_CREDENTIAL_ENV_PREFIXES`,
+    :data:`_CLAUDE_CREDENTIAL_ENV`), read from the gateway's own environment with the
+    start's ``extra_env`` (*env_overrides*) over it. A running gateway changes that
+    environment when an edited ``.env`` is applied (``config/live.py``), so a new
+    chat after the edit founds a new process instead of joining one holding the old
+    credential. A config file that exists but cannot be read or parsed is ``""``,
+    which the placement turns into a key nothing can match: fail closed.
+    """
+    env = {**(os.environ if environ is None else environ), **(env_overrides or {})}
+    config_dir = env.get("CLAUDE_CONFIG_DIR")
+    path = Path(config_dir) / ".claude.json" if config_dir else Path.home() / ".claude.json"
+    try:
+        data = json.loads(path.read_bytes())
+    except FileNotFoundError:
+        data = None
+    except (OSError, ValueError):
+        return ""
+    account = data.get("oauthAccount") if isinstance(data, dict) else None
+    signed_in = (
+        [account.get("accountUuid"), account.get("organizationUuid")]
+        if isinstance(account, dict)
+        else ("no-account" if data is not None else "no-config")
+    )
+    credentials = sorted(
+        (name, value)
+        for name, value in env.items()
+        if name.startswith(_CLAUDE_CREDENTIAL_ENV_PREFIXES) or name in _CLAUDE_CREDENTIAL_ENV
+    )
+    stable = json.dumps([str(path), signed_in, credentials])
+    # A random token per distinct sign-in, as codex's: equal within this process,
+    # and carrying nothing of a key that could be guessed against.
+    token = _CLAUDE_ERA_TOKENS.get(stable)
+    if token is None:
+        token = _CLAUDE_ERA_TOKENS.setdefault(stable, secrets.token_hex(16))
+    return "claude:" + token
+
+
+def _self_signed_era(backend: str, env_overrides: Mapping[str, str] | None = None) -> str | None:
+    """The account era of a harness that signs in on its own, or None for one that
+    reads Kiro's sign-in. *env_overrides* is the start's ``extra_env``, which can
+    move codex's home and carry claude's credential variables. Looked up by name at call time, so a patch of either reader
+    reaches it."""
+    if backend == ACP_BACKEND_CODEX:
+        return codex_spawn_identity(env_overrides)
+    if backend == ACP_BACKEND_CLAUDE:
+        return claude_spawn_identity(env_overrides=env_overrides)
+    return None
+
+
 #: How many placements a start makes while a keyed input keeps moving between the
 #: read and the acquisition. Small on purpose: an input still moving after this
 #: many rounds is being rewritten continuously, and the last round founds this
@@ -220,7 +302,7 @@ class ChatSharePlacement:
         tree_root: str = "",
         member_scope: tuple[str, str] = ("", ""),
         tool_surface_pinned: bool = False,
-        codex_era: str | None = None,
+        harness_era: str | None = None,
     ) -> None:
         self._provider = provider
         # The sharing scope, read once at this start: sessions share only inside
@@ -234,9 +316,13 @@ class ChatSharePlacement:
         self._keys_spec = tool_surface_pinned or "spec_generation" not in per_session_fields(
             provider._client.backend
         )
-        # codex reads its own credential, never Kiro's, so its era is the codex
-        # one (:func:`codex_spawn_identity`), read and re-read in place of Kiro's.
-        self._codex_era = codex_era is not None
+        # codex and claude read their own credential, never Kiro's, so their era is
+        # their own (:func:`_self_signed_era`), read and re-read in place of Kiro's.
+        self._self_signed_backend = (
+            str(getattr(getattr(provider, "_client", None), "backend", "") or "")
+            if harness_era is not None
+            else ""
+        )
         # ``agent.env`` as this start read it: a child takes it at spawn and never
         # re-reads it, so a saved change must found a new process rather than join
         # one that carries the old values. A founding spawn launches with this same
@@ -265,8 +351,8 @@ class ChatSharePlacement:
         # this start, which no other key can equal, so the session founds its
         # own process. The confirm compares raw against raw.
         self._raw_era = (
-            codex_era
-            if codex_era is not None
+            harness_era
+            if harness_era is not None
             else str(getattr(provider, "pre_spawn_identity", "") or "")
         )
         self._era = self._raw_era or f"unverified-{uuid.uuid4().hex}"
@@ -336,8 +422,13 @@ class ChatSharePlacement:
             if self._keys_spec
             else ""
         )
-        if self._codex_era:
-            era = await asyncio.to_thread(codex_spawn_identity, self._extra_env)
+        if self._self_signed_backend:
+            era = (
+                await asyncio.to_thread(
+                    _self_signed_era, self._self_signed_backend, self._extra_env
+                )
+                or ""
+            )
         elif self._identity_reader is not None:
             era = await pre_spawn_identity(self._identity_reader)
         else:
@@ -650,6 +741,32 @@ def _kas_telemetry_for(
     return True
 
 
+def _seeds_auto_permission_mode(provider: Any, backend: str) -> bool:
+    """Whether this chat's session would start in Claude Code's ``auto`` mode.
+
+    In ``auto`` the backend's classifier approves calls without asking, and only the
+    per-chat client writes the audit record for those calls
+    (``client_tool_events._maybe_audit_unasked_tool_call``), so such a chat keeps its
+    own process.
+    shortcut: give the shared session handle that audit to lift this.
+    """
+    from kiro_crew.acp.types import CC_PERMISSION_MODE_AUTO
+    from kiro_crew.agent_sdk.backends import (
+        ACP_BACKENDS_SEED_LOCAL_SETTINGS,
+        CC_PERMISSION_MODE_ENV,
+    )
+
+    if backend not in ACP_BACKENDS_SEED_LOCAL_SETTINGS:
+        return False
+    # The answer ``resolve_cc_permission_mode`` gives, read without its warning for
+    # an unrecognised value: the session's own start says that once.
+    asked = getattr(getattr(provider, "_client", None), "_permission_mode", None)
+    requested = (
+        asked if isinstance(asked, str) and asked else os.environ.get(CC_PERMISSION_MODE_ENV)
+    )
+    return requested == CC_PERMISSION_MODE_AUTO
+
+
 async def resolve_chat_share(
     provider: AcpProvider,
     *,
@@ -744,6 +861,8 @@ async def resolve_chat_share(
         member_shares_root=member_shares_root,
         harness_enabled=harness_enabled,
     )
+    if not refusal and _seeds_auto_permission_mode(provider, backend):
+        refusal = "auto_permission_mode"
     if not refusal and await asyncio.to_thread(
         agent_spawns_native_subagents, work_dir, agent, backend
     ):
@@ -779,7 +898,7 @@ async def resolve_chat_share(
             configured_env,
             telemetry,
             pinned,
-            codex_spawn_identity(extra_env) if backend == ACP_BACKEND_CODEX else None,
+            _self_signed_era(backend, extra_env),
         )
 
     (
@@ -789,7 +908,7 @@ async def resolve_chat_share(
         configured_env,
         telemetry,
         pinned,
-        codex_era,
+        harness_era,
     ) = await asyncio.to_thread(_read_placement_inputs)
     return ChatSharePlacement(
         provider,
@@ -811,8 +930,13 @@ async def resolve_chat_share(
         tree_root=tree_root,
         member_scope=member_scope,
         tool_surface_pinned=pinned,
-        codex_era=codex_era,
+        harness_era=harness_era,
     )
 
 
-__all__ = ["ChatSharePlacement", "codex_spawn_identity", "resolve_chat_share"]
+__all__ = [
+    "ChatSharePlacement",
+    "claude_spawn_identity",
+    "codex_spawn_identity",
+    "resolve_chat_share",
+]
