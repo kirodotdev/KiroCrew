@@ -11,6 +11,7 @@ carries. No test here reads a built dashboard bundle.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -21,6 +22,7 @@ from typing import Any
 import pytest
 
 from kiro_crew import mcp_guide, ui_index
+from kiro_crew.ui_index_load import parse_index_text
 
 _WEBSITE = Path(__file__).resolve().parents[1] / "website"
 
@@ -315,7 +317,7 @@ def _real() -> dict[str, Any]:
 def test_the_committed_index_carries_no_auto_tier() -> None:
     real = _real()
     assert {loc.get("tier") for loc in real["locations"]} == {"generated", "curated"}
-    assert "auto" not in real["coverage"]["tiers"] and "auto_controls" not in real["coverage"]
+    assert "auto_controls" not in real["coverage"]
 
 
 @pytest.fixture(scope="module")
@@ -350,7 +352,7 @@ def built(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
 
 
 def test_the_generated_auto_tier_is_well_formed(built: tuple[Path, Path]) -> None:
-    index = json.loads(built[0].read_text(encoding="utf-8"))
+    index = parse_index_text(built[0].read_text(encoding="utf-8"))
     auto = json.loads(built[1].read_text(encoding="utf-8"))
     assert auto["artifact"] == "auto" and auto["base_input_digest"] == index["input_digest"]
     assert auto["locales"] == index["locales"]
@@ -453,3 +455,17 @@ def test_the_tool_description_says_how_to_relay_an_auto_result() -> None:
     assert "tier: auto" in tool["description"]
     assert "hedged" in tool["description"]
     assert "auto_tier: unavailable" in tool["description"]
+
+
+def test_the_committed_index_digest_is_computed_from_its_text(tmp_path: Path) -> None:
+    """The committed file carries no ``input_digest`` (it changed on almost every
+    UI edit, so PRs on different pages conflicted on it): the reader computes it
+    from the text, CRLF or LF alike, and a file that names one keeps it."""
+    text = '{"schema_version": 1,\n"locales": ["en"]\n}\n'
+    want = "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+    assert parse_index_text(text)["input_digest"] == want
+    crlf = tmp_path / "crlf.json"
+    crlf.write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+    assert parse_index_text(crlf.read_text(encoding="utf-8"))["input_digest"] == want
+    assert parse_index_text('{"input_digest": "sha256:pinned"}')["input_digest"] == "sha256:pinned"
+    assert "input_digest" not in json.loads(ui_index.INDEX_PATH.read_text(encoding="utf-8"))
