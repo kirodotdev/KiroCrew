@@ -1349,6 +1349,10 @@ class TestTerminalWsIntegration:
         array whose element zero is still the hook, so a scalar-equality test
         alone would match and unset the WHOLE array — taking the profile's own
         element with it and silently disabling it after the first prompt.
+
+        The probe reads the LAST element: the system profile runs first and may
+        append its own (systemd's OSC 3008 snippet does), so the user's element
+        is not always at index one.
         """
         home = tmp_path / "home"
         home.mkdir()
@@ -1380,22 +1384,25 @@ class TestTerminalWsIntegration:
                             msg = await ws.receive()
                             if msg.type == web.WSMsgType.BINARY:
                                 out.extend(msg.data)
-                                if b"PC1=" in bytes(out):
+                                if b"PCLAST=" in bytes(out):
                                     return
                             elif msg.type == web.WSMsgType.TEXT:
                                 if json.loads(msg.data).get("type") == "ready":
                                     # First prompt reached, so the hook has fired and
                                     # made its keep-or-withdraw decision by now.
                                     # EXECUTION-only marker: the typed bytes carry
-                                    # PC''1= so the line-discipline echo of our own
-                                    # keystrokes cannot satisfy the match below.
-                                    await ws.send_bytes(b"echo PC''1=${PROMPT_COMMAND[1]:-GONE}.\n")
+                                    # PC''LAST= so the line-discipline echo of our
+                                    # own keystrokes cannot satisfy the match below.
+                                    await ws.send_bytes(
+                                        b"echo PC''LAST="
+                                        b"${PROMPT_COMMAND[${#PROMPT_COMMAND[@]}-1]:-GONE}.\n"
+                                    )
                             elif msg.type in _SOCKET_ENDED:
                                 return
 
                     await _read_bounded(
                         read_until_the_probe_answers(),
-                        "the answer to the PROMPT_COMMAND[1] probe",
+                        "the answer to the last PROMPT_COMMAND element probe",
                         out,
                     )
                     await ws.close()
@@ -1405,7 +1412,7 @@ class TestTerminalWsIntegration:
                 await terminal._kill_session(spawned)
 
         tail = bytes(out)
-        assert b"PC1=true." in tail, (
+        assert b"PCLAST=true." in tail, (
             "the profile's own PROMPT_COMMAND element did not survive the "
             f"readiness hook's self-withdrawal. PTY tail: {tail[-400:]!r}"
         )
@@ -1543,10 +1550,15 @@ class TestTerminalWsIntegration:
         reason="POSIX login-shell semantics; needs a real bash on PATH",
     )
     @pytest.mark.asyncio
+    # The array append stands in for any profile that adds an element after the
+    # hook, systemd's /etc/profile.d OSC 3008 snippet among them: the inherited
+    # command must come back in element zero then too.
+    @pytest.mark.parametrize("profile_tail", ["", "PROMPT_COMMAND+=(true)\n"])
     async def test_ws_bash_restores_an_inherited_prompt_command(
         self,
         monkeypatch,
         tmp_path,
+        profile_tail,
     ):
         """An exported PROMPT_COMMAND in the GATEWAY's environment is preserved.
 
@@ -1557,7 +1569,7 @@ class TestTerminalWsIntegration:
         """
         home = tmp_path / "home"
         home.mkdir()
-        (home / ".bash_profile").write_text("export KC_5885_PROFILE=PROFILE_OK\n")
+        (home / ".bash_profile").write_text("export KC_5885_PROFILE=PROFILE_OK\n" + profile_tail)
 
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(

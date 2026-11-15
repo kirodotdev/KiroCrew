@@ -199,12 +199,13 @@ class TestBashShellReadiness:
         assert f'-n "${{{terminal._READY_TOKEN_VAR}-}}"' in hook
         assert f"builtin unset {terminal._READY_TOKEN_VAR}" in hook
         assert "]697;KiroCrewReady;%s" in hook
-        # Withdraws itself only while PROMPT_COMMAND is still exactly the scalar
-        # that was exported: a profile that APPENDED its own command keeps that
-        # half, and one that appended as an ARRAY leaves the exported text as
-        # element zero, which the scalar test alone would match.
-        assert f'"${{PROMPT_COMMAND-}}" == "${{{terminal._READY_HOOK_VAR}-}}"' in hook
-        assert '-z "${PROMPT_COMMAND[1]+x}"' in hook
+        # Withdraws itself only while element zero is still exactly the text
+        # that was exported: a profile that APPENDED to the scalar keeps that
+        # half. When later elements exist (a profile's array append, systemd's
+        # OSC 3008 snippet) only element zero is rewritten, since unsetting the
+        # variable would drop them too.
+        assert f'"${{PROMPT_COMMAND-}}" == "${{{terminal._READY_HOOK_VAR}-}}" ]]' in hook
+        assert 'elif [[ -n "${PROMPT_COMMAND[1]+x}" ]]; then PROMPT_COMMAND=; ' in hook
         assert "builtin unset PROMPT_COMMAND; fi" in hook
         # The mirror and the inherited-value carrier are unset either way, so a
         # session whose profile took PROMPT_COMMAND over does not keep them.

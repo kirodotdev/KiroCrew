@@ -395,14 +395,19 @@ def _bash_ready_env(token: str) -> dict[str, str]:
     The snippet is single-shot and self-removing: it emits only while the token
     variable is still set, unsets that token so neither a later prompt nor a
     child shell repeats the sequence, and withdraws itself from
-    ``PROMPT_COMMAND`` only when that variable is still exactly the scalar that
-    was exported. Both halves of that last test matter: a profile that APPENDED
-    (``PROMPT_COMMAND="$PROMPT_COMMAND; history -a"``) no longer matches, and one
-    that appended as an ARRAY (``PROMPT_COMMAND+=("history -a")``, Bash 5.1+)
-    leaves the exported text as element zero — which the scalar expansion alone
-    would match, so unsetting there would take the user's own element with it.
-    ``${PROMPT_COMMAND[1]+x}`` distinguishes the two without Bash 5.1 syntax the
-    ``/bin/bash`` on macOS (3.2) cannot parse.
+    ``PROMPT_COMMAND`` only when element zero is still exactly the text that was
+    exported. A profile that APPENDED to the scalar
+    (``PROMPT_COMMAND="$PROMPT_COMMAND; history -a"``) does not match, so the hook
+    stays, inert. One that appended as an ARRAY
+    (``PROMPT_COMMAND+=("history -a")``, Bash 5.1+) leaves the exported text as
+    element zero, and so does systemd's ``/etc/profile.d`` OSC 3008 snippet,
+    which every login Bash on a distribution shipping it runs. There the
+    withdrawal rewrites element zero alone (to the inherited command, or to an
+    empty element, the placeholder systemd itself leaves), because unsetting the
+    variable would take every later element with it.
+    ``${PROMPT_COMMAND[1]+x}`` tells the two apart without Bash 5.1 syntax the
+    ``/bin/bash`` on macOS (3.2) cannot parse, and a bare assignment to an array
+    name writes element zero in every Bash.
 
     A profile that ASSIGNS ``PROMPT_COMMAND`` outright drops the hook, and with
     it the marker: that session's barrier never opens, and the client's own
@@ -435,10 +440,10 @@ def _bash_ready_env(token: str) -> dict[str, str]:
         f"builtin printf '\\033]697;KiroCrewReady;%s\\007' "
         f'"${{{_READY_TOKEN_VAR}}}"; '
         f"builtin unset {_READY_TOKEN_VAR}; "
-        f'if [[ "${{PROMPT_COMMAND-}}" == "${{{_READY_HOOK_VAR}-}}" '
-        f'&& -z "${{PROMPT_COMMAND[1]+x}}" ]]; then '
+        f'if [[ "${{PROMPT_COMMAND-}}" == "${{{_READY_HOOK_VAR}-}}" ]]; then '
         f'if [[ -n "${{{_READY_PREV_VAR}+x}}" ]]; then '
         f'PROMPT_COMMAND="${{{_READY_PREV_VAR}}}"; '
+        f'elif [[ -n "${{PROMPT_COMMAND[1]+x}}" ]]; then PROMPT_COMMAND=; '
         f"else builtin unset PROMPT_COMMAND; fi; fi; "
         f"builtin unset {_READY_HOOK_VAR} {_READY_PREV_VAR}; fi"
     )
