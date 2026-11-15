@@ -362,9 +362,19 @@ def _read_bodies(
 
 
 def _body_substitutions(body: str, base: int, track: bool) -> "list[ShellCommand]":
-    """The commands of each ``$(…)`` / backtick in an unquoted heredoc body. There a quote
-    is a plain character and only a backslash escapes, so each body is read once."""
+    """The commands of each ``$(…)`` / backtick in an unquoted heredoc body, read once."""
     out: list[ShellCommand] = []
+    for _start, _stop, inner_at, inner in _heredoc_body_substitutions(body):
+        out.extend(read_commands(inner, track, base + inner_at, heredocs=True))
+    return out
+
+
+def _heredoc_body_substitutions(body: str) -> "list[tuple[int, int, int, str]]":
+    """``(start, stop, inner_start, inner)`` of each ``$(…)`` / backtick in an unquoted
+    heredoc body, in order; ``start:stop`` spans the opener to the closer. There a quote
+    is a plain character and only a backslash escapes. The one scan of such a body: the
+    ssh self-target floor (``argv_floor_ssh_bodies``) reads it too."""
+    out: list[tuple[int, int, int, str]] = []
     i = 0
     while i < len(body):
         if body[i] == "\\":
@@ -372,13 +382,12 @@ def _body_substitutions(body: str, base: int, track: bool) -> "list[ShellCommand
         elif body.startswith("$(", i):
             rest = body[i + 2 :]  # the walk starts unquoted inside the substitution
             close, proven = _shell._matching_close_paren(rest, 0)
-            inner = rest[: close - 1 if proven else close]
-            out.extend(read_commands(inner, track, base + i + 2, heredocs=True))
+            out.append((i, i + 2 + close, i + 2, rest[: close - 1 if proven else close]))
             i += 2 + close
         elif body[i] == "`":
             closer = _shell._backtick_closer(body, i + 1)
             end = len(body) if closer < 0 else closer
-            out.extend(read_commands(body[i + 1 : end], track, base + i + 1, heredocs=True))
+            out.append((i, end + 1, i + 1, body[i + 1 : end]))
             i = end + 1
         else:
             i += 1
