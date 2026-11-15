@@ -850,8 +850,8 @@ owner turn.
 
 1. `work_ledger_record` `action=create`, as for a local item.
 2. `session_create` with `work_item=<item_id>`, `title` and
-   `agent="kirocrew-worker"` (optionally `model`). A crew create refuses
-   `folder` and `agent_kind`. The session is created already bound, so **skip
+   `agent="kirocrew-worker"`, `agent_kind="template"` (optionally `model`). A
+   crew create refuses `folder`. The session is created already bound, so **skip
    `bind`**. Name a crew with `crew=`, or omit it and the hub picks the
    connected crew with the most headroom after its own reservations; the reply
    then says which crew, and you pass that crew's id as `crew=` on every later
