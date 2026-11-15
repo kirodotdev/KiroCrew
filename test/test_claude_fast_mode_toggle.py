@@ -52,6 +52,7 @@ from kiro_crew.providers.acp_model_effort import (
     FAST_MODE_UNAVAILABLE_MAX,
     fast_mode_unavailable_reason,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 FIXTURE = CORPUS / "claude" / "fast-mode.jsonl"
@@ -182,7 +183,7 @@ def test_the_two_switches_read_their_own_options():
         (f"{FAST_MODE_AVAILABLE_DESCRIPTION} —", ""),
         # The text is the adapter's: redacted, then bounded; too long to redact, no words.
         (
-            f"{FAST_MODE_AVAILABLE_DESCRIPTION} — key ghp_" + "a" * 36,
+            f"{FAST_MODE_AVAILABLE_DESCRIPTION} — key " + github_classic(seed=351),
             "key [REDACTED: credential]",
         ),
         (f"{FAST_MODE_AVAILABLE_DESCRIPTION} — " + "x" * 400, "x" * FAST_MODE_UNAVAILABLE_MAX),

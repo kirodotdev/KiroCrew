@@ -3320,18 +3320,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Governance Policy"
   },
   {
-    "id": "security.hide-credentials-from-the-ai-model-and-server-logs",
-    "labelKey": "pages.settings.securityPanel.credential_redaction_seams_toggle",
-    "tab": "security",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "section": "redaction"
-    },
-    "label": "Hide credentials from the AI model and server logs",
-    "description": "Turn off to let the agent read a credential you gave it earlier in the chat; the AI model then receives it and the app's own log files on this computer can show it. Chats, Slack and values on the Secrets page stay protected either way."
-  },
-  {
     "id": "security.how-long-auto-approve-stays-on",
     "labelKey": "pages.settings.securityPanel.yolo_duration_title",
     "tab": "security",
@@ -3342,18 +3330,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     },
     "configKey": "agent.yolo_duration",
     "label": "How long auto-approve stays on"
-  },
-  {
-    "id": "security.keep-ids-readable",
-    "labelKey": "pages.settings.securityPanel.credential_redaction_engine_toggle",
-    "tab": "security",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "section": "redaction"
-    },
-    "label": "Keep IDs readable",
-    "description": "On: keeps IDs readable, such as an AWS key ID (AKIA…, not a secret) or a 40-character commit hash. Off: AWS key IDs and commit hashes are hidden like secrets. This setting doesn't change whether secrets are hidden."
   },
   {
     "id": "security.live-security-posture",
@@ -3367,7 +3343,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Live Security Posture"
   },
   {
-    "id": "security.redact-credentials-in-files-the-dashboard-opens-for-you",
+    "id": "security.redact-credentials",
     "labelKey": "pages.settings.securityPanel.credential_redaction_toggle",
     "tab": "security",
     "type": "toggle",
@@ -3375,8 +3351,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "section": "redaction"
     },
-    "label": "Redact credentials in files the dashboard opens for you",
-    "description": "Off shows files the dashboard opens for you — the chat side panel's Files tab, and the Library and Artifacts previews — as written, in your own dashboard only. On by default. Conversations in this dashboard, Slack, and messaging channels stay redacted. Changing it reloads the files you have open (unsaved edits are kept) and closes file-comparison (diff) views."
+    "label": "Redact credentials",
+    "description": "Hides keys, tokens and passwords in chat, messaging channels, the agent's prompt, files and logs."
   },
   {
     "id": "security.config-pending",

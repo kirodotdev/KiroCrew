@@ -22,6 +22,7 @@ from webhooks_api_helpers import _bearer, _payload, _req
 
 from kiro_crew import webhooks
 from kiro_crew.dashboard.handlers import hooks as H
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 class TestWebhooksRead:
@@ -62,7 +63,7 @@ class TestWebhooksRead:
         like the delivered result and the kiro-hooks command list, both of which
         already scrub, so it must scrub too.
         """
-        secret = "ghp_" + "a" * 36
+        secret = github_classic(seed=312)
         (wired / "hooks.json").write_text(
             json.dumps(
                 {
@@ -84,7 +85,7 @@ class TestWebhooksRead:
     @pytest.mark.asyncio
     async def test_redaction_runs_before_the_transport_slice(self, wired):
         """Slicing first would let a secret survive by straddling the cut."""
-        secret = "ghp_" + "b" * 36
+        secret = github_classic(seed=313)
         padding = "p" * (webhooks.CONTEXT_SUMMARY_TRANSPORT_MAX - 10)
         (wired / "hooks.json").write_text(
             json.dumps(
@@ -541,7 +542,7 @@ class TestIdentifierRedaction:
 
     @pytest.mark.asyncio
     async def test_hook_id_and_session_key_are_redacted(self, wired):
-        secret = "ghp_" + "c" * 36
+        secret = github_classic(seed=314)
         (wired / "hooks.json").write_text(
             json.dumps(
                 {
@@ -563,7 +564,7 @@ class TestIdentifierRedaction:
     @pytest.mark.asyncio
     async def test_a_redacted_context_can_still_be_deleted(self, wired):
         """Redacting the id must not strand the context: delete still resolves it."""
-        secret = "ghp_" + "d" * 36
+        secret = github_classic(seed=315)
         raw_id = f"job-{secret}"
         (wired / "hooks.json").write_text(
             json.dumps({raw_id: {"context_summary": "x", "registered_at": time.time()}}),

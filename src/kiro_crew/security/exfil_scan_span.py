@@ -1,4 +1,4 @@
-"""Which URL span the exfil scanner judges and replaces.
+"""Which URL span the exfil scanner judges.
 
 The walk over one ``_URL_SCAN_RE`` match: its narrow span, its whole span, and
 each URL embedded in it on a host the exempt set does not hold. The per-URL
@@ -12,12 +12,7 @@ import re
 from collections.abc import Callable
 from itertools import chain
 
-from .exfil_url_rules import (
-    _URL_SCAN_RE,
-    _embedded_url_matches,
-    _is_safe_presigned,
-    _url_scan_candidates,
-)
+from .exfil_url_rules import _embedded_url_matches, _is_safe_presigned, _url_scan_candidates
 
 #: ``(domain, path_and_query, port, is_https) -> warning or None``.
 _UrlJudge = Callable[[str, str, str, bool], "str | None"]
@@ -84,19 +79,3 @@ def _tail_after_exempt_span(
     if alias is not None:
         return "?" + alias + tail
     return None
-
-
-def _walk_span_urls(text: str, exempt_hosts: frozenset[str]) -> set[str]:
-    """Every URL span the redactor can judge and replace in *text*.
-
-    The same walk as :func:`_walk_flagged_span`: each scan match, then the URLs
-    embedded in it on a non-exempt host, each read as its narrow and its whole
-    span. A caller that must recognize a redacted address as its own reads them
-    here instead of re-deriving the spans.
-    """
-    return {
-        url
-        for match in _URL_SCAN_RE.finditer(text)
-        for judged in chain((match,), _embedded_url_matches(match, exempt_hosts))
-        for url, _ in _url_scan_candidates(judged)
-    }

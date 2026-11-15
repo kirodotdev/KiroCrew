@@ -871,7 +871,8 @@ class TestRound24Hardening:
         from kiro_crew.deploy import engine
 
         secret = SECRET
-        padded = "x" * 190 + secret + " trailing context"
+        # A blank before it: a token glued to a letter is no token.
+        padded = "x" * 189 + " " + secret + " trailing context"
         out = engine._trimmed_stderr(padded)
 
         assert len(out) <= 200

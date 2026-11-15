@@ -23,6 +23,7 @@ from webex_dispatch_helpers import (
 )
 
 from kiro_crew.acp.types import EVENT_COMPLETE, AcpEvent
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 from kiro_crew.testing.wait import await_until
 from kiro_crew.webex import cards
 from kiro_crew.webex import transport_dispatch as webex_dispatch
@@ -205,7 +206,8 @@ class TestOutboundRedaction:
         written, and Webex's own renderer removes the emphasis and shows the
         intact key.
         """
-        secret = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
+        # A Slack bot token: a bare 40-character run stays visible by design.
+        secret = SAMPLE_SLACK_BOT_TOKEN
         provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
         client = FakeClient()
         d = _dispatcher(FakeSessions(provider), FakeCtx(), client)

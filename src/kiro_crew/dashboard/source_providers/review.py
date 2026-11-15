@@ -19,6 +19,7 @@ from urllib.parse import quote
 
 from kiro_crew.dashboard.source_providers import LOGGER_NAME, cache, hosts, links, runner, sanitize
 from kiro_crew.dashboard.source_providers.contract import SourceProviderError, SourceRef
+from kiro_crew.security.exfil import refuses
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -131,7 +132,9 @@ async def _github_pending_review(ref: SourceRef) -> dict[str, Any]:
             # Unknown draft or head sha counts as stale: fail closed rather than
             # treat an unanswerable question as "current".
             "stale": not (draft_sha and head_sha and draft_sha == head_sha),
-            "contentRedacted": any(sanitize._redact_provider_data(t) != t for t in texts),
+            "contentRedacted": any(
+                refuses(t, lambda text: str(sanitize._redact_provider_data(text))) for t in texts
+            ),
             "autoMergeArmed": bool(state["autoMergeArmed"]),
             "contentDigest": _review_content_digest(raw_body, comments),
             "staleDismissalEnabled": await _github_stale_dismissal_enabled(

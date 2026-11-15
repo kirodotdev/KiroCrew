@@ -10,6 +10,7 @@ import os
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import redaction_seams
 from kiro_crew.dashboard.chat_utils import (
     RecoveryPayload,
     is_synthetic_recovery_item,
@@ -1060,6 +1061,7 @@ async def _retire_mirror_thinking(slack_client: Any, channel: str | None, ts: st
     return ""
 
 
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
 def _prepare_mirror_msg(raw_user_message: str) -> str:
     """Prepare a user message for the cross-surface / Slack mirror echo.
 

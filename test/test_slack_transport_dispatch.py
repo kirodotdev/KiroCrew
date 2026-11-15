@@ -43,7 +43,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.slack import handler as slack_handler
 from kiro_crew.slack import transport_dispatch
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 
 def _run_transport(monkeypatch, thread_agent=None, agent_override=None, **extra):
@@ -533,7 +533,7 @@ def test_member_memory_refusal_redacts_before_posting(monkeypatch):
     from kiro_crew.memory_stores import UnknownMemoryStore
 
     private_path = "/home/alice/.kiro/crew/memory_stores/member-one/memory.db"
-    credential = SAMPLE_AWS_SECRET  # synthetic AWS secret
+    credential = SAMPLE_SLACK_BOT_TOKEN  # synthetic Slack bot token
     failure = UnknownMemoryStore(f"memory_unavailable: cannot open {private_path}; {credential}")
     monkeypatch.setattr(
         transport_dispatch, "session_store_for_turn", AsyncMock(side_effect=failure)
@@ -624,7 +624,7 @@ class TestTransportErrorText:
 
     def test_classified_acp_error_is_redacted_before_posting(self):
         private_path = "/Users/alice/secret/x"
-        credential = SAMPLE_AWS_SECRET  # synthetic AWS secret
+        credential = SAMPLE_SLACK_BOT_TOKEN  # synthetic Slack bot token
         err = AcpError(
             f"Backend refused: cannot read {private_path}; key {credential}",
             transient=False,
@@ -637,8 +637,9 @@ class TestTransportErrorText:
 
     @pytest.mark.parametrize("split", ["{h}*{r}*", "{h}**{r}**", "{h}_{r}_", "{h}`{r}`"])
     def test_a_key_split_by_display_markup_is_redacted(self, split):
-        # A synthetic 40-character AWS secret split after its first 4 characters.
-        head, rest = SAMPLE_AWS_SECRET[:4], SAMPLE_AWS_SECRET[4:]
+        # A synthetic Slack bot token split after its first 4 characters. (No ``_``
+        # in it: the display form drops that as markup.)
+        head, rest = SAMPLE_SLACK_BOT_TOKEN[:4], SAMPLE_SLACK_BOT_TOKEN[4:]
         err = _classified_acp_error(
             "The monthly usage limit has been reached. key " + split.format(h=head, r=rest)
         )

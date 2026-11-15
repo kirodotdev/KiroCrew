@@ -14,6 +14,10 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.handlers import workflows as handlers
+from kiro_crew.testing.synthetic_credentials import github_classic
+
+#: A GitHub token with a valid checksum, written into a plan label.
+_TOKEN = github_classic(seed=93)
 
 pytestmark = pytest.mark.asyncio
 
@@ -139,10 +143,7 @@ async def test_a_preview_failure_still_returns_the_run() -> None:
 async def test_an_llm_authored_label_is_redacted_like_the_rest_of_the_snapshot() -> None:
     # Plan labels come from the script's own string literals, so they ride the same
     # redaction path every other LLM-derived string on this endpoint does.
-    script = (
-        "async def workflow(ctx):\n"
-        '    await ctx.agent("x", label="ghp_0123456789abcdefghijklmnopqrstuvwxyz")\n'
-    )
+    script = "async def workflow(ctx):\n" f'    await ctx.agent("x", label="{_TOKEN}")\n'
     body = await _get({"run_id": "wf_1", "status": "running", "events": [], "source": script})
     label = body["plan"]["phases"][0]["nodes"][0]["label"]
-    assert "ghp_0123456789abcdefghijklmnopqrstuvwxyz" not in label
+    assert _TOKEN not in label

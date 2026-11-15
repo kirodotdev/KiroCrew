@@ -384,9 +384,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
 
 async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     """The send itself; :func:`api_chat` adds the Crew Mode worker steer record."""
-    # Imported here because this module's bodies run in the chat_handlers
-    # namespace, which carries only the names it re-exports.
-    from kiro_crew.dashboard import card_send, channel_prompt
+    # Imported here: this module's bodies run in the chat_handlers namespace.
+    from kiro_crew.dashboard import card_send, channel_prompt, redaction_audience
 
     _timing_t0 = turn_timing.now()
     state: DashboardState = request.app["state"]
@@ -1944,6 +1943,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                 return web.json_response(_receipt, status=202)
         return web.json_response(_receipt)
 
+    sse_events = redaction_audience.SseEvents(request)  # in full for a non-owner while off
     resp = web.StreamResponse()
     resp.headers.update(admission_entry.admission_headers(turn_admission))
     resp.content_type = "text/event-stream"
@@ -1975,7 +1975,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                     if msg["cls"] == "done" or (
                         turn_scoped_stream and (msg["cls"] == TURN_END_WIRE_CLS or foreign_user_row)
                     ):
-                        await write_sse_or_abort(request, resp, b"data: [DONE]\n\n")
+                        await write_sse_or_abort(request, resp, sse_events.done())
                         slot._has_reader = False
                         return resp
                     if msg["cls"] == TURN_END_WIRE_CLS:
@@ -1985,8 +1985,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                         # A placeholder for a later turn (a cron notification or
                         # an MCP-App message queued meanwhile), never this one.
                         continue
-                    chunk = _build_stream_chunk(msg)
-                    await write_sse_or_abort(request, resp, f"data: {chunk}\n\n".encode())
+                    for event in sse_events.events(_build_stream_chunk(msg)):
+                        await write_sse_or_abort(request, resp, f"data: {event}\n\n".encode())
                     turn_timing.sse_first_frame(slot.key)
                 try:
                     await asyncio.wait_for(slot.event.wait(), timeout=30)

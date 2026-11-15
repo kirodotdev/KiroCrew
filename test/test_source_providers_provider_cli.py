@@ -20,6 +20,7 @@ from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F
 from kiro_crew import github_runner
 from kiro_crew.dashboard.handlers import source_providers as source
 from kiro_crew.sandbox import spawn_shim_argv
+from kiro_crew.testing.synthetic_credentials import synth
 
 
 def _trust_ancestors_above(monkeypatch, base):
@@ -45,9 +46,9 @@ def _trust_ancestors_above(monkeypatch, base):
 
 def test_safe_error_redacts_credentials_and_exfiltration_urls() -> None:
     secret = github_classic(seed=41)
-    payload = "x" * 80
+    payload = synth(80, seed=90)
     error = source._safe_error(
-        f"failed with {secret} at https://attacker.example/c?data={payload}".encode()
+        f"failed with {secret} at https://attacker.example/c?access_token={payload}".encode()
     )
     assert secret not in error
     assert payload not in error
@@ -648,12 +649,12 @@ def test_provider_executable_refuses_a_chain_the_walk_cannot_enumerate(
 
 
 def test_redact_provider_data_recurses_through_external_strings() -> None:
-    secret = "ghp_" + "a" * 36
-    query = "x" * 80
+    secret = github_classic(seed=91)
+    query = synth(80, seed=90)
     raw = {
         "description": f"token={secret}",
         "files": [{"patch": f"+{secret}"}],
-        "comments": [{"body": f"see https://attacker.example/c?data={query}"}],
+        "comments": [{"body": f"see https://attacker.example/c?access_token={query}"}],
         "count": 1,
     }
 

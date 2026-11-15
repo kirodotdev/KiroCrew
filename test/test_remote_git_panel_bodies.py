@@ -6,19 +6,10 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
-from redaction_structured_cases import structured_engine
 from test_coder_session_launch import PEM_BEGIN_RSA, PEM_END_RSA, _plain_git_repo
-
-
-@pytest.fixture(autouse=True)
-def _structured_engine() -> Iterator[None]:
-    """These cases assert the structured engine's output: keep it selected under a legacy run."""
-    with structured_engine():
-        yield
 
 
 @pytest.mark.parametrize("deleted", [False, True])

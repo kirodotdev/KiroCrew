@@ -18,6 +18,7 @@ from unittest import mock
 import pytest
 from mcp_apps_render_helpers import spool_fixture  # noqa: F401
 from mcp_apps_render_helpers import _FakeState, _hex, _write_spool
+from redaction_structured_cases import jwt
 
 from kiro_crew import mcp_apps_render
 from kiro_crew.testing.wait import await_until
@@ -28,7 +29,8 @@ from kiro_crew.testing.wait import await_until
 #: one in fragments to slip past that check would be hiding a credential pattern
 #: from a security control for a value that is not a credential at all. What the
 #: redaction tests need is only that the detector matches it, which they assert.
-FAKE_CREDENTIAL = "eyJhbGciOiJIUzI1NiJ9." + "a" * 30 + "." + "s" * 20
+#: A signed JWT: a three-segment run whose payload is no JSON is no JWT.
+FAKE_CREDENTIAL = jwt()
 
 # ── marker regex ─────────────────────────────────────────────────────────────
 

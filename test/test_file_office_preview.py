@@ -171,7 +171,8 @@ async def test_pptx_slides_are_redacted_before_the_cap(tmp_path, mock_sel):
     # credential straddling the per-slide cut must not leak as a prefix.
     f = tmp_path / "creds.pptx"
     secret = _SECRET
-    _write_pptx(str(f), [["x" * (_OFFICE_PREVIEW_CAP - 10) + secret], ["next"]])
+    # A blank before the token: a token glued to a letter is no token by its format.
+    _write_pptx(str(f), [["x" * (_OFFICE_PREVIEW_CAP - 11) + " " + secret], ["next"]])
     with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-office-preview?path={f}")
@@ -420,9 +421,10 @@ async def test_redaction_runs_before_truncation(tmp_path, mock_sel):
     """
     f = tmp_path / "creds.docx"
     # One paragraph: filler that ends 10 chars before the cap, then a fake
-    # GitHub token that straddles the boundary.
+    # GitHub token that straddles the boundary. A blank before it: a token glued
+    # to a letter is no token by its format.
     secret = _SECRET
-    filler = "x" * (_OFFICE_PREVIEW_CAP - 10)
+    filler = "x" * (_OFFICE_PREVIEW_CAP - 11) + " "
     _write_docx(str(f), [filler + secret])
     with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
         async with TestClient(TestServer(_make_app())) as client:
@@ -461,7 +463,9 @@ def _b64url(raw: str) -> str:
 
 
 def _jwt(payload_chars: int) -> str:
-    return _b64url(_JWT_HEADER) + "." + _b64url("x" * payload_chars) + "." + "s" * 43
+    """A signed JWT: its payload is a JSON object."""
+    payload = _b64url('{"sub":"' + "x" * payload_chars + '"}')
+    return _b64url(_JWT_HEADER) + "." + payload + "." + "s" * 43
 
 
 async def _preview(path) -> dict[str, Any]:
@@ -490,7 +494,9 @@ async def test_docx_credential_straddling_the_cap_near_either_edge_is_masked(
     """
     secret = _SECRET
     f = tmp_path / "edge.docx"
-    _write_docx(str(f), ["x" * (_OFFICE_PREVIEW_CAP - before_cap) + secret + " tail", "next"])
+    _write_docx(
+        str(f), ["x" * (_OFFICE_PREVIEW_CAP - before_cap - 1) + " " + secret + " tail", "next"]
+    )
     body = await _preview(f)
     assert body["truncated"] is True
     assert "ghp_" not in body["text"]
@@ -519,13 +525,15 @@ async def test_docx_redaction_shrink_above_the_cap_pulls_no_unmasked_text_under_
     reaches was redacted whole, and the secret that sits one redactor window past
     the cap is masked or never extracted, never served as a prefix.
     """
-    jwt = _jwt(3000)
+    # Each segment within the 2000-character bound the rule table reads a JWT to.
+    jwt = _jwt(1400)
     head = [jwt] * 4
     used = sum(len(p) + 1 for p in head)
     margin = files_mod._STREAM_HOLDBACK_JWT_MAX
     secret = _SECRET
     f = tmp_path / "shrink.docx"
-    _write_docx(str(f), [*head, "a" * (_OFFICE_PREVIEW_CAP + margin - 6 - used) + secret, "keep"])
+    filler = "a" * (_OFFICE_PREVIEW_CAP + margin - 7 - used) + " "
+    _write_docx(str(f), [*head, filler + secret, "keep"])
     body = await _preview(f)
     assert body["truncated"] is True
     assert jwt not in body["text"]
@@ -587,7 +595,9 @@ async def test_pptx_credential_straddling_the_cap_is_masked_in_slides_and_text(
     """
     secret = _SECRET
     f = tmp_path / "edge.pptx"
-    _write_pptx(str(f), [["x" * (_OFFICE_PREVIEW_CAP - before_cap) + secret + " tail"], ["next"]])
+    _write_pptx(
+        str(f), [["x" * (_OFFICE_PREVIEW_CAP - before_cap - 1) + " " + secret + " tail"], ["next"]]
+    )
     body = await _preview(f)
     assert body["truncated"] is True
     assert "ghp_" not in _slides_text(body)
@@ -606,7 +616,8 @@ async def test_pptx_redaction_shrink_in_one_slide_frees_no_unmasked_text_in_the_
     those is itself redacted whole before its cut, so the freed budget never
     carries a raw secret.
     """
-    jwt = _jwt(3000)
+    # Each segment within the 2000-character bound the rule table reads a JWT to.
+    jwt = _jwt(1400)
     secret = _SECRET
     filler = "a" * (_OFFICE_PREVIEW_CAP - 6 - 4 * (len(jwt) + 1))
     f = tmp_path / "shrink.pptx"

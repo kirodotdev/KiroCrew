@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import redaction_seams
 from kiro_crew.agent_sdk.spec_hooks import post_tool_identity
 from kiro_crew.dashboard.chat_utils import (
     _tool_identity_fields,
@@ -580,8 +581,11 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
                 _mirror_active_task = f"tool_{_mirror_task_counter}"
                 turn._mirror_active_task = _mirror_active_task
                 _task_title = event.tool_purpose or _mirror_task_label(event)
-                _task_title, _ = redact_exfiltration_urls(_task_title)
-                _task_title, _ = redact_credentials(_task_title)
+                # The thread's task title is a channel post: it never stands down
+                # with the turn's CHAT seam.
+                with redaction_seams.output_seam(redaction_seams.CHANNELS):
+                    _task_title, _ = redact_exfiltration_urls(_task_title)
+                    _task_title, _ = redact_credentials(_task_title)
                 _task_title = _task_title[:75]
                 _mirror_active_task_title = _task_title
                 turn._mirror_active_task_title = _mirror_active_task_title

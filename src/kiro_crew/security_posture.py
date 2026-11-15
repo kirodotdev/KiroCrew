@@ -64,7 +64,7 @@ from kiro_crew import _facade_mirror
 # catches an omission.
 NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
     {
-        # The output-seams switch's table and scope: it applies no redactor and
+        # The output seams' table and scope: it applies no redactor and
         # emits nothing; the call-site scan matches the seam names its prose
         # lists (`redact(x)`, `redact_log_via_context`).
         "redaction_seams.py",
@@ -104,13 +104,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # only caller is `dashboard/warm_task_brief.py`, the registered sink that
         # posts the welcome.
         "dashboard/warm_task_brief_check.py",
-        # The redaction cards' owner-only route (allowed hosts). It applies no
+        # The blocked link cards' owner-only route (allowed hosts). It applies no
         # redactor; the call-site scan matches its
         # handler names (`api_redaction_allow_host`, ...).
         "dashboard/handlers/redaction.py",
-        # Gate-side: the link-preview route runs both redactors on the URL it was
-        # asked to fetch only to REFUSE it (`400 blocked_url`) when either would
-        # change it, so a zero-click fetch never carries what redaction removes.
+        # Gate-side: the link-preview route runs the exfiltration scan and the
+        # credential redactor on the URL it was asked to fetch only to REFUSE it
+        # (`400 blocked_url`) when either flags or changes it, so a zero-click
+        # fetch never carries what redaction removes.
         # Nothing it returns is redacted text, so it is a gate, not an egress sink.
         "dashboard/handlers/link_meta.py",
         # Gate-side, same shape as link_meta: the mediated-secret dispatcher runs
@@ -1205,7 +1206,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # warning log line carries; it returns nothing to the model or a user.
         "subagent_read_collected.py",
         # Uses the redactor as a PREDICATE, not a transform: `resolve_deck_dir`
-        # compares `redact(deck_id) != deck_id` to decide whether to refuse the deck
+        # asks `refuses(deck_id, redact)` to decide whether to refuse the deck
         # outright. A deck id cannot be scrubbed on the way out — it is the directory
         # name, the `preview/<deckId>/...` URL segment and the handle every later
         # request sends back — so the only safe answer is not to serve that deck at

@@ -359,7 +359,6 @@ _ENDPOINT_EXTENSION_CAP = 50
 # rejects wildcards, schemes, ports, userinfo, percent-escapes, whitespace,
 # backslashes, and bracketed IPv6. Empty labels reject leading/trailing dots.
 # The lookahead bounds total length to the DNS maximum.
-# ``redaction_allow`` validates allowed link hosts with this same regex.
 _OAUTH_EXTENSION_HOST_RE = re.compile(
     r"\A(?=.{1,253}\Z)"
     r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"

@@ -13,6 +13,7 @@ import os
 from dataclasses import dataclass
 
 from kiro_crew.platform.context import redact_via_context as redact
+from kiro_crew.security import refuses
 from kiro_crew.slack.code_channels.workspace.pr import PullRequest
 from kiro_crew.slack.code_channels.workspace.remote import RepoRef
 
@@ -66,7 +67,7 @@ def _item(key: str, label: str, icon: str, url: str = "") -> dict[str, str]:
     # the gateway's outbound redaction runs on them like on any other post.
     label = redact(label)
     item = {"key": key[:_MAX_KEY], "label": label[:_MAX_LABEL] or key, "icon": icon}
-    if url and len(url) <= _MAX_URL and url.startswith("https://") and redact(url) == url:
+    if url and len(url) <= _MAX_URL and url.startswith("https://") and not refuses(url, redact):
         item["url"] = url
     return item
 

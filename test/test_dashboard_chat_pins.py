@@ -567,7 +567,8 @@ async def test_create_pin_redacts_credential_straddling_truncation_boundary(tmp_
     """A credential straddling the 200-char truncation boundary must not
     survive as an unrecognized fragment: redaction runs BEFORE truncation."""
     secret = github_classic(seed=11)  # 40 chars
-    preview = "x" * 181 + secret + " trailing text beyond the cap"
+    # A blank before it: a token glued to a letter is no token by its format.
+    preview = "x" * 180 + " " + secret + " trailing text beyond the cap"
     async with _client(tmp_path) as client:
         state: DashboardState = client.app["state"]
         resp = await client.post(

@@ -8,41 +8,35 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from redaction_structured_cases import structured_engine
 
 from kiro_crew import credential_patterns as cp
 from kiro_crew.security import redaction
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
-
-
-@pytest.fixture(autouse=True)
-def _structured_engine() -> Iterator[None]:
-    """These cases assert the structured engine's output: keep it selected under a legacy run."""
-    with structured_engine():
-        yield
-
+from kiro_crew.security.redaction_structured import compat
+from kiro_crew.security.redaction_structured.model import SECRET
+from kiro_crew.security.redaction_structured.table import TABLE
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET, github_classic
 
 SECURITY_DIR = Path(redaction.__file__).resolve().parent
 
 
 def _core_rule_ids() -> set[str]:
     """Rule ids the core credential redactor can write into a record."""
-    ids = {rule for _pattern, rule in redaction._PASS1_RULES}
-    ids |= {rule for _pattern, rule in redaction._AWS_LABEL_RULES}
-    # Passes 2-4 and the pass-1 fallback name their rule as ``("<id>", "")``.
-    tree = ast.parse(Path(redaction.__file__).read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Tuple)
-            and len(node.elts) == 2
-            and all(isinstance(e, ast.Constant) and isinstance(e.value, str) for e in node.elts)
-            and node.elts[1].value == ""  # type: ignore[attr-defined]
-        ):
-            ids.add(node.elts[0].value)  # type: ignore[attr-defined]
+    # A Secret hit of a table row is recorded under its pass-1 name (``old_rule``).
+    ids = {compat.old_rule(rule) for rule, _detector, tier in TABLE.rule_ids() if tier == SECRET}
+    # The whole-text fallback names its rule as ``("<id>", "")``.
+    for module in (redaction, compat):
+        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Tuple)
+                and len(node.elts) == 2
+                and all(isinstance(e, ast.Constant) and isinstance(e.value, str) for e in node.elts)
+                and node.elts[1].value == ""  # type: ignore[attr-defined]
+            ):
+                ids.add(node.elts[0].value)  # type: ignore[attr-defined]
     return ids
 
 
@@ -96,7 +90,7 @@ def test_rule_tier_refuses_an_unknown_rule() -> None:
             "aws_secret_access_key",
             cp.TIER_SECRET,
         ),
-        ("tok ghp_" + "a" * 36 + " end", "github_token", cp.TIER_SECRET),
+        (f"tok {github_classic(seed=333)} end", "github_token", cp.TIER_SECRET),
     ],
 )
 def test_recorded_rules_have_the_expected_tier(text: str, rule: str, tier: str) -> None:
@@ -105,9 +99,8 @@ def test_recorded_rules_have_the_expected_tier(text: str, rule: str, tier: str) 
 
 
 def test_identifier_tier_key_id_is_kept_visible() -> None:
-    """A key ID is tagged as an identifier and is left in the text."""
-    assert cp.rule_tier("aws_access_key_id") == cp.TIER_IDENTIFIER
-    # An AWS key ID is an Identifier with the structured detectors on.
+    """A key ID is an identifier: no rule masks it, so it is left in the text."""
+    assert "aws_access_key_id" not in cp.RULE_TIERS
     cleaned, _warnings, records = redaction.redact_credentials_with_records(
         "id AKIAIOSFODNN7EXAMPLE end"
     )

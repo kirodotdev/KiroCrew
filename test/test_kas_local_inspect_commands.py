@@ -23,8 +23,9 @@ from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard.chat_runner import _run_chat, effective_session_key
 from kiro_crew.providers.acp import AcpProvider
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-_SECRET = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+_SECRET = github_classic(seed=407)
 
 
 @pytest.fixture(autouse=True)

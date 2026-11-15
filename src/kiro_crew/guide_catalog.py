@@ -330,10 +330,9 @@ def needs_redaction(text: str) -> bool:
     if not text:
         return False
     from kiro_crew.platform import redact_via_context
-    from kiro_crew.security import redact_exfiltration_urls
+    from kiro_crew.security import refuses
 
-    scrubbed, _ = redact_exfiltration_urls(text)
-    return scrubbed != text or redact_via_context(scrubbed) != scrubbed
+    return refuses(text, redact_via_context)
 
 
 def validate_intro(raw: object) -> str:
@@ -1445,10 +1444,11 @@ _AUTO_SITE_OR_LOCATION_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 
 
 def _redacts(text: str) -> bool:
-    """True when the existing credential redactor would change *text*."""
+    """True when the existing credential redactor would change *text*, or a URL is flagged."""
     from kiro_crew.platform import redact_via_context
+    from kiro_crew.security import refuses
 
-    return redact_via_context(text) != text
+    return refuses(text, redact_via_context)
 
 
 def _has_control_chars(text: str, *, allow_newlines: bool = False) -> bool:

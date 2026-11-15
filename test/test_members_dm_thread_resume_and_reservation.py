@@ -940,27 +940,6 @@ class TestPersistenceRestoreGate:
 
         assert _member_restore_identity(key) is _SKIP_MEMBER_RESTORE
 
-    def test_skipped_restore_warning_does_not_log_a_credential_shaped_slot(self, caplog):
-        import logging
-
-        from kiro_crew.dashboard.chat_persistence import (
-            _SKIP_MEMBER_RESTORE,
-            _member_restore_identity,
-        )
-
-        name = "xoxb-000000000000-abcdefghijkl"
-        slug = slug_for_name(name)
-        key = member_slot_key(slug)
-        write_dm_binding(slug, member=name, slot_key=key)
-
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.chat_persistence"):
-            assert _member_restore_identity(key) is _SKIP_MEMBER_RESTORE
-
-        messages = [record.getMessage() for record in caplog.records]
-        assert any("no dispatchable dm binding" in message for message in messages)
-        assert not any(name in message for message in messages)
-        assert not any(slug in message for message in messages)
-
     def test_member_key_without_binding_is_skipped_not_published(self):
         """No binding -> the restore skips the slot instead of publishing it.
 

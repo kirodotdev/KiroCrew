@@ -1025,15 +1025,15 @@ async def synthesize_speech(
 
     LLM output is redacted for credentials and exfiltration URLs before
     synthesis — audio files uploaded to Slack bypass the usual text-path
-    redaction, so we apply both filters here to prevent secrets or
-    suspicious URLs from being spoken and persisted in Slack.
+    redaction, so we apply both filters here to prevent secrets, in prose or
+    inside a URL, from being spoken and persisted in Slack.
     """
     # ── Redact LLM output before it crosses an external surface (audio) ──
     text, cred_warns, url_warns = redact_with_findings(text)
     if cred_warns:
         logger.warning("voice_reply: redacted %d credential pattern(s) before TTS", len(cred_warns))
     if url_warns:
-        logger.warning("voice_reply: redacted %d suspicious URL(s) before TTS", len(url_warns))
+        logger.warning("voice_reply: masked %d URL credential(s) before TTS", len(url_warns))
 
     # ``language_code`` is unused by both built-ins: Polly and the built-in engine
     # each speak the language of the voice the user picked.
@@ -1559,7 +1559,7 @@ async def streaming_voice_reply(
         )
     if url_warns:
         logger.warning(
-            "stream_voice_chunks: redacted %d suspicious URL(s) before TTS", len(url_warns)
+            "stream_voice_chunks: masked %d URL credential(s) before TTS", len(url_warns)
         )
 
     sentences = split_sentences(response_text)

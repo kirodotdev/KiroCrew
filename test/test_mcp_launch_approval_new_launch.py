@@ -30,6 +30,7 @@ from mcp_launch_approval_helpers import (  # noqa: F401 -- the fixture is reques
 
 from kiro_crew.doctor_checks import mcp as doctor_mcp
 from kiro_crew.mcp_gateway import rewriter
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 #: Opts this module out of the conftest fixture that approves every gatewayd launch.
 ENFORCE_LAUNCH_APPROVAL = True
@@ -122,10 +123,10 @@ async def test_an_edit_beside_a_second_agent_keeps_command_changed(tmp_path, tog
 async def test_a_changed_credential_beside_a_second_agent_keeps_command_changed(
     tmp_path, toggle_home, capsys
 ):
-    _declare(toggle_home, "agent spec", _APPROVED_CMD, ["--token", "ghp_" + "a1B2" * 9])
+    _declare(toggle_home, "agent spec", _APPROVED_CMD, ["--token", github_classic(seed=135)])
     assert (await _toggle_on())[0] == 200
 
-    _declare(toggle_home, "agent spec", _APPROVED_CMD, ["--token", "ghp_" + "z9Y8" * 9])
+    _declare(toggle_home, "agent spec", _APPROVED_CMD, ["--token", github_classic(seed=136)])
     _declare_second_agent(toggle_home, ["--second-agent"])
     refusal = await _refusal_after_next_boot(tmp_path, toggle_home)
 

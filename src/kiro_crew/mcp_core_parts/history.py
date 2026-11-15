@@ -51,8 +51,15 @@ def _redact_history_output(text: str) -> str:
     credential patterns apply to verbatim chat-transcript egress; the Default
     ``CredentialPolicy`` delegates to ``security.redact`` (the same
     exfil-then-credential dual pass), so standalone is byte-for-byte unchanged.
+
+    The chat output seam (``redaction_seams.CHAT``): in a process that has the owner's
+    redaction setting published off, the output stays as written. The MCP server
+    this tool runs in never publishes it, so there the output keeps redacting.
     """
-    return redact(text)
+    from kiro_crew import redaction_seams
+
+    with redaction_seams.output_seam(redaction_seams.CHAT):
+        return redact(text)
 
 
 def _parse_iso_date_epoch(date_str: str) -> float | None:

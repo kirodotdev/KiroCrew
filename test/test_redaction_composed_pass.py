@@ -15,38 +15,8 @@ import pytest
 from kiro_crew import security
 from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-# A URL to an unknown host whose query carries a credential-shaped value. The
-# composed pass removes the whole URL.
-_URL = (
-    "https://collector.example/c?d=AKIAIOSFODNN7EXAMPLE"
-    "&s=Qh4Tm2Vx9KpRc%2FZ8Nw3Hd%2FJf1Lb5Gs0Ye9Ua2WkE&pad=" + "x" * 40
-)
-_TEXT = f"see {_URL} now"
-_EXPECTED = "see [REDACTED: suspicious URL to collector.example] now"
-
-
-def test_composed_pass_removes_the_url_whole() -> None:
-    assert security.redact(_TEXT) == _EXPECTED
-    assert security.redact_and_truncate(_TEXT) == _EXPECTED
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "see https://AKIAIOSFODNN7EXAMPLE.Qh4Tm2Vx9KpRc1Z8Nw3Hd" "Jf1Lb5Gs0Ye9Ua2WkEzz x",
-        "see https://10.0.0.1Qh4Tm2Vx9KpRc1Z8Nw3Hd" "Jf1Lb5Gs0Ye9Ua2WkEzz x",
-        "see https://host.example:443Qh4Tm2Vx9KpRc1Z8Nw3Hd" "Jf1Lb5Gs0Ye9Ua2WkEzz x",
-    ],
-)
-def test_url_match_never_ends_inside_a_word(text: str) -> None:
-    """A URL host or port is matched whole, so the credential pass sees whole words."""
-    out = security.redact(text)
-    assert "Qh4Tm2Vx9KpRc" not in out
-    assert "Z8Nw3HdJf1Lb5Gs" not in out
-
-
-# Enough query to make the URL pass flag the address. ``x`` and not a hex
-# letter: a 40-run of hex is a git object name and is kept.
+# A long query value that is no credential. ``x`` and not a hex letter: a
+# 40-run of hex is a git object name and is kept.
 _PAD = "x" * 40
 
 
@@ -55,8 +25,6 @@ _PAD = "x" * 40
     [
         # A credential that starts inside a flagged URL and ends after it.
         (f"https://collector.example/?pad={_PAD}&token=)opaque-value-xyz", "opaque-value", ""),
-        # The same, with nothing after the label.
-        (f"https://collector.example/?pad={_PAD}&token=", "collector.example/?", ""),
         # A flagged URL followed by a labelled secret. The value has the AWS
         # secret's shape (40 characters of its alphabet), which the label needs.
         (
@@ -65,12 +33,6 @@ _PAD = "x" * 40
             "Qh4Tm2Vx9KpRc",
             " end",
         ),
-        # Two flagged URLs around plain text.
-        (
-            f"a https://one.example/?p={_PAD}b x https://two.example/?q={_PAD}c z",
-            "one.example/?",
-            " x ",
-        ),
     ],
 )
 def test_composed_pass_removes_what_either_pass_finds(text: str, gone: str, kept: str) -> None:
@@ -78,13 +40,6 @@ def test_composed_pass_removes_what_either_pass_finds(text: str, gone: str, kept
     assert gone not in out
     assert kept in out
     assert security.redact(out) == out
-
-
-def test_composed_pass_does_not_repeat_a_host_a_credential_runs_through() -> None:
-    text = f"see https://AKIAIOSFODNN7EXAMPLE.{SAMPLE_AWS_SECRET} end"
-    out = security.redact(text)
-    assert SAMPLE_AWS_SECRET[:13] not in out
-    assert out.endswith(" end")
 
 
 _VALUES = (
@@ -133,12 +88,6 @@ def test_composed_pass_removes_at_least_what_either_order_removes() -> None:
                 assert not any(p in out for p in _pieces(value)), text
 
 
-def test_composed_pass_reports_both_kinds_of_finding() -> None:
-    text = f"https://collector.example/?pad={_PAD}&token=)opaque-value-xyz"
-    _out, credentials, urls = security.redact_with_findings(text)
-    assert credentials and urls
-
-
 def test_composed_pass_leaves_clean_text_alone() -> None:
     for text in ("", "plain text", "see https://example.com/a?b=1 now"):
         assert security.redact(text) == text
@@ -150,4 +99,5 @@ def test_stream_redactor_uses_the_composed_pass(cut: int) -> None:
     stream = security.StreamRedactor()
     out = stream.feed(text[:cut]) + stream.feed(text[cut:]) + stream.flush()
     assert "opaque-value" not in out
-    assert "collector.example/?" not in out
+    # A URL is never replaced whole: everything but the credential's value stays.
+    assert f"see https://collector.example/?pad={_PAD}&token=" in out

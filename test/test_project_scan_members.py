@@ -37,6 +37,7 @@ from kiro_crew.project_scan import (
     manifest_signal,
     scan,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -521,7 +522,7 @@ class TestDeclarationFailures:
 # A synthetic 40-char AWS secret access key, split so no contiguous key-shaped
 # literal exists in this source file for a secrets scanner to flag; the joined
 # runtime value is what the redactor must catch.
-_FAKE_AWS_KEY = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
+_FAKE_AWS_KEY = github_classic(seed=148)  # a token; a bare 40-character run stays visible
 
 
 class TestWarningReasonRedaction:

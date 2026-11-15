@@ -1381,7 +1381,7 @@ def test_a_credential_straddling_the_line_cap_is_scrubbed_before_the_cut():
     the way out -- and BEFORE the per-line cap, or a secret straddling the cap would
     be cut to a fragment the redactor cannot recognise and leave as plain text."""
     secret = github_classic(seed=81)
-    prefix = "x" * 30
+    prefix = "x" * 29 + " "  # a blank: a token glued to a letter is no token by its format
     cap = len(prefix) + 12  # the cut lands inside the token
     line = chat_threads._line(chat_threads.ROLE_ASSISTANT, prefix + secret, cap)
     assert secret not in line and secret[:12] not in line

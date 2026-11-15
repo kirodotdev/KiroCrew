@@ -11,7 +11,6 @@ mocked, so the suite runs on Linux CI.
 from __future__ import annotations
 
 import ast
-import json
 import re
 from pathlib import Path
 
@@ -76,19 +75,6 @@ def test_telemetry_salt_is_restricted(
     salt = handlers_system._get_telemetry_salt()
     assert (tmp_path / "telemetry_salt").read_bytes() == salt
     assert len(seen) == 1 and Path(seen[0]).parent == tmp_path, seen
-
-
-def test_redaction_allow_list_is_restricted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seen: list[str]
-) -> None:
-    from kiro_crew.security import redaction_allow
-
-    target = tmp_path / "redaction-allow" / "hosts.json"
-    monkeypatch.setattr(redaction_allow, "_path_override", target)
-    monkeypatch.setattr(redaction_allow, "_snapshot", None)
-    redaction_allow._write({"ws": ["example.com"]})
-    assert json.loads(target.read_text(encoding="utf-8")) == {"ws": ["example.com"]}
-    assert _names(seen) == ["hosts.tmp"], seen
 
 
 def test_log_append_is_restricted_on_windows(

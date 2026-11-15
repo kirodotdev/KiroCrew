@@ -50,6 +50,7 @@ import tempfile
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from kiro_crew import redaction_seams
 from kiro_crew.messaging.attachments import (
     Attachment,
     IngestLimits,
@@ -65,7 +66,7 @@ from kiro_crew.messaging.outbound_files import (
     extract_local_refs_off_loop,
 )
 from kiro_crew.platform_compat import restrict_dir_to_owner
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls, refuses
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -200,6 +201,7 @@ def _redact(text: str) -> str:
 _MAX_REJECTION_LINES = 3
 
 
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
 def _display_safe(text: str) -> str:
     """Redact against what Slack RENDERS, not only the literal bytes.
 
@@ -339,11 +341,16 @@ def upload_filename(file: OutboundFile, index: int) -> str:
     stem = _UNSAFE_FILENAME_RE.sub("_", os.path.basename(file.path))
     stem = os.path.splitext(stem)[0].strip("._")[:_STEM_CHARS]
     name = f"{stem or f'image_{index}'}{ext}"
-    return name if _redact(name) == name else f"image_{index}{ext}"
+    return f"image_{index}{ext}" if refuses(name, _redact) else name
 
 
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
 def upload_title(file: OutboundFile, filename: str) -> str:
-    """The title Slack shows above the file: the alt text, redacted and capped."""
+    """The title Slack shows above the file: the alt text, redacted and capped.
+
+    Every channel member sees it, so it is redacted whatever seam the upload is
+    called from (the dashboard's linked-thread mirror runs inside CHAT).
+    """
     alt = _redact(file.alt or "").strip()
     return alt[:_TITLE_CHARS] or filename
 

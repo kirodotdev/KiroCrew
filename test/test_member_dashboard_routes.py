@@ -10,8 +10,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import random
-import re
 import string
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -515,7 +513,7 @@ def test_a_credential_in_a_fold_value_is_redacted_before_it_reaches_the_page():
         "MIIEowIBAAKCAQEA3Zx8kUoTBqQw0hXvPj9mKpLq2yTnVr7dFcBg6WsEnJaHtYuZ\n"
         f"{_dashes}END {_kind}{_dashes}"
     )
-    token = "ghp" + "_" + "ZXAMPLEzxampleZXAMPLEzxampleZXAMPLE12"
+    token = github_classic(seed=64)
     value = {
         "goal": f"ship the thing; key is {pem}",
         "items": [{"summary": f"used {token} to fetch it"}],
@@ -523,7 +521,7 @@ def test_a_credential_in_a_fold_value_is_redacted_before_it_reaches_the_page():
     }
     out = routes._page_safe(value)
     blob = json.dumps(out)
-    assert f"BEGIN {_kind}" not in blob, f"a key block reaches the page: {blob[:300]}"
+    assert "MIIEowIBAAKCAQEA3Zx8" not in blob, f"a key body reaches the page: {blob[:300]}"
     assert token not in blob, f"a token reaches the page: {blob[:300]}"
     # Still a page, not a blank: the prose around the secret survives.
     assert "ship the thing" in out["goal"]
@@ -866,8 +864,7 @@ def test_a_credential_in_a_page_is_redacted_before_it_reaches_the_reader():
 
 
 #: 62 letters and digits, then 18 marks: the 80-character palette a pixel-art page indexes
-#: into. Any 40-character window of it holds forty distinct characters, which is what the
-#: bare-secret pass reads as a key.
+#: into. Any 40-character window of it holds forty distinct characters and no label.
 _PALETTE = string.ascii_lowercase + string.ascii_uppercase + string.digits + "#$%&*+-=?@^_~:;<>!"
 
 
@@ -877,13 +874,9 @@ def _bare_key() -> str:
 
 
 def test_a_script_is_served_as_its_author_wrote_it():
-    """The bare-secret pass reads an alphabet as a key, and the page ran on the marker.
-
-    The script loaded, nothing reported an error, and every lookup into the alphabet
-    answered the wrong index.
-    """
+    """An alphabet is no credential: a marker in it would leave the script loading with
+    nothing reported and every lookup into the alphabet answering the wrong index."""
     page = f'<canvas id="c"></canvas><script>var ART_CHARS = "{_PALETTE}";</script>'
-    assert redact_via_context(page) != page, "the premise: the whole-page pass rewrites it"
     assert routes._template_text_safe(page) == page
 
 
@@ -897,278 +890,48 @@ def test_a_script_is_served_as_its_author_wrote_it():
     ],
 )
 def test_a_long_base64_data_uri_in_a_stylesheet_or_script_is_served_as_written(template):
-    """A font or an image inlined into the page's code is binary, so the bare-secret
-    pass reads windows of it as keys and the browser then decodes the marker."""
+    """A font or an image inlined into the page's code is binary, not a credential: a
+    marker in it would leave the browser decoding the marker."""
     blob = base64.b64encode(
         b"".join(hashlib.sha256(bytes([n])).digest() for n in range(12))
     ).decode()
     page = template.format(blob=blob)
-    assert redact_via_context(page) != page, "the premise: the whole-page pass rewrites it"
     assert routes._template_text_safe(page) == page
-
-
-def test_the_same_run_outside_a_script_or_stylesheet_is_still_masked():
-    run = _PALETTE[:62]
-    for page in (
-        f"<p>{run}</p>",
-        f'<p title="{run}">x</p>',
-        f'<a href="#" onclick="draw(\'{run}\')">x</a>',
-        f'<script src="/lib.js" data-key="{run}"></script>',
-    ):
-        assert run not in routes._template_text_safe(page), page
-
-
-def test_a_label_less_key_in_visible_text_is_masked_beside_a_script_that_keeps_its_literal():
-    page = f"<script>var A = '{_PALETTE}';</script><p>key {_bare_key()}</p>"
-    out = routes._template_text_safe(page)
-    assert f"var A = '{_PALETTE}';" in out
-    assert _bare_key() not in out
 
 
 def test_a_credential_written_into_a_script_or_stylesheet_is_still_masked():
     # ASSEMBLED at runtime for the reason the page case above gives.
     dashes = "-" * 5
     kind = "RSA PRIVATE KEY"
-    secrets = [
-        SAMPLE_AWS_SECRET,
-        github_classic(seed=66),
+    pem = (
         f"{dashes}BEGIN {kind}{dashes}\nMIIEowIBAAKCAQEA3Zx8kUoTBqQw0hXvPj9mKpLq2yTnVr7\n"
-        f"{dashes}END {kind}{dashes}",
+        f"{dashes}END {kind}{dashes}"
+    )
+    token = github_classic(seed=66)
+    # (as written, the value that must not be served): a bare 40-character run is no
+    # credential by itself, so the AWS secret is a member under its label.
+    secrets = [
+        (f'{{"aws_secret_access_key": "{SAMPLE_AWS_SECRET}"}}', SAMPLE_AWS_SECRET),
+        (token, token),
+        (pem, pem),
     ]
-    for secret in secrets:
+    for written, secret in secrets:
         for page in (
-            f"<script>var k = `{secret}`; draw(k);</script>",
-            f"<style>/* {secret} */ .a {{ color: red }}</style>",
+            f"<script>var k = `{written}`; draw(k);</script>",
+            f"<style>/* {written} */ .a {{ color: red }}</style>",
         ):
             out = routes._template_text_safe(page)
             assert secret not in out, page
             assert out.startswith(page[:8]) and out.endswith(page[-9:]), "the tags were eaten"
 
 
-@pytest.mark.parametrize("keep_first", [True, False])
-@pytest.mark.parametrize("length", [30, 36, 39])
-def test_a_key_id_glued_to_a_partial_key_is_masked_as_one_run_beside_a_style(keep_first, length):
-    """The full pass reads the two as one run; rewriting the id first leaves a tail under 40."""
-    key_id = "AKIA" + "IOSFODNN7" + "EXAMPLE"
-    tail = _bare_key()[:length]
-    run = key_id + tail if keep_first else tail + key_id
-    page = f"<p>{run}</p><style>a {{ color: red }}</style>"
-    out = routes._template_text_safe(page)
-    assert out == redact_via_context(page)
-    assert tail not in out
-
-
 def test_a_script_holding_a_masked_credential_still_keeps_its_literal():
-    """The page changes under the scrub here, so the result is read again before it is served."""
+    """Only the credential's value changes: the script's other literal is served as written."""
     token = github_classic(seed=67)
-    page = f"<script>var A = '{_PALETTE}'; var k = '{token}';</script><p>{_bare_key()}</p>"
+    page = f"<script>var A = '{_PALETTE}'; var k = '{token}';</script>"
     out = routes._template_text_safe(page)
     assert f"var A = '{_PALETTE}';" in out
     assert token not in out
-    assert _bare_key() not in out
-
-
-@pytest.mark.parametrize(
-    "template",
-    [
-        # A PEM block wraps a nested script opener, so the first end tag after it closes the script.
-        "<script>\n{pem}\n// </script><p>{key}</p>\n</script>",
-        # A labelled value runs through the start tag that follows its label, or the end tag.
-        "aws_secret_access_key=<script>{key}</script>",
-        "aws_secret_access_key=<script/c>{key}</script>",
-        "<script/aws_secret_access_key=>{key}</script>",
-    ],
-)
-def test_a_rule_that_rewrites_the_markup_around_a_script_cannot_turn_its_text_into_prose(template):
-    """A rule that takes tags with it must not leave the text it spared to be read as prose.
-
-    The browser reads the page the rules leave, so the script text is chosen from that page and
-    not from the page before the rules ran.
-    """
-    dashes = "-" * 5
-    pem = (
-        f"{dashes}BEGIN PRIVATE KEY{dashes}\nMIIEowIBAAKCAQEA3Zx8kUoTBqQw0hXvPj9mKpLq2yTnVr7\n"
-        f"<!--<script>\n{dashes}END PRIVATE KEY{dashes}"
-    )
-    page = template.format(pem=pem, key=_bare_key())
-    assert _bare_key() not in routes._template_text_safe(page)
-
-
-def _page_vocabulary():
-    """Tags, comment and script openers, the rules that reach across them, keys, and glued runs."""
-    dashes = "-" * 5
-    keys = [
-        k
-        for k in (
-            base64.b64encode(hashlib.sha256(b"kc-bare-%d" % n).digest()).decode()[:40]
-            for n in range(40)
-        )
-        if k not in redact_via_context(f"<p>{k}</p>")
-    ]
-    assert len(keys) >= 10, "the premise: the full pass masks a key standing alone"
-    key_id = "AKIA" + "IOSFODNN7" + "EXAMPLE"
-    tails = [k[:36] for k in keys[:6]]
-    structure = [
-        "<script>", "</script>", "<style>", "</style>", "<!--", "-->", "<!--<script>", "<p>",
-        "</p>", '<script src="', '">', ">", "<", "\n", " ", "//", "<script ", "<scr", "ipt>",
-        "<noscript>", "<template>", "<textarea>", "</textarea>", "var s = '", "'", ";",
-    ]  # fmt: skip
-    rules = [
-        f"{dashes}BEGIN PRIVATE KEY{dashes}", f"{dashes}END PRIVATE KEY{dashes}",
-        "aws_secret_access_key=", "aws_secret_access_key = ", "password=", "token=",
-        "api_key=", "const password =\n    ", "headers['X-Api-Key'] = '", key_id,
-    ]  # fmt: skip
-    glued = [key_id + t for t in tails] + [t + key_id for t in tails]
-    return structure, rules, glued, keys, tails
-
-
-def test_a_page_without_an_alphabet_or_a_data_uri_is_scrubbed_exactly_as_the_full_pass_does():
-    """Whatever the markup, the scrub differs from the full pass only by the two shapes it keeps.
-
-    The pages are seeded mixes of tags, comment and script openers, the rules that reach across
-    them (a PEM block, a labelled value), keys and keys glued to a key id. None holds an
-    alphabet or a data URI, so every page must come out as the full pass makes it.
-    """
-    structure, rules, glued, keys, _tails = _page_vocabulary()
-    rng = random.Random(20815)
-    differing = []
-    for _ in range(3000):
-        pieces = []
-        for _ in range(rng.randint(3, 16)):
-            pick = rng.random()
-            pieces.append(
-                rng.choice(structure)
-                if pick < 0.4
-                else (
-                    rng.choice(rules)
-                    if pick < 0.65
-                    else rng.choice(glued) if pick < 0.75 else rng.choice(keys)
-                )
-            )
-        page = "".join(pieces)
-        if routes._template_text_safe(page) != redact_via_context(page):
-            differing.append(page)
-    assert not differing, differing[:3]
-
-
-def _in_a_data_uri_payload(page: str, secret: str) -> bool:
-    """Whether every run of *page* that holds *secret* is a payload behind a data URI header."""
-    runs = [m for m in re.finditer(r"[A-Za-z0-9+/]{40,}", page) if secret in m.group()]
-    return bool(runs) and all(
-        len(m.group()) >= 64
-        and re.search(r"data:[^,;]+/[^,;]+(?:;[^,;]+)*;base64,\Z", page[: m.start()], re.I)
-        for m in runs
-    )
-
-
-def test_an_alphabet_and_a_data_uri_survive_and_nothing_else_the_full_pass_masks_does():
-    """The two shapes the scope keeps are kept; every key beside them is masked all the same.
-
-    The one place a key the full pass masks may be served is the stated limit: inside a run of
-    64 characters or more directly behind a ``data:`` header. The test finds that run itself.
-    """
-    structure, rules, glued, keys, tails = _page_vocabulary()
-    shapes = [_PALETTE, "data:image/png;base64," + "QUJD" * 40]
-    rng = random.Random(20816)
-    kept = limit = 0
-    for _ in range(3000):
-        pieces = []
-        for _ in range(rng.randint(3, 16)):
-            pick = rng.random()
-            pieces.append(
-                rng.choice(structure)
-                if pick < 0.35
-                else (
-                    rng.choice(rules)
-                    if pick < 0.55
-                    else (
-                        rng.choice(glued)
-                        if pick < 0.65
-                        else rng.choice(keys) if pick < 0.8 else rng.choice(shapes)
-                    )
-                )
-            )
-        page = "".join(pieces)
-        served = routes._template_text_safe(page)
-        masked_by_main = redact_via_context(page)
-        for secret in (*keys, *tails):
-            if (secret in served) == (secret in masked_by_main):
-                continue
-            assert secret in served and _in_a_data_uri_payload(page, secret), (page, served)
-            limit += 1
-        kept += sum(shape in served for shape in shapes)
-    assert kept > 0, "no alphabet or data URI was ever kept, so this proves nothing"
-    assert limit > 0, "the stated limit never came up, so its test proves nothing"
-
-
-@pytest.mark.parametrize(
-    "template",
-    [
-        "<!-- old <script> tag removed --><p>{key}</p>",
-        '<p title="<style>">{key}</p>',
-        "<textarea><script></textarea><p>{key}</p>",
-        "<title><style></title><p>{key}</p>",
-        "<script data-note='>'>var a = 1;</script><p data-q='<style>'>{key}</p>",
-        "<script>var a = 1;<p>{key}</p>",
-        "<svg><script/></svg><p>{key}</p><script>var a = 1;</script>",
-        "<svg><script><p>{key}</p></script></svg>",
-        "<math><style><p>{key}</p></style></math>",
-        '<p a=x"b="c>d" e<textarea x><script>{key}</script></textarea>',
-        "<math></svg><style><mtext>{key}</mtext></style></math>",
-        '<svg><foreignObject><div></svg></div></foreignObject><script><a title="{key}">x</a></script>',
-        "<select><style></select><p>{key}</p></style>",
-        "<noscript><textarea></noscript><script>{key}</script></textarea></noscript>",
-        "<template><col><style></template><p>{key}</p></style>",
-        "<script\u00a0>var a = 1;</script\u00a0><p>{key}</p>",
-        "<\u017fcript>var a = 1;</\u017fcript><p>{key}</p><style>a{{}}</style>",
-    ],
-)
-def test_prose_a_browser_reads_as_prose_keeps_every_pass_whatever_markup_surrounds_it(template):
-    """A tag the HTML tokenizer would not open must not turn the text after it into code.
-
-    Each page puts a key-shaped run in a paragraph. Reading the page the way a browser does
-    leaves the paragraph as prose, and where the scan cannot tell it reads nothing as code.
-    """
-    key = _bare_key()
-    assert key not in routes._template_text_safe(template.format(key=key))
-
-
-def test_a_real_script_beside_markup_that_only_looks_like_one_keeps_its_literal():
-    page = (
-        f"<!-- <script> --><svg><circle/></svg><select><option>a</option></select>"
-        f"<script>var A = '{_PALETTE}';</script>"
-        f'<p title="<style>">{_bare_key()}</p>'
-    )
-    out = routes._template_text_safe(page)
-    assert f"var A = '{_PALETTE}';" in out
-    assert _bare_key() not in out
-
-
-def test_past_the_bound_a_scripts_text_gets_every_pass_not_fewer():
-    """Handing text to the code function is a relaxation, so a page cannot earn it by length.
-
-    Only the first MAX_CODE_PIECES non-empty elements are handed over. Every element after
-    them goes back to the full pass, and empty elements neither spend the bound nor change
-    what is masked. So adding elements can only move text from the relaxed pass to the strict one.
-    """
-    from kiro_crew import dashboard_frame
-
-    bound = dashboard_frame.MAX_CODE_PIECES
-    token = github_classic(seed=68)
-    first = f"<script>var FIRST = '{_PALETTE}';</script>"
-    spent = "<script></script><script>var a = 1;</script>" * (bound - 1)
-    past = "<script>var a = 1;</script>" * 4
-    last = f"<script>var LAST = '{_PALETTE}'; var k = '{token}'; var b = '{_bare_key()}';</script>"
-    page = first + spent + past + last
-    assert len(dashboard_frame.code_spans(page)) > bound, "the premise: elements past the bound"
-
-    out = routes._template_text_safe(page)
-
-    assert f"var FIRST = '{_PALETTE}';" in out, "the first element lost its literal"
-    assert token not in out, "a credential in the last element was served"
-    assert _bare_key() not in out, "the last element kept a key-shaped run the full pass masks"
-    assert f"var LAST = '{_PALETTE}'" not in out, "the last element kept its literal"
-    assert out.count("<script>") == page.count("<script>"), "a tag was eaten"
 
 
 def test_a_page_with_no_script_or_stylesheet_is_scrubbed_as_it_always_was():

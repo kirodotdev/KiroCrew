@@ -328,11 +328,11 @@ class TestCycleFileMatching:
         # credential + exfil-URL redaction on it as on a canonical-named file.
         with patch("kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path):
             d = self._findings_dir(tmp_path)
-            # 40+ char base64-ish blob in the query = exfil-shaped URL, which the
-            # URL leg redacts wholesale (domain included). A plain source URL is
-            # deliberately NOT redacted — findings legitimately cite sources.
+            # A credential parameter in the query: the URL leg masks its value and
+            # keeps the link. A plain source URL is deliberately NOT redacted —
+            # findings legitimately cite sources.
             exfil_url = (
-                "https://evil.example.com/exfil?blob="
+                "https://evil.example.com/exfil?access_token="
                 "QUtJQUlPU0ZPRE5ON0VYQU1QTEVBQkNERUZHSElKS0w"
             )
             (d / "cycle-1.json").write_text(json.dumps({
@@ -346,12 +346,12 @@ class TestCycleFileMatching:
             blob = json.dumps(findings[0])
             # Leg 1: the raw credential must not survive into the surfaced payload.
             assert _SECRET not in blob
-            # Leg 2: the exfil-shaped URL must be redacted wholesale — path and
-            # payload gone, replaced by the redaction marker. (The marker itself
-            # names the domain by design, so assert on the URL body, not the domain.)
-            assert "exfil?blob=" not in blob
+            # Leg 2: the credential value in the URL must be gone; the link stays.
             assert "QUtJQUlPU0ZPRE5ON0VYQU1QTEVBQkNERUZHSElKS0w" not in blob
-            assert "[REDACTED: suspicious URL" in blob
+            assert (
+                "https://evil.example.com/exfil?access_token=[REDACTED: credential]"
+                in blob
+            )
 
 
 class TestFileInterface:
@@ -1036,10 +1036,15 @@ class TestGrillHTTP:
             request["user"] = "test-user"
             return await handler(request)
 
-        with patch(
-            "kiro_crew.apps.builtins.auto_research.handlers.DB_PATH", tmp_path / "t.db"
-        ), patch(
-            "kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path / "r"
+        with (
+            patch(
+                "kiro_crew.apps.builtins.auto_research.handlers.DB_PATH",
+                tmp_path / "t.db",
+            ),
+            patch(
+                "kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR",
+                tmp_path / "r",
+            ),
         ):
             a = web.Application(middlewares=[_inject_user])
             register_routes(a)

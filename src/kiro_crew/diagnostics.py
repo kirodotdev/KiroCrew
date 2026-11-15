@@ -1411,8 +1411,8 @@ def terminal_issue_url(result: BundleResult, note: str = "") -> str:
     The dashboard renders `BundleResult.github_issue_url` out of a JSON response
     that no redactor scans, so it keeps the full pre-filled body. A link PRINTED
     to stdout has no such guarantee — it gets selected into chat, captured from a
-    shell tool, or relayed by an agent, and on those paths the pre-filled variant
-    is replaced wholesale by ``[REDACTED: suspicious URL to github.com]``. This
+    shell tool, or relayed by an agent, and on those paths a long pre-filled query
+    reads as data carried out (``security.exfil.scan_exfiltration_urls``). This
     variant trades the pre-filled body for a link that arrives intact. An edition
     tracker gets the same ``prefill=False`` signal and owns keeping its query short.
     """

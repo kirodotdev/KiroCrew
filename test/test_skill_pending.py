@@ -8,12 +8,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from redaction_structured_cases import synth
+from redaction_structured_cases import github_classic
 
 from kiro_crew.skills import AutoSkillProvenance, ClaimRefusal, PendingApprovalRefused, SkillsLoader
 
-# A synthetic 40-character secret the redactor removes; an AWS key ID stays visible.
-_SECRET = synth(40, seed=206)
+# A synthetic GitHub token the redactor removes; an AWS key ID and a bare 40-character
+# run stay visible.
+_SECRET = github_classic(seed=206)
 
 
 @pytest.fixture()
@@ -377,7 +378,7 @@ def test_direct_write_candidate_is_redacted_at_detail_and_approve(loader):
     """A candidate written straight into the pending queue (crystallize path,
     bypassing consolidation redaction) must not surface a credential to the
     dashboard detail API or promote it into a live skill (GPT HIGH)."""
-    secret = "ghp_0123456789abcdefghijklmnopqrstuvwx"
+    secret = github_classic(seed=207)
     slug = "leaky-cand"
     pdir = loader._pending_root() / slug
     (pdir / "scripts").mkdir(parents=True, exist_ok=True)
@@ -814,7 +815,7 @@ def test_meta_credentials_are_redacted_in_list_and_detail(loader):
     through the pending list/detail API (GPT HIGH: redact metadata strings)."""
     import json as _json
 
-    secret = "ghp_0123456789abcdefghijklmnopqrstuvwx"
+    secret = github_classic(seed=208)
     slug = "meta-leak"
     pdir = loader._pending_root() / slug
     pdir.mkdir(parents=True, exist_ok=True)
@@ -878,7 +879,7 @@ def test_nested_meta_credentials_redacted(loader):
     top-level-only redaction leaked nested values)."""
     import json as _json
 
-    secret = "ghp_0123456789abcdefghijklmnopqrstuvwx"
+    secret = github_classic(seed=208)
     slug = "nested-meta"
     pdir = loader._pending_root() / slug
     pdir.mkdir(parents=True, exist_ok=True)

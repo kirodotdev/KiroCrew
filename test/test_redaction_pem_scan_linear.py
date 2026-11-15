@@ -14,21 +14,11 @@ from __future__ import annotations
 
 import random
 import re
-from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from redaction_structured_cases import structured_engine
 
 from kiro_crew.security import pem_scan, redaction
-
-
-@pytest.fixture(autouse=True)
-def _structured_engine() -> Iterator[None]:
-    """These cases assert the structured engine's output: keep it selected under a legacy run."""
-    with structured_engine():
-        yield
-
 
 # The BEGIN markers are assembled from their dashes, so no line of this file holds a whole
 # private-key header for a secret scanner to read.
@@ -139,18 +129,34 @@ SHAPES: dict[str, tuple[str, list[tuple[int, int]], str]] = {
 }
 
 
-# With the structured detectors on, an unterminated private-key block is redacted to the
-# end of the text, so these shapes redact more than the pass-1 spans above.
-_REDACTED_TO_THE_END: dict[str, str] = {
-    "unterminated header, body lines": _TAG,
-    "unterminated header in prose": f"see {_TAG}",
-    "unterminated headers, LF": _TAG,
-    "unterminated headers, glued": _TAG,
-    "block, then an unterminated header": f"{_TAG}\n{_TAG}",
-    "CRLF unterminated": _TAG,
-    "blank lines, unterminated": _TAG,
-    "header after the last end": f"{_TAG}\n{_TAG}",
-    "other credential after an unterminated header": _TAG,
+# With the structured detectors on, only a private key's BODY is redacted: the BEGIN and
+# END lines stay, a block with no body has nothing to redact, and an unterminated block's
+# body runs to the end of the text (its last blanks aside). So these shapes redact other
+# text than the pass-1 spans above.
+_BODY_ONLY: dict[str, str] = {
+    "full rsa block": f"{_BR}\n{_TAG}\n{_ER}",
+    "full block in prose": f"key:\n{_B}\n{_TAG}\n{_E}\nthanks",
+    "encrypted block with a blank line": f"{_BR}\n{_TAG}\n{_ER}",
+    "unterminated header": _B,
+    "unterminated header, body lines": f"{_B}\n{_TAG}\n",
+    "unterminated header in prose": f"see {_B} {_TAG}",
+    "unterminated headers, LF": f"{_B}\n{_TAG}\n",
+    "unterminated headers, glued": f"{_B}{_TAG}",
+    "nested begin": f"{_B}\n{_TAG}\n{_E}",
+    "two blocks": f"{_B}\n{_TAG}\n{_E}\nmiddle\n{_BR}\n{_TAG}\n{_ER}\n",
+    "block, then an unterminated header": f"{_B}\n{_TAG}\n{_E}\n{_B}\n{_TAG}\n",
+    "unterminated header, then a block": f"{_B}\n{_TAG}",
+    "end before begin": f"{_E}\n{_B}\n{_TAG}",
+    "CRLF block": f"{_B}\r\n{_TAG}\r\n{_E}\r\n",
+    "CRLF unterminated": f"{_B}\r\n{_TAG}\r\n",
+    "CR-only block": f"{_B}\r{_TAG}\r{_E}",
+    "blank lines, unterminated": f"{_B}\n\n{_TAG}",
+    "overlapping end markers": f"{_B}\n{_TAG}\n{_E}END PRIVATE KEY-----",
+    "end glued to the header": f"{_B}{_E}",
+    "header at the very end": f"text {_B}",
+    "header after the last end": f"{_B}\n{_E}\n{_B}\n{_TAG}",
+    "other credential in the block": f"{_B}\n{_TAG}\n{_E}",
+    "other credential after an unterminated header": f"{_B}\n{_TAG}",
 }
 
 
@@ -159,7 +165,7 @@ def test_every_pem_shape_matches_and_redacts_as_before(name: str) -> None:
     text, spans, redacted = SHAPES[name]
     assert _scan(text) == spans
     assert _search_loop(text) == spans
-    assert redaction.redact_credentials(text)[0] == _REDACTED_TO_THE_END.get(name, redacted)
+    assert redaction.redact_credentials(text)[0] == _BODY_ONLY.get(name, redacted)
 
 
 _PIECES = (
@@ -272,7 +278,7 @@ def test_a_text_of_repeated_headers_at_the_dashboard_page_cap_is_redacted() -> N
     scan did not finish, redacted whole by the public entry point."""
     text = (_B + "\n") * (3 * 1024 * 1024 // (len(_B) + 1))
     redacted, warnings = redaction.redact_credentials(text)
-    assert "PRIVATE KEY" not in redacted
-    # The first unterminated header's block runs to the end of the text, so one warning.
-    assert redacted == _TAG
-    assert warnings == [f"Redacted credential pattern ({len(text)} chars)"]
+    # The first unterminated header's body runs to the end of the text, so one warning;
+    # the header itself stays.
+    assert redacted == f"{_B}\n{_TAG}"
+    assert warnings == [f"Redacted credential pattern ({len(text) - len(_B) - 1} chars)"]

@@ -24,6 +24,7 @@ import pytest
 
 from kiro_crew.dashboard import chat_auto_tag
 from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until
 
 
@@ -257,8 +258,9 @@ class TestAutoTagRedaction:
 
     async def test_credential_in_project_name_is_redacted(self, patch_save_slot):
         state = _make_state()
-        # This extreme case: project dir named with an AWS secret key
-        secret = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
+        # This extreme case: project dir named with a GitHub token (a bare
+        # 40-character run with no label or key ID beside it is no credential)
+        secret = github_classic(seed=57)
         slot = _make_slot(project="/x/deploy-" + secret)
 
         await maybe_auto_tag(state, slot)
@@ -656,7 +658,7 @@ class TestTopicTags:
         assert by_tag["st"]["error"] == "status_tag_requires_set_state"
 
     async def test_credentials_are_redacted_before_the_prompt(self, patch_save_slot, topic_model):
-        secret = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
+        secret = github_classic(seed=58)
         state = _make_state()
         slot = _topic_slot(message=f"my key is {secret} please help")
 
@@ -788,7 +790,7 @@ class TestTopicTags:
     ):
         from kiro_crew.dashboard.chat_auto_tag import _TOPIC_MESSAGE_CHARS
 
-        key = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
+        key = github_classic(seed=59)
         pad = "x " * ((_TOPIC_MESSAGE_CHARS - 8) // 2)
         state = _make_state()
         slot = _topic_slot(project="", message=pad + key + " tail")

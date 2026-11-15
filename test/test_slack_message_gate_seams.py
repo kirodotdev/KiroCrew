@@ -73,7 +73,7 @@ class TestDecoratedReplyIsReScanned:
         from kiro_crew.security import redact_credentials
 
         # A footer that (pathologically) carried an AWS key must be redacted.
-        decorated = "Your reply.\n\n_expires in 4m_ " + SAMPLE_AWS_SECRET
+        decorated = "Your reply.\n\n_expires in 4m_ aws_secret_access_key=" + SAMPLE_AWS_SECRET
         cleaned, warnings = redact_credentials(decorated)
         assert SAMPLE_AWS_SECRET not in cleaned
         assert warnings  # a credential was flagged

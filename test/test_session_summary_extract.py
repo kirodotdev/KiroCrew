@@ -25,6 +25,10 @@ from kiro_crew.session_summary import (
     render_bounded_input,
     render_input,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
+
+#: A GitHub token with a valid checksum.
+_TOKEN = github_classic(seed=67)
 
 
 def _rec(role, content, ts=None, **extra):
@@ -398,13 +402,11 @@ class TestPayloadRedaction:
     the sidecar is read straight back to the panel."""
 
     def test_a_credential_in_a_title_is_redacted(self):
-        payload = normalize_payload(
-            {"intents": [{"title": "rotate ghp_abcdefghijklmnopqrstuvwxyz0123456789"}]}
-        )
-        assert "ghp_abcdefghijklmnopqrstuvwxyz0123456789" not in payload["intents"][0]["title"]
+        payload = normalize_payload({"intents": [{"title": f"rotate {_TOKEN}"}]})
+        assert _TOKEN not in payload["intents"][0]["title"]
 
     def test_redaction_reaches_nested_fields(self):
-        secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+        secret = _TOKEN
         payload = normalize_payload(
             {
                 "intents": [

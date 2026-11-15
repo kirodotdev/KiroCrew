@@ -23,6 +23,7 @@ from kiro_crew.dashboard.handlers import session_control as handlers_sc
 from kiro_crew.mcp_dashboard import TABLE
 from kiro_crew.mcp_tools.dashboard_client import DashboardRequest, InMemoryDashboardClient
 from kiro_crew.mcp_tools.table import Caller, ToolContext
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 @pytest.fixture(autouse=True)
@@ -677,7 +678,7 @@ def test_a_credential_shaped_model_is_refused_before_it_is_stored(tmp_path):
     target = state.get_or_create_slot("chat-2")
 
     with pytest.raises(sc.SessionControlError) as exc:
-        _set_model(state, caller, "chat-2", "ghp_" + "a" * 36)
+        _set_model(state, caller, "chat-2", github_classic(seed=107))
 
     assert exc.value.code == "model_rejected"
     assert target._pending_model_pick is None
@@ -809,7 +810,7 @@ def test_a_read_redacts_a_credential_shaped_model(tmp_path):
     state = _make_state(tmp_path)
     caller = state.get_or_create_slot("chat-1")
     target = state.get_or_create_slot("chat-2")
-    secret = "ghp_" + "a" * 36
+    secret = github_classic(seed=108)
     target.model = secret
 
     read = sc.read_messages(state, caller_session_key=_key(caller), target="chat-2")

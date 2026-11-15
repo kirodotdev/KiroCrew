@@ -19,9 +19,7 @@ from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, E
 from kiro_crew.security import (
     contains_injection,
     redact_credentials,
-    redact_exfiltration_urls_with_records,
 )
-from kiro_crew.security.exfil import _scan_span_urls
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -35,10 +33,6 @@ _OPTIMIZER_DENY_REASON = (
     "the prompt optimizer runs no tools: it only rewrites the prompt it was "
     "given and answers with text, so every tool call is refused here"
 )
-
-#: Sentence punctuation a URL match can include at the end. Stripped
-#: from both the draft's URLs and the redacted addresses before they are compared.
-_URL_TRAILING_PUNCT = ".,;:!?]"
 
 # Placeholder the frontend collapses large pastes into (mirrors formatToken in
 # pasteTokens.ts: "[ Paste #N · M lines ]"). The middle dot is U+00B7. Captured
@@ -480,23 +474,8 @@ async def handle_optimize(request: web.Request) -> web.Response:
         )
         return web.json_response({"optimized": prompt, "changed": False})
 
-    # Redact any exfiltration URLs or credentials from LLM output. When the pass
-    # removes a URL the user wrote in the draft, the rewrite would hand back a
-    # placeholder for their own link, so keep the draft instead. Nothing in the
-    # model's text is exempted: the whole reply is redacted either way. A URL
-    # match can swallow the sentence punctuation after it, so both sides drop
-    # trailing ``.,;:!?]`` before the comparison; a looser match only ever
-    # keeps the user's own draft.
-    removed: list[tuple[str, str]] = []
-    optimized, _, _ = redact_exfiltration_urls_with_records(optimized, removed_out=removed)
-    # The draft's URLs are read with the redactor's own spans, so any span it
-    # can remove is recognized as the user's.
-    draft_urls = {url.rstrip(_URL_TRAILING_PUNCT) for url in _scan_span_urls(prompt)}
-    if any(address.rstrip(_URL_TRAILING_PUNCT) in draft_urls for address, _ in removed):
-        logger.info("Optimizer rewrite redacted a URL from the draft; returning original")
-        return web.json_response(
-            {"optimized": prompt, "changed": False, "reason": "draft_url_redacted"}
-        )
+    # Redact credentials from LLM output, inside a URL or not. Nothing in the
+    # model's text is exempted.
     optimized, _ = redact_credentials(optimized)
 
     changed = optimized.lower().strip() != prompt.lower().strip()

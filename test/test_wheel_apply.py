@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from kiro_crew.platform import wheel_apply, wheel_engine
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -480,7 +481,7 @@ class TestShownFailureText:
         assert shown.endswith(final)
 
     def test_a_credential_is_redacted_before_the_cut(self) -> None:
-        secret = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+        secret = github_classic(seed=177)
         text = "step exited 1: " + "x" * 3000 + secret + "y" * 200
         assert secret[-10:] not in wheel_apply.shown_failure_text(text)
 
@@ -733,7 +734,7 @@ class TestOutcomes:
     async def test_failure_text_is_redacted_then_capped(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        secret = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+        secret = github_classic(seed=178)
 
         def apply(**_kwargs: object) -> Path:
             raise wheel_engine.WheelUpdateError(f"could not fetch with {secret} " + "x" * 5000)

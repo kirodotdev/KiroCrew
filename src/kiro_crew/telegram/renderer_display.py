@@ -13,7 +13,11 @@ from __future__ import annotations
 
 import re
 
-from kiro_crew.messaging.display_safety import TELEGRAM_FALLBACK_FENCE, redact_for_display
+from kiro_crew.messaging.display_safety import (
+    TELEGRAM_FALLBACK_FENCE,
+    outside_redaction_tags,
+    redact_for_display,
+)
 from kiro_crew.messaging.renderer import _default_redactor, split_options_trailer
 
 
@@ -153,9 +157,12 @@ def _strip_steering(text: str) -> str:
 def _neutralize_md(raw: str) -> str:
     """Collapse whitespace, cap length, and strip Markdown control chars from a
     steer's text so the chip renders literally (inside a blockquote) and can't
-    perturb surrounding formatting."""
+    perturb surrounding formatting. Redacted before the strip: dropping ``_`` takes a
+    token's own separator (``ghp_``) with it, and the send-time pass would not read
+    the stripped text as that token."""
     t = " ".join((raw or "").split())[:120]
-    return re.sub(r"[*_`\[\]()]", "", t)
+    t, _ = redact_for_display(t, _default_redactor)
+    return outside_redaction_tags(t, lambda text: re.sub(r"[*_`\[\]()]", "", text))
 
 
 def _strip_hr(text: str) -> str:

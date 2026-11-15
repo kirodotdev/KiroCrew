@@ -17,7 +17,7 @@ Every string in an item is LLM-authored, and one of them (`branch`) reaches a
 2. **Gateway** — `POST /api/chat/slots/{slot}/followup` re-validates against the
    same schema (the endpoint is reachable over loopback from inside the kiro-cli
    process group, so it is a trust boundary, not a relay) and redacts
-   credentials and exfiltration URLs from every string before broadcasting.
+   credentials, inside URLs too, from every string before broadcasting.
 
 Both endpoints are **owner-only**. They act on owner-scoped resources — the
 card renders in the owner's composer, and the worktree allow-list spans every

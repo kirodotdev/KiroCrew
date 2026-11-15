@@ -38,6 +38,7 @@ from onboarding_import_helpers import (  # noqa: F401 -- the autouse fixture reg
 from kiro_crew import onboarding_apply, onboarding_scan
 from kiro_crew.cron import CronService, CronStoreUnreadable
 from kiro_crew.onboarding_sources import hermes as hermes_source
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.vector_memory import VectorMemoryStore
 
 # Keep apply_import's MCP sidecar lock off the real ~/.kiro/settings (see the
@@ -1094,7 +1095,7 @@ class TestApplySchedules:
     def test_schedule_rejects_secret_bearing_prompt_instead_of_redacting_it(
         self, tmp_path: Path
     ) -> None:
-        secret = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
+        secret = github_classic(seed=76)
         predecessor_root = tmp_path / "home" / ".predecessor"
         predecessor_root.mkdir(parents=True)
         (predecessor_root / "crons.json").write_text(

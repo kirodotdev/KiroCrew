@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 
-import pytest
-from redaction_structured_cases import session_token, structured_engine
+from redaction_structured_cases import session_token
 
 from kiro_crew.security.credential_sources import (
     CredentialEvidence,
@@ -16,20 +14,16 @@ from kiro_crew.security.credential_sources import (
     tool_output_fingerprints,
 )
 from kiro_crew.security.redaction import redact_credentials_with_records
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
-
-
-@pytest.fixture(autouse=True)
-def _structured_engine() -> Iterator[None]:
-    """These cases assert the structured engine's output: keep it selected under a legacy run."""
-    with structured_engine():
-        yield
-
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET, github_classic, synth
 
 # Synthetic values in the shapes the plan redacts: a 40-character secret key that
 # is not the documentation example, and a full-length session token.
 _SECRET = SAMPLE_AWS_SECRET
 _TOKEN = session_token()
+#: A URL password with no ``/`` in it (one would end the URL's authority) and a token
+#: in its published form: a bare 40-character run is no credential by itself.
+_PASSWORD = synth(24, seed=102)
+_GH = github_classic(seed=103)
 _CREDS_FILE = (
     f"[default]\naws_secret_access_key = {_SECRET}\n\n[dev]\naws_session_token = {_TOKEN}\n"
 )
@@ -71,16 +65,16 @@ def test_a_session_token_recommends_the_profile() -> None:
 
 
 def test_a_command_source_offers_the_command_that_ran() -> None:
-    ev = _evidence({"command": "cat .env"}, f"DB=postgresql://user:{_SECRET}@h/db", is_shell=True)
-    [rec] = _records(f"postgresql://user:{_SECRET}@h/db", ev)
+    ev = _evidence({"command": "cat .env"}, f"DB=postgresql://user:{_PASSWORD}@h/db", is_shell=True)
+    [rec] = _records(f"postgresql://user:{_PASSWORD}@h/db", ev)
     assert rec["source"] == {"type": "command", "command": "cat .env"}
     assert rec["view_command"] == "cat .env"
 
 
 def test_a_command_field_on_a_non_shell_tool_is_not_a_source() -> None:
     """Any tool can carry a `command` the agent chose; only a shell call ran one."""
-    ev = _evidence({"command": "cat .env"}, f"DB=postgresql://user:{_SECRET}@h/db")
-    [rec] = _records(f"postgresql://user:{_SECRET}@h/db", ev)
+    ev = _evidence({"command": "cat .env"}, f"DB=postgresql://user:{_PASSWORD}@h/db")
+    [rec] = _records(f"postgresql://user:{_PASSWORD}@h/db", ev)
     assert rec["source"] is None
     assert rec["view_command"] is None
 
@@ -97,8 +91,8 @@ def test_the_record_never_carries_the_value() -> None:
 
 
 def test_a_command_carrying_a_secret_is_not_a_source() -> None:
-    ev = _evidence({"command": f"echo {_SECRET}"}, _SECRET, is_shell=True)
-    [rec] = _records(_SECRET, ev)
+    ev = _evidence({"command": f"echo {_GH}"}, _GH, is_shell=True)
+    [rec] = _records(_GH, ev)
     assert rec["source"] is None
 
 

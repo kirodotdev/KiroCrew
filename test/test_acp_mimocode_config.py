@@ -45,7 +45,7 @@ from kiro_crew.providers.mirrors.mimocode import (
     mimocode_tool_id,
     place_mimocode_array,
 )
-from kiro_crew.testing.synthetic_credentials import synth
+from kiro_crew.testing.synthetic_credentials import github_classic, synth
 
 # ── acp mimocode readback
 # Refusing branches of the read-back, seed and version gate, pinned against
@@ -68,8 +68,10 @@ _READBACK_UNPARSED = "Kiro Crew could not parse the settings MiMo Code printed"
 _VERSION_UNREADABLE = "MiMo Code did not report a readable version"
 # Fake AWS secret-key shape (40 base64 chars).
 _SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-_GITHUB_TOKEN_SHAPE = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
-_EXFIL_URL = "https://evil.example.com/collect?data=aGVsbG8gd29ybGQgdGhpcyBpcyBhIHNlY3JldA=="
+_GITHUB_TOKEN_SHAPE = github_classic(seed=50)
+#: A URL is never replaced whole: the value of its credential parameter is.
+_EXFIL_VALUE = synth(40, seed=51)
+_EXFIL_URL = f"https://evil.example.com/collect?access_token={_EXFIL_VALUE}"
 
 
 def _clear_mimocode_env(monkeypatch) -> None:
@@ -699,7 +701,7 @@ def test_the_observed_value_is_redacted_before_it_reaches_a_refusal(
     (issue, _remedy), _seen, _client = _readback(monkeypatch, tmp_path, json.dumps(document))
     assert branch in issue, issue
     assert _GITHUB_TOKEN_SHAPE not in issue
-    assert "evil.example.com/collect" not in issue
+    assert _EXFIL_VALUE not in issue
     assert "[REDACTED" in issue
 
 
@@ -722,7 +724,7 @@ def test_a_native_mount_name_is_redacted_in_its_refusal(monkeypatch, tmp_path) -
     )
     assert issue.startswith("MiMo Code loads the MCP server '")
     assert "from its own config" in issue
-    assert _GITHUB_TOKEN_SHAPE not in issue and "evil.example.com/collect" not in issue
+    assert _GITHUB_TOKEN_SHAPE not in issue and _EXFIL_VALUE not in issue
     assert remedy.startswith("Remove that tool from your MiMo Code config")
 
 
@@ -1980,7 +1982,7 @@ class TestToolIdAndDenyRules:
 def test_a_logged_server_name_is_redacted_and_kept_on_one_line(caplog) -> None:
     """Agent-spec or stub names pass the package's one sink cleaner before logging."""
     caplog.set_level(logging.INFO, logger=mirror_mod.__name__)
-    sample = synth(40, seed=17)
+    sample = github_classic(seed=52)
     name = f"srv-{sample}\ninjected"
     projection = _projection([_stdio(name)], refs={name})
     place_mimocode_array(

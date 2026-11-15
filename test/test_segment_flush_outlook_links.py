@@ -12,13 +12,13 @@ import pytest
 
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.state import _ChatSlot
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-# A synthetic 40-character AWS secret key, and the same key without its `/`, so it
-# fits an id or a field whole. (The AWS documentation example key would not do: the
-# structured detectors keep it visible as an identifier.)
-KEY = SAMPLE_AWS_SECRET
-SEGMENT_KEY = SAMPLE_AWS_SECRET.replace("/", "z", 1).replace("/", "q", 1)
+# A synthetic GitHub token with a valid checksum. It has no `/`, so it fits an id or
+# a field whole. (A bare 40-character run or an AWS key ID would not do: the
+# redactor keeps both visible.)
+KEY = github_classic(seed=124)
+SEGMENT_KEY = KEY
 # A real-shaped Outlook item id (see test_document_link_redaction.OUTLOOK_ID).
 OUTLOOK_ID = (
     "AAMkAGVmMDEzMTM4LTZmYWUtNDdkNC1hMDZiLTU1OGY5OTZhYmY4OABGAAAAAAAiQ8W967B7TKBjgx9rVEURBwAi"

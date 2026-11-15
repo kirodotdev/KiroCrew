@@ -26,7 +26,7 @@ import re
 import time
 from typing import Any, Awaitable, Callable
 
-from kiro_crew import name_grant
+from kiro_crew import name_grant, redaction_seams
 from kiro_crew.acp.types import (
     EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
@@ -692,7 +692,10 @@ class TurnDriver:
 
     async def run(self, message: str) -> str:
         """Drive one turn; return the accumulated channel-safe assistant text."""
-        with trace_surfaces.root(trace_surfaces.TRIGGER_CHANNEL, channel=self._trace_channel()):
+        with (
+            trace_surfaces.root(trace_surfaces.TRIGGER_CHANNEL, channel=self._trace_channel()),
+            redaction_seams.output_seam(redaction_seams.CHANNELS),
+        ):
             return await self._drive(message)
 
     def _trace_channel(self) -> str:

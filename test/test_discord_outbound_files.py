@@ -22,12 +22,13 @@ from kiro_crew.discord.renderer import _UPLOAD_LIMITS, DiscordRenderer
 from kiro_crew.discord.transport import DISCORD_CAPABILITIES, DiscordTransport
 from kiro_crew.messaging import outbound_files as outbound
 from kiro_crew.messaging.display_safety import canonicalize_display
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN, github_classic
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 _JPEG = b"\xff\xd8\xff" + b"\x11" * 64
-# A synthetic 40-char AWS secret; no "/" so it can also be a file name.
-_KEY = SAMPLE_AWS_SECRET.replace("/", "+")
+# A synthetic Slack bot token: no "/" so it can also be a file name, and no "_" or
+# other display markup, so a reassembled form is the token itself.
+_KEY = SAMPLE_SLACK_BOT_TOKEN
 _TEST_UPLOAD_ROOT = ""
 
 
@@ -427,7 +428,7 @@ class TestMultipartWire:
     def test_the_form_carries_bytes_and_never_reopens_the_path(self) -> None:
         assert _fields({"content": ""}, [_file("/nonexistent/dir/chart.png")])[1][2] == _PNG
 
-    @pytest.mark.parametrize("raw,mime,expected", [("/tmp/chart.png", "image/jpeg", "chart.jpg"), ("/tmp/deep/dir/shot.png", "image/png", "shot.png"), ('/tmp/no"quotes.png', "image/png", None), ("/tmp/no\nnewline.png", "image/png", None), ("/tmp/../../etc/passwd.png", "image/png", None), ("/tmp/.hidden.png", "image/png", None), ("/tmp/ghp:" + "a" * 36 + ".png", "image/png", "image_0.png")])
+    @pytest.mark.parametrize("raw,mime,expected", [("/tmp/chart.png", "image/jpeg", "chart.jpg"), ("/tmp/deep/dir/shot.png", "image/png", "shot.png"), ('/tmp/no"quotes.png', "image/png", None), ("/tmp/no\nnewline.png", "image/png", None), ("/tmp/../../etc/passwd.png", "image/png", None), ("/tmp/.hidden.png", "image/png", None), ("/tmp/" + github_classic(seed=126) + ".png", "image/png", "image_0.png")])
     def test_the_upload_filename_is_derived_not_trusted(self, raw: str, mime: str, expected: str | None) -> None:
         name = upload_filename(_file(raw, mime=mime), 0)
         if expected is not None:

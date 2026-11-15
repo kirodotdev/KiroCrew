@@ -591,9 +591,8 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
         text: string
         /** Last-modified timestamp, or null when no notes file exists yet. */
         updated_ts: number | null
-        /** The text above was redacted on the way out (a secret-like string or an
-         *  exfiltration URL replaced by its placeholder); the panel says so above
-         *  the notes. */
+        /** The text above was redacted on the way out (a secret-like string
+         *  replaced by its placeholder); the panel says so above the notes. */
         redacted: boolean
         /** The file ran past the briefing cap, so the text above ends in the
          *  truncation marker instead of the tail; the panel says so above the

@@ -32,6 +32,7 @@ from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.dashboard.handlers.sessions import api_approval_resolve
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, parse_cls_meta
 from kiro_crew.providers.base import EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK, LLMEvent
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until
 
 
@@ -79,7 +80,7 @@ class TestBatchRejection:
         """The title is model-written; a credential in it must not reach the log."""
         import logging
 
-        token = "ghp_" + "a1B2" * 9
+        token = github_classic(seed=130)  # a ghp_ without a valid checksum is no token
         state, client = _make_state(tmp_path, context_builder=_context_builder())
         slot = _make_slot()
         evt1 = _permission_event(title=f"git push https://x:{token}@github.com/o/r")

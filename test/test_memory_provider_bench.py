@@ -20,12 +20,13 @@ from kiro_crew.eval.bench.target import NoneBaseline, RecencyBaseline
 from kiro_crew.eval.bench.target_builtin import ScratchBuiltinTarget
 from kiro_crew.eval.bench.target_provider import ProviderTarget
 from kiro_crew.eval.bench.toy_embedder import toy_embed_fn
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 EMBED = toy_embed_fn()
 DAY = 86_400.0
 T0 = 1_690_000_000.0
 # Built at run time so no scanner reads a credential-shaped literal in the source.
-PLANTED = "ghp_" + "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+PLANTED = github_classic(seed=11)
 
 
 def _unit(name: str = "u1") -> ItemUnit:

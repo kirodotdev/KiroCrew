@@ -69,12 +69,12 @@
       {
         "kind": "tool_call",
         "raw_tool_params": {
-          "path": "~/notes.md",
-          "token": "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB"
+          "access_token": "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB",
+          "path": "~/notes.md"
         },
         "title": "read the deploy notes",
         "tool_call_id": "kiro-tool-0002",
-        "tool_input": "{\n  \"path\": \"~/notes.md\",\n  \"token\": \"[REDACTED: credential]\"\n}",
+        "tool_input": "{\n  \"path\": \"~/notes.md\",\n  \"access_token\": \"[REDACTED: credential]\"\n}",
         "tool_input_redacted": true,
         "tool_kind": "read",
         "wire_title": "read the deploy notes"
@@ -90,15 +90,15 @@
         "kind": "tool_result",
         "tool_call_id": "kiro-tool-0002",
         "tool_final": true,
-        "tool_output": "{\"content\": \"the deploy key is [REDACTED: credential]\"}",
-        "tool_output_bytes": 55,
+        "tool_output": "{\"content\": \"the deploy key\", \"access_token\": \"[REDACTED: credential]\"}",
+        "tool_output_bytes": 71,
         "tool_output_credentials": [
           [
             "<fingerprint>",
             null
           ]
         ],
-        "tool_output_digest": "a4794d0ce0319c03fe14037082f367633d91b9ab8d85cf066f3deedc892fed2a",
+        "tool_output_digest": "941c71488b5af8f1df90768816935556f4bf596448d8fef7632adacbae389926",
         "tool_status": "completed"
       }
     ],

@@ -473,9 +473,9 @@ Outer to inner:
    Kiro Crew's sandbox. On macOS, when kiro-cli's own internal sandbox is
    enabled, Kiro Crew delegates to it instead of applying either tier (the two
    are mutually exclusive because nested Seatbelt profiles fail with EPERM).
-5. **Output redaction.** Credential shapes (AWS access key IDs, presigned-URL
-   credential parameters, and more) are scrubbed before text reaches a user or
-   an egress tool.
+5. **Output redaction.** Credential values (vendor tokens, private keys, AWS
+   secret keys, presigned-URL signatures, and more) are masked before text
+   reaches a user or an egress tool; identifiers such as AWS access key IDs stay.
 6. **SEL** (`sel.py`). Append-only, HMAC-SHA256 hash-chained JSONL at
    `<data home>/security_events.jsonl`.
 

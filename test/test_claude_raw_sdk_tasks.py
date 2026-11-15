@@ -530,7 +530,10 @@ async def test_the_task_name_and_summary_are_redacted() -> None:
         _client(),
         [
             _started("b1", "local_bash", description=secret, is_backgrounded=True),
-            _notified("b1", "completed", summary=f"printed {SAMPLE_AWS_SECRET}"),
+            # A bare 40-character run is no credential; under its name it is one.
+            _notified(
+                "b1", "completed", summary=f"printed AWS_SECRET_ACCESS_KEY={SAMPLE_AWS_SECRET}"
+            ),
         ],
     )
     (notice,) = _notices(events)

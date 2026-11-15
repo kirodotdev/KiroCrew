@@ -22,7 +22,11 @@ from kiro_prerequisite_helpers import _make_executable, _no_audit
 
 from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService, PrerequisiteStatus, ProcessResult
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until, await_until
+
+#: A GitHub token the rule table masks (its checksum holds), carried in a server name.
+_TOKEN = github_classic(seed=412)
 
 
 def _parked_on(lock: asyncio.Lock) -> bool:
@@ -654,7 +658,7 @@ class TestRejectedAgentSpecsNarrowReadiness:
                 {
                     "name": "kirocrew",
                     "mcpServers": {
-                        "svc?token=AKIAIOSFODNN7EXAMPLE": {"args": []},
+                        f"svc-{_TOKEN}": {"args": []},
                     },
                 }
             ),
@@ -668,7 +672,7 @@ class TestRejectedAgentSpecsNarrowReadiness:
         status = await self._service(tmp_path, run).snapshot(force=True)
 
         assert status["rejected_agent_specs"] == ["kirocrew.json"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in status["agent_spec_rejection_detail"]
+        assert _TOKEN not in status["agent_spec_rejection_detail"]
 
     @pytest.mark.asyncio
     async def test_a_remote_url_mcp_server_is_launchable_and_not_reported(
@@ -1003,7 +1007,7 @@ class TestAgentSpecRepair:
 
         self._agents_dir(tmp_path, monkeypatch)
         # Assembled at runtime so the literal never sits in the file for the scan.
-        secret = "ghp_" + "A" * 36
+        secret = github_classic(seed=309)
 
         def _rebuild() -> Path:
             raise RuntimeError(f"bad env GITHUB_TOKEN={secret}")

@@ -365,7 +365,7 @@ async def test_unknown_kind_error_is_scrubbed_before_it_is_reflected(
     _setup_guards(tmp_path, monkeypatch)
     secret = github_classic()
     async with TestClient(TestServer(_make_app())) as client:
-        resp = await client.post(f"{_base()}/aws_secret_access_key{secret}/start")
+        resp = await client.post(f"{_base()}/aws_secret_access_key-{secret}/start")
         assert resp.status == 404
         body = await resp.json()
         assert body["code"] == "unknown_job_kind"

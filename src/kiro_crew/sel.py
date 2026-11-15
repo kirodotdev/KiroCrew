@@ -171,8 +171,12 @@ def _redact_text(text: str) -> str:
     # from this module at top level, so the redactor can only be imported
     # lazily here (same pattern as _forward_event / log_governance_decision).
     from kiro_crew.security import redact
+    from kiro_crew.security.redaction_switch import always_scan
 
-    return _AWS_KEY_ANYCASE_RE.sub("[REDACTED: credential]", redact(text))
+    # The security event log stays redacted whatever the owner's setting: inside a
+    # seam with redaction off, the passes still run in full here.
+    with always_scan():
+        return _AWS_KEY_ANYCASE_RE.sub("[REDACTED: credential]", redact(text))
 
 
 # Free-form string fields on SecurityEvent that carry caller-influenced text

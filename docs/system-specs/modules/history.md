@@ -390,9 +390,7 @@ moved, every row the memo answered is rendered again against the live context,
 nothing from that read is stored and no row identity is issued.
 Filled pages reuse fragments only when the complete source row and render
 context match. The context reuses `_display_redaction_cache_key("")`, so changes
-to that key's redaction dependencies invalidate row fragments too. Workspace
-allowed hosts are also keyed separately: blocked-link restoration reads those
-hosts alone, not their union with policy exemptions. OAuth rows are never
+to that key's redaction dependencies invalidate row fragments too. OAuth rows are never
 memoized: every response rechecks live child identity and endpoint approval.
 Owner-view scopes neither read nor fill the memo.
 The per-string cache still serves cold reads, changed rows and other callers.

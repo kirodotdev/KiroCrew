@@ -21,6 +21,7 @@ from kiro_crew.agent_discovery import (
     declared_spec_claim,
     spec_by_declared_name,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 _HOOK_A = {"agentSpawn": [{"command": "metrics-hook --agent-package PkgA --event spawn"}]}
 _HOOK_B = {"agentSpawn": [{"command": "metrics-hook --agent-source-package=PkgB"}]}
@@ -535,7 +536,7 @@ def test_a_claimant_row_carries_its_own_description(tmp_path):
 def test_a_claimant_description_is_redacted_before_it_reaches_the_card(tmp_path):
     from kiro_crew.agent_spec_pin_ops import claimant_rows
 
-    secret = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+    secret = github_classic(seed=94)
     a = _write(tmp_path, "A.json", name="helper", description=f"Uses token {secret} to sync")
     b = _write(tmp_path, "B.json", name="helper", description="Plain")
     rows = claimant_rows([a, b])

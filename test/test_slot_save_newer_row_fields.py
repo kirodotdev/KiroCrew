@@ -154,7 +154,7 @@ def test_the_websocket_chat_message_frame_never_carries_the_private_key(tmp_path
 
     _state, restored = _restored_with_newer_field(tmp_path, monkeypatch)
     row = next(m for m in restored.messages if UNKNOWN_ROW_FIELDS_KEY in m)
-    frame = chat_message_note("s1", row, workspace=None)
+    frame = chat_message_note("s1", row)
     assert UNKNOWN_ROW_FIELDS_KEY not in json.dumps(frame, default=str)
     assert "thumbs_up" not in json.dumps(frame, default=str)
 

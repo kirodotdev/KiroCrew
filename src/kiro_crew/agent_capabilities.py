@@ -51,6 +51,7 @@ from kiro_crew.config.paths import mate_agents_dir, project_agents_dir
 from kiro_crew.platform import redact_via_context
 from kiro_crew.platform.governance import sanitize_agent_config_governance
 from kiro_crew.platform.governance_profiles import governance_answer_generation
+from kiro_crew.security import refuses
 from kiro_crew.validation import is_registered_agent_name
 
 logger = logging.getLogger(__name__)
@@ -598,8 +599,7 @@ def _safe_view(value: Any, inherited_secrets: tuple[str, ...]) -> Any:
     if isinstance(value, str):
         if any(secret in value for secret in inherited_secrets):
             return "[REDACTED]"
-        redacted = redact_via_context(value)
-        return "[REDACTED]" if redacted != value else value
+        return "[REDACTED]" if refuses(value, redact_via_context) else value
     return value
 
 

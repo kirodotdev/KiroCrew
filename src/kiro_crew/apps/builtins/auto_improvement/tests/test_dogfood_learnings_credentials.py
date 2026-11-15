@@ -18,11 +18,13 @@ import pytest
 from kiro_crew.apps.builtins.auto_improvement.tests.dogfood_learnings_helpers import (  # noqa: F401
     _cwd_is_the_scratch_dir,
 )
-from kiro_crew.testing.synthetic_credentials import aws_secret
+from kiro_crew.testing.synthetic_credentials import aws_secret, github_classic, synth
 
 #: An AWS secret of the real shape (40 characters): after its label the redactor
 #: removes only a value of that shape.
 _SECRET = aws_secret(seed=61)
+#: A GitLab personal access token in its published form (``glpat-`` and 20 characters).
+_GITLAB_TOKEN = "glpat-" + synth(20, seed=7)
 
 
 class TestSubprocessFallbackIsAudited:
@@ -95,19 +97,19 @@ class TestActivityFeedIsRedacted:
     def test_a_credential_in_agent_text_is_redacted(self) -> None:
         from kiro_crew.apps.builtins.auto_improvement.backend.runner import _redact_activity
 
-        event = {"kind": "tool", "detail": "aws_access_" "key_id=glpat-IOSFODNN7EXAMPLE"}
+        event = {"kind": "tool", "detail": "aws_access_" f"key_id={_GITLAB_TOKEN}"}
         out = _redact_activity(event)
-        assert "glpat-IOSFODNN7EXAMPLE" not in str(out)
+        assert _GITLAB_TOKEN not in str(out)
 
     def test_nested_agent_events_are_reached(self) -> None:
         """The agent event is nested under an "agent" key — redacting only the top level
         would miss the field that actually carries the text."""
         from kiro_crew.apps.builtins.auto_improvement.backend.runner import _redact_activity
 
-        nested = {"agent": {"detail": "aws_access_" "key_id=glpat-IOSFODNN7EXAMPLE"}}
-        assert "glpat-IOSFODNN7EXAMPLE" not in str(_redact_activity(nested))
-        listed = {"agent": {"lines": ["aws_access_" "key_id=glpat-IOSFODNN7EXAMPLE"]}}
-        assert "glpat-IOSFODNN7EXAMPLE" not in str(_redact_activity(listed))
+        nested = {"agent": {"detail": "aws_access_" f"key_id={_GITLAB_TOKEN}"}}
+        assert _GITLAB_TOKEN not in str(_redact_activity(nested))
+        listed = {"agent": {"lines": ["aws_access_" f"key_id={_GITLAB_TOKEN}"]}}
+        assert _GITLAB_TOKEN not in str(_redact_activity(listed))
 
     def test_ordinary_text_and_non_strings_survive(self) -> None:
         """Fail-open feed: it must stay readable, and numbers must stay numbers."""
@@ -121,8 +123,8 @@ class TestActivityFeedIsRedacted:
         from kiro_crew.apps.builtins.auto_improvement.backend.runner import RunSupervisor
 
         sup = RunSupervisor()
-        sup._on_agent_activity({"detail": "aws_access_" "key_id=glpat-IOSFODNN7EXAMPLE"})
-        assert "glpat-IOSFODNN7EXAMPLE" not in str(list(sup._state.activity))
+        sup._on_agent_activity({"detail": "aws_access_" f"key_id={_GITLAB_TOKEN}"})
+        assert _GITLAB_TOKEN not in str(list(sup._state.activity))
 
 
 class TestFallbackAuditsEveryToolItUses:
@@ -183,8 +185,8 @@ class TestFallbackAuditsEveryToolItUses:
         import kiro_crew.sel as sel_mod
 
         monkeypatch.setattr(sel_mod, "sel", lambda: _Sel())
-        ar._audit_fallback_tool(tool="Bash", detail="aws s3 cp glpat-IOSFODNN7EXAMPLE", cwd=None)
-        assert "glpat-IOSFODNN7EXAMPLE" not in logged[0]["metadata"]["target"]
+        ar._audit_fallback_tool(tool="Bash", detail=f"aws s3 cp {_GITLAB_TOKEN}", cwd=None)
+        assert _GITLAB_TOKEN not in logged[0]["metadata"]["target"]
         assert "REDACTED" in logged[0]["metadata"]["target"]
 
     def test_a_broken_redactor_never_emits_raw_agent_text(self, monkeypatch) -> None:
@@ -908,9 +910,9 @@ class TestCommitMessageRedactionFailsClosed:
         # not exercising the broken-redactor path this test exists for.
         monkeypatch.setattr(commit_mod, "redact", _boom)
         body = tmp_path / "fp.pr.md"
-        body.write_text("# aws_secret_" "access_key=glpat-IOSFODNN7EXAMPLE\n", encoding="utf-8")
+        body.write_text("# aws_secret_" f"access_key={_GITLAB_TOKEN}\n", encoding="utf-8")
         subject = commit_mod._commit_message(body, "deadbeefcafe")
-        assert "glpat-IOSFODNN7EXAMPLE" not in subject, "an unscanned credential reached the commit"
+        assert _GITLAB_TOKEN not in subject, "an unscanned credential reached the commit"
         assert subject == "auto-improvement: apply verified change deadbeefcafe"
 
     def test_driver_commit_message_falls_back_on_a_broken_redactor(self, monkeypatch) -> None:
@@ -921,8 +923,8 @@ class TestCommitMessageRedactionFailsClosed:
             raise RuntimeError("scanner down")
 
         monkeypatch.setattr(security_mod, "redact", _boom)
-        out = Driver._redact_commit_message("leak aws_secret_" "access_key=glpat-IOSFODNN7EXAMPLE")
-        assert "glpat-IOSFODNN7EXAMPLE" not in out
+        out = Driver._redact_commit_message("leak aws_secret_" f"access_key={_GITLAB_TOKEN}")
+        assert _GITLAB_TOKEN not in out
         assert out == "auto-improvement: apply verified change"
 
 
@@ -957,7 +959,7 @@ class TestTerminalErrorsAreRedacted:
 
         secret = _SECRET
         sup = runner_mod.RunSupervisor()
-        sup._fail(RuntimeError(f"boom {secret}"))
+        sup._fail(RuntimeError(f"boom aws_secret_access_key={secret}"))
         assert secret not in str(sup.status()["activity"]), "the feed copy is unredacted"
 
     def test_every_terminal_error_site_goes_through_the_helper(self) -> None:
@@ -1109,7 +1111,7 @@ class TestMcpErrorsAreRedacted:
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/call",
-                "params": {"name": f"aws_access_key_id={secret}", "arguments": {}},
+                "params": {"name": f"aws_secret_access_key={secret}", "arguments": {}},
             }
         )
         assert secret not in json.dumps(
@@ -1210,7 +1212,7 @@ class TestWatcherSnapshotsAreRedacted:
         from kiro_crew.apps.builtins.auto_improvement.backend import pr_watchers as pw
         from kiro_crew.apps.builtins.auto_improvement.backend import routes as routes_mod
 
-        secret = _SECRET
+        secret = github_classic(seed=49)
         st = pw.WatcherState(fp="fp1", pr="https://github.com/o/r/pull/1")
         st.target = f"src/m.py::aws_secret_access_key={secret}"
         st.last_note = f"agent said {secret}"

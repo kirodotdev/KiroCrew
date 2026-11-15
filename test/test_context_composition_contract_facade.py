@@ -179,7 +179,6 @@ _FACADE_IMPORTS: dict[str, tuple[str, str]] = {
     "read_member_briefing": ("kiro_crew.members", "read_member_briefing"),
     "read_member_rules": ("kiro_crew.members", "read_member_rules"),
     "redact_credentials": ("kiro_crew.security", "redact_credentials"),
-    "redact_exfiltration_urls": ("kiro_crew.security", "redact_exfiltration_urls"),
     "render_essentials": ("kiro_crew.member_essential_context", "render_essentials"),
     "render_folder_steering": ("kiro_crew.folder_steering", "render_folder_steering"),
     "render_omission_notice": ("kiro_crew.folder_steering", "render_omission_notice"),

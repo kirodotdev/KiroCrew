@@ -54,8 +54,9 @@ from kiro_crew.secrets_mediation.policy import (
     load_authorization,
     normalize_origin,
 )
-from kiro_crew.security.exfil import redact_exfiltration_urls
+from kiro_crew.security.exfil import scan_exfiltration_urls
 from kiro_crew.security.redaction import redact_credentials
+from kiro_crew.security.redaction_switch import always_scan
 
 #: Methods a mediated request may use. Writes only: the origin's response is always
 #: withheld, so a safe method (GET, HEAD) would send the credential and show nothing.
@@ -170,11 +171,13 @@ def _iter_outbound_strings(value: Any) -> Any:
 
 
 def _refuse_if_outbound_redacted(url: Any, json_body: Any, headers: Any, query: Any) -> None:
-    """Refuse the request if EITHER required redactor would change any
-    agent-supplied outbound string.
+    """Refuse the request if any agent-supplied outbound string carries a credential
+    or a URL the exfiltration scan flags.
 
-    ``redact_credentials`` and ``redact_exfiltration_urls`` are the two mandatory
-    scans for content that leaves the machine. Individual leaves are scanned, as
+    ``redact_credentials`` (a credential it would mask) and ``scan_exfiltration_urls``
+    (its blocking decision, not a text rewrite) are the two mandatory scans for
+    content that leaves the machine. Both run in full whatever the owner's
+    redaction setting: this is a refusal gate, not an output. Individual leaves are scanned, as
     are the serialized JSON body, joined header lines, and the URL with its query
     map assembled, so credential markers that depend on their key stay visible to
     the redactors. A match fails the whole request closed, before the vault read.
@@ -203,14 +206,14 @@ def _refuse_if_outbound_redacted(url: Any, json_body: Any, headers: Any, query: 
         for text in _iter_outbound_strings(source):
             if not text:
                 continue
-            redacted_cred, _ = redact_credentials(text)
+            with always_scan():
+                redacted_cred, _ = redact_credentials(text)
             if redacted_cred != text:
                 raise MediationError(
                     "The request carries a credential in an agent-supplied value; "
                     "refused before sending."
                 )
-            redacted_url, _ = redact_exfiltration_urls(text)
-            if redacted_url != text:
+            if scan_exfiltration_urls(text):
                 raise MediationError(
                     "The request carries a disallowed URL in an agent-supplied "
                     "value; refused before sending."

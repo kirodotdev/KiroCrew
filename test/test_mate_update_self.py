@@ -301,7 +301,7 @@ def test_a_credential_shaped_name_is_refused_and_not_echoed(_events) -> None:
     _seed()
     state = FakeState()
     _thread(state, ASSISTANT_MEMBER_NAME)
-    raw = "https://user:password@example.com"
+    raw = "https://user:Sup3rS3cretPw@example.com"  # ``password`` itself is a placeholder
     status, body = _update(state, {"display_name": raw})
     assert (status, body["code"]) == (400, "invalid_name")
     assert raw not in str(body)
@@ -345,7 +345,7 @@ def test_the_description_is_cleaned_and_saved_and_the_row_names_the_field(_event
     [
         (42, "invalid_description"),
         ("x" * (members_mod.MEMBER_DESCRIPTION_MAX_CHARS + 1), "invalid_description"),
-        ("token https://user:password@example.com", "invalid_description"),
+        ("token https://user:Sup3rS3cretPw@example.com", "invalid_description"),
     ],
 )
 def test_an_unusable_description_is_refused(raw: object, code: str, _events) -> None:

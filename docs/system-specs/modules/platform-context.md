@@ -57,7 +57,7 @@ omit the policy.
 | `agent_executable` | adapter | `DefaultAgentExecutableResolver` (identity) | resolves an edition-managed launcher to its direct executable before core sandboxing |
 | `gateway_lifecycle` | adapter | `DefaultGatewayLifecycleProvider` (`restart_launcher()` → `None`) | stable absolute launcher for package-manager-owned gateway installs |
 | `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | additional edition-specific credential dirs |
-| `credentials` | adapter | `DefaultCredentialPolicy` (AKIA/ASIA redaction; `exempt_exact_hosts()` → `frozenset()`) | internal token regexes + trusted-tenant exempt hosts |
+| `credentials` | adapter | `DefaultCredentialPolicy` (the core credential redaction, `security.redact`; `exempt_exact_hosts()` → `frozenset()`) | internal token regexes + trusted-tenant exempt hosts |
 | `security` | **concrete** | `PolicyAuthority()` (baseline only) | `PolicyAuthority(overlay=…)` ADD-only |
 | `governance` | **concrete carrier** | `load_security_policy()` result or `None` | bundled Level-1 ceiling |
 | `slack_gate` | adapter | `DefaultSlackEnterpriseGate` (default-open) | fail-closed enterprise allowlist |
@@ -801,15 +801,6 @@ Wired sites:
   exfil-then-credential two-pass (the Default `CredentialPolicy.redact` delegates
   to `security.redact`); a loaded companion adds its internal-token regexes
   uniformly across every egress surface.
-- Code text (`kiro_crew.platform.context.redact_code_via_context`) — `redact_via_context` run
-  inside a `security.redaction_switch.code_text()` scope, where pass 3 of the core credential pass
-  (the entropy-and-shape guess at a secret key) spares an ordered alphabet and a data URI payload of
-  64 characters or more and judges every other run as it does anywhere, while every other pass, the
-  exfiltration-URL pass and a loaded companion's patterns run as they do for `redact_via_context`.
-  Its one caller is the member dashboard page scrub, which takes `redact_via_context` over the whole
-  page as its baseline and puts what this returns in place of the baseline's for the text of the
-  page's `<script>` and `<style>` elements. Like `redact_owner_view_via_context` it is a scope the
-  caller must open, so a sink that does not call it keeps the full pass.
 - Content scans (`binary_content_is_flagged`, `wide_content_is_flagged`) are serialized
   behind one re-entrant lock (`_SCAN_LOCK`) and their verdicts are kept in a 256-entry LRU
   (`_SCAN_VERDICTS`) keyed by (scan kind, SHA-256 of the bytes, `governance_generation()`),
@@ -870,7 +861,7 @@ Wired sites:
   correct there. A count that has fallen must be lowered, so a converted module
   does not leave free slots behind.
 - Exfil exact-host heuristic exemption (`CredentialPolicy.exempt_exact_hosts()`) —
-  `security.scan_exfiltration_urls` / `redact_exfiltration_urls` read the
+  `security.scan_exfiltration_urls` (the request-blocking URL scan) reads the
   companion-supplied exact-host set and, for a URL whose domain is an EXACT
   member, skip ONLY the base64-blob / query-length heuristics (which
   false-positive on legitimate long base64 document pointers, e.g. SharePoint
@@ -879,23 +870,22 @@ Wired sites:
   fast-path and the unconditional `_HARD_CREDENTIAL_RE` path+query scan run FIRST
   (before the exemption is consulted), so a real AWS key / SSH-or-PEM header /
   Slack token on an exempted host — including one embedded in the URL PATH — is
-  still flagged and redacted. Matched EXACTLY (not by suffix) so a shared
+  still flagged. Matched EXACTLY (not by suffix) so a shared
   multi-tenant domain does not exempt every tenant. The set is guarded with
   `getattr(policy, "exempt_exact_hosts", None)` (a pre-method companion adapter
   degrades to the empty set) and is NEVER sourced from `config.json` — an
-  agent-writable exemption would be a hole in the redaction ceiling, so the
+  agent-writable exemption would be a hole in the blocking ceiling, so the
   companion adapter is the only supplier. EVERY failure degrades to
-  `frozenset()` — the empty set means MORE redaction (every host runs the
+  `frozenset()` — the empty set means MORE flagging (every host runs the
   heuristics), the safe direction, and stricter than any companion-supplied list
   could be; NO logging on the degrade path (runs inside the stdio MCP servers).
-- Pass-4 token-parameter URL prefixes
-  (`CredentialPolicy.token_param_exempt_url_prefixes()`) — redaction pass 4
-  redacts every `token=` URL value by name. It skips only a literal `?token=`
+- Token-parameter URL prefixes
+  (`CredentialPolicy.token_param_exempt_url_prefixes()`): the token-parameter
+  pass redacts every `token=` URL value by name. It skips only a literal `?token=`
   immediately after a companion-supplied `https://host/path` prefix whose local
   boundary and preceding text prove it is not nested in another destination,
-  whose value is one URL-safe/base64 run plus closers, and which no earlier pass
-  claimed. The companion must list the host in `exempt_exact_hosts()` too, or
-  earlier base64/query heuristics can redact the URL before pass 4. The
+  whose value is one URL-safe/base64 run plus closers, and which no rule-table hit
+  claimed. The
   preceding-text guard rejects URL, backslash, scheme and HTML
   destination signals — any `&` (character reference) or `<` (tag) counts, scanned
   over the raw text and never decoded — after blanking earlier links that already
@@ -904,18 +894,18 @@ Wired sites:
   Context-incomplete streaming windows never apply the exemption; the complete
   stored message may apply it when the destination guards can inspect all prior text.
   While the prefix set is non-empty, the dashboard's per-delta redaction of the text
-  it accumulates for that stored message leaves pass 4 to the whole-segment run
-  (`redact_credentials(..., defer_token_param=True)`), so a delta cut inside the
-  link cannot redact a value the whole text would exempt; every other pass still
-  runs per delta, and the live wire window still redacts the value.
+  it accumulates for that stored message leaves the `token` parameter row to the
+  whole-segment run (`redact_credentials(..., defer_token_param=True)`), so a delta
+  cut inside the link cannot redact a value the whole text would exempt; the rule
+  table still runs per delta, and the live wire window still redacts the value.
   For links the user must open whose token is a lookup key, e.g. a one-time
-  approval workflow. Read lazily on the first pass-4 match via
+  approval workflow. Read lazily on the first token-parameter match via
   `installed_context()` (declared in `PEEK_CALLERS`) with the same degrade
   contract as `exempt_exact_hosts`: no context, a pre-method adapter, an
   exception or a member without a path all mean MORE redaction. The display
   redaction memo reads the prefix set once per render and hands that one snapshot
-  to its key and to pass 4 (`redact_credentials(..., token_param_prefixes=...)`,
-  the nested scan of a diagram's source included), so a cached entry is always
+  to its key and to the `token` parameter row
+  (`redact_credentials(..., token_param_prefixes=...)`), so a cached entry is always
   judged under the set its key names. Public default:
   `frozenset()`; never sourced from `config.json`.
   The set is read via `installed_context()`, so a process with no installed
@@ -1619,9 +1609,8 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   print (`terminal_issue_url`, `prefill=False`). `None` (the Default) keeps the
   public pre-filled GitHub link byte-for-byte; a string REPLACES it. `prefill`
   names the surface: the dashboard renders the URL from a JSON field no redactor
-  scans, while a terminal print crosses `redact_exfiltration_urls`, which
-  replaces any URL whose query is 200 characters or longer, so an edition keeps
-  that variant's query short. Read through `safe_context_call` (fallback `None`):
+  scans, while a terminal print crosses `redact_exfiltration_urls`, which masks
+  the credential values inside a URL and leaves the rest of it as written. Read through `safe_context_call` (fallback `None`):
   diagnostics catches `PlatformCompositionError`, logs a warning and returns an
   empty issue link while keeping the bundle usable, without a standalone fallback.
   `kirocrew doctor --bundle` prints the bundle path and explains why the link is
@@ -1759,8 +1748,8 @@ representative rather than exhaustive.
     default `slack/renderer.py::SlackRenderer.on_done` (the `handle_message_transport`
     path that normal non-review traffic uses — `SlackRenderer` takes a `user_id`
     kwarg for it). Decorator-introduced text is re-scanned (`redact_exfiltration_urls`
-    + `redact_credentials`) on both paths so a decorator cannot smuggle a URL/
-    credential past redaction; the native path logs only the redaction COUNT
+    + `redact_credentials`) on both paths so a decorator cannot smuggle a credential, inside a URL or
+    not, past redaction; the native path logs only the redaction COUNT
     (never the warning strings, which embed a truncated credential prefix).
 
   Interceptor ordering + dedup + audit (security-critical, all in `_route_message`):

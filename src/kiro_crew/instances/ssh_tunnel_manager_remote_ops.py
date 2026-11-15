@@ -58,7 +58,7 @@ from kiro_crew.instances.validation import (
     SsmValidationError,
     UnsupportedConnectionMethodError,
 )
-from kiro_crew.security import redact
+from kiro_crew.security import redact, refuses
 
 if TYPE_CHECKING:
     from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
@@ -480,7 +480,7 @@ async def _peer_version(self: SshTunnelManager, instance_id: str) -> str:
     if not ok:
         return ""
     version = clean_version(raw)
-    return version if version and redact(version) == version else ""
+    return version if version and not refuses(version, redact) else ""
 
 
 async def _await_peer_version_change(self: SshTunnelManager, instance_id: str, before: str) -> str:

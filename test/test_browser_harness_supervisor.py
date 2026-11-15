@@ -895,7 +895,9 @@ def test_a_key_chromium_wrapped_across_lines_withholds_its_stderr(short_home: Pa
 
     key = SAMPLE_AWS_SECRET
     sup = HarnessSupervisor(short_home, base_env={}, config_reader=lambda: {})
-    sup._chromium_stderr = bytearray(f"auth key={key[:18]}\n{key[18:]} rejected\n".encode())
+    sup._chromium_stderr = bytearray(
+        f"aws_secret_access_key={key[:18]}\n{key[18:]} rejected\n".encode()
+    )
     detail = sup._chromium_exit_detail(1)
     assert detail == f"Kiro's Chromium exited with code 1: {STDERR_WITHHELD}"
     sup._chromium_stderr = bytearray(b"one\ntwo\nthree\nfour\n")

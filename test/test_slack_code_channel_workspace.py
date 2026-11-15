@@ -29,6 +29,7 @@ from kiro_crew.slack.code_channels.workspace.diff import MAX_VIEW_BYTES, assembl
 from kiro_crew.slack.code_channels.workspace.pr import PrLookup, PullRequest
 from kiro_crew.slack.code_channels.workspace.remote import RepoRef, parse_remote
 from kiro_crew.slack.code_channels.workspace.store import WorkspaceStore
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 
@@ -1666,7 +1667,7 @@ def test_the_folder_reuse_scan_resolves_paths_off_the_event_loop(tmp_path, monke
 # ── outbound redaction ──────────────────────────────────────────────────────
 
 # A synthetic 40-character AWS secret, split so no source line spells one.
-_FAKE_KEY = "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" + "Jf1Lb5Gs0Ye9Ua2WkE"
+_FAKE_KEY = github_classic(seed=141)  # a bare 40-character run is no credential
 
 
 def test_a_credential_written_into_a_file_never_reaches_slack(tmp_path, repo, audits):
@@ -1881,7 +1882,9 @@ def test_the_installed_credential_policy_applies_to_every_slack_bound_string(
     monkeypatch.setattr(context_bar, "redact", policy)
     h = Harness(tmp_path)
     binding, rec = _bound(h, repo)
-    (Path(rec.worktree) / "README.md").write_text(f"token: {house}\n", newline="\n")
+    # No label the base table reads, so only the companion's pattern can mask it: a
+    # ``token:`` label would let the rule table mask the value first.
+    (Path(rec.worktree) / "README.md").write_text(f"see {house}\n", newline="\n")
     (Path(rec.worktree) / "new.txt").write_text(f"{house}\n", newline="\n")
     h.run(h.svc.refresh(binding))
     assert house not in repr(h.client.calls)

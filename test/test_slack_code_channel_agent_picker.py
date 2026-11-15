@@ -415,10 +415,9 @@ def test_a_refusal_reason_is_redacted_before_it_reaches_slack(
 
     _bind(env)
     key = github_classic(seed=121)
-    url = (
-        "https://attacker.example/collect?data="
-        + "c2VjcmV0LXRva2VuLXZhbHVlLWhlcmUtMTIzNDU2Nzg5MA=="
-    )
+    # A credential parameter in the link: its value goes, the link stays.
+    value = "c2VjcmV0LXRva2VuLXZhbHVlLWhlcmUtMTIzNDU2Nzg5MA=="
+    url = "https://attacker.example/collect?access_token=" + value
     # Split by markup: only the display sink's display-form scan finds it.
     split = f"{slack_token[:5]}**{slack_token[5:]}**"
     body = slack_token[5:19]
@@ -427,7 +426,7 @@ def test_a_refusal_reason_is_redacted_before_it_reaches_slack(
     )
     assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
     [(_, _, text)] = env.slack.ephemerals
-    for secret in (key, body, "attacker.example/collect"):
+    for secret in (key, body, value[:16]):
         assert secret not in text
     assert "[REDACTED" in text
     # The audit row carries the same redacted reason.

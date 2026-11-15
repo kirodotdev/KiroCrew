@@ -31,6 +31,7 @@ from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_values
 from kiro_crew.dashboard.state import _MAX_PENDING_CONTEXT, DashboardState, _ChatSlot
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 MOD = "kiro_crew.dashboard.chat_handlers"
 
@@ -508,7 +509,7 @@ class TestRedactFollowupItem:
         assert ch._redact_followup_item({}) == {"title": "", "description": "", "prompt": ""}
 
     def test_text_fields_are_redacted(self):
-        secret = "ghp_" + "A" * 36
+        secret = github_classic(seed=86)
         out = ch._redact_followup_item({"title": f"use {secret}", "prompt": "ok"})
         assert secret not in out["title"]
         assert "REDACTED" in out["title"]
@@ -520,7 +521,7 @@ class TestRedactFollowupItem:
 
     def test_branch_is_dropped_when_redaction_changes_it(self):
         # A mangled ref is worse than no ref: the frontend derives one instead.
-        out = ch._redact_followup_item({"title": "t", "branch": "feat/" + "ghp_" + "A" * 36})
+        out = ch._redact_followup_item({"title": "t", "branch": "feat/" + github_classic(seed=86)})
         assert "branch" not in out
 
     def test_non_string_branch_is_ignored(self):

@@ -284,11 +284,13 @@ async def test_other_browse_errors_do_not_reinstall(browse_target, monkeypatch):
     ("sensitive", "replacement"),
     [
         (github_classic(seed=22), "[REDACTED: credential]"),
-        (SAMPLE_AWS_SECRET, "[REDACTED: credential]"),
-        ("?token=opaque-example", "?token=[REDACTED: credential]"),
         (
-            "https://example.com/?data=" + "a" * 300,
-            "[REDACTED: suspicious URL to example.com]",
+            f"aws_secret_access_key={SAMPLE_AWS_SECRET}",
+            "aws_secret_access_key=[REDACTED: credential]",
+        ),
+        (
+            "https://h.example/r.git?token=opaque-example",
+            "https://h.example/r.git?token=[REDACTED: credential]",
         ),
     ],
 )
@@ -428,11 +430,12 @@ async def test_git_diff_multiline_credential_keeps_patch_framing(browse_target):
         }
     ).encode()
     result = await session_browse.browse_session(SESSION, "git_diff", "key")
+    # Only the key's body is masked; the BEGIN and END lines stay as patch lines.
     assert result == {
         "git": True,
         "output": (
-            "diff --git a/key b/key\n--- /dev/null\n+++ b/key\n@@ -0,0 +1 @@\n"
-            "+[REDACTED: credential]\n"
+            "diff --git a/key b/key\n--- /dev/null\n+++ b/key\n@@ -0,0 +1,3 @@\n"
+            f"+{_PEM_BEGIN_RSA}\n+[REDACTED: credential]\n+{_PEM_END_RSA}\n"
         ),
     }
     assert "QUJD" not in str(result)

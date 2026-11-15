@@ -19,26 +19,22 @@ import pytest
 from redaction_structured_cases import github_classic
 
 from kiro_crew import preview_text
-from kiro_crew.dashboard import chat_utils as cu
 from kiro_crew.dashboard import chat_utils_display as cud
 from kiro_crew.dashboard import state as dashboard_state
 from kiro_crew.dashboard.state_parts import slot_transcript as st
-from kiro_crew.security import exfil, redact_credentials, redact_exfiltration_urls
-from kiro_crew.security.redaction_switch import code_text, owner_view
+from kiro_crew.security import redact_credentials
+from kiro_crew.security.redaction_switch import owner_view
 
 # A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
 # stays visible as an identifier, so it cannot show that a value is redacted.
 _TOKEN = github_classic(seed=48)
 _HOST = "tenant.example.com"
 _EXFIL_URL = f"https://{_HOST}/view?d={base64.b64encode(bytes(range(200))).decode()}"
-#: Redacted as a bare secret outside ``code_text``, spared as an ordered alphabet inside.
-_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 _ZWSP = "\u200b"
 _LIMIT = st._LAST_MESSAGE_PREVIEW_CHARS
 
 
 def _battery(text: str) -> str:
-    text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
     return text
 
@@ -166,30 +162,10 @@ def test_the_slot_redaction_is_the_battery_cold_and_warm(text):
     assert st._redact(text) == expected
 
 
-def test_an_exempt_host_change_is_not_answered_from_either_memo(monkeypatch):
-    text = f"see {_EXFIL_URL} end"
-    exempt: dict[str, frozenset[str]] = {"hosts": frozenset()}
-    monkeypatch.setattr(exfil, "_exempt_exact_hosts", lambda: exempt["hosts"])
-    monkeypatch.setattr(cu, "_exempt_exact_hosts", lambda: exempt["hosts"])
-    blocked, blocked_preview = st._redact(text), st._last_message_preview(text)
-    assert blocked == _battery(text) and "suspicious URL" in blocked
-    assert blocked_preview == _direct_preview(text)
-    exempt["hosts"] = frozenset({_HOST})
-    assert st._redact(text) == _battery(text) != blocked
-    assert st._last_message_preview(text) == _direct_preview(text) != blocked_preview
-    exempt["hosts"] = frozenset()
-    assert st._redact(text) == blocked
-    assert st._last_message_preview(text) == blocked_preview
-    with exfil.scoped_exempt_hosts(frozenset({_HOST})):
-        assert st._redact(text) == _battery(text) != blocked
-        assert st._last_message_preview(text) == _direct_preview(text) != blocked_preview
-    assert st._last_message_preview(text) == blocked_preview
+_SCOPED = [(owner_view, f"key {_TOKEN} here")]
 
 
-_SCOPED = [(owner_view, f"key {_TOKEN} here"), (code_text, f"run {_ALPHABET} ok")]
-
-
-@pytest.mark.parametrize("scope,text", _SCOPED, ids=["owner_view", "code_text"])
+@pytest.mark.parametrize("scope,text", _SCOPED, ids=["owner_view"])
 def test_redact_for_display_neither_reads_nor_fills_its_cache_inside_the_scope(scope, text):
     outside = _battery(text)
     with scope():
@@ -205,7 +181,7 @@ def test_redact_for_display_neither_reads_nor_fills_its_cache_inside_the_scope(s
         assert cud._redact_for_display(text) == inside
 
 
-@pytest.mark.parametrize("scope,text", _SCOPED, ids=["owner_view", "code_text"])
+@pytest.mark.parametrize("scope,text", _SCOPED, ids=["owner_view"])
 def test_the_preview_memo_neither_reads_nor_fills_inside_the_scope(scope, text):
     outside = _direct_preview(text)
     with scope():

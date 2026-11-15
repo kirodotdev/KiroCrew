@@ -1322,3 +1322,21 @@ def _reset_materialized_agents_snapshot():
         yield
     finally:
         clear()
+
+
+@pytest.fixture(autouse=True)
+def _published_redaction_verdict_on():
+    """Every test starts and ends with redaction published ON in this process.
+
+    The owner's setting defaults to OFF, so a test that boots the dashboard
+    (``seed_pushed_switch``) publishes OFF; left in place, every later output-seam
+    test in that xdist worker would read raw text. A test that wants OFF publishes
+    it itself.
+    """
+    seams = sys.modules.get("kiro_crew.redaction_seams")
+    if seams is not None:
+        seams.publish(False)
+    yield
+    seams = sys.modules.get("kiro_crew.redaction_seams")
+    if seams is not None:
+        seams.publish(False)

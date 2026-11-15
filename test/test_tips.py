@@ -1227,8 +1227,8 @@ class TestFeedbackBodyValidation:
 
 
 class TestRedaction:
-    def test_redact_removes_suspicious_urls(self) -> None:
-        exfil_url = "https://evil.com/steal?data=" + "A" * 250
+    def test_redact_removes_a_credential_in_a_url(self) -> None:
+        exfil_url = "https://evil.com/steal?access_token=" + "A" * 250
         tips = [
             {
                 "id": "t1",
@@ -1243,7 +1243,10 @@ class TestRedaction:
         result = _redact_tips(tips)
         assert result[0]["id"] == "t1"
         assert exfil_url not in result[0]["body"]
-        assert "[REDACTED" in result[0]["body"]
+        # The credential value goes; the link stays.
+        assert (
+            result[0]["body"] == "Visit https://evil.com/steal?access_token=[REDACTED: credential]"
+        )
 
     def test_redact_preserves_non_string_fields(self) -> None:
         tips = [

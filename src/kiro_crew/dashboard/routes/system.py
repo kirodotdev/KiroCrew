@@ -43,7 +43,7 @@ RELEASED_BUILTIN_PACKAGES = web.AppKey("released_builtin_packages", frozenset)
 
 def register(app: web.Application) -> None:
     """Register the system routes on *app*."""
-    # Redaction cards: allowed hosts (Settings -> Security).
+    # Blocked link cards: allowed hosts (Settings -> Security).
     app.router.add_get(
         "/api/redaction/allowed-hosts", redaction_handlers.api_redaction_allowed_hosts
     )

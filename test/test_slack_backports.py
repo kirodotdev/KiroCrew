@@ -892,13 +892,16 @@ class TestReleasedTailIsRedacted:
 
     @pytest.mark.asyncio
     async def test_an_exfiltration_url_in_shown_text_is_redacted_too(self) -> None:
-        """Both outbound redactors, in the seal's order -- URLs then credentials."""
+        """A credential value inside a URL is masked in shown text; the URL stays."""
         slack = _FakeSlack(streaming=True)
         renderer = _renderer(slack)
 
-        shown = await renderer._shown("see https://evil.example.com/?q=AKIAIOSFODNN7EXAMPLE now")
+        shown = await renderer._shown(
+            "see https://evil.example.com/?access_token=opaque-value-1234 now"
+        )
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in shown
+        assert "opaque-value-1234" not in shown
+        assert "evil.example.com/?access_token=" in shown
 
 
 class TestEveryRendererEgressMeetsTheDisplayFloor:

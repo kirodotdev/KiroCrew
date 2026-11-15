@@ -11,6 +11,7 @@ from typing import Any, Protocol
 
 from aiohttp import web
 
+from kiro_crew.dashboard import redaction_audience
 from kiro_crew.dashboard import ws_chunk_scope as chunk_scope
 from kiro_crew.dashboard import ws_snapshot_hold as snapshot_hold
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG
@@ -322,6 +323,15 @@ class WebSocketHub:
         self._serving_loop_provider()
         if self._drop_if_stalled(ws):
             return
+        # A socket that is not the owner's gets the frame redacted in full while the
+        # owner's redaction is off. Asked whatever the setting reads: a stream that began
+        # while it was off stays on that socket's stream redactor after it is turned on,
+        # so its context holds. The owner's setting governs only what the owner reads.
+        owners = getattr(self._owner, "_owner_ws_clients", None) or ()
+        shown = redaction_audience.for_socket(ws, msg, owner=ws in owners)
+        if shown is None:
+            return
+        msg = shown
         # A socket still waiting for its connect snapshot gets this frame right after it,
         # or is dropped when holding it would pass the ceiling.
         if snapshot_hold.held(ws, msg, self._hold_ceiling):

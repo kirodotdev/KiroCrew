@@ -256,12 +256,12 @@ def _refuse_credential_shaped_name(name: str) -> None:
     would put it exactly where this check exists to keep it out of.
     """
     from kiro_crew.platform.context import redact_via_context
+    from kiro_crew.security import refuses
 
-    redacted = redact_via_context(name)
-    if redacted == name:
+    if not refuses(name, redact_via_context):
         return
     raise _refuse(
-        f"model.types.{redacted}",
+        f"model.types.{redact_via_context(name)}",
         "is shaped like a credential, so it is refused as a field NAME. Field "
         "names are served in the package's field list and written into the "
         "page's data island, where only values are redacted -- rename the field",

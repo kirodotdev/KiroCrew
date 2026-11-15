@@ -269,7 +269,7 @@ class TestRowIdentities:
     def test_owner_view_rows_have_no_identity(self, monkeypatch):
         from kiro_crew.dashboard import wire_render
 
-        monkeypatch.setattr(wire_render, "credential_pass_bypassed", lambda: True)
+        monkeypatch.setattr(wire_render, "bypassed_in", lambda _seam: True)
         _, ids = wire_render.prepare_message_rows(
             [{"role": "assistant", "content": "x", "cls": "msg msg-a"}], False, live_child=""
         )

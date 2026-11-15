@@ -928,7 +928,9 @@ async def test_the_gateway_log_line_redacts_a_credential_shaped_filename(
     The agents directory is user-writable, so a file named after a token must not persist
     that token in gateway.log.
     """
-    token = "ghp_" + "C" * 36
+    from kiro_crew.testing.synthetic_credentials import github_classic
+
+    token = github_classic(seed=94)  # a valid checksum: a ghp_ without one is no token
     broken = tmp_path / f"{token}.json"
     broken.write_text("{ not json", encoding="utf-8")
     monkeypatch.setattr(sessions_mod, "_UNREADABLE_SPEC_WARNED", set())

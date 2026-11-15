@@ -3521,7 +3521,7 @@ Wraps `SlackClientOps` in the Layer-1 contract; declares Slack's real (rich-end)
 
 `SlackRenderer` maps the abstract `OutputEvent` stream onto Slack's streaming + Block Kit surface (`StatusReactionController` phase/emoji, per-tool task cards with a 30s elapsed timer in the stream's plan block, a timing footer at `on_done`). Text is **not** streamed as it arrives, because until the next event nothing says whether it is the reply or narration before a tool call, and an append to Slack's stream is final. It matches the dashboard, which folds narration into the turn's steps: at a tool call the text since the last step becomes that step's task-card `details` (display-safe, capped at `_NARRATION_MAX_CHARS`, written once and whole — when the driver flags `text_held`, the card is drawn without details and they follow with the `continues_segment` run, so no half sentence is shown; at a `wait` boundary such a step keeps no narration). The reply is the text after the last step — or, when the turn ends on a tool call, the last step's text (followed by the driver's unfinished-turn notice when there is one) — sealed in `on_done` (`[OPTIONS:…]`, `<thinking>` and control tags removed, images extracted, `_display_safe`, `decorate_reply`) and appended whole in pieces of at most `_STREAM_APPEND_MAX` characters cut at a line break or space at least a quarter into the piece (`_append_pieces`, picked by `slack/break_point.last_break`); the no-stream fallback renders it with one `chat.update` of the placeholder. The first text after a tool call resets the thread status from "is using …" to the working text. A step's label (card title, details, "is using …" status) is the driver's derived title and purpose passed through `slack/step_labels.slack_step_label`: environment assignments are dropped (where a command starts, including after `sudo`/`env`/`time`), the session cwd and home become relative / `~` wherever they appear, any other path rooted in a filesystem area (`/opt`, `/var`, `/usr`, `/tmp`, ...) becomes `…/parent/name` (a path-shaped argument such as `/api/v1` stays), and this host's name reads `[host]`; line breaks are kept and at most 4 KB is read; a raw-fallback title is rebuilt from the whole command (`OutputEvent.raw_title`) and cut to a line after the scrub. Display only — the classification and its safety rules are `tool_call_title`'s. `stamp_options` records the whole turn's raw text (`_turn_raw`). `on_turn_start` is idempotent (guarded by `_started`) so the dispatcher can fire the ack reaction early and the driver's later call no-ops.
 
-`on_prompt_choice` renders `build_approval_blocks()`. The card names the tool (`🔧 Approve tool *<title>*?`), then, when the request's MCP identity is proven (`prompt_mcp_identity`), the server and tool the call runs on as a context line (`MCP tool: *<server>* / *<tool>*`), then, when present, the purpose the request's own `tool_call` declared (an italic context line) and the tool input in a code block, so the approver sees the recipient, the body or the command and not only a bare tool name. The input is the same detail the native path's card shows (`handler_runtime/approvals._build_approval_blocks`), so in a group channel every member sees the redacted arguments. The server line is drawn by `slack.handler.mcp_identity_text`, the native card's own writer, so both cards name a server the same way; it is not model-authored, so it skips `_display_safe`, and `mcp_identity_text` scrubs each name for credentials and exfiltration URLs as the native card scrubs every string it posts, cuts it to `_IDENTITY_NAME_MAX` and escapes it. The title, purpose and input are model-authored: `on_prompt_choice` runs each through `_display_safe` before building the card, because the driver's byte-level pass reads `AKIA**…**` as no key while Slack renders it whole. That scan reads at most the first 16 KB of each (`approval_card.bounded_scan`), since the card shows only their start and the scan runs on the event loop every turn shares; a head the scan shrinks under half that bound is scanned whole instead, so the part of a key the bound cuts stays off the card. `slack/approval_card.py` then makes them safe for the mrkdwn parser: `escape_mrkdwn` on each (a `<!channel>` in a title or an argument would otherwise notify the channel), a zero-width space between adjacent backticks in the input (three would close the fence early), and a cut at `_SLACK_SECTION_TEXT_LIMIT` taken AFTER escaping and backed off an entity it would split, so no text passes Slack's 3000-character block limit, which refuses the whole post. An empty input draws no code block. The detail sits between the header and the buttons and changes nothing a click is routed by. Three Block Kit buttons whose `action_id`s encode the request id:
+`on_prompt_choice` renders `build_approval_blocks()`. The card names the tool (`🔧 Approve tool *<title>*?`), then, when the request's MCP identity is proven (`prompt_mcp_identity`), the server and tool the call runs on as a context line (`MCP tool: *<server>* / *<tool>*`), then, when present, the purpose the request's own `tool_call` declared (an italic context line) and the tool input in a code block, so the approver sees the recipient, the body or the command and not only a bare tool name. The input is the same detail the native path's card shows (`handler_runtime/approvals._build_approval_blocks`), so in a group channel every member sees the redacted arguments. The server line is drawn by `slack.handler.mcp_identity_text`, the native card's own writer, so both cards name a server the same way; it is not model-authored, so it skips `_display_safe`, and `mcp_identity_text` scrubs each name for credentials, inside URLs too, as the native card scrubs every string it posts, cuts it to `_IDENTITY_NAME_MAX` and escapes it. The title, purpose and input are model-authored: `on_prompt_choice` runs each through `_display_safe` before building the card, because the driver's byte-level pass reads `ghp_**…**` as no token while Slack renders it whole. That scan reads at most the first 16 KB of each (`approval_card.bounded_scan`), since the card shows only their start and the scan runs on the event loop every turn shares; a head the scan shrinks under half that bound is scanned whole instead, so the part of a key the bound cuts stays off the card. `slack/approval_card.py` then makes them safe for the mrkdwn parser: `escape_mrkdwn` on each (a `<!channel>` in a title or an argument would otherwise notify the channel), a zero-width space between adjacent backticks in the input (three would close the fence early), and a cut at `_SLACK_SECTION_TEXT_LIMIT` taken AFTER escaping and backed off an entity it would split, so no text passes Slack's 3000-character block limit, which refuses the whole post. An empty input draws no code block. The detail sits between the header and the buttons and changes nothing a click is routed by. Three Block Kit buttons whose `action_id`s encode the request id:
 
 | Button | `action_id` prefix | Scope |
 |--------|--------------------|-------|
@@ -3600,8 +3600,8 @@ of its own and so can never name the surface itself.
   returned, never on a prediction that the channel *would* take it: governance can
   refuse the send and the wire can fail, and standing Slack down on a prediction
   loses the run's output outright in exactly the cases the fallback exists for.
-  That send redacts at the canonical egress (credentials and exfiltration URLs
-  both) and chunks to the transport's own ceiling. Delivering to both would notify
+  That send redacts at the canonical egress (credentials, inside URLs
+  too) and chunks to the transport's own ceiling. Delivering to both would notify
   one operator twice for one run, which is how notifications become noise people
   stop reading.
 - **A markup cut is an egress, and appended text is final.** Slack streams by
@@ -3634,7 +3634,7 @@ of its own and so can never name the surface itself.
   `api_send_message` (before any leg reads the body), `_deliver_channel_reply`
   (cron results, run-failure and crash alerts, subagent completions), and
   `_deliver_channel_dm` (so a future caller cannot reach a channel without it).
-  A literal-only scan there let a markdown-collapse credential (`AKIA**...**`,
+  A literal-only scan there let a markdown-collapse credential (`ghp_**...**`,
   which the client renders whole) reach the channel, and every caller inherited
   the gap rather than each one carrying it. Applying it twice on one path is
   deliberate: the redactors are idempotent and the guarantee belongs at the
@@ -4622,10 +4622,10 @@ worse than one clean bubble followed by its pictures. The picture send is
 
 `TurnDriver`'s redaction is byte-level and runs BEFORE this renderer introduces
 markup, so it cannot see a credential that markup will REASSEMBLE:
-`redact_credentials("AKIA**IOSFODNN7EXAMPLE**")` matches nothing because the `**`
-sits inside the key, and `_md_to_telegram_html` then emits
-`AKIA<b>IOSFODNN7EXAMPLE</b>` — which Telegram displays as an intact access key.
-A link (`[AKIA](https://x)REST`) and a zero-width character between the halves are
+`redact_credentials("ghp_**<token body>**")` matches nothing because the `**`
+sits inside the token, and `_md_to_telegram_html` then emits
+`ghp_<b><token body></b>` — which Telegram displays as an intact GitHub token.
+A link (`[ghp_](https://x)REST`) and a zero-width character between the halves are
 the same hazard. `messaging/display_safety.redact_for_display` canonicalizes to the
 rendered form and scans both it and the literal; it runs at the two sinks — the
 live plaintext frame and `_seal_text`, ahead of the HTML, Rich and plaintext
@@ -4649,9 +4649,9 @@ leaves a separator and stays the renderer's own. That reading matters here for t
 The fallback prints a link's url beside its label, where the rendered form hides
 it, so a key split by `**` inside a url is whole only in that reading. And the
 fallback links AFTER it drops delimiters, where the screen's rendered form links
-first: `AKIA[IOSF...]**(https://x)**` is text to the rendered form's link pass and
+first: `ghp_[1a2b...]**(https://x)**` is text to the rendered form's link pass and
 a link to the fallback once the `**` is gone, so the fallback shows
-`AKIAIOSFODNN7EXAMPLE (https://x)`. The screen answers both with the rendered
+`ghp_1a2b... (https://x)`. The screen answers both with the rendered
 form, which drops the url, and whose settling passes collapse and redact the
 link the delimiters closed. `TELEGRAM_FALLBACK_LINK` reads a link with the
 screen's grammar: the shared `constants.md_link_destination` url pattern (one
@@ -5418,9 +5418,9 @@ until the policy changes, and then the failure is silent.
 **A streaming cut may not sever a credential the reader's client will rejoin.** The cap
 is applied to the RAW answer, while the reader sees the CANONICAL rendering of each
 bubble, so a transformation that happens after the scan can reassemble what the scan saw
-as broken: neither `AKIA**` nor `**REST` matches a credential pattern as written, and
-neither does `[AKIA](https://x)` beside `REST`, yet the platform renders the markup away
-and shows an intact key. Each bubble is scrubbed on its own and matches nothing, so the
+as broken: neither `ghp_**` nor `**REST` matches a credential pattern as written, and
+neither does `[ghp_](https://x)` beside `REST`, yet the platform renders the markup away
+and shows an intact token. Each bubble is scrubbed on its own and matches nothing, so the
 per-message redaction cannot see it. `_push` therefore picks the boundary with
 `safe_split_offset` instead of cutting at whatever raw character the budget lands on.
 Nothing after that offset has been delivered, so the next frame of the bubble carries the
@@ -5487,9 +5487,9 @@ continuous stream across the two bubbles, so the boundary whitespace is real
 on-screen text, not a message break. The stripped `repaired_after_a_sent_tail` the
 separate-message channels (Telegram, WhatsApp) use must NOT be consulted here: it
 strips the boundary whitespace because those platforms drop it between messages, so
-on WeCom it would see a join across a space the reader actually sees (`…AKIAIOSF`
-then ` ODNN7…` reads as two space-separated tokens, not a key) and over-redact
-harmless prose that merely mentions example-key fragments. `_seam_showing` supplies
+on WeCom it would see a join across a space the reader actually sees (`…ghp_1a2b`
+then ` 3c4d…` reads as two space-separated pieces, not a token) and over-redact
+harmless prose that merely mentions token fragments. `_seam_showing` supplies
 the seams as a LIST: when the answer has
 advanced (`_carried > 0`) the one seam is the delivered answer prefix; when no
 answer has been delivered yet (`_carried == 0`) the seams are the reasoning
@@ -6311,7 +6311,7 @@ the record of the decision rather than of an impossibility.
 - **The attachment NAME is a display sink too, and both its sources are untrusted.**
   `inline_image_name` prefers the (already redacted) alt text and falls back to the
   path's basename — which the model also wrote. `_SAFE_NAME_RE` preserves
-  `[A-Za-z0-9._-]`, every character an `AKIA…` key id or a `ghp_…` token needs, and
+  `[A-Za-z0-9._-]`, every character a `ghp_…` token or a signed JWT needs, and
   extraction has already cut the path out of the body, so for an empty caption this
   name is the only remaining sink. Both the SOURCE and the finished name are scanned
   and any hit collapses the whole name to `image.<ext>`; scanning the source too is
@@ -7083,13 +7083,13 @@ fence nested in a wider block stays content.
 **The renderer is a registered `security_posture` redaction sink, and the screen
 that carries the guarantee runs LAST.** This is the only markup-CONSUMING channel
 whose own converter rewrites the delimiters: `TurnDriver` scans the provider stream
-as literal bytes, so `AKIA**I**OSFODNN7EXAMPLE` matches no credential pattern,
-`to_whatsapp_text` turns it into `AKIA*I*OSFODNN7EXAMPLE`, and the reader's client
-strips the markers and shows an intact key. `to_whatsapp_text` therefore screens
+as literal bytes, so `ghp_**1**a2b3c...` matches no credential pattern,
+`to_whatsapp_text` turns it into `ghp_*1*a2b3c...`, and the reader's client
+strips the markers and shows an intact token. `to_whatsapp_text` therefore screens
 through `display_safety.redact_for_display` AFTER every reduction, which is the
 only form whose safety does not depend on which reductions ran: each of them
 deletes a span, and deleting a span joins what sat on either side of it. A scan of
-`AKIA<thinking>x</thinking>IOSFODNN7EXAMPLE` sees nothing at all, which is why
+`ghp_<thinking>x</thinking>1a2b3c...` sees nothing at all, which is why
 screening before the transform is the bypass rather than the fix. A second screen
 runs before the conversion; it is a belt, and it also carries the ANSI
 normalisation the conversion depends on, since every dialect rule is line-shaped

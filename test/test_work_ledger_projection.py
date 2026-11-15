@@ -37,7 +37,7 @@ from work_ledger_projection_helpers import (
 from kiro_crew import work_ledger as wl
 from kiro_crew.crew_log import projection
 from kiro_crew.dashboard.handlers import work_ledger as routes
-from kiro_crew.testing.synthetic_credentials import aws_secret
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import until_parked
 
 # The shared fixtures, bound here by name so pytest registers them for this module.
@@ -162,9 +162,10 @@ async def test_each_write_records_one_entry_with_the_fields_it_set(recorded):
 @pytest.mark.asyncio
 async def test_caller_text_is_redacted_before_both_cache_and_log_are_written(recorded):
     """Both route entry points cross the same boundary before their fit probes
-    and commits, so secrets and suspicious URLs reach neither durable copy."""
-    secret = aws_secret(seed=95)
-    url = "https://evil.example.com/steal?data=" + "A" * 250
+    and commits, so secrets, a credential inside a URL included, reach neither
+    durable copy."""
+    secret = github_classic(seed=95)
+    url = "https://evil.example.com/steal?access_token=" + "A" * 250
     acceptance = {"kind": "human_approval", "notes": [secret, url]}
 
     status, body = await _record(
@@ -222,7 +223,7 @@ async def test_caller_text_is_redacted_before_both_cache_and_log_are_written(rec
 
 @pytest.mark.asyncio
 async def test_credential_in_artifact_key_is_redacted_before_storage(recorded):
-    secret = aws_secret(seed=95)
+    secret = github_classic(seed=95)
     item_id = await _board()
 
     status, body = await _report(
@@ -245,7 +246,7 @@ async def test_credential_in_artifact_key_is_redacted_before_storage(recorded):
 
 @pytest.mark.asyncio
 async def test_cache_and_crew_log_keep_byte_identical_redacted_fields(recorded):
-    secret = aws_secret(seed=95)
+    secret = github_classic(seed=95)
     item_id = await _board()
 
     status, body = await _report(
@@ -1525,7 +1526,7 @@ async def test_a_legacy_items_first_conductor_write_keeps_the_whole_baseline(rec
 
 @pytest.mark.asyncio
 async def test_a_legacy_stored_baseline_is_redacted_before_recording(recorded):
-    secret = aws_secret(seed=95)
+    secret = github_classic(seed=95)
     acceptance = {"kind": "human_approval", "notes": [f"inspect {secret}"]}
     wl.ensure_conductor(CONDUCTOR, goal="old goal")
     old = wl.apply_conductor_action(
@@ -1554,11 +1555,11 @@ async def test_a_legacy_stored_baseline_is_redacted_before_recording(recorded):
 
 @pytest.mark.asyncio
 async def test_a_legacy_baseline_key_collision_is_refused_before_writing(recorded):
-    first = aws_secret(seed=95)
-    # Synthetic 40-character secrets built at run time, so no line carries a
+    first = github_classic(seed=95)
+    # Synthetic 40-character GitHub tokens built at run time, so no line carries a
     # credential shape. The redactor sees the value at runtime, which is
     # what this test needs. Do not inline this back.
-    second = aws_secret(seed=96)
+    second = github_classic(seed=96)
     wl.ensure_conductor(CONDUCTOR, goal="old goal")
     old = wl.apply_conductor_action(
         CONDUCTOR,

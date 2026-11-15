@@ -185,6 +185,8 @@ def _validated_params(params: Mapping[str, str] | None) -> dict[str, str]:
         raise TypeError(f"job params must be a mapping, not {type(params).__name__}")
     if len(params) > _MAX_PARAMS:
         raise ValueError(f"a job takes at most {_MAX_PARAMS} params, got {len(params)}")
+    from kiro_crew.security import refuses
+
     out: dict[str, str] = {}
     for key, value in params.items():
         if not isinstance(key, str):
@@ -200,7 +202,7 @@ def _validated_params(params: Mapping[str, str] | None) -> dict[str, str]:
             raise TypeError(f"job param {key!r} must be a string, not {type(value).__name__}")
         if len(value) > _MAX_PARAM_VALUE:
             raise ValueError(f"job param {key!r} is longer than {_MAX_PARAM_VALUE} characters")
-        if _redact(value) != value:
+        if refuses(value, _redact):
             raise ValueError(
                 f"job param {key!r} looks like a credential, and params are not a way "
                 "to hand a runner a secret"

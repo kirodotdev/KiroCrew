@@ -47,9 +47,9 @@ def _redact_followup_item(item: dict) -> dict:
         # fields: into a git ref, a directory name, SEL records and logs. Run the
         # same redactors, and if either one CHANGES it, drop the field rather than
         # ship a mangled ref — the frontend then derives a branch from the title.
-        scrubbed, _ = redact_exfiltration_urls(branch)
-        scrubbed, _ = redact_credentials(scrubbed)
-        if scrubbed == branch:
+        from kiro_crew.security.exfil import refuses
+
+        if not refuses(branch, lambda v: redact_credentials(redact_exfiltration_urls(v)[0])[0]):
             out["branch"] = branch
     return out
 

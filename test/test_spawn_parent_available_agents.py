@@ -38,6 +38,7 @@ from kiro_crew import agent_discovery
 from kiro_crew import subagent as sa
 from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.mcp_tools import spawn as spawn_tools
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 def _write_spec(agents_dir: Path, name: str, **extra: Any) -> None:
@@ -370,7 +371,7 @@ class TestVetAgainstParentSpec:
         # Named ``planted`` on purpose: CodeQL seeds a sensitive-data source from
         # a variable called ``secret`` and does not treat the redaction as a
         # sanitizer, so that name would re-flag the (redacted) log line downstream.
-        planted = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+        planted = github_classic(seed=153)
         denial = _vet("orchestrator", planted)
         assert denial is not None
         assert planted not in denial
@@ -381,7 +382,7 @@ class TestVetAgainstParentSpec:
     def test_refusal_log_line_is_redacted_too(
         self, triage_fixture: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        planted = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+        planted = github_classic(seed=153)
         with caplog.at_level("WARNING", logger="kiro_crew.subagent"):
             assert _vet("orchestrator", planted) is not None
         joined = "\n".join(r.getMessage() for r in caplog.records)
@@ -392,7 +393,7 @@ class TestVetAgainstParentSpec:
         """The fail-closed branch names the parent whose spec could not be read;
         that name is the session's persisted template id, so it is redacted
         exactly as the sibling refusal redacts it."""
-        planted = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+        planted = github_classic(seed=153)
         denial = sa._vet_parent_available_agents((planted, None), "agent1")
         assert denial is not None
         assert "could not be read" in denial

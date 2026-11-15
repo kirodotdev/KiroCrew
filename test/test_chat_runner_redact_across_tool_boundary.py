@@ -33,6 +33,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 from test_credential_prefilter import AWS_SECRET, BRANCH_SAMPLES
 from turn_harness import APPROVED, Do, Raise, TurnContext, TurnRecord, TurnScript, run_turn
 
@@ -49,12 +50,12 @@ from kiro_crew.dashboard import chat_runner, openai_compat
 from kiro_crew.dashboard.chat_turn import turn_reply_seams
 from kiro_crew.dashboard.chat_utils import _build_stream_chunk
 from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact, reveal_store
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-#: A synthetic 40-character AWS secret access key, split so no literal sits here.
-#: An AWS key ID would not do: it is an identifier the redactor keeps visible.
-_HEAD, _TAIL = SAMPLE_AWS_SECRET[:4], SAMPLE_AWS_SECRET[4:]
-_KEY = _HEAD + _TAIL
+#: A synthetic GitHub token with a valid checksum, built so no literal sits here.
+#: An AWS key ID would not do: it is an identifier the redactor keeps visible; nor
+#: would a bare 40-character AWS-shaped run, which is no credential by itself.
+_KEY = github_classic(seed=33)
+_HEAD, _TAIL = _KEY[:4], _KEY[4:]
 #: The start of an AWS key ID, a run that could still become a credential.
 _KEY_ID_HEAD = "AKIA"
 _TAG = REDACTED_CREDENTIAL_TAG
@@ -310,9 +311,11 @@ class TestCredentialSplitAcrossABoundary:
         together keeps the name and replaces only the value, so the redacted output
         still starts with the held name. The name must still go with the value it
         names, everywhere the reply is saved or sent."""
-        record, queued = await _read_turn(kind, f"Call /api{_PARAM}", f"{_VALUE} then")
+        record, queued = await _read_turn(
+            kind, f"Call https://h.example/api{_PARAM}", f"{_VALUE} then"
+        )
 
-        whole = redact(f"Call /api{_PARAM}{_VALUE} then")
+        whole = redact(f"Call https://h.example/api{_PARAM}{_VALUE} then")
         assert _VALUE not in whole, "the pass this test drives no longer redacts the value"
         assert "".join(_saved(record)) == whole
         assert "".join(_shown(record)) == whole
@@ -707,3 +710,56 @@ class TestStreamReadersAcrossABoundary:
 
         assert _sse_reply(queued) == "Let me check the config."
         assert await _openai_reply(queued) == "Let me check the config."
+
+
+class TestARawCopyNeverOutlivesTheTextItMirrors:
+    """Through the real ``_run_chat``: a site that clears the visible text mid-turn
+    clears its raw copy too, so a credential streamed before the boundary is never
+    saved against the reply the reader sees after it.
+
+    The flush saves the raw copy redacted as one text only when it is the copy of
+    the streamed text, so a raw copy that outlived a clear would hold the earlier
+    credential and the reply would be withheld. The reply after the boundary
+    carries exactly its own credential and its one record.
+    """
+
+    def _events(self, boundary: object) -> list[object]:
+        from kiro_crew.acp.types import EVENT_TEXT_CHUNK, STOP_REASON_END_TURN, AcpEvent
+
+        return [
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="draft "),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"token {github_classic(seed=31)}"),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text=" . "),
+            boundary,
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"key {github_classic(seed=32)}"),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text=" is the one."),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+        ]
+
+    def _assert_only_the_reply_after(self, record: TurnRecord) -> None:
+        rows = [r for r in record.rows("assistant") if "is the one" in str(r.get("content"))]
+        assert len(rows) == 1
+        assert rows[0]["content"] == "key [REDACTED: credential] is the one."
+        assert len((rows[0].get("meta") or {}).get("redactions", [])) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_compaction_boundary_clears_the_raw_copy(self) -> None:
+        from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, AcpEvent
+
+        boundary = AcpEvent(kind=EVENT_COMPACTION_STATUS, text="completed", context_usage_pct=40.0)
+        record = await run_turn(TurnScript(events=self._events(boundary)))
+
+        self._assert_only_the_reply_after(record)
+
+    @pytest.mark.asyncio
+    async def test_a_mid_turn_clear_clears_the_raw_copy(self) -> None:
+        from turn_harness import SlotSpec
+
+        from kiro_crew.acp.types import EVENT_CLEAR_STATUS, AcpEvent
+
+        record = await run_turn(
+            TurnScript(events=self._events(AcpEvent(kind=EVENT_CLEAR_STATUS))),
+            slot=SlotSpec(rows=[("user", "earlier"), ("assistant", "earlier answer")]),
+        )
+
+        self._assert_only_the_reply_after(record)

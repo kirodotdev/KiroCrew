@@ -44,6 +44,7 @@ from kiro_crew.discord.renderer import DiscordRenderer
 from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 from kiro_crew.discord.transport_dispatch import DiscordDispatcher
 from kiro_crew.history import ConversationLog
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 FOOTER_MARK = "\n\n-# "
 
@@ -372,8 +373,8 @@ class TestEmptyTurnIsNeverAFinishedReply:
         cli = FakeClient()
         r = DiscordRenderer(cli, "chan1", DISCORD_CAPABILITIES, session_key="sk")  # type: ignore[arg-type]
         await r.on_turn_start()
-        # A synthetic 40-character AWS secret, assembled so no source line spells one.
-        key = "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" + "Jf1Lb5Gs0Ye9Ua2WkE"
+        # A Slack bot token, built so no source line spells one.
+        key = SAMPLE_SLACK_BOT_TOKEN
         r.note_steer(f"use {key} for the bucket")
         await r.close()
 

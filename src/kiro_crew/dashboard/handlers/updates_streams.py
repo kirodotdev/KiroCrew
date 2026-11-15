@@ -149,7 +149,7 @@ _REDACTING = threading.local()
 
 
 def _stream_safe(msg: str) -> str:
-    """*msg* as the live log stream may carry it: redacted, whatever the seams switch says.
+    """*msg* as the live log stream may carry it: redacted, whatever the owner's redaction setting says.
 
     The stream reaches every dashboard-user socket and ``log``-scoped apps, not only
     the owner, so it is not an output seam. The switch read here would not say how
@@ -393,6 +393,18 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
     except ConnectionResetError:
         return resp
 
+    # Whether this reader is the owner alone, decided once: a note was built inside
+    # the owner's seam, so any other reader gets each event redacted in full.
+    from kiro_crew import redaction_seams
+    from kiro_crew.dashboard.redaction_audience import for_reader, request_audience
+
+    owner_reader = redaction_seams.owner_alone(request_audience(request))
+
+    async def send(event: str, payload: str) -> None:
+        shown = for_reader(payload, owner=owner_reader)
+        if shown is not None:
+            await resp.write(f"event: {event}\ndata: {shown}\n\n".encode())
+
     # Register a per-client notification queue
     client_q = state.register_sse()
     try:
@@ -406,10 +418,10 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                         payload = note["slots"]
                         if not is_dashboard_user:
                             payload = _without_pin_ranks(payload)
-                        await resp.write(f"event: slots\ndata: {payload}\n\n".encode())
+                        await send("slots", payload)
                     elif msg_type == "slot_title":
                         payload = json.dumps({"key": note["key"], "title": note["title"]})
-                        await resp.write(f"event: slot_title\ndata: {payload}\n\n".encode())
+                        await send("slot_title", payload)
                     elif msg_type == "refresh":
                         await resp.write(f"event: refresh\ndata: {note['kinds']}\n\n".encode())
                     elif msg_type == "chat_message":
@@ -431,13 +443,13 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                         payload = json.dumps(
                             chat_message_frame(note, include_metadata=is_dashboard_user)
                         )
-                        await resp.write(f"event: chat_message\ndata: {payload}\n\n".encode())
+                        await send("chat_message", payload)
                     else:
                         if relay_teammate and app_origin_frame(msg_type or "notification", note):
                             audit_teammate_withheld(msg_type or "notification")
                             continue
                         payload = json.dumps(note)
-                        await resp.write(f"event: notification\ndata: {payload}\n\n".encode())
+                        await send("notification", payload)
                 except asyncio.QueueEmpty:
                     break
 

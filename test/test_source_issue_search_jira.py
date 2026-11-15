@@ -15,6 +15,7 @@ from urllib.parse import parse_qsl, urlsplit
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 from source_providers_helpers import _clear_shared_fetch_state  # noqa: F401
 from source_providers_helpers import _mock_source_sel_fixture  # noqa: F401
 from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F401
@@ -22,7 +23,7 @@ from source_providers_helpers import _app
 
 from kiro_crew.dashboard.source_providers import cache, hosts, issue_search, jira
 
-_SECRET = "ghp_" + "b" * 36
+_SECRET = github_classic(seed=90)
 _DASHES = "-----"
 _CLOUD = "acme.atlassian.net"
 _SERVER = "jira.acme.dev"

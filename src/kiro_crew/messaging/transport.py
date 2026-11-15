@@ -1,15 +1,18 @@
 """Layer 1 -- the ``MessagingTransport`` contract and value objects.
 
-Depends only on the standard library so the package stays channel-neutral
-and cycle-free.
+Depends only on the standard library (and ``redaction_seams``, a stdlib-only leaf)
+so the package stays channel-neutral and cycle-free.
 """
 
 from __future__ import annotations
 
+import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+
+from kiro_crew import redaction_seams
 
 if TYPE_CHECKING:
     from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile
@@ -311,6 +314,11 @@ class InboundMessage:
         }
 
 
+#: The outbound methods of :class:`MessagingTransport` a subclass's posts go through.
+_CHANNEL_SENDS = ("send_message", "send_markdown", "send_outbound_image")
+_CHANNEL_SEND_MARK = "_kirocrew_channel_send"
+
+
 class MessagingTransport(ABC):
     """Channel-neutral inbound/outbound contract for a messaging channel.
 
@@ -320,6 +328,22 @@ class MessagingTransport(ABC):
 
     channel_type: str = ""
     capabilities: TransportCapabilities
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Run each send a transport defines inside ``output_seam(CHANNELS)``.
+
+        A post reaches channel members, so it never stands down whatever seam its
+        caller is in: the dashboard's chat turn mirrors its reply and its prompt
+        from inside the CHAT seam, and a transport's own rendering and redaction
+        run in that call. A sender that named the owner's DM keeps it.
+        """
+        super().__init_subclass__(**kwargs)
+        for name in _CHANNEL_SENDS:
+            send = cls.__dict__.get(name)
+            if inspect.isfunction(send) and not getattr(send, _CHANNEL_SEND_MARK, False):
+                wrapped = redaction_seams.in_seam(redaction_seams.CHANNELS)(send)
+                setattr(wrapped, _CHANNEL_SEND_MARK, True)
+                setattr(cls, name, wrapped)
 
     @property
     def dispatcher(self) -> Any:

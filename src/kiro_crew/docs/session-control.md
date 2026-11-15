@@ -949,7 +949,7 @@ rather than cut down (`invalid_title`). The
 zero-width joiner and non-joiner and the tag characters stay allowed, because
 emoji sequences, flag emoji and scripts such as Persian need them. The stored title
 passes through `_scrub_text`, the scrub the dashboard applies to stored fields.
-It redacts credentials and exfiltration URLs, and a secret split by an
+It redacts credentials, inside URLs too, and a secret split by an
 invisible character (such as a zero-width joiner) is still redacted. A title
 that redaction lengthens past 200 characters is refused (`invalid_title`)
 rather than cut, so a stored title never holds a torn `[REDACTED]` marker.

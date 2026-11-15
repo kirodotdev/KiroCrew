@@ -24,6 +24,7 @@ import pytest
 from kiro_crew.apps import chat_slot_sdk
 from kiro_crew.apps.chat_slot_sdk import QUEUED_TEXT_WITHHELD, ChatSlotRefused, ChatSlotSDK
 from kiro_crew.apps.context import build_app_context
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 APP = "slot-probe"
 KEY = f"{APP}-job-1"
@@ -301,7 +302,7 @@ def test_a_title_marks_the_slot_for_the_periodic_flush():
 
 
 def test_a_title_is_redacted_before_it_is_pushed_and_withheld_when_it_cannot_be(monkeypatch):
-    secret = "ghp_" + "b" * 36
+    secret = github_classic(seed=160)
     slot = _Slot()
     state = _State(slot)
     assert _sdk().set_title(state, slot, f"Job {secret}") is True
@@ -542,7 +543,7 @@ def test_a_message_sent_while_a_turn_runs_is_queued_stamped_and_redacted(monkeyp
     monkeypatch.setattr(
         "kiro_crew.dashboard.session_control.containment_meta", lambda state, slot: stamp
     )
-    secret = "token ghp_" + "a" * 36
+    secret = "token " + github_classic(seed=161)
     slot = _Slot()
     state = _State(slot)
 

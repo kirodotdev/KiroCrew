@@ -432,35 +432,45 @@ someone deciding which bucket it belongs in.
 
 The memory recovery, record editor, and member recall/copy APIs each register
 their own output boundary. Their response fields pass through the shared
-credential and exfiltration-URL chain before reaching the dashboard or MCP caller.
+credential redaction, inside URLs too, before reaching the dashboard or MCP caller.
 
-- `redact_credentials()` runs four passes:
-  1. Fixed patterns: cloud access key IDs and secret keys, private-key blocks,
-     chat and forge tokens, package-registry tokens, JWTs, `Authorization: Bearer`
-     headers, and database connection URIs carrying embedded credentials.
-  2. Base64: it decodes base64-looking chunks and re-runs pass 1 on the bytes.
-  3. Bare secret key: an entropy and shape heuristic for an unlabelled
-     40-character cloud secret key, with exemptions for shapes it would otherwise
-     misread (digests, document links, code literals and others).
-  4. Token parameter: the value of a `token` URL parameter, keyed on the name.
+- `redact_credentials()` masks what the rule table decides is a credential, then
+  the few classes no table row reads yet (Telegram and Discord bot tokens, npm and
+  PyPI tokens, OpenAI `sk-proj-` keys, the `Authorization: Bearer` token) by fixed
+  pattern, then the value of a `token` URL parameter, keyed on the name. The table
+  (`security/redaction_structured/`) reads vendor tokens by published format
+  (checksums where published), private-key blocks, signed JWTs, a cloud secret key
+  beside its key ID or after its label, session tokens after their label,
+  passwords in URL userinfo, Basic-auth and API-key header values, session cookies,
+  labelled values such as `password=`, credential-type URL parameters, webhook URL
+  secrets, and base64 or hex runs that decode to one of these. It never masks an
+  identifier (a cloud access key ID, an account ID, an ARN, a request id, a UUID, a
+  git object name), a documentation example key, a public certificate or SSH key,
+  an image data URI, an OAuth `code` or `state`, an unsigned JWT or a token that
+  fails its format check, and it does not guess a secret from a run's entropy.
 
-  Key-value matching is JSON-aware and value classes stop at JSON structural
-  delimiters, so a match in compact JSON does not run into the next field. A
-  labelled match replaces the label together with the value, so
-  `{"AccessKeyId": "..."}` becomes `{"[REDACTED: credential]"}`.
-- `redact_exfiltration_urls()` / `scan_exfiltration_urls()` judge the payload
-  first. A credential in a URL is an unconditional floor; long query strings,
-  base64 blobs and heavy URL-encoding are heuristics. A flagged URL is replaced
-  with a redaction marker. Some destinations get narrower treatment: a valid S3
+  Only the value is replaced: the label, header name, URL scheme, host, path and
+  other parameters stay, so `{"Authorization": "Bearer <tok>"}` becomes
+  `{"Authorization": "Bearer [REDACTED: credential]"}`.
+- `redact_exfiltration_urls()` masks the credential values inside a URL the same
+  way and leaves the rest of the URL as written; a URL is never replaced whole.
+  `scan_exfiltration_urls()` is a request-blocking decision: it judges the payload
+  of a URL in a command. A credential in a URL is an unconditional floor; long
+  query strings, base64 blobs and heavy URL-encoding are heuristics, and a flagged
+  URL refuses the request. Some destinations get narrower treatment: a valid S3
   presigned URL is exempt; the ACP OAuth banner path spares standard OAuth
   parameters at approved authorization endpoints; Kiro Crew's own Slack app-create
-  link keeps only its alias under the heuristics; and a companion's exact hosts and
-  a reader's allowed hosts (*Allow for this host*, kept per workspace in a
-  read-only leaf) skip only the length and base64 heuristics. The credential
-  checks still run on those last three.
-- The owner's switch (Settings → Security) applies only inside the Files view,
-  and there it turns all credential redaction off. A code-text scope spares two
-  source-code shapes from pass 3 and nothing else.
+  link keeps only its alias under the heuristics; and a companion's exact hosts
+  skip only the length and base64 heuristics. The credential checks still run on
+  those last two. The dashboard never loads a remote markdown image on its own: it
+  draws a click-to-load placeholder.
+- The owner's one setting (Settings → Security → Redaction) turns credential
+  redaction on or off on the output paths that open a seam (chat, the saved
+  transcript, channel egress, the conversation replayed into the agent's prompt,
+  the log-record filter) and in the owner's Files view. It is off by default; a
+  host whose policy governs any scope keeps it on unless the top policy tier names
+  `capabilities.credential_redaction_off`. Every blocking gate, and every
+  redaction call outside a seam, redacts whichever way it is set.
 - `redact()` composes both in order for a single call site.
 - `StreamRedactor` handles the case per-chunk redaction structurally cannot: a
   credential split across a streaming boundary, where neither fragment matches on
@@ -741,14 +751,14 @@ process that confinement actually took effect (for example by attempting to read
 a canary that should be hidden). A confinement that loads but does not enforce
 would not be noticed.
 
-**Base64 credential detection has a floor.** Only base64 chunks at or above the
-minimum length are decoded and re-checked, so a shorter encoded fragment, or one
-split across messages, can pass. Cross-message correlation would extend it.
+**Encoded credential detection has a floor.** Only an encoded run at or above the
+`encoded_credential` row's minimum length is decoded and re-read, so a shorter
+encoded fragment, or one split across messages, can pass.
 
-**A bare secret key is a guess.** Pass 3 judges an unlabelled 40-character run by
-entropy and shape, which cannot tell a random secret from a random digest, so it
-carries exemptions and still misreads some benign values. The recorded direction
-replaces it with case-insensitive labels and key-ID pairing; see
+**A credential no table row reads stays as written.** The rule table masks
+values that are credentials by their published format or their label, never a run
+judged by its entropy, so an unlabelled secret in a format the table does not
+know reaches the output; see
 [the redaction tier decision](../decisions/2026-10-20-redaction-classifies-by-what-a-value-can-do.md).
 
 **Write protection covers Kiro Crew's own trust root, not the user's shell

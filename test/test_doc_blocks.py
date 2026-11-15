@@ -19,6 +19,7 @@ from kiro_crew import doc_blocks
 from kiro_crew.doc_blocks import extract_blocks
 from kiro_crew.doc_parser import extract_text
 from kiro_crew.security import redact_credentials
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 def _kinds(blocks: list[dict]) -> list[str]:
@@ -253,7 +254,7 @@ def test_a_text_box_is_read_once_so_a_credential_inside_it_is_redacted(tmp_path)
     """A VML text box nests whole runs inside a run. Read through the outer run and
     again from the nested one, its text came back as two glued copies, and the
     redactor then had no boundary to stop the token match on."""
-    token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+    token = github_classic(seed=131)  # a ghp_ without a valid checksum is no token
     f = tmp_path / "textbox.docx"
     write_docx(
         str(f),
@@ -271,7 +272,7 @@ def test_a_word_text_box_reads_its_choice_once_so_a_credential_is_redacted(tmp_p
     """Word saves a text box twice, under mc:Choice and mc:Fallback, and a reader
     takes one branch. Reading more glued the token to itself, in a paragraph and
     in a table cell alike, and a second Choice must not glue it either."""
-    token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+    token = github_classic(seed=131)  # a ghp_ without a valid checksum is no token
     box = f"<w:txbxContent>{docx_para(token)}</w:txbxContent>"
     alternate = (
         '<w:p><w:r><w:t xml:space="preserve">Key: </w:t></w:r><w:r>'
@@ -305,7 +306,7 @@ def test_a_text_box_inside_a_run_keeps_its_place_in_the_text(tmp_path):
 
 def test_each_text_box_paragraph_keeps_its_line_so_a_token_on_it_is_redacted(tmp_path):
     """Glued to the line before it, a token loses the boundary the redactor needs."""
-    token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+    token = github_classic(seed=131)  # a ghp_ without a valid checksum is no token
     f = tmp_path / "lines.docx"
     write_docx(
         str(f),

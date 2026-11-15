@@ -14,13 +14,15 @@ from test_cron_call_tool_scan import (
     ACCOUNT_RESOURCE,
     CODEDEPLOY_TARGET,
     DRIVE_ID,
-    GITHUB_TOKEN,
     GRAPH_MESSAGE_ID,
 )
 
 from conftest import forget_env_at_teardown
 from kiro_crew.cli_commands import _cron_preview
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET, github_classic
+
+#: A GitHub token with a valid checksum: the scan refuses a call that carries it.
+GITHUB_TOKEN = github_classic(seed=66)
 
 
 @pytest.fixture(autouse=True)
@@ -174,8 +176,9 @@ class TestCronPreviewValidation:
         # Not named s.py: the bytecode fixture expects s.py to be imported,
         # and this script never is.
         _write_script(tmp_path, "unloadable.py", "def run(ctx): pass\n")
-        with _patch_resolve(tmp_path, name="unloadable.py"), patch(
-            "importlib.util.spec_from_file_location", return_value=None
+        with (
+            _patch_resolve(tmp_path, name="unloadable.py"),
+            patch("importlib.util.spec_from_file_location", return_value=None),
         ):
             with pytest.raises(SystemExit) as exc:
                 _cron_preview(_make_args(f"{tmp_path / 'unloadable.py'}:run"))
@@ -439,15 +442,17 @@ class TestCronPreviewNotifyParity:
             "from kiro_crew.cron_script import Report\n"
             "def run(ctx):\n"
             "    ctx.notify('leak aws_secret_access_key=" "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" "Jf1Lb5Gs0Ye9Ua2WkE',\n"
-            "               detail='aws_secret_access_key=" "Qh4Tm2Vx9KpRcZ8Nw3Hd" "Jf1Lb5Gs0Ye9Ua2WkEQ2')\n"
+            f"               detail='token {GITHUB_TOKEN}')\n"
             "    raise Report('done')\n",
         )
         with _patch_resolve(tmp_path):
             _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
         out = capsys.readouterr().out
         assert SAMPLE_AWS_SECRET not in out
-        # The kwarg value is redacted too, not just the text.
-        assert "Qh4Tm2Vx9KpRcZ8Nw3Hd" "Jf1Lb5Gs0Ye9Ua2WkEQ2" not in out
+        # The kwarg value is redacted too, not just the text. A labelled AWS secret
+        # inside the kwargs' JSON string is an assignment in a quoted string, which
+        # the rule table does not read; a token by its format is read anywhere.
+        assert GITHUB_TOKEN not in out
         assert "REDACTED" in out
 
 

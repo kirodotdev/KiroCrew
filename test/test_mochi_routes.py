@@ -18,7 +18,7 @@ from dashboard_owner_helpers import NoConfiguredOwner
 
 from kiro_crew.apps.builtins.mochi import hooks
 from kiro_crew.apps.builtins.mochi.backend import routes
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -134,7 +134,7 @@ class TestWatchlistRoutes:
     async def test_agent_authored_credential_is_redacted_in_both_responses(self, tmp_path):
         """An MCP-authored watchlist item carrying a credential must not reach the
         browser verbatim through either the update echo or the GET payload."""
-        secret = SAMPLE_AWS_SECRET
+        secret = github_classic(seed=168)
         async with _live_runtime(tmp_path):
             upd = await routes._handle_watchlist_update(
                 _json_request(
@@ -434,9 +434,11 @@ class TestPinnedRoutes:
         async with _live_runtime(tmp_path) as runtime:
             target = tmp_path / "watched.txt"
             target.write_text("x")
-            # A synthetic 40-char AWS secret the credential plan redacts.
-            planted = SAMPLE_AWS_SECRET
-            assert runtime.pinned.add_pin(str(target), label=f"see {planted}", now_ms=1_000)
+            # A GitHub token with a valid checksum, which the credential plan redacts.
+            planted = github_classic(seed=169)
+            assert runtime.pinned.add_pin(
+                str(target), label=f"see {planted}", now_ms=1_000
+            )
             resp = await routes._handle_pinned_get(
                 _owner_request("GET", "/api/apps/mochi/pinned")
             )
