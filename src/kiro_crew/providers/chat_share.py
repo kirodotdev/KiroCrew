@@ -14,7 +14,9 @@ provider exists, and handed to ``AcpSessionProvider`` as ``runtime_lease``.
 
 Four inputs a running process cannot shed are read before the acquisition and
 RE-READ after it: the agent spec generation, the account era, the governed
-sandbox tier and the SSH_AUTH_SOCK-forwarding consent. The acquisition is not
+sandbox tier and the SSH_AUTH_SOCK-forwarding consent. On codex the account era is
+the codex credential file (:func:`codex_spawn_identity`), because codex-acp signs
+in on its own and never reads Kiro's sign-in. The acquisition is not
 instantaneous (a same-key arrival waits out a founding spawn), so a revocation, a
 sign-in to another account, a raised floor or a revoked consent landing in that
 window would otherwise place this session on a process started under the older
@@ -31,6 +33,7 @@ the gateway's life.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import uuid
@@ -49,7 +52,7 @@ from kiro_crew.acp.chat_runtime_sharing import (
     kas_chat_sharing_ready,
 )
 from kiro_crew.acp.runtime import AcpRuntimeError
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KAS
 from kiro_crew.metrics.chat_runtime_share import record_placed, record_refused
 from kiro_crew.runtime_ownership import CHAT_RUNTIME_CAP, RUNTIME_OWNERSHIP, Acquisition
 
@@ -58,6 +61,31 @@ if TYPE_CHECKING:
     from kiro_crew.providers.acp import AcpProvider
 
 logger = logging.getLogger(__name__)
+
+
+def codex_spawn_identity(environ: dict[str, str] | None = None) -> str:
+    """The account era of a codex start: which codex credential a new process loads.
+
+    codex-acp authenticates itself, from ``$CODEX_HOME/auth.json`` (``~/.codex`` when
+    ``CODEX_HOME`` is unset; ``agent.env`` cannot move it), and never from Kiro's
+    sign-in, so the Kiro era says nothing about a codex process and is empty for a
+    codex-only operator. The era is a digest of that file, so a codex sign-in to
+    another account founds a new process instead of joining one holding the old
+    token. No file is a stable answer for that home (the adapter then reads an API
+    key from the gateway's environment, which a running gateway does not change).
+    A file that exists but cannot be read is ``""``, which the placement turns into
+    a key nothing can match: fail closed.
+    """
+    env = os.environ if environ is None else environ
+    home = Path(env.get("CODEX_HOME") or Path.home() / ".codex")
+    try:
+        data = (home / "auth.json").read_bytes()
+    except FileNotFoundError:
+        return f"codex-no-auth-file:{home}"
+    except OSError:
+        return ""
+    return "codex:" + hashlib.sha256(data).hexdigest()
+
 
 #: How many placements a start makes while a keyed input keeps moving between the
 #: read and the acquisition. Small on purpose: an input still moving after this
@@ -120,8 +148,12 @@ class ChatSharePlacement:
         forward_ssh: bool,
         agent_env: dict[str, str] | None = None,
         kas_telemetry: bool = True,
+        codex_era: str | None = None,
     ) -> None:
         self._provider = provider
+        # codex reads its own credential, never Kiro's, so its era is the codex
+        # one (:func:`codex_spawn_identity`), read and re-read in place of Kiro's.
+        self._codex_era = codex_era is not None
         # ``agent.env`` as this start read it: a child takes it at spawn and never
         # re-reads it, so a saved change must found a new process rather than join
         # one that carries the old values. A founding spawn launches with this same
@@ -149,7 +181,11 @@ class ChatSharePlacement:
         # compare equal and join across accounts. It becomes a token unique to
         # this start, which no other key can equal, so the session founds its
         # own process. The confirm compares raw against raw.
-        self._raw_era = str(getattr(provider, "pre_spawn_identity", "") or "")
+        self._raw_era = (
+            codex_era
+            if codex_era is not None
+            else str(getattr(provider, "pre_spawn_identity", "") or "")
+        )
         self._era = self._raw_era or f"unverified-{uuid.uuid4().hex}"
         self._identity_reader = getattr(provider, "spawn_identity_reader", None)
         # False once placement gave up and made the key unique: nothing can join
@@ -204,7 +240,9 @@ class ChatSharePlacement:
         from kiro_crew.sandbox import _forward_ssh_auth_sock, effective_sandbox_mode
 
         generation = await asyncio.to_thread(agent_spec_generation, self._work_dir, self._agent)
-        if self._identity_reader is not None:
+        if self._codex_era:
+            era = await asyncio.to_thread(codex_spawn_identity)
+        elif self._identity_reader is not None:
             era = await pre_spawn_identity(self._identity_reader)
         else:
             era = self._raw_era
@@ -458,7 +496,7 @@ async def resolve_chat_share(
     from kiro_crew.acp.agent_env import agent_env_overlay
     from kiro_crew.sandbox import _forward_ssh_auth_sock, effective_sandbox_mode
 
-    def _read_placement_inputs() -> tuple[str, str, bool, dict[str, str], bool]:
+    def _read_placement_inputs() -> tuple[str, str, bool, dict[str, str], bool, str | None]:
         configured_env = agent_env_overlay()
         telemetry = _kas_telemetry_for(backend, work_dir, configured_env, extra_env)
         return (
@@ -467,9 +505,10 @@ async def resolve_chat_share(
             _forward_ssh_auth_sock(sandbox_mode, ()),
             configured_env,
             telemetry,
+            codex_spawn_identity() if backend == ACP_BACKEND_CODEX else None,
         )
 
-    generation, tier, forward, configured_env, telemetry = await asyncio.to_thread(
+    generation, tier, forward, configured_env, telemetry, codex_era = await asyncio.to_thread(
         _read_placement_inputs
     )
     return ChatSharePlacement(
@@ -489,7 +528,8 @@ async def resolve_chat_share(
         forward_ssh=forward,
         agent_env=configured_env,
         kas_telemetry=telemetry,
+        codex_era=codex_era,
     )
 
 
-__all__ = ["ChatSharePlacement", "resolve_chat_share"]
+__all__ = ["ChatSharePlacement", "codex_spawn_identity", "resolve_chat_share"]

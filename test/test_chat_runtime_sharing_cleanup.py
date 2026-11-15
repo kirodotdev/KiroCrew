@@ -23,7 +23,7 @@ from test_chat_runtime_sharing import (
 )
 
 import kiro_crew.runtime_ownership as ro
-from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.acp_backends import ACP_BACKEND_CODEX, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.runtime_ownership import RuntimeOwnership, authorize_runtime_kill
 from kiro_crew.testing.wait import async_wait_until
 
@@ -906,7 +906,7 @@ class TestChatSharePlacement:
         assert fresh_table.leases_on_runtime(dead) == 0
         assert fresh_table.leases_on_runtime(fresh) == 1
 
-    @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS])
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX])
     def test_a_failed_joiner_is_evicted_without_ending_the_process(self, fresh_table, backend):
         rt = _PlacedRuntime(backend=backend)
         spawn = spawner(rt)
@@ -921,11 +921,18 @@ class TestChatSharePlacement:
             await joiner.abandon(rt, "sess-joiner")
 
         asyncio.run(scenario())
-        # KAS keeps the record (session/close); kiro-cli terminates the session.
+        # KAS keeps the record (session/close) instead of its deleting teardown;
+        # kiro-cli terminates the session, and codex's own teardown verb is the
+        # record-keeping session/close (CodexHarness.teardown).
         if backend == ACP_BACKEND_KAS:
             assert (rt.evicted, rt.terminated) == (["sess-joiner"], [])
         else:
             assert (rt.evicted, rt.terminated) == ([], ["sess-joiner"])
+        if backend == ACP_BACKEND_CODEX:
+            from kiro_crew.acp.harness.codex import CodexHarness
+            from kiro_crew.acp.types import METHOD_SESSION_CLOSE
+
+            assert CodexHarness().teardown.method == METHOD_SESSION_CLOSE
         assert rt.kills == []
         assert fresh_table.leases_on_runtime(rt) == 1
 
@@ -1123,6 +1130,35 @@ class TestResolveChatShare:
         )
         assert counted == [("harness_switched_off", {"backend": ACP_BACKEND_KAS})]
 
+    def test_codex_is_off_by_default_under_the_preview(self, monkeypatch, caplog):
+        """codex is new to chat sharing: with the preview on and no switch stored,
+        a codex chat keeps its own process."""
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.providers.chat_share"):
+            placement, reads = self._resolve(
+                monkeypatch,
+                {"chat_runtime_sharing": True},
+                _PlacementProvider(backend=ACP_BACKEND_CODEX),
+            )
+        assert placement is None and reads == []
+        assert "reason=harness_switched_off backend=codex" in caplog.text
+
+    def test_a_codex_chat_switched_on_shares_without_the_kas_engine_read(self, monkeypatch):
+        """codex has no engine gate: with its switch on it shares, and the KAS
+        engine is never probed. Its era is the codex credential, not Kiro's."""
+        import kiro_crew.providers.chat_share as share_mod
+
+        monkeypatch.setattr(share_mod, "codex_spawn_identity", lambda: "codex:fixed")
+        placement, reads = self._resolve(
+            monkeypatch,
+            {"chat_runtime_sharing": True},
+            _PlacementProvider(backend=ACP_BACKEND_CODEX),
+            harnesses={"codex": True},
+        )
+        assert placement is not None
+        assert reads == ["spec"]
+        assert self.kas_probes == 0
+        assert placement._raw_era == "codex:fixed"
+
     def test_a_native_subagent_agent_keeps_its_own_process(self, monkeypatch, caplog):
         # Its subagents' approvals route only while one session is registered, so
         # beside a co-tenant they would be auto-rejected: it must never join.
@@ -1169,3 +1205,95 @@ class TestResolveChatShare:
             remote=True,
         )
         assert placement is None and reads == []
+
+
+class TestTheCodexEraIsCodexsOwnCredential:
+    """A codex process authenticates from ``$CODEX_HOME/auth.json``, never from Kiro's
+    sign-in, so its placement keys and re-confirms on that file, not the Kiro era."""
+
+    def test_the_era_follows_the_codex_credential_file(self, tmp_path):
+        from kiro_crew.providers.chat_share import codex_spawn_identity
+
+        env = {"CODEX_HOME": str(tmp_path)}
+        missing = codex_spawn_identity(env)
+        assert missing and missing == codex_spawn_identity(env)
+        (tmp_path / "auth.json").write_text('{"account": "A"}', encoding="utf-8")
+        signed_in_a = codex_spawn_identity(env)
+        assert signed_in_a.startswith("codex:") and signed_in_a != missing
+        assert codex_spawn_identity(env) == signed_in_a
+        (tmp_path / "auth.json").write_text('{"account": "B"}', encoding="utf-8")
+        assert codex_spawn_identity(env) not in (signed_in_a, missing)
+        # The digest names the file, never its contents.
+        assert "account" not in codex_spawn_identity(env)
+
+    def test_an_unreadable_credential_fails_closed(self, tmp_path):
+        from kiro_crew.providers.chat_share import codex_spawn_identity
+
+        (tmp_path / "auth.json").mkdir()
+        assert codex_spawn_identity({"CODEX_HOME": str(tmp_path)}) == ""
+
+    def _real_confirmation(self, monkeypatch, codex_eras):
+        import kiro_crew.providers.chat_share as share_mod
+        import kiro_crew.sandbox as sandbox_mod
+
+        pending = list(codex_eras)
+        monkeypatch.setattr(
+            share_mod,
+            "codex_spawn_identity",
+            lambda: pending.pop(0) if len(pending) > 1 else pending[0],
+        )
+        monkeypatch.setattr(share_mod, "agent_spec_generation", lambda w, a: "gen-1")
+        monkeypatch.setattr(share_mod, "_kas_telemetry_for", lambda *a: True)
+        monkeypatch.setattr(sandbox_mod, "effective_sandbox_mode", lambda mode: "auto")
+        monkeypatch.setattr(sandbox_mod, "_forward_ssh_auth_sock", lambda mode, hidden: False)
+
+    def test_codex_chats_with_no_kiro_sign_in_share_one_process(self, fresh_table, monkeypatch):
+        """The codex-only operator: no Kiro era at all, one codex credential."""
+        self._real_confirmation(monkeypatch, ["codex:aaa"])
+        rt = _PlacedRuntime(backend=ACP_BACKEND_CODEX)
+        spawn = spawner(rt)
+
+        async def scenario():
+            starts = [
+                make_placement(
+                    provider=_PlacementProvider(era="", backend=ACP_BACKEND_CODEX),
+                    session_key=f"dashboard:chat-{i}-1790000000",
+                    codex_era="codex:aaa",
+                )
+                for i in (1, 2)
+            ]
+            return [await p.place(spawn) for p in starts], starts
+
+        placed, starts = asyncio.run(scenario())
+        assert placed == [rt, rt]
+        assert spawn.calls == [rt]
+        assert [p.joined for p in starts] == [False, True]
+
+    def test_a_codex_sign_in_that_moves_during_placement_never_joins(
+        self, fresh_table, monkeypatch
+    ):
+        """The confirm re-reads the CODEX credential: a sign-in to another codex
+        account landing in the window founds a new process on the fresh key."""
+        rt_a, rt_b = _PlacedRuntime(backend=ACP_BACKEND_CODEX), _PlacedRuntime(
+            pid=4343, backend=ACP_BACKEND_CODEX
+        )
+        spawn = spawner(rt_a, rt_b)
+
+        async def scenario():
+            founder = make_placement(
+                provider=_PlacementProvider(era="", backend=ACP_BACKEND_CODEX),
+                codex_era="codex:aaa",
+            )
+            joiner = make_placement(
+                provider=_PlacementProvider(era="", backend=ACP_BACKEND_CODEX),
+                session_key="dashboard:chat-2-1790000000",
+                codex_era="codex:aaa",
+            )
+            self._real_confirmation(monkeypatch, ["codex:aaa"])
+            await founder.place(spawn)
+            self._real_confirmation(monkeypatch, ["codex:bbb"])
+            return await joiner.place(spawn), joiner
+
+        placed, joiner = asyncio.run(scenario())
+        assert placed is rt_b
+        assert joiner.joined is False
