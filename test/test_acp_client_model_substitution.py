@@ -699,7 +699,7 @@ class TestSubstitutionWrappersAndRedaction:
         client._capture_available_models = MagicMock()  # type: ignore[assignment]
         client._store_session_config = MagicMock()  # type: ignore[assignment]
 
-        async def _drain():
+        async def _drain(**_kwargs):
             return None
 
         client._drain_notifications = _drain  # type: ignore[assignment]

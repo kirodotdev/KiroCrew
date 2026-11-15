@@ -34,6 +34,7 @@ from kiro_crew.acp.types import METHOD_SESSION_CLOSE
 from kiro_crew.agent import require_unchanged_derived_spec
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_CLIENT_NEW_CONVERSATION,
+    ACP_BACKENDS_NO_MCP_INIT_FRAMES,
     POLICY_ID_BY_BACKEND,
 )
 
@@ -107,7 +108,10 @@ async def new_conversation(self: AcpClient) -> None:
         self._start_mount_check()
         await self.confirm_member_projection()
         await self._apply_startup_model()
-        await self._drain_notifications()
+        if self.backend in ACP_BACKENDS_NO_MCP_INIT_FRAMES:
+            await self._drain_notifications(idle_exit=0.0)
+        else:
+            await self._drain_notifications()
     except BaseException:
         # Not yet closed: the process end in ``_reset_state`` removes them.
         self._crew_bridge_snapshots += old_bridges
