@@ -16,12 +16,12 @@ import os
 import stat
 import sys
 import threading
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from denied_commands_security_helpers import _interpreter_work, _linear_work
 from stray_line_helpers import cyclic_gc_quiesced  # noqa: F401 - fixture
 
 from kiro_crew import security_posture
@@ -587,19 +587,23 @@ def test_many_keys_collapsing_to_one_spelling_cost_linear_work(monkeypatch):
     """A frame whose every key is a secret under ``Authorization`` collapses
     them all to ``[REDACTED: credential]``; the ``#n`` suffixing must not
     rescan every taken suffix per key, or such a frame pins the writer.
-    Rescanning from ``#2`` each time is quadratic (about n*n/2 probes: ~2e8
-    for this frame, tens of seconds); one probe per key is well under a
-    second even on a slow CI box."""
+    Rescanning from ``#2`` each time is quadratic (about n*n/2 probes); one
+    probe per key is linear. Asserted as the interpreter work the scrub costs
+    at three equally spaced frame sizes, which a rescan's probe loop grows
+    quadratically, rather than as seconds, which read the host."""
     _clean(monkeypatch)
-    n = 20000
-    frame = {"Authorization": {f"Basic blob{i} {i}": i for i in range(n)}}
-    started = time.monotonic()
-    out = json.loads(_frame_record.scrub_frame(frame))
-    elapsed = time.monotonic() - started
+
+    def frame_of(n: int) -> dict:
+        return {"Authorization": {f"Basic blob{i} {i}": i for i in range(n)}}
+
+    n = 600
+    out = json.loads(_frame_record.scrub_frame(frame_of(n)))
     inner = out["Authorization"]
     assert len(inner) == n, len(inner)
     assert all(k.startswith("[REDACTED: credential]") for k in inner), list(inner)[:3]
-    assert elapsed < 5.0, elapsed
+    frames = [frame_of(size) for size in (n, 2 * n, 3 * n)]
+    work = [_interpreter_work(lambda f=f: _frame_record.scrub_frame(f)) for f in frames]
+    assert _linear_work(work), f"suffixing rescans taken suffixes: work {work} at {n}, 2n, 3n keys"
 
 
 def test_a_name_value_pair_naming_a_plain_field_is_not_redacted(monkeypatch):

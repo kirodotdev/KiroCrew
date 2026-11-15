@@ -623,7 +623,7 @@ class TestCallerBudget:
             executor.shutdown(wait=False)
 
     def test_killed_but_unexited_children_are_bounded_and_a_slot_respawns_below_the_bound(
-        self, tmp_path: pathlib.Path
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # A child killed at its deadline on a wedged mount dies only when its syscall
         # returns -- for a hung mount, maybe never.  Two review findings meet here: the
@@ -658,10 +658,32 @@ class TestCallerBudget:
             assert (
                 slot.proc is None or slot.proc.poll() is not None
             ), "at the bound the slot must not spawn a third process"
-            started = time.monotonic()
-            with pytest.raises(SubprocessPoolUnavailable, match="have not exited"):
-                executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=5.0)
-            assert time.monotonic() - started < 1.0, "exhaustion is reported at once"
+            caller = threading.get_ident()
+            real_get = executor._free.get
+
+            def _refuse_waiting(*args, **kwargs):
+                if threading.get_ident() == caller:
+                    raise AssertionError(
+                        "exhaustion is reported at once: the caller waited on the free queue"
+                    )
+                return real_get(*args, **kwargs)
+
+            class _NoSleepOnCaller:
+                def __getattr__(self, name):
+                    return getattr(time, name)
+
+                def sleep(self, secs):
+                    if threading.get_ident() == caller:
+                        raise AssertionError("exhaustion is reported at once: the caller slept")
+                    time.sleep(secs)
+
+            # The caller may neither wait on the free queue nor sleep: the refusal
+            # comes from the pre-check, not after (part of) its 5 s budget.
+            with monkeypatch.context() as mp:
+                mp.setattr(executor._free, "get", _refuse_waiting)
+                mp.setattr(executor_mod, "time", _NoSleepOnCaller())
+                with pytest.raises(SubprocessPoolUnavailable, match="have not exited"):
+                    executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=5.0)
             executor._unreaped._procs = [types.SimpleNamespace(poll=lambda: 0)]  # one exited
             wait_until(
                 lambda: slot.proc is not None and slot.proc.poll() is None,

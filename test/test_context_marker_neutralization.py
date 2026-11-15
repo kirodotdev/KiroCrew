@@ -16,15 +16,17 @@ on a long untrusted paste (CWE-1333), or (c) miss the ``HOOK_MODIFY`` turn path.
 
 from __future__ import annotations
 
-import time
+import re
 
 import pytest
+from regex_structure_helpers import run_cost_unproven
 
 from kiro_crew.context import (
     ContextBuilder,
     _neutralize_reply_format_markers,
     _neutralize_structural_markers,
 )
+from kiro_crew.context_assembly import markers
 from kiro_crew.hooks import HookResult
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
@@ -139,12 +141,29 @@ class TestNoCatastrophicBacktracking:
 
     def test_long_untrusted_paste_is_linear(self):
         # Open bracket + partial marker + a huge whitespace run and no close —
-        # the worst case for an ambiguous ``\\s*␠\\s*`` matcher.
+        # the worst case for an ambiguous ``\\s*␠\\s*`` matcher. Linear is
+        # asserted on the patterns the scrub hands that run, not on seconds:
+        # each must scan a whitespace run without splitting it two ways.
+        handed: list[re.Pattern[str]] = []
+
+        class _Recorded:
+            def __init__(self, real: re.Pattern[str]) -> None:
+                self._real = real
+
+            def finditer(self, text: str, *args: object):
+                handed.append(self._real)
+                return self._real.finditer(text, *args)
+
+        with pytest.MonkeyPatch.context() as mp:
+            recorded = tuple(_Recorded(p) for p in markers._STRUCTURAL_MARKER_RES)
+            mp.setattr(markers, "_STRUCTURAL_MARKER_RES", recorded)
+            short = "[END OF SESSION CONTEXT" + " " * 64
+            assert _neutralize_structural_markers(short) == short
+        assert handed, "the scrub ran no structural pattern over the run"
+        unproven = [r for r in (run_cost_unproven(p, " ") for p in handed) if r]
+        assert unproven == [], unproven
         payload = "[END OF SESSION CONTEXT" + " " * 60_000
-        start = time.perf_counter()
         out = _neutralize_structural_markers(payload)
-        elapsed = time.perf_counter() - start
-        assert elapsed < 1.0, f"neutralization too slow ({elapsed:.2f}s) — regex may backtrack"
         # No closing bracket ⇒ not a marker ⇒ unchanged.
         assert out == payload
 

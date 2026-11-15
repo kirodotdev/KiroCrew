@@ -394,15 +394,31 @@ class TestTheCourtesyNeverEndangersTheGrant:
         # A restart path calls this. An unbounded wait would freeze a gateway
         # that was trying to re-exec, which is worse than losing the record
         # (found in review). Simulate a publish that never finishes.
-        so._breadcrumb_idle.clear()
+        from kiro_crew import safety_override_breadcrumb as breadcrumb
+
+        real_idle = breadcrumb._breadcrumb_idle
+        real_idle.clear()
+        waits: list[float | None] = []
+        flusher = threading.get_ident()
+        real_wait = real_idle.wait
+
+        def _recorded_wait(timeout: float | None = None) -> bool:
+            # The real event stays in place for every other thread (a pump left over
+            # from another test may still set or clear it); only this thread's waits
+            # are recorded.
+            if threading.get_ident() == flusher:
+                waits.append(timeout)
+                if timeout is None:
+                    raise AssertionError("flush waited without a bound on a stalled write")
+            return real_wait(timeout)
+
+        monkeypatch.setattr(real_idle, "wait", _recorded_wait)
         try:
-            started = time.monotonic()
             drained = so.flush_breadcrumb_writes(0.05)
-            elapsed = time.monotonic() - started
             assert drained is False
-            assert elapsed < 1.0, f"flush waited {elapsed:.2f}s on a stalled write"
+            assert waits == [0.05], f"flush waited {waits} on a stalled write, not its 0.05s bound"
         finally:
-            so._breadcrumb_idle.set()
+            real_idle.set()
 
 
 class TestOneRecordPerHomeIsSafe:

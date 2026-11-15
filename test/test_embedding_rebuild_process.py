@@ -5,6 +5,7 @@ import contextlib
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -422,15 +423,38 @@ def test_child_exiting_before_handshake_reports_its_code_and_output(tmp_path, tr
     assert "why" in message, message
 
 
-def test_handshake_already_written_does_not_wait(tmp_path, trivial_child):
+def test_handshake_already_written_does_not_wait(tmp_path, trivial_child, monkeypatch):
     """A budget is an upper bound on a failure, not a cost a passing run pays."""
+    import kiro_crew.testing.wait as wait_mod
+
     (tmp_path / "child-ready").write_text("ready", encoding="utf-8")
     process = trivial_child("import time; time.sleep(30)")
-    started = time.monotonic()
+    slept: list[float] = []
+    real_time = time
+
+    waiter = threading.get_ident()
+
+    def _refuse_sleep(secs: float) -> None:
+        if threading.get_ident() != waiter:
+            return real_time.sleep(secs)  # another thread's poll is not this wait
+        slept.append(secs)
+        raise AssertionError(f"waited {secs}s for a marker that was already written")
+
+    class _NoSleepTime:
+        """This module's ``time`` without ``sleep``, so a helper poll fails by name."""
+
+        sleep = staticmethod(_refuse_sleep)
+
+        def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+            return getattr(real_time, name)
+
+    # Any wait, however short, is a sleep: in wait_until's poll (its defining
+    # module's ``_sleep``) or in the helper itself. `< _STARTUP_CEILING` on a clock
+    # would also hold for a wait that sat out most of the budget.
+    monkeypatch.setattr(wait_mod, "_sleep", _refuse_sleep)
+    monkeypatch.setitem(globals(), "time", _NoSleepTime())
     _wait_for_marker(process, tmp_path, "child-ready", _STARTUP_CEILING)
-    # Tight on purpose: `< _STARTUP_CEILING` would also hold for a wait that sat
-    # out most of the budget, which is the thing this asserts does not happen.
-    assert time.monotonic() - started < 1.0
+    assert slept == [], f"the wait slept {slept} with the marker already written"
 
 
 def test_the_startup_leg_is_bounded_separately_from_the_handshake(tmp_path, trivial_child):
