@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { autoOpenRows } from '../../lib/crewMode'
+import { yieldToMain } from '../../lib/yieldToMain'
 import { unwrapResult } from '@reduxjs/toolkit'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { matchPath, type NavigateFunction, type NavigationType } from 'react-router-dom'
@@ -574,6 +575,11 @@ export function useChatPageSessionController({
     setSidError('')
   }, [activeSlot, newSlotFailed])
 
+  /** The URL open below asks once for a turn of the main thread; `taken` once it got it. */
+  const urlOpenTurnRef = useRef<'none' | 'asked' | 'taken'>('none')
+  /** What that turn runs: the open, as the latest run of the effect that passed
+   *  every guard left it. Empty whenever no such run stands, unmount included. */
+  const openUrlSessionRef = useRef<() => void>(() => {})
   // On mount, URL ?sid= drives which session is active (URL wins over localStorage)
   useEffect(() => {
     if (embedded && !embedMode) return
@@ -623,14 +629,41 @@ export function useChatPageSessionController({
     // `some` on an empty list is false, so an unpopulated slot list waits here
     // too; this effect re-runs when `filteredSlots` arrives.
     if (filteredSlots.some(s => s.key === urlSlot)) {
-      initialSidRef.current = null
-      popInFlightRef.current = true
-      dispatch(switchSlot(urlSlot))
+      const openNow = () => {
+        initialSidRef.current = null
+        popInFlightRef.current = true
+        dispatch(switchSlot(urlSlot))
+      }
+      if (urlOpenTurnRef.current === 'taken') {
+        openNow()
+        return
+      }
+      // The run that finds the session is the task the session list arrived
+      // in, which has just rendered the sidebar. Opening the session there
+      // mounts the transcript in the same task: the longest one of a cold
+      // open. So the first open waits one turn of the main thread. Nothing
+      // changes while it waits: the link stays armed exactly as it was while
+      // the list had not arrived. The turn opens only what a run of this
+      // effect that passed every guard above left for it; a re-run or an
+      // unmount takes that away first.
+      openUrlSessionRef.current = () => {
+        // The store has moved on and the render that shows it has not run.
+        // That render re-runs this effect, which finds the turn taken.
+        if (store.getState().chat.activeSlot === activeSlot) openNow()
+      }
+      if (urlOpenTurnRef.current === 'none') {
+        urlOpenTurnRef.current = 'asked'
+        void yieldToMain().then(() => {
+          urlOpenTurnRef.current = 'taken'
+          openUrlSessionRef.current()
+        })
+      }
+      return () => { openUrlSessionRef.current = () => {} }
     }
     // Don't error immediately — slot may arrive via SSE shortly
     // embedded/embedMode are read in the guard above; they are stable for the
     // session, so listing them satisfies the linter without changing behavior.
-  }, [filteredSlots, activeSlot, dispatch, connected, embedded, embedMode])
+  }, [filteredSlots, activeSlot, dispatch, connected, embedded, embedMode, store])
 
   // React to ?sid= changes AFTER mount — required for plugin tab switching
   // where the URL is updated via react-router navigate() (soft nav). The
