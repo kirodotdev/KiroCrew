@@ -149,6 +149,17 @@ clears the marker and wakes its waiters; a runtime is published in the same
 synchronous stretch in which `spawn()` returns, so no cancellation point lies
 between a spawned runtime and its entry.
 
+**A founder may publish under another key than it matched on.** `acquire`'s
+optional `published_key` reads the key off the spawned runtime; matching still
+uses the caller's key. Chat sharing uses it for a restarted chat that founds its
+tree's first process: its key carries the scratch tree it was recorded in, and
+the process mounts that tree as its own `work_scratch_dir`, so it is published
+with the empty `shared_scratch` a fresh founder publishes, and a fresh chat of
+the same tree joins it. A runtime that does not expose the tree keeps the full
+key. The founding records the entry it published, and a woken waiter takes that
+entry (when it has room and is alive) before re-picking by its own key, so two
+restarts of one tree waiting on one launch still land on one process.
+
 On the **chat** registration path a lease means the same thing as registry
 membership, which is why it is taken there rather than at provider start:
 `session_allocation.SessionAllocationService._get_or_create_impl` calls

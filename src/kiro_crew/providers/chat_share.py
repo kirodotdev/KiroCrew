@@ -375,6 +375,22 @@ class ChatSharePlacement:
             cap=self.cap,
         )
 
+    def _published_key_for(self, runtime: object) -> ChatRuntimeKey:
+        """The key a runtime this start FOUNDED is published under.
+
+        A restarted chat keys the tree it was recorded in, and the process it founds
+        mounts that tree and exposes it as its own (``work_scratch_dir``). That
+        process is then the same as one a fresh chat founds and allocates a tree
+        for, so it is published with the founder's empty ``shared_scratch``: a fresh
+        chat of the same tree joins it, and a later restart on that tree finds it
+        through :meth:`_join_own_tree`. A runtime that does not expose the tree
+        keeps the full key, so nothing lands on it without the tree.
+        """
+        tree = self._provider._shared_scratch
+        if tree is not None and getattr(runtime, "work_scratch_dir", None) == Path(tree):
+            return dataclasses.replace(self.key, shared_scratch="")
+        return self.key
+
     async def _admit_joiner(self, placed: Acquisition) -> None:
         """Run the fork-governance admission a founder ran inside ``spawn()``.
 
@@ -402,7 +418,11 @@ class ChatSharePlacement:
         """Take a lease on a compatible runtime (or found one), then confirm the placement."""
         for _ in range(_PLACEMENT_ATTEMPTS):
             placed = self._join_own_tree() or await RUNTIME_OWNERSHIP.acquire(
-                self.key, self.session_key, spawn, cap=self.cap
+                self.key,
+                self.session_key,
+                spawn,
+                cap=self.cap,
+                published_key=self._published_key_for,
             )
             try:
                 generation, era, tier, forward, telemetry = await self._read_confirmation()
@@ -531,6 +551,8 @@ class ChatSharePlacement:
             tree=self.tree_kind,
             backend=self._provider._client.backend,
         )
+        if not placed.joined:
+            _log_why_not_joined(self.key, self.session_key, runtime)
         return runtime
 
     async def replace_dead(self, spawn: Callable[[], Awaitable[AcpRuntime]]) -> AcpRuntime:
@@ -572,6 +594,43 @@ class ChatSharePlacement:
                 await _kill_stranded(
                     await _settle_release(lease), "failed session setup cleanup (last holder)"
                 )
+
+
+def _log_why_not_joined(key: ChatRuntimeKey, session_key: str, runtime: object) -> None:
+    """One INFO line naming which key fields keep a founded start off each live process.
+
+    Only field names and whether each side is empty: a key holds paths, env and
+    an account era, none of which belong in a log. A candidate is a live process
+    of the same session tree; with none, the line says so.
+    """
+    try:
+        names = [f.name for f in dataclasses.fields(key)]
+        candidates = [
+            other
+            for other in RUNTIME_OWNERSHIP.live_keys(exclude=runtime)
+            if isinstance(other, ChatRuntimeKey) and other.tree_root == key.tree_root
+        ]
+        if not candidates:
+            logger.info(
+                "chat-runtime-sharing founded: no live process in this tree session=%s",
+                session_key,
+            )
+            return
+        for i, other in enumerate(candidates):
+            diffs = [
+                f"{n}(ours={'empty' if not getattr(key, n) else 'set'},"
+                f"theirs={'empty' if not getattr(other, n) else 'set'})"
+                for n in names
+                if getattr(key, n) != getattr(other, n)
+            ]
+            logger.info(
+                "chat-runtime-sharing founded: differs from candidate %d in %s session=%s",
+                i,
+                ", ".join(diffs) or "nothing (full or closed)",
+                session_key,
+            )
+    except Exception:  # noqa: BLE001 - a diagnostic never fails a placement
+        logger.debug("chat-runtime-sharing: key diff log failed", exc_info=True)
 
 
 def _kas_telemetry_for(

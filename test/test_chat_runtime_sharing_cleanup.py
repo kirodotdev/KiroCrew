@@ -824,6 +824,114 @@ class TestChatSharePlacement:
         assert placed == [full, full, other, own], "the restart joined a process on another tree"
         assert b.joined is False and b.key.shared_scratch
 
+    def test_a_fresh_chat_joins_the_process_a_restarted_founder_mounted_its_tree_on(
+        self, fresh_table
+    ):
+        """The gateway restarts and the lead's resume is the tree's first start.
+
+        It keys the tree it was recorded in and founds a process that mounts that
+        tree as its own. A worker the lead opens afterwards is fresh (no tree): it
+        must join that process, as it would one a fresh lead had founded.
+        """
+        from pathlib import Path
+
+        tree = Path("/home/u/.kirocrew/scratch/tree-lead")
+        lead_rt, stray = _PlacedRuntime(pid=1), _PlacedRuntime(pid=2)
+        lead_rt.work_scratch_dir = tree
+        spawn = spawner(lead_rt, stray)
+        ok = confirming(("gen-1", "acct-A", "auto", False, True))
+
+        async def scenario():
+            restarted = _PlacementProvider()
+            restarted._shared_scratch = tree
+            lead = make_placement(provider=restarted, session_key="dashboard:chat-lead-1")
+            lead._read_confirmation = ok
+            worker = make_placement(session_key="dashboard:chat-worker-1")
+            worker._read_confirmation = ok
+            return worker, await lead.place(spawn), await worker.place(spawn)
+
+        worker, placed_lead, placed_worker = asyncio.run(scenario())
+        assert (placed_lead, placed_worker) == (lead_rt, lead_rt), "the worker founded its own"
+        assert spawn.calls == [lead_rt]
+        assert worker.joined is True
+
+    def test_two_restarts_of_one_tree_at_once_share_the_process_the_first_founds(self, fresh_table):
+        """Resume All after a restart: two chats of tree A start together.
+
+        The second waits on the first one's launch. The first publishes under the
+        founder's empty tree key, so a waiter re-picking by its own tree key would
+        miss it and found a second process on the same tree.
+        """
+        from pathlib import Path
+
+        tree = Path("/home/u/.kirocrew/scratch/tree-a")
+        first, stray = _PlacedRuntime(pid=1), _PlacedRuntime(pid=2)
+        first.work_scratch_dir = tree
+        launched, release = asyncio.Event(), asyncio.Event()
+        calls: list[object] = []
+        pending = [first, stray]
+
+        async def spawn():
+            rt = pending.pop(0)
+            calls.append(rt)
+            launched.set()
+            await release.wait()
+            return rt
+
+        ok = confirming(("gen-1", "acct-A", "auto", False, True))
+
+        def restarted(name):
+            provider = _PlacementProvider()
+            provider._shared_scratch = tree
+            p = make_placement(provider=provider, session_key=f"dashboard:chat-{name}-1")
+            p._read_confirmation = ok
+            return p
+
+        async def scenario():
+            a, b = restarted("a"), restarted("b")
+            ta = asyncio.ensure_future(a.place(spawn))
+            await async_wait_until(launched.is_set, describe=lambda: "the first launch")
+            tb = asyncio.ensure_future(b.place(spawn))
+            await async_wait_until(
+                lambda: any("dashboard:chat-b-1" in f.sessions for f in fresh_table._foundings),
+                describe=lambda: "the second start waiting on the launch",
+            )
+            release.set()
+            placed_a = await await_until(ta, what="the first restart's placement")
+            placed_b = await await_until(tb, what="the waiting restart's placement")
+            return placed_a, placed_b, b
+
+        placed_a, placed_b, b = asyncio.run(scenario())
+        assert (placed_a, placed_b) == (first, first), "the waiter founded a second process"
+        assert calls == [first]
+        assert b.joined is True
+
+    def test_a_founded_start_logs_which_key_fields_kept_it_off(self, fresh_table, caplog):
+        # Names and emptiness only: the restart's tree is the one field that differs.
+        from pathlib import Path
+
+        tree = Path("/home/u/.kirocrew/scratch/tree-gone")
+        own, fresh = _PlacedRuntime(pid=1), _PlacedRuntime(pid=2)
+        spawn = spawner(own, fresh)
+        ok = confirming(("gen-1", "acct-A", "auto", False, True))
+
+        async def scenario():
+            restarted = _PlacementProvider()
+            restarted._shared_scratch = tree
+            b = make_placement(provider=restarted, session_key="dashboard:chat-b-1")
+            b._read_confirmation = ok
+            c = make_placement(session_key="dashboard:chat-c-1")
+            c._read_confirmation = ok
+            await b.place(spawn)
+            await c.place(spawn)
+
+        with caplog.at_level(logging.INFO, logger="kiro_crew.providers.chat_share"):
+            asyncio.run(scenario())
+        lines = [r.getMessage() for r in caplog.records if "founded:" in r.getMessage()]
+        assert lines[0].startswith("chat-runtime-sharing founded: no live process in this tree")
+        assert "differs from candidate 0 in shared_scratch(ours=empty,theirs=set)" in lines[1]
+        assert str(tree) not in "\n".join(lines)
+
     def test_two_starts_of_ONE_chat_never_share_a_process(self, fresh_table):
         """The same equal inputs, but both starts are the same chat.
 
