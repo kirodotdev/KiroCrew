@@ -39,6 +39,7 @@ from kiro_crew.acp.client_permissions import _scrub_observed
 from kiro_crew.acp.client_timeouts import _INIT_TIMEOUT
 from kiro_crew.acp.harness import claude as claude_mod
 from kiro_crew.acp.harness_tool_names import CLAUDE_READ_ONLY_BUILTINS
+from kiro_crew.acp.raw_sdk_tasks import session_meta_filter
 from kiro_crew.acp.spec_tools_allowlists import claude_ask_rules_for_allowlists
 from kiro_crew.acp.transport_errors import (
     AcpError,
@@ -589,6 +590,10 @@ def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
     sets there is lost; ``settings.env`` is the flag tier, which Claude Code
     applies after the user, project and local tiers' ``env``, so none of those
     can set the switch back.
+
+    Beside ``options``, a backend in ``ACP_BACKENDS_RAW_SDK_TASKS`` asks for the raw SDK
+    messages of its background tasks and API retries, ``emitRawSDKMessages``
+    (``acp.raw_sdk_tasks.RAW_SDK_MESSAGE_FILTER``).
     """
     options: dict[str, Any] = {}
     excluded = getattr(self, "_claude_local_settings_excluded", False) or getattr(
@@ -706,7 +711,11 @@ def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
         if isinstance(rules, list):
             shipped.update((kind, rule) for rule in rules if isinstance(rule, str))
     self._claude_shipped_restrictions = frozenset(shipped)
-    return {"claudeCode": {"options": options}}
+    claude_code: dict[str, Any] = {"options": options}
+    raw_filter = session_meta_filter(self.backend)
+    if raw_filter is not None:
+        claude_code["emitRawSDKMessages"] = raw_filter
+    return {"claudeCode": claude_code}
 
 
 def refuse_claude_zero_tool_mounts(spec_zero_tools: bool, mcp_servers: Any) -> None:

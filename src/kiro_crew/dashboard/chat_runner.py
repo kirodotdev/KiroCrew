@@ -54,6 +54,7 @@ from kiro_crew.acp.types import (
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
+    EVENT_HARNESS_NOTICE,
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
@@ -180,6 +181,7 @@ from kiro_crew.dashboard.chat_turn.model_fallback import (  # noqa: F401
     _sync_served_model,
 )
 from kiro_crew.dashboard.chat_turn.native_cards import (
+    _expect_background_draw,
     _on_subagent_activity,
     _on_subagent_list,
 )
@@ -229,9 +231,11 @@ from kiro_crew.dashboard.chat_turn.segment_flush import (
     _turn_settle_answer,
 )
 from kiro_crew.dashboard.chat_turn.session_events import (
+    _finish_harness_notices,
     _on_agent_switched,
     _on_clear_status,
     _on_compaction_status,
+    _on_harness_notice,
     _on_todo_update,
 )
 from kiro_crew.dashboard.chat_turn.session_reset import (
@@ -1116,6 +1120,9 @@ async def _run_chat(
         # The gateway-wide heartbeat ticks while any turn holds it; released first
         # in ``finally`` below.
         state.hold_turn_heartbeat(turn, slot.key)
+        # This turn's stream alone draws what Claude Code's background work made; the
+        # release takes the mark back.
+        _expect_background_draw(client)
         # The prefixes added after assembly made the prompt a plain string again;
         # re-apply build_message's provenance so only the user's text is upgraded.
         if _agent_started:
@@ -1228,7 +1235,9 @@ async def _run_chat(
                 )
 
             if event.kind == EVENT_TEXT_CHUNK:
-                await _on_text_chunk(turn, event)
+                # An adapter notice rides a text chunk; it becomes a notice row.
+                if not _on_harness_notice(turn, event):
+                    await _on_text_chunk(turn, event)
             elif event.kind == EVENT_THINKING_CHUNK:
                 await _on_thinking_chunk(turn, event)
             elif event.kind == EVENT_TOOL_CALL:
@@ -1275,6 +1284,8 @@ async def _run_chat(
                 await _on_mcp_server_init_failure(turn, event)
             elif event.kind == EVENT_TODO_UPDATE:
                 await _on_todo_update(turn, event)
+            elif event.kind == EVENT_HARNESS_NOTICE:
+                _on_harness_notice(turn, event)
             elif event.kind == EVENT_MODEL_FALLBACK:
                 # kiro-cli moved this turn onto another model, or could not. The
                 # handle already moved the resolved model; the slot follows a
@@ -1299,6 +1310,8 @@ async def _run_chat(
         await _turn_compact_command(turn)
 
         await _turn_settle_answer(turn)
+        # After the reply's last segment and before the turn is saved.
+        _finish_harness_notices(turn)
 
         await _turn_ending_chain(turn)
         await _turn_persist_and_settle(turn)
@@ -1448,6 +1461,8 @@ async def _run_chat(
         slot._git_repo_touch_terminal.clear()
         slot._git_repo_touch_overflow = False
         await _turn_record_outcome(turn)
+        # A notice still held here is one an early exit left behind.
+        _finish_harness_notices(turn)
         # The engine's fallback walk, said once whatever path ended the turn.
         _engine_fallback.finish_engine_fallback(
             slot,

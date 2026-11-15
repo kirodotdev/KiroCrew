@@ -613,6 +613,26 @@ path is unchanged. `test/test_kas_skill_scope.py` compares the skills KAS would
 offer for the built payload with the kiro-cli scope and goes red when the rule
 is not sent.
 
+### H16 on Claude: Workflow agents and a child's Stop
+
+Each agent of a Claude Code Workflow run, read from Claude Code's raw SDK task
+messages (`acp/raw_sdk_tasks.py`), is an H16 native child of its session with no
+child-routed frames and no conversation. `native_child_resume_refusal` refuses its
+card id (`<task_id>:<agent>`, or `native:<task_id>:<agent>`) for every agent the
+client has seen (`workflow_card_ids`, bounded by `NATIVE_CHILD_ROSTER_CAP`, kept
+past the run's record and `forget_tasks`, as the child id set is), and
+`report_native_children` counts the agents the run still runs (`live_card_ids`).
+The parent's `session/cancel` stops every background Workflow; a Stop on an
+agent's card closes the card alone.
+
+A person's Stop on a running Agent-tool child's card is the one per-child request:
+`AcpClient.cancel_native_child` sends `session/cancel` naming that child when its
+announce granted `capabilities.cancel` (`ACP_BACKENDS_NATIVE_CHILD_CANCEL`), never
+the parent, and no recovery path sends it. Pinned by
+`test_claude_raw_sdk_tasks.py::test_a_workflow_agent_is_a_native_child_of_its_session`,
+`test_claude_raw_sdk_tasks_lifecycle.py::test_a_workflow_agent_is_refused_after_its_record_goes`
+and `test_claude_native_child_stop.py`.
+
 ## The CI half
 
 The added-line gate that enforces Group B on a diff is

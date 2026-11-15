@@ -36,7 +36,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_AGENT_STARTED_TURNS,
 )
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, await_until
 
 _ACP_DIR = Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "acp"
 # AcpClient binds members its owner modules define, so a stdout reader can live in any of them.
@@ -163,7 +163,43 @@ async def test_a_permission_request_between_turns_starts_a_turn() -> None:
     "kind", ["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan"]
 )
 def test_each_activity_kind_starts_a_turn(kind: str) -> None:
-    assert _starts_agent_turn(JsonRpcMessage.from_dict(_update({"sessionUpdate": kind})))
+    assert _starts_agent_turn(
+        JsonRpcMessage.from_dict(_update({"sessionUpdate": kind})), ACP_BACKEND_CLAUDE
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_notice_between_turns_hands_off_and_streams_as_the_turn_text() -> None:
+    """A client that declares ``session.notices`` is sent an advisory as a ``notice``
+    where claude-agent-acp would send it a chunk (``session-notices.js``
+    ``noticeOrTranscriptUpdate``), so the notice starts the turn a chunk would."""
+    turns: list[AcpClient] = []
+    client, reader, _proc = _client(on_turn=turns.append)
+    notice = {
+        "sessionUpdate": "notice",
+        "severity": "info",
+        "title": "Task stopped by user",
+        "description": "build watcher.",
+    }
+
+    await _handed_off(client, reader, _usage(), _update(notice))
+
+    assert turns == [client]
+    assert _kinds(client) == ["usage_update", "notice"]
+    async with contextlib.aclosing(
+        client.stream_unsolicited(timeout=FALLBACK_TIMEOUT_SECS)
+    ) as stream:
+        first = await stream.__anext__()
+        _feed(reader, _AUTONOMOUS_END)
+        rest = [e async for e in stream]
+
+    assert (first.kind, first.text) == (
+        EVENT_TEXT_CHUNK,
+        "\n\n> **Task stopped by user:** build watcher.\n\n",
+    )
+    assert first.harness_notice.title == "Task stopped by user"
+    assert [e.kind for e in rest] == [EVENT_COMPLETE]
+    await _stop_restarted_reader(client)
 
 
 @pytest.mark.parametrize(

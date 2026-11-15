@@ -38,8 +38,11 @@ from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator, Callable
 from kiro_crew.acp import (
     batch_guard,
     disposed_session,
+    harness_notices,
     launch_tuning,
     pi_steer_turn,
+    plan_checklist,
+    raw_sdk_tasks,
 )
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
@@ -923,7 +926,7 @@ async def send_message_stream(
                 # permission frames, this text-only one included.
                 await self._tripwire_pi_gate(msg)
                 await self._tripwire_permission_state(msg)
-                chunk, is_thinking = self._extract_text_chunk(msg)
+                chunk, is_thinking, _ = harness_notices.text_chunk(self, msg)
                 if chunk and not is_thinking:
                     # A claude compaction notice is a control frame wearing
                     # assistant text. This API yields str, so the event has
@@ -1052,6 +1055,7 @@ async def _dispatch_events(
     """Shared event dispatch loop for prompts and commands."""
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
     self._reset_native_child_turn()
+    _draws_background = raw_sdk_tasks.begin_draw(self)
     self._engine_fallback.begin_prompt(self)
     # Credits held between turns (see ``_track_metadata``): billed here, once.
     self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
@@ -1109,6 +1113,13 @@ async def _dispatch_events(
 
     _prompt_events = self._prompt_loop(req_id, timeout)
     async for action, msg in _prompt_events:
+        # What Claude Code's background work sent before this frame, drawn above it by the
+        # dashboard turn alone: its first frame comes after what was read between prompts
+        # (``raw_sdk_tasks``).
+        for _raw_event in self._redact_native_child_events(
+            raw_sdk_tasks.pending_events(self) if _draws_background else []
+        ):
+            yield _raw_event
         if action != "update":
             logger.debug(
                 "ACP event: method=%s id=%s action=%s",
@@ -1282,7 +1293,13 @@ async def _dispatch_events(
             _codex_compaction = self._codex_compaction_event(msg)
             if _codex_compaction is not None:
                 yield _codex_compaction
-            chunk, is_thinking = self._extract_text_chunk(msg)
+            _plan_todo = plan_checklist.todo_event(self, msg)
+            if _plan_todo is not None:
+                yield _plan_todo
+            _mode_notice = harness_notices.mode_notice_event(self, msg)
+            if _mode_notice is not None:
+                yield _mode_notice
+            chunk, is_thinking, _notice = harness_notices.text_chunk(self, msg)
             _notice_chunk = False
             if chunk and not is_thinking:
                 # The claude backend reports compaction as plain assistant
@@ -1310,6 +1327,7 @@ async def _dispatch_events(
                     text=chunk,
                     control_notice=_notice_chunk,
                     message_id=parse_message_id((msg.params or {}).get("update")),
+                    harness_notice=_notice,
                 )
                 if not is_thinking and _is_tool_interrupted_marker(chunk):
                     # kiro-cli's built-in security filter cancelled the turn's tools.
@@ -1762,7 +1780,7 @@ async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) ->
             # See send_message_stream: settle the codex compaction for the
             # context counts, drop the event this API cannot return.
             self._codex_compaction_event(msg)
-            chunk, is_thinking = self._extract_text_chunk(msg)
+            chunk, is_thinking, _ = harness_notices.text_chunk(self, msg)
             if chunk and not is_thinking:
                 # Apply the claude compaction state change, then KEEP the
                 # chunk. This path returns one string callers treat as the

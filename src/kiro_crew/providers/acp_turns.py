@@ -170,6 +170,8 @@ def _to_llm_event(e: Any) -> LLMEvent:
         mcp_server_name=e.mcp_server_name,
         diff_old_text=e.diff_old_text,
         diff_path=e.diff_path,
+        # Dropping it leaves a claude Read of an image with no thumbnail on its row.
+        read_path_arg=e.read_path_arg,
         # Typed execution-layer status (``kirocrew/status`` / the watchdog's
         # ``waiting_input`` classification). The consumers read it here:
         # chat_runner's tool-stall continuation takes ``wait_reason`` from
@@ -186,6 +188,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # nothing to record: no notice line and no promotion of the slot to
         # the model the engine moved to (acp/engine_fallback.py).
         model_fallback=e.model_fallback,
+        # A notice the harness reported. Dropping it zeroes it to None, so the
+        # dashboard reads an adapter notice as reply text and never sees a mode change.
+        harness_notice=e.harness_notice,
     )
 
 

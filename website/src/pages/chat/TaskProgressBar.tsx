@@ -43,6 +43,8 @@ function tickFailureDetail(e: unknown): string | null {
       return i18nT('pages.chat.taskProgressBar.fail_session_gone')
     case 'relay_archive_read_only':
       return i18nT('pages.chat.taskProgressBar.fail_remote')
+    case 'todo_read_only':
+      return i18nT('pages.chat.taskProgressBar.agent_kept_hint')
     default:
       return null
   }
@@ -65,7 +67,9 @@ function tickFailureDetail(e: unknown): string | null {
  * tick the rows it shows. A click writes the dashboard's copy through
  * `PATCH /api/chat/slots/{slot}/todo`; the gateway echoes the same
  * `todo_update` delta the tool result does, so the store repaints and the next
- * fresh agent session rebuilds its list from this copy.
+ * fresh agent session rebuilds its list from this copy. The rows are status
+ * marks, not toggles, on a relay archive and on a list the harness keeps itself
+ * (`read_only`, Claude Code's checklist), which no click can reach.
  */
 const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: { slot: string | null; disclosureKey?: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
@@ -77,9 +81,12 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
   ) as TodoList | null
   // An `executor: 'remote'` slot is a read-only relay archive: the local slot
   // holds no list to write, so the PATCH would 404. Rows stay read-only there.
-  const editable = useAppSelector(s =>
-    (s.dashboard.slots ?? []).find(x => x.key === slot)?.executor !== 'remote'
+  const remote = useAppSelector(s =>
+    (s.dashboard.slots ?? []).find(x => x.key === slot)?.executor === 'remote'
   )
+  // A `read_only` list is one the harness keeps itself (an ACP `plan`): a click
+  // could never reach the agent, so it takes the same read-only rows.
+  const editable = !remote && todo?.read_only !== true
 
   const tasks = useMemo(() => todo?.tasks ?? [], [todo])
   const toggle = useCallback(() => setExpanded(v => !v), [setExpanded])
@@ -273,7 +280,9 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
             <li className="text-[11px] text-muted/70 font-mono pb-1" data-testid="todo-hint">
               {editable
                 ? i18nT('pages.chat.taskProgressBar.click_to_toggle_hint')
-                : i18nT('pages.chat.taskProgressBar.read_only_hint')}
+                : remote
+                  ? i18nT('pages.chat.taskProgressBar.read_only_hint')
+                  : i18nT('pages.chat.taskProgressBar.agent_kept_hint')}
             </li>
             {tasks.slice(0, MAX_VISIBLE_ROWS).map((t, i) => {
               const id = t.id || String(i + 1)

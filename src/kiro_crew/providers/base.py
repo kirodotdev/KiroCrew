@@ -1172,6 +1172,22 @@ class LLMProvider(ABC):
         back. Default ``None``: no switch, nothing sent."""
         return None
 
+    def fast_mode_enabled(self) -> bool | None:
+        """Whether the session's Fast mode switch is on; ``None`` (the default) when
+        the session offers no such switch."""
+        return None
+
+    def fast_mode_unavailable(self) -> str | None:
+        """Why the session's Fast mode switch cannot be turned on, in the harness's
+        words (``""`` when it gives none); ``None`` (the default) when nothing blocks
+        it or the session offers no such switch."""
+        return None
+
+    async def set_fast_mode(self, enabled: bool) -> bool | None:
+        """Turn the session's Fast mode switch on or off and return the value read
+        back. Default ``None``: no switch, nothing sent."""
+        return None
+
     async def change_effort(self, level: str) -> bool:
         """Change reasoning effort live for the current model. Returns True on success,
         False when effort is unsupported. Default False."""

@@ -358,6 +358,15 @@ ACP_BACKENDS_ULTRACODE_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE})
 #: The ``configId`` of that switch.
 ULTRACODE_CONFIG_OPTION_ID = "ultracode"
 
+# Backends whose session offers the ``fast`` switch (Fast mode) to the dashboard: it
+# changes how fast the model answers and what a turn costs, not which tools run or how
+# they are approved. Opt-in (harness-parity H6); see claude-code-provider.md, "The Fast
+# mode switch".
+ACP_BACKENDS_FAST_MODE_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE})
+
+#: The ``configId`` of that switch.
+FAST_MODE_CONFIG_OPTION_ID = "fast"
+
 
 def effort_config_option_id(backend: str) -> str:
     """The ``configId`` *backend* exposes its reasoning effort under.

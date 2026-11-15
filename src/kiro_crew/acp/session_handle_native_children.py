@@ -518,9 +518,15 @@ def native_child_resume_refusal(self: NativeChildIds, conversation_id: str) -> s
     """
     if conversation_id not in self._native_child_sids:
         return None
+    return native_child_refusal(conversation_id, self._session_id)
+
+
+def native_child_refusal(conversation_id: str, session_id: str | None) -> str:
+    """The ``native_child_not_resumable`` reason for *conversation_id*, a harness-native
+    child of the session *session_id*."""
     return (
         f"{NATIVE_CHILD_NOT_RESUMABLE}: {conversation_id} is a harness-native "
-        f"child of session {self._session_id}; it has no conversation of its "
+        f"child of session {session_id}; it has no conversation of its "
         "own and cannot be resumed, steered or cancelled independently -- "
         "continue or cancel the parent session instead"
     )

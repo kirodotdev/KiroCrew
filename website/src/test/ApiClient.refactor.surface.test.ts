@@ -73,7 +73,7 @@ const API_KEY_ORDER = [
   'chatSlotSelectionCapabilities', 'chatSlotSteering', 'chatSlotSteeringSwitch', 'effortLevels', 'slashCommands', 'chatSlotAgent',
   'chatSlotModel', 'chatSlotAutocompact', 'setChatSlotAutocompact', 'chatSlotTurnTimeout',
   'setChatSlotTurnTimeout', 'chatSlotsModel', 'chatSlotsFollowDefaultCount', 'chatSlotsFollowDefault',
-  'chatSlotReasoningEffort', 'chatSlotUltracode', 'chatSlotEnvironment', 'chatSlotEnvironmentList',
+  'chatSlotReasoningEffort', 'chatSlotUltracode', 'chatSlotFastMode', 'chatSlotEnvironment', 'chatSlotEnvironmentList',
   'chatSlotEnvironmentRead', 'chatSlotEnvironmentHealth', 'chatSlotEnvironmentGit',
   'sessionEnvironmentsCheck', 'sessionEnvironmentsWorkspaces', 'sessionEnvironmentsTemplates', 'chatSlotEnvironmentWrite',
   'setChatSlotEnvironment', 'chatSlotWorkspace', 'chatSlotReload', 'chatSlotProject',

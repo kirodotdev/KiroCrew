@@ -373,7 +373,8 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # On a warm turn the agent still holds its list, so it gets only the rows
     # the person ticked in the pill since its last snapshot (todo_sync_prompt),
     # which is how a click reaches a live agent instead of being reverted by
-    # its next full snapshot.
+    # its next full snapshot. A harness that keeps its checklist itself gets
+    # neither (see _checklist_resync).
     if _sends_prompt and not is_slash:
         full_message, _todo_sync_rendered, _todo_recovery_carried = await _checklist_resync(
             slot,
@@ -382,6 +383,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
             _provider_has_history=_provider_has_history,
             _todo_sync_rendered=_todo_sync_rendered,
             _todo_recovery_carried=_todo_recovery_carried,
+            client=client,
         )
         turn._todo_recovery_carried = _todo_recovery_carried
         turn._todo_sync_rendered = _todo_sync_rendered

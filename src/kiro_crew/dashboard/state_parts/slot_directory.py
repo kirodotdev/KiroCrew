@@ -389,6 +389,8 @@ def native_subagent_snapshots(
                 "task": str(info.get("task") or ""),
                 "agent": str(info.get("agent") or ""),
             }
+            # The label and model a card's frames carry, when it has them.
+            base.update({key: str(info[key]) for key in ("label", "model") if info.get(key)})
             if info.get("done"):
                 done_at = float(info.get("done_at") or 0.0)
                 if done_at and (now - done_at) > ttl_secs:

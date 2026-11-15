@@ -34,10 +34,14 @@ from acp_session_mcp_helpers import (
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp.client import AcpClient, ClaudeAcpClient
+from kiro_crew.acp.raw_sdk_tasks import RAW_SDK_MESSAGE_FILTER
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 from kiro_crew.providers.mirrors import claude_code as claude_mirror
 from kiro_crew.providers.mirrors import registry as mirrors_registry
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
+
+#: What a claude session asks for beside its options (``acp.raw_sdk_tasks``).
+_RAW_SDK_FILTER = list(RAW_SDK_MESSAGE_FILTER)
 
 
 class TestClientSeam:
@@ -542,7 +546,9 @@ class TestClientSeam:
         assert client._claude_local_settings_excluded is False
         assert client._claude_inline_settings is None
         assert "foo" in _by_name(client._session_mcp_servers())
-        assert client._claude_session_meta() == {"claudeCode": {"options": {}}}
+        assert client._claude_session_meta() == {
+            "claudeCode": {"options": {}, "emitRawSDKMessages": _RAW_SDK_FILTER}
+        }
 
     def test_the_envelope_follows_the_array_it_shipped_with(self, tmp_path, agents_dir):
         """An array projected under the exclusion carries it even once the flag clears."""
@@ -623,7 +629,9 @@ class TestClientSeam:
         await client._new_session_following_substitution()
 
         assert len(sent) == 2
-        assert sent[0]["_meta"] == {"claudeCode": {"options": {}}}
+        assert sent[0]["_meta"] == {
+            "claudeCode": {"options": {}, "emitRawSDKMessages": _RAW_SDK_FILTER}
+        }
         retry = sent[1]
         assert "foo" in _by_name(retry["mcpServers"])
         options = retry["_meta"]["claudeCode"]["options"]
@@ -640,7 +648,9 @@ class TestClientSeam:
         client = self._seeded(tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)
         params = await self._session_new_params(client, tmp_path, monkeypatch)
         assert "foo" in _by_name(params["mcpServers"])
-        assert params["_meta"] == {"claudeCode": {"options": {}}}
+        assert params["_meta"] == {
+            "claudeCode": {"options": {}, "emitRawSDKMessages": _RAW_SDK_FILTER}
+        }
 
     _pin_harness = staticmethod(_pin_harness)
     _recorded_results = staticmethod(_recorded_results)
@@ -818,7 +828,9 @@ class TestClientSeam:
         client._write_claude_local_settings()
         assert client._claude_local_settings_excluded is False
         assert client._session_mcp_servers() == []
-        assert client._claude_session_meta() == {"claudeCode": {"options": {}}}
+        assert client._claude_session_meta() == {
+            "claudeCode": {"options": {}, "emitRawSDKMessages": _RAW_SDK_FILTER}
+        }
 
     @pytest.mark.parametrize("version", ["0.84.0", "0.85.2-preview.3", "1.0.0"])
     def test_an_installed_adapter_at_or_above_the_floor_keeps_the_tools(
@@ -1489,7 +1501,9 @@ class TestClientSeam:
         main = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         await main._prepare_claude_side_read_denies()
         assert main._claude_side_read_denies == ()
-        assert main._claude_session_meta() == {"claudeCode": {"options": {}}}
+        assert main._claude_session_meta() == {
+            "claudeCode": {"options": {}, "emitRawSDKMessages": _RAW_SDK_FILTER}
+        }
 
     @pytest.mark.parametrize(
         ("target", "windows", "pattern"),
@@ -1576,7 +1590,9 @@ class TestClientSeam:
         )
         client._write_claude_local_settings()
         assert client._session_mcp_servers() == []
-        assert client._claude_session_meta() == {"claudeCode": {"options": {}}}
+        assert client._claude_session_meta() == {
+            "claudeCode": {"options": {}, "emitRawSDKMessages": _RAW_SDK_FILTER}
+        }
 
     def test_a_symlinked_project_file_still_withholds_the_array(self, tmp_path, agents_dir):
         _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
@@ -1588,7 +1604,9 @@ class TestClientSeam:
         client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)
         client._write_claude_local_settings()
         assert client._session_mcp_servers() == []
-        assert client._claude_session_meta() == {"claudeCode": {"options": {}}}
+        assert client._claude_session_meta() == {
+            "claudeCode": {"options": {}, "emitRawSDKMessages": _RAW_SDK_FILTER}
+        }
 
     def test_the_cached_array_is_not_aliased_to_callers(self, tmp_path, agents_dir):
         # The two call sites splat this list into their params; handing out the

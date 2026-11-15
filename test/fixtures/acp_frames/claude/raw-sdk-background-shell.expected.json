@@ -1,0 +1,238 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "title": "Terminal",
+        "tool_call_id": "toolu_probe_1",
+        "tool_kind": "execute",
+        "wire_title": "Terminal"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_probe_1",
+        "tool_output": "Sleep 8 seconds then print a message",
+        "tool_output_bytes": 36,
+        "tool_output_digest": "1aceb4aa95a92585eaff79a40e9245214177ab7290def4048fb55a9ed78b5dce"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "sleep 8; echo bg-finished",
+          "description": "Sleep 8 seconds then print a message",
+          "run_in_background": true
+        },
+        "title": "Sleep 8 seconds then print a message",
+        "tool_call_id": "toolu_probe_1",
+        "tool_input": "{\n  \"command\": \"sleep 8; echo bg-finished\",\n  \"description\": \"Sleep 8 seconds then print a message\",\n  \"run_in_background\": true\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "description": "Sleep 8 seconds then print a message",
+        "is_backgrounded": true,
+        "run_id": "0mwgedo5r-44e5429e",
+        "session_id": "claude-session-raw-sdk-shell",
+        "subtype": "task_started",
+        "task_id": "bnds7ry9r",
+        "task_type": "local_bash",
+        "tool_use_id": "toolu_probe_1",
+        "type": "system",
+        "uuid": "probe-msg-1"
+      },
+      "sessionId": "claude-session-raw-sdk-shell"
+    },
+    "raw_sdk_subtype": "task_started"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_probe_1",
+        "tool_final": true,
+        "tool_output": "```console\nCommand running in background with ID: bnds7ry9r. Output is being written to: <tasks>/bnds7ry9r.output. You will be notified when it completes. To check interim output, use Read on that file path.\n```",
+        "tool_output_bytes": 211,
+        "tool_output_digest": "cf05ef0c379e19bbc855146261ee4fff72027874e6ccd80d71910e7023b0ed18",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_1",
+        "text": "STARTED"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "STARTED",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      81517,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "prompt_tokens": [
+      4,
+      241,
+      95305,
+      67260
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "patch": {
+          "end_time": 1794660264160,
+          "status": "completed"
+        },
+        "run_id": "0mwgedo5r-44e5429e",
+        "session_id": "claude-session-raw-sdk-shell",
+        "subtype": "task_updated",
+        "task_id": "bnds7ry9r",
+        "type": "system",
+        "uuid": "probe-msg-2"
+      },
+      "sessionId": "claude-session-raw-sdk-shell"
+    },
+    "raw_sdk_subtype": "task_updated"
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "output_file": "<tasks>/bnds7ry9r.output",
+        "run_id": "0mwgedo5r-44e5429e",
+        "session_id": "claude-session-raw-sdk-shell",
+        "status": "completed",
+        "subtype": "task_notification",
+        "summary": "Background command \"Sleep 8 seconds then print a message\" completed (exit code 0)",
+        "task_id": "bnds7ry9r",
+        "tool_use_id": "toolu_probe_1",
+        "type": "system",
+        "uuid": "probe-msg-3"
+      },
+      "sessionId": "claude-session-raw-sdk-shell"
+    },
+    "raw_sdk_subtype": "task_notification"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_2",
+        "text": "The background job fin"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "The background job fin",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_2",
+        "text": "ished. It printed `bg"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ished. It printed `bg",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_2",
+        "text": "-finished` and exited with"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "-finished` and exited with",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_2",
+        "text": " code 0."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " code 0.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      82342,
+      1000000
+    ],
+    "usage_cost": null
+  }
+]

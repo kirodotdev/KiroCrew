@@ -7,7 +7,8 @@
  *    than listing the call twice;
  *  - the coalesced batch frame feeds the same timeline;
  *  - the list is capped, while `toolCount` keeps the true total;
- *  - a reconnect snapshot keeps the timeline the card already had.
+ *  - a reconnect snapshot keeps the timeline the card already had;
+ *  - a refinement (`is_update`) renames its call's row wherever it sits.
  */
 import { describe, it, expect } from 'vitest'
 import { createTestStore } from './helpers'
@@ -126,5 +127,70 @@ describe('subagent tool-call timeline', () => {
     expect(tools(store)).toEqual(['spawn child'])
     store.dispatch(sseSubagentTool({ slot, id: ID, tool: 'child: Running: rm x', tool_count: 1, tool_call_id: 'k1' }))
     expect(tools(store)).toEqual(['spawn child', 'child: Running: rm x'])
+  })
+})
+
+// claude-agent-acp names a call before its input streamed ("Read File") and sends
+// the real title in a tool_call_update; the run loop relays it as a frame marked
+// `is_update`, with the call's id and an unmoved count.
+describe('subagent tool-call refinement', () => {
+  it('renames the newest call in place and updates lastTool', () => {
+    const { store, slot } = setup()
+    store.dispatch(sseSubagentTool({ slot, id: ID, tool: 'Read File', tool_count: 1, tool_call_id: 'r1' }))
+    store.dispatch(sseSubagentTool({ slot, id: ID, tool: 'Read /work/a.png', tool_count: 1, tool_call_id: 'r1', is_update: true }))
+    expect(sub(store).toolCalls).toEqual([{ tool: 'Read /work/a.png', id: 'r1' }])
+    expect(sub(store).lastTool).toBe('Read /work/a.png')
+    expect(sub(store).toolCount).toBe(1)
+  })
+
+  it('renames an earlier call where it sits and leaves lastTool on the newest', () => {
+    // Two children's calls interleave, so a refinement can name a call that is no
+    // longer the newest; without the mark it would be listed a second time.
+    const { store, slot } = setup()
+    store.dispatch(sseSubagentTool({ slot, id: ID, tool: 'Terminal', tool_count: 1, tool_call_id: 'b1' }))
+    store.dispatch(sseSubagentTool({ slot, id: ID, tool: 'Edit', tool_count: 2, tool_call_id: 'e1' }))
+    store.dispatch(sseSubagentTool({ slot, id: ID, tool: 'touch made.txt', tool_count: 2, tool_call_id: 'b1', is_update: true }))
+    expect(tools(store)).toEqual(['touch made.txt', 'Edit'])
+    expect(sub(store).lastTool).toBe('Edit')
+    store.dispatch(sseSubagentTool({ slot, id: ID, tool: 'Edit note.txt', tool_count: 2, tool_call_id: 'e1', is_update: true }))
+    expect(tools(store)).toEqual(['touch made.txt', 'Edit note.txt'])
+    expect(sub(store).lastTool).toBe('Edit note.txt')
+  })
+
+  it('an unmarked frame naming an earlier call is still listed as a call, as before', () => {
+    const { store, slot } = setup()
+    store.dispatch(sseSubagentTool({ slot, id: ID, tool: 'a', tool_count: 1, tool_call_id: 'c1' }))
+    store.dispatch(sseSubagentTool({ slot, id: ID, tool: 'b', tool_count: 2, tool_call_id: 'c2' }))
+    store.dispatch(sseSubagentTool({ slot, id: ID, tool: 'a again', tool_count: 2, tool_call_id: 'c1' }))
+    expect(tools(store)).toEqual(['a', 'b', 'a again'])
+  })
+
+  it('a refinement of a call this client never listed is recorded as that call', () => {
+    // Above the coalescing threshold the call's own frame can be merged into its
+    // refinement, so the refinement is the first this client hears of the call.
+    const { store, slot } = setup()
+    store.dispatch(sseSubagentTool({ slot, id: ID, tool: 'Terminal', tool_count: 1, tool_call_id: 'b1' }))
+    store.dispatch(sseSubagentBatchUpdate({ updates: [{ id: ID, slot, tool: 'Read /work/a.png', tool_count: 2, tool_call_id: 'r1', is_update: true }] }))
+    expect(tools(store)).toEqual(['Terminal', 'Read /work/a.png'])
+    expect(sub(store).lastTool).toBe('Read /work/a.png')
+    expect(sub(store).toolCount).toBe(2)
+  })
+
+  it("an unlisted older call's refinement is listed before the newest call", () => {
+    // Coalesced: c1's own frame was merged away, then c2, then c1's refinement.
+    const { store, slot } = setup()
+    store.dispatch(sseSubagentTool({ slot, id: ID, tool: 'Terminal', tool_count: 2, tool_call_id: 'c2' }))
+    store.dispatch(sseSubagentBatchUpdate({ updates: [{ id: ID, slot, tool: 'Read /work/a.png', tool_count: 2, tool_call_id: 'c1', is_update: true }] }))
+    expect(tools(store)).toEqual(['Read /work/a.png', 'Terminal'])
+    expect(sub(store).lastTool).toBe('Terminal')
+  })
+
+  it('the coalesced batch frame renames an earlier call where it sits', () => {
+    const { store, slot } = setup()
+    store.dispatch(sseSubagentTool({ slot, id: ID, tool: 'Task', tool_count: 1, tool_call_id: 'a1' }))
+    store.dispatch(sseSubagentTool({ slot, id: ID, tool: 'SubagentHandback', tool_count: 2, tool_call_id: 'k1' }))
+    store.dispatch(sseSubagentBatchUpdate({ updates: [{ id: ID, slot, tool: 'say pong', tool_count: 2, tool_call_id: 'a1', is_update: true }] }))
+    expect(tools(store)).toEqual(['say pong', 'SubagentHandback'])
+    expect(sub(store).lastTool).toBe('SubagentHandback')
   })
 })

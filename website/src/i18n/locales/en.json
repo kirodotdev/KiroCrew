@@ -6014,6 +6014,12 @@
       "hint": "Splits big tasks into steps that helper agents carry out. It changes how work is planned, not how hard Claude thinks. Slower, and counts more against your Claude usage. This chat only, from your next message.",
       "label": "Ultracode"
     },
+    "fastModeToggle": {
+      "hint": "Claude answers faster on the same model. It does not change how hard Claude thinks. Counts more against your Claude usage. This chat only, from your next message.",
+      "label": "Fast mode",
+      "unavailable": "Claude can't use Fast mode in this chat: {{reason}}.",
+      "unavailable_no_reason": "Claude can't use Fast mode in this chat right now."
+    },
     "updateFoundModal": {
       "cancel_update": "Cancel the update",
       "cancel_update_failed": "Could not cancel the update. Try again.",
@@ -7575,6 +7581,16 @@
         "member_rebind_kept_agent": "{{bot}} is now set to {{agent}}, but this chat keeps running {{recorded}}, the agent it started with. Start a new chat with {{bot}} to use {{agent}}.",
         "agent_no_tools": "{{agent}} lists no tools, so it cannot run commands, work with files or use MCP servers in this chat.",
         "agent_no_tools_open": "Choose its tools",
+        "harness_mode_changed": "This session switched to {{mode}} mode.",
+        "harness_task_completed": "Background task completed: {{task}}{{detail}}",
+        "harness_task_failed": "Background task failed: {{task}}{{detail}}",
+        "harness_task_stopped": "Background task stopped: {{task}}{{detail}}",
+        "harness_api_retry": "Claude is retrying a failed request{{reason}}, attempt {{attempt}} of {{max}}.",
+        "harness_api_retry_rate_limit": "rate limit",
+        "harness_api_retry_overloaded": "overloaded",
+        "harness_api_retry_server_error": "server error",
+        "harness_api_retry_cloud_credential_error": "cloud credential error",
+        "harness_api_retry_status": "HTTP {{status}}",
         "crew_name_undispatchable": "This thread's crew name cannot be dispatched. Rename or recreate the bot.",
         "code_channel_worktree_not_ready": "This code channel's worktree is not ready, so the message was not run. Send it again in a moment.",
         "remote_crew_read_only": "This chat ran on a remote crew and is read-only now. Open the crew's own session to keep going.",

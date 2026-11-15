@@ -1,10 +1,12 @@
 """The ACP driver's vocabulary: names application code reads by VALUE.
 
-Stop classes and the stop-reason classifier, the tool-call and tool-result
-event kinds, the stop reasons of a turn the backend did not finish, the
-structured-status frame and its wait reasons, the terminal tool-call statuses, the session-start and prompt timeouts and the
-native-child marker are backend vocabulary a consumer compares against or
-raises on, and so is the continuation that hands a timed-out call back to the
+Stop classes and the stop-reason classifier, the tool-call, tool-call-update and
+tool-result event kinds, the stop reasons of a turn the backend did not finish, the
+structured-status frame and its wait reasons, the terminal tool-call statuses, the session-start and prompt timeouts, the
+native-child marker, the notice a harness reports for the person, the mark a dashboard
+turn's stream draws background work under and the background cards its harness still
+runs (and loses) are backend
+vocabulary a consumer compares against or raises on, and so is the continuation that hands a timed-out call back to the
 model. The in-flight tool-call tracker is here too: a sub-agent's run
 record builds one as a dataclass field default, so the class has to be bound
 when that module is imported. They reach application code from here, so a
@@ -32,10 +34,29 @@ from kiro_crew.acp.engine_fallback import (
     tracker_of,
     walk_outcome,
 )
+from kiro_crew.acp.harness_notices import (
+    NOTICE_KIND_ADAPTER,
+    NOTICE_KIND_MODE,
+    SEVERITY_WARNING,
+    HarnessNotice,
+    title_ends_sentence,
+)
 from kiro_crew.acp.liveness import InFlightToolTracker
+from kiro_crew.acp.raw_sdk_tasks import (
+    END_COMPLETED,
+    END_FAILED,
+    END_STOPPED,
+    NOTICE_KIND_API_RETRY,
+    NOTICE_KIND_TASK_ENDED,
+    expect_dashboard_turn,
+)
+from kiro_crew.acp.raw_sdk_tasks import live_card_ids as live_background_card_ids
+from kiro_crew.acp.raw_sdk_tasks import on_cards_lost as on_background_cards_lost
+from kiro_crew.acp.raw_sdk_workflow_cards import BackgroundCardRow
 from kiro_crew.acp.session_handle import NATIVE_CHILD_NOT_RESUMABLE, AcpRequestTimeout
 from kiro_crew.acp.timed_out_continuation import continue_timed_out_calls, timed_out_continuation
 from kiro_crew.acp.types import (
+    EVENT_HARNESS_NOTICE,
     EVENT_MODEL_FALLBACK,
     EVENT_STRUCTURED_STATUS,
     PROVIDER_LABEL_DEFAULT,
@@ -57,7 +78,7 @@ from kiro_crew.acp.types import (
     StructuredStatus,
     classify_stop_reason,
 )
-from kiro_crew.providers.base import EVENT_TOOL_CALL, EVENT_TOOL_RESULT
+from kiro_crew.providers.base import EVENT_TOOL_CALL, EVENT_TOOL_CALL_UPDATE, EVENT_TOOL_RESULT
 
 __all__ = [
     "is_runtime_death",
@@ -65,6 +86,7 @@ __all__ = [
     "EVENT_MODEL_FALLBACK",
     "EVENT_STRUCTURED_STATUS",
     "EVENT_TOOL_CALL",
+    "EVENT_TOOL_CALL_UPDATE",
     "EVENT_TOOL_RESULT",
     "NATIVE_CHILD_NOT_RESUMABLE",
     "PROVIDER_LABEL_DEFAULT",
@@ -99,6 +121,28 @@ __all__ = [
     "same_model",
     "tracker_of",
     "walk_outcome",
+    # A notice a harness reported for the person (``acp/harness_notices.py``):
+    # the event, its payload, the payload's kinds and warning severity, and the
+    # rule that joins a title to its description in every form of the notice.
+    "EVENT_HARNESS_NOTICE",
+    "HarnessNotice",
+    "NOTICE_KIND_ADAPTER",
+    "NOTICE_KIND_MODE",
+    "SEVERITY_WARNING",
+    "title_ends_sentence",
+    # Claude Code's background work (``acp/raw_sdk_tasks.py``): the kinds of the two
+    # notices it makes, how a task ended, the row type of a Workflow agent's card, the
+    # mark that has a dashboard turn's stream draw them, the cards the harness still
+    # runs, and the watch that says when the client lost them.
+    "BackgroundCardRow",
+    "END_COMPLETED",
+    "END_FAILED",
+    "END_STOPPED",
+    "NOTICE_KIND_API_RETRY",
+    "NOTICE_KIND_TASK_ENDED",
+    "expect_dashboard_turn",
+    "live_background_card_ids",
+    "on_background_cards_lost",
     # A call whose own silence timer ended the turn, handed back to the model on
     # the same session (``acp/timed_out_continuation.py``) by a surface with no
     # tool-stall recovery queue of its own.

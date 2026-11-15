@@ -25,6 +25,7 @@ from typing import Any, Protocol, cast
 
 from kiro_crew import model_registry, platform_compat
 from kiro_crew.acp import launch as launch_mod
+from kiro_crew.acp.claude_settings_sources import a_source_decides_thinking
 from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.agent_sdk.backends import (
@@ -32,6 +33,8 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_NODE_ADAPTER_PACKAGES,
     ACP_BACKEND_PROCESS_NAMES,
     ACP_BACKENDS_AGENT_STARTED_TURNS,
+    ACP_BACKENDS_PLAN_CHECKLIST,
+    ACP_BACKENDS_SUMMARIZED_THINKING,
     NODE_ADAPTER_ENTRY_SEGMENTS,
     model_registry_namespace,
 )
@@ -44,6 +47,9 @@ __all__ = [
     "CLAUDE_ACP_BIN",
     "CLAUDE_ACP_NPM_PKG",
     "CLAUDE_CODE_BIN",
+    "CLAUDE_THINKING_DISPLAY_DEFAULT",
+    "CLAUDE_THINKING_DISPLAY_ENV",
+    "CLAUDE_TODO_TOOLS_ENV",
     "ClaudeLaunch",
 ]
 
@@ -82,6 +88,21 @@ _CLAUDE_CODE_NPM_EXE = Path("@anthropic-ai", "claude-code", "bin", "claude.exe")
 # Batch files: what Node's spawn rejects with EINVAL when given no shell
 # (the CVE-2024-27980 fix), so never a value for CLAUDE_CODE_EXECUTABLE.
 _WINDOWS_BATCH_SUFFIXES = frozenset({".cmd", ".bat"})
+#: Claude Code's switch for its checklist tools (TodoWrite, or the Task* tools),
+#: which it does not offer the model in the adapter's SDK mode unless it is set
+#: (measured on Claude Code 2.1.325 through claude-agent-acp 0.107.0). Their list
+#: reaches Crew as the ACP ``plan`` update ``acp.plan_checklist`` reads.
+CLAUDE_TODO_TOOLS_ENV = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
+#: claude-agent-acp's switch for how Claude Code returns the model's thinking:
+#: ``summarized`` (a readable summary) or ``omitted`` (thinking blocks with no text,
+#: the default of recent models, for which the adapter sends no
+#: ``agent_thought_chunk``). Read by claude-agent-acp 0.107.0 from its own process
+#: environment at ``session/new`` (``session-env.js`` ``resolveThinkingConfig``), so a
+#: value in a Claude Code settings file's ``env`` never reaches it; 0.94.0 does not
+#: read it.
+CLAUDE_THINKING_DISPLAY_ENV = "CLAUDE_CODE_THINKING_DISPLAY"
+#: The display a claude launch asks for when nothing else decides it.
+CLAUDE_THINKING_DISPLAY_DEFAULT = "summarized"
 
 # Cache the PATH with the resolution result. A failed resolve is cached too, so
 # recomputing PATH at the error site could report directories that were never searched.
@@ -328,6 +349,9 @@ class ClaudeLaunch(ProcessAdapter):
     """claude-agent-acp: a Node adapter, seeded before it starts."""
 
     backend = ACP_BACKEND_CLAUDE
+    #: The work directory of the session this launch serves, set by
+    #: :meth:`resolve_spawn`, whose project settings :meth:`apply_spawn_env` reads.
+    _work_dir: Path | None = None
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
         """Resolve the adapter, read its version, then seed the session it will serve.
@@ -343,6 +367,7 @@ class ClaudeLaunch(ProcessAdapter):
         global _claude_acp_argv_cache  # noqa: PLW0603
         session = ctx.session
         assert session is not None, "claude-agent-acp is launched for one session"
+        self._work_dir = Path(ctx.work_dir) if ctx.work_dir is not None else None
         session._model = model_registry.resolve_wire_model_id(
             session._model, model_registry_namespace(self.backend)
         )
@@ -398,7 +423,10 @@ class ClaudeLaunch(ProcessAdapter):
         The SDK needs a native Claude binary Crew does not vendor and does NOT search
         PATH for ``claude`` itself, so it is named explicitly. Only set when unset, so
         an operator override always wins.
+
+        Also sets the launch's environment defaults (:meth:`_apply_env_defaults`).
         """
+        self._apply_env_defaults(env)
         if env.get("CLAUDE_CODE_EXECUTABLE"):
             return
         claude_exe = _resolve_claude_code_executable()
@@ -414,3 +442,36 @@ class ClaudeLaunch(ProcessAdapter):
                 "CLAUDE_CODE_EXECUTABLE.",
                 CLAUDE_CODE_BIN,
             )
+
+    def _apply_env_defaults(self, env: dict[str, str]) -> None:
+        """Set each variable this launch defaults, unless the environment names it.
+
+        A value already in the environment, an empty one included, is the operator's
+        (the gateway's own environment, ``agent.env`` or a session's ``extra_env``).
+
+        - :data:`CLAUDE_TODO_TOOLS_ENV` ``=1`` on a backend in
+          ``ACP_BACKENDS_PLAN_CHECKLIST``: Claude Code then offers its checklist
+          tools, whose list the adapter sends as the ``plan`` the task progress bar
+          draws.
+        - :data:`CLAUDE_THINKING_DISPLAY_ENV` ``=summarized`` on a backend in
+          ``ACP_BACKENDS_SUMMARIZED_THINKING``, so the adapter streams the model's
+          thinking as text. Not when a Claude Code settings file decides thinking
+          (:func:`a_source_decides_thinking`: turns it off, sets its budget or
+          chooses its display): the adapter turns a display into an explicit
+          ``--thinking=adaptive`` and an explicit display, which would override
+          that file. Blocking: it reads those files, so it runs off the loop with
+          the rest of :meth:`apply_spawn_env`.
+        """
+        if self.backend in ACP_BACKENDS_PLAN_CHECKLIST:
+            env.setdefault(CLAUDE_TODO_TOOLS_ENV, "1")
+        if (
+            self.backend not in ACP_BACKENDS_SUMMARIZED_THINKING
+            or CLAUDE_THINKING_DISPLAY_ENV in env
+        ):
+            return
+        # The child's own config directory when the environment names one.
+        config_dir = env.get("CLAUDE_CONFIG_DIR")
+        if not a_source_decides_thinking(
+            self._work_dir, config_dir=Path(config_dir) if config_dir else None
+        ):
+            env[CLAUDE_THINKING_DISPLAY_ENV] = CLAUDE_THINKING_DISPLAY_DEFAULT

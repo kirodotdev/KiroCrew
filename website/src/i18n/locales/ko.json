@@ -9543,6 +9543,12 @@
       "hint": "큰 작업을 보조 에이전트가 수행하는 단계로 나눕니다. 작업을 계획하는 방식이 바뀌며, Claude가 얼마나 깊이 생각하는지는 바뀌지 않습니다. 더 느리고 Claude 사용량을 더 많이 씁니다. 이 채팅에만 다음 메시지부터 적용됩니다.",
       "label": "Ultracode"
     },
+    "fastModeToggle": {
+      "hint": "같은 모델로 Claude가 더 빠르게 응답합니다. Claude가 얼마나 깊이 생각하는지는 바뀌지 않습니다. Claude 사용량을 더 많이 씁니다. 이 채팅에만 다음 메시지부터 적용됩니다.",
+      "label": "빠른 모드",
+      "unavailable": "이 채팅에서는 Claude가 빠른 모드를 사용할 수 없습니다: {{reason}}.",
+      "unavailable_no_reason": "지금은 이 채팅에서 Claude가 빠른 모드를 사용할 수 없습니다."
+    },
     "updateFoundModal": {
       "cancel_update": "업데이트 취소",
       "cancel_update_failed": "업데이트를 취소하지 못했습니다. 다시 시도해 주세요.",
@@ -12964,6 +12970,7 @@
         "click_to_toggle_hint": "행을 클릭해 완료 또는 미완료로 표시하세요. 에이전트에게는 다음 턴까지 아무것도 반영되지 않으며, 그때까지는 다시 클릭해 되돌릴 수 있습니다. 완료된 행은 에이전트가 다시 하지 않고, 미완료 행은 여전히 열린 것으로 취급합니다. 당신이 표시한 행에는 에이전트가 확인할 때까지 사람 표시가 붙습니다.",
         "tick_failed_lead": "‘{{task}}’이(가) 업데이트되지 않았습니다. 행은 이전 상태 그대로입니다. 다시 클릭해도 안전합니다. 행은 목록에 표시될 때만 바뀝니다.",
         "read_only_hint": "읽기 전용: 이 세션을 실행하는 원격 컴퓨터가 관리합니다.",
+        "agent_kept_hint": "읽기 전용: 이 목록은 에이전트가 직접 관리하며, 에이전트만 바꿀 수 있습니다.",
         "fail_task_stale": "클릭하는 동안 목록이 바뀌어서 이 행은 이제 다른 작업입니다. 클릭하기 전에 행을 다시 확인하세요.",
         "fail_task_gone": "그 행은 더 이상 목록에 없습니다. 에이전트가 목록을 교체했습니다.",
         "fail_session_gone": "대시보드 세션이 만료되었습니다. 페이지를 새로고침하고 다시 클릭하세요 — 그 외에는 아무것도 잃지 않습니다.",
@@ -13136,6 +13143,16 @@
         "member_rebind_kept_agent": "{{bot}}은(는) 이제 {{agent}}(으)로 설정되어 있지만, 이 채팅은 시작할 때의 에이전트인 {{recorded}}(으)로 계속 실행됩니다. {{agent}}을(를) 사용하려면 {{bot}}와(과) 새 채팅을 시작하세요.",
         "agent_no_tools": "{{agent}}에는 지정된 도구가 없어서 이 채팅에서 명령 실행, 파일 작업, MCP 서버 사용을 할 수 없습니다.",
         "agent_no_tools_open": "도구 선택",
+        "harness_mode_changed": "이 세션이 {{mode}} 모드로 전환되었습니다.",
+        "harness_task_completed": "백그라운드 작업이 완료되었습니다: {{task}}{{detail}}",
+        "harness_task_failed": "백그라운드 작업이 실패했습니다: {{task}}{{detail}}",
+        "harness_task_stopped": "백그라운드 작업이 중지되었습니다: {{task}}{{detail}}",
+        "harness_api_retry": "Claude가 실패한 요청을 다시 시도하고 있습니다{{reason}}. {{max}}회 중 {{attempt}}회째입니다.",
+        "harness_api_retry_rate_limit": "속도 제한",
+        "harness_api_retry_overloaded": "과부하",
+        "harness_api_retry_server_error": "서버 오류",
+        "harness_api_retry_cloud_credential_error": "클라우드 자격 증명 오류",
+        "harness_api_retry_status": "HTTP {{status}}",
         "crew_name_undispatchable": "이 스레드의 크루 이름은 사용할 수 없습니다. Bot의 이름을 바꾸거나 다시 만드세요.",
         "code_channel_worktree_not_ready": "이 코드 채널의 worktree가 아직 준비되지 않아 메시지를 실행하지 않았습니다. 잠시 후 다시 보내세요.",
         "remote_crew_read_only": "이 채팅은 원격 크루에서 실행되어 이제 읽기 전용입니다. 계속하려면 크루의 자체 세션을 여세요.",

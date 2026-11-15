@@ -30,7 +30,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry, model_scope
-from kiro_crew.acp import launch_tuning, runtime_models
+from kiro_crew.acp import harness_notices, launch_tuning, raw_sdk_tasks, runtime_models
 from kiro_crew.acp._dispatch import build_session_new_params, parse_session_modes
 from kiro_crew.acp.client_timeouts import _INIT_TIMEOUT
 from kiro_crew.acp.harness.mimocode import mimocode_model_rows
@@ -1023,6 +1023,10 @@ def _store_session_config(self: AcpClient, resp: dict) -> None:
     # Assigned unconditionally so a re-init that omits `modes` clears any
     # stale state rather than guarding on it.
     self._available_mode_ids, _current_mode, self._modes_advertised = parse_session_modes(resp)
+    # The mode names a mode-change notice reads (``acp.harness_notices``).
+    harness_notices.note_session_modes(self, resp)
+    # The background tasks of the session this one replaced do not report here.
+    raw_sdk_tasks.forget_tasks(self)
 
 
 def _handle_config_option_update(self: AcpClient, msg: JsonRpcMessage) -> None:

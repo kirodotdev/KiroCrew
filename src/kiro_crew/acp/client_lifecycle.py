@@ -42,7 +42,7 @@ import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
 from kiro_crew import platform_compat, process_identity
-from kiro_crew.acp import runtime_process_tree
+from kiro_crew.acp import raw_sdk_tasks, runtime_process_tree
 from kiro_crew.acp._dispatch import BackgroundLaunchRecord
 from kiro_crew.acp.client_spawn_env import KIRO_CLI_BIN
 from kiro_crew.acp.client_timeouts import (
@@ -628,6 +628,8 @@ def _reset_state(self: AcpClient) -> None:
                     pipe.close()  # type: ignore[union-attr]
                 except Exception:
                     pass
+    # Claude Code's background tasks ran in the dead process (``acp.raw_sdk_tasks``).
+    raw_sdk_tasks.forget_tasks(self)
     # Clean up sandbox temp files (macOS seatbelt profile)
     self._discard_sandbox_cleanup()
     # The process this projection's views were prepared for is dead, so its
