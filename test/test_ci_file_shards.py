@@ -316,6 +316,28 @@ class TestFileShards(unittest.TestCase):
         self.assertLess(max(pinned) - min(pinned), max(hashed) - min(hashed))
         self.assertLessEqual(max(pinned) - min(pinned), 100.0)
 
+    def test_pin_generator_reads_macos_artifacts_into_the_macos_pin_file(self):
+        shard_dir = self.root / "runs" / "m" / "macos-pytest-progress-1"
+        shard_dir.mkdir(parents=True)
+        record = {"event": "phase_end", "module": "test/test_mac.py", "elapsed": 5.0}
+        (shard_dir / "gw0.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        self.write("test/test_mac.py", "def test_ok(): pass\n")
+        run = str(self.root / "runs" / "m")
+        # Linux mode finds no linux-pytest-progress-* records here.
+        with self.assertRaises(SystemExit):
+            ci_file_shard_pins.main([run, f"--root={self.root}", f"--out={self.root}/x.txt"])
+        out = self.root / "mac.txt"
+        argv = [run, "--platform=macos", "--shards=2", "--pins=1", f"--out={out}"]
+        self.assertEqual(ci_file_shard_pins.main([*argv, f"--root={self.root}"]), 0)
+        self.assertEqual(set(read_pins(out, 2)), {"test/test_mac.py"})
+        # Without --out, a macOS refresh must never overwrite the Linux pin file.
+        self.assertEqual(
+            ci_file_shard_pins.DEFAULT_OUT["macos"], ROOT / "scripts/ci_file_shard_pins_macos.txt"
+        )
+        self.assertNotEqual(
+            ci_file_shard_pins.DEFAULT_OUT["macos"], ci_file_shard_pins.DEFAULT_OUT["linux"]
+        )
+
     def test_reduced_backend_scope_timeout_accounts_for_windows(self):
         self.assertEqual(
             _backend_scope_timeout_seconds(windows=False), _LINUX_BACKEND_SCOPE_TIMEOUT_SECONDS

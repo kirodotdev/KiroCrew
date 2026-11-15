@@ -304,14 +304,16 @@ jobs:
           # console script does not, so `-p scripts.ci_file_shards` resolves here
           # exactly as it does in backend-test and backend-test-windows.
           # ci_pytest_progress records each file's seconds, as backend-test does,
-          # so scripts/ci_file_shard_pins.py can balance these shards by measured
-          # macOS time: path-hash ownership left shards 2 and 5 at 37-38 minutes
-          # on 11/14 while shard 3 took 20.
+          # and scripts/ci_file_shard_pins_macos.txt (built from those records
+          # by `scripts/ci_file_shard_pins.py --platform macos`) pins the heavy
+          # files so the shards' test time comes out even: path-hash ownership
+          # left shards 2 and 5 at 37-38 minutes on 11/14 while shard 3 took 20.
           python -m pytest -p scripts.ci_file_shards -q -n 2 --timeout=180 \
             --no-cov --max-worker-restart=0 \
             -p scripts.ci_pytest_progress --ci-progress-dir="$RUNNER_TEMP/pytest-progress" \
             -p scripts.ci_faulthandler_budget --faulthandler-grace=30 \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --file-shard-pins scripts/ci_file_shard_pins_macos.txt \
             2>&1 | tee "shard-macos-${{ matrix.group }}.log"
 
       # The log carries pytest's own `FAILED <nodeid> - <msg>` summary lines, so a

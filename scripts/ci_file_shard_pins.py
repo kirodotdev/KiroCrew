@@ -15,7 +15,8 @@ Refresh it from several green ``main`` runs (the artifacts are kept 7 days)::
     python scripts/ci_file_shard_pins.py <dir>/<run-id> [<dir>/<run-id> ...]
 
 The macOS nightly shards (``platform-tests.yml``) upload the same records as
-``macos-pytest-progress-<N>``; read those with ``--platform macos``.
+``macos-pytest-progress-<N>``; ``--platform macos`` reads those and writes
+``scripts/ci_file_shard_pins_macos.txt`` instead.
 
 Each file's weight is its median share of a run's total test time, scaled by the
 median total, so one slow runner does not dominate. Pins are placed heaviest
@@ -37,7 +38,10 @@ sys.path.insert(0, str(ROOT))
 
 from scripts.ci_file_shards import hash_shard  # noqa: E402
 
-DEFAULT_OUT = ROOT / "scripts" / "ci_file_shard_pins.txt"
+DEFAULT_OUT = {
+    "linux": ROOT / "scripts" / "ci_file_shard_pins.txt",
+    "macos": ROOT / "scripts" / "ci_file_shard_pins_macos.txt",
+}
 DEFAULT_SHARDS = 8
 DEFAULT_PINS = 800
 
@@ -89,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("runs", nargs="+", type=Path, help="one directory per downloaded run")
     parser.add_argument("--shards", type=int, default=DEFAULT_SHARDS)
     parser.add_argument("--pins", type=int, default=DEFAULT_PINS)
-    parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--out", type=Path, default=None, help="default: the platform's pin file")
     parser.add_argument("--root", type=Path, default=ROOT, help="checkout the pins are for")
     parser.add_argument(
         "--platform",
@@ -98,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
         help="which <platform>-pytest-progress-* artifacts to read",
     )
     args = parser.parse_args(argv)
+    out = args.out or DEFAULT_OUT[args.platform]
     runs = [run_seconds(path, args.platform) for path in args.runs]
     # A file measured on an older main but since moved or deleted would only be
     # a dead pin; leave it out so the pins describe this checkout.
@@ -113,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         f"# shards: {args.shards}",
     ]
     lines += [f"{owners[name]} {name}" for name in sorted(owners)]
-    args.out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     loads = ", ".join(f"{value:.0f}" for value in load[1:])
     print(f"pinned {len(owners)} of {len(weight)} files; predicted worker-seconds: {loads}")
     return 0

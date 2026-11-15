@@ -40,6 +40,8 @@ import yaml
 from git_maintenance_helpers import git_maintenance_off_entries
 from macos_lane_helpers import verdict_script as _verdict_script
 
+from scripts.ci_file_shards import read_pins
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 
@@ -268,6 +270,12 @@ class TestTheMovedLaneIsTheSameLane:
         run = next(str(s["run"]) for s in steps if "--file-shards" in str(s.get("run", "")))
         assert "-p scripts.ci_pytest_progress" in run
         assert '--ci-progress-dir="$RUNNER_TEMP/pytest-progress"' in run
+        assert "--file-shard-pins scripts/ci_file_shard_pins_macos.txt" in run
+        # The pins balance the shards only if they were made for this shard count
+        # and every shard holds some of them.
+        count = _load("platform-tests.yml")["jobs"]["backend-test-macos"]["env"]["SHARD_COUNT"]
+        pins = read_pins(ROOT / "scripts/ci_file_shard_pins_macos.txt", count)
+        assert set(pins.values()) == set(range(1, count + 1))
         upload = next(s for s in steps if s.get("name") == "Upload macOS pytest progress")
         assert upload["if"] == "always()"
         assert upload["with"]["name"] == "macos-pytest-progress-${{ matrix.group }}"
