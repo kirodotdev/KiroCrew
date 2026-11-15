@@ -91,6 +91,7 @@ from kiro_crew.acp.session_mcp import (
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     KAS_CLIENT_CAPABILITIES,
     METHOD_KAS_MCP_STATUS,
@@ -767,6 +768,10 @@ class KasHarness(MembershipHarness):
     #: knows it: its own bundle's. ``""`` on the relay, whose ``initialize``
     #: names no engine version.
     bundle_engine_version = ""
+    #: :func:`~kiro_crew.acp.client_turn_control.untested_version_issue` for the
+    #: kiro-cli a relay spawn ran under, set at each spawn; "" on Crew's own bundle,
+    #: whose engine is the pinned one (``acp/kas_pin.py``).
+    untested_version_notice = ""
 
     # ── Seam 1: spawn ──
 
@@ -806,6 +811,7 @@ class KasHarness(MembershipHarness):
 
         self.spawn_sandbox_mode = ctx.sandbox_mode
         self.bundle_engine_version = ""
+        self.untested_version_notice = ""
         # The route reason of this spawn's bundle plan ("" on the relay): the
         # runtime reads it when the start fails (``runtime_spawn_entry``).
         self.spawn_route_reason = ""
@@ -903,6 +909,17 @@ class KasHarness(MembershipHarness):
         kiro_cli_version = await asyncio.to_thread(installed_kiro_cli_version)
         warn_kas_vocabulary_drift(kiro_cli_version)
         self.agent_prompt_notice = kas_agent_prompt_issue(kiro_cli_version)
+        # Imported here: client_turn_control imports the harness package.
+        from kiro_crew.acp.client_turn_control import untested_version_issue
+
+        # The binary this relay spawns, read as the route reads it, so a kiro-cli
+        # found only through PATH is warned about too.
+        spawned_version = await asyncio.to_thread(resolved_kiro_cli_version, kas_bin)
+        self.untested_version_notice = (
+            untested_version_issue(ACP_BACKEND_KIRO, ".".join(map(str, spawned_version)))
+            if spawned_version is not None
+            else ""
+        )
         self.agent_prompt_applied = (
             kiro_cli_version is not None and kiro_cli_version >= KAS_AGENT_PROMPT_MIN_KIRO_CLI
         )
@@ -1033,6 +1050,7 @@ class KasHarness(MembershipHarness):
         # Crew's own engine: kiro-cli's release says nothing about it.
         self.agent_prompt_notice = ""
         self.agent_prompt_applied = False
+        self.untested_version_notice = ""
         self.bundle_engine_version = bundle.version
         if getattr(self, "_sharing_preview_on", False):
             from kiro_crew.acp.chat_runtime_sharing import engine_shares_chats
@@ -1194,6 +1212,7 @@ class KasHarness(MembershipHarness):
         handle.kas_agent_prompt_notice = self.agent_prompt_notice if custom_agents else ""
         handle.kas_agent_prompt_applied = self.agent_prompt_applied
         handle.kas_bundle_engine_version = self.bundle_engine_version
+        handle.kas_untested_version_notice = self.untested_version_notice
 
     async def session_extras(
         self,
