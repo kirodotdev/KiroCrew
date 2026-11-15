@@ -293,8 +293,15 @@ async def _route_owned_child_frame(
     background child's request would sit unanswered -- the original hang with
     extra steps. It is answered fail-closed NOW instead. A child's question
     (an elicitation request) is declined then, for the same reason.
+
+    An owner whose queue reads turns the agent starts on its own (a watched
+    ``AgentTurnQueue``, claude) has a reader between turns too: the frame goes to
+    that queue, so a background child's request opens a turn and an approval card
+    there rather than being refused.
     """
-    _owner_turn_active = owner in self._turn_active_sessions
+    _owner_turn_active = owner in self._turn_active_sessions or (
+        getattr(self._session_queues.get(owner), "on_frame", None) is not None
+    )
     # The child is working for its owner whatever happens to the frame below --
     # answered, routed or dropped between turns -- so it counts as the owner's
     # activity, which keeps the owner off the idle sweep.

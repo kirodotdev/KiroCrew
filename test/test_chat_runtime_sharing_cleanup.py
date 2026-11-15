@@ -1435,12 +1435,10 @@ class TestResolveChatShare:
         )
         assert placement is None and reads == []
 
-    @pytest.mark.parametrize("agent_turns, shares", [(True, False), (False, True)])
-    def test_a_claude_chat_shares_only_with_agent_started_turns_off(
-        self, monkeypatch, agent_turns, shares
-    ):
-        """The shared session has no idle reader, so a turn claude starts on its own
-        would be dropped there: with the setting on, the chat keeps its own process."""
+    @pytest.mark.parametrize("agent_turns", [True, False])
+    def test_a_claude_chat_shares_whatever_agent_started_turns_says(self, monkeypatch, agent_turns):
+        """The shared session handle reads a turn claude starts on its own
+        (``session_handle_agent_turns``), so the setting places no claude chat."""
         import kiro_crew.providers.chat_share as share_mod
 
         real_cfg = self._cfg
@@ -1458,7 +1456,7 @@ class TestResolveChatShare:
             _PlacementProvider(backend=ACP_BACKEND_CLAUDE),
             harnesses={"claude": True},
         )
-        assert (placement is not None) is shares
+        assert placement is not None
 
     @pytest.mark.parametrize(
         "mode, env, shares",

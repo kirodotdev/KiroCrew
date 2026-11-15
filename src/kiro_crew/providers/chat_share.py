@@ -61,12 +61,7 @@ from kiro_crew.acp.chat_runtime_sharing import (
     share_tree_root_of,
 )
 from kiro_crew.acp.runtime import AcpRuntimeError
-from kiro_crew.agent_sdk.backends import (
-    ACP_BACKEND_CLAUDE,
-    ACP_BACKEND_CODEX,
-    ACP_BACKEND_KAS,
-    ACP_BACKENDS_AGENT_STARTED_TURNS,
-)
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_KAS
 from kiro_crew.agent_sdk.codex_transcripts import codex_home
 from kiro_crew.metrics.chat_runtime_share import record_placed, record_refused
 from kiro_crew.runtime_ownership import CHAT_RUNTIME_CAP, RUNTIME_OWNERSHIP, Acquisition
@@ -747,14 +742,6 @@ async def resolve_chat_share(
         configured_cap = int(
             getattr(cfg.agent, "chat_runtime_sharing_max_sessions", CHAT_RUNTIME_CAP)
         )
-        # A harness whose agent starts turns on its own (claude, after a background
-        # command) needs an idle reader on the session, and only the per-chat client
-        # has one: on the shared transport those turns would be dropped unseen.
-        # shortcut: such a chat keeps its own process while the setting is on; give
-        # the shared session handle an idle reader to lift this.
-        agent_turns_need_own_process = backend in ACP_BACKENDS_AGENT_STARTED_TURNS and bool(
-            getattr(cfg.agent, "agent_started_turns", True)
-        )
     except Exception:
         # An unreadable config leaves sharing OFF: absence must not enable a
         # feature nobody turned on.
@@ -815,8 +802,6 @@ async def resolve_chat_share(
         member_shares_root=member_shares_root,
         harness_enabled=harness_enabled,
     )
-    if not refusal and agent_turns_need_own_process:
-        refusal = "agent_started_turns"
     if not refusal and _seeds_auto_permission_mode(provider, backend):
         refusal = "auto_permission_mode"
     if not refusal and await asyncio.to_thread(

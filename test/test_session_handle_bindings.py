@@ -111,6 +111,15 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "spec_shell_allowlist": ("data", False, "", ""),
     "spec_write_allowlist": ("data", False, "", ""),
     "spec_write_cwd": ("data", False, "", ""),
+    "_agent_turn_reading": ("data", False, "", ""),
+    "_agent_turn_start": ("data", False, "", ""),
+    "_on_agent_turn": ("data", False, "", ""),
+    "_note_queued_frame": ("function", False, "87459833bc5c", "session_handle_agent_turns"),
+    "_take_agent_turn_frames": ("function", False, "f546b68d1845", "session_handle_agent_turns"),
+    "_rearm_agent_turn": ("function", False, "b60c5fea256e", "session_handle_agent_turns"),
+    "agent_turn_pending": ("function", False, "a6632a57e602", "session_handle_agent_turns"),
+    "stream_unsolicited": ("function", "agen", "38f8aabafd49", "session_handle_agent_turns"),
+    "watch_agent_turns": ("function", False, "42d751137554", "session_handle_agent_turns"),
     "__init__": ("function", False, "a01004fc4c51", "session_handle_class"),
     "_accept_oauth_request": ("function", False, "668a15b0478d", "session_handle_mcp"),
     "_active_tool_calls": ("property", False, "d150141e37db", "session_handle_class"),
@@ -301,7 +310,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "session_handle_tool_silence",
     ),
     "_roster_route_proven": ("function", False, "a6632a57e602", "session_handle_tool_silence"),
-    "_run_turn": ("function", "agen", "f38a930fc812", "session_handle_turn"),
+    "_run_turn": ("function", "agen", "23084a57ba5b", "session_handle_turn"),
     "_runtime_idle_secs": ("function", False, "59162e39f6f1", "session_handle_watchdog"),
     "_runtime_reattempts_mcp": ("function", False, "a6632a57e602", "session_handle_mcp"),
     "_send_awaited": ("function", True, "99990f4299d3", "session_handle_lifecycle"),
@@ -461,6 +470,7 @@ _DECLARED = frozenset({"_compaction_terminal_seen", "_kas_compact_turn"})
 
 #: The owner modules, lowest layer first.
 _OWNERS = (
+    "kiro_crew.acp.session_handle_agent_turns",
     "kiro_crew.acp.session_handle_harness_surfaces",
     "kiro_crew.acp.session_handle_runtime_contract",
     "kiro_crew.acp.session_handle_watchdog",

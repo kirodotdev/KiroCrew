@@ -22,6 +22,7 @@ from contextlib import aclosing
 from pathlib import Path
 from typing import Any, cast
 
+from kiro_crew.acp import session_provider_agent_turns as _sp_agent_turns
 from kiro_crew.acp import session_provider_claim as _sp_claim
 from kiro_crew.acp import session_provider_context as _sp_context
 from kiro_crew.acp import session_provider_keepalive as _sp_keepalive
@@ -128,6 +129,9 @@ class AcpSessionProvider(LLMProvider):
     #: (``HarnessAdapter.prepare_session``), set by the start that built this
     #: provider. None: the host reads none.
     _harness_options: dict[str, Any] | None = None
+    #: The chat's agent-turn callback (``watch_agent_turns``), re-registered on
+    #: each handle that replaces this session's. None: nothing watches.
+    _agent_turn_callback: Callable[[], None] | None = None
 
     # Applying a dashboard MCP config change to this live session by re-sending
     # its projection: ``kiro_crew.acp.session_provider_mcp_reinject``.
@@ -497,6 +501,7 @@ class AcpSessionProvider(LLMProvider):
         # Still the session the keepalive route's registry holds, if it was.
         new_handle.keepalive_routed = getattr(old, "keepalive_routed", False) is True
         self._handle = new_handle
+        self._rewatch_agent_turns()
         old.mcp_session_report().hand_over(new_handle.mcp_session_report())  # its reader follows
         # The fresh session/new restored nothing: a session/load observation from
         # the old handle would make the next turn skip its history replay
@@ -619,6 +624,12 @@ class AcpSessionProvider(LLMProvider):
         """See AcpSessionHandle.flush_native_child_text (a turn cut short)."""
         flush = getattr(self._handle, "flush_native_child_text", None)
         return list(flush()) if callable(flush) else []
+
+    # Turns the agent starts on its own: ``kiro_crew.acp.session_provider_agent_turns``.
+    watch_agent_turns = _sp_agent_turns.watch_agent_turns
+    _rewatch_agent_turns = _sp_agent_turns._rewatch_agent_turns
+    agent_turn_pending = _sp_agent_turns.agent_turn_pending
+    stream_unsolicited = _sp_agent_turns.stream_unsolicited
 
     @property
     def child_fidelity_aware(self) -> bool:

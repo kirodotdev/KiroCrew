@@ -207,6 +207,7 @@ async def apply_pending_mcp_reinjection(self: AcpSessionProvider) -> None:
         *getattr(new_handle, "kas_launch_snapshots", []),
     ]
     self._handle = new_handle
+    self._rewatch_agent_turns()
     # Whoever follows this session's MCP report follows the reloaded one, and is
     # told at once: the server set it describes has changed.
     old.mcp_session_report().hand_over(new_handle.mcp_session_report())

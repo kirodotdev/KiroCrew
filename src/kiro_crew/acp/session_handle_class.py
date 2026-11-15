@@ -15,6 +15,7 @@ from typing import Any
 
 from kiro_crew._facade_bindings import own_methods
 from kiro_crew.acp import batch_guard, kas_wire
+from kiro_crew.acp import session_handle_agent_turns as _sh_agent_turns
 from kiro_crew.acp import session_handle_claude_children as _sh_claude_children
 from kiro_crew.acp import session_handle_compaction as _sh_compaction
 from kiro_crew.acp import session_handle_dispatch as _sh_dispatch
@@ -70,6 +71,7 @@ from kiro_crew.security import StreamRedactor
 _MEMBER_OWNERS = frozenset(
     {
         "kiro_crew.acp.session_handle_class",
+        "kiro_crew.acp.session_handle_agent_turns",
         "kiro_crew.acp.session_handle_compaction",
         "kiro_crew.acp.session_handle_dispatch",
         "kiro_crew.acp.session_handle_elicitation",
@@ -298,6 +300,13 @@ class AcpSessionHandle:
     command_is_native = _sh_turn.command_is_native
     _run_turn = _sh_turn._run_turn
     _close_abandoned_turn = _sh_turn._close_abandoned_turn
+    # Turns the agent starts on its own: ``kiro_crew.acp.session_handle_agent_turns``.
+    watch_agent_turns = _sh_agent_turns.watch_agent_turns
+    _note_queued_frame = _sh_agent_turns._note_queued_frame
+    agent_turn_pending = _sh_agent_turns.agent_turn_pending
+    _take_agent_turn_frames = _sh_agent_turns._take_agent_turn_frames
+    _rearm_agent_turn = _sh_agent_turns._rearm_agent_turn
+    stream_unsolicited = _sh_agent_turns.stream_unsolicited
     # The per-turn event loop: ``kiro_crew.acp.session_handle_dispatch``.
     _dispatch_events = _sh_dispatch._dispatch_events
     _classify = _sh_dispatch._classify
@@ -1077,6 +1086,14 @@ class AcpSessionHandle:
     spec_shell_allowlist: tuple[str, ...] | None = None
     spec_write_allowlist: tuple[str, ...] | None = None
     spec_write_cwd: str = ""
+
+    # A turn the agent started on its own (``session_handle_agent_turns``): its
+    # first frame while no turn has read it, the chat's callback, and whether
+    # the running turn is one. Class defaults, so a host whose queue is plain
+    # never sets them and every read finds the default.
+    _agent_turn_start: JsonRpcMessage | None = None
+    _on_agent_turn: Callable[[], None] | None = None
+    _agent_turn_reading: bool = False
 
     @property
     def last_steer_monotonic(self) -> float:

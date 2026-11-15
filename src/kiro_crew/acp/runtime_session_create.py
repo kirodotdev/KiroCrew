@@ -58,6 +58,7 @@ from kiro_crew.acp.session_handle import (
     _load_watchdog_settings,
     advertised_models_from_session,
 )
+from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.types import (
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -909,7 +910,11 @@ async def _finish_create_session(
     # Register the session's queue, and its MCP report with it: no await in
     # between, so a frame that reaches the queue has reached the report.
     report = self._open_mcp_report(session_id, mcp_servers)
-    queue: asyncio.Queue[JsonRpcMessage | None] = asyncio.Queue()
+    # A host with per-session state (claude) can start a turn on its own; its
+    # queue tells the handle (``session_handle_agent_turns``). One flag read.
+    queue: asyncio.Queue[JsonRpcMessage | None] = (
+        AgentTurnQueue() if self._harness.per_session_state else asyncio.Queue()
+    )
     self._session_queues[session_id] = queue
     self._session_cwds[session_id] = str(session_work_dir)
     for msg in buffered_init:

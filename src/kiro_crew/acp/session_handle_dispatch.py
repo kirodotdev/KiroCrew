@@ -49,6 +49,7 @@ from kiro_crew.acp.client import (
     compaction_failure_is_transient,
     format_command_result,
 )
+from kiro_crew.acp.client_transport import _ends_agent_started_turn
 from kiro_crew.acp.engine_fallback import normalize_kiro_v2
 from kiro_crew.acp.liveness import (
     EVIDENCE_ESTABLISHED_FLAT,
@@ -61,6 +62,7 @@ from kiro_crew.acp.liveness import (
     VERDICT_UNKNOWN,
     VERDICT_WORKING,
 )
+from kiro_crew.acp.session_handle_agent_turns import AGENT_STARTED_REQUEST_ID
 from kiro_crew.acp.session_handle_watchdog import INTERACTIVE_POLICY_WAIT
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.tool_silence import named_tool_call_id
@@ -1066,6 +1068,20 @@ async def _dispatch_events(
                             kind=EVENT_COMPLETE, usage=self.last_prompt_stats.to_turn_usage()
                         )
                         return
+                if req_id == AGENT_STARTED_REQUEST_ID and _ends_agent_started_turn(msg):
+                    # The usage_update that closes a cycle Claude Code ran on its
+                    # own: no response comes for a turn nobody prompted.
+                    self._tool_dispatched = False
+                    self._last_stop_reason = (
+                        STOP_REASON_CANCELLED if self._cancelled else STOP_REASON_END_TURN
+                    )
+                    self._turn_done.set()
+                    yield AcpEvent(
+                        kind=EVENT_COMPLETE,
+                        stop_reason=self._last_stop_reason,
+                        usage=self.last_prompt_stats.to_turn_usage(),
+                    )
+                    return
             elif action == "steer":
                 # Mid-turn steer lifecycle echo from kiro-cli (_session/steer).
                 # queued carries the pending snapshot; consumed carries injected
