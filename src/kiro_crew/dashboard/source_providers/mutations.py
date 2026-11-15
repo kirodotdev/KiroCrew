@@ -101,7 +101,7 @@ _GITHUB_AUTO_MERGE_MUTATION = (
 # It does NOT cover the operator's decision window: the read happens on the confirm
 # call, after the prompt, so a push that lands before the operator confirms is read
 # and merged as the current head -- closing that gap would need the prompt to carry
-# the head and the confirm to echo it, which this change deliberately does not add.
+# the head and the confirm to echo it, which is deliberately not done here.
 _GITHUB_MERGE_MUTATION = (
     "mutation($pullRequestId:ID!,$mergeMethod:PullRequestMergeMethod!,$head:GitObjectID!)"
     "{mergePullRequest(input:{pullRequestId:$pullRequestId,mergeMethod:$mergeMethod,"

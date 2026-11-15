@@ -897,7 +897,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             # at the NEW project. A start carries the old cwd when:
             #   * a session is already registered under the key, or
             #   * a turn is in flight (running, or its admission reserved) whose
-            #     own get_or_create captured slot.project BEFORE this change and
+            #     own get_or_create captured slot.project BEFORE this switch and
             #     will register a session rooted at the old cwd, or
             #   * a cold start is already reserved under the key — a
             #     channel-linked turn (Slack/Discord) resuming on
