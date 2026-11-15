@@ -165,6 +165,17 @@ Six shapes escape the env var:
   `test_identity_stores.py::TestUsageTuplesAnchorTheRealHome` instead. Read
   `_EXCLUDED` for the live list rather than a copy here.
 
+**A faked host condition and the check that reads it are one contract.** A test
+that fakes the default home (`beacon.is_default_home`), the platform or a
+privilege depends on the production check it answers. Change the fake and the
+check in the same pull request: a new check means searching `test/` for the
+tests that reach it, and removing a fake means searching for every assertion that
+still relies on it. Two parallel pull requests, one dropping the `home` fixture's
+default-home fake and one adding a default-home check to `off_offer_due()`, were
+each green alone and red together on every run of `main`. Keep the fake scoped to
+the class that needs it. Full telling:
+[testing-conventions.md](../../../../../docs/system-specs/common/testing-conventions.md#a-faked-host-condition-changes-with-the-check-that-reads-it).
+
 ### 1c. A child process inherits pytest's CWD, which is the repo root
 
 This is the leak a reviewer cannot see: no line says `open(..., "w")`, the write
@@ -534,6 +545,9 @@ naming the shape; the contract line holds the detail and its numbers. The helper
       absent key records no undo, and a `delenv` AFTER the write puts the written value back
 - [ ] No `monkeypatch.undo()` in a test body: it reverts every fixture's records too. A
       patch you need to drop early lives in `with pytest.MonkeyPatch.context() as patched:`
+- [ ] A fake of a host condition (default home, platform, privilege) lives on the tests
+      that need it, not a shared fixture; adding a production check on that condition, or
+      removing the fake, comes with a `git grep` for every test that reaches the check
 - [ ] No module-level `skipif` probe that reads `KiroCrewConfig` / `config_dir()` /
       `Path.home()` — it runs before any pin and observes the operator's real config
 - [ ] A collection-time probe that can construct a process singleton (`sel()`, a config
