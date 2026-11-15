@@ -848,3 +848,41 @@ describe('authRequiredIsNewest -- the composer keeps Resume under a sign-in erro
     expect(authRequiredIsNewest([user(), msg('error', { content: 'Bedrock is throttling requests.' })])).toBe(false)
   })
 })
+
+describe('a usage-limit row hands the card its chat, so the card can offer one continue after the reset', () => {
+  const limit = (over: Partial<ChatMessage> = {}) =>
+    msg('error', { content: 'You have hit your session limit · resets soon.', meta: { kind: 'usage_limit' }, ...over })
+  const recoverable = { slot: 's1', continuable: true, interrupted: true, onContinue: () => undefined }
+
+  it('names the chat on a usage-limit row and on no other kind', () => {
+    const row = limit()
+    const el = render(row, recoverable, { index: 0, messages: [row] }) as ReactElement
+    expect(el.props.limitContinueSlot).toBe('s1')
+    const other = msg('error', { content: 'Connection lost.' })
+    const el2 = render(other, recoverable, { index: 0, messages: [other] }) as ReactElement
+    expect(el2.props.limitContinueSlot).toBeUndefined()
+  })
+
+  it('names nothing on a surface that cannot name the chat', () => {
+    const row = limit()
+    const el = render(row, {}, { index: 0, messages: [row] }) as ReactElement
+    expect(el.props.limitContinueSlot).toBeUndefined()
+  })
+
+  it('names nothing on an older row, so the button never sits on settled history', () => {
+    const older = limit()
+    const newer = msg('error', { content: 'Connection lost.' })
+    const el = render(older, recoverable, { index: 0, messages: [older, newer] }) as ReactElement
+    expect(el.props.limitContinueSlot).toBeUndefined()
+  })
+
+  it('still names the chat while it cannot be resumed, so a wait already held keeps its Cancel', () => {
+    const row = limit()
+    for (const blocked of [{ continuable: false }, { interrupted: false }]) {
+      const el = render(row, { ...recoverable, ...blocked }, { index: 0, messages: [row] }) as ReactElement
+      expect(el.props.limitContinueSlot).toBe('s1')
+      // No Resume, so the card offers no new wait (ErrorCard.limitContinue.test.tsx).
+      expect(el.props.onContinue).toBeUndefined()
+    }
+  })
+})

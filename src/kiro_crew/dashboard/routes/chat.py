@@ -16,6 +16,7 @@ from kiro_crew.dashboard import (
     chat_follow_default,
     chat_threads,
     handlers,
+    limit_continue,
     queue_edit_hold,
     session_export,
     session_transfer,
@@ -157,6 +158,15 @@ def register(app: web.Application) -> None:
     # Deliberately NOT /resume — that path is already taken by "open a history
     # session into a tab" (api_chat_slot_resume) and means something else.
     app.router.add_post("/api/chat/slots/{slot}/continue", chat.api_chat_slot_continue)
+    # One continue, held until the usage limit the chat stopped on resets.
+    app.router.add_post(
+        "/api/chat/slots/{slot}/limit-continue", limit_continue.api_chat_slot_limit_continue
+    )
+    app.router.add_delete(
+        "/api/chat/slots/{slot}/limit-continue",
+        limit_continue.api_chat_slot_limit_continue_cancel,
+    )
+    app.on_cleanup.append(limit_continue.cancel_all)
     app.router.add_delete(
         "/api/chat/slots/{slot}/queue/{queue_id}", chat.api_chat_slot_queue_cancel
     )

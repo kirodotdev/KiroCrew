@@ -346,6 +346,8 @@ export interface ChatSlot extends TurnIdentityFields {
   /** Of those, the restored cards no drain starts on its own (`readyQueueDepth`).
    *  Absent on an older gateway. */
   queue_held_depth?: number
+  /** The ISO instant this chat will resume by itself after its usage limit resets; present only while that wait is armed. */
+  limit_continue_at?: string
   /** Set when this session is a Slack code channel's (see `CodeChannelInfo`). */
   code_channel?: CodeChannelInfo
   /** Code channels are on but not read yet, so this Slack-linked row may still
