@@ -552,6 +552,16 @@ def test_the_kickoff_options_say_what_each_agent_does(env: Env) -> None:
     assert select["initial_option"] in options  # Slack requires an exact match
 
 
+def test_conductor_modes_default_agent_is_offered_under_its_own_role() -> None:
+    from kiro_crew import crew_mode
+
+    name = crew_mode.DEFAULT_CREW_MODE_AGENT
+    assert name == "kirocrew-conductor"
+    option = agent_picker._option(name, "")
+    assert option["text"]["text"] == "Goal conductor (kirocrew-conductor)"
+    assert option["description"]["text"] == agent_picker._SHIPPED[name][1]
+
+
 def test_every_shipped_agent_has_a_distinct_best_for_line_that_fits_uncut() -> None:
     """The table the picker reads: each role label and best-for line fits Slack's
     75-character plain_text cap whole, and no two agents share either."""

@@ -248,6 +248,11 @@ class TestTheClosedVocabularies:
     ) -> None:
         assert _agent_kind(raw_agent, "") == expected
 
+    def test_conductor_modes_default_agent_is_counted_as_the_conductor(self) -> None:
+        from kiro_crew import crew_mode
+
+        assert _agent_kind(crew_mode.DEFAULT_CREW_MODE_AGENT, "dashboard:chat-1") == "conductor"
+
     @pytest.mark.parametrize(
         "raw_slot",
         [

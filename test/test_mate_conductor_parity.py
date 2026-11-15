@@ -29,7 +29,9 @@ The direction is one way: the crewmate's conductor carries much the root one doe
 not (cron, guide and mate servers, the default built-ins, its front-desk wording),
 and that is not drift.
 
-Conductor mode runs a third agent, ``kirocrew-team-lead`` (``crew_mode.DEFAULT_CREW_MODE_AGENT``).
+Conductor mode runs ``kirocrew-conductor`` by default
+(``crew_mode.DEFAULT_CREW_MODE_AGENT``), the root conductor compared above. A person
+can still set ``agent.crew_mode_agent`` to a third agent, ``kirocrew-team-lead``.
 Its system prompt carries none of the shared rules: it reaches them only through
 the ``team-lead`` skill, which points at ``goal-conductor``. The last section holds
 that chain and each shared rule's counterpart in ``goal-conductor/SKILL.md``
@@ -591,15 +593,22 @@ def test_the_anchor_check_sees_a_lost_rule(monkeypatch: pytest.MonkeyPatch) -> N
         test_goal_conductor_skill_carries_each_mapped_rule()
 
 
-def test_conductor_mode_reaches_goal_conductor_through_team_lead(
+def test_conductor_mode_runs_the_root_conductor_by_default() -> None:
+    """The agent conductor mode runs while the key is unset is the root conductor this
+    file holds the shared rules against."""
+    from kiro_crew import crew_mode
+    from kiro_crew.agent_files import CONDUCTOR_AGENT_FILENAME
+
+    assert crew_mode.DEFAULT_CREW_MODE_AGENT == CONDUCTOR_AGENT_FILENAME.removesuffix(".json")
+
+
+def test_a_team_lead_set_as_the_conductor_reaches_goal_conductor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Conductor mode's default agent is the team lead; its prompt sends it to ``team-lead``,
+    """A team lead set as ``agent.crew_mode_agent``: its prompt sends it to ``team-lead``,
     that skill sends it to ``goal-conductor``, and its spec maps both."""
-    from kiro_crew import crew_mode
     from kiro_crew.agent_files import TEAM_LEAD_AGENT_FILENAME
 
-    assert crew_mode.DEFAULT_CREW_MODE_AGENT == "kirocrew-team-lead"
     prompt = _words(agent._TEAM_LEAD_SYSTEM_PROMPT)
     assert "read the team-lead skill" in prompt
     assert "procedure is goal-conductor" in prompt
