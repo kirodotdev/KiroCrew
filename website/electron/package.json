@@ -315,6 +315,7 @@
       "crew-companion/panelWindow.js",
       "crew-companion/panelPlacement.js",
       "crew-companion/galleryWindow.js",
+      "crew-companion/displayHandOff.js",
       "anime.global.js",
       "loading.html",
       "token-prompt.html",
