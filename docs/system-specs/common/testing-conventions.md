@@ -95,7 +95,8 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   [lost-run bound](#6-a-hang-is-a-lost-run-not-a-failed-test) may stay, and so may a
   lower bound that proves a deadline was honoured (with a margin of at least one clock
   tick) or a bound relative to a span the test measured itself. An existing complexity
-  guard keeps its thread-CPU budget at the original constant (class 5); a new one counts
+  guard keeps its thread-CPU budget at the original constant, or replaces it with a
+  count of work proven to fail on what the budget caught (class 5); a new one counts
   work instead. [Class 5](#5-absolute-time-budgets-on-instrumented-runs).
 - **D8. Every await, join or `communicate` the test itself must unblock is bounded and
   fails by name** (`asyncio.wait_for`; `join(timeout)` followed by an `is_alive()`
@@ -5280,7 +5281,8 @@ do is counted -- characters read, entries visited -- and require that doubling t
 at most doubles the count (a small constant factor of passes aside). That fails only on
 the property, never on the runner, and unlike a count of *calls* it also sees a
 superlinear scan hidden inside one call. Keep any timing bound the guard already carried
-at its original constant, read on thread CPU: a ratchet may only tighten. A *timed*
+at its original constant, read on thread CPU: a ratchet may only tighten, and the only
+way such a bound leaves is a count proven to catch what it caught (below). A *timed*
 doubling ratio is version-independent (a constant multiplier cancels) but still
 runner-dependent: even on `thread_time`, frequency scaling and co-tenant cache contention
 on a shared runner inflated a measured 3.0-bounded ratio to 3.2x with the property intact.
@@ -5350,6 +5352,32 @@ assert traced(build(4000)) == traced(build(2000))
 
 Keep a *small*-`n` absolute assertion alongside it so a uniform slowdown is still caught, and
 verify the threshold against a mutated implementation rather than reasoning about it.
+
+**A kept budget still reads the tracer, so replace it once a count can do its job.** The
+self-module scan guard (`test_denied_commands_security_cost.py`,
+`test_the_scan_is_linear_not_quadratic`) kept a 0.5 s thread-CPU budget beside its call
+counts, for cost added outside the counted functions. The scan costs about 0.07 s bare.
+Coverage's tracer multiplies that about five times, so on the instrumented Linux shards
+the intact scan read 0.51 to 0.92 s, run after run, on heads that never touched it.
+Taking the smallest of several readings removes a one-off spike, not the multiplier,
+which is on every reading. Removing the trace function for the readings takes the
+multiplier off and leaves a clock. A budget may leave only when a count
+takes over everything it caught: plant each regression the budget was there for and show
+the count fails it. `_interpreter_work` in `test/denied_commands_security_helpers.py` is
+that count where no narrower unit exists: the interpreter instructions the call executes
+on this thread, read through `sys.monitoring`. It is the same number bare, under coverage
+and on a loaded host, so it is bounded as a ratio between three equally spaced sizes
+(`_linear_work`: the second step costs at most a twentieth more than the first), and
+what one more token costs is held under a wide fixed ceiling, so a slowdown that is the
+same for every token still fails. Planted
+in the scan, the old per-token re-walk fails it, and so does a per-token walk that
+inlines its comparisons and calls no counted function, which the 0.5 s budget passed. It
+sees every step taken in Python, however the loop is spelled; it does not see work inside
+one C call (a slice, `in` on a list, `str.join`, a regex search). For a regex, where all
+the work is inside one call, assert what the engine is HANDED before the hostile input
+runs: that a refused pattern compiled nothing, that the one exponential construct never
+reaches a compiled pattern, that a bounded matcher passes at most its window. A
+regression then fails at that assertion instead of never returning (class 6).
 
 For a regex — no instrumentation surface at all — use `test/conftest.py`'s
 `assert_rejected_without_backtracking(reject, build_pump)`, and note what the mutation
