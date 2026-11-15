@@ -1312,6 +1312,18 @@ function useThemeState(): ThemeContextValue {
     bridge?.setTitleBarOverlayTheme?.(resolved)
   }, [resolved])
 
+  // Read the target token, not body.backgroundColor: the body's colour
+  // transition can still be between palettes when this frame runs.
+  useEffect(() => {
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+    if (!meta) return
+    const id = requestAnimationFrame(() => {
+      const background = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()
+      if (background) meta.content = background
+    })
+    return () => cancelAnimationFrame(id)
+  }, [resolved, colorTheme, themeVersion])
+
   // Report the resolved accent to the Electron shell (if present) so the NEXT
   // launch's boot splash (loading.html) paints in the user's chosen colour.
   // Reads the computed --accent after paint; a no-op in a plain browser.
