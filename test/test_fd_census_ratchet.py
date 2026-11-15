@@ -57,7 +57,7 @@ def _sites() -> list[str]:
             path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
         ):
             if _CENSUS.search(line):
-                found.append(f"{path.relative_to(_TEST_ROOT)}:{number}: {line.strip()}")
+                found.append(f"{path.relative_to(_TEST_ROOT).as_posix()}:{number}: {line.strip()}")
     return found
 
 

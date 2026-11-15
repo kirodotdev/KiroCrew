@@ -76,7 +76,9 @@ def _sites() -> list[str]:
                 continue
             lines = text.splitlines()
             for number in _lines_with_construction(text):
-                found.append(f"{path.relative_to(_ROOT)}:{number}: {lines[number - 1].strip()}")
+                found.append(
+                    f"{path.relative_to(_ROOT).as_posix()}:{number}: {lines[number - 1].strip()}"
+                )
     return found
 
 

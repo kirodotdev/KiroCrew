@@ -168,7 +168,7 @@ def _bypass_sites() -> dict[str, list[tuple[int, str]]]:
             continue
         found = _primitive_calls(tree)
         if found:
-            sites[str(path.relative_to(SRC))] = found
+            sites[path.relative_to(SRC).as_posix()] = found
     return sites
 
 
