@@ -299,7 +299,11 @@ async def permission_pre_tool_block(
             )
             continue
         if r.exit_code == 2 and not r.refused:
-            return f"{r.hook_name}: {r.stderr[:200] if r.stderr else 'hook denied'}"
+            # Imported here: this owner's module-level imports are inert for its
+            # functions, which read kiro_crew.hooks globals (see hook_runtime).
+            from kiro_crew.constants import HOOK_DENY_REASON_MAX_CHARS
+
+            return f"{r.hook_name}: {r.stderr[:HOOK_DENY_REASON_MAX_CHARS] if r.stderr else 'hook denied'}"
         return f"{r.hook_name}: {r.failure_detail}"
     return None
 

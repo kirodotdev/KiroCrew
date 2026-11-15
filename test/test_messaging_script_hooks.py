@@ -177,6 +177,27 @@ def test_hook_output_reaches_prompt_with_markers_neutralized(store):
     assert sent.endswith("[End hook context]\n\n[built prompt] hello")
 
 
+#: ``HOOK_DENY_REASON_MAX_CHARS``, written out so this test still collects, and
+#: fails on its assertions, when the limit is missing.
+_DENY_REASON_LIMIT = 2000
+
+
+def test_a_long_exit_2_reason_reaches_the_channel_prompt_up_to_the_limit(store):
+    """An exit-2 prompt hook's reason reaches the prompt whole, up to the shared limit."""
+    whole = "Write the plan file first. " + "x" * 450 + " END"
+    head = "a" * _DENY_REASON_LIMIT
+    store.prompt_results = [
+        _result(exit_code=2, stderr=whole),
+        _result(exit_code=2, stderr=head + "TAIL-PAST-THE-LIMIT"),
+    ]
+    provider = _Provider()
+    _run(provider, ScriptHookTurn("k", "hello"))
+    sent = provider.messages[0]
+    assert f"BLOCKED:probe:{whole}\n" in sent
+    assert f"BLOCKED:probe:{head}\n" in sent
+    assert "TAIL-PAST-THE-LIMIT" not in sent
+
+
 def test_no_store_runs_turn_unchanged(monkeypatch):
     monkeypatch.setattr(script_hooks, "get_global_hook_store", lambda: None)
     provider = _Provider()
