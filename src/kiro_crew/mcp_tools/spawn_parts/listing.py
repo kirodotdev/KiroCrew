@@ -225,6 +225,13 @@ def spawn_status(name: str, args: dict[str, Any]) -> "str | DeferredTool":
             f"(ran on {d.get('backend', '?')!r}: {d['failover_from']!r} could not start,"
             " agent.acp_failover)\n" + result
         )
+    worktree = d.get("worktree")
+    if isinstance(worktree, dict) and worktree.get("path"):
+        # spawn_run isolate: where this run works, while its record lives.
+        result = (
+            f"(worktree: {worktree['path']} detached at {str(worktree.get('base', ''))[:12]})\n"
+            + result
+        )
     if not running:
         # The same notes spawn_sub_agents and the completion event attach, so a
         # later read of the result is not mistaken for verified work. Exactly

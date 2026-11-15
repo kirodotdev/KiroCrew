@@ -64,6 +64,16 @@ def _failover_fields(info: object) -> dict[str, object]:
     return {"failover_from": moved_from, "backend": backend_to_stored(ran_on)}
 
 
+def _worktree_field(path: object, base: object) -> dict[str, object]:
+    """``{"worktree": {"path", "base"}}`` for an isolated run (``spawn_run`` ``isolate``), else ``{}``.
+
+    Redacted like the task text: with the sandbox off, the run can write the record.
+    """
+    if not isinstance(path, str) or not path or not isinstance(base, str):
+        return {}
+    return {"worktree": {"path": _redact(path[:4096]), "base": _redact(base[:64])}}
+
+
 def _redact(text: str) -> str:
     """Two-pass redaction for LLM-derived content on external surfaces."""
     text, _ = redact_exfiltration_urls(text)
@@ -154,11 +164,15 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         try:
             disk_state = read_state(agent_id)
             if disk_state:
+                from kiro_crew.subagent_persistence import read_run_worktree_record
+
+                record = await asyncio.to_thread(read_run_worktree_record, agent_id)
                 disk_data: dict[str, object] = {
                     "id": agent_id,
                     "task": _redact(disk_state.get("task", "")),
                     "done": True,
                     "started": disk_state.get("started"),
+                    **_worktree_field(*(record or ("", ""))),
                 }
                 tombstone = await asyncio.to_thread(read_tombstone, agent_id) or {}
                 # Legacy persisted records do not carry terminal usage. Keep
@@ -240,6 +254,8 @@ async def api_spawn_status(request: web.Request) -> web.Response:
     # Present only when ``agent.acp_failover`` moved the run, so the default
     # payload is unchanged: the backend asked for, and the one that ran.
     data.update(_failover_fields(info))
+    worktree = getattr(info, "worktree", None)
+    data.update(_worktree_field(getattr(worktree, "path", None), getattr(worktree, "base", None)))
     if info.done:
         data["outcome"] = info.outcome
         data["stopped"] = info.user_stopped

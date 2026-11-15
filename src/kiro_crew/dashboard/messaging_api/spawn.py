@@ -591,6 +591,7 @@ async def api_spawn(request: web.Request) -> web.Response:
                 "agent": body.get("agent", ""),
                 "max_turns": body.get("max_turns", 0),
                 "cwd": body.get("cwd", ""),
+                "isolate": body.get("isolate", ""),
                 "model": body.get("model", ""),
                 "reasoning_effort": body.get("reasoning_effort", ""),
                 "include_memory": body.get("include_memory", True),
@@ -871,6 +872,8 @@ async def api_spawn(request: web.Request) -> web.Response:
             # what it did before.
             **({"failover_from": failover_from} if failover_from else {}),
             label=str(cleaned.get("label") or ""),
+            # Only when asked, so a spawn without it passes exactly what it did before.
+            **({"isolate": str(cleaned["isolate"])} if cleaned.get("isolate") else {}),
             approval_mode=approval_mode or None,
             silent=silent,
             batch_id=batch_id,

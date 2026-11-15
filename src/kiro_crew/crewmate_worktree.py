@@ -20,6 +20,14 @@ model cannot do for itself here:
   kept and reported, the branch always stays, and the repository's own checkout
   is never touched.
 
+The module also makes the worktree an isolated ``spawn_run`` worker runs in
+(``isolate: "worktree"``, :func:`make_run_worktree`): detached at the HEAD of the
+checkout the task's ``cwd`` is in, BESIDE the repository as
+``<parent>/<repo>-wt-<run id>`` and only under an allowed root of
+``agent.subagent_cwd_allowed_roots``; and removes it once the run's retention
+ends, only while it is clean (:func:`remove_run_worktree`). :func:`source_path`
+maps such a worktree back to the repository too, so a binding there still applies.
+
 Everything else is the worker's own git work, asked for in its prompt
 (``worker.principles``): further branches under its prefix, rebasing onto the
 default branch when it needs that branch's changes, checking before it pushes.
@@ -48,6 +56,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import PurePath
 
+from kiro_crew.subprocess_utf8 import utf8_path_stdout
+
 logger = logging.getLogger(__name__)
 
 #: The folder under a crewmate's workspace that holds its worktrees.
@@ -69,6 +79,13 @@ _DOTS_RE = re.compile(r"\.{2,}")
 _NAME_MAX = 40
 #: Local branches tried, in order, when the repository names no ``origin/HEAD``.
 _LOCAL_BASES = ("main", "master")  # wokeignore:rule=master
+#: Between a repository's name and a run id in a run worktree's folder name
+#: (``<repo>-wt-<run id>``); also what keeps :func:`source_path` from running git.
+RUN_WORKTREE_INFIX = "-wt-"
+#: A run id's shape: ``kiro_crew.subagent._RUN_ID_HEX_CHARS`` lowercase hex characters.
+_RUN_ID_RE = re.compile(r"[0-9a-f]{16}")
+#: Most commits a run worktree's report names; the count covers the rest.
+_RUN_COMMITS_SHOWN = 20
 
 
 @dataclass(frozen=True)
@@ -79,6 +96,27 @@ class CrewmateWorktree:
     path: str  # this crewmate's worktree root
     branch: str
     cwd: str  # where the worker starts: the same subdirectory inside the worktree
+
+
+@dataclass(frozen=True)
+class RunWorktree:
+    """The worktree one isolated ``spawn_run`` run works in."""
+
+    source_cwd: str  # the cwd it was made from, as given; a retry or recovery starts there
+    path: str  # ``<parent of the repository>/<repo name>-wt-<run id>``
+    base: str  # the commit it was detached at
+    cwd: str  # where the worker starts: the same subdirectory inside the worktree
+
+
+@dataclass(frozen=True)
+class RunWorktreeReport:
+    """What :func:`remove_run_worktree` found and did."""
+
+    path: str
+    removed: bool
+    kept_because: str  # "" when removed, or when only reporting
+    commits: tuple[str, ...]  # short shas of ``base..HEAD``, newest first, at most 20
+    commit_count: int  # all of ``base..HEAD``; -1 when git could not say
 
 
 class WorktreeRefused(RuntimeError):
@@ -237,9 +275,13 @@ def source_path(cwd: str) -> str:
     each time and nothing is remembered, so it holds after a restart: the folder
     git names as the work tree's top must sit at ``worktrees/<slug>/``, carry the
     name :func:`path_for` gives that repository, and be registered by that
-    repository as one of its worktrees. A repository cloned inside the worktree
-    is its own top, so it answers itself. A path with no ``worktrees`` folder in
-    it runs no git. Never raises; blocks, so an async caller runs it off the loop.
+    repository as one of its worktrees. A run worktree (:func:`make_run_worktree`)
+    maps back the same way: its top must sit beside the repository, be named
+    ``<repo>-wt-`` plus a run id's 16 lowercase hex characters, and be registered
+    by that repository. A repository cloned inside the worktree is its own top,
+    so it answers itself. A path with neither a ``worktrees`` folder nor a
+    ``-wt-`` component in it runs no git. Never raises; blocks, so an async
+    caller runs it off the loop.
     """
     if not cwd or not _absolute_here(cwd):
         return cwd
@@ -247,13 +289,55 @@ def source_path(cwd: str) -> str:
         real = os.path.realpath(os.path.expanduser(cwd))
     except (OSError, ValueError):
         return cwd
-    if WORKTREES_DIR not in PurePath(real).parts[:-2]:
+    parts = PurePath(real).parts
+    crewmate = WORKTREES_DIR in parts[:-2]
+    run = any(RUN_WORKTREE_INFIX in part for part in parts[1:])
+    if not crewmate and not run:
         return cwd
     try:
-        return _source_of(real) or cwd
+        return (crewmate and _source_of(real)) or (run and _run_source_of(real)) or cwd
     except Exception:  # noqa: BLE001 - no sandbox, no git: the path matches as itself
         logger.debug("Bot worktree source of %s unknown", cwd, exc_info=True)
         return cwd
+
+
+def _run_folder_name(repo: str, run_id: str) -> str:
+    """The folder a run worktree of *repo* for *run_id* takes, beside *repo*."""
+    return f"{_name(os.path.basename(repo))}{RUN_WORKTREE_INFIX}{run_id}"
+
+
+def _plain_real(path: str) -> str:
+    """*path*'s realpath without Windows' extended-length prefix: the form ``validate_cwd`` compares."""
+    from kiro_crew.platform_compat import strip_extended_length_prefix
+
+    return strip_extended_length_prefix(os.path.realpath(path))
+
+
+def _is_run_worktree_of(repo: str, top: str) -> bool:
+    """Whether the folder *top* is named and placed as a run worktree of *repo* (no git)."""
+    prefix = f"{_name(os.path.basename(repo))}{RUN_WORKTREE_INFIX}"
+    name = os.path.basename(top)
+    return (
+        name.startswith(prefix)
+        and _RUN_ID_RE.fullmatch(name[len(prefix) :]) is not None
+        and os.path.dirname(_plain_real(top)) == os.path.dirname(_plain_real(repo))
+    )
+
+
+def _run_source_of(real: str) -> str | None:
+    """The checkout path *real* mirrors when it is in a run worktree, else ``None``."""
+    wt = _wt()
+    top = wt._git_toplevel(_nearest_dir(real))
+    if not top or not _contains(top, real):
+        return None
+    repo = repo_root(top)
+    if repo is None or repo == top or not _is_run_worktree_of(repo, top):
+        return None
+    trees = wt._worktree_branches(repo)
+    if not trees or wt._norm_path(top) not in trees:
+        return None
+    rel = os.path.relpath(real, top)
+    return repo if rel == "." else os.path.join(repo, rel)
 
 
 def _source_of(real: str) -> str | None:
@@ -394,34 +478,52 @@ def _create(wt, repo: str, dest: str, branch: str, workspace_dir: str, slug: str
     logger.info("Bot worktree %s on %s from %s", dest, branch, repo)
 
 
+def _claim_folder(
+    anchor: str, parts: tuple[str, ...], dest: str, *, what: str, create: bool
+) -> tuple[int, int]:
+    """Make the empty folder *dest* in *anchor*/*parts* without following a link; its ``(dev, ino)``.
+
+    Each part is opened (with *create*, made first) with a no-follow descriptor from
+    *anchor* down (``pinned_fs.open_pinned_descendant_dir``) and *dest* is made
+    relative to the last one. Raises ``PinnedPathRefusal`` for a part it cannot open
+    that way and ``FileExistsError`` when *dest* is taken.
+    """
+    from kiro_crew.pinned_fs import open_pinned_descendant_dir
+
+    name = os.path.basename(dest)
+    with open_pinned_descendant_dir(anchor, parts, what=what, create=create) as dir_fd:
+        if dir_fd is None:  # Windows: the walk lstat-refused every link
+            os.mkdir(dest)
+            made = os.lstat(dest)
+        else:
+            os.mkdir(name, dir_fd=dir_fd)
+            made = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    return made.st_dev, made.st_ino
+
+
 def _make_dest(workspace_dir: str, slug: str, dest: str) -> tuple[int, int]:
     """Make the empty folder *dest* without following a link; its ``(dev, ino)``.
 
     ``worktrees/<slug>`` sits in the agent-writable workspace and this runs in the
     gateway: each part is made and opened with a no-follow descriptor from the
-    workspace down (``pinned_fs.open_pinned_descendant_dir``) and *dest* is made
-    relative to the last one. A link raises :class:`WorktreeRefused`.
+    workspace down (:func:`_claim_folder`). A link raises :class:`WorktreeRefused`.
     """
-    from kiro_crew.pinned_fs import PinnedPathRefusal, open_pinned_descendant_dir
+    from kiro_crew.pinned_fs import PinnedPathRefusal
 
     workspace = os.path.realpath(workspace_dir)
     os.makedirs(workspace, exist_ok=True)  # configured, not the agent's
-    name = os.path.basename(dest)
     try:
-        with open_pinned_descendant_dir(
-            workspace, (WORKTREES_DIR, _name(slug)), what="Bot worktree folder", create=True
-        ) as dir_fd:
-            if dir_fd is None:  # Windows: the walk lstat-refused every link
-                os.mkdir(dest)
-                made = os.lstat(dest)
-            else:
-                os.mkdir(name, dir_fd=dir_fd)
-                made = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        return _claim_folder(
+            workspace,
+            (WORKTREES_DIR, _name(slug)),
+            dest,
+            what="Bot worktree folder",
+            create=True,
+        )
     except FileExistsError:
         raise WorktreeRefused(f"{dest} already exists") from None
     except PinnedPathRefusal as exc:
         raise WorktreeRefused(f"{dest} is not a plain folder: {exc}") from None
-    return made.st_dev, made.st_ino
 
 
 def _unwind_add(
@@ -483,6 +585,214 @@ def _rmdir_if_made(dest: str, made: tuple[int, int]) -> bool:
         return False
 
 
+def _allowed_anchor(parent: str, allowed_roots: list[str]) -> tuple[str, tuple[str, ...]] | None:
+    """The longest allowed root holding *parent*, and the parts from it down to *parent*.
+
+    ``validate_cwd``'s own test (``sandbox_plan.path_within`` on realpaths with the
+    extended-length prefix stripped), so the folder made here passes it later. The parts
+    are cut from those same strings, never case-folded ones.
+    """
+    from kiro_crew.sandbox_plan import path_within
+
+    plain_parent = _plain_real(parent)
+    best: tuple[str, tuple[str, ...]] | None = None
+    best_len = -1
+    for root in allowed_roots:
+        try:
+            real_root = os.path.realpath(os.path.expanduser(root))
+            plain_root = _plain_real(real_root)
+            if not path_within(plain_parent, plain_root) or len(plain_root) <= best_len:
+                continue
+            rel = os.path.relpath(plain_parent, plain_root)
+        except (OSError, ValueError, TypeError):
+            continue
+        parts = () if rel == os.curdir else tuple(rel.split(os.sep))
+        if any(part in ("", os.curdir, os.pardir) for part in parts):
+            continue
+        best, best_len = (real_root, parts), len(plain_root)
+    return best
+
+
+def make_run_worktree(cwd: str, run_id: str, allowed_roots: list[str]) -> RunWorktree:
+    """The worktree isolated run *run_id* works in, made from the checkout *cwd* is in.
+
+    Detached at that checkout's HEAD (uncommitted changes there are not carried
+    over), at ``<parent of the repository>/<repo>-wt-<run id>``, and only when that
+    folder is under one of *allowed_roots*: the longest root holding the parent is
+    where the no-follow walk down to the new folder starts. Made again for the same
+    run id, a worktree the repository registers at that exact place is reused.
+    Raises :class:`WorktreeRefused` with a plain reason: no repository (or a bare
+    one), a repository the edition works in place, a checkout filter, no parent
+    folder, no allowed root, the place taken by something else, no HEAD, a folder
+    on the way that cannot be opened, or a failed ``worktree add`` (which leaves no
+    folder, registration or ref behind). Blocks; callers run it off the loop.
+    """
+    from kiro_crew.pinned_fs import PinnedPathRefusal
+
+    if not isinstance(run_id, str) or not _RUN_ID_RE.fullmatch(run_id):
+        raise WorktreeRefused(f"isolate: {run_id!r} is not a run id")
+    wt = _wt()
+    repo = repo_root(cwd)
+    if repo is None:
+        raise WorktreeRefused(f"isolate: {cwd} is not in a git repository with a checkout")
+    if _works_in_place(repo):
+        raise WorktreeRefused(
+            f"isolate: this edition works {repo} in place, so it gets no worktree"
+        )
+    offending = wt._checkout_filter(repo)
+    if offending:
+        raise WorktreeRefused(f"isolate: {repo} configures a checkout filter ({offending})")
+    parent = os.path.dirname(repo)
+    if not parent or parent == repo:
+        raise WorktreeRefused(f"isolate: {repo} has no parent folder to put a worktree beside it")
+    anchor = _allowed_anchor(parent, allowed_roots)
+    if anchor is None:
+        raise WorktreeRefused(
+            f"isolate: the folder beside {repo} is not under subagent_cwd_allowed_roots"
+        )
+    dest = os.path.join(parent, _run_folder_name(repo, run_id))
+    with _lock(dest):
+        trees = wt._worktree_branches(repo)
+        if trees is None:
+            raise WorktreeRefused("isolate: git could not list this repository's worktrees")
+        registered = wt._norm_path(dest) in trees
+        if registered and os.path.isdir(dest) and not os.path.islink(dest):
+            base = wt._resolve_commit(dest, "HEAD")
+            if not base:
+                raise WorktreeRefused(f"isolate: cannot read the HEAD of {dest}")
+            return RunWorktree(
+                source_cwd=cwd, path=dest, base=base, cwd=_mapped_cwd(wt, repo, dest, cwd)
+            )
+        if os.path.lexists(dest):
+            raise WorktreeRefused(f"isolate: {dest} already exists and is not this run's worktree")
+        if registered:
+            # Its folder was deleted by hand: drop the stale registration.
+            wt._run_git(["worktree", "prune"], repo)
+        checkout = _nearest_dir(os.path.realpath(os.path.expanduser(cwd)))
+        base = wt._resolve_commit(checkout, "HEAD")
+        if not base:
+            raise WorktreeRefused(f"isolate: the checkout {cwd} is in has no commit at HEAD")
+        try:
+            made = _claim_folder(
+                anchor[0], anchor[1], dest, what="run worktree folder", create=False
+            )
+        except FileExistsError:
+            raise WorktreeRefused(f"isolate: {dest} already exists") from None
+        except PinnedPathRefusal:
+            raise WorktreeRefused(f"isolate: cannot open {parent} to make the worktree") from None
+        except OSError as exc:
+            raise WorktreeRefused(f"isolate: cannot make {dest}: {exc.strerror or exc}") from None
+        try:
+            proc = wt._run_git(["worktree", "add", "--detach", dest, base], repo)
+        except (subprocess.TimeoutExpired, OSError):
+            _unwind_add(wt, repo, dest, "", made, claimed=False, base_sha="")
+            raise
+        if proc.returncode != 0 or not os.path.exists(os.path.join(dest, ".git")):
+            _unwind_add(wt, repo, dest, "", made, claimed=False, base_sha="")
+            reason = wt._git_error(proc) if proc.returncode else "worktree add failed"
+            raise WorktreeRefused(f"isolate: {reason}")
+    logger.info("Run worktree %s at %s from %s", dest, base[:12], repo)
+    return RunWorktree(source_cwd=cwd, path=dest, base=base, cwd=_mapped_cwd(wt, repo, dest, cwd))
+
+
+def _commits_since(wt, path: str, base: str) -> tuple[tuple[str, ...], int]:
+    """The short shas of ``base..HEAD`` in *path* (newest first, bounded) and their count."""
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base or ""):
+        return (), -1
+    counted = wt._run_git(["rev-list", "--count", f"{base}..HEAD"], path)
+    try:
+        count = int(counted.stdout.strip()) if counted.returncode == 0 else -1
+    except ValueError:
+        count = -1
+    if count <= 0:
+        return (), count
+    listed = wt._run_git(
+        ["rev-list", f"--max-count={_RUN_COMMITS_SHOWN}", "--abbrev-commit", f"{base}..HEAD"], path
+    )
+    shas = tuple(line.strip() for line in listed.stdout.splitlines() if line.strip())
+    return (shas if listed.returncode == 0 else ()), count
+
+
+def remove_run_worktree(
+    path: str, base: str, run_id: str, *, remove: bool = True
+) -> RunWorktreeReport:
+    """Remove run *run_id*'s worktree at *path* when it is clean; what it found.
+
+    *path* and *base* come from the gateway's own record. The folder is first
+    re-derived from *run_id* and the repository git says *path* belongs to, and
+    that repository must register a worktree at exactly that place; anything else
+    is left alone. Clean means its HEAD is still *base*, ``git status`` shows
+    nothing (untracked files included, whatever the config), it holds no
+    ignored files and no file flagged assume-unchanged or skip-worktree (which
+    both git checks skip) is still in the folder; only then ``git worktree
+    remove`` runs, never with ``--force``.
+    *remove* false only reports the commits ``base..HEAD``.
+    Never raises; blocks, so callers run it off the loop.
+    """
+    wt = _wt()
+
+    def kept(why: str, commits: tuple[str, ...] = (), count: int = -1) -> RunWorktreeReport:
+        if remove and why:
+            logger.warning("Run worktree %s kept: %s", path, why)
+        return RunWorktreeReport(path, False, why, commits, count)
+
+    try:
+        if not path or not os.path.isdir(path) or os.path.islink(path):
+            return RunWorktreeReport(path, False, "the folder is not there", (), -1)
+        repo = repo_root(path)
+        real = os.path.realpath(path)
+        if repo is None or repo == real:
+            return kept("it is not a worktree of a repository")
+        expected = os.path.join(os.path.dirname(repo), _run_folder_name(repo, run_id))
+        if wt._norm_path(expected) != wt._norm_path(path) or (
+            wt._norm_path(real) != wt._norm_path(expected)
+        ):
+            return kept("it is not where this run's worktree goes")
+        with _lock(expected):
+            trees = wt._worktree_branches(repo)
+            if not trees or wt._norm_path(expected) not in trees:
+                return kept("the repository does not register it")
+            commits, count = _commits_since(wt, expected, base)
+            if not remove:
+                return kept("", commits, count)
+            why = ""
+            if wt._resolve_commit(expected, "HEAD") != base:
+                why = "it has commits" if count > 0 else "its HEAD moved"
+            elif wt._checkout_filter(expected):
+                why = "the repository configures a checkout filter"
+            else:
+                # --untracked-files=all: a status.showUntrackedFiles=no config must never
+                # hide new files that ``git worktree remove`` would delete with the folder.
+                status = wt._run_git(
+                    [
+                        "--no-optional-locks",
+                        "status",
+                        "--porcelain",
+                        "--untracked-files=all",
+                        "--ignore-submodules=all",
+                    ],
+                    expected,
+                )
+                if status.returncode != 0:
+                    why = "git could not read its status"
+                elif status.stdout.strip():
+                    why = "it has uncommitted changes"
+                elif ignored := _ignored_files(wt, expected):
+                    why = f"it holds ignored files ({ignored})"
+                elif flagged := _flagged_files(wt, expected):
+                    why = f"it holds files flagged assume-unchanged or skip-worktree ({flagged})"
+            if why:
+                return kept(why, commits, count)
+            proc = wt._run_git(["worktree", "remove", expected], repo)
+    except Exception:  # noqa: BLE001 - no sandbox, no git: keep it
+        logger.warning("Run worktree %s could not be checked; kept", path, exc_info=True)
+        return RunWorktreeReport(path, False, "it could not be checked", (), -1)
+    if proc.returncode != 0:
+        return kept(wt._git_error(proc), commits, count)
+    logger.info("Run worktree %s removed", expected)
+    return RunWorktreeReport(path, True, "", commits, count)
+
+
 def _ignored_files(wt, path: str) -> str:
     """The first ignored paths in the worktree at *path*, ``""`` when none; ``"unknown"`` if git cannot say."""
     proc = wt._run_git(
@@ -492,6 +802,31 @@ def _ignored_files(wt, path: str) -> str:
         return "unknown"
     found = [p for p in proc.stdout.split("\0") if p]
     return ", ".join(found[:5]) + (f" and {len(found) - 5} more" if len(found) > 5 else "")
+
+
+def _flagged_files(wt, path: str) -> str:
+    """The first flagged tracked files in the worktree at *path*, returned as :func:`_ignored_files`.
+
+    Flagged means assume-unchanged (``ls-files -v`` tags it in lowercase) or
+    skip-worktree (``S``), which ``git status`` and ``git worktree remove`` both
+    skip. Only a flagged file still in the folder counts: an absent one (a sparse
+    checkout leaves skipped files out) holds nothing a removal could lose. The
+    presence check uses the exact bytes git listed, whatever the locale, and a
+    name shows U+FFFD for a byte that is not UTF-8.
+    """
+    proc = wt._run_git(["ls-files", "-z", "-v"], path, stdout_decoder=utf8_path_stdout)
+    if proc.returncode != 0:
+        return "unknown"
+    found = [
+        entry[2:]
+        for entry in proc.stdout.split("\0")
+        if (entry[:1] == "S" or entry[:1].islower())
+        and os.path.lexists(
+            os.path.join(os.fsencode(path), entry[2:].encode("utf-8", "surrogateescape"))
+        )
+    ]
+    shown = ", ".join(found[:5]).encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+    return shown + (f" and {len(found) - 5} more" if len(found) > 5 else "")
 
 
 def remove_crewmate_worktrees(workspace_dir: str, slug: str) -> tuple[list[str], list[str]]:

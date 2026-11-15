@@ -64,12 +64,14 @@ from kiro_crew.subagent_persistence_layout import (
     _CLEANUP_IDENTITY_LOCK,
     _LIVE_CLEANUP_HINTS,
     _LIVE_CLEANUP_IDENTITIES,
+    _RUN_WORKTREE_FILE,
     SUBAGENT_CONVERSATION_PREFIX,
     _agent_dir,
     _CleanupIdentitySweepReader,
     _delete_cleanup_identities_file,
     _live_cleanup_identities,
     _merge_cleanup_identity_records,
+    _parse_run_worktree_file,
     _read_cleanup_identities_file,
     _subagents_dir,
     agent_dir_for_display,
@@ -77,9 +79,11 @@ from kiro_crew.subagent_persistence_layout import (
     logger,
     publish_live_cleanup_hint,
     publish_live_cleanup_identity,
+    read_run_worktree_record,
     remember_live_cleanup_identity,
     subagent_id_from_conversation_key,
     trusted_cleanup_identity_record,
+    write_run_worktree_record,
 )
 from kiro_crew.subagent_persistence_state import (
     RetentionPromotionResult,
@@ -943,6 +947,14 @@ def prune_stale_tombstones(
                             # fault, and is tried again on every sweep.
                             _UNRECLAIMABLE_MEMO[d.name] = (evidence, retry_until)
                         continue
+                    # An isolated run's worktree goes when its retention does,
+                    # read from the run folder's record before the folder is
+                    # deleted below; a kept or failed one never holds the prune back.
+                    from kiro_crew.subagent_worktree import remove_recorded_worktree
+
+                    remove_recorded_worktree(
+                        d.name, _parse_run_worktree_file(d / _RUN_WORKTREE_FILE)
+                    )
                     shutil.rmtree(d, ignore_errors=True)
                     if not d.exists():
                         with _CLEANUP_IDENTITY_LOCK:
@@ -1091,6 +1103,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.subagent_persistence_layout import (  # noqa: F401
         _CLEANUP_IDENTITIES_FILE,
         _CLEANUP_IDENTITIES_TRUST_DIR,
+        _RUN_WORKTREE_BASE_RE,
         _SUBAGENTS_DIR,
         _agent_dir_under,
         _atomic_write,
