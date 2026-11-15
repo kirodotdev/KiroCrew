@@ -725,9 +725,11 @@ def _drift(
 def _lines_to_write(drift: dict[str, tuple[tuple[int, int], tuple[int, int]]]) -> str:
     """The ``_BASELINE`` lines that make the table match, one per drifted file."""
     return "\n".join(
-        f"  delete the line for {name!r}  # was {was}"
-        if now == (0, 0)
-        else f'    "{name}": {now},  # was {was}'
+        (
+            f"  delete the line for {name!r}  # was {was}"
+            if now == (0, 0)
+            else f'    "{name}": {now},  # was {was}'
+        )
         for name, (was, now) in drift.items()
     )
 
