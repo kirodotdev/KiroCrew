@@ -62,15 +62,18 @@ test("registerShell owns the exact shell channel set and is idempotent", () => {
   assert.strictEqual(h.registrar.registerShell(), h.registrar.summonDashboard);
   assert.doesNotThrow(() => h.registrar.registerShell());
 
+  // The exact sorted channel lists above decide the inventory, one channel per
+  // line; a hand-kept total beside them added no check and was the one line two
+  // changes adding different channels both rewrote to the same number
+  // (testing-conventions.md § Merge-safe ratchets and counts).
   assert.deepEqual([...h.handlers.keys()].sort(), SHELL_HANDLES);
   assert.deepEqual([...h.listeners.keys()].sort(), SHELL_LISTENERS);
-  assert.equal(h.handlers.size + h.listeners.size, 47);
+  assert.ok(h.handlers.size > 0 && h.listeners.size > 0);
 
   // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
   // globally here would weaken its sender check and leak listeners.
   assert.match(GATEWAY_SOURCE, /ipcMain\.on\("boot-complete", onComplete\)/);
-  assert.equal(h.handlers.size + h.listeners.size + 1, 48);
   assert.equal(h.handlers.has("boot-complete"), false);
   assert.equal(h.listeners.has("boot-complete"), false);
 
