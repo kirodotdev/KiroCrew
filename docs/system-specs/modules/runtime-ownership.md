@@ -793,16 +793,18 @@ commit.
   as undiagnosable as before. A positive control
   (`test_the_needles_match_a_known_call_site`) stops an empty scan reading as total
   success.
-- `test/test_pid_reader_ratchet.py` — `_BASELINE_SITES` counts src sites that read
-  a runtime's pid, by AST rather than grep so reflective reads survive nesting and
-  wrapping. A site whose reading genuinely belongs to the module that owns the pid
-  carries an owner marker and is counted apart under `_BASELINE_OWNER_MARKED`, so
-  marking a site is a visible act rather than a silent exemption. The exact-match
-  test refuses a stale baseline in either direction: a baseline left above the real
-  count leaves room for a future reader to fill silently.
+- `test/test_pid_reader_ratchet.py` — `_BASELINE` counts, per file, src sites that
+  read a runtime's pid, by AST rather than grep so reflective reads survive nesting
+  and wrapping. A site whose reading genuinely belongs to the module that owns the
+  pid carries an owner marker and is counted apart, in the second number of its
+  file's entry, so marking a site is a visible act rather than a silent exemption.
+  The exact-match test refuses a stale entry in either direction: an entry left
+  above the real count leaves room for a future reader to fill silently.
 
-The baseline is an invariant of the tree, not of a branch. Whoever merges after
-someone else re-measures on their own tree.
+The baseline is an invariant of the tree, not of a branch. The kill-chokepoint
+baseline is one total, so whoever merges after someone else re-measures on their
+own tree. The pid-reader baseline is one line per file, so two changes to different
+files merge with the table right and two changes to one file conflict on its line.
 
 ### The leak and chaos gates
 
