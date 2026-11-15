@@ -56,6 +56,7 @@ from kiro_crew.acp.client_timeouts import _ACP_RESPAWN_BACKOFF_S, _INIT_TIMEOUT
 from kiro_crew.acp.harness import process_adapter_for
 from kiro_crew.acp.harness.base import HarnessReadBack, SpawnContext, SpawnPlan
 from kiro_crew.acp.launch import LaunchRequest, launch
+from kiro_crew.acp.no_model_provider import AcpNoModelProvider
 from kiro_crew.acp.pi_mcp_registration import verify_registration
 from kiro_crew.acp.spawn_blocked import SPAWN_BLOCKED_BINARY_ATTR, AcpSpawnBlocked
 from kiro_crew.acp.transport_errors import (
@@ -1245,6 +1246,13 @@ async def ensure_ready(self: AcpClient) -> None:
                 # it subclasses AcpError and would otherwise be retried by it,
                 # which is the shape that made the distinct type decorative.
                 _startup_outcome = "tool_gate_unroutable"
+                await self._cleanup_failed_live_spawn()
+                self._reset_state()
+                raise
+            except AcpNoModelProvider:
+                # Non-retryable for the same reason: a respawn reads the same
+                # missing provider. Before the generic handler, which would retry.
+                _startup_outcome = "auth_required"
                 await self._cleanup_failed_live_spawn()
                 self._reset_state()
                 raise

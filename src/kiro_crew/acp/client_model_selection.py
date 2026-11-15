@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry, model_scope
@@ -33,6 +34,11 @@ from kiro_crew.acp import launch_tuning, runtime_models
 from kiro_crew.acp._dispatch import build_session_new_params, parse_session_modes
 from kiro_crew.acp.client_timeouts import _INIT_TIMEOUT
 from kiro_crew.acp.harness.mimocode import mimocode_model_rows
+from kiro_crew.acp.no_model_provider import (
+    AcpNoModelProvider,
+    is_opencode_hosted_fallback,
+    opencode_hosted_fallback_message,
+)
 from kiro_crew.acp.runtime_models import DEFAULT_MODEL, model_is_unusable, pick_served_default
 from kiro_crew.acp.transport_errors import AcpError, AcpModelUnavailable
 from kiro_crew.acp.types import (
@@ -734,6 +740,26 @@ async def _ensure_served_default(self: AcpClient) -> None:
             ", ".join(advertised),
             fallback,
         )
+    elif self._is_opencode:
+        _refuse_opencode_hosted_fallback(
+            self._resolved_model_id or "",
+            self._advertised_model_ids(),
+            self._harness_read_back().config_model,
+        )
+
+
+def _refuse_opencode_hosted_fallback(
+    current: str, advertised: Sequence[str], config_model: str
+) -> None:
+    """Raise :class:`AcpNoModelProvider` when opencode fell back to its hosted model.
+
+    Before the first prompt; see :func:`is_opencode_hosted_fallback` for the test.
+    """
+    if not is_opencode_hosted_fallback(current, advertised, config_model):
+        return
+    shown, _ = redact_exfiltration_urls(current)
+    shown, _ = redact_credentials(shown)
+    raise AcpNoModelProvider(opencode_hosted_fallback_message(shown))
 
 
 def _note_agent_switched(self: AcpClient, params: dict[str, Any] | None) -> None:
@@ -930,6 +956,14 @@ async def _apply_startup_model(self: AcpClient) -> None:
             # pin so a caller billing by it can tell it never ran.
             self.model_pin_refused = self._model
             self._model = DEFAULT_MODEL
+            # The session now runs session/new's own model, which on opencode can
+            # be its hosted fall-back: judged as an inherited one would be.
+            if self._is_opencode:
+                _refuse_opencode_hosted_fallback(
+                    self._resolved_model_id or "",
+                    self._advertised_model_ids(),
+                    self._harness_read_back().config_model,
+                )
             return
         self.model_pin_refused = ""
         self._model = sent
