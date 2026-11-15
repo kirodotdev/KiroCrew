@@ -29,6 +29,8 @@ interface CollectionStatus {
   otlp_configured?: boolean
   /** That destination is sent to now: recording was turned on explicitly. */
   export_permitted?: boolean
+  /** Off only by a written false older builds wrote: the chapter offers Turn on once. */
+  off_offer?: boolean
   /** Each destination by name; `provider` + `locked` rows are shipped by the build. */
   otlp_destinations?: Array<{ name: string; source?: string; locked?: boolean }>
 }
@@ -61,6 +63,8 @@ export interface UsageDataState {
   exportOn: boolean
   /** Local recording is on AND the build's Kiro telemetry destination gets product metrics. */
   kiroTelemetryOn?: boolean
+  /** Recording is off only by a written false an older build wrote: offer Turn on once. */
+  offerOn?: boolean
   /** Set only when `on` is false. */
   offReason: UsageOffReason | null
   /** The env var to name when `offReason` is `env`. */
@@ -131,7 +135,8 @@ export function useUsageDataState(enabled: boolean): UsageDataState {
     && otherDestination
   const kiroTelemetryOn = recordingOn && rows.some(isKiroTelemetryRow)
   if (recordingOn || heartbeatOn) {
-    return { status: 'ready', on: true, recordingOn, heartbeatOn, exportOn, kiroTelemetryOn, offReason: null, envVar: '' }
+    const offerOn = !recordingOn && !!collection.off_offer
+    return { status: 'ready', on: true, recordingOn, heartbeatOn, exportOn, kiroTelemetryOn, offerOn, offReason: null, envVar: '' }
   }
   const envVar = (beacon.env_override ? beacon.env_var : collection.env_pinned ? collection.env_var : '') ?? ''
   let offReason: UsageOffReason = 'config'

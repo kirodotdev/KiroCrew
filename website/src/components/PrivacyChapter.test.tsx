@@ -526,6 +526,155 @@ describe('PrivacyChapter', () => {
     expect(screen.queryByTestId('privacy-kiro-telemetry')).not.toBeInTheDocument()
   })
 
+  describe('off only by a written false an older build wrote', () => {
+    function statusOffer() {
+      stored = { recording: false, beacon: true }
+      statusFromStore()
+      collectionStatus.mockImplementation(async () => ({
+        enabled: stored.recording,
+        env_pinned: false,
+        env_var: 'KIROCREW_TELEMETRY',
+        off_offer: !stored.recording,
+      }))
+    }
+
+    it('names Kiro telemetry, says nothing changes, and offers Turn on / Keep off', async () => {
+      statusOffer()
+      renderChapter()
+
+      expect(await screen.findByRole('heading', { name: 'Performance metrics are off' })).toBeInTheDocument()
+      expect(screen.getByText(/also sends product usage metrics to Kiro telemetry\. While they are off, only the anonymous daily heartbeat and official app install receipts are sent/)).toBeInTheDocument()
+      expect(screen.getByTestId('privacy-offer-heartbeat-fields')).toHaveTextContent(/Anonymous daily heartbeat.*Random installation ID/)
+      expect(screen.getByTestId('privacy-kiro-telemetry-offer')).toHaveTextContent(/to Kiro telemetry/)
+      expect(screen.getByText(/five fields listed under the intro/)).toBeInTheDocument()
+      expect(await readyButton('Turn on performance metrics')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Keep off' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Keep on' })).not.toBeInTheDocument()
+      expect(screen.queryByTestId('privacy-turn-off-scope')).not.toBeInTheDocument()
+    })
+
+    it('Turn on writes the switch, then records the Kiro telemetry ack', async () => {
+      statusOffer()
+      const onContinue = vi.fn().mockResolvedValue(undefined)
+      renderChapter({ onContinue })
+
+      fireEvent.click(await readyButton('Turn on performance metrics'))
+      await waitFor(() => expect(onContinue).toHaveBeenCalledWith({ noticeVersion: true, kiroTelemetry: true }))
+      expect(patchConfig).toHaveBeenCalledWith('telemetry.enabled', true)
+    })
+
+    it('Turn on that does not take effect records nothing and says nothing changed', async () => {
+      statusOffer()
+      patchConfig.mockResolvedValue({})
+      const onContinue = vi.fn().mockResolvedValue(undefined)
+      renderChapter({ onContinue })
+
+      fireEvent.click(await readyButton('Turn on performance metrics'))
+      expect(await screen.findByText('Your choice could not be saved, so nothing changed. Try again.')).toBeInTheDocument()
+      expect(onContinue).not.toHaveBeenCalled()
+    })
+
+    it('Turn on whose write fails says nothing changed', async () => {
+      statusOffer()
+      patchConfig.mockRejectedValue(new Error('500'))
+      const onContinue = vi.fn().mockResolvedValue(undefined)
+      renderChapter({ onContinue })
+
+      fireEvent.click(await readyButton('Turn on performance metrics'))
+      expect(await screen.findByText('Your choice could not be saved, so nothing changed. Try again.')).toBeInTheDocument()
+      expect(onContinue).not.toHaveBeenCalled()
+    })
+
+    it('Turn on whose response is lost after the switch landed does not claim nothing changed', async () => {
+      statusOffer()
+      patchConfig.mockImplementation(async () => {
+        stored.recording = true
+        throw new Error('response lost')
+      })
+      const onContinue = vi.fn().mockResolvedValue(undefined)
+      renderChapter({ onContinue })
+
+      fireEvent.click(await readyButton('Turn on performance metrics'))
+      expect(await screen.findByText('Performance metrics are now on, but your choice could not be fully saved. Keep them on, or turn them off.')).toBeInTheDocument()
+      expect(onContinue).not.toHaveBeenCalled()
+    })
+
+    it('Turn on whose result cannot be read back says metrics may now be on', async () => {
+      statusOffer()
+      patchConfig.mockRejectedValue(new Error('response lost'))
+      const onContinue = vi.fn().mockResolvedValue(undefined)
+      renderChapter({ onContinue })
+
+      const button = await readyButton('Turn on performance metrics')
+      collectionStatus.mockRejectedValue(new Error('status unreadable'))
+      fireEvent.click(button)
+      expect(await screen.findByText(/Turn on could not be finished or confirmed, so performance metrics may now be on/)).toBeInTheDocument()
+      expect(onContinue).not.toHaveBeenCalled()
+    })
+
+    it('Turn on whose acknowledgement fails after the switch landed says so', async () => {
+      statusOffer()
+      const onContinue = vi.fn().mockRejectedValue(new Error('500'))
+      renderChapter({ onContinue })
+
+      fireEvent.click(await readyButton('Turn on performance metrics'))
+      expect(await screen.findByText('Performance metrics are now on, but your choice could not be fully saved. Keep them on, or turn them off.')).toBeInTheDocument()
+      expect(screen.queryByText(/so nothing changed/)).not.toBeInTheDocument()
+    })
+
+    it('Keep off writes the switch off and records only the notice version', async () => {
+      statusOffer()
+      const onContinue = vi.fn().mockResolvedValue(undefined)
+      renderChapter({ onContinue })
+
+      fireEvent.click(await readyButton('Keep off'))
+      await waitFor(() => expect(onContinue).toHaveBeenCalledWith({ noticeVersion: true }))
+      expect(patchConfig).toHaveBeenCalledWith('telemetry.enabled', false)
+      expect(patchConfig).not.toHaveBeenCalledWith('telemetry.enabled', true)
+    })
+
+    it('Keep off whose write fails says nothing changed when still off, and names no Turn off', async () => {
+      statusOffer()
+      patchConfig.mockRejectedValue(new Error('500'))
+      const onContinue = vi.fn().mockResolvedValue(undefined)
+      renderChapter({ onContinue })
+
+      fireEvent.click(await readyButton('Keep off'))
+      expect(await screen.findByText('Your choice could not be saved, so nothing changed. Try again.')).toBeInTheDocument()
+      expect(screen.queryByText(/Turn off could not be finished/)).not.toBeInTheDocument()
+      expect(onContinue).not.toHaveBeenCalled()
+    })
+
+    it('Keep off whose result cannot be read back says so without naming a button', async () => {
+      statusOffer()
+      patchConfig.mockRejectedValue(new Error('500'))
+      const onContinue = vi.fn().mockResolvedValue(undefined)
+      renderChapter({ onContinue })
+
+      const button = await readyButton('Keep off')
+      collectionStatus.mockRejectedValue(new Error('status unreadable'))
+      fireEvent.click(button)
+      expect(await screen.findByText('Your choice could not be saved or confirmed. Try again.')).toBeInTheDocument()
+      expect(screen.queryByText(/Turn off could not be finished/)).not.toBeInTheDocument()
+    })
+
+    it('a Turn on that half-landed shows the on form, so Turn off is the way back', async () => {
+      statusOffer()
+      patchConfig.mockImplementation(async (path: string, value: unknown) => {
+        if (path === 'telemetry.enabled') stored.recording = value as boolean
+        throw new Error('response lost')
+      })
+      const onContinue = vi.fn().mockResolvedValue(undefined)
+      renderChapter({ onContinue })
+
+      fireEvent.click(await readyButton('Turn on performance metrics'))
+      expect(await screen.findByText(/Performance metrics are now on, but your choice could not be fully saved/)).toBeInTheDocument()
+      expect(await screen.findByRole('button', { name: 'Turn off' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Keep off' })).not.toBeInTheDocument()
+      expect(onContinue).not.toHaveBeenCalled()
+    })
+  })
+
   it('renders nothing while closed', () => {
     renderWithProviders(<PrivacyChapter open={false} onContinue={vi.fn()} />)
 

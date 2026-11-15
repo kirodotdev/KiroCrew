@@ -50,6 +50,17 @@ NOTICE_TEXT_KIRO = (
 #: Privacy chapter instead.
 KIRO_NOTICE_STAMP_FILE = "kiro_telemetry_notice_shown"
 
+#: Off only by a written ``telemetry.enabled: false`` older builds put in every
+#: new config (``kiro_export.off_offer_due``): one line, once, on a terminal.
+OFFER_TEXT = (
+    "Kiro Crew performance metrics are off on this machine. Turning them on records "
+    "them here and sends product usage metrics to Kiro telemetry with a hashed install "
+    "ID (no prompts, files or credentials). To turn them on, run kirocrew telemetry enable."
+)
+
+#: Under the data home: the notice version :data:`OFFER_TEXT` last printed for.
+OFFER_STAMP_FILE = "telemetry_offer_shown"
+
 #: The last background notice thread, held so it is not collected mid-print.
 _notice_thread: "threading.Thread | None" = None
 
@@ -102,7 +113,7 @@ def maybe_print_notice(
         if cfg is None:
             cfg = KiroCrewConfig.load()
         if _held_consent(cfg, _consent_enabled(cfg.telemetry)) is not True:
-            return False
+            return _maybe_print_offer(cfg, stream, headless)
         stamp = config_dir() / NOTICE_STAMP_FILE
         from kiro_crew.metrics import kiro_export
 
@@ -161,3 +172,34 @@ def stamped_version(name: str = NOTICE_STAMP_FILE) -> int:
         return int(raw) if raw.isdigit() else 0
     except Exception:
         return 0
+
+
+def _maybe_print_offer(cfg: "KiroCrewConfig", stream: "TextIO | None", headless: bool) -> bool:
+    """Print :data:`OFFER_TEXT` once, on a terminal, when the off offer is due.
+
+    Only a start with no dashboard: a dashboard host is asked by the Privacy
+    chapter's off form instead. Changes no setting. Returns whether it printed.
+    """
+    try:
+        from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
+        from kiro_crew.config.paths import config_dir
+        from kiro_crew.metrics import kiro_export
+
+        out = stream if stream is not None else sys.stderr
+        if not headless or not bool(getattr(out, "isatty", lambda: False)()):
+            return False
+        if stamped_version(OFFER_STAMP_FILE) >= PRIVACY_NOTICE_VERSION:
+            return False
+        if not kiro_export.off_offer_due(cfg):
+            return False
+        print(OFFER_TEXT, file=out, flush=True)
+    except Exception:
+        logger.debug("telemetry offer line not printed", exc_info=True)
+        return False
+    try:
+        from kiro_crew.atomic_write import atomic_write
+
+        atomic_write(config_dir() / OFFER_STAMP_FILE, f"{PRIVACY_NOTICE_VERSION}\n")
+    except Exception:
+        logger.debug("telemetry offer stamp not written; it will print again", exc_info=True)
+    return True
