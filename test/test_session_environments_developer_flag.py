@@ -130,8 +130,8 @@ def test_a_bound_session_whose_choice_is_lost_is_refused_not_run_here(choices, l
 
 
 def test_every_way_a_row_leaves_takes_its_marker(choices, monkeypatch):
-    """A row ends by being cleared, by an inherited row ageing out, or by a child
-    whose parent runs here; none of them may leave a marker that later refuses."""
+    """A row that ages out after inheriting, or is cleared, leaves no marker that
+    later refuses the session."""
     from kiro_crew.coder import session_launch
 
     choices.inherit("dashboard:child", "dashboard:remote")
