@@ -64,6 +64,7 @@ from kiro_crew.acp.runtime import AcpRuntimeError
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
 )
@@ -262,7 +263,150 @@ def _self_signed_era(backend: str, env_overrides: Mapping[str, str] | None = Non
         return claude_spawn_identity(env_overrides=env_overrides)
     if backend == ACP_BACKEND_GOOSE:
         return goose_spawn_identity(env_overrides=env_overrides)
+    if backend == ACP_BACKEND_DEEPSEEK:
+        return deepseek_spawn_identity(env_overrides=env_overrides)
     return None
+
+
+#: :func:`deepseek_spawn_identity`'s random token per credential set seen by this
+#: process. shortcut: never pruned, like ``_CODEX_ERA_TOKENS``; one entry per vault
+#: write of a mapped key, which stays a handful. Prune if rotations ever churn.
+_DEEPSEEK_ERA_TOKENS: dict[str, str] = {}
+
+#: The provider-key name dsh's own DeepSeek route reads by default.
+_DEEPSEEK_DEFAULT_KEY_ENV = "DEEPSEEK_API_KEY"
+
+#: The non-secret config files of a dsh home that can name another key variable
+#: (``apiKeyEnv``): the home layer and the ACP profile's own layers.
+_DSH_CONFIG_FILES = (
+    "cordis.patch.yml",
+    "profiles/acp/cordis.patch.yml",
+    "profiles/acp/cordis.yml",
+)
+
+
+def _dsh_home(env: Mapping[str, str]) -> Path | None:
+    """The dsh home a child launched with *env* reads, or None when it cannot be named."""
+    home = env.get("DSH_HOME")
+    if home:
+        path = Path(home)
+        return path if path.is_absolute() else None
+    user_home = env.get("HOME")
+    return Path(user_home) / ".dsh" if user_home else None
+
+
+def _dsh_key_env_names(home: Path) -> set[str] | None:
+    """Every provider-key variable name dsh's config under *home* reads, or None.
+
+    ``DEEPSEEK_API_KEY`` plus each ``apiKeyEnv`` the home and ACP profile layers
+    name. Only the config layers are read, never ``.credentials.yaml`` or ``.env``.
+    A layer that exists but cannot be read or parsed is None: fail closed.
+    """
+    import yaml  # type: ignore[import-untyped]
+
+    names = {_DEEPSEEK_DEFAULT_KEY_ENV}
+
+    def _walk(node: object, depth: int) -> None:
+        if depth > 32:
+            return
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "apiKeyEnv" and isinstance(value, str) and value:
+                    names.add(value)
+                else:
+                    _walk(value, depth + 1)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item, depth + 1)
+
+    for relative in _DSH_CONFIG_FILES:
+        try:
+            text = (home / relative).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeDecodeError):
+            return None
+        try:
+            _walk(yaml.safe_load(text), 0)
+        except yaml.YAMLError:
+            return None
+    return names
+
+
+def deepseek_spawn_identity(
+    environ: Mapping[str, str] | None = None,
+    env_overrides: Mapping[str, str] | None = None,
+) -> str:
+    """The account era of a deepseek start: which provider key a new process holds.
+
+    dsh never reads Kiro's sign-in. Crew hands it its provider key from Crew's own
+    vault (``agent.deepseek_env``: variable name -> ``secret://`` reference), and
+    both of dsh's own credential files stay masked. The era names the dsh home, the
+    mapping, and the vault REVISION of each referenced secret
+    (:meth:`SecretVault.list_items`): read from the store in the clear, without
+    decrypting, and changed by every write. So a rotated key, a remapped name or
+    another home founds a new process instead of joining one that holds the old
+    key, and the key itself is never read here.
+
+    A key the child would take from its inherited environment instead (a variable
+    dsh reads -- ``DEEPSEEK_API_KEY`` or any ``apiKeyEnv`` the home's config names --
+    that the mapping does not set) is ``""``: its rotation cannot be told without
+    reading it, so such a chat never shares. So is a mapping Crew would refuse, a
+    home that cannot be named, and a config or vault that cannot be read. The
+    placement turns ``""`` into a key nothing can match: fail closed.
+
+    With no *environ*, the environment dsh is launched with: the gateway's, under
+    ``agent.env``. *env_overrides* is the start's ``extra_env``, over either.
+    """
+    from kiro_crew.acp.harness.deepseek import _validate_deepseek_env_mapping
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.config.paths import config_dir
+    from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX
+    from kiro_crew.secrets import SecretVault
+    from kiro_crew.secrets.items import parse_reference
+
+    if environ is None:
+        from kiro_crew.acp.agent_env import agent_env_overlay
+
+        env: dict[str, str] = {**os.environ, **agent_env_overlay()}
+    else:
+        env = dict(environ)
+    env.update(env_overrides or {})
+    home = _dsh_home(env)
+    if home is None:
+        return ""
+    key_names = _dsh_key_env_names(home)
+    if key_names is None:
+        return ""
+    try:
+        mapping = dict(KiroCrewConfig.load().agent.deepseek_env)
+        if mapping:
+            _validate_deepseek_env_mapping(mapping)
+    except (OSError, ValueError):
+        return ""
+    if any(env.get(name) for name in key_names - set(mapping)):
+        return ""
+    revisions: list[tuple[str, str]] = []
+    if mapping:
+        try:
+            stored = {
+                row["name"]: row["revision"] for row in SecretVault(config_dir()).list_items()
+            }
+        except (OSError, ValueError):
+            return ""
+        for ref in sorted(mapping.values()):
+            name, _field = parse_reference(ref[len(SECRET_URI_PREFIX) :])
+            revision = stored.get(name)
+            if revision is None:
+                return ""
+            revisions.append((name, revision))
+    stable = json.dumps([str(home), sorted(mapping.items()), revisions])
+    # A random token per distinct value, as codex does: equal within this process,
+    # and carrying nothing of the vault entry.
+    token = _DEEPSEEK_ERA_TOKENS.get(stable)
+    if token is None:
+        token = _DEEPSEEK_ERA_TOKENS.setdefault(stable, secrets.token_hex(16))
+    return "deepseek:" + token
 
 
 def goose_spawn_identity(
@@ -1045,6 +1189,7 @@ __all__ = [
     "ChatSharePlacement",
     "claude_spawn_identity",
     "codex_spawn_identity",
+    "deepseek_spawn_identity",
     "goose_spawn_identity",
     "resolve_chat_share",
 ]

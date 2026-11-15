@@ -637,3 +637,19 @@ def test_a_trip_is_audited_as_the_call_that_ran_not_as_a_mode_change(monkeypatch
     assert rows and rows[0]["tool_name"] == "call_5"
     assert rows[0]["outcome"] == "ran_without_approval"
     assert rows[0]["metadata"]["reason"] == "pi_gate_tripwire"
+
+
+def test_a_side_chat_session_is_refused_a_shared_process():
+    harness = harness_for(ACP_BACKEND_DEEPSEEK)
+    with pytest.raises(AcpToolGateUnroutable):
+        asyncio.run(
+            harness.prepare_session(
+                work_dir="/w",
+                agent="kirocrew",
+                model="",
+                session_key="k",
+                channel_id="dashboard",
+                memory_mode="",
+                options={"side_read_only": True},
+            )
+        )

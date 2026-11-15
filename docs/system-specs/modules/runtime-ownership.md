@@ -856,9 +856,11 @@ recover.
 - **Chat sharing is a preview.** The `chat_runtime_sharing` feature preview is off
   by default, so a default install still serves one chat per runtime. The members
   are KAS (its switch on by default), codex (off by default), claude (off by
-  default, dashboard chats only) and goose (off by default, dashboard chats only; a
+  default, dashboard chats only), goose (off by default, dashboard chats only; a
   goose Side Chat never shares, because its goose home is the process-wide
-  `GOOSE_PATH_ROOT`); kiro-cli is not,
+  `GOOSE_PATH_ROOT`) and deepseek (off by default, dashboard chats only; a
+  deepseek Side Chat never shares, because its READ_ONLY proof is recorded per
+  process); kiro-cli is not,
   because some of its session-control frames name no session. A shared codex
   process takes no new chat once any chat leaves it and dies with its last chat
   (`chat_closes_on_departure`, read by `RuntimeOwnership.release`): codex's

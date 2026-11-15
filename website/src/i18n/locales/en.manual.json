@@ -10908,6 +10908,8 @@
         "chat_runtime_sharing_harness_claude_desc": "On: new chats on this harness share one background program and use less memory. Off: each chat runs its own program.",
         "chat_runtime_sharing_harness_goose": "Chats using Goose",
         "chat_runtime_sharing_harness_goose_desc": "On: new chats on this harness share one background program and use less memory. Off: each chat runs its own program.",
+        "chat_runtime_sharing_harness_deepseek": "Chats using DeepSeek Harness",
+        "chat_runtime_sharing_harness_deepseek_desc": "On: new chats on this harness share one background program and use less memory. Off: each chat runs its own program.",
         "chat_runtime_sharing_harness_save_failed": "Couldn't save the switch. Try again.",
         "chat_runtime_sharing_harness_load_failed": "Couldn't load these switches.",
         "chat_runtime_sharing_desc_summary": "Saves computer memory by running several chats in one background program. You choose which kinds of chat share it. They reply at the same time and can't see each other's messages. Turn it off and each new chat gets its own program again.",

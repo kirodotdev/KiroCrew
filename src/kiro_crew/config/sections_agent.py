@@ -862,7 +862,7 @@ class AgentConfig:
             "while the chat_runtime_sharing feature preview is on, by harness name, "
             "each true or false. A harness switched off keeps one process per chat. "
             "A harness that is absent takes its default "
-            "(KAS: on, codex: off, claude: off, goose: off). "
+            "(KAS: on, codex: off, claude: off, goose: off, deepseek: off). "
             "Has no effect "
             "while the preview is off. Applies to chats started after the change.",
             properties={

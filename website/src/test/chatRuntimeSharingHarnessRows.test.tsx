@@ -34,6 +34,7 @@ const kasSwitch = () => screen.getByRole('switch', { name: /Chats using Kiro Age
 const codexSwitch = () => screen.getByRole('switch', { name: /Chats using OpenAI Codex/i })
 const claudeSwitch = () => screen.getByRole('switch', { name: /Chats using Claude Code/i })
 const gooseSwitch = () => screen.getByRole('switch', { name: /Chats using Goose/i })
+const deepseekSwitch = () => screen.getByRole('switch', { name: /Chats using DeepSeek Harness/i })
 
 beforeEach(() => {
   localStorage.clear()
@@ -127,5 +128,19 @@ describe('ACP runtime sharing per-harness switches', () => {
     await waitFor(() => expect(gooseSwitch().hasAttribute('disabled')).toBe(false))
     await act(async () => { gooseSwitch().click() })
     await waitFor(() => expect(patch).toHaveBeenCalledWith('agent.chat_runtime_sharing_harnesses.goose', true))
+  })
+
+  it('show deepseek off when nothing is stored, and write its own key', async () => {
+    mockConfig()
+    const patch = vi.spyOn(api, 'patchConfig').mockResolvedValue({} as never)
+    act(() => { setPreviewFlag(PREVIEW_CHAT_RUNTIME_SHARING, true) })
+    renderSection()
+    await waitFor(() => expect(deepseekSwitch().getAttribute('aria-checked')).toBe('false'))
+    // Enabled once the config read answers.
+    await waitFor(() => expect(deepseekSwitch().hasAttribute('disabled')).toBe(false))
+    await act(async () => { deepseekSwitch().click() })
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith('agent.chat_runtime_sharing_harnesses.deepseek', true),
+    )
   })
 })
