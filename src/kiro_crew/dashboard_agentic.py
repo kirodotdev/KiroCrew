@@ -1692,7 +1692,7 @@ def session_turn_block(slot_key: str) -> str:
 
 
 #: The rule that keeps the board's Overview (the work-ledger goal) current. The same
-#: words are in the team-lead prompt and the team-lead / goal-conductor skills.
+#: words are in the conductor and team-lead prompts and the team-lead / goal-conductor skills.
 GOAL_FIRST_RULE: Final[str] = (
     "When the person gives a new goal or changes the scope, call `work_ledger_record` "
     "`action=goal` FIRST, before you dispatch or reply: `new_goal=true` for a new goal, "

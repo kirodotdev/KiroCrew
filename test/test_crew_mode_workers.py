@@ -48,10 +48,10 @@ def _reset_crew_mode_agent(_floor_monkeypatch):
 # ── the config key ─────────────────────────────────────────────────────────────
 
 
-def test_crew_mode_agent_defaults_to_the_team_lead():
+def test_crew_mode_agent_defaults_to_the_conductor():
     from kiro_crew.config.loader_builders import _build_agent_config
 
-    assert _build_agent_config({}).crew_mode_agent == "kirocrew-team-lead"
+    assert _build_agent_config({}).crew_mode_agent == "kirocrew-conductor"
 
 
 def test_crew_mode_agent_is_read_from_its_one_key():
@@ -64,7 +64,7 @@ def test_crew_mode_agent_is_read_from_its_one_key():
 def test_an_unusable_crew_mode_agent_falls_back_to_the_conductor(value):
     from kiro_crew.config.loader_builders import _build_agent_config
 
-    assert _build_agent_config({"crew_mode_agent": value}).crew_mode_agent == "kirocrew-team-lead"
+    assert _build_agent_config({"crew_mode_agent": value}).crew_mode_agent == "kirocrew-conductor"
 
 
 def test_swapping_the_key_swaps_the_conductor_and_joins_the_family():

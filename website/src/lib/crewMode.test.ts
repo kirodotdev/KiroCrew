@@ -19,8 +19,17 @@ const GATEWAY_CONDUCTORS = ['kirocrew-conductor', 'kirocrew-ledger-conductor', '
 
 describe('crewMode', () => {
   it('runs on the shipped conductor until the catalog says otherwise', () => {
-    expect(DEFAULT_CREW_MODE_AGENT).toBe('kirocrew-team-lead')
-    expect(crewModeAgent()).toBe('kirocrew-team-lead')
+    expect(DEFAULT_CREW_MODE_AGENT).toBe('kirocrew-conductor')
+    expect(crewModeAgent()).toBe('kirocrew-conductor')
+  })
+
+  it('treats the default conductor as conductor mode once a Crew Mode catalog lands', () => {
+    setCrewModeCatalog(undefined, GATEWAY_CONDUCTORS)
+    expect(crewModeAgent()).toBe(DEFAULT_CREW_MODE_AGENT)
+    expect(isConductorAgent(DEFAULT_CREW_MODE_AGENT)).toBe(true)
+    expect(runsCrewMode(DEFAULT_CREW_MODE_AGENT, 'template')).toBe(true)
+    // The team lead stays a conductor too, for a person who set it.
+    expect(runsCrewMode('kirocrew-team-lead', 'template')).toBe(true)
   })
 
   it('swaps the conductor to the one the catalog names', () => {

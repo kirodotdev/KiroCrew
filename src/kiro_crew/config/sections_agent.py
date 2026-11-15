@@ -77,7 +77,7 @@ def coerce_fallback_model(raw: object) -> str:
 #: The Crew Mode conductor template's name. Equal to
 #: ``crew_mode.DEFAULT_CREW_MODE_AGENT`` (a test pins it); defined here so this owner
 #: binds no name the sections facade does not.
-_CREW_MODE_AGENT_DEFAULT = "kirocrew-team-lead"
+_CREW_MODE_AGENT_DEFAULT = "kirocrew-conductor"
 
 
 def _chat_runtime_sharing_harness_defaults() -> dict:
@@ -1490,7 +1490,7 @@ class AgentConfig:
         default=True,
         metadata=_meta(
             "Conductor Own-Child Sends",
-            "Let the Conductor and the conductor mode team lead send to and close a "
+            "Let the Conductor and the team lead send to and close a "
             "session they created themselves without an approval prompt, the way a "
             "Bot already does. A send or close aimed at any other session still "
             "prompts, and the child keeps its own approval mode. Turn this off to "

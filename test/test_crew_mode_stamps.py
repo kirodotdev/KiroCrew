@@ -83,3 +83,34 @@ def test_a_root_that_closes_while_a_root_still_holds_its_workers() -> None:
     rows = _stamp([dict(worker)], parents={})
     assert rows["w"][crew_mode.WORKER_FIELD] == ROOT
     assert crew_mode.known_roots() == {ROOT}
+
+
+def test_the_default_conductor_roots_the_worker_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Conductor mode's default agent is a root: ``stamp_rows`` hangs its workers under
+    it at every depth, and ``slot_is_crew_mode_root`` answers the same on a live slot."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(crew_mode, "_live_cfg", lambda: None)
+    monkeypatch.setattr(crew_mode, "_configured", crew_mode.DEFAULT_CREW_MODE_AGENT)
+    monkeypatch.setattr(crew_mode, "lineage_is_settled", lambda: False)
+    assert crew_mode.DEFAULT_CREW_MODE_AGENT == "kirocrew-conductor"
+    rows = _stamp(
+        [
+            _row(ROOT, crew_mode.DEFAULT_CREW_MODE_AGENT),
+            _row(CHILD, "kirocrew-worker", created_by=ROOT),
+            _row("grand", "kirocrew-worker", created_by=CHILD),
+        ],
+        parents={},
+    )
+    assert rows[ROOT][crew_mode.ROOT_FIELD] is True
+    assert rows[CHILD][crew_mode.WORKER_FIELD] == ROOT
+    assert rows["grand"][crew_mode.WORKER_FIELD] == ROOT
+    assert rows["grand"][crew_mode.DISPATCHER_FIELD] == CHILD
+    live = SimpleNamespace(
+        key=ROOT, agent=crew_mode.DEFAULT_CREW_MODE_AGENT, agent_kind="template", mode=""
+    )
+    assert crew_mode.slot_is_crew_mode_root(live)
+    worker = SimpleNamespace(
+        key=CHILD, agent="kirocrew-worker", agent_kind="template", mode="", _created_by=ROOT
+    )
+    assert not crew_mode.slot_is_crew_mode_root(worker)

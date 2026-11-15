@@ -582,7 +582,10 @@ conductor gets `not_bound` from `work_brief` and knows it has no parent.
         "goal_changes",
         """The user can message you at any time: apply goal changes at the
 round boundary, except a message that invalidates an in-flight item, which you
-handle immediately.
+handle immediately. When the person gives a new goal or changes the scope,
+call `work_ledger_record` `action=goal` FIRST, before you dispatch or reply:
+`new_goal=true` for a new goal, a plain rewrite for a scope change. The Board's
+Overview shows that goal; the re-plan itself still waits for the round boundary.
 
 """,
     ),

@@ -53,8 +53,8 @@ from kiro_crew.agent_files import (
 )
 
 #: The agent Crew Mode (conductor mode) runs while ``agent.crew_mode_agent`` is unset:
-#: the team lead. A person who set the key keeps their value.
-DEFAULT_CREW_MODE_AGENT: Final[str] = TEAM_LEAD_AGENT_FILENAME.removesuffix(".json")
+#: the conductor. A person who set the key keeps their value.
+DEFAULT_CREW_MODE_AGENT: Final[str] = CONDUCTOR_AGENT_FILENAME.removesuffix(".json")
 
 #: The shipped conductors: every agent whose job is dispatching work to other
 #: sessions, all kept out of a normal chat's agent picker. Derived from the
