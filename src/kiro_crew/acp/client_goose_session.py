@@ -21,12 +21,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from kiro_crew import acp_tool_gate
 from kiro_crew import sel as sel_module
-from kiro_crew.acp._dispatch import parse_session_modes
-from kiro_crew.acp.client_permissions import _scrub_observed
-from kiro_crew.acp.transport_errors import AcpToolGateUnroutable
-from kiro_crew.acp.types import UPDATE_CURRENT_MODE, JsonRpcMessage
+from kiro_crew.acp.harness import goose as goose_harness
+from kiro_crew.acp.types import JsonRpcMessage
 
 if TYPE_CHECKING:
     from kiro_crew.acp.client import GooseAcpClient
@@ -74,27 +71,15 @@ def _verify_goose_routing(self: GooseAcpClient, resp: dict) -> None:
 
     Raises ``AcpToolGateUnroutable`` when the required mode is not in force.
     """
-    _ids, current_mode, advertised = parse_session_modes(resp)
-    # An omitted modes block is INDETERMINATE rather than a pass: this harness
-    # always reports one, so its absence means the response is not the shape this
-    # read was verified against and no claim can be made from it.
-    observed = current_mode if advertised else ""
-    issue = acp_tool_gate.seeded_setting_issue(self.backend, _scrub_observed(observed))
-    if not issue:
-        return
-    try:
-        acp_tool_gate.enforce_runtime_routing(
-            self.backend,
-            issue,
-            remedy=acp_tool_gate.remediation_for(self.backend),
-        )
-    except acp_tool_gate.ToolGateUnroutable as exc:
-        # Translated to the ACP-layer type like the sibling refusal sites, and
-        # that is not cosmetic: ``ensure_ready`` catches ``AcpToolGateUnroutable``,
-        # so a bare gate exception would escape both of its handlers and skip
-        # ``_cleanup_failed_live_spawn`` -- leaving the refusal untyped and the
-        # failed spawn unreaped.
-        raise AcpToolGateUnroutable(str(exc)) from None
+    # The read and the refusal are the goose harness's, shared with the
+    # shared-runtime driver (``GooseHarness.after_session_start``). An omitted
+    # modes block is INDETERMINATE rather than a pass: this harness always
+    # reports one, so its absence means the response is not the shape this read
+    # was verified against and no claim can be made from it. The refusal is the
+    # ACP-layer type ``ensure_ready`` catches, so a failed spawn is reaped.
+    issue = goose_harness.session_mode_issue(resp)
+    if issue:
+        goose_harness.refuse_routing(issue)
 
 
 def _note_goose_version(self: GooseAcpClient) -> None:
@@ -139,18 +124,13 @@ async def _tripwire_goose_mode(self: GooseAcpClient, msg: JsonRpcMessage) -> Non
     mode (goose re-emits the current mode on load), is a no-op.
     """
     params = msg.params if isinstance(msg.params, dict) else {}
-    update = params.get("update")
-    if not isinstance(update, dict) or update.get("sessionUpdate") != UPDATE_CURRENT_MODE:
-        return
-    mode_id = update.get("currentModeId")
-    observed = mode_id if isinstance(mode_id, str) else ""
-    issue = acp_tool_gate.seeded_setting_issue(self.backend, _scrub_observed(observed))
+    issue, observed = goose_harness.mode_update_issue(params.get("update"))
     if not issue:
         return
     logger.error(
         "goose routing: session reported mode %r mid-session, which is not the "
         "required one; stopping the harness before it approves on its own [session=%s]",
-        _scrub_observed(observed),
+        observed,
         self._session_id,
     )
     try:
@@ -163,20 +143,13 @@ async def _tripwire_goose_mode(self: GooseAcpClient, msg: JsonRpcMessage) -> Non
             metadata={
                 "reason": "goose_mode_tripwire",
                 "backend": self.backend,
-                "mode": _scrub_observed(observed),
+                "mode": observed,
             },
         )
     except Exception:  # pragma: no cover - audit is best-effort
         logger.debug("goose routing: audit of the mode tripwire failed", exc_info=True)
     await self._kill_process(force=True)
-    try:
-        acp_tool_gate.enforce_runtime_routing(
-            self.backend,
-            issue,
-            remedy=acp_tool_gate.remediation_for(self.backend),
-        )
-    except acp_tool_gate.ToolGateUnroutable as exc:
-        raise AcpToolGateUnroutable(str(exc)) from None
+    goose_harness.refuse_routing(issue)
 
 
 def _goose_session_mcp_servers(self: GooseAcpClient) -> list:

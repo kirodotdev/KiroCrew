@@ -30,6 +30,7 @@ from kiro_crew.acp._dispatch_parts.tool_call_identity import (
     _harness_identifier,
     _permission_tool_id,
     is_shell_kind,
+    meta_builtin_server_names,
 )
 from kiro_crew.acp._dispatch_parts.tool_call_provenance import scoped_tool_cache_key
 from kiro_crew.acp.harness_tool_names import (
@@ -460,6 +461,35 @@ def identified_mcp_call(event: AcpEvent) -> tuple[str, str] | None:
     if event.mcp_identity_trusted and event.mcp_server_name and event.tool_name:
         return event.mcp_server_name, event.tool_name
     return None
+
+
+#: The audit reasons of the two identity-channel refusals, the same on both drivers.
+REFUSAL_UNCLASSIFIED_CALL = "spec_disabled_tool_unclassified_call"
+REFUSAL_FOREIGN_SERVER = "spec_disabled_tool_foreign_server"
+
+
+def unclassified_call_refused(event: AcpEvent, *, frame_unclassified: bool) -> bool:
+    """Whether a permission request is refused as a call no channel classified.
+
+    *frame_unclassified* is the driver's own evidence that this session saw the
+    call's ``tool_call`` frame and it carried neither an ACP ``kind`` nor a harness
+    identity. A call still identified by a trusted channel (:func:`identified_mcp_call`)
+    is left to the MCP checks. The one decision both drivers make.
+    """
+    return frame_unclassified and identified_mcp_call(event) is None
+
+
+def foreign_server_refused(event: AcpEvent, placed: frozenset[str] | set[str]) -> bool:
+    """Whether a trusted identity names a server this session never placed.
+
+    *placed* is the server names the session's own ``mcpServers`` array carried. The
+    harness's own builtin extensions (:func:`meta_builtin_server_names`) are not
+    foreign. Only a TRUSTED identity is judged; the permission payload's prose is
+    never read. The one decision both drivers make.
+    """
+    if not (event.mcp_identity_trusted and event.mcp_server_name):
+        return False
+    return event.mcp_server_name not in set(placed) | meta_builtin_server_names()
 
 
 def is_mcp_tool_approval(msg: JsonRpcMessage, event: AcpEvent | None = None) -> bool:
