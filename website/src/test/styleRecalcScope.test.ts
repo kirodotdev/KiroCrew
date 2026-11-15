@@ -155,3 +155,68 @@ describe('opening a layer restyles only what changed', () => {
     expect(rule![1].replace(/\s/g, '')).toContain('inherits:false')
   })
 })
+
+/**
+ * A `::highlight(name)` rule with nothing before the pseudo-element matches
+ * every element, so each style recalc builds a highlight style for the whole
+ * page: the sidebar, the menus, everything that never holds a highlight. A rule
+ * is either attached to a class, or limited to `[data-hl-scope]`, the attribute
+ * on each element a highlight registrar walks.
+ */
+const HIGHLIGHT_SCOPE = '[data-hl-scope]'
+const pageWideHighlight = (selector: string) => {
+  if (!selector.includes('::highlight(') || selector.startsWith(`${HIGHLIGHT_SCOPE} `)) return false
+  const subject = compounds(selector).pop()!.compound
+  return !hasFeature(subject.slice(0, subject.indexOf('::highlight(')))
+}
+
+/** The element each registrar walks for text, by the ref that element takes. */
+const HIGHLIGHT_ROOTS: [file: string, ref: string, what: string][] = [
+  ['pages/chat/AssistantMessage.tsx', 'contentRef', 'the reply bubble the transcript find walks'],
+  ['pages/chat/UserMessage.tsx', 'userRef', 'the user bubble the transcript find walks'],
+  ['components/ContentRenderer.tsx', 'previewRef', 'the preview the preview find, the comment underline and the composer passage walk'],
+  ['pages/RemoteArtifactDetailPage.tsx', 'mdPreviewRef', 'the remote artifact body the composer passage walks'],
+]
+
+describe('highlight rules reach only the elements that can hold a highlight', () => {
+  it('finds no ::highlight() rule that matches every element of the page', () => {
+    const offenders: string[] = []
+    for (const file of sourceFiles(SRC, (n) => n.endsWith('.css'))) {
+      for (const sel of cssSelectors(readFileSync(file, 'utf-8'))) {
+        if (pageWideHighlight(sel)) offenders.push(`${relative(SRC, file)}: ${sel}`)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it('still recognises the shapes it guards against', () => {
+    expect(pageWideHighlight('::highlight(mc-find)')).toBe(true)
+    expect(pageWideHighlight('.panel ::highlight(mc-find)')).toBe(true)
+    expect(pageWideHighlight(':root::highlight(mc-find)')).toBe(true)
+    expect(pageWideHighlight('[data-hl-scope] ::highlight(mc-find)')).toBe(false)
+    expect(pageWideHighlight('[data-hl-scope]::highlight(mc-find)')).toBe(false)
+    expect(pageWideHighlight('.code-block::highlight(mc-find-current)')).toBe(false)
+    expect(pageWideHighlight('.code-block')).toBe(false)
+  })
+
+  it('limits each scoped rule to the scope element and its descendants, both', () => {
+    // Firefox and Safari do not pass a highlight style down to descendants, so
+    // a rule on the scope element alone paints nothing inside it.
+    const css = readFileSync(resolve(SRC, 'styles/highlights-and-page-zoom.css'), 'utf-8')
+    const selectors = cssSelectors(css).filter((s) => s.includes('::highlight(') && s.startsWith(HIGHLIGHT_SCOPE))
+    const names = new Set(selectors.map((s) => /::highlight\(([\w-]+)\)/.exec(s)![1]))
+    expect(names.size).toBeGreaterThan(0)
+    for (const name of names) {
+      expect(selectors, name).toContain(`${HIGHLIGHT_SCOPE}::highlight(${name})`)
+      expect(selectors, name).toContain(`${HIGHLIGHT_SCOPE} ::highlight(${name})`)
+    }
+  })
+
+  it.each(HIGHLIGHT_ROOTS)('%s: every element taking %s carries data-hl-scope (%s)', (file, ref) => {
+    const source = readFileSync(resolve(SRC, file), 'utf-8')
+    const taken = source.match(new RegExp(`ref=\\{${ref}\\b[^}]*\\}`, 'g')) ?? []
+    const scoped = source.match(new RegExp(`ref=\\{${ref}\\b[^}]*\\}\\s+data-hl-scope=""`, 'g')) ?? []
+    expect(taken.length, `${file} no longer attaches ${ref}`).toBeGreaterThan(0)
+    expect(scoped.length, `${file}: an element takes ${ref} without data-hl-scope right after it`).toBe(taken.length)
+  })
+})

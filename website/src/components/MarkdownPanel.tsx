@@ -907,14 +907,6 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     const scrollRoot = fullscreen ? fullscreenBodyRef.current : sidePanelScrollRef.current
     if (!scrollRoot) { clear(); return }
 
-    // Inject the highlight paint rule once (background + accent underline).
-    if (!document.getElementById('mc-comment-hl-style')) {
-      const style = document.createElement('style')
-      style.id = 'mc-comment-hl-style'
-      style.textContent = `::highlight(${HL}){background-color:var(--accent-subtle,rgba(99,102,241,0.18));text-decoration-line:underline;text-decoration-color:var(--accent,#6366f1);text-decoration-thickness:2px;text-decoration-skip-ink:none;text-underline-offset:2px;}`
-      document.head.appendChild(style)
-    }
-
     // Recompute ranges + repaint. Called once now, then again whenever the
     // preview DOM settles — code-block syntax highlighting swaps text nodes
     // AFTER first paint, which strips a just-created highlight range (symptom:

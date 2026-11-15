@@ -211,6 +211,8 @@ describe('MarkdownPanel — annotation selection highlight', () => {
     expect(ranges).toBeDefined()
     expect(ranges!.length).toBe(1)
     expect(ranges![0].toString()).toBe('beta')
+    // The highlight rules reach only `[data-hl-scope]`: a passage outside one is registered and never painted.
+    expect(ranges![0].startContainer.parentElement!.closest('[data-hl-scope]')).not.toBeNull()
     // The DOM the highlight paints over is exactly the DOM React rendered.
     expect(document.querySelector('mark')).toBeNull()
     expect(textNodeCount(para)).toBe(nodesBefore)
