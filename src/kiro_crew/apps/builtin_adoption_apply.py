@@ -4,6 +4,8 @@ APPLY, per pin in name order, under the app's lifecycle lock:
 
 0. recovery of a hard-killed swap, then the crash windows a ``granting`` marker names;
 1. eligibility of the record (E2); a ledger that is ``staged`` for the pin commit;
+   the app's core-owned legacy state move, if it has one, sealed
+   (``legacy_state_moves``), else the swap waits for the next boot;
 2. the staged artifact copied into a private temp dir and ``treeSha256`` verified
    on that copy; the tree checks (E7, E8, E10), host (E3, E5), admission (E4) and
    permission parity (E9);
@@ -67,6 +69,7 @@ from kiro_crew.apps.builtin_adoption_state import (
     write_grant_and_marker,
     write_ledger,
 )
+from kiro_crew.apps.legacy_state_moves import seal_adopted, sealed_for_adoption
 from kiro_crew.sandbox import SandboxUnavailableError
 
 logger = logging.getLogger("kiro_crew.apps.builtin_adoption")
@@ -511,6 +514,11 @@ async def _apply_one(pin: AdoptionPin, marker: AdoptionMarker | None) -> str:
     if needs_newer_sdk(pin):
         await _release_reused(name, pin, reused)
         return await _block(ledger, pin, "host_sdk_too_old", ledger.staged.get("kind", "-"))
+    if not await asyncio.to_thread(sealed_for_adoption, name):
+        # The built-in's state is still on its way into ``data/``: the swap would leave
+        # it where the adopted app never reads it. The ledger stays ``staged``.
+        await _release_reused(name, pin, reused)
+        return "state_move_pending"
     staged = await asyncio.to_thread(_staged_artifact, pin, ledger)
     if staged is None:
         await asyncio.to_thread(_set_ledger, ledger, "pending")
@@ -692,6 +700,7 @@ async def apply_all() -> dict[str, str]:
                 outcomes[name] = await _apply_one(pins[name], markers.get(name))
                 if outcomes[name] == "skipped":
                     await _record_missing_nav(pins[name], markers.get(name), navs.get(name))
+                    await asyncio.to_thread(seal_adopted, name)
         except (asyncio.CancelledError, PlatformCompositionError):
             raise
         except PendingEditBlocksSave as exc:

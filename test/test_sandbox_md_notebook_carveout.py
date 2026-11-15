@@ -574,14 +574,21 @@ class TestAbsentStateFilesAreMaterializedSoTheMaskCanMount:
     def test_a_linked_app_directory_keeps_the_backend_from_starting(self):
         """Pinned structurally: with ``workspace/md-notebook`` masked by a writable,
         namespace-only stand-in, a backend could attach, clone and save a PAT there, and
-        all of it would vanish on restart. ``apps/backend.py`` must not start it."""
+        all of it would vanish on restart. ``apps/backend.py`` must not start it: Notes'
+        row's start gate (``md_notebook_state.backend_start_refusal``) refuses, and the
+        spawn returns on that answer. The spawn's provenance argument is pinned by
+        behaviour in ``test_app_backend_spawn_env.py``."""
         import inspect
 
+        from kiro_crew import md_notebook_state as mns
         from kiro_crew.apps import backend as backend_mod
 
         source = inspect.getsource(backend_mod._start_app_backend_body)
-        guard = source.index("for d in _md_notebook_degraded_mask_dirs())")
-        assert "return None" in source[guard : guard + 900]
+        guard = source.index("_legacy_state_moves.backend_start_refusal(")
+        assert "return None" in source[guard : guard + 400]
+        refusal = inspect.getsource(mns.backend_start_refusal)
+        guard = refusal.index("for d in _md_notebook_degraded_mask_dirs())")
+        assert "return (" in refusal[guard : guard + 400]
 
     def test_a_resolving_leaf_symlink_refuses_the_spawn(self, crew_home, tmp_path):
         """A RESOLVING link at the leaf is refused too, not only a dangling one:

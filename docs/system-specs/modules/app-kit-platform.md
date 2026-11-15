@@ -7325,9 +7325,10 @@ already has it. A release that pins the app still ships its wheel copy; on a hos
 whose record is builtin-owned, the gateway swaps the record **in place** onto the
 pinned repository tree, keeping `data/`, `.app_secret`, the approved grants and
 `enabled`. A host that cannot adopt keeps running the wheel copy unchanged. Core
-names no app anywhere in this machinery: the pin table is data, and
-`test_builtin_adoption_pins.py` fails on a shipped built-in name in any adoption
-module.
+names no app anywhere in this machinery but one stated place, the row keys of
+`apps/legacy_state_moves` ("A legacy state move holds the swap" below): the pin table
+is data, and `test_builtin_adoption_pins.py` fails on a shipped built-in name in any
+adoption module other than that listed exception, and on a row key it does not list.
 
 **What the swap keeps is `data/`, so a built-in keeps its state there before it
 is pinned.** Everything else in the record's directory is retired with the old
@@ -7347,6 +7348,51 @@ package beside `app.json`, and its repository ships both. The record keeps
 running the built-in, whose startup hook moves the file, and the next start
 adopts. A user who never started the release carrying that hook loses nothing.
 Research Lab's campaigns database is the worked case (knowledge.md § 7).
+
+**A legacy state move holds the swap.** A built-in whose state core itself still
+moves out of a layout core used to own (outside the app's directory, masked and handed
+back by name) cannot move it from a startup hook: the old location is core's, and only
+the gateway may read it. Such a built-in has one data row in the core-owned table
+`apps/legacy_state_moves.LEGACY_STATE_MOVES` (today only Notes, whose
+`md_notebook_state` moves `md-notebook-staging/` into `apps/md-notebook/data/state/`;
+[md-notebook](md-notebook.md#state-layout)). A row is two callables of the core module
+that owns the move, `seal()` (run the move under its own safety checks; whether the
+state is now final in `data/`) and `start_refusal()`; no manifest field reads or adds
+one, so an app cannot declare, widen or name a move. The row key is the one place the
+adoption machinery names an app, a stated exception rather than a seam: a row exists
+only for a layout core itself created, so the move's code is core's and so is the row
+that binds it to the app, and the built-in cannot declare it in its own package (§ 34),
+which leaves the wheel while an adopted host still needs the move. The key is a literal,
+so both name gates see it: `test_builtin_adoption_pins.py` lists it as its one exception
+and compares the live keys to that list, and `test_core_md_notebook_decoupling.py` lists
+the Notes key with the old layouts it goes with.
+Three callers, each on the former built-in's provenance only, since the move writes
+the built-in's state into the record's `data/`:
+
+- APPLY, after the `staged` ledger and seam-level checks and before the staged tree is
+  copied, asks `sealed_for_adoption(name)`, which runs the move. Until it seals (a
+  copy failing, an extra hard link on the token, a sandbox of an earlier build still
+  alive, a crash at any step) the outcome is `state_move_pending`: the ledger stays
+  `staged`, a crash-surviving `granting` grant is rolled back as for the other holds,
+  the built-in keeps running, and the next boot asks again. It runs whether or not the
+  app is enabled, so a host whose built-in was disabled at the upgrade (its backend
+  never started, so nothing moved) is not adopted onto an empty `data/`.
+- APPLY, for a pin whose record is not builtin-owned, runs `seal_adopted(name)`: the
+  move, only when `builtin_adoption_gate.adopted_under_pin_trust` holds, at every boot,
+  enabled or not. A record adopted before its move sealed still gets it; a third-party
+  record under the name, or a grant bound to another repository, gets nothing.
+- The backend spawn asks `backend_start_refusal(name, builtin=...)` for the shipped
+  built-in (`is_builtin_app` on the executed path) or a record adopted under pin trust,
+  and does not start while it answers a reason; every other app starts as before.
+
+A host-side gate, not an app-reachable seam, so it carries no `APP_SDK_LEVEL`: the
+pin table that names an app ships in the same wheel as this gate. Pinned by
+`test/test_legacy_state_moves.py`, end to end through STAGE and APPLY with the real
+Notes moves, including a stop at each step of the move;
+`test/test_app_backend_spawn_env.py` (`TestTheSpawnAsksALegacyStateMoveOnProvenance`)
+drives the backend spawn for the shipped built-in, another app under the name and a
+record adopted under pin trust, so the provenance the spawn passes is pinned by
+behaviour.
 
 **Pins.** `apps/adoption-pins.json` (packaged; each row is the output of
 `scripts/adoption_pin.py compute`, re-checked with `adoption_pin.py verify`, and the
@@ -7662,8 +7708,9 @@ the other two keys and only the marker is dropped, so the next APPLY meets
 `trust_conflict`; with the binding gone only the added name is removed, never the
 local marker restored. Success sets the marker `adopted`. A grant a crash left behind
 (a `granting` marker for the pin commit) is rolled back the same way when APPLY
-refuses before the swap: a `blocked` ledger, `host_sdk_too_old`, a staged tree
-that no longer verifies, or a record held by state beside `app.json`. A `granting` marker for a name the wheel no longer pins is
+refuses before the swap: a `blocked` ledger, `host_sdk_too_old`, a pending legacy
+state move, a staged tree that no longer verifies, or a record held by state beside
+`app.json`. A `granting` marker for a name the wheel no longer pins is
 not visited; the release that drops a pin row owns that cleanup.
 
 **Durable state.** `agent.apps_builtin_adoption` in `config.json` (sealed
@@ -7938,7 +7985,9 @@ Tests: `test/test_task_runner_fold.py`, `test/test_taskrunner_switch.py`,
 
 The core names no built-in app. Where a shipped built-in needs something from the host
 that no manifest field may ask for, the built-in declares it and the core reads it
-through one seam that is empty by default:
+through one seam that is empty by default (the one stated exception, core's own move
+of a built-in's state out of a layout core created, is a core row keyed on the app: § 33,
+"A legacy state move holds the swap"):
 
 - **Host grants** (`apps/builtin_host_grants.py`). A package in `BUILTIN_NAMES` may ship
   a `host_grants.py` data module holding one `HOST_GRANTS` mapping: `build_rlimit` (the

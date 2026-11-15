@@ -101,6 +101,32 @@ class TestTheFirstPass:
         if os.name == "posix":
             assert os.stat(state / "pat").st_mode & 0o077 == 0
 
+    def test_a_pat_an_interrupted_pass_copied_is_emptied_by_the_next(self, dirs):
+        """A pass stopped after copying the PAT and before its seal leaves the same bytes
+        at both names; the next pass does not copy it again but still empties the legacy
+        one, so the token does not stay at a second name."""
+        state, legacy = dirs
+        state.mkdir(parents=True)
+        (legacy / "pat").write_text("ghp_real")
+        (state / "pat").write_text("ghp_real")
+
+        assert mns.migrate_legacy_state(state, legacy) == []
+
+        assert (state / "pat").read_text() == "ghp_real"
+        assert (legacy / "pat").read_bytes() == b""
+        assert (state / mns.MIGRATION_MARKER).is_file()
+
+    def test_a_different_destination_pat_keeps_the_legacy_one(self, dirs):
+        state, legacy = dirs
+        state.mkdir(parents=True)
+        (legacy / "pat").write_text("ghp_old")
+        (state / "pat").write_text("ghp_newer")
+
+        mns.migrate_legacy_state(state, legacy)
+
+        assert (state / "pat").read_text() == "ghp_newer"
+        assert (legacy / "pat").read_text() == "ghp_old"
+
     @_POSIX_ONLY
     def test_the_legacy_pat_is_emptied_in_place_not_unlinked(self, dirs):
         """A live namespace's bind mask sits on the inode; unlinking the name would
@@ -346,7 +372,7 @@ class TestPromotionClosesAfterTheFirstPass:
         from kiro_crew.apps import backend as backend_mod
 
         source = inspect.getsource(backend_mod._start_app_backend_body)
-        guard = source.index("if not _md_notebook_state.sealed_default_legacy_state():")
+        guard = source.index("_legacy_state_moves.backend_start_refusal(")
         assert "return None" in source[guard : guard + 400]
 
 
@@ -358,9 +384,13 @@ class TestTheMoveRunsBeforeAnySandboxLaunches:
     def test_the_notes_backend_spawn_runs_it(self):
         """A host with no sandbox wrap (Windows) reaches the backend without spawn prep."""
         from kiro_crew.apps import backend as backend_mod
+        from kiro_crew.apps import legacy_state_moves
 
         source = inspect.getsource(backend_mod._start_app_backend_body)
-        assert "sealed_default_legacy_state()" in source
+        assert "_legacy_state_moves.backend_start_refusal(" in source
+        assert "sealed_default_legacy_state()" in inspect.getsource(mns.backend_start_refusal)
+        row = legacy_state_moves.legacy_state_move(sb.MD_NOTEBOOK_APP_NAME)
+        assert row is not None
 
     @_POSIX_ONLY
     def test_a_namespace_spawn_moves_bare_state_first(self, tmp_path, monkeypatch):
@@ -376,8 +406,9 @@ class TestTheMoveRunsBeforeAnySandboxLaunches:
         sb.namespace_argv(["/bin/true"])
 
         # Into ``md-notebook-staging/``, which every build masks, and no further: the move
-        # into the app's own directory waits for the Notes backend's start, which checks
-        # that no sandbox of an earlier build is alive.
+        # into the app's own directory waits for a gateway caller of Notes' row in
+        # ``apps/legacy_state_moves`` (the backend's start, or adoption), which checks that
+        # no sandbox of an earlier build is alive.
         assert (home / mns.STATE_DIR_LEAF / "pat").read_text() == "ghp_real"
         assert (home / mns.STATE_DIR_LEAF / mns.MIGRATION_MARKER).exists()
         assert not (home / mns.STATE_DIR_LEAF / mns.APP_MOVE_MARKER).exists()
