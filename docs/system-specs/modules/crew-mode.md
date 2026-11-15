@@ -4376,7 +4376,10 @@ parts:
   (`member_mate_tools.binding_has_ledger_tools`). There the tracking sentence
   names `work_ledger_record` / `work_ledger_read` (`conductor.tracking_ledger`
   in place of `conductor.tracking`), and the operating-mode block appends
-  `conductor.patrol`. There every task the Bot hands to a worker is tracked, a
+  `conductor.patrol`. A turn whose operating-mode block is withheld
+  (`member_gates._member_dispatch_held`: this session lacks the `session_*`
+  mount, or the backend cannot mount it) keeps `conductor.tracking`: it has no
+  worker to hand a task to. There every task the Bot hands to a worker is tracked, a
   single task too, as on the conductor in conductor mode, and so is work the user asked
   to track; the tracking sentence says the same, and the goal-setup nudge
   (`goal_setup.kickoff_step2_ledger`) and the heartbeat hand-off
@@ -4588,8 +4591,8 @@ parts:
   names (`mate_worker.uncarried_tool_limits_of`). The worker's model pin is judged against the same backend
   (`mate_worker.crewmate_worker_backend`).
 
-**The two conductors stay in step.** `kirocrew-conductor` (conductor mode
-chats) and `kirocrew-mate-conductor` both conduct work through a work ledger, from
+**The two conductors stay in step.** `kirocrew-conductor` (plain and child
+conductors) and `kirocrew-mate-conductor` both conduct work through a work ledger, from
 different installers and different prompt files. A conductor change lands on
 both, or it lands on the parity allowlist with a reason. The rules both need
 (dispatch and bind before the seed, the `watch="work-ledger"` patrol, the
@@ -4607,7 +4610,11 @@ lacks unless its `ALLOWLIST` names it with a one-line reason; on a Bot piece
 that copies root charter text instead of naming the rule; and on an allowlist
 entry that no longer names a difference. The check runs one way: what only the
 Bot's conductor has (cron, guide and Bot servers, the default built-ins, its
-front-desk wording) is not drift.
+front-desk wording) is not drift. Conductor mode chats run `kirocrew-team-lead`,
+which reaches the shared rules only through the `goal-conductor` skill: the same
+test holds each rule to anchor phrases in `goal-conductor/SKILL.md`
+(`CONDUCTOR_MODE_SKILL_ANCHORS`), or to a named gap with a reason
+(`CONDUCTOR_MODE_GAPS`, empty today), and fails on a gap the skill has closed.
 
 **A stale worker is released, not capped.** A Bot opens as many workers as
 its work needs; memory is bounded by the cgroup `max_memory_mb`. A worker idle
@@ -5676,7 +5683,7 @@ Parent-change and impact previews use the server's redacted projection.
 | `test/test_members.py`, `test/test_members_dm_thread.py`, `test/test_members_dm_thread_activity_and_briefing.py` | Slug validation and containment, activity recording and dedupe, DM-binding canonicality, rules and briefing reads, briefing endpoint |
 | `test/test_chat_send_agent_model_default.py` | The crew model default a new session starts on |
 | `test/test_cron_conductor_scripted.py` | A scripted `cron_add` from a Bot's conductor is dispatched like any caller's |
-| `test/test_mate_conductor_parity.py` | Every section of the root conductor's charter is a shared rule the Bot's conductor is told, a heading, or allowlisted with a reason; no Bot piece copies charter text; every MCP server, tool, auto-approve grant and mapped skill of `kirocrew-conductor` is on `kirocrew-mate-conductor`, both read through the per-session projection, or allowlisted; no allowlist entry is stale; a planted root-only section, server, tool, grant or skill is caught |
+| `test/test_mate_conductor_parity.py` | Every section of the root conductor's charter is a shared rule the Bot's conductor is told, a heading, or allowlisted with a reason; no Bot piece copies charter text; every MCP server, tool, auto-approve grant and mapped skill of `kirocrew-conductor` is on `kirocrew-mate-conductor`, both read through the per-session projection, or allowlisted; no allowlist entry is stale; a planted root-only section, server, tool, grant or skill is caught; every shared rule has its anchor phrases in `goal-conductor/SKILL.md` (the skill `kirocrew-team-lead` follows in conductor mode) or a named gap that is still a gap |
 | `test/test_mate_config_migration.py` | The upgrade migration carries a shared template's or a `crew-<hex>` copy's kit and nothing the worker base has, gives a default-template Bot a file that adds nothing, gives the conductor-bound first Bot what a default-template Bot gets, leaves a binding without a `member_id` alone without a log line above DEBUG, records the kit's source, skips and logs a Bot whose worker would differ (binding and disk untouched), changes nothing on a second run, leaves a hand-made rollback alone, and the carried capabilities read as already there |
 | `test/test_mate_thread_wakes.py` | A worker's turn end wakes its Bot once; no wake for a session the Bot did not create or that this process did not witness; a busy thread gets one report (the latest, with the turn count) after its turn ends; a held report waits for the thread's next turn end; the excerpt's end marker cannot be forged; only the creator's send witnesses the link; a quiet worker end (`nothing_to_do`, no text) reports nothing and leaves a pending report as it was, while an empty reply without it or a reply with text still reports; every top-level turn end reaches the wake path with its quiet-end fact |
 | `test/test_mate_upgrade_notice.py` | A moved Bot's notice is posted once and never on a later start, never by a Bot created after the upgrade or on a thread whose binding names another member, reaches a thread not open at startup at its next turn end, and is owed only by Bots the migration moved |

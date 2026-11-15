@@ -330,6 +330,7 @@ def build_message(
             steering_dirs=steering_dirs,
             desk_withheld=ctx._desk_withheld(execution_context, desk_member),
             provider_type=provider_type,
+            dispatch_mounted=member_dispatch_mounted,
         )
     if _essentials and not is_new_session:
         parts.append(_essentials)
@@ -490,6 +491,7 @@ def build_message(
                         member,
                         include_briefing=not blocks_reads,
                         desk_withheld=ctx._desk_withheld(execution_context, desk_member),
+                        dispatch_mounted=member_dispatch_mounted,
                     )
                     if _member_section:
                         _resume_member = (
@@ -676,6 +678,7 @@ def build_message(
                 member,
                 include_briefing=not blocks_reads,
                 desk_withheld=ctx._desk_withheld(execution_context, desk_member),
+                dispatch_mounted=member_dispatch_mounted,
             )
             if _member_section:
                 parts.append(ctx._neutralize_structural_markers(_member_section))

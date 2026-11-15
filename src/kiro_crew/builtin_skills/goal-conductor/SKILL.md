@@ -181,6 +181,13 @@ the owner names one.
 
 ## The loop
 
+**A call that depends on another goes in a later step, never the same block.**
+It depends on another when its arguments, or the fact it records or reports,
+are only true once the other has returned: a verdict and the eval that produces
+it, a report and the read that proves it, a `session_send` and the
+`work_ledger_read` it quotes. Calls that truly do not depend on each other,
+such as several reads, still go together in one block.
+
 ### Round 0 — one plan, one gate
 
 **Look before you plan.** In the same turn, before you write the plan: call
@@ -428,7 +435,9 @@ or `max_runtime_secs`. A
 a stop condition below, or a person stops it.
 
 `monitor_start` is create-only, so every change after arming is a
-`monitor_update`. Then end your turn.
+`monitor_update`. A reply saying *requested* confirms receipt only: do not
+retry it in the same turn. Confirm the loop is armed from the gateway arm
+notice or `monitor_inspect` on a later turn. Then end your turn.
 
 **Run from the goal: handle routine incidents yourself.** These do not wait for
 your manager:

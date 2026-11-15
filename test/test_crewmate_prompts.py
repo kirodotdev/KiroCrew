@@ -466,6 +466,37 @@ def test_a_render_without_the_ledger_is_the_text_every_crewmate_had(
     )
 
 
+@pytest.mark.parametrize("mounted, backend_can_dispatch", [(False, True), (None, False)])
+def test_a_turn_without_the_dispatch_tools_is_not_told_to_track_its_hand_offs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mounted: bool | None,
+    backend_can_dispatch: bool,
+) -> None:
+    """The ledger is mounted but the operating-mode block is withheld (this session
+    lacks the ``session_*`` mount, or the backend cannot mount it): the tracking
+    sentence is the plain one, not the one about tasks handed to workers."""
+    from types import SimpleNamespace
+
+    from kiro_crew import context as ctx
+    from kiro_crew import member_mate_tools
+    from kiro_crew.context_assembly import member
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    cfg = ctx.KiroCrewConfig()
+    cfg.agents["Atlas"] = SimpleNamespace(
+        description="", triggers="", kiro_agent="", workspace="", member_id=""
+    )
+    monkeypatch.setattr(ctx.KiroCrewConfig, "load", staticmethod(lambda *a, **k: cfg))
+    monkeypatch.setattr(member_mate_tools, "binding_has_ledger_tools", lambda _b: True)
+    monkeypatch.setattr(ctx, "_member_backend_can_dispatch", lambda *_a: backend_can_dispatch)
+    text = member.build_member_section("Atlas", include_briefing=False, dispatch_mounted=mounted)
+    assert crewmate_prompts.text("conductor.tracking") in text
+    assert crewmate_prompts.text("conductor.tracking_ledger") not in text
+    held = member.build_member_section("Atlas", include_briefing=False, dispatch_mounted=True)
+    assert crewmate_prompts.text("conductor.tracking_ledger") in held
+
+
 # -- which spec counts as having the ledger ---------------------------------- #
 
 
