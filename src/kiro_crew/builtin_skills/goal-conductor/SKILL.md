@@ -276,6 +276,29 @@ that waits on another item's output belongs in a later round, or in the same
 item. Size each item to what one worker can finish and prove. A file two items
 must both write has one owner item, named in both briefs.
 
+**One owner per shared file, one integrator per output.** Every file two items
+could touch has exactly one item allowed to write it; every output (a merge
+queue, a deployer, a published artifact) has exactly one item that lands it.
+Testing and review are their own item, dispatched to a different worker than
+the author: an author grading its own work reports the result it already
+believes.
+
+**Merge two lines of work when they stop being two.** Three readings say it:
+they edit the same files, one of them is down to a single item, or hand-offs
+between them keep bouncing. `action=close` one line's items with their state,
+then reseed the surviving line with the remaining work and the closed line's
+artifacts by path.
+
+**Add a tracker when one patrol read no longer fits.** The signals: your
+`compact` ledger read comes back cut, the items span more than one ledger or
+machine, or you catch yourself skipping items in a cycle. Then dispatch ONE
+worker whose only item is tracking: it reads every ledger and the pull
+requests, writes one summary item, and you read only that. **A tracker reports
+and never decides.** A tracker that rules is a second conductor over one fleet,
+and that is how an item gets dispatched twice. A Bot's ledger is one level on
+one machine and its `[Worker report]` turns carry each worker's state, so this
+rule is for a conductor-mode conductor.
+
 ### Dispatch a round
 
 For each item in the round, call `work_dispatch` with the item's `title`, its
@@ -473,6 +496,12 @@ on the item, or a `session_ledger_record` event, naming the PR or path, the head
 sha, and the reason. Escalate to the person only an ask case (a)-(e); a change
 to an owner ruling is (e). Send a conflict with another lead to the lead that
 dispatched you as `question`; with none, decide it and record it.
+
+**Report before you park.** When you stop on a wait you have not reported yet
+(workers running, a CI run, a person's answer), first say in one line what you
+wait on and what wakes you next: in your reply, or as `work_report` `progress`
+when a conductor dispatched you. A turn that ends having reported nothing wakes
+nobody and tells nobody where the goal stands.
 
 **Record each slip.** Record a slip of your own with `session_ledger_record`:
 an event with the time, what happened, the root cause, and the fix or guard,
@@ -672,6 +701,11 @@ Each cycle:
    worker that could fill in its own acceptance could point it at anybody's
    already-green pull request, which is exactly why the claim and the condition
    are separate fields.
+
+   **A code change is done when it lands.** When the goal wants the pull
+   request merged, the bar you promote is `pr_merged` (with `repo`), not
+   `pr_checks`, and the patrol stays armed until it merges: a reviewer can still
+   ask for changes after the checks go green, and main can still conflict.
 
    **A `human_approval` item is verified by asking.** The evaluator answers `pending` for it forever, so the answer comes from the user. In a turn nobody typed (it opens with `[auto-nudge cycle`, `[work-ledger wake]` or `[sent by session`, or a cron fired it), never call `ask_question`: record the ask with `work_ask_record`, put it in `needs_you` or an `[OPTIONS:]` reply, keep patrolling the other items, and record the verdict in the turn the user answers. In a turn the user typed, ask with `ask_question`. That call BLOCKS until the user responds and returns the answers as its tool result, so your turn does not end and no later patrol cycle has to pick the answer up: read the result and record the verdict in the same turn. Nothing else runs in this session meanwhile, so keep patrol work out of the turn that asks. The card waits up to 30 minutes; if the result says it expired, was dismissed, or that the user replied in chat instead, act on that outcome (re-ask, or read their next message) rather than inventing an answer.
 
