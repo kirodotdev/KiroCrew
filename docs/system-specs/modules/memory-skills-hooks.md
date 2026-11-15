@@ -99,7 +99,8 @@ an edited or shortened prefix refuses acknowledgement. Receipts are not pruned.
   Learned reads/writes, FTS and vectors run on that connection, split between the
   store and the `vector_memory_runtime/` modules it delegates to (see
   [Store composition](#store-composition-vector_memorypy-and-vector_memory_runtime));
-  `memory_record_metadata.py` maintains revisions, proposals and provenance.
+  `memory_record_metadata.py` maintains revisions, proposals and provenance;
+  `memory_reconcile_child.py` runs its full reconcile pass in a child process.
 - `memory.py` is the facade for manual documents and learned history. V2 learned
   operations delegate to its admitted SQLite handle; V1 keeps its file layout.
 - `history_consolidation_pass.py` (`HistoryConsolidator._consolidate`, bound
@@ -1171,7 +1172,24 @@ the closing `COMMIT`.
 
 **The open-time metadata pass writes only when it has work.** After the schema step,
 `record_meta.reconcile` and (V1 algorithm only) `limit_v1_accepted_history` run in their
-own transaction. Reconcile skips rows whose content hash is unchanged, and the history
+own transaction. The incremental check (a trusted marker, see below) runs in the opener's
+transaction. A full pass (no trusted marker) runs in a spawned child process instead:
+`record_meta.full_pass_needed` decides this by reading only, and the parent holds no
+transaction while the child works. `memory_reconcile_child.py` starts the child with the
+`spawn` method, so it has its own GIL and does not wait behind busy threads of the
+gateway. The child opens its own connection, runs `reconcile(db, full=True)` in one
+transaction and writes the same rows and marker an in-process pass writes. The parent
+waits for the child's result on a pipe for at most 600 seconds (it reads before it joins,
+so a large result cannot block the child), then joins the child with a short grace. A child
+that is still running at the deadline, or still alive after it has sent its result, is
+terminated and, if it survives the grace, killed, and joined before anything else runs. If
+the child cannot start, exits non-zero, exits without a result or times out, the parent
+runs the full pass in process and logs one WARNING that names the reason. A busy write lock is not a failure: the child
+leaves no marker and exits 0, exactly as the in-process pass does, and the next start
+repeats the pass. Warnings the pass itself logs (rows skipped for lack of an id) are sent
+back over the pipe, the first 50 plus a count of the rest, and logged by the parent. `limit_v1_accepted_history` always runs in the
+parent, after the child has finished. `kirocrew doctor --reconcile-memory` runs its full
+pass in the doctor process. Reconcile skips rows whose content hash is unchanged, and the history
 bound selects only records over `V1_ACCEPTED_REVISION_LIMIT` before it deletes anything.
 Under implicit transactions any DML takes the write lock even when it matches no row, so
 a steady-state open issues none and does not wait on another writer (#21056).
