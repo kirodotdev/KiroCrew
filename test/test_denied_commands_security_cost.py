@@ -575,7 +575,9 @@ class TestSelfModuleIndexIsLinear:
         (0.507s against a scan that costs about 0.08s of CPU under coverage). The
         budget holds the minimum of a fixed five readings: one collection or
         frequency dip charged to the thread can inflate a reading, but not all five.
+        Each reading runs with the coverage tracer paused.
         """
+        import sys
         import time
 
         from kiro_crew import security
@@ -592,9 +594,18 @@ class TestSelfModuleIndexIsLinear:
         text = build(2000)
 
         def reading() -> float:
-            start = time.thread_time()
-            assert security._is_self_restart(text) is True
-            return time.thread_time() - start
+            # Coverage's line tracer (the CI shards run with --cov) multiplies the
+            # scan's CPU about five-fold, so the reading pauses it: the
+            # budget measures the scan, not the instrumentation. The scan's frames
+            # start after the pause, so none of them is traced.
+            tracer = sys.gettrace()
+            sys.settrace(None)
+            try:
+                start = time.thread_time()
+                assert security._is_self_restart(text) is True
+                return time.thread_time() - start
+            finally:
+                sys.settrace(tracer)
 
         large = min(reading() for _ in range(5))
         # Base spent 1.94 s here; a quadratic scan cannot come near this ceiling.
