@@ -799,6 +799,70 @@ class HarnessAdapter(LaunchAdapter):
         """
         return params, agent
 
+    # ── Seam 3b: per-session state (a host whose sessions carry their own setup) ──
+
+    #: True on a host that prepares each session on its own before ``session/new`` /
+    #: ``session/load`` and checks it after (:meth:`prepare_session` and the seams
+    #: below). The runtime reads this before awaiting any of them, so a host that
+    #: answers False -- kiro-cli, KAS, codex -- makes no extra call at all
+    #: (harness-parity H13).
+    per_session_state: bool = False
+
+    async def prepare_session(
+        self,
+        *,
+        work_dir: str | Path,
+        agent: str | None,
+        model: str,
+        session_key: str,
+        channel_id: str,
+        memory_mode: str,
+    ) -> Any:
+        """Prepare one session before its ``session/new`` or ``session/load`` goes out.
+
+        Returns the session's state, handed back to every seam below, or None.
+        Off-loop work (a settings file this host reads per session) belongs here.
+        Raising refuses the start before anything is sent. Reached only where
+        :attr:`per_session_state` is True.
+        """
+        return None
+
+    def permission_surface_owned(self, state: Any) -> bool:
+        """Whether Crew governs this session's native permission surface, for the
+        mirror's array: False unless the host's own state says it does."""
+        return False
+
+    def session_meta(
+        self, state: Any, mcp_servers: list[dict[str, Any]], *, zero_tools: bool = False
+    ) -> dict[str, Any] | None:
+        """The ``_meta`` entries this session's request carries, built after its array, or None."""
+        return None
+
+    async def after_session_start(
+        self,
+        state: Any,
+        session_id: str,
+        resp: dict[str, Any],
+        *,
+        send_request: Callable[[str, dict[str, Any]], Awaitable[Any]],
+        close_session: Callable[[], Awaitable[None]],
+        agent_version: str = "",
+    ) -> None:
+        """Check the session that just started, before its first prompt.
+
+        *agent_version* is the ``agentInfo.version`` the process reported at its
+        handshake.
+
+        *send_request* sends a request on the shared connection and awaits its
+        answer; *close_session* ends THIS session only. A host that refuses the
+        session closes it through *close_session* and raises; it never ends the
+        process, which other sessions share.
+        """
+
+    async def end_session(self, state: Any) -> None:
+        """Release what :meth:`prepare_session` set up, once the session is over or
+        never started. Must not raise."""
+
     def holds_replayed_permission(self, session_id: str) -> bool:
         """Whether a permission request for *session_id* arrived inside a resume hold.
 

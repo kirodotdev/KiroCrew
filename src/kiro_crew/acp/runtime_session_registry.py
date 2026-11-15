@@ -9,9 +9,10 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_announced_children``, ``_announced_overflow``,
 ``_mcp_sign_in_ended_hooks``, ``_pending_init_notifications``, ``_routed_requests``,
-``_session_activity_at``, ``_session_cwds``, ``_session_inits_in_flight``,
-``_session_mcp_reports``, ``_session_queues``,
-``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``, ``_turn_active_sessions``.
+``_session_activity_at``, ``_session_cwds``, ``_session_harness_states``,
+``_session_inits_in_flight``, ``_session_mcp_reports``, ``_session_queues``,
+``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
+``_turn_active_sessions``.
 
 Instance fields read: ``_agent_capabilities``, ``_dead``, ``_mcp_reports``, ``_process``,
 ``_record_keeping_sessions``, ``_start_collectors``.
@@ -259,6 +260,11 @@ async def terminate_session(
     finally:
         self._unclaimed_new_sessions.discard(session_id)
         self.unregister_session(session_id)
+        # What the harness prepared for this session (``HarnessAdapter.end_session``).
+        # A host without per-session state recorded nothing, so nothing is awaited.
+        harness_state = self._session_harness_states.pop(session_id, None)
+        if harness_state is not None:
+            await self._harness.end_session(harness_state)
 
 
 class _RecordKeepingScope:
@@ -336,6 +342,11 @@ async def evict_session(self: AcpRuntime, session_id: str) -> None:
                 )
     finally:
         self.unregister_session(session_id)
+        # What the harness prepared for this session (``HarnessAdapter.end_session``).
+        # A host without per-session state recorded nothing, so nothing is awaited.
+        harness_state = self._session_harness_states.pop(session_id, None)
+        if harness_state is not None:
+            await self._harness.end_session(harness_state)
 
 
 def can_release(self: AcpRuntime) -> bool:

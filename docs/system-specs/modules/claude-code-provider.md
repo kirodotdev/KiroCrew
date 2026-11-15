@@ -950,7 +950,8 @@ claude-agent-acp reports Claude Code's TodoWrite or Task* list as a legacy ACP `
 update (Crew declares no `clientCapabilities.plan`): the whole list on every change,
 `entries: []` once it is gone, and no tool row. Claude Code 2.1.325 offers no checklist
 tool in the adapter's SDK mode unless `CLAUDE_CODE_ENABLE_TODO_TOOLS` is set, so
-`ClaudeLaunch._apply_env_defaults` sets it to `1` (`CLAUDE_TODO_TOOLS_ENV`) on a
+`harness.claude._apply_claude_env_defaults` (called by `ClaudeLaunch` and
+`ClaudeHarness`'s `apply_spawn_env`) sets it to `1` (`CLAUDE_TODO_TOOLS_ENV`) on a
 backend in `ACP_BACKENDS_PLAN_CHECKLIST` (claude) when the spawn environment does not
 name it. A value already there (the gateway's environment, `agent.env`, `extra_env`),
 an empty one included, is the operator's and is kept, and a Claude Code settings file's
@@ -978,7 +979,7 @@ Frames: `test/fixtures/acp_frames/claude/plan-checklist.jsonl` and
 Claude Code's recent models default the thinking display to `omitted`, so a turn
 streams no `agent_thought_chunk`. claude-agent-acp 0.107.0 reads
 `CLAUDE_CODE_THINKING_DISPLAY` and `MAX_THINKING_TOKENS` from its process environment
-at `session/new` (0.94.0 reads only the budget), so `ClaudeLaunch._apply_env_defaults`
+at `session/new` (0.94.0 reads only the budget), so `_apply_claude_env_defaults`
 sets `CLAUDE_CODE_THINKING_DISPLAY=summarized` (`CLAUDE_THINKING_DISPLAY_ENV`) on a
 backend in `ACP_BACKENDS_SUMMARIZED_THINKING`, by the checklist default's rule. A
 settings file's `env` never reaches the adapter. Summarized thinking bills the full
