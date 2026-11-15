@@ -377,6 +377,15 @@ test must first establish the concurrency it is asserting about.
   hold and an ordinary shell does not, so a blanket `skipif(IS_WINDOWS)` would drop the
   assertion exactly where it needs to run. Use the `make_escaping_link` /
   `make_dir_link` helpers, which fall back to a junction.
+- **Probe with the program under test, not a stand-in.** When a live test picks its
+  expected branch from a host probe, the probe makes the same check the program makes,
+  with the binary it runs (codex's own bubblewrap preflight, not Crew's
+  `userns_available()`). AppArmor judges each binary by its own profile, so one
+  process's refusal does not predict another's: on the `ubuntu-26.04` runner Crew's
+  probe was refused while codex's sandbox ran, and the codex inner-sandbox tests were
+  red on every PR that runner served. A second probe answers only where the program's
+  own check gives no verdict, never as a veto ahead of it (testing-conventions § A host
+  probe that asks a different program than the one under test).
 - **arm64 vs x86_64** rarely matters for test logic, but check it when you touch memory
   or page arithmetic (`SC_PAGE_SIZE` is 16K on some arm64 configurations) or a
   dependency with per-architecture wheels.

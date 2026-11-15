@@ -5619,6 +5619,32 @@ behaviour regresses. `test/test_source_pin_budget.py` counts every test module's
 reads of those files against a per-module `BUDGET` that may only fall, so a new read
 fails and a change that removes one lowers its row in the same commit.
 
+### A host probe that asks a different program than the one under test
+
+A live test that picks its expected branch from a host probe ("this host can build
+the sandbox, so the step must run; otherwise it must fail closed") is only as
+deterministic as the probe's agreement with the program under test. A probe that
+asks a DIFFERENT program the same question -- Crew's own launcher probe standing in
+for codex's bubblewrap -- agrees on some runner images and not on others, and the
+test then reds on every pull request routed to the image where they part.
+
+The probe MUST make the same check the program under test makes, with the binary it
+runs: its own preflight, its own binary lookup (`PATH` first, then the bundled copy,
+if that is the program's order). A second probe may answer only where the program's
+own check gives no verdict. Never chain the two so the stand-in can veto the real
+one: a short-circuit on the stand-in's "no" skips the check that would have said
+"yes". The kernel and its LSMs judge per binary and per profile (AppArmor attaches
+a profile to a path), so one process's refusal does not predict another's.
+
+MEASURED: `test/test_codex_inner_sandbox_approval.py` returned "no sandbox" whenever
+`userns_available()` said no, without running codex's own bubblewrap preflight. On
+the `ubuntu-26.04` image of `kirocrew-linux-4-core`, Crew's Python probe was refused
+`unshare(CLONE_NEWNS)` (EPERM) while codex's sandbox ran `git status` and the
+network step (exit 0, `NET-200`). The test expected a `bwrap:` refusal, so two
+contract tests were red on every pull request that runner served. Codex's preflight
+now decides; Crew's probe answers only when no bubblewrap is found or the preflight
+fails some other way.
+
 ### A test that ASSERTS a host capability instead of gating on it
 
 `assert supervisor.can_reap()` inside a test body says "this host supports pidfd".
