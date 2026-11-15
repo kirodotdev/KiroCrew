@@ -6713,6 +6713,7 @@
       "memory_yes": "Memory: yes",
       "min_product_version": "Min {{productName}}: v{{version}}",
       "network_yes": "Network: yes",
+      "hidden_sessions_desc": "Chats it creates as its own private chats stay out of your sidebar and session list; open them from the app's page. Its other chats stay listed under the app. Approvals and questions from hidden chats still reach you.",
       "next": "Next",
       "once_launched_the_app_will_automatically_connect": "Once launched, the app will automatically connect to this {{productName}} instance and appear in Apps.",
       "origin_builtin": "Built-in",

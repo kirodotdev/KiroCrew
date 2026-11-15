@@ -274,6 +274,7 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     deny_session_approval_caller,
 )
 from kiro_crew.dashboard.chat_api.slot_create import (  # noqa: F401
+    _app_hides_own_mode,
     _birth_default_project,
     _check_new_slot_assignment,
     _created_slot_row,

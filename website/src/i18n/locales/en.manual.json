@@ -2079,6 +2079,8 @@
         "desktop_shortcuts": "Keyboard shortcuts that work in every program while the app is on.",
         "chat_slots_heading": "This app also runs its own chat sessions",
         "chat_slots_desc": "It can start chats it owns, listed under the app in the sidebar, send them work, stop or archive them, and keep them going on a timer. Never your chats. Their tool calls follow your approval rules for this app.",
+        "hidden_sessions_heading": "Its chats stay out of your session list",
+        "hidden_sessions_desc": "Chats it creates as its own private chats do not appear in your sidebar or Older sessions; open them from the app's page. Its other chats stay listed under the app. Approvals and questions from hidden chats still reach you.",
         "user_session_reach_heading": "This app also lets your chats reach the sessions it runs",
         "user_session_reach_read": "Your chats can read those sessions.",
         "user_session_reach_send": "Your chats can send messages to those sessions. Each message shows which chat sent it.",

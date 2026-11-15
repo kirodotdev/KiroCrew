@@ -7,6 +7,7 @@ export interface DisclosedPermissions {
   memberThreads?: boolean
   workerAutoApprove?: boolean
   chatSlots?: boolean
+  hiddenSessions?: boolean
   reachableByUserSessions?: string[]
   desktopCapabilities?: string[]
   webhookSource?: boolean
@@ -14,7 +15,7 @@ export interface DisclosedPermissions {
 
 type TrustGrants = Pick<
   TrustAppTarget,
-  'sessionApproval' | 'memberThreads' | 'workerAutoApprove' | 'chatSlots' | 'reachableByUserSessions' | 'desktopCapabilities' | 'api' | 'webhookSource'
+  'sessionApproval' | 'memberThreads' | 'workerAutoApprove' | 'chatSlots' | 'hiddenSessions' | 'reachableByUserSessions' | 'desktopCapabilities' | 'api' | 'webhookSource'
 >
 
 /**
@@ -29,6 +30,7 @@ export function trustGrants(permissions: DisclosedPermissions | undefined): Trus
     memberThreads: permissions?.memberThreads === true,
     workerAutoApprove: permissions?.workerAutoApprove === true,
     chatSlots: permissions?.chatSlots === true,
+    hiddenSessions: permissions?.hiddenSessions === true,
     reachableByUserSessions: permissions?.reachableByUserSessions,
     desktopCapabilities: permissions?.desktopCapabilities,
     api: permissions?.api,

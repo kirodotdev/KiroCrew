@@ -157,6 +157,9 @@ class Resume:
     disk_meta_observed: bool = True
     app: str = ""
     history_key: str = ""
+    #: Whether a non-plain mode the line carries is kept, decided off the loop by the
+    #: caller (``apps.hidden_sessions.resume_keeps_mode``); otherwise it resumes plain.
+    keeps_mode: bool = True
 
 
 Purpose = Restore | Resume
@@ -479,6 +482,8 @@ def _read_mode(r: _Read) -> None:
         from kiro_crew import members as members_mod  # members imports artifacts: see cp
 
         if mode == members_mod.DM_SLOT_MODE:
+            return
+        if mode and not r.purpose.keeps_mode:
             return
     if mode:
         r.slot.mode = mode

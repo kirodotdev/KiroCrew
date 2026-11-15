@@ -1,4 +1,4 @@
-import { Monitor, MessagesSquare, ShieldAlert, Webhook } from 'lucide-react'
+import { EyeOff, Monitor, MessagesSquare, ShieldAlert, Webhook } from 'lucide-react'
 import { i18nT } from '../i18n/t'
 import { desktopCapabilityLine, knownDesktopCapabilities, type DesktopCapability } from '../components/appstore/desktopCapabilities'
 
@@ -52,6 +52,21 @@ export function WebhookSourceBox({ source }: { source: string }) {
       </div>
       <div className="mt-1.5 text-[11px] text-muted">
         {i18nT('pages.appDetailPage.webhook_source_id')}: <code data-testid="webhook-source-id">{source}</code>
+      </div>
+    </div>
+  )
+}
+
+/** `permissions.hiddenSessions`: the app's own chats are left out of the session lists. */
+export function HiddenSessionsBox() {
+  return (
+    <div className="rounded-md border border-border px-2.5 py-2" data-testid="hidden-sessions">
+      <div className="flex items-start gap-2 text-text">
+        <EyeOff size={13} className="mt-[2px] shrink-0 text-muted" />
+        <span>{i18nT('pages.appDetailPage.hidden_sessions_desc')}</span>
+      </div>
+      <div className="mt-1.5 text-[11px] text-muted">
+        {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>hiddenSessions</code>
       </div>
     </div>
   )

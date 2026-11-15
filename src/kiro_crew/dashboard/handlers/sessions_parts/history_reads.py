@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Iterable
+from collections.abc import Set as AbstractSet
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -214,16 +216,29 @@ def _has_user_content(log: object, row: dict, *, indexed: bool = False) -> bool:
         return True
 
 
-def _is_user_listed_row(log: object, row: dict, *, indexed: bool = False) -> bool:
+def _is_user_listed_row(
+    log: object, row: dict, *, indexed: bool = False, hidden: AbstractSet[str] = frozenset()
+) -> bool:
     """True when the ``user_only`` listing shows *row*.
 
     ONE predicate, shared by ``GET /api/sessions?user_only=1`` and the
     ``user_only`` bulk clear, so the Older Sessions "Delete all" removes only
     rows the reader could see in that pane. Both pass ``indexed=True`` for rows
-    from ``list_sessions_indexed``, so both read the same answer.
+    from ``list_sessions_indexed``, so both read the same answer. *hidden* is
+    :func:`user_hidden_modes` of the same rows: a chat whose mode names an app that
+    keeps its chats out of the lists is not shown.
     """
     key = row.get("key", "")
+    if row.get("mode") in hidden:
+        return False
     return not _is_machine_only_session(key) and _has_user_content(log, row, indexed=indexed)
+
+
+def user_hidden_modes(rows: Iterable[dict]) -> frozenset[str]:
+    """The modes among *rows* whose app keeps its chats out of the lists. Blocking I/O."""
+    from kiro_crew.apps.hidden_sessions import hidden_modes
+
+    return hidden_modes(row.get("mode") for row in rows)
 
 
 _SHORT_SLOT_NAME_RE = re.compile(r"chat-\d+")
@@ -371,7 +386,8 @@ async def api_sessions(request: web.Request) -> web.Response:
                     except HistoryLockTimeout:
                         continue
                 return owned
-            return [s for s in sessions if _is_user_listed_row(log, s, indexed=True)]
+            hidden = user_hidden_modes(sessions)
+            return [s for s in sessions if _is_user_listed_row(log, s, indexed=True, hidden=hidden)]
 
         all_sessions = await asyncio.to_thread(_user_rows, all_sessions)
     # Count AFTER the exclusion so the page, ``total`` and ``has_more`` describe

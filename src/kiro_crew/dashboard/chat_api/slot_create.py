@@ -217,6 +217,22 @@ async def _check_new_slot_assignment(
         )
 
 
+async def _app_hides_own_mode(request: web.Request, body: dict[str, Any], mode: Any) -> bool:
+    """Whether *mode* is the creating app's own id and that app may hide its chats.
+
+    The creating app is the app token's (``request["app"]``), else, on the owner's
+    own request, the app whose page asks (``embed_app``). Either way the mode must
+    be that app's id, so no app can hide another app's chat or the person's.
+    """
+    request_app = request.get("app", "")
+    creator = request_app or (body.get("embed_app") if is_owner_dashboard_request(request) else "")
+    if not isinstance(mode, str) or not mode or mode != creator:
+        return False
+    from kiro_crew.apps.hidden_sessions import may_hide_sessions
+
+    return await asyncio.to_thread(may_hide_sessions, mode)
+
+
 async def api_chat_slot_create(request: web.Request) -> web.Response:
     """POST /api/chat/slots — create a new chat slot."""
     state: DashboardState = request.app["state"]
@@ -376,7 +392,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     if memory_mode not in ("persistent", "incognito", "temporary"):
         return web.json_response({"error": "invalid memory_mode"}, status=400)
     _mode = _coerce_requested_mode(body.get("mode", ""))
-    if _mode not in _CREATABLE_MODES:
+    if _mode not in _CREATABLE_MODES and not await _app_hides_own_mode(request, body, _mode):
         return web.json_response({"error": "invalid mode", "code": "invalid_mode"}, status=400)
     # A member-* name is RESERVED for DM threads (born only through the member
     # thread endpoint); `get_or_create_slot` below rejects it with a ValueError

@@ -569,6 +569,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
     # The orphan set may have named this app; a successor installed under the
     # same name must not inherit its stale `orphaned` flag.
     invalidate_orphan_cache()
+    # An uninstalled app hides none of its open chats.
+    from kiro_crew.apps.hidden_sessions import request_hiding_refresh
+
+    request_hiding_refresh()
     return AppResult(ok=True, name=name, message=f"uninstalled {name}{residual}")
 
 
