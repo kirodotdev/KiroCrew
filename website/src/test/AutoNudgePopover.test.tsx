@@ -804,6 +804,24 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     }
   })
 
+  it('Nudge now keeps its name until the popover closes, so the press that ends the wait does not slide Pause under the pointer', () => {
+    const label = () => screen.queryByTestId('auto-nudge-play-label')
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    const props = { slotKey: SLOT, onOpenChange: () => {}, onChange: () => {}, onFired: () => {} }
+    const held = running({ waiting_on_person: true, person_wait_declared: true })
+    // The press released the wait: the record comes back running, no longer held.
+    const released = running({ person_wait_release: 'person' })
+    const view = render(<QueryClientProvider client={qc}><AutoNudgePopover {...props} open loop={held} /></QueryClientProvider>)
+    expect(label()!.textContent).toBe(NUDGE_NOW)
+    view.rerender(<QueryClientProvider client={qc}><AutoNudgePopover {...props} open loop={released} /></QueryClientProvider>)
+    expect(label()!.textContent).toBe(NUDGE_NOW)
+    expect(byLabel(NUDGE_NOW)!).toContainElement(label())
+    // Closed and opened again, the released loop's button is the plain icon.
+    view.rerender(<QueryClientProvider client={qc}><AutoNudgePopover {...props} open={false} loop={released} /></QueryClientProvider>)
+    view.rerender(<QueryClientProvider client={qc}><AutoNudgePopover {...props} open loop={released} /></QueryClientProvider>)
+    expect(label()).toBeNull()
+  })
+
   it('while a declared person-wait holds, the status line leads with the clock and rides the time left in parentheses, tagging the next day and never a year', () => {
     // A fixed clock so the branch (same day vs the next) is deterministic. The
     // popover renders in the HOST timezone (format.ts pins none), so the end

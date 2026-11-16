@@ -797,8 +797,16 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
           : i18nT('components.autoNudgePopover.loop_paused')
   /** The declared-wait status line tells the person to press Nudge now, so the
    *  press is named on the button too, beside its icon; the accessible name is
-   *  `playName` either way. */
-  const showPlayLabel = runsNow && declaredPersonWait && !formDirty
+   *  `playName` either way. Once shown, the name stays until the popover closes:
+   *  the press that ends the wait would otherwise shrink the button to its icon
+   *  and slide Pause under the pointer that just clicked. */
+  const playLabelNow = runsNow && declaredPersonWait && !formDirty
+  const [keepPlayLabel, setKeepPlayLabel] = useState(false)
+  useEffect(() => {
+    if (!open) setKeepPlayLabel(false)
+    else if (playLabelNow) setKeepPlayLabel(true)
+  }, [open, playLabelNow])
+  const showPlayLabel = playLabelNow || (keepPlayLabel && runsNow && !formDirty)
   /** Whether a cycle is ALREADY armed to run. Derived from the same countdown
    *  the status line renders, so the button and the text can never disagree.
    *  Never while held for an approval or a declared person-wait: the deadline

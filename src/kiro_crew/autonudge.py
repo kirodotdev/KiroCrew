@@ -432,7 +432,9 @@ def get_instance() -> "AutoNudgeService | None":
     return _INSTANCE
 
 
-def release_approval_hold_for(slot_key: str | None, *, why: str, arm: bool = True) -> None:
+def release_approval_hold_for(
+    slot_key: str | None, *, why: str, arm: bool = True, person: bool = True
+) -> None:
     """End *slot_key*'s approval hold, if its loop has one. Best-effort.
 
     The one call the approval paths make once a person answers a prompt. It
@@ -440,12 +442,14 @@ def release_approval_hold_for(slot_key: str | None, *, why: str, arm: bool = Tru
     durable write) and returns at once. A monitoring convenience must never change
     how that answer is applied, so a missing service, an empty key or a fault here
     is swallowed. A caller about to run a turn passes ``arm=False``: that turn's end
-    re-arms the loop.
+    re-arms the loop. A caller that does not prove a person is back (a turn opening
+    for any sender) passes ``person=False``: it ends an approval hold only, and a
+    declared person-wait stays held.
     """
     try:
         svc = _INSTANCE
         if svc is not None and slot_key:
-            _timers._schedule_release(svc, slot_key, why=why, arm=arm)
+            _timers._schedule_release(svc, slot_key, why=why, arm=arm, person=person)
     except Exception:
         logger.debug("autonudge.release_approval_hold failed", exc_info=True)
 

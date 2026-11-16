@@ -292,7 +292,9 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "notify_user_input": ("method", "fad3ce03aadf"),
     "pending_wake_briefs": ("method", "45a16f5ce541"),
     "record_monitor_completion_evidence_unavailable": ("method+async", "400845dc24be"),
-    "release_approval_hold": ("method+async", "d9496ee75440"),
+    # ``person=False`` (a turn opening for any sender) ends an approval hold only and
+    # leaves a declared person-wait held.
+    "release_approval_hold": ("method+async", "60a4bf59afbb"),
     "record_monitor_dispatch_busy": ("method+async", "400845dc24be"),
     "record_monitor_dispatch_failure": ("method+async", "716192392c13"),
     "record_monitor_dispatched": ("method+async", "400845dc24be"),

@@ -215,7 +215,7 @@ async def test_a_suspend_before_declaration_keeps_the_monotonic_runtime_remainde
 
     assert await svc.declare_person_wait(SLOT, held=True)
 
-    assert armed == [3000.0]
+    assert armed == [SUBJECT_READ_SECS], "the hold ticks one read interval out"
     assert model.person_wait_expires_at(loop) == clock.wall + 3000.0
     assert model.person_wait_ends_on_budget(loop) is True
     await _drain(svc)
@@ -302,6 +302,40 @@ async def test_a_person_s_message_releases_and_an_app_s_does_not(svc, _nosleep):
     svc.notify_turn_complete(SLOT)
     await svc._timers[loop.id]
     assert len(fired) == 2
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_new_turn_in_the_slot_does_not_release_a_declared_wait(svc, _nosleep):
+    """A turn opening (``turn_entry``: any sender -- a subagent completion, a cron, a
+    conductor's send) proves no approval prompt is open, not that a person is back."""
+    fired: list = []
+    loop = await _armed(svc, fired)
+    assert await svc.declare_person_wait(SLOT, held=True)
+    assert _an.get_instance() is svc
+
+    _an.release_approval_hold_for(
+        SLOT, why="a new turn started in the session", arm=False, person=False
+    )
+    await _settle(svc)
+    held = svc._loops[loop.id]
+    assert held.person_wait_declared is True and held.waiting_on_person is True
+    assert held.person_wait_release == ""
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_new_turn_in_the_slot_still_releases_an_approval_hold(svc, _nosleep):
+    fired: list = []
+    loop = await _armed(svc, fired)
+    svc._loops[loop.id].approval_stalled = True
+    svc._loops[loop.id].approval_stalled_at = time.time()
+
+    _an.release_approval_hold_for(
+        SLOT, why="a new turn started in the session", arm=False, person=False
+    )
+    await _settle(svc)
+    assert svc._loops[loop.id].approval_stalled is False
     await _drain(svc)
 
 
@@ -412,7 +446,7 @@ async def test_an_unanswered_declared_wait_expires_after_a_day_and_fires(svc, mo
     t = _whole_now()
     loop, armed, fired = await _declared_plain(svc, monkeypatch, now=t)
     assert await svc.declare_person_wait(SLOT, held=True)
-    assert armed == [float(PERSON_WAIT_MAX_SECS)], "one tick, at the expiry instant"
+    assert armed == [SUBJECT_READ_SECS], "ticks one read interval out, not a day"
     assert _an.person_wait_expires_at(loop) == t + PERSON_WAIT_MAX_SECS
     created = loop.created_ts
     events: list[str] = []
@@ -436,6 +470,80 @@ async def test_an_unanswered_declared_wait_expires_after_a_day_and_fires(svc, mo
     stored = json.loads(svc._store.path.read_text())["loops"][0]
     assert stored["person_wait_release"] == "expired"
     assert stored["person_wait_declared"] is False and stored["waiting_on_person"] is False
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_subject_less_declared_hold_arms_no_more_than_one_read_interval(svc, monkeypatch):
+    t = _whole_now()
+    loop, armed, _fired = await _declared_plain(svc, monkeypatch, now=t)
+    assert await svc.declare_person_wait(SLOT, held=True)
+    assert _an.person_wait_expires_at(loop) == t + PERSON_WAIT_MAX_SECS
+    assert len(armed) == 1 and 0 < armed[0] <= SUBJECT_READ_SECS
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_tick_before_the_expiry_re_arms_one_read_interval_out_and_fires_nothing(
+    svc, monkeypatch
+):
+    t = _whole_now()
+    loop, armed, fired = await _declared_plain(svc, monkeypatch, now=t)
+    assert await svc.declare_person_wait(SLOT, held=True)
+    armed.clear()
+
+    _pin_clock(monkeypatch, t + SUBJECT_READ_SECS)
+    await svc._timer(loop, 0)
+
+    assert fired == [], "a tick inside the hold delivers no turn"
+    assert loop.person_wait_declared is True and loop.waiting_on_person is True
+    assert armed == [SUBJECT_READ_SECS], "re-armed one read interval out, not at the expiry"
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_host_suspended_past_the_expiry_ends_the_hold_at_its_next_tick(svc, monkeypatch):
+    """asyncio sleeps on the monotonic clock, which stops while the host is suspended.
+
+    A timer armed for the whole day would still owe its full sleep after a resume
+    past the expiry; a read-interval tick reaches the expiry one interval later.
+    """
+    clock = _SuspendClock()
+    for module in (firing, timers, subject_reads, model):
+        monkeypatch.setattr(module, "time", clock)
+    resumed = asyncio.Event()
+    never = asyncio.Event()
+
+    async def _nap(secs: float) -> None:
+        # A sleep longer than one read interval is still running after the resume.
+        await (never if secs > SUBJECT_READ_SECS else resumed).wait()
+
+    monkeypatch.setattr(subject_reads, "_nap", _nap)
+    fired: list = []
+
+    async def on_fire(lp):
+        fired.append(lp.cycle_count)
+        return True
+
+    await svc.start()
+    svc._on_fire = on_fire
+    loop = await svc.add(slot_key=SLOT, message="babysit", idle_secs=1800)
+    svc._cancel_timer(loop.id)
+    loop = svc._loops[loop.id]
+    assert await svc.declare_person_wait(SLOT, held=True)
+    expires_at = _an.person_wait_expires_at(loop)
+    assert expires_at is not None
+
+    clock.wall = expires_at + 3600.0  # suspended past the expiry; monotonic stood still
+    resumed.set()
+    await async_wait_until(
+        lambda: loop.person_wait_release == "expired",
+        describe=lambda: (loop.person_wait_declared, loop.person_wait_release),
+    )
+
+    assert loop.person_wait_declared is False and loop.waiting_on_person is False
+    stored = json.loads(svc._store.path.read_text())["loops"][0]
+    assert stored["person_wait_release"] == "expired"
     await _drain(svc)
 
 
@@ -466,7 +574,7 @@ async def test_a_declared_wait_expires_with_the_budget_and_the_tick_stops_the_lo
     loop, armed, fired = await _declared_plain(svc, monkeypatch, now=t, max_runtime_secs=3600)
     loop.created_ts = t - 3000.0  # 600 seconds of budget left
     assert await svc.declare_person_wait(SLOT, held=True)
-    assert armed == [600.0]
+    assert armed == [SUBJECT_READ_SECS]
     assert _an.person_wait_expires_at(loop) == t + 600.0
 
     _pin_clock(monkeypatch, t + 600.0)
@@ -843,10 +951,10 @@ async def test_the_declaring_turns_end_keeps_the_read_not_the_deadline(svc, monk
 
 
 @pytest.mark.asyncio
-async def test_a_turn_ending_on_a_declared_wait_with_nothing_to_read_arms_its_expiry(
+async def test_a_turn_ending_on_a_declared_wait_with_nothing_to_read_arms_its_interval_tick(
     svc, monkeypatch
 ):
-    """A turn-complete re-arm keeps a no-subject hold bounded by its expiry."""
+    """A turn-complete re-arm keeps a no-subject hold's read-interval tick."""
     t = _whole_now()
     loop, armed, _fired = await _declared_plain(svc, monkeypatch, now=t)
     assert await svc.declare_person_wait(SLOT, held=True)
@@ -854,7 +962,7 @@ async def test_a_turn_ending_on_a_declared_wait_with_nothing_to_read_arms_its_ex
 
     svc.notify_turn_complete(SLOT)
 
-    assert armed == [float(PERSON_WAIT_MAX_SECS)]
+    assert armed == [SUBJECT_READ_SECS]
     await _drain(svc)
 
 
@@ -952,11 +1060,9 @@ async def test_a_declared_hold_on_an_ungated_loop_survives_its_pull_request_merg
     svc, monkeypatch
 ):
     """``gate=False`` promises a terminal reading never ends the loop: a declared
-    ungated hold reads nothing and still ticks only at its expiry."""
+    ungated hold reads nothing and ticks only to re-read its expiry."""
     loop, armed = await _declared_on_a_pr(svc, monkeypatch, gate=False)
-    assert (
-        len(armed) == 1 and SUBJECT_READ_SECS < armed[0] <= PERSON_WAIT_MAX_SECS
-    ), "no read interval, one tick at expiry"
+    assert armed == [SUBJECT_READ_SECS], "a read-interval tick that reads nothing"
     armed.clear()
     reads: list[str] = []
 
@@ -972,9 +1078,7 @@ async def test_a_declared_hold_on_an_ungated_loop_survives_its_pull_request_merg
     assert reads == [], "an ungated hold does not read its pull request"
     assert kept.active is True and kept.stopped_reason == ""
     assert kept.person_wait_declared is True and kept.waiting_on_person is True
-    assert (
-        len(armed) == 1 and SUBJECT_READ_SECS < armed[0] <= PERSON_WAIT_MAX_SECS
-    ), "re-armed toward its expiry"
+    assert armed == [SUBJECT_READ_SECS], "re-armed one read interval out"
     await _drain(svc)
 
 
