@@ -157,7 +157,7 @@ export function useWebSocket() {
   // The reconnect catch-up window, closed by the new socket's connect snapshot.
   const reconnectSnapshotRef = useRef<ReconnectSnapshotWait | null>(null)
   if (reconnectSnapshotRef.current === null) {
-    reconnectSnapshotRef.current = createReconnectSnapshotWait(dispatch, reconnectingRef)
+    reconnectSnapshotRef.current = createReconnectSnapshotWait(dispatch, reconnectingRef, queryClient)
   }
   const reconnectSnapshot = reconnectSnapshotRef.current
   const voice = useVoicePlayback(dispatch)
