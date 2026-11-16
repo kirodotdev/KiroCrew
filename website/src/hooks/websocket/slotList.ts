@@ -218,10 +218,20 @@ export function useSlotListSync(
       // `mustResettleActiveSlot` misses two such ends: text the flush above
       // just landed, and a pending send this row itself ends.
       const afterSettle = store.getState().chat
+      const endedIdentity = activeSlotEnded && activeKey
+        ? wireTurnIdentity(data.find(s => s.key === activeKey) ?? {})
+        : null
+      // An idle pane can miss a whole server-started turn (run, rows and `_done`
+      // all lost); the row then names a newer ended turn of the same generation.
+      const knownEnded = activeKey && Object.prototype.hasOwnProperty.call(beforeSettle.endedTurn ?? {}, activeKey)
+        ? beforeSettle.endedTurn[activeKey]
+        : undefined
+      const missedWholeTurn = !!endedIdentity && !!knownEnded
+        && knownEnded.gen === endedIdentity.gen && endedIdentity.turn > knownEnded.turn
       if (activeSlotEnded && activeKey && afterSettle.activeSlot === activeKey
-          && (beforeSettle.slotState !== 'idle' || beforeSettle.slotRunning)
+          && (beforeSettle.slotState !== 'idle' || beforeSettle.slotRunning || missedWholeTurn)
           && afterSettle.slotState === 'idle' && !afterSettle.slotRunning) {
-        recordIdleRowRefresh(activeKey, wireTurnIdentity(data.find(s => s.key === activeKey) ?? {}))
+        recordIdleRowRefresh(activeKey, endedIdentity)
         dispatch(refreshSlot(activeKey))
       }
       // Seed the ['chat-folders'] query cache from the folder tree carried

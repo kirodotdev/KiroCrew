@@ -450,5 +450,41 @@ describe('useWebSocket: a slots frame ending the active turn flushes its buffere
       expect(refreshes() - before).toBe(1)
       hook.unmount()
     })
+
+    it('an idle pane whose turn frames were all lost re-hydrates once from the idle row', async () => {
+      const { ws, hook } = mount()
+      const gen = 'gateway-server-turn'
+      act(() => { ws.simulateMessage(turnRow(false, 3, gen)) })
+      // The server starts turn 4 itself. Its running row, its rows and its
+      // `_done` never reach this tab, so the pane still believes it is idle.
+      vi.mocked(api.chatSlotDetail).mockResolvedValueOnce({
+        messages: [{ role: 'assistant', content: 'close-out report', cls: 'msg msg-a', meta: { mid: 'a-4' } }],
+        running: false, turn: 4, turn_gen: gen, has_more: false, total: 1, queue: [],
+      })
+      const before = refreshes()
+
+      act(() => { ws.simulateMessage(turnRow(false, 4, gen)) })
+
+      expect(refreshes() - before).toBe(1)
+      await vi.waitFor(() => {
+        expect(replies().map(m => [m.role, m.content])).toEqual([['assistant', 'close-out report']])
+      })
+      act(() => { ws.simulateMessage(chatDone(4, gen)) })
+      act(() => { ws.simulateMessage(turnRow(false, 4, gen)) })
+      expect(refreshes() - before).toBe(1)
+      hook.unmount()
+    })
+
+    it('an idle row for an idle pane fetches nothing without a newer turn of the same generation', () => {
+      const { ws, hook } = mount()
+      const before = refreshes()
+
+      act(() => { ws.simulateMessage(turnRow(false, 2, 'gateway-unseen')) })
+      act(() => { ws.simulateMessage(turnRow(false, 2, 'gateway-unseen')) })
+      act(() => { ws.simulateMessage(turnRow(false, 3, 'gateway-restarted')) })
+
+      expect(refreshes() - before).toBe(0)
+      hook.unmount()
+    })
   })
 })
