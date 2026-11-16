@@ -5,6 +5,7 @@ import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, toPathSegment, parsePathSegments } from '../components/subNavParams'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
+import { useRenderedLocationIsCurrent } from '../hooks/useRenderedLocationIsCurrent'
 import { RemoteControlCard } from './settings/RemoteControlCard'
 import { RemoteCrewPanel } from './settings/RemoteCrewPanel'
 import { PeoplePanel } from './settings/PeoplePanel'
@@ -149,6 +150,7 @@ export default function SettingsPage() {
   useSettingHighlight()
   const navigate = useNavigate()
   const location = useLocation()
+  const renderedLocationIsCurrent = useRenderedLocationIsCurrent()
 
   // Legacy query-param translation: Settings navigation used to live in query
   // params (?tab=X&sub=Y, with the per-host `channel`/`section` aliases, and
@@ -223,8 +225,11 @@ export default function SettingsPage() {
         ? `${SETTINGS_BASE_PATH}/${tabSeg}/${subSeg}`
         : `${SETTINGS_BASE_PATH}/${tabSeg}`
       : SETTINGS_BASE_PATH
+    // A newer navigation still pending means this location is no longer the
+    // one to translate; the effect runs again when the router renders it.
+    if (!renderedLocationIsCurrent()) return
     navigate({ pathname: target, search: rest ? `?${rest}` : '' }, { replace: true })
-  }, [search, pathname, navigate])
+  }, [search, pathname, navigate, renderedLocationIsCurrent])
 
   // Remote Crew is reachable inside an embedded pane: a pane may connect a
   // further crew, and the gateway showing this dashboard adds it as a top-level
