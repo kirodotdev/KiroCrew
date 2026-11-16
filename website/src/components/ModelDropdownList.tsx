@@ -162,10 +162,20 @@ export default function ModelDropdownList({ models, activeModel, onSelect, loadi
                   translated label would make that selector locale-dependent. The
                   VISIBLE text prefers the backend's native label (e.g. "Opus 5.5"
                   for the id `opus`), in the sans font, followed by the id in small
-                  monospace; without one the row shows the id via rowLabel. */}
-              <span data-model-name data-model-id={m.name} className={`text-[13px] ${named ? '' : 'font-mono '}font-semibold truncate ${active ? 'text-accent' : 'text-text'}`}>{named ? m.displayName : rowLabel(m.name)}</span>
-              {named && <span data-model-id-hint className="text-[11px] font-mono text-muted truncate">{m.name}</span>}
-              {active && <span className="text-accent text-[12px]"><Check className="lucide-inline" /></span>}
+                  monospace; without one the row shows the id via rowLabel.
+                  Name and id WRAP, never truncate: two rows often differ only at
+                  the end ("Opus 4.8 (1M context)" vs "Opus 4.8", or a Bedrock id's
+                  `[1m]` suffix), which is exactly what an ellipsis cuts. The id
+                  drops to its own line when it does not fit beside the name, and
+                  break-all splits an id longer than the row. The label is capped
+                  at two lines: real names fit in one, and the gateway's 400-char
+                  label bound (ADVERTISED_LABEL_MAX_CHARS) must not grow a row
+                  past that. */}
+              <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2">
+                <span data-model-name data-model-id={m.name} className={`min-w-0 text-[13px] ${named ? 'break-words' : 'font-mono break-all'} line-clamp-2 font-semibold ${active ? 'text-accent' : 'text-text'}`}>{named ? m.displayName : rowLabel(m.name)}</span>
+                {named && <span data-model-id-hint className="min-w-0 text-[11px] font-mono text-muted break-all">{m.name}</span>}
+                {active && <span className="text-accent text-[12px]"><Check className="lucide-inline" /></span>}
+              </span>
               {/* Credit multiplier. Rendered only when the backend reported a
                   usable one — a cold-start or pre-feature cached row has none,
                   and an absent badge is the honest state (see
@@ -178,7 +188,7 @@ export default function ModelDropdownList({ models, activeModel, onSelect, loadi
                   popover's accent-subtle wash would otherwise show through and
                   muddy the border hue that carries the tier. */}
               {isPricedMultiplier(mult) && (
-                <span className={`ml-auto shrink-0 min-w-[2.9rem] text-center px-1.5 py-[3px] rounded-full border bg-bg-elevated font-mono font-semibold tabular-nums text-[10.5px] leading-none text-text ${TIER_BORDER[costTier(mult)]}`}>
+                <span className={`shrink-0 min-w-[2.9rem] text-center px-1.5 py-[3px] rounded-full border bg-bg-elevated font-mono font-semibold tabular-nums text-[10.5px] leading-none text-text ${TIER_BORDER[costTier(mult)]}`}>
                   <span aria-hidden="true">{formatMultiplier(mult)}</span>
                   {/* The visible glyph alone reads as a bare "2.2 times" to a
                       screen reader. The option's accessible name is built from

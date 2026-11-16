@@ -168,15 +168,22 @@ export default function MultiSelect({
                 />
                 <span className="min-w-0 flex-1">
                   {/* Muted text, not an opacity drop, so a locked row reads as unavailable. */}
+                  {/* A named row's label and id hint WRAP rather than truncate: model
+                      rows sharing a prefix differ only at the end ("(1M context)",
+                      a Bedrock id's `[1m]`), which an ellipsis cuts. The hint drops
+                      below the label when the two do not fit on one line. A label
+                      with no hint can be a raw id too (a cold model cache). Label and
+                      description stop at two lines, so the gateway's 400-char label
+                      bound cannot grow a row past that. */}
                   {option.hint ? (
-                    <span className="flex min-w-0 items-baseline gap-2">
-                      <span className={`min-w-0 truncate text-[13px] font-medium ${option.locked ? 'text-muted' : 'text-text'}`}>{option.label}</span>
-                      <span data-multi-select-hint className="min-w-0 truncate text-[11px] font-mono text-muted">{option.hint}</span>
+                    <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+                      <span className={`min-w-0 break-words line-clamp-2 text-[13px] font-medium ${option.locked ? 'text-muted' : 'text-text'}`}>{option.label}</span>
+                      <span data-multi-select-hint className="min-w-0 break-all text-[11px] font-mono text-muted">{option.hint}</span>
                     </span>
                   ) : (
-                    <span className={`block truncate text-[13px] font-medium ${option.locked ? 'text-muted' : 'text-text'}`}>{option.label}</span>
+                    <span className={`break-words line-clamp-2 text-[13px] font-medium ${option.locked ? 'text-muted' : 'text-text'}`}>{option.label}</span>
                   )}
-                  {option.description && <span className="block truncate text-[11px] text-muted">{option.description}</span>}
+                  {option.description && <span className="break-words line-clamp-2 text-[11px] text-muted">{option.description}</span>}
                 </span>
               </label>
             )
