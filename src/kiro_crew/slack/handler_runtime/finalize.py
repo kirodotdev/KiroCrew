@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         _AnswerStream,
         _dashboard_state,
         _review_drafts,
+        _ts_before,
         auto_title,
         logger,
     )
@@ -136,6 +137,70 @@ def _append_footer_actions(
         else:
             footer_blocks.append({"type": "actions", "elements": [build_link_dashboard_button()]})
     return footer_blocks
+
+
+async def seal_stream(
+    slack: SlackClientOps,
+    channel: str,
+    ts: str,
+    final_text: str | None,
+    footer_blocks: list[dict] | None,
+    thread_ts: str | None = None,
+) -> bool:
+    """Stop a Slack stream, with *footer_blocks* at the bottom of the answer message.
+
+    True only when the footer is on the answer message, so the caller posts none of
+    its own. On False (no footer asked for, or the footer seal refused, e.g.
+    ``message_not_in_streaming_state`` once the stream's 10 minutes are up) the
+    stream is sealed bare and the caller posts the footer as its own message: one
+    footer per turn, never zero or two. Never raises: the seal is decoration.
+
+    A failed footer seal may still have landed (Slack applied it and the reply was
+    lost, or the SDK's retry of an applied seal was refused), and the error cannot
+    say which. So the message is read back from *thread_ts*: a footer found there
+    counts as delivered; a footer not found, or a read that fails, means post it.
+    """
+    if footer_blocks:
+        try:
+            if await slack.stop_stream(channel, ts, final_text, blocks=footer_blocks):
+                return True
+        except Exception:
+            logger.warning("Slack stop_stream with the footer failed", exc_info=True)
+    try:
+        await slack.stop_stream(channel, ts, final_text)
+    except Exception:
+        logger.warning("Slack stop_stream failed at finalize", exc_info=True)
+    if footer_blocks and thread_ts:
+        return await _footer_landed(slack, channel, thread_ts, ts, footer_blocks)
+    return False
+
+
+def _block_texts(blocks: object) -> set[str]:
+    """The mrkdwn/plain text of every context element in *blocks*."""
+    texts: set[str] = set()
+    for block in blocks if isinstance(blocks, list) else []:
+        for el in (block.get("elements") or []) if isinstance(block, dict) else []:
+            if isinstance(el, dict) and isinstance(el.get("text"), str):
+                texts.add(el["text"])
+    return texts
+
+
+async def _footer_landed(
+    slack: SlackClientOps, channel: str, thread_ts: str, ts: str, footer_blocks: list[dict]
+) -> bool:
+    """Whether the message at *ts* already shows *footer_blocks*; False on any doubt."""
+    want = _block_texts(footer_blocks)
+    oldest = _ts_before(ts)
+    if not want or oldest is None:
+        return False
+    try:
+        replies = await slack.fetch_thread_replies(
+            channel, thread_ts, limit=2, warn_on_pagination=False, oldest=oldest
+        )
+    except Exception:
+        logger.warning("Slack read-back of the footer seal failed", exc_info=True)
+        return False
+    return any(m.get("ts") == ts and want <= _block_texts(m.get("blocks")) for m in replies)
 
 
 async def _maybe_auto_title_slack(
