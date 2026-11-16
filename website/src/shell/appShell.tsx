@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
-import { isRelayCrewWindow, isRelayRetrying, offlineReason } from '../utils/offlineReason'
+import { isRelayCrewPane, isRelayCrewWindow, isRelayRetrying, offlineReason } from '../utils/offlineReason'
 import { prefillCrewAddForm, setActiveId } from '../store/instancesSlice'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
 import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
@@ -224,6 +224,9 @@ export function useAppShell() {
   // is then the one live region speaking the state, so the capsule's region
   // and the focus-mode stand-in say nothing until the state changes again.
   const relayCrewWindow = useRef(isRelayCrewWindow()).current
+  // A relay Crew shown inside the desktop app's main window: that window's own
+  // top bar is the only one, so App leaves this page's header out.
+  const relayCrewPane = useRef(isRelayCrewPane()).current
   const relayRetrying = relayCrewWindow && !connected && !gatewayConnecting && !authRequired
     && isRelayRetrying(offlineCause, relayCrewWindow)
   const gatewayStatusAnnounce = relayRetrying ? '' : gatewayStatusMsg
@@ -1128,7 +1131,7 @@ export function useAppShell() {
 
   return {
     isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, gatewayConnecting, updateAvailable, settingsDotLabel, authRequired, terminalEnabled,
-    gatewayStatusMsg, gatewayStatusAnnounce, relayCrewWindow, relayRetrying,
+    gatewayStatusMsg, gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, relayRetrying,
     focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
     hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
