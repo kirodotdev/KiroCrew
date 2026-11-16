@@ -2465,6 +2465,14 @@ Both halves are pinned by tests (`ComputerUsePanel.test.tsx`,
 `electron/test/external-scheme.test.js`) because the failure mode is a silent
 dead button that only reproduces in a packaged build.
 
+The window the handler creates for such a same-origin `blob:` loads it through
+the dashboard's navigation guard (`createNavigationGuard`, attached on `did-create-window` in
+`window-lifecycle.js`), which admits only `http:` and `https:`. So a window
+opened on a `blob:` URL gets the guard with `allowOwnBlob`, which also admits a
+`blob:` the app origin minted; every other window, the dashboard's own
+included, refuses every `blob:` navigation. `window-lifecycle.test.js` pins
+both.
+
 Editor links that name a file get a fourth verdict, `confirm`:
 `vscode://file/<path>`, `vscode://file/<drive>:/<path>` (a Windows drive letter,
 local files only) and `vscode://vscode-remote/ssh-remote+<host>/<path>`
