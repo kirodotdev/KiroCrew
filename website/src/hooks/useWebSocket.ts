@@ -974,7 +974,7 @@ export function useWebSocket() {
             break
           }
           case 'chat.side_result':
-            dispatch(sseSideResult(data as { slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; final?: boolean; is_error?: boolean; steer?: boolean; message_id?: string; link_blocks?: unknown }))
+            dispatch(sseSideResult(data as { slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; final?: boolean; is_error?: boolean; steer?: boolean; message_id?: string; link_blocks?: unknown; redactions?: unknown }))
             break
           case 'chat.side_closed': {
             // The slot's side conversation was closed (Refresh context in another
