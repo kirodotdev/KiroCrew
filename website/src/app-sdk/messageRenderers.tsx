@@ -566,6 +566,12 @@ export interface AssistantBubbleOptions {
   /** Show the reply's action row without hover, for a host whose playback the
    *  browser blocked (the recovery notice points at More → Read aloud). */
   revealActions?: boolean
+  /** Copy a mouse selection in the reply as the drag ends (Settings -> Chat ->
+   *  Copy on Select). Absent: off. */
+  copyOnSelect?: boolean
+  /** Draw link previews under the reply's links (Settings -> Chat -> Link
+   *  Previews). Absent: off. */
+  linkPreviews?: boolean
 }
 
 /**
@@ -639,6 +645,8 @@ export function renderAssistantBubble(
       onRegenerate={opts.onRegenerate}
       onSpeak={opts.onSpeak}
       revealActions={opts.revealActions}
+      copyOnSelect={opts.copyOnSelect}
+      linkPreviews={opts.linkPreviews}
       redactions={opts.redactionSlot ? (m.meta as Record<string, unknown> | undefined)?.redactions : undefined}
       // The Blocked link chip and its card on every host: whether a link
       // renders live is the server's decision about the text, whoever draws

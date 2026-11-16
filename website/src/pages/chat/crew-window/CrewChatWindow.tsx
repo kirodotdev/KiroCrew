@@ -44,6 +44,7 @@ import { capsRetryInterval, closeCrewWindow, crewVersionMismatchText, markCrewWi
 import { coverSiblings } from '../../../utils/coverSiblings'
 import { createCrewWindowRenderers, crewWindowSlot } from './crewWindowRenderers'
 import { authRequiredIsNewest } from '../transcriptRenderers'
+import { useChatSetting } from '../../../hooks/useChatSetting'
 import { useCrewWindowModelPicker, type PeerModelFields } from './crewWindowModelPicker'
 import { useCrewWindowAgentMode, type PeerAgentModeFields } from './crewWindowAgentMode'
 import { mergeRecoveredDraft } from '../../../utils/chatDrafts'
@@ -53,7 +54,6 @@ import { isSystemNoticeRow } from '../CompactionCard'
 import { useMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
 import { clearDictated, isDictated, markDictated, noteComposerEdit, takeDictated, wantsDictationNote, withDictationNote } from '../../../chat-core/composer/dictationProvenance'
-import { loadChatConfig } from '../ChatSettings'
 
 interface PeerApproval { origin?: string; request_id?: string; request_mid?: string }
 interface PeerSlot extends PeerModelFields, PeerAgentModeFields {
@@ -311,8 +311,8 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // and not while a refused rewind is held (Send retries that first).
   const continuable = connected && !running && !rewindTs && !slotQ.data?.stopping && !!slotQ.data?.interrupted
   const continuing = action.isPending && action.variables?.path === slotPath + '/continue'
-  // This machine's display choice for the meter; the reading is the peer's.
-  const [chatConfig] = useState(loadChatConfig)
+  // Show Thinking Inline, as the Sessions chat reads it.
+  const collapseAllSteps = useChatSetting('collapseAllSteps')
   const approval = slotQ.data?.pending_approval_info
   // Only a native approval names its transcript row, and the peer's strict
   // check needs that row's id so a stale card cannot decide a newer request.
@@ -497,7 +497,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
         {/* Every code fence here is the peer's: copy only, never Edit or Run
             in THIS machine's terminal. */}
         <ReadOnlyCodeCtx.Provider value={true}>
-          <ChatMessageList messages={messages} running={displayRunning} renderers={renderers} onApprove={approve} onQuoteMessage={messageQuote.quoteMessage} />
+          <ChatMessageList messages={messages} running={displayRunning} renderers={renderers} onApprove={approve} onQuoteMessage={messageQuote.quoteMessage} collapseAllSteps={collapseAllSteps} />
         </ReadOnlyCodeCtx.Provider>
         {/* The footer reads the peer's turn phase from `state` and its stop
             from `stopState`, the same two fields the local chat passes. */}
@@ -636,8 +636,6 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             contextPct={detailQ.data?.context_pct}
             contextUsedTokens={detailQ.data?.context_used_tokens}
             contextWindowTokens={detailQ.data?.context_window_tokens}
-            showContextPct={chatConfig.showContextPct}
-            showContextTokens={chatConfig.showContextTokens}
             // The PEER's folder, as a label: no picker, and nothing on this
             // machine is rooted at it (see `sessionOnPeer`).
             project={slotQ.data?.project || ''}
