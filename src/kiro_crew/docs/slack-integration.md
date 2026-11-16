@@ -337,6 +337,24 @@ exactly as with the switch off, and the page says why under the switch.
   the board, a task waiting on you links to its chat. A code channel adds no reactions to your
   messages: its progress is the channel's status and the board. In the dashboard the helper agents sit under the channel's session, in
   the channel's folder (a channel whose chat has conductor mode on keeps them out of folders, as conductor mode does everywhere).
+  The context bar holds Slack's maximum of five items: the helper agents in one item
+  (for example "2 working · 1 needs you") that opens the board, the repository, the
+  branch, **Stop** while the channel's own agent is working (it is Slack's own Stop
+  button: it stops that turn, the helper agents and their sub-agents, as above), and the channel's pull request with its tests. With no
+  pull request yet, once the branch has commits, the last item is a **Create PR** button
+  (it does what `/create-pr` does). **Open in dashboard** (a plain link, shown when your
+  dashboard has an https address; you need to be signed in to it) takes a slot only
+  when one is free; in a channel with a work board, the board links the channel's
+  session instead.
+  A button answers only the people who may use Kiro Crew; anyone else is told so
+  privately. Comments people leave on the **Plan** tab reach the channel's agent as
+  feedback from the person who wrote them. When the channel already has Slack's maximum
+  of five tabs, the agent's tab it updated least recently makes room for a new one; the
+  Plan tab, the Code tab and tabs others added are never removed. The channel's
+  pull request is also its linked resource in Slack, and the work board is its live
+  summary until the wrap-up replaces it. If Slack stops accepting the channel's updates
+  (it is no longer a code channel, or Kiro Crew is no longer its agent), the dashboard
+  says so once.
   It adds the `code_channels:manage`, `chat:write.customize`, `canvases:write`,
   `channels:write.invites`, `groups:write.invites` and `pins:write` scopes (the last
   lets the work board pin itself in its channel). Your workspace must have

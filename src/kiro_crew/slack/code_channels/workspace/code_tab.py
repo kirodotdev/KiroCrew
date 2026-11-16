@@ -62,6 +62,8 @@ class CodeTab:
 
         def _board_still_admitted(self, binding: Any) -> bool: ...
 
+        def _write_fence(self, binding: Any, *, board: bool) -> Callable[[], bool] | None: ...
+
         def _worker_projects(self, board: Any) -> dict[str, str]: ...
 
         def _build_diff(
@@ -120,7 +122,7 @@ class CodeTab:
         content, base_label, head_label = built
         if not content:
             return await self._clear_diff(record)
-        from kiro_crew.slack.code_channels.workspace.service import _digest
+        from kiro_crew.slack.code_channels.workspace.publishing import _digest
 
         digest = _digest(content, base_label, head_label)
         if digest == record.diff_hash and not (record.diff_workers and board is None):
@@ -138,6 +140,8 @@ class CodeTab:
             if not await self._owe_tab(record):
                 return False
         uncertain: list[bool] = []
+        from kiro_crew.slack.code_channels.workspace.publishing import _FENCED
+
         view_id = await self._call(
             "set_diff_view",
             record,
@@ -146,14 +150,22 @@ class CodeTab:
             head_branch=head_label,
             gate=gate,
             uncertain=uncertain,
+            # At Slack's view cap a stale tab of ours makes room; the channel's
+            # activation (Off or Review refuse) is asked right before the send.
+            room_for="diff",
+            fence=self._write_fence(binding, board=False),
         )
+        if view_id is _FENCED:
+            view_id = None  # set to Off or Review meanwhile: nothing was sent
         if view_id is None:
             if not any(uncertain):
                 record.diff_workers = prior  # never applied: the tab up is unchanged
                 if board is not None and not prior:
                     await self._unowe_tab(record)  # undo this send's own write-ahead
             if gate is not None and not gate():
-                return await self._publish_diff(record, replacing=True)  # refused at the send
+                # Refused at the send: the channel's own tab instead, under the
+                # same activation fence (an Off or Review sends nothing at all).
+                return await self._publish_diff(record, binding, replacing=True)
             # A tab that carries (or replaces one carrying) helper agents must land:
             # the pass stays unsent and is re-armed. The channel's own retries next turn.
             return board is None and not replacing

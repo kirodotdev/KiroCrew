@@ -112,6 +112,8 @@ from kiro_crew.slack.blocks import (
 from kiro_crew.slack.channel_policy import SlackChannelRefused
 from kiro_crew.slack.code_channels import install as install_code_channels
 from kiro_crew.slack.code_channels import lifecycle as code_channel_lifecycle
+from kiro_crew.slack.code_channels.actions import EVENT as CODE_CHANNEL_ACTION_EVENT
+from kiro_crew.slack.code_channels.actions import dispatch as dispatch_code_channel_action
 from kiro_crew.slack.code_channels.binding import no_reactions as code_channel_no_reactions
 from kiro_crew.slack.code_channels.creation import PERSON_SUBTYPES
 from kiro_crew.slack.code_channels.routing import Gate as CodeChannelGate
@@ -385,6 +387,11 @@ async def init_socket_mode(
         # ── Code channels: archive, unarchive, rename ──
         if event_type in code_channel_lifecycle.LIFECYCLE_EVENTS:
             code_channel_lifecycle.dispatch(req.payload or {}, event)
+            return
+
+        # ── Code channels: a context-bar action item was clicked ──
+        if event_type == CODE_CHANNEL_ACTION_EVENT:
+            dispatch_code_channel_action(orch, req.payload or {}, event)
             return
 
         # ── Messages and mentions ──

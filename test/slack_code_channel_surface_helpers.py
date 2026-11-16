@@ -96,7 +96,9 @@ def env_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     e.slack.post_blocks = post_blocks
     e.slack.update_message = update_message
     commands._seen = None
-    surface._archived_here.clear()
+    # Fresh per test and put back after it: an archive a test makes never
+    # fences the next test's channel (surface.archived_now).
+    monkeypatch.setattr(surface, "_archived_here", set())
     wrapup._requests.clear()
     wrapup._carrying.clear()
     wrapup._recoveries.clear()

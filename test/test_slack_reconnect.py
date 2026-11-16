@@ -503,7 +503,12 @@ def _code_channel_turn_across_a_reconnect(
     monkeypatch.setattr(slack_client_mod, "RealSlackClient", lambda token: new)
     monkeypatch.setattr(cc_status, "_gate", lambda: True)
     monkeypatch.setattr(cc_status, "_slack_provider", lambda: orch.slack)
-    binding = SimpleNamespace(channel_id="C0CODE")
+
+    async def _open(_binding: Any, **_kw: Any) -> str:
+        return ""  # the write gate is test_slack_code_channel_fences.py's; open here
+
+    monkeypatch.setattr(cc_status, "_refused", _open)
+    binding = SimpleNamespace(channel_id="C0CODE", session_key="chat-1-1")
 
     async def _turn() -> None:
         await cc_status._on_start(binding, None)  # type: ignore[arg-type]
