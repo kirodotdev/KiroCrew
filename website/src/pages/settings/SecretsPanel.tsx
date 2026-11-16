@@ -29,6 +29,7 @@ import {
 } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { SecretsOwnerOnlyNotice, useSecretsOwnerOnly } from './secretsOwnerOnly'
+import { RotateByNote, RotationDueChip } from './RotateByNote'
 import { fmtDateTime } from '../../i18n/format'
 import { settingsPath } from '../../components/settingsPath'
 import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
@@ -209,11 +210,13 @@ interface ItemValues {
   urls: string[]
   notes: string
   newUrl: string
+  /** The optional rotate-by day, `YYYY-MM-DD`, or empty for none. */
+  rotateBy: string
 }
 
 type LoginDraft = Pick<ItemValues, 'username' | 'password' | 'urls' | 'notes' | 'newUrl'>
 
-const emptyValues = (): ItemValues => ({ value: '', text: '', username: '', password: '', urls: [], notes: '', newUrl: '' })
+const emptyValues = (): ItemValues => ({ value: '', text: '', username: '', password: '', urls: [], notes: '', newUrl: '', rotateBy: '' })
 
 /** Whether *draft* holds anything the user typed since the form opened on *initial*. */
 function loginChanged(draft: LoginDraft, initial: LoginDraft): boolean {
@@ -236,6 +239,7 @@ function itemSchema(type: SecretItemType, editing: boolean) {
     urls: z.array(z.string()),
     notes: z.string(),
     newUrl: z.string(),
+    rotateBy: z.string(),
   })
 }
 
@@ -342,6 +346,7 @@ function ItemForm({
   name,
   type,
   initialLogin,
+  initialRotateBy,
   onSaved,
   onPendingChange,
   onCancel,
@@ -353,6 +358,9 @@ function ItemForm({
   name: string
   type: SecretItemType
   initialLogin?: Partial<Pick<ItemValues, 'username' | 'urls'>>
+  /** The stored rotate-by day when editing: a save without a date clears it,
+   *  so the form starts on it and a save that leaves it keeps it. */
+  initialRotateBy?: string
   /** Editing a stored item of this type: a hidden field left blank is not
    *  sent, so the server keeps its stored value instead of erasing it. */
   editing?: boolean
@@ -372,14 +380,14 @@ function ItemForm({
   const stillMounted = useStillMounted()
   // The host keys this form by type, so the type and the schema are fixed for
   // its life.
-  const [initial] = useState<ItemValues>(() => ({ ...emptyValues(), ...initialLogin }))
+  const [initial] = useState<ItemValues>(() => ({ ...emptyValues(), ...initialLogin, rotateBy: initialRotateBy ?? '' }))
   const [schema] = useState(() => itemSchema(type, editing))
   const form = useForm<ItemValues>({ resolver: zodResolver(schema), defaultValues: initial, mode: 'onChange' })
   const values = { ...initial, ...useWatch({ control: form.control }) } as ItemValues
   const { isValid } = form.formState
   // Every editable field counts, so the agent hand-off is withheld for any
   // unsaved edit (it navigates away and unmounts this form).
-  const hasDraft = Boolean(values.value || values.text) || loginChanged(values, initial)
+  const hasDraft = Boolean(values.value || values.text) || loginChanged(values, initial) || values.rotateBy !== initial.rotateBy
   useEffect(() => {
     onDraftChange(hasDraft)
   }, [hasDraft, onDraftChange])
@@ -401,7 +409,7 @@ function ItemForm({
 
   const save = useMutation({
     mutationKey: [WRITE_KEY, name],
-    mutationFn: (data: ItemValues) => api.secretsSave(name, body(data)),
+    mutationFn: (data: ItemValues) => api.secretsSave(name, body(data), data.rotateBy),
     // Returned, so the mutation stays pending until the host's refetch and
     // navigation are done.
     onSuccess: () => onSaved(stillMounted),
@@ -472,6 +480,20 @@ function ItemForm({
               )}
             />
           )}
+          <FormField
+            control={form.control}
+            name="rotateBy"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{i18nT('settings.secrets.rotate_by_label')}</FormLabel>
+                <FormControl>
+                  <Input {...field} type="date" className="w-full font-mono" />
+                </FormControl>
+                <p className="text-[12.5px] text-muted">{i18nT('settings.secrets.rotate_by_hint')}</p>
+                <RotateByNote name={name} rotateBy={values.rotateBy || undefined} preview />
+              </FormItem>
+            )}
+          />
         </fieldset>
         <div className="flex gap-2">
           <Btn primary type="submit" disabled={!isValid || frozen || disabled}>
@@ -579,6 +601,7 @@ function ManagedPane({
   secret,
   configured,
   unusedReason,
+  rotateBy,
   allowAgentHandoff,
   onDraftChange,
   lockedNames,
@@ -586,6 +609,7 @@ function ManagedPane({
   secret: ManagedSecret
   configured: boolean
   unusedReason: keyof typeof UNUSED_REASON_KEYS | undefined
+  rotateBy?: string
   allowAgentHandoff: boolean
   onDraftChange: (name: string, hasDraft: boolean) => void
   /** Names with a vault write in flight (see WRITE_KEY). This pane freezes
@@ -641,6 +665,7 @@ function ManagedPane({
   return (
     <div className="flex h-full flex-col gap-4">
       <DetailHeader icon={<ShieldCheck aria-hidden />} title={secret.name} subtitle={label} />
+      <RotateByNote name={secret.name} rotateBy={rotateBy} />
       {unusedReason && <p className="text-[12px] text-warn">{i18nT(UNUSED_REASON_KEYS[unusedReason])}</p>}
       <fieldset disabled={locked}>
         {/* The slot's own label, as in the default panel: it is the anchor
@@ -760,6 +785,7 @@ function authorizeCommand(name: string): string {
 function ItemPane({
   item,
   unusedReason,
+  rotateBy,
   allowAgentHandoff,
   onDraftChange,
   onDeleted,
@@ -767,6 +793,7 @@ function ItemPane({
 }: {
   item: SecretListItem
   unusedReason: keyof typeof UNUSED_REASON_KEYS | undefined
+  rotateBy?: string
   allowAgentHandoff: boolean
   onDraftChange: (name: string, hasDraft: boolean) => void
   onDeleted: () => void
@@ -828,6 +855,8 @@ function ItemPane({
         <div className="min-w-0 flex-1">
           <h4 className="truncate font-mono text-[17px] font-semibold text-text-strong">{item.name}</h4>
           <div className="mt-0.5 text-[12.5px] text-muted">{typeLabel(item.type)}</div>
+          {/* While editing, the form's own note under the field shows the date. */}
+          {!editing && <RotateByNote name={item.name} rotateBy={rotateBy} />}
         </div>
         {/* Two controls, per the row budget: Edit and Delete. */}
         {!editing && !item.corrupt && (
@@ -877,6 +906,7 @@ function ItemPane({
               name={item.name}
               type={item.type}
               initialLogin={pub ? { username: pub.username, urls: pub.urls } : undefined}
+              initialRotateBy={rotateBy}
               editing
               disabled={locked}
               onSaved={async () => {
@@ -1035,6 +1065,9 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
     for (const name of names) if (!map.has(name)) map.set(name, { name, type: 'secret', revision: '' })
     return map
   }, [data?.items, names])
+  // A Map keeps the lookup to the entries the list carried: a name such as
+  // `constructor` finds no inherited member of a plain object.
+  const rotateByDates = useMemo(() => new Map(Object.entries(data?.rotate_by ?? {})), [data?.rotate_by])
   const managedNames = useMemo(() => new Set(managed.map(secret => secret.name)), [managed])
   const otherNames = names.filter(name => !managedNames.has(name))
 
@@ -1068,6 +1101,12 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
   const handleAddDraft = useCallback((hasDraft: boolean) => setAddDraft(hasDraft), [])
   const hasAnyDraft = addDraft || managedDraftNames.size > 0
 
+  /** A row's second line, with the "Rotation due" chip under it once the entry's date has passed. */
+  const withRotation = (name: string, summary: ReactNode): ReactNode => {
+    const rotateBy = rotateByDates.get(name)
+    return rotateBy ? <>{summary}<RotationDueChip name={name} rotateBy={rotateBy} inRow /></> : summary
+  }
+
   const rows: SubNavItem<string>[] = [
     {
       key: ADD_KEY,
@@ -1083,12 +1122,15 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
         labelOpaque: true,
         icon: <ShieldCheck className="lucide-inline text-muted" aria-hidden />,
         group: i18nT('settings.secrets.managed_title'),
-        summary: reason ? (
-          <StatusLine tone="warn" text={i18nT('settings.secrets.status_unused')} />
-        ) : configured ? (
-          <StatusLine tone="ok" text={i18nT('settings.secrets.status_set')} />
-        ) : (
-          <StatusLine tone="muted" text={i18nT('settings.secrets.status_not_set')} />
+        summary: withRotation(
+          secret.name,
+          reason ? (
+            <StatusLine tone="warn" text={i18nT('settings.secrets.status_unused')} />
+          ) : configured ? (
+            <StatusLine tone="ok" text={i18nT('settings.secrets.status_set')} />
+          ) : (
+            <StatusLine tone="muted" text={i18nT('settings.secrets.status_not_set')} />
+          ),
         ),
       }
     }),
@@ -1104,13 +1146,16 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
         // The backend's catalog omits a stored name it reports as unused
         // (WakaTime disabled, a global token beside per-host ones), so the
         // warning has to be read here too. Unreadable outranks unused.
-        summary: item.corrupt
-          ? <StatusLine tone="warn" text={i18nT('settings.secrets.status_unreadable')} />
-          : unusedReasons.has(name) && !referenced.has(name)
-            ? <StatusLine tone="warn" text={i18nT('settings.secrets.status_unused')} />
-            : pub?.username
-              ? <span className="text-[11.5px] text-muted">{pub.username}</span>
-              : undefined,
+        summary: withRotation(
+          name,
+          item.corrupt
+            ? <StatusLine tone="warn" text={i18nT('settings.secrets.status_unreadable')} />
+            : unusedReasons.has(name) && !referenced.has(name)
+              ? <StatusLine tone="warn" text={i18nT('settings.secrets.status_unused')} />
+              : pub?.username
+                ? <span className="text-[11.5px] text-muted">{pub.username}</span>
+                : undefined,
+        ),
       }
     }),
   ]
@@ -1166,6 +1211,7 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
               secret={managedSecret}
               configured={stored.has(active)}
               unusedReason={unusedReasons.get(active) as keyof typeof UNUSED_REASON_KEYS | undefined}
+              rotateBy={rotateByDates.get(active)}
               allowAgentHandoff={!hasAnyDraft}
               onDraftChange={handleManagedDraftChange}
               lockedNames={lockedNames}
@@ -1183,6 +1229,7 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
             item={item}
             // Same rule as the rail: an item some place uses is not "Not used".
             unusedReason={referenced.has(active) ? undefined : unusedReasons.get(active) as keyof typeof UNUSED_REASON_KEYS | undefined}
+            rotateBy={rotateByDates.get(active)}
             allowAgentHandoff={!hasAnyDraft}
             onDraftChange={handleManagedDraftChange}
             onDeleted={() => select(ADD_KEY)}

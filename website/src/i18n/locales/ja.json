@@ -23282,7 +23282,12 @@
       "advanced_title": "詳細",
       "api_call_label": "API 呼び出し",
       "owner_only": "シークレットを表示または変更できるのは Crew のオーナーだけです。",
-      "relay_unavailable": "シークレットの表示と変更は Crew のコンピューター上でのみ行えます。Remote Control からはできません。"
+      "relay_unavailable": "シークレットの表示と変更は Crew のコンピューター上でのみ行えます。Remote Control からはできません。",
+      "rotate_by_label": "ローテーション期限（任意）",
+      "rotate_by_hint": "この期限を過ぎると「ローテーション期限切れ」と表示されます。期限を後から変更または削除するには、値をもう一度入力して保存してください。",
+      "rotate_by_note": "{{date}} までにローテーション",
+      "rotation_due": "ローテーション期限切れ",
+      "rotation_due_aria": "{{name}} のローテーション期限切れ: 期限 {{date}} を過ぎています"
     }
   },
   "store": {

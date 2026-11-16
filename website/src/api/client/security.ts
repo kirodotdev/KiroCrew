@@ -439,6 +439,9 @@ export interface SecretsListResponse {
    *  are still authoritative, so this is a warning beside a good list rather
    *  than a failed request. */
   managed_error?: boolean
+  /** Name -> the `YYYY-MM-DD` date the owner means to rotate it by. Absent when
+   *  no entry carries one. */
+  rotate_by?: Record<string, string>
 }
 
 /** Which kind of place references a vault item (`secrets_usage.py`). */
@@ -589,8 +592,13 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
      *  instead of the gateway's cryptographic reason. Raw `fetch` reaches none of
      *  that, so an expired session was shown a bare status code and offered only a
      *  retry that could not succeed (#12240). */
-    secretsSave: (name: string, value: string | SecretItemBody) =>
-      post('/api/secrets', typeof value === 'string' ? { name, value } : { name, ...value }).then(j),
+    secretsSave: (name: string, value: string | SecretItemBody, rotateBy?: string) =>
+      post('/api/secrets', {
+        name,
+        ...(typeof value === 'string' ? { value } : value),
+        // Sent only when set: a save without a date stores none, as before.
+        ...(rotateBy ? { rotate_by: rotateBy } : {}),
+      }).then(j),
     /** Remove a vault secret by name. Same transport reason as `secretsSave`. */
     secretsDelete: (name: string) => del('/api/secrets/' + encodeURIComponent(name)).then(j),
   }
