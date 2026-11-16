@@ -730,6 +730,43 @@ describe('useVirtualChat: above-fold compensation during a width transition', ()
     expect(state.scrollTop).toBe(settledAt)
     expect(reply.top).toBe(50)
   })
+
+  it('keeps a straddler held by its bottom mounted when a scroll recompute runs before the fire that pays a reflow', () => {
+    // Under load a scroll's frame callback can run between a reflow and the
+    // fire that pays it: scrollTop still holds the reflow's displacement, and
+    // the window mapped through it walks past the reader's rows. The held
+    // reply must stay mounted, or the next fire takes the row below it as the
+    // reader's and misses the re-wrap of everything between (probe on
+    // chat-form-switch-anchor.spec.ts, 1400 -> 382: row 32 landed 33px low).
+    const { el, state, view, gate, nudge, setWidth } = setup()
+    const reply = { top: -300, h: 500 }
+    const next = { top: 220, h: 100 }
+    const replyRow = makeRow(reply)
+    const nextRow = makeRow(next)
+    // The reader's rows sit inside the committed window (20-29 at this
+    // scrollTop); the setup's own rows 3 and 12 leave.
+    act(() => {
+      view.result.current.measureRef(3)(null)
+      view.result.current.measureRef(12)(null)
+      view.result.current.measureRef(20)(replyRow)
+      view.result.current.measureRef(23)(nextRow)
+    })
+    const mounted = () => view.result.current.virtualItems.map((v) => v.index)
+    expect(mounted()).toContain(20)
+    gate.open = false
+    reply.h = 150; next.top -= 350; state.scrollHeight -= 350
+    act(() => { fire?.([{ target: replyRow }]) })
+    expect(reply.top).toBe(50)
+    act(() => { vi.advanceTimersByTime(1000) })
+    // The column narrows again, and its reflow drags scrollTop far down
+    // before this layout's fire has paid it back. No reader input.
+    setWidth(200)
+    nudge(2500)
+    act(() => { el.dispatchEvent(new Event('scroll')) })
+    // The scroll's frame callback: the window recompute.
+    act(() => { vi.advanceTimersByTime(16) })
+    expect(mounted()).toContain(20)
+  })
 })
 
 /**

@@ -113,7 +113,7 @@ import { useFollowState, usePinning, useFollowPlacementPins } from './followPoli
 import { useWindowState, useWindowOperations, useCoverageWatchdog, useWindowEdgeTriggers, useTailAppendMount } from './windowRange'
 import { useShiftCapture, useShiftCompensation } from './shiftCompensation'
 import { useReadingPositionEntry, useVisibilityReplacement, useReadingPositionRestore } from './readingPosition'
-import { useHeightOwner, useRowMeasurement, useMeasurementScopeReseed } from './measurement'
+import { useHeightOwner, useRowMeasurement, useMeasurementScopeReseed, type FiredAnchor } from './measurement'
 import { useStreamingSettleGrace, useGeometrySync } from './geometryScheduling'
 
 // The hook's public helpers, defined where their rules live and re-exported
@@ -314,8 +314,11 @@ export function useVirtualChat<T>(
     syncScrollerEl()
   })
 
+  // The reader's row the last ResizeObserver fire measured: measurement owns
+  // it, and the window recompute keeps that row mounted (see FiredAnchor).
+  const firedAnchorRef = useRef<FiredAnchor | null>(null)
   const ops = useWindowOperations({
-    overscan, getH, scrollerRef, leadingOffset, itemsRef, heightIndexRef, elIndexRef, paintedHeightsRef, view, follow,
+    overscan, getH, scrollerRef, leadingOffset, itemsRef, heightIndexRef, elIndexRef, paintedHeightsRef, firedAnchorRef, view, follow,
   })
   const pinning = usePinning({
     followOutput, overscan, scrollerRef, itemsRef, runActiveRef, getH, setWindowRange, follow, reading,
@@ -323,7 +326,7 @@ export function useVirtualChat<T>(
   const sync = useGeometrySync({ itemsRef, eagerFirstMeasureRef, heightIndexRef, shift, follow, pinning, ops })
   const measurement = useRowMeasurement({
     itemsRef, getKeyRef, streamingIndexRef, eagerFirstMeasureRef, elIndexRef, resizeObserverRef,
-    trailingRef, heightIndexRef, canMeasure, windowRangeRef, scrollerRef, grace, sync, follow,
+    trailingRef, heightIndexRef, canMeasure, windowRangeRef, scrollerRef, grace, sync, follow, firedAnchorRef,
   })
 
   // Layout effects, pre-paint: the shift compensation's consumers, then

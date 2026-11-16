@@ -297,6 +297,22 @@ export interface ResizeBatch {
   aboveFoldReprice: number
 }
 
+/** The reader's row the last ResizeObserver fire measured, and where its write
+ *  puts it. Owned by useRowMeasurement; the window recompute only reads it.
+ *  `holdsBottom`: the fire credited the row's own re-wrap as a straddler's,
+ *  keeping its bottom where the reader saw it. Until the next frame is read
+ *  afresh, later fires keep that same edge (see the anchor pass).
+ *  `carried`: kept through a scroll event's re-read (see noteRowTops), so it
+ *  holds only while the width gate stays unsettled.
+ *
+ *  The window recompute keeps this row mounted. During a width transition a
+ *  scroll's frame callback can run between a reflow and the fire that pays
+ *  for it, so scrollTop still holds the reflow's displacement; mapped through
+ *  it, the window drops the reader's row, and the next fire picks the row
+ *  below as the reader's and misses whatever lay between them (probe,
+ *  1400 -> 382 under load: row 31 unmounted, row 32 landed 33px low). */
+export interface FiredAnchor { node: Element; wantedTop: number; holdsBottom: boolean; carried?: boolean }
+
 export interface RowMeasurement {
   /** The ResizeObserver's per-entry pass: record measurements, classify the fire. */
   measureResizeEntries: (entries: ResizeObserverEntry[], el: HTMLDivElement) => ResizeBatch
@@ -331,6 +347,7 @@ export function useRowMeasurement<T>(ctx: {
   grace: Pick<StreamingGrace, 'graceIndexRef'>
   sync: Pick<GeometrySync, 'scheduleHeightSync'>
   follow: Pick<FollowState, 'lastScrollClientHRef' | 'lastReaderScrollAtRef' | 'lastHardInputAtRef'>
+  firedAnchorRef: Ref<FiredAnchor | null>
 }): RowMeasurement {
   const {
     itemsRef, getKeyRef, streamingIndexRef, eagerFirstMeasureRef, elIndexRef, resizeObserverRef,
@@ -451,13 +468,9 @@ export function useRowMeasurement<T>(ctx: {
   const recordWidthRef = useRef<number | null>(null)
   /** The last scroll event that belonged to a reader gesture (see above). */
   const gestureScrollAtRef = useRef(Number.NEGATIVE_INFINITY)
-  /** The reader's row the last fire measured, and where its write puts it. */
-  // `holdsBottom`: the fire credited the row's own re-wrap as a straddler's,
-  // keeping its bottom where the reader saw it. Until the next frame is read
-  // afresh, later fires keep that same edge (see the anchor pass).
-  // `carried`: kept through a scroll event's re-read (see noteRowTops), so it
-  // holds only while the width gate stays unsettled.
-  const firedAnchorRef = useRef<{ node: Element; wantedTop: number; holdsBottom: boolean; carried?: boolean } | null>(null)
+  // Shared with the window recompute, which keeps this row mounted (see
+  // FiredAnchor).
+  const { firedAnchorRef } = ctx
   const { lastScrollClientHRef, lastReaderScrollAtRef, lastHardInputAtRef } = ctx.follow
   const noteRowTops = useCallback((el: HTMLDivElement) => {
     if (typeof el.getBoundingClientRect !== 'function') return
@@ -496,7 +509,7 @@ export function useRowMeasurement<T>(ctx: {
       return
     }
     firedAnchorRef.current = null
-  }, [elIndexRef, lastHardInputAtRef, measurementIndex])
+  }, [elIndexRef, firedAnchorRef, lastHardInputAtRef, measurementIndex])
   const shiftRowTops = useCallback((delta: number) => {
     const tops = liveTopRef.current
     for (const [node, top] of tops) tops.set(node, top - delta)
@@ -505,7 +518,7 @@ export function useRowMeasurement<T>(ctx: {
     // write alone and re-read at the scroll event it raises.
     const fired = firedAnchorRef.current
     if (fired && tops.has(fired.node)) tops.set(fired.node, fired.wantedTop)
-  }, [])
+  }, [firedAnchorRef])
   /** Last observed scroller clientHeight, so a viewport resize has a direction. */
   const viewportHeightRef = useRef(0)
 
@@ -801,7 +814,7 @@ export function useRowMeasurement<T>(ctx: {
     // This fire classified the layout at the scroller's current width.
     recordWidthRef.current = el.clientWidth
     return { genuineResize, firstMount, viewportResized, tailRowResized, trailingChromeResized, streamingRowResized, aboveFoldReprice }
-  }, [elIndexRef, itemsRef, measurementIndex, streamingIndexRef, graceIndexRef, trailingRef, lastScrollClientHRef, lastReaderScrollAtRef, lastHardInputAtRef])
+  }, [elIndexRef, firedAnchorRef, itemsRef, measurementIndex, streamingIndexRef, graceIndexRef, trailingRef, lastScrollClientHRef, lastReaderScrollAtRef, lastHardInputAtRef])
 
   // ---- measureRef: per-item ref callback (memoized per index) ----
   //
