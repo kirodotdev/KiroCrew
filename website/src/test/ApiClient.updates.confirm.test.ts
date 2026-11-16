@@ -13,6 +13,7 @@ import { api, ApiError, __resetAuthRecoveryStateForTests } from '../api/client'
 import { WorkConfirmDeclined } from '../utils/workInFlight'
 import { i18nT } from '../i18n/t'
 import { __resetErrorJournalForTests } from '../utils/errorReport'
+import { UPDATE_RESTART_LATCH_TTL_MS, clearGatewayRestart, takeRestartKeepsTab } from '../lib/gatewayRestart'
 import { confirmText, stubAppConfirm } from './appConfirmStub'
 
 function res(status: number, body: unknown): Response {
@@ -35,10 +36,12 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock)
   __resetAuthRecoveryStateForTests()
   __resetErrorJournalForTests()
+  clearGatewayRestart()
 })
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.useRealTimers()
   __resetAuthRecoveryStateForTests()
 })
 
@@ -77,6 +80,40 @@ describe('restartGateway', () => {
     expect(text).toContain(i18nT('components.updateFoundModal.work_running_title'))
     expect(text).toContain(i18nT('components.updateFoundModal.work_running_busy', { active: 3 }))
     expect(ask.mock.calls[0][0].confirmLabel).toBe(i18nT('components.updateFoundModal.restart_anyway'))
+  })
+
+  it('keeps the tab once across a keepTab restart, through the confirm, and never for a plain one', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    stubAppConfirm(true)
+    fetchMock
+      .mockResolvedValueOnce(res(409, { ...WORK, error: 'busy' }))
+      .mockResolvedValue(res(200, { ok: true }))
+
+    await api.restartGateway({ keepTab: true })
+    expect(takeRestartKeepsTab()).toBe(true)
+    expect(takeRestartKeepsTab()).toBe(false)
+
+    await api.restartGateway()
+    expect(takeRestartKeepsTab()).toBe(false)
+  })
+
+  it('still keeps the tab when a reconnect or a long wait drops the note while the confirm is open', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    stubAppConfirm(true).mockImplementation(async () => {
+      vi.setSystemTime(Date.now() + UPDATE_RESTART_LATCH_TTL_MS + 1)
+      clearGatewayRestart()
+      return true
+    })
+    fetchMock
+      .mockResolvedValueOnce(res(409, { ...WORK, error: 'busy' }))
+      .mockResolvedValueOnce(res(200, { ok: true }))
+
+    await api.restartGateway({ keepTab: true })
+
+    expect(posted().map(p => p.body)).toEqual([{ force: false }, { force: true }])
+    expect(takeRestartKeepsTab()).toBe(true)
   })
 
   it('sends nothing more when the person declines, and says it was cancelled', async () => {
