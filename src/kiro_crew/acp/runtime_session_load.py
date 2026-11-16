@@ -180,7 +180,9 @@ async def load_session(
         # with ``session/close`` and keeps the record; it ends with the load, so a
         # later teardown of the returned handle deletes as before. The body is
         # re-run through this module's function, not the bound method, so the scope
-        # costs no second call of ``AcpRuntime.load_session``.
+        # costs no second call of ``AcpRuntime.load_session``. Every argument is
+        # forwarded: a dropped ``kas_memory_mode`` would resume the saved SID under
+        # whatever ``agent.orchestrator_memory`` reads now and skip its memory check.
         with self.keep_record_on_teardown(resume_sid):
             return await load_session(
                 self,
@@ -192,6 +194,7 @@ async def load_session(
                 member_session_key=member_session_key,
                 session_key=session_key,
                 channel_id=channel_id,
+                kas_memory_mode=kas_memory_mode,
                 require_replay=require_replay,
                 start_priority=start_priority,
                 focus_resume=focus_resume,

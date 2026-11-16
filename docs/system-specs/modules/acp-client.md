@@ -2371,6 +2371,15 @@ the provider then takes the fresh-session path with `_history_replay_needed`, th
 same one a failed load takes. The MCP re-injection load and every other backend
 pass `False`.
 
+**A refused KAS resume keeps its stored record.** Every KAS
+`AcpRuntime.load_session` whose caller has not already opened
+`keep_record_on_teardown(resume_sid)` opens it itself, so a failure arm past the
+load evicts with `session/close` instead of deleting the record through
+`_kiro/session/delete`; the scope ends with the load, so a later teardown of the
+returned handle deletes as before. The scoped load is re-run with every argument
+it was given, `kas_memory_mode` included, so the resume still states the saved
+SID's memory mode and refuses an acknowledgement that does not match it.
+
 `AcpRuntime.load_session` has a second caller on KAS: applying a dashboard MCP
 config change to a LIVE session (`acp/session_provider_mcp_reinject.py`,
 membership `ACP_BACKENDS_MCP_WIRE_REINJECT`). The engine registers a session's
