@@ -1345,6 +1345,21 @@ async def test_reads_normalize_crlf_to_lf(fixtures) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("eol", [b"\n", b"\r\n"])
+async def test_reads_keep_frontmatter_of_a_utf8_bom_note(fixtures, eol: bytes) -> None:
+    """A note saved "UTF-8 with BOM" (Windows editors) keeps its frontmatter."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        text = b"---\ntitle: Plan\ntags: [alpha, beta]\n---\nbody\n".replace(b"\n", eol)
+        (Path(vault["localPath"]) / "bom.md").write_bytes(b"\xef\xbb\xbf" + text)
+        status, read = await client.get("/api/note?path=bom.md")
+        assert status == 200, read
+        assert read["content"].startswith("---\ntitle: Plan\n")
+        assert read["meta"]["frontmatter"] == {"title": "Plan", "tags": ["alpha", "beta"]}
+
+
+@pytest.mark.asyncio
 async def test_reads_a_note_with_an_unquoted_frontmatter_date(fixtures) -> None:
     """An unquoted YAML date in frontmatter must not 500 the read.
 
