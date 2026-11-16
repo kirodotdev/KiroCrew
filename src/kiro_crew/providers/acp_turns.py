@@ -359,14 +359,21 @@ async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEv
 def watch_agent_turns(self: AcpProvider, callback: Callable[[], None] | None) -> bool:
     """Call *callback* when the agent starts a turn on its own; ``None`` stops it.
 
-    Only a direct ``AcpClient`` on a backend in ``ACP_BACKENDS_AGENT_STARTED_TURNS``
-    has a reader that sees such a turn, so any other session registers nothing and
-    returns False. The callback runs synchronously on the event loop, from the
-    client's idle reader, and the turn is read with :func:`stream_unsolicited`.
+    A backend in ``ACP_BACKENDS_AGENT_STARTED_TURNS`` sees such a turn on a direct
+    ``AcpClient`` (its idle reader) and on a chat of the shared runtime (its
+    session handle's queue); any other session registers nothing and returns
+    False. The callback runs synchronously on the event loop, and the turn is
+    read with :func:`stream_unsolicited`.
     """
     client = self._client
-    if not isinstance(client, AcpClient) or client.backend not in ACP_BACKENDS_AGENT_STARTED_TURNS:
+    if getattr(client, "backend", None) not in ACP_BACKENDS_AGENT_STARTED_TURNS:
         return False
+    if not isinstance(client, AcpClient):
+        # A chat on the shared runtime: its session handle sees such a turn in
+        # its queue (``session_handle_agent_turns``).
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+
+        return isinstance(client, AcpSessionProvider) and client.watch_agent_turns(callback)
     if callback is None:
         client.on_agent_turn = None
     else:
@@ -377,7 +384,11 @@ def watch_agent_turns(self: AcpProvider, callback: Callable[[], None] | None) ->
 def agent_turn_pending(self: AcpProvider) -> bool:
     """Whether a turn the agent started is waiting to be read by :func:`stream_unsolicited`."""
     client = self._client
-    return isinstance(client, AcpClient) and client._agent_turn_pending()
+    if isinstance(client, AcpClient):
+        return client._agent_turn_pending()
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+
+    return isinstance(client, AcpSessionProvider) and client.agent_turn_pending()
 
 
 async def stream_unsolicited(
@@ -390,6 +401,12 @@ async def stream_unsolicited(
     """
     client = self._client
     if not isinstance(client, AcpClient):
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+
+        if isinstance(client, AcpSessionProvider):
+            async with aclosing(client.stream_unsolicited(timeout)) as shared_events:
+                async for e in shared_events:
+                    yield self._to_llm_event(e)
         return
     try:
         # The client's method is an async generator typed as its iterator.

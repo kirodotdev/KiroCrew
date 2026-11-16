@@ -30,8 +30,14 @@ from typing import Any, Awaitable, Callable
 from kiro_crew.acp.client_claude import ClaudeAcpClient
 from kiro_crew.acp.harness import claude as claude_mod
 from kiro_crew.acp.session_handle_runtime_contract import AcpRequestTimeout, AcpRuntimeError
+from kiro_crew.acp.spec_tools_allowlists import (
+    session_allowlist_spec,
+    spec_shell_patterns,
+    spec_write_globs,
+)
 from kiro_crew.acp.transport_errors import AcpError, AcpTimeoutError
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, METHOD_SET_MODE
+from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 
 
 class ClaudeSharedSession(ClaudeAcpClient):
@@ -49,6 +55,9 @@ class ClaudeSharedSession(ClaudeAcpClient):
         agent: str | None,
         session_key: str,
         channel_id: str,
+        permission_mode: str | None = None,
+        side_read_only: bool = False,
+        include_memory: bool = True,
     ) -> None:
         super().__init__(
             work_dir=work_dir,
@@ -57,9 +66,14 @@ class ClaudeSharedSession(ClaudeAcpClient):
             session_key=session_key or None,
             channel_id=channel_id or None,
             acp_backend=ACP_BACKEND_CLAUDE,
+            permission_mode=permission_mode,
+            side_read_only=side_read_only,
+            include_memory=include_memory,
         )
         self._shared_send: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
         self._shared_close: Callable[[], Awaitable[None]] | None = None
+        # Set by :meth:`adopt_allowlist_spec`; the envelope is refused until then.
+        self._spec_allowlists_adopted = False
 
     async def prepare(self, argv: list[str]) -> None:
         """Write this session's seed and side-session deny rules, before its request.
@@ -83,6 +97,38 @@ class ClaudeSharedSession(ClaudeAcpClient):
         self._session_mcp_excludes_local = excludes_local
         self._session_mcp_inline_settings = inline_settings
         self._refuse_claude_session_below_floor_before_spawn(installed)
+
+    async def adopt_allowlist_spec(self, spec: dict[str, Any] | None) -> None:
+        """Take the spec's ``toolsSettings`` shell and write allowlists from *spec*.
+
+        Claude never reads them: the per-chat client takes them in its MCP-array step
+        (``client_mcp_array``) from the spec that step projected, which the runtime's
+        mirror replaces here, so *spec* is the one the mirror's projection read. A
+        withheld array carries none, and the native shell and write tools still run,
+        so the spec is read once through the same resolution that step falls back
+        on. The envelope's ask rules (``session_meta``) and this session's permission
+        requests (``ClaudeHarness.bind_session_handle``) both read what is set here.
+        """
+        if spec is None:
+            spec = await asyncio.to_thread(
+                session_allowlist_spec, self._agent or "kirocrew", self._work_dir
+            )
+        cwd = str(self._work_dir or "")
+        self._spec_shell_allowlist = spec_shell_patterns(spec)
+        self._spec_write_allowlist = spec_write_globs(spec, cwd)
+        self._spec_write_cwd = cwd
+        self._spec_allowlists_adopted = True
+
+    def session_identity_env(self, stub_token: str) -> dict[str, str]:
+        """This session's identity, as a per-chat client puts it on its process env
+        (``AcpClient._apply_session_identity_env``): the stub token that names its
+        brokered servers, and its session key when it has one."""
+        env: dict[str, str] = {}
+        if stub_token:
+            env[STUB_SESSION_TOKEN_ENV] = stub_token
+        if self._session_key:
+            env["KIROCREW_SESSION_KEY"] = self._session_key
+        return env
 
     def bind_started(
         self,

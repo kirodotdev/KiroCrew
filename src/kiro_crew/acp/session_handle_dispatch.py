@@ -49,6 +49,7 @@ from kiro_crew.acp.client import (
     compaction_failure_is_transient,
     format_command_result,
 )
+from kiro_crew.acp.client_transport import _ends_agent_started_turn
 from kiro_crew.acp.engine_fallback import normalize_kiro_v2
 from kiro_crew.acp.liveness import (
     EVIDENCE_ESTABLISHED_FLAT,
@@ -61,6 +62,7 @@ from kiro_crew.acp.liveness import (
     VERDICT_UNKNOWN,
     VERDICT_WORKING,
 )
+from kiro_crew.acp.session_handle_agent_turns import AGENT_STARTED_REQUEST_ID
 from kiro_crew.acp.session_handle_runtime_contract import host_checks_sessions
 from kiro_crew.acp.session_handle_watchdog import INTERACTIVE_POLICY_WAIT
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
@@ -759,6 +761,18 @@ async def _dispatch_events(
 
             # Turn-complete response
             if msg.is_response_for(req_id):
+                if msg.error and host_checks_sessions(self._runtime):
+                    # A claude turn whose only unfinished calls are background
+                    # agents' ends as the finished turn it is, as on the per-chat
+                    # client (``claude_background_calls``), read on this session's
+                    # own harness state.
+                    _state: Any = getattr(self._runtime, "_session_harness_states", {}).get(
+                        self._session_id
+                    )
+                    if getattr(_state, "_ends_background_only_turns", False) is True:
+                        _ended: JsonRpcMessage | None = await _state._settle_background_only(msg)
+                        if _ended is not None:
+                            msg = _ended
                 if msg.error:
                     if error_is_refusal_terminal(msg.error, self.last_prompt_stats.refusal):
                         # A content-filter refusal whose terminal is the
@@ -884,6 +898,22 @@ async def _dispatch_events(
                 if msg.id in self._awaited_responses:
                     self._queue.put_nowait(msg)
                     await asyncio.sleep(0)
+                elif req_id == AGENT_STARTED_REQUEST_ID and _ends_agent_started_turn(msg):
+                    # A turn the agent started reads no response of its own, so a
+                    # response nobody waits on is a prompt's late answer: the
+                    # backend finished, and that ends this turn as its own
+                    # closing usage_update would.
+                    self._tool_dispatched = False
+                    self._last_stop_reason = (
+                        STOP_REASON_CANCELLED if self._cancelled else STOP_REASON_END_TURN
+                    )
+                    self._turn_done.set()
+                    yield AcpEvent(
+                        kind=EVENT_COMPLETE,
+                        stop_reason=self._last_stop_reason,
+                        usage=self.last_prompt_stats.to_turn_usage(),
+                    )
+                    return
                 else:
                     logger.debug(
                         "Dropping stray response frame id=%s (no waiter)",
@@ -1083,6 +1113,20 @@ async def _dispatch_events(
                             kind=EVENT_COMPLETE, usage=self.last_prompt_stats.to_turn_usage()
                         )
                         return
+                if req_id == AGENT_STARTED_REQUEST_ID and _ends_agent_started_turn(msg):
+                    # The usage_update that closes a cycle Claude Code ran on its
+                    # own: no response comes for a turn nobody prompted.
+                    self._tool_dispatched = False
+                    self._last_stop_reason = (
+                        STOP_REASON_CANCELLED if self._cancelled else STOP_REASON_END_TURN
+                    )
+                    self._turn_done.set()
+                    yield AcpEvent(
+                        kind=EVENT_COMPLETE,
+                        stop_reason=self._last_stop_reason,
+                        usage=self.last_prompt_stats.to_turn_usage(),
+                    )
+                    return
             elif action == "steer":
                 # Mid-turn steer lifecycle echo from kiro-cli (_session/steer).
                 # queued carries the pending snapshot; consumed carries injected

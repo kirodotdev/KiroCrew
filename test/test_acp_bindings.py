@@ -63,6 +63,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_note_zero_tool_servers": ("function", True, "b60c5fea256e", "acp_runtime_start"),
     "_owning_channel_id": ("function", False, "f21e39ec5ffb", "acp_runtime_start"),
     "_owning_session_key": ("function", False, "bb418bb7ece8", "acp_runtime_start"),
+    "_prejoined_chat_share": ("data", False, "", ""),
     "_ready_confirmed_session": ("function", True, "b60c5fea256e", "acp_turns"),
     "_reclaim_work_dir": ("function", True, "b60c5fea256e", "acp_lifecycle"),
     "_recover_effort_overlay": ("function", True, "b60c5fea256e", "acp_cli_overlay"),

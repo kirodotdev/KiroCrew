@@ -284,6 +284,18 @@ class TestTheApply:
         assert runtime.new_handle.keepalive_routed is True
 
     @pytest.mark.asyncio
+    async def test_an_inherited_model_the_load_re_applied_stands(self) -> None:
+        """The load's own re-apply of the inherited model (``ensure_served_default``)
+        is not cleared by an old handle that had none to carry."""
+        runtime = _runtime()
+        runtime.new_handle.inherited_model = "opus"
+        provider = _provider(runtime, _handle(inherited_model=""))
+        provider.mark_mcp_config_changed()
+        await provider.apply_pending_mcp_reinjection()
+        assert runtime.new_handle.inherited_model == "opus"
+        assert runtime.new_handle.model == ""
+
+    @pytest.mark.asyncio
     async def test_a_handle_no_keepalive_reaches_stays_unrouted_across_the_swap(self) -> None:
         runtime = _runtime()
         provider = _provider(runtime, _handle(keepalive_routed=False))

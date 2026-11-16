@@ -99,7 +99,9 @@ def test_refusal_reasons_are_every_branch_the_eligibility_rule_returns():
         and node.value.value
     }
     assert returned, "the AST harvest found nothing; this guard would be vacuous"
-    assert set(crs.REFUSAL_REASONS) == returned | {"native_subagents"}
+    # Two refusals resolve_chat_share adds after the rule: a spec that spawns
+    # native sub-agents, and a claude chat in Auto permission mode.
+    assert set(crs.REFUSAL_REASONS) == returned | {"native_subagents", "auto_permission_mode"}
 
 
 def test_metrics_spells_no_preview_reader_of_its_own():

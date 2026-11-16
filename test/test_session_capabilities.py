@@ -1407,14 +1407,16 @@ def test_the_kiro_construction_path_carries_no_member_confirmation():
     assert "await asyncio.to_thread(require_unchanged_derived_spec, sent_snapshot)" in init
 
     # The confirmation sits on ONE arm of the provider's existing backend split: the
-    # legacy AcpClient path. The Kiro/KAS arm above it reaches none of it.
+    # legacy AcpClient path. The Kiro/KAS arm above it reaches none of it. The split
+    # may widen the runtime arm with an ``or`` (a harness shared only for chats).
+    def _runtime_split(test: ast.expr) -> bool:
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or):
+            test = test.values[0]
+        return isinstance(test, ast.Attribute) and test.attr == "is_acp_runtime_backend"
+
     tree = ast.parse(textwrap.dedent(inspect.getsource(AcpProvider.start)))
     split = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.If)
-        and isinstance(node.test, ast.Attribute)
-        and node.test.attr == "is_acp_runtime_backend"
+        node for node in ast.walk(tree) if isinstance(node, ast.If) and _runtime_split(node.test)
     ]
     assert len(split) == 1, "the provider's backend split is the arm this rides"
     client_arm = split[0].orelse

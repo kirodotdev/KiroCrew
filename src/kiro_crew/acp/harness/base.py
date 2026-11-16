@@ -819,6 +819,12 @@ class HarnessAdapter(LaunchAdapter):
     #: (harness-parity H13).
     per_session_state: bool = False
 
+    #: True on a host whose adapter can report an inheriting session's model without
+    #: passing it on to the agent it runs (claude-agent-acp reports the settings
+    #: model verbatim): the session handle sends the reported id back once the
+    #: session starts (``session_handle_model_selection.ensure_served_default``).
+    reasserts_reported_model: bool = False
+
     async def prepare_session(
         self,
         *,
@@ -828,8 +834,12 @@ class HarnessAdapter(LaunchAdapter):
         session_key: str,
         channel_id: str,
         memory_mode: str,
+        options: Mapping[str, Any] | None = None,
     ) -> Any:
         """Prepare one session before its ``session/new`` or ``session/load`` goes out.
+
+        *options* are the caller's per-session choices this host reads (a permission
+        mode, for one), or None when the caller made none.
 
         Returns the session's state, handed back to every seam below, or None.
         Off-loop work (a settings file this host reads per session) belongs here.
@@ -844,9 +854,19 @@ class HarnessAdapter(LaunchAdapter):
         return False
 
     def session_meta(
-        self, state: Any, mcp_servers: list[dict[str, Any]], *, zero_tools: bool = False
+        self,
+        state: Any,
+        mcp_servers: list[dict[str, Any]],
+        *,
+        zero_tools: bool = False,
+        stub_token: str = "",
     ) -> dict[str, Any] | None:
-        """The ``_meta`` entries this session's request carries, built after its array, or None."""
+        """The ``_meta`` entries this session's request carries, built after its array, or None.
+
+        *stub_token* is the token the runtime minted to name THIS session's brokered
+        servers, for a host that also hands the session's identity to the tools it
+        runs.
+        """
         return None
 
     async def after_session_start(
@@ -931,6 +951,31 @@ class HarnessAdapter(LaunchAdapter):
         :meth:`session_update_issue` last reported on *state*, or None for the default
         row (a denied ``session/set_mode``, the mode tripwire's). Must not raise."""
         return None
+
+    async def adopt_substituted_model(self, state: Any, substitute: str) -> bool:
+        """Take *substitute*, the model a refused ``session/new`` names in its place.
+
+        True when the host adopted it on *state* and the start should be sent once
+        more with this session's envelope rebuilt; every other host answers False,
+        and the error stands.
+        """
+        return False
+
+    async def adopt_session_spec(self, state: Any, spec: dict[str, Any] | None) -> None:
+        """Take what this session enforces from *spec*, the spec its MCP projection read.
+
+        Called once per start or load, after the projection and before the request's
+        envelope (:meth:`session_meta`) is built, on a host with per-session state
+        only, so the envelope and the handle (:meth:`bind_session_handle`) read the
+        same spec the array was built from. *spec* is None when the projection
+        carried none (a withheld array).
+        """
+
+    def bind_session_handle(self, state: Any, handle: Any) -> None:
+        """Hand *handle* what this session's own setup decided that the handle enforces.
+
+        Called once the handle exists, on a host with per-session state only.
+        """
 
     def holds_replayed_permission(self, session_id: str) -> bool:
         """Whether a permission request for *session_id* arrived inside a resume hold.

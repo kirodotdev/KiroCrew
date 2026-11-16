@@ -26,7 +26,7 @@ import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
 
 from kiro_crew import session_head
 from kiro_crew.acp import batch_guard, kas_cli_settings, kas_env_launch
@@ -58,6 +58,7 @@ from kiro_crew.acp.session_handle import (
     AcpSessionHandle,
     _load_watchdog_settings,
 )
+from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
 from kiro_crew.acp.session_handle_mcp import MOUNTED_MCP_WAIT_SECS
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.types import (
@@ -96,6 +97,7 @@ async def load_session(
     require_replay: bool = False,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     focus_resume: bool = False,
+    harness_options: Mapping[str, Any] | None = None,
     harness_state: Any = None,
 ) -> AcpSessionHandle:
     """Resume a prior session via session/load — mirrors AcpClient.
@@ -155,6 +157,7 @@ async def load_session(
             require_replay=require_replay,
             start_priority=start_priority,
             focus_resume=focus_resume,
+            harness_options=harness_options,
         )
     if not self._initialized:
         raise AcpRuntimeError("Runtime not initialized — call spawn() first")
@@ -447,10 +450,16 @@ async def load_session(
         if person_waits(start_priority, focus_resume=focus_resume) and self.can_release():
             parking = parking_load(load_params)
     if harness_state is not None:
+        # What this session enforces, from the spec its array was projected from.
+        await self._harness.adopt_session_spec(
+            harness_state, consumed_spec if isinstance(consumed_spec, dict) else None
+        )
         # This session's own envelope, on every host that prepared per-session
         # state, built after the final array it travels with: a resume carries
         # the same settings exclusion its session/new did.
-        meta = self._harness.session_meta(harness_state, wire_servers, zero_tools=zero_tools)
+        meta = self._harness.session_meta(
+            harness_state, wire_servers, zero_tools=zero_tools, stub_token=stub_token
+        )
         if meta is not None:
             load_params["_meta"] = {**(load_params.get("_meta") or {}), **meta}
     budget = await self._session_start_budget()
@@ -469,7 +478,21 @@ async def load_session(
         # docs/system-specs/modules/acp-client.md "loading a session
         # triggers MCP re-initialization") — so it gets the same budget.
         request_sent_at = time.time()
-        resp = await self._send_and_await(restore_method, load_params, timeout=budget)
+        if harness_state is None:
+            resp = await self._send_and_await(restore_method, load_params, timeout=budget)
+        else:
+            # A per-session host's load is kept to its end: a load abandoned while
+            # the adapter works on it (a cancel, a timeout) would leave a session
+            # resident with no owner on a process other chats keep alive, so it is
+            # closed once the request settles (``_close_abandoned_load``).
+            load_task = asyncio.ensure_future(
+                self._send_and_await(restore_method, load_params, timeout=budget)
+            )
+            try:
+                resp = await asyncio.shield(load_task)
+            except BaseException:
+                _abandon_load(self, resume_sid, load_task)
+                raise
 
         # A genuine resume echoes "modes" in the response (same signal AcpClient
         # keys on). Anything else means load did not actually restore state. A
@@ -512,7 +535,11 @@ async def load_session(
     if pruned is not None:
         # What the array left out is this resume's own failure, on its new report.
         record_pruned(report, pruned.pruned, pruned.omitted)
-    queue: asyncio.Queue[JsonRpcMessage | None] = asyncio.Queue()
+    # A host with per-session state (claude) can start a turn on its own; its
+    # queue tells the handle (``session_handle_agent_turns``). One flag read.
+    queue: asyncio.Queue[JsonRpcMessage | None] = (
+        AgentTurnQueue() if self._harness.per_session_state else asyncio.Queue()
+    )
     self._session_queues[resume_sid] = queue
     self._session_cwds[resume_sid] = str(session_work_dir)
     for msg in buffered_init:
@@ -563,6 +590,10 @@ async def load_session(
     handle.spec_zero_tools = zero_tools
     handle.consumed_agent_spec = consumed_spec
     handle.mirror_used = mirrored is not None
+    if harness_state is not None:
+        # Mirrors create_session: what the host's own setup decided that the
+        # handle enforces.
+        self._harness.bind_session_handle(harness_state, handle)
     # Mirrors create_session: the re-registered batch is what this session now
     # runs.
     self._harness.record_session_projection(handle, kas_agents, active_agent)
@@ -935,6 +966,68 @@ async def _wait_managed_mcp(
         raise
 
 
+#: Closes of loads their caller abandoned: asyncio keeps only weak task references.
+_ABANDONED_LOAD_CLOSES: set[asyncio.Task[Any]] = set()
+
+
+def _abandon_load(runtime: AcpRuntime, resume_sid: str, load: asyncio.Future[Any]) -> None:
+    """Hold the session id from the moment its caller abandons the load.
+
+    A barrier is registered now, before the load settles, and a load of the same id
+    waits on it (``_load_session_with_harness_state``); it is resolved once the load
+    settled and, when that left a session to close, the close finished. So no retry
+    can register the id while the abandoned load or its teardown is in flight.
+    """
+    key = (id(runtime), resume_sid)
+    barrier: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    _PENDING_ABANDONED_CLOSES[key] = barrier
+
+    def _release(_t: Any = None) -> None:
+        if _PENDING_ABANDONED_CLOSES.get(key) is barrier:
+            del _PENDING_ABANDONED_CLOSES[key]
+        if not barrier.done():
+            barrier.set_result(None)
+
+    def _settled(fut: asyncio.Future[Any]) -> None:
+        close = _close_abandoned_load(runtime, resume_sid, fut)
+        if close is None:
+            _release()
+        else:
+            close.add_done_callback(_release)
+
+    load.add_done_callback(_settled)
+
+
+def _close_abandoned_load(
+    runtime: AcpRuntime, resume_sid: str, load: asyncio.Future[Any]
+) -> asyncio.Task[Any] | None:
+    """Close the session a ``session/load`` its caller left restored, once it settles.
+
+    A load that failed restored nothing; one that answered, or ran out of time while
+    the adapter may still be loading, may have left the session resident, and no
+    handle will ever own it. Teardown is ``terminate_session``, which closes only
+    this session (``session/close``) and releases any per-session state recorded.
+    The close task, or None when nothing is closed.
+    """
+    if load.cancelled():
+        return None
+    exc = load.exception()
+    if exc is not None and not isinstance(exc, AcpRequestTimeout):
+        return None
+    if resume_sid in runtime._session_queues:
+        # A session of this id is registered: not the abandoned load's, which
+        # registered nothing, so closing the id would end that session.
+        return None
+    task = asyncio.ensure_future(runtime.terminate_session(resume_sid))
+    _ABANDONED_LOAD_CLOSES.add(task)
+    task.add_done_callback(_ABANDONED_LOAD_CLOSES.discard)
+    return task
+
+
+#: An abandoned load's barrier, by runtime and session id (``_abandon_load``).
+_PENDING_ABANDONED_CLOSES: dict[tuple[int, str], asyncio.Future[None]] = {}
+
+
 async def _load_session_with_harness_state(
     self: AcpRuntime, session_file: str, resume_sid: str, **kwargs: Any
 ) -> AcpSessionHandle:
@@ -942,8 +1035,12 @@ async def _load_session_with_harness_state(
 
     The twin of ``_create_session_with_harness_state``: the state is prepared in
     the session's own working directory first, and released here when the load
-    fails before the session is recorded.
+    fails before the session is recorded. A close of an abandoned load of the same
+    id still in flight is awaited first, so its teardown cannot end this session.
     """
+    pending = _PENDING_ABANDONED_CLOSES.get((id(self), resume_sid))
+    if pending is not None:
+        await asyncio.wait({pending})
     agent = kwargs["agent"] or self._agent
     work_dir = await self._session_work_dir(kwargs["cwd"])
     state = await self._harness.prepare_session(
@@ -953,10 +1050,17 @@ async def _load_session_with_harness_state(
         session_key=kwargs["session_key"],
         channel_id=kwargs["channel_id"],
         memory_mode="persistent",
+        options=kwargs.get("harness_options"),
     )
     try:
         return await self.load_session(session_file, resume_sid, **kwargs, harness_state=state)
     except BaseException:
-        if state not in self._session_harness_states.values():
+        # Recorded but no handle came back (a cancel or a failure after the load
+        # registered it): no caller holds the session, so it is closed here, which
+        # releases the state too. Shielded, so the cancel cannot cut the close.
+        owned = [sid for sid, held in self._session_harness_states.items() if held is state]
+        if owned:
+            await asyncio.shield(self.terminate_session(owned[0]))
+        else:
             await self._harness.end_session(state)
         raise

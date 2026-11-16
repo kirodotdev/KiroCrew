@@ -32,6 +32,7 @@ function mockConfig(harnesses?: Record<string, unknown>) {
 
 const kasSwitch = () => screen.getByRole('switch', { name: /Chats using Kiro Agent/i })
 const codexSwitch = () => screen.getByRole('switch', { name: /Chats using OpenAI Codex/i })
+const claudeSwitch = () => screen.getByRole('switch', { name: /Chats using Claude Code/i })
 
 beforeEach(() => {
   localStorage.clear()
@@ -101,5 +102,17 @@ describe('ACP runtime sharing per-harness switches', () => {
     await waitFor(() => expect(codexSwitch().hasAttribute('disabled')).toBe(false))
     await act(async () => { codexSwitch().click() })
     await waitFor(() => expect(patch).toHaveBeenCalledWith('agent.chat_runtime_sharing_harnesses.codex', true))
+  })
+
+  it('show claude off when nothing is stored, and write its own key', async () => {
+    mockConfig()
+    const patch = vi.spyOn(api, 'patchConfig').mockResolvedValue({} as never)
+    act(() => { setPreviewFlag(PREVIEW_CHAT_RUNTIME_SHARING, true) })
+    renderSection()
+    await waitFor(() => expect(claudeSwitch().getAttribute('aria-checked')).toBe('false'))
+    // Enabled once the config read answers.
+    await waitFor(() => expect(claudeSwitch().hasAttribute('disabled')).toBe(false))
+    await act(async () => { claudeSwitch().click() })
+    await waitFor(() => expect(patch).toHaveBeenCalledWith('agent.chat_runtime_sharing_harnesses.claude', true))
   })
 })

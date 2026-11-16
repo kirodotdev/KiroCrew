@@ -928,6 +928,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "withholds and a lost resume record when it grants, which is a defect rather "
         "than an absent feature a card could mark"
     ),
+    "ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS": (
+        "which chat-sharing members move onto the shared runtime only for a chat that "
+        "shares, keeping their own process for every other session. A transport "
+        "choice made per start, invisible to a reader choosing a harness: the chat "
+        "behaves the same on either process"
+    ),
 }
 
 #: The set that is the membership floor rather than a capability.
