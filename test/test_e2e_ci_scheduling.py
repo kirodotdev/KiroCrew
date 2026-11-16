@@ -495,7 +495,14 @@ raise SystemExit(m['main']())
         self.assertNotIn("--no-vs-base", render["run"])
         # The render needs the browser the E2E job provisions the same way: the
         # exact revision @playwright/test pins, downloaded before the render.
-        install = next(s for s in steps if s.get("run") == "npx playwright install chromium")
+        # The install ends on `npx playwright install chromium`; a host guard for
+        # images Playwright has no entry for (ubuntu 26.04) may precede it.
+        install = next(
+            s
+            for s in steps
+            if str(s.get("run", "")).rstrip().splitlines()[-1:]
+            == ["npx playwright install chromium"]
+        )
         self.assertLess(steps.index(install), steps.index(render))
         self.assertEqual(install["timeout-minutes"], 6)
         # The gate runs nowhere else in the workflow: one job owns it.
