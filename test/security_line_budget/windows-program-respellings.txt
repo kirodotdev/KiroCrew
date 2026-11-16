@@ -1,0 +1,7 @@
++75
+The deny view tries a Windows program word without its .exe/.cmd/.bat suffix, at the
+program word past sudo/env-style wrappers and cmd switches before /c or /k (spaced or
+glued), and inside a quoted cmd /c or /k line; it folds an in-word cmd ^ or PowerShell
+backtick. The scratch rm view and the rm floor read rm.exe/.cmd/.bat as rm. The s3
+download reader reads aws.exe as aws, and aws.cmd/aws.bat only on a line with no cmd.exe
+metacharacter. Views only add matches.
