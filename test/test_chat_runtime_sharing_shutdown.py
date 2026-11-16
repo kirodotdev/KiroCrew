@@ -105,6 +105,40 @@ class TestSharedShutdownAsksTheTableWhoIsLeft:
         finally:
             ro._reset_for_tests()
 
+    def test_a_closed_worker_leaves_one_tenant_and_the_other_keeps_running(self):
+        """Closing one of two chats on a process frees its seat; the other is untouched.
+
+        The process's scratch directory belongs to the process, not to the chat
+        that left, so the one that stays keeps it.
+        """
+        from pathlib import Path
+
+        ro._reset_for_tests()
+        try:
+            rt = KillableRuntime(pid=9205)
+            rt.work_scratch_dir = Path("/home/u/.kirocrew/scratch/tree-lead")
+            live = ro.RUNTIME_OWNERSHIP
+            lead = asyncio.run(live.acquire(a_key(), "dashboard:chat-1-1", spawner(rt), cap=10))
+            worker = asyncio.run(live.acquire(a_key(), "dashboard:chat-2-1", spawner(rt), cap=10))
+            assert live.leases_on_runtime(rt) == 2
+
+            staying, staying_handle = shared_provider(rt, "dashboard:chat-1-1", lead.lease)
+            closing, closing_handle = shared_provider(rt, "dashboard:chat-2-1", worker.lease)
+            asyncio.run(closing.shutdown())
+
+            assert closing_handle.destroyed == 1, "the closed chat stayed on the process"
+            assert live.leases_on_runtime(rt) == 1
+            assert rt.kills == [] and rt.is_alive()
+            assert staying_handle.destroyed == 0
+            assert staying._runtime is rt and rt.work_scratch_dir == Path(
+                "/home/u/.kirocrew/scratch/tree-lead"
+            )
+            # Its seat is free again: a new chat of the tree joins the same process.
+            again = asyncio.run(live.acquire(a_key(), "dashboard:chat-3-1", spawner(), cap=10))
+            assert again.runtime is rt and again.joined is True
+        finally:
+            ro._reset_for_tests()
+
     def test_the_last_session_out_kills_the_process(self):
         """The other direction: a shared process must not be leaked either."""
         ro._reset_for_tests()

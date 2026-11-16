@@ -253,9 +253,7 @@ class _Founding:
 
     ``done`` resolves when the founding ends, published or not, and only tells a
     waiter to look again -- never what it found. ``entry`` is what it published,
-    when it did: a founder may publish under another key than it matched on
-    (``acquire``'s *published_key*), so a woken waiter takes that entry rather
-    than re-picking by its own key and missing it.
+    when it did, so a woken waiter takes that entry rather than re-picking.
     """
 
     key: Hashable
@@ -297,7 +295,6 @@ class RuntimeOwnership:
         spawn: Callable[[], Awaitable[OwnedRuntime]],
         *,
         cap: int = CHAT_RUNTIME_CAP,
-        published_key: Callable[[OwnedRuntime], Hashable] | None = None,
     ) -> Acquisition:
         """Take a LEASE on a runtime, spawning one only when needed.
 
@@ -328,12 +325,6 @@ class RuntimeOwnership:
         runtime may have filled, died, or never been published because its spawn
         raised or was cancelled. A founder's failure is its own; the waiter gets
         no share of it and simply looks again, founding itself if it must.
-
-        *published_key*, when given, names the key a FOUNDED runtime is published
-        under, read off the spawned runtime: a founder whose spawn input describes
-        something the runtime then exposes as its own (a restarted chat's tree) can
-        be published the way a founder that allocated that state is, so later
-        arrivals match it. Matching here still uses *key*.
         """
         while True:
             self._drop_dead()
@@ -386,8 +377,7 @@ class RuntimeOwnership:
             # sharing placement (cap > 1) logs it; the cap-1 registration of every
             # chat with the preview off stays silent.
             closed = getattr(runtime, "chat_joinable", True) is False
-            entry_key = published_key(runtime) if published_key is not None else key
-            entry = _Entry(runtime=runtime, key=entry_key, closed=closed)
+            entry = _Entry(runtime=runtime, key=key, closed=closed)
             if entry.closed and cap > 1:
                 logger.warning(
                     "chat-runtime-sharing: runtime pid=%s runs an engine that queues chats; "
@@ -594,27 +584,6 @@ class RuntimeOwnership:
         a kill-gate answer, which must stay live-only.
         """
         return sum(len(e.leases) for e in list(self._entries) if e.runtime is runtime)
-
-    def join_on_tree(
-        self, key: Hashable, tree: object, session_key: str, *, cap: int = CHAT_RUNTIME_CAP
-    ) -> Acquisition | None:
-        """A lease on a live runtime under *key* that exposes *tree*, or None. Never spawns.
-
-        A runtime exposes the work directory it inherited or allocated
-        (``work_scratch_dir``). Only a runtime that both matches *key* and exposes
-        *tree* is taken, with the same room and same-session rule as
-        :meth:`acquire`; on None the caller places through :meth:`acquire` instead.
-        """
-        self._drop_dead()
-        for entry in self._entries:
-            if (
-                entry.key == key
-                and entry.admits(session_key, cap=cap)
-                and self._alive(entry)
-                and getattr(entry.runtime, "work_scratch_dir", None) == tree
-            ):
-                return self._mint(entry, session_key, cap=cap, joined=True)
-        return None
 
     # -- internals --
 

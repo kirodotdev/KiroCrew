@@ -775,59 +775,37 @@ class TestChatSharePlacement:
         assert spawn.calls == [shared]
         assert b.joined is True
 
-    def test_a_restart_whose_tree_no_live_process_exposes_keys_that_tree(self, fresh_table):
-        # The process that exposed the tree is gone: the restart founds one that
-        # mounts it, and a fresh chat (no tree) does not land there.
-        from pathlib import Path
+    def test_two_restarts_of_one_tree_with_different_recorded_trees_share(self, fresh_table):
+        """The gateway restarts on a tree whose lead and worker ran on two processes.
 
-        tree = Path("/home/u/.kirocrew/scratch/tree-gone")
-        own, fresh = _PlacedRuntime(pid=1), _PlacedRuntime(pid=2)
-        spawn = spawner(own, fresh)
-        ok = confirming(("gen-1", "acct-A", "auto", False, True))
-
-        async def scenario():
-            restarted = _PlacementProvider()
-            restarted._shared_scratch = tree
-            b = make_placement(provider=restarted, session_key="dashboard:chat-b-1")
-            b._read_confirmation = ok
-            c = make_placement(session_key="dashboard:chat-c-1")
-            c._read_confirmation = ok
-            return b, await b.place(spawn), await c.place(spawn)
-
-        b, placed_b, placed_c = asyncio.run(scenario())
-        assert (placed_b, placed_c) == (own, fresh)
-        assert b.key.shared_scratch
-
-    def test_a_restart_never_joins_a_process_that_does_not_expose_its_tree(self, fresh_table):
-        """The process on the chat's tree is full; a same-key one on another tree has room.
-
-        Joining that one would cut the chat off from its staged work, so the restart
-        founds a process of its own that mounts its tree.
+        Each recorded its own scratch directory. The directory is not a sharing
+        input, so the worker's key equals the lead's and it joins the lead's process
+        instead of founding a second one on every restart.
         """
         from pathlib import Path
 
-        tree_a, tree_d = Path("/home/u/.kirocrew/scratch/a"), Path("/home/u/.kirocrew/scratch/d")
-        full, other, own = (_PlacedRuntime(pid=p) for p in (1, 2, 3))
-        full.work_scratch_dir, other.work_scratch_dir = tree_a, tree_d
-        spawn = spawner(full, other, own)
+        lead_rt, stray = _PlacedRuntime(pid=1), _PlacedRuntime(pid=2)
+        lead_rt.work_scratch_dir = Path("/home/u/.kirocrew/scratch/tree-lead")
+        spawn = spawner(lead_rt, stray)
         ok = confirming(("gen-1", "acct-A", "auto", False, True))
 
-        async def scenario():
-            placed = []
-            for n in ("a", "c", "d"):
-                p = make_placement(session_key=f"dashboard:chat-{n}-1", cap=2)
-                p._read_confirmation = ok
-                placed.append(await p.place(spawn))
-            restarted = _PlacementProvider()
-            restarted._shared_scratch = tree_a
-            b = make_placement(provider=restarted, session_key="dashboard:chat-b-1", cap=2)
-            b._read_confirmation = ok
-            placed.append(await b.place(spawn))
-            return b, placed
+        def restarted(name, tree):
+            provider = _PlacementProvider()
+            provider._shared_scratch = Path(tree)
+            p = make_placement(provider=provider, session_key=f"dashboard:chat-{name}-1")
+            p._read_confirmation = ok
+            return p
 
-        b, placed = asyncio.run(scenario())
-        assert placed == [full, full, other, own], "the restart joined a process on another tree"
-        assert b.joined is False and b.key.shared_scratch
+        async def scenario():
+            lead = restarted("lead", "/home/u/.kirocrew/scratch/tree-lead")
+            worker = restarted("worker", "/home/u/.kirocrew/scratch/tree-worker")
+            assert worker.key == lead.key
+            return worker, await lead.place(spawn), await worker.place(spawn)
+
+        worker, placed_lead, placed_worker = asyncio.run(scenario())
+        assert (placed_lead, placed_worker) == (lead_rt, lead_rt), "the worker founded its own"
+        assert spawn.calls == [lead_rt]
+        assert worker.joined is True
 
     def test_a_fresh_chat_joins_the_process_a_restarted_founder_mounted_its_tree_on(
         self, fresh_table
@@ -912,18 +890,14 @@ class TestChatSharePlacement:
         assert b.joined is True
 
     def test_a_founded_start_logs_which_key_fields_kept_it_off(self, fresh_table, caplog):
-        # Names and emptiness only: the restart's tree is the one field that differs.
-        from pathlib import Path
-
-        tree = Path("/home/u/.kirocrew/scratch/tree-gone")
+        # Names and emptiness only: the work directory is the one field that differs.
         own, fresh = _PlacedRuntime(pid=1), _PlacedRuntime(pid=2)
         spawn = spawner(own, fresh)
         ok = confirming(("gen-1", "acct-A", "auto", False, True))
+        tree = "/home/u/oss/other-worktree"
 
         async def scenario():
-            restarted = _PlacementProvider()
-            restarted._shared_scratch = tree
-            b = make_placement(provider=restarted, session_key="dashboard:chat-b-1")
+            b = make_placement(session_key="dashboard:chat-b-1", work_dir=tree)
             b._read_confirmation = ok
             c = make_placement(session_key="dashboard:chat-c-1")
             c._read_confirmation = ok
@@ -934,8 +908,8 @@ class TestChatSharePlacement:
             asyncio.run(scenario())
         lines = [r.getMessage() for r in caplog.records if "founded:" in r.getMessage()]
         assert lines[0].startswith("chat-runtime-sharing founded: no live process in this tree")
-        assert "differs from candidate 0 in shared_scratch(ours=empty,theirs=set)" in lines[1]
-        assert str(tree) not in "\n".join(lines)
+        assert "differs from candidate 0 in work_dir(ours=set,theirs=set)" in lines[1]
+        assert tree not in "\n".join(lines)
 
     def test_two_starts_of_ONE_chat_never_share_a_process(self, fresh_table):
         """The same equal inputs, but both starts are the same chat.
@@ -1350,6 +1324,18 @@ class TestResolveChatShare:
         placement, reads = self._resolve(monkeypatch, {}, _PlacementProvider())
         assert placement is None
         assert reads == []
+
+    def test_preview_off_leaves_a_resumed_chats_recorded_tree_bound(self, monkeypatch):
+        # Off, nothing is placed, so the chat's own spawn still mounts its recorded tree.
+        from pathlib import Path
+
+        provider = _PlacementProvider()
+        tree = Path("/home/u/.kirocrew/scratch/tree-own")
+        provider._shared_scratch = tree
+        placement, reads = self._resolve(monkeypatch, {}, provider)
+        assert placement is None
+        assert reads == []
+        assert provider._shared_scratch == tree
 
     def test_preview_on_places_an_eligible_chat_with_the_configured_cap(self, monkeypatch):
         placement, reads = self._resolve(

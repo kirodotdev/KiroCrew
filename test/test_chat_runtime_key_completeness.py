@@ -42,7 +42,6 @@ _SPAWN_INPUT_KEYED = {
     "acp_backend": "acp_backend",
     "memory_mode": "memory_mode",
     "tool_search": "tool_search",
-    "shared_scratch": "shared_scratch",
     "forward_ssh_auth_sock": "forward_ssh_auth_sock",
     "launch_agent": "launch_agent",
     "harness_pin": "harness_pin",
@@ -61,6 +60,12 @@ _SPAWN_INPUT_KEYED = {
 #: A reason, never a boolean: the next reader needs to know why without
 #: re-deriving it, and a boolean invites flipping.
 _SPAWN_INPUT_NOT_KEYED = {
+    "shared_scratch": (
+        "The scratch tree a resumed chat was recorded in. Sessions of one tree share "
+        "by tree_root, which IS keyed; a joiner runs in the directory the process it "
+        "joins mounts and records that one, so keying the directory only split one "
+        "tree into one process per directory it had ever recorded."
+    ),
     "max_age_secs": (
         "A recycle threshold, not an input the child behaves differently under. "
         "A hard module default with no config path, so every chat slot passes the "
