@@ -1344,8 +1344,8 @@ components:
       - name
       - status
       description: 'Roster and status, these fields only. It is the cut-down view apps get of the Owner tier''s
-        BotRosterRow (GET /v1/crew/owner/bots): only id, name, description, avatar and status, and only the grant''s
-        Bot range. Private chat (including the last line), briefing, rules, conversations and private memory are
+        BotRosterRow (GET /v1/crew/owner/bots): only id, name, description, avatar, status and has_goal, and only
+        the grant''s Bot range. Private chat (including the last line), briefing, rules, conversations and private memory are
         never here, and no Public operation returns them.'
       properties:
         id:
@@ -1365,9 +1365,12 @@ components:
           type: string
           enum:
           - idle
-          - working
-          description: working means this Bot has a turn running right now (in whichever conversation). Open enum;
-            a client treats an unknown value as idle.
+          - busy
+          description: busy means this Bot has a turn running right now (in whichever conversation). The values are
+            the same as the App SDK's Bot. Open enum; a client treats an unknown value as idle.
+        has_goal:
+          type: boolean
+          description: This Bot has a goal; when true, GET /v1/crew/bots/{bot_id}/goals has content to read.
         created_by_app:
           type: boolean
           description: 'true: this app created the Bot (bundle.kind bot or bots:create), so it is in the app_created
@@ -1381,8 +1384,9 @@ components:
       properties:
         ref:
           type: string
-          pattern: ^[A-Za-z0-9_-]{1,64}$
-          description: The number of that message in the app's own ledger. This character set cannot hold a sentence.
+          pattern: ^[A-Za-z0-9_.:-]{1,64}$
+          description: 'The number of that message in the app''s own ledger: 1 to 64 letters, digits, _, ., : or -,
+            the same as the App SDK''s wake. This character set cannot hold a sentence.'
     BotWakeUsage:
       type: object
       description: Usage at the time of the wake, without this turn itself (that arrives with bot.turn.completed).
@@ -1435,11 +1439,13 @@ components:
         status:
           type: string
           enum:
+          - started
           - queued
           - coalesced
           - deferred
-          description: 'queued: a new turn was queued; coalesced: merged into a turn already queued; deferred: the
-            Bot is not online and runs it when it is back.'
+          description: 'started: the Bot was idle and the turn is already running; queued: a new turn was queued and
+            waits for the Bot''s current turn to end; coalesced: merged into a turn already queued; deferred: the Bot
+            is not online and runs it when it is back. started and queued mean the same as in the App SDK''s wake.'
         usage:
           $ref: '#/components/schemas/BotWakeUsage'
     BotList:
