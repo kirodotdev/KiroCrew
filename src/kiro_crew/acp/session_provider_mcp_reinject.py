@@ -27,7 +27,8 @@ the eviction -- is ``acp/runtime_session_registry.py``.
 
 Instance fields written: ``_handle``, ``_mcp_reinject_pending``.
 
-Instance fields read: ``_channel_id``, ``_handle``, ``_runtime``, ``_session_key``.
+Instance fields read: ``_channel_id``, ``_handle``, ``_runtime``, ``_session_key``,
+``kas_memory_mode``.
 """
 
 from __future__ import annotations
@@ -164,6 +165,7 @@ async def apply_pending_mcp_reinjection(self: AcpSessionProvider) -> None:
                 member_session_key=member_session_key,
                 session_key=self._session_key,
                 channel_id=self._channel_id or "",
+                kas_memory_mode=self.kas_memory_mode,
                 harness_options=self._harness_options,
             )
     except BaseException as exc:

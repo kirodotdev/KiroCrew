@@ -618,6 +618,7 @@ async def test_warm_reuse_claims_the_fresh_sessions_stubs(
     provider._runtime = _Runtime()
     provider._session_key = PARENT_KEY
     provider._channel_id = None
+    provider.kas_memory_mode = ""
     await provider.new_conversation()
 
     assert provider._handle is fresh
