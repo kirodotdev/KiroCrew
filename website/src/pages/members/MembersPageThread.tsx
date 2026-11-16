@@ -1148,6 +1148,7 @@ export function MembersPageThreadColumn({
                         onSessionOpen={openSessionGuarded}
                         sessions={connected && slotsLoaded ? sessionRoster : undefined}
                         activeSession={activeSlot}
+                        appSessionControls
                       />
                     </ErrorBoundary>
                   </div>
