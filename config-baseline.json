@@ -127,7 +127,6 @@
         "conductor_own_child_verbs": true,
         "crew_panel": true,
         "subagent_cost_gb": 0.5,
-        "subagent_cpu_cost_cores": 1.0,
         "subagent_auto_max": 32,
         "subagent_spawn_stagger_secs": 0.25,
         "windows_background_qos": false,
@@ -362,11 +361,11 @@
       "kind": "core",
       "type": "string",
       "required": false,
-      "deprecated": false,
+      "deprecated": true,
       "sensitive": false,
       "tags": [],
       "label": "Provider",
-      "help": "LLM provider backend (KiroACP / kiro-cli).",
+      "help": "Deprecated: the harness is chosen by agent.acp_backend, and this build accepts only 'acp' here, so the value changes nothing. Preserved on load and save so an existing config, or an edition that reads it, keeps working.",
       "hasChildren": false,
       "enumValues": [
         "acp"
@@ -2021,20 +2020,6 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0.5
-    },
-    {
-      "path": "agent.subagent_cpu_cost_cores",
-      "kind": "core",
-      "type": "number",
-      "required": false,
-      "deprecated": true,
-      "sensitive": false,
-      "tags": [],
-      "label": "SubAgent CPU Cost (cores)",
-      "help": "Deprecated and inert: CPU never sizes subagent concurrency, because over-committing memory is an unrecoverable OOM while over-committing CPU only slows work the adaptive controller already backs off from. Preserved on load and save so an existing config is not rewritten out from under the operator.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": 1.0
     },
     {
       "path": "agent.subagent_auto_max",
@@ -10664,20 +10649,6 @@
       "tags": [],
       "label": "Feature preview: folder_conductor",
       "help": "Turn on the 'folder_conductor' feature preview.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": false
-    },
-    {
-      "path": "dashboard.feature_previews.layout_harness",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Feature preview: layout_harness",
-      "help": "Turn on the 'layout_harness' feature preview.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

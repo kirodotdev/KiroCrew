@@ -2309,19 +2309,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "developer.composable-layout",
-    "label": "Composable layout",
-    "labelKey": "pages.developer.featurePreviewsTab.layout_harness",
-    "description": "Developer-only test harness, with no visible change.",
-    "hint": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
     "id": "developer.decisions",
     "label": "Decisions",
     "labelKey": "pages.developer.featurePreviewsTab.decisions",

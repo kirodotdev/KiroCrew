@@ -126,7 +126,6 @@ export const PREVIEW_FLAG_SETTING_IDS: ReadonlySet<string> = new Set([
   'developer.explore',
   'developer.mcp-sign-in-by-kiro-crew',
   'developer.chat-on-a-crew',
-  'developer.composable-layout',
   'developer.folder-conductor',
   'developer.mark-out-of-date-dashboard-fields',
   'developer.wake-bots-to-update-out-of-date-fields',

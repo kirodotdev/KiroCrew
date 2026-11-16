@@ -157,10 +157,16 @@ def _section(data: dict, key: str) -> dict:
 
 
 def _get_provider_type(config: Optional[dict] = None) -> str:
-    """Configured knowledge provider; defaults to ``"acp"``."""
-    data = _read_config() if config is None else config
-    provider = _section(data, "agent").get("provider", "acp")
-    return provider if isinstance(provider, str) and provider else "acp"
+    """``agent.provider`` as the loader validates it: outside the schema enum is ``"acp"``.
+
+    The pool reads raw ``config.json``; checking the same enum keeps a hand-edited
+    value that every other reader sees as ``"acp"`` from picking this pool's worker.
+    """
+    from kiro_crew.config.schema import JSON_SCHEMA
+
+    provider = _section(_read_config() if config is None else config, "agent").get("provider")
+    allowed = JSON_SCHEMA["properties"]["agent"]["properties"]["provider"].get("enum", [])
+    return provider if isinstance(provider, str) and provider in allowed else "acp"
 
 
 def _get_sandbox_mode(config: Optional[dict] = None) -> str:

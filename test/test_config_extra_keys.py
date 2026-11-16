@@ -409,6 +409,62 @@ def test_the_retired_conductor_skill_flag_is_purged(cfg_home):
     assert written["subagent_max_turns"] == 42
 
 
+def _seed_retired_cpu_cost_and_layout_switch(cfgp) -> None:
+    _write(
+        cfgp,
+        {
+            "agent": {"subagent_cpu_cost_cores": 0.8, "subagent_max_turns": 42},
+            "dashboard": {"feature_previews": {"layout_harness": True, "explore": True}},
+        },
+    )
+
+
+def _assert_retired_cpu_cost_and_layout_switch_dropped(cfgp) -> dict:
+    written = json.loads(cfgp.read_text(encoding="utf-8"))
+    assert "subagent_cpu_cost_cores" not in written["agent"]
+    assert written["agent"]["subagent_max_turns"] == 42
+    assert written["dashboard"]["feature_previews"] == {"explore": True}
+    return written
+
+
+def test_the_retired_cpu_cost_and_layout_switch_load_and_drop_on_save(cfg_home, caplog):
+    """``agent.subagent_cpu_cost_cores`` sized nothing and the ``layout_harness``
+    preview switch gated nothing. A config that still carries them loads with no
+    warning and no degraded section, and the next save writes neither."""
+    _seed_retired_cpu_cost_and_layout_switch(cfg_home)
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+        cfg = KiroCrewConfig.load()
+    assert cfg.degraded_sections == frozenset()
+    assert "agent" not in cfg._extra_keys
+    assert not hasattr(cfg.agent, "subagent_cpu_cost_cores")
+    assert cfg.dashboard.feature_previews == {"explore": True}
+    assert not [r for r in caplog.records if "subagent_cpu_cost_cores" in r.getMessage()]
+
+    cfg.save()
+    _assert_retired_cpu_cost_and_layout_switch_dropped(cfg_home)
+
+
+@pytest.mark.asyncio
+async def test_a_settings_patch_drops_the_retired_cpu_cost_and_layout_switch(cfg_home):
+    """The Settings PATCH edits the raw document, not through save()."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.dashboard.handlers import api_kirocrew_config_patch
+
+    _seed_retired_cpu_cost_and_layout_switch(cfg_home)
+    app = web.Application()
+    app.router.add_patch("/api/config/kirocrew", api_kirocrew_config_patch)
+    async with TestClient(TestServer(as_owner(app))) as c:
+        resp = await c.patch(
+            "/api/config/kirocrew",
+            json={"path": "dashboard.feature_previews.explore", "value": True},
+        )
+        assert resp.status == 200, await resp.text()
+    _assert_retired_cpu_cost_and_layout_switch_dropped(cfg_home)
+
+
 def test_the_retired_browser_keys_are_dropped_with_one_warning(cfg_home, caplog):
     """``dashboard.use_builtin_browser`` and ``dashboard.browser_view_port`` went with
     the agent browser they configured. An existing config that still carries them

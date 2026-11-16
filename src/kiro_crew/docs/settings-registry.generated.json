@@ -1343,14 +1343,6 @@
       "hint": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew — and shows each connected crew’s sessions in their own group in the Sessions list. Unfinished."
     },
     {
-      "id": "developer.composable-layout",
-      "label": "Composable layout",
-      "tab": "developer",
-      "route": "/settings/developer/feature-previews?highlight=developer.composable-layout",
-      "description": "Developer-only test harness, with no visible change.",
-      "hint": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch."
-    },
-    {
       "id": "developer.decisions",
       "label": "Decisions",
       "tab": "developer",

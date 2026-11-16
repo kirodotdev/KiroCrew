@@ -212,7 +212,15 @@ class AgentConfig:
     )
     provider: str = field(
         default="acp",
-        metadata=_meta("Provider", "LLM provider backend (KiroACP / kiro-cli).", enum=["acp"]),
+        metadata=_meta(
+            "Provider",
+            "Deprecated: the harness is chosen by agent.acp_backend, and this build "
+            "accepts only 'acp' here, so the value changes nothing. Preserved on "
+            "load and save so an existing config, or an edition that reads it, "
+            "keeps working.",
+            enum=["acp"],
+            deprecated=True,
+        ),
     )
     mcp_registry_mode: bool = field(
         default=False,
@@ -1550,18 +1558,6 @@ class AgentConfig:
             "parallel-step cap is sized with until a learned value accumulates, "
             "and the auto subagent cap too while spawn_min_memory_gb is 0 or "
             "less and so disables the per-start floor.",
-        ),
-    )
-    subagent_cpu_cost_cores: float = field(
-        default=1.0,
-        metadata=_meta(
-            "SubAgent CPU Cost (cores)",
-            "Deprecated and inert: CPU never sizes subagent concurrency, because "
-            "over-committing memory is an unrecoverable OOM while over-committing "
-            "CPU only slows work the adaptive controller already backs off from. "
-            "Preserved on load and save so an existing config is not rewritten "
-            "out from under the operator.",
-            deprecated=True,
         ),
     )
     subagent_auto_max: int = field(
