@@ -1402,7 +1402,10 @@ async def api_memory_consolidate(request: web.Request) -> web.Response:
             },
             status=403,
         )
+    # bool("false") is True: the shared reader maps the usual spellings, and any
+    # other value keeps the same truth test as before.
     include_history = body.get("include_history", True)
+    include_history = _coerce_bool(include_history, bool(include_history))
     # Claim the key before the eligibility probe below, which awaits. Testing
     # membership and adding must happen with no yield between them: the probe
     # offloads a transcript read, and a check-then-act spanning that await lets
