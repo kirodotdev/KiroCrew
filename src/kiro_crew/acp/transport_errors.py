@@ -78,6 +78,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
 )
+from kiro_crew.acp.user_rate_limit_errors import USER_RATE_LIMIT_TEXT, is_user_rate_limit
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.credential_errors import is_credential_propagation_delay
 from kiro_crew.limit_reset import parse_limit_reset
@@ -1589,14 +1590,13 @@ def _format_acp_error_worded(
                 f"wait a minute and retry."
                 f"{req_id_suffix}"
             )
+        elif is_user_rate_limit(haystack):  # per user, not per model: no switch advice
+            formatted = USER_RATE_LIMIT_TEXT + req_id_suffix
         elif _RE_THROTTLE_NAMED.search(haystack) or _RE_THROTTLE_GENERIC.search(haystack):
-            # Throttle / rate limit (the spent usage limit above was checked
-            # first). Worded by backend: only kiro-cli reaches the model through
-            # Bedrock, so only it names Bedrock (POSITIVE identity per AGENTS.md
-            # "Harness parity"; a "not claude" test would answer Bedrock for
-            # untested harnesses). The verb stays "throttling" so
-            # llm_helpers._TRANSIENT_MARKERS ("throttl") keeps classifying it
-            # transient: a throttle IS retryable, unlike the usage-limit branch.
+            # Throttle / rate limit (usage and user-rate limits checked above).
+            # Worded by backend: only kiro-cli reaches the model through Bedrock,
+            # so only it names Bedrock (POSITIVE identity, AGENTS.md "Harness
+            # parity"). "throttling" keeps the llm_helpers "throttl" marker.
             subject = "Bedrock" if backend == ACP_BACKEND_KIRO else "The model provider"
             formatted = (
                 f"{subject} is throttling requests. Try: (1) wait a few seconds "
