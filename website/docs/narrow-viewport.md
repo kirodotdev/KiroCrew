@@ -644,8 +644,11 @@ keeps its compositor settle. Once it settles, the resting state is published thr
 `togglePanel` / the strip's focus (only for a run that revealed the panel) / the strip's
 close, and the placement takes it back with no width transition, since the spacer
 already stands at the column's width. A run's owner is fixed by its first event: a vertical
-start, a pinch (`ctrlKey`), a run over content that can still scroll that way, and a
-direction with nothing to do are all left alone; a new run during a settle grabs the
+start, a pinch (`ctrlKey`), a run over content that can still scroll that way, a run
+over a strip marked `data-owns-sideways-swipe` (the follow-up options row, arrows
+included, even at its end or when it fits), and a direction with nothing to do are all
+left alone; on such a strip a sideways step it cannot scroll is cancelled, so the
+browser's back/forward swipe does not take it either; a new run during a settle grabs the
 panel where it is presenting it and follows from there, as a phone's drag can; anything else is cancelled event by event, with
 `overscroll-behavior-x: contain` on the document root while it runs, so macOS's
 back/forward swipe does not start under it. A leftward run from rest (the host's

@@ -18,7 +18,7 @@ import { ThemeProvider } from '../hooks/useTheme'
 import { __resetPanelTabs } from '../hooks/usePanelTabs'
 import { setSidePanelDock } from '../hooks/useSidePanelDock'
 import { switchSlot, openActivityPanel } from '../store/chatSlice'
-import { swipeTiming, SWIPE_GESTURE_IDLE_MS, SWIPE_THRESHOLD_PX } from '../hooks/useTrackpadSwipe'
+import { swipeTiming, SWIPE_GESTURE_IDLE_MS, SWIPE_THRESHOLD_PX, OWNS_SIDEWAYS_SWIPE_ATTR } from '../hooks/useTrackpadSwipe'
 import { MotionGlobalConfig, frame, frameData } from 'framer-motion'
 
 // --- Stub child components (the ChatPage.responsivePanel scaffold) ---
@@ -737,6 +737,38 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     // Room to scroll on (deltaX > 0 raises scrollLeft).
     expect(swipe(scroller(container, 'ltr', 0), 20, 5)).toBe(0)
     expect(column()).toBeNull()
+  })
+
+  it('a run over an unmarked scroller already at its end drives the panel', () => {
+    const { container } = renderChat()
+    const chip = scroller(container, 'ltr', 600).appendChild(document.createElement('button'))
+    expect(swipe(chip, 20, 12)).toBeGreaterThan(0)
+    expect(column()).not.toBeNull()
+  })
+
+  /** The follow-up options row: a marked scroller at `scrollLeft`, with a chip. */
+  const optionsRowChip = (container: HTMLElement, scrollLeft: number) => {
+    const row = scroller(container, 'ltr', scrollLeft)
+    row.setAttribute(OWNS_SIDEWAYS_SWIPE_ATTR, '')
+    return row.appendChild(document.createElement('button'))
+  }
+
+  it('a run over the options row at its end moves no panel, and every step is cancelled so no back swipe starts', () => {
+    const { store, container } = renderChat()
+    expect(swipe(optionsRowChip(container, 600), 20, 12)).toBe(12)
+    expect(column()).toBeNull()
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('leaves a run over the options row with room to it, to scroll the chips', () => {
+    const { container } = renderChat()
+    expect(swipe(optionsRowChip(container, 0), 20, 12)).toBe(0)
+    expect(column()).toBeNull()
+  })
+
+  it('a vertical scroll over the options row at its end is left alone', () => {
+    const { container } = renderChat()
+    expect(swipe(optionsRowChip(container, 600), 2, 12, 30)).toBe(0)
   })
 
   it('reads a right-to-left scroller at its start (scrollLeft 0) as having room for a negative deltaX', async () => {

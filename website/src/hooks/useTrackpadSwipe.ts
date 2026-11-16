@@ -14,6 +14,10 @@
  * - vertical-first, or a pinch (`ctrlKey`), is never ours;
  * - horizontal-first over something that can still scroll that way (a code
  *   block, a wide table, a sideways list) belongs to that scroller;
+ * - horizontal-first over a strip marked {@link OWNS_SIDEWAYS_SWIPE_ATTR} (the
+ *   follow-up options row) belongs to that strip, even at its end; a step
+ *   the strip cannot scroll is cancelled, so the browser's back/forward swipe
+ *   does not take it either;
  * - horizontal-first in a direction `wants` declines is left to the browser
  *   (on macOS that is its back/forward swipe);
  * - a run that `reveals` (brings a closed panel out) is read like a drag from
@@ -512,6 +516,27 @@ export function inModalLayer(from: EventTarget | null | readonly EventTarget[], 
   return false
 }
 
+/** Marks a sideways strip that keeps every horizontal run starting over it,
+ *  even at its end or when it does not overflow, so a swipe that misses the
+ *  strip's last pixel of scroll never moves the page's panel instead. */
+export const OWNS_SIDEWAYS_SWIPE_ATTR = 'data-owns-sideways-swipe'
+
+/** Whether an element on the way from the event's target up to (not past)
+ *  `root` carries {@link OWNS_SIDEWAYS_SWIPE_ATTR}. */
+export function inSidewaysSwipeOwner(from: EventTarget | null | readonly EventTarget[], root: Element | null): boolean {
+  const chain: Element[] = []
+  if (Array.isArray(from)) {
+    for (const n of from as readonly EventTarget[]) if (n instanceof Element) chain.push(n)
+  } else {
+    for (let n = from instanceof Element ? from : null; n; n = n.parentElement) chain.push(n)
+  }
+  for (const n of chain) {
+    if (n === root) break
+    if (n.hasAttribute(OWNS_SIDEWAYS_SWIPE_ATTR)) return true
+  }
+  return false
+}
+
 function prefersReducedMotion(): boolean {
   return typeof window !== 'undefined'
     && typeof window.matchMedia === 'function'
@@ -669,8 +694,10 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       const path = typeof e.composedPath === 'function' ? e.composedPath() : []
       // A run that starts inside a modal layer is the layer's: the page behind
       // it must not move (a swipe over the What's New dialog opened the panel).
-      const owned = inModalLayer(path.length ? path : e.target, root)
-        || (e.deltaX !== 0 && canScrollX(path.length ? path : e.target, e.deltaX, root))
+      const from = path.length ? path : e.target
+      const scrollsX = e.deltaX !== 0 && canScrollX(from, e.deltaX, root)
+      const overStrip = inSidewaysSwipeOwner(from, root)
+      const owned = inModalLayer(from, root) || overStrip || scrollsX
       // The event's own time, not the time it is handled: wheels queued behind a
       // slow frame arrive in a burst, and handling time would read that frame
       // as a gap in the fingers and end the drag under them.
@@ -678,7 +705,11 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       // The reader reads the fingers: undo Natural scrolling's sign here.
       const sign = fingerSign((e as WheelEvent & { webkitDirectionInvertedFromDevice?: unknown }).webkitDirectionInvertedFromDevice, shellNaturalScrolling())
       const sample = { dx: sign * e.deltaX, dy: e.deltaY, mode: e.deltaMode, ctrl: e.ctrlKey, owned, at: when }
-      if (run(sample)) e.preventDefault()
+      const taken = run(sample)
+      // A sideways step the strip cannot scroll would chain to the page and
+      // start the browser's back/forward swipe, which the strip keeps out too.
+      const strandedOnStrip = overStrip && !scrollsX && Math.abs(e.deltaX) > Math.abs(e.deltaY)
+      if (taken || strandedOnStrip) e.preventDefault()
     }
     /** Tell a relaying frame whether this host is listening. A frame that is
      *  not armed leaves every wheel to the browser, so a run nobody would act on

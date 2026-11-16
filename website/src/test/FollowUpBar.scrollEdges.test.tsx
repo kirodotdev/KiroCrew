@@ -17,6 +17,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react'
 import { expectWheelToScrollRow } from './helpers'
 import FollowUpBar, { FOLLOWUP_CHIP_DEBOUNCE_MS, LEFT_ARROW_CLICK_SHIELD_MS } from '../components/FollowUpBar'
+import { inSidewaysSwipeOwner } from '../hooks/useTrackpadSwipe'
 
 /** `hidden` px of content beyond the right edge, `scrolled` px already past the left. */
 function stubGeometry({ hidden, scrolled = 0 }: { hidden: number; scrolled?: number }) {
@@ -76,6 +77,19 @@ describe('FollowUpBar scroll layout edges', () => {
     fireEvent.scroll(scroller)
     expect(leftArrow()).toBeTruthy()
     expect(rightArrow()).toBeNull()
+  })
+
+  it('keeps a sideways swipe over the chips and the arrows, at the row\'s end or when it fits', () => {
+    stubGeometry({ hidden: 240, scrolled: 240 })
+    const { container, unmount } = renderScroll()
+    const chip = screen.getByRole('button', { name: /ship it/i })
+    expect(inSidewaysSwipeOwner(chip, container)).toBe(true)
+    expect(inSidewaysSwipeOwner(leftArrow(), container)).toBe(true)
+    unmount()
+
+    stubGeometry({ hidden: 0 })
+    const fits = renderScroll()
+    expect(inSidewaysSwipeOwner(screen.getByRole('button', { name: /ship it/i }), fits.container)).toBe(true)
   })
 
   it('scrolls sideways on a vertical wheel only while the chips are clipped', () => {

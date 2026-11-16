@@ -1,6 +1,7 @@
 import { memo, useRef, useState, useEffect, useLayoutEffect, useCallback } from 'react'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
+import { OWNS_SIDEWAYS_SWIPE_ATTR } from '../hooks/useTrackpadSwipe'
 import { ChevronLeft, ChevronRight, ArrowUp, Loader2 } from 'lucide-react'
 import { InstantTip, useInstantTip as useSharedInstantTip } from './InstantTip'
 import ErrorNotice from './ErrorNotice'
@@ -687,7 +688,9 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, multi, ani
   const arrowClass = 'absolute top-1/2 -translate-y-1/2 z-20 flex items-center justify-center h-6 w-6 rounded-full bg-bg-elevated border border-border text-muted hover:text-text hover:border-accent/40 shadow-sm cursor-pointer p-0'
 
   return (
-    <div className="pt-1">
+    // The whole row, arrows included, keeps a sideways swipe even at its end,
+    // so scrolling the chips never opens the chat's side panel instead.
+    <div className="pt-1" {...{ [OWNS_SIDEWAYS_SWIPE_ATTR]: '' }}>
       <div className="relative">
       {edges.left && <div className="absolute left-0 top-0 bottom-0 w-10 z-10 pointer-events-none bg-gradient-to-r from-bg to-transparent" />}
       {edges.right && <div className="absolute right-0 top-0 bottom-0 w-10 z-10 pointer-events-none bg-gradient-to-l from-bg to-transparent" />}
