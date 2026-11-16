@@ -305,3 +305,39 @@ def test_an_owner_edit_made_while_the_repair_runs_is_kept(layout, persisted, mon
     written = _file(mates, "zxc")
     assert written["description"] == "owner edit"
     assert written["permissions"]["rules"]
+
+
+_SHELL_BOTH = {
+    "execute_bash": {"deniedCommands": ["rm -rf .*", "sudo .*"], "autoAllowReadonly": True},
+    "shell": {"deniedCommands": ["rm -rf .*", "sudo .*"]},
+}
+_SHELL_FOLDED = {"execute_bash": {"deniedCommands": ["rm -rf .*", "sudo .*"]}}
+
+
+def test_a_bot_whose_old_agent_wrote_both_shell_spellings_gets_its_denies_back_and_no_hold(
+    layout, persisted
+):
+    user, mates = layout
+    cfg = _moved_before(user, mates, _old(toolsSettings=_SHELL_BOTH), _MOVED_FILE)
+    persisted(cfg)
+
+    assert restore_dropped_policy(cfg) == ["zxc"]
+
+    written = _file(mates, "zxc")
+    merged = mate_worker.merge_worker_spec(BASE, mate_worker.worker_additions(BASE, written))
+    assert merged["toolsSettings"] == _SHELL_FOLDED
+    assert HELD_KEY not in _ledger(mates)
+    assert _owed("zxc")[1] is False
+
+
+def test_a_bot_that_already_carries_the_folded_shell_entry_is_not_repaired_again(layout, persisted):
+    user, mates = layout
+    carried = {"toolsSettings": _SHELL_FOLDED}
+    cfg = _moved_before(user, mates, _old(toolsSettings=_SHELL_BOTH), {**_MOVED_FILE, **carried})
+    persisted(cfg)
+    before = (mates / "zxc.json").read_bytes()
+
+    assert restore_dropped_policy(cfg) == []
+
+    assert (mates / "zxc.json").read_bytes() == before
+    assert HELD_KEY not in _ledger(mates)
