@@ -479,7 +479,7 @@ export default function EmbedTabStrip() {
           of the scroller itself would travel with the scrolled content, so the
           fades anchor to this non-scrolling parent. It also owns the flex
           sizing so the scroller keeps filling the row. */}
-      <div className="relative min-w-0 flex-1">
+      <div className="relative min-w-0 flex-1" data-owns-scroll-x="">
         <div
           ref={setStrip}
           className="flex items-center gap-1 overflow-x-auto relative"

@@ -544,7 +544,7 @@ export default function SessionTabStrip({ tabs, pinned = NO_PINS, activeKey, cue
       // strip claims both horizontal directions from touchstart.
       data-owns-swipe="left right"
     >
-      <div className="relative min-w-0 flex-1">
+      <div className="relative min-w-0 flex-1" data-owns-scroll-x="">
       {/* The scroller is a wrapper, not the group. Framer's drag auto-scroll
           looks for a scrollable ANCESTOR of the Reorder.Group, so a group
           that scrolls itself never scrolls while a tab is held at its edge,

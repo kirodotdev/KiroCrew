@@ -555,7 +555,7 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
         {/* Wrapper for the edge cues: the fades anchor to this non-scrolling
             parent, not the scrolled Reorder.Group. min-w-0 lets the scroller
             shrink below its content like the group did. */}
-        <div className="relative min-w-0 flex items-center">
+        <div className="relative min-w-0 flex items-center" data-owns-scroll-x="">
         <Reorder.Group
           ref={attachScroller}
           axis="x"
