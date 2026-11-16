@@ -8603,7 +8603,8 @@
     "onboardingChapterShell": {
       "kiro_crew": "{{productName}}",
       "skip_all": "सभी छोड़ें",
-      "skip_all_setup_and_onboarding": "सारा सेटअप और ऑनबोर्डिंग छोड़ें"
+      "skip_all_setup_and_onboarding": "सारा सेटअप और ऑनबोर्डिंग छोड़ें",
+      "owner_check_failed": "यह पक्का नहीं हो सका कि यह तुम्हारा Crew है, इसलिए पहली बार का सेटअप रुका हुआ है।"
     },
     "meetCrewmatesFlow": {
       "done": "हो गया",

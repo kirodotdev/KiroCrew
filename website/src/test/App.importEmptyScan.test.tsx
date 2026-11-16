@@ -75,6 +75,8 @@ beforeEach(() => {
   themeState.markImportOnboarded.mockClear()
   vi.spyOn(api, 'onboardingImportScan').mockResolvedValue(NOTHING_TO_IMPORT)
   vi.spyOn(api, 'onboardingImportState').mockResolvedValue({ ok: true })
+  // First run opens only for the owner (`useViewerIsNotOwner`).
+  vi.spyOn(api, 'viewerOwnerOk').mockResolvedValue(true)
 })
 
 afterEach(() => {

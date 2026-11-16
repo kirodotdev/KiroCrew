@@ -28,6 +28,7 @@ import { useGatewayConnecting } from '../hooks/useConnected'
 import { useConfigAutolinkRules } from '../hooks/useConfigAutolinkRules'
 import { usePreviewFlagServerSync } from '../hooks/usePreviewFlagServerSync'
 import { useTheme } from '../hooks/useTheme'
+import { useViewerIsNotOwner } from '../hooks/sharedCrew/useSharedCrew'
 import { useShellBranding } from './branding'
 import { useRumPageView } from '../hooks/useRumPageView'
 import { useFocusRouteRelay } from '../hooks/useFocusRouteRelay'
@@ -436,10 +437,20 @@ export function useAppShell() {
   // answer. A failed boot read leaves only this browser's flags, which a new
   // browser does not have; it may go on only where they already say first run
   // is done.
+  // Those flags are also owner-only to write (the theme and config routes refuse
+  // anyone else), so the chapters open only once `/api/auth/me` said this tab is
+  // the owner. A relay teammate, an unanswered check and a failed one all keep
+  // them shut: the host's first run is not theirs to answer. Unconfirmed also
+  // counts as unread, so the tour this browser's flags would seed waits too.
+  // A failed check is said, with a retry, wherever first run is still owed.
+  const ownerCheck = useViewerIsNotOwner()
+  const hostFlagsReady = themeBootReady && (themeBootRead || onboarded)
   const firstRun = useFirstRunChapters({
     onboarded, importOnboarded, privacyAcked, privacyAckVersion,
-    themeBootReady: themeBootReady && (themeBootRead || onboarded),
-    hostStateUnread: themeBootReady && !themeBootRead && !onboarded,
+    themeBootReady: hostFlagsReady && ownerCheck.owner,
+    hostStateUnread: (themeBootReady && !themeBootRead && !onboarded) || !ownerCheck.owner,
+    ownerCheckFailed: ownerCheck.failed && hostFlagsReady && (!importOnboarded || !privacyAcked || !onboarded),
+    retryOwnerCheck: ownerCheck.retry,
     markOnboarded,
   })
   // Decided once per document: the URL does not change under a mounted App.

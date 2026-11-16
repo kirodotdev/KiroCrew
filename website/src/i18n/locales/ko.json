@@ -8391,7 +8391,8 @@
     "onboardingChapterShell": {
       "kiro_crew": "{{productName}}",
       "skip_all": "모두 건너뛰기",
-      "skip_all_setup_and_onboarding": "모든 설정과 온보딩 건너뛰기"
+      "skip_all_setup_and_onboarding": "모든 설정과 온보딩 건너뛰기",
+      "owner_check_failed": "이 Crew가 내 것인지 확인하지 못해 첫 설정을 보류했어요."
     },
     "meetCrewmatesFlow": {
       "done": "완료",
