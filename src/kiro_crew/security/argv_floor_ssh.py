@@ -32,15 +32,12 @@ from .argv_floor_self import (
     _self_token_frames,
     _static_substitution_output,
 )
-from .shell_commands import read_commands
 from .shell_normalizer import (
     _argv_programs,
     _cut_at_operator,
     _data_consumer_exempt,
     _decode_shell_quoted_literals,
     _ends_argv,
-    _iter_shell_chars,
-    _matching_close_paren,
     _only_single_quoted_openers,
     _program_basename,
     _resolve_param_defaults,
@@ -176,64 +173,6 @@ _QUOTED_SEP_SENTINELS = {
     "(": "\x05",
     "{": "\x06",
 }
-
-
-def _double_quoted_substitution_bodies(text: str) -> "list[str]":
-    """The body of each ``$(...)`` that sits directly inside double quotes in *text*.
-
-    :func:`_mask_quoted_separators` keeps double-quoted text as data, but bash runs
-    such a body as a command line of its own, in a new quote context. Only an
-    unpaired ``$`` opens one (``$$`` is the PID, ``\\$`` is text); the body ends at
-    its own matching ``)``, or runs to the end of *text* when none is found. A ``)``
-    in a heredoc body that :func:`read_commands` finds there does not end it. The
-    text that a bare ``cat`` prints from a quoted-tag heredoc is cut out of each
-    body (:func:`_without_quoted_heredoc_text`).
-    """
-    bodies: list[str] = []
-    i, state = 0, 0
-    while i < len(text):
-        dollars = 0
-        for step in _iter_shell_chars(text[i:], state):
-            at = i + step.offset
-            dollars = dollars + 1 if step.state == 2 and step.text == "$" else 0
-            if dollars % 2 and text.startswith("(", at + 1):
-                rest = text[at + 2 :]
-                commands = read_commands(rest, heredocs=True) if "<<" in rest else []
-                for doc in [doc for command in commands for doc in command.heredocs]:
-                    blank = re.sub("[^\n]", " ", rest[doc.start : doc.end])
-                    rest = rest[: doc.start] + blank + rest[doc.end :]
-                end, proven = _matching_close_paren(rest, 0)
-                bodies.append(text[at + 2 : at + 1 + end] if proven else text[at + 2 :])
-                i, state = (at + 2 + end if proven else len(text)), 2
-                break
-        else:
-            break
-    return [_without_quoted_heredoc_text(body) for body in bodies]
-
-
-def _without_quoted_heredoc_text(body: str) -> str:
-    """*body* with the text of each quoted-tag heredoc that a bare ``cat`` prints cut out.
-
-    Bash expands nothing in such a text, and a ``cat`` that writes to no file and
-    pipes to nothing only prints it. Every other heredoc keeps its text, so a shell
-    fed one (``bash <<'EOF'``, ``cat <<'EOF' | sh``) is read as before.
-    """
-    if "<<" not in body:
-        return body
-    docs = [
-        doc
-        for cmd in read_commands(body, heredocs=True)
-        if [word.raw for word in cmd.argv] == ["cat"]
-        and all(word.raw.startswith("<<") for word, _target in cmd.redirects)
-        and not cmd.separator.startswith("|")
-        for doc in cmd.heredocs
-        if doc.quoted
-    ]
-    cut = len(body)
-    for doc in sorted(docs, key=lambda doc: doc.start, reverse=True):
-        if doc.end <= cut:
-            body, cut = body[: doc.start] + body[doc.end :], doc.start
-    return body
 
 
 def _mask_quoted_separators(text: str) -> str:
@@ -1075,7 +1014,6 @@ def _is_ssh_to_self(text_lower: str, *, own_line: bool = False) -> bool:
     # separator-free by construction, so the substitution cannot fabricate a
     # command boundary the masking below would misread.
     text_lower = _resolve_line_assignments(text_lower)
-    unmasked = text_lower
     # Mask every ``;``/``|`` that is QUOTED or backslash-escaped in the source to
     # a sentinel BEFORE tokenization, so a quoted separator surviving into a
     # shlex-dequoted token (``scp 'a;b' localhost:/x``) is not read as a
@@ -1103,10 +1041,6 @@ def _is_ssh_to_self(text_lower: str, *, own_line: bool = False) -> bool:
     # id; }; f localhost``) and recurse on the bound body -- the literal call
     # argument is the destination the walk below cannot see through ``$1``.
     if _function_call_binds_self(text_lower):
-        return True
-    # The mask above keeps double-quoted text as data, but bash runs a ``$(...)``
-    # there, so each such body is judged as a command line of its own.
-    if any(map(_is_ssh_to_self, _double_quoted_substitution_bodies(unmasked))):
         return True
     # A self-targeting ``RSYNC_RSH`` set in one frame is inherited by
     # LATER frames (an exported value, or a command-scoped prefix on a command

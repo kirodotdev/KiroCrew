@@ -1099,23 +1099,6 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   control byte (a newline, or a separator the ssh floor masked), and any text whose
   quotes do not all close.
   A catalog row still matches its raw text either way.
-  Before the ssh floor walks a line, it masks every quoted separator and paren
-  (`argv_floor_ssh._mask_quoted_separators`), so a quoted `;` or `(` does not end its
-  walk, and a double-quoted word stays one word of the command's argv. Bash still runs
-  a `$(` inside double quotes, so the floor also finds each such body on the unmasked
-  text (`_double_quoted_substitution_bodies`) and judges it as a command line of its
-  own, in a new quote context, up to its matching `)` (`_matching_close_paren`, or the
-  rest of the text when none is found). A `)` inside a heredoc body that
-  `shell_commands.read_commands` finds after the `$(` does not end it, as it does not
-  in an unquoted `$(`. So `echo "$(ssh -p 22 <this host> id)"` and
-  `x="$(...)"` are refused like the unquoted and backtick spellings, while
-  `ssh -i "$(...; ...)" <this host>` still reaches the host after the quoted word.
-  Only an unpaired `$` opens a body: `$$(` is the PID followed by quoted text, and
-  `\$(` is text. Inside a body, the text that a bare `cat` prints from a quoted-tag
-  heredoc is cut out (found by `shell_commands.read_commands`), because bash expands
-  nothing there and `cat` only prints it. A heredoc that a shell reads
-  (`bash <<'EOF'`, `cat <<'EOF' | sh`, a `cat` that writes a file), or one with an
-  unquoted tag, keeps its text, so it is read as at the top level.
   Within one `is_denied` call (`call_views.sharing_views`, which this module also serves
   to its importers) both walks share one result per frame text, and `_shell_payload_walk`
   and `argv_floor_self._quoted_assignment_scripts` keep theirs in the same memo, so every
