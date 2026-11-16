@@ -564,6 +564,49 @@ the record itself stays in the owner-only milestones state file. The rules are
 in [`../system-specs/modules/metrics.md`](../system-specs/modules/metrics.md),
 "Recommendation attribution".
 
+### Metric schema contract
+
+Dashboards and queries downstream are built on the names, units and attribute
+values above, and they keep reading data from older releases. So the exported
+schema is append-only: a metric, an attribute key or an attribute value can be
+added, but never removed, renamed or given a new meaning. A metric's kind,
+unit, instrumentation scope and temporality never change either. To change one
+of those, add a metric under a new name and deprecate the old one.
+
+`src/kiro_crew/metrics/schema_manifest.json` lists every metric in
+`PRODUCT_METRICS`: its kind, unit, scope, temporality, attribute keys and, where
+the code closes them, the allowed attribute values. A key with no `values` list
+is pinned as a key, but its values come from a catalog or a bucket function
+rather than a closed list in code. The file is generated from the code; do not
+edit values by hand.
+
+Two tests in `test/metrics/test_metrics_schema.py` enforce the rule:
+
+- The code must match the manifest. A metric, key or value the code adds without
+  a manifest update fails, so every addition shows up in review. A metric, key
+  or value the code stops sending fails until it is marked deprecated.
+- The manifest must only grow against its copy at the base commit. A removed or
+  renamed row, a removed key or value, or a changed kind, unit, scope or
+  temporality fails, even when the manifest was regenerated.
+
+To add a metric, key or value: change the code, then regenerate the manifest
+and commit it in the same pull request.
+
+```bash
+python test/metrics_schema_helpers.py --write
+```
+
+To retire something, stop sending it and mark it in the manifest. The generator
+keeps these marks when it regenerates:
+
+| Retiring | Mark |
+|---|---|
+| A metric | set the row's `"status"` to `"deprecated"` |
+| An attribute key | add `"status": "deprecated"` to the key's entry |
+| An attribute value | move it from the key's `values` to its `deprecated_values` |
+
+A deprecated name, key or value is never used again for something else.
+
 ### Before you build a per-host dashboard
 
 Kiro Crew sets `service.instance.id` explicitly to a random, persisted install
