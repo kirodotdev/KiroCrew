@@ -177,6 +177,8 @@ Examples:
   kirocrew eval --dir ./evals           # your own scenario files (.json, .yaml, .yml)
   kirocrew eval --file ./evals/a.yaml --agent reviewer --model my-model-id --repeat 3
   kirocrew eval --dir ./evals --baseline eval_results/main.json --max-drop 0.05 --junit eval.xml
+  kirocrew eval run --suite tasks --check   # each case fails on its base, passes on its reference
+  kirocrew eval run --suite tasks --tier simple --harness crew-chat,claude-code --eval-home /srv/eval
 """,
         formatter_class=_fmt,
         parents=[_jail_opts],
@@ -212,9 +214,10 @@ Examples:
     eval_parser.add_argument(
         "--repeat",
         type=positive_int,
-        default=1,
+        default=None,
         metavar="N",
-        help="Run the scenarios N times; a scenario passes only when all N runs pass (pass^k)",
+        help="Run the scenarios N times; a scenario passes only when all N runs pass (pass^k). "
+        "With eval run: runs per case (default: the tier's k)",
     )
     eval_parser.add_argument(
         "--baseline",
@@ -229,6 +232,35 @@ Examples:
     )
     eval_parser.add_argument(
         "--junit", metavar="PATH", help="Also write the results as a JUnit XML file at PATH"
+    )
+    # kirocrew eval run (rfc-builtin-eval.md §3.4): `run` as the first name selects it.
+    run = eval_parser.add_argument_group("kirocrew eval run")
+    run.add_argument(
+        "--suite", metavar="tasks|DIR", help="tasks (evals/tasks here) or a suite directory"
+    )
+    run.add_argument(
+        "--tier", choices=["simple", "medium", "complex", "all"], default=None, help="Default: all"
+    )
+    run.add_argument(
+        "--harness",
+        metavar="LIST",
+        help="Comma list of crew-chat, crew-conductor, kiro-cli-v3, claude-code, codex, or all",
+    )
+    run.add_argument(
+        "--case", dest="case_ids", action="append", metavar="ID", help="Only this case (repeatable)"
+    )
+    run.add_argument(
+        "--eval-home",
+        dest="eval_home",
+        metavar="DIR",
+        help="Root for the per-run isolated homes (required to run arms)",
+    )
+    run.add_argument("--out", metavar="DIR", help="Results directory (default: ./eval_results)")
+    run.add_argument("--json", action="store_true", help="Print the summary as one JSON object")
+    run.add_argument(
+        "--check",
+        action="store_true",
+        help="No model: check each case fails on its base and passes on its reference",
     )
 
 

@@ -1080,8 +1080,14 @@ def main() -> None:
 
         run_computer(getattr(args, "computer_args", []))
     elif args.command == "eval":
-        from kiro_crew.cli_commands import _run_eval
+        from kiro_crew.cli_commands import _eval_run_flag_refusal, _run_eval, _run_eval_tasks
 
+        _eval_refusal = _eval_run_flag_refusal(args)
+        if _eval_refusal:
+            print(f"Error: {_eval_refusal}", file=sys.stderr)
+            sys.exit(2)
+        if args.scenarios[:1] == ["run"]:
+            sys.exit(_run_eval_tasks(args))
         asyncio.run(_run_eval(args))
     elif args.command == "security":
         from kiro_crew.cli_commands import _security

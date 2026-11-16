@@ -101,6 +101,14 @@ The command exits 0 only when every scenario passes. It exits 1 when any
 scenario fails (the report is still written first) or when a scenario name is
 unknown (nothing runs), so `kirocrew eval && next` stops on a failure.
 
+## Task cases across harnesses
+
+`kirocrew eval run --suite tasks` runs real coding cases from `evals/tasks/`
+unattended on Crew chat, Crew conductor mode and Claude Code, each run in its
+own eval home, and scores them PASSED / FAILED / VOID (`tasks.py`, `arms.py`).
+`--check` proves each case without a model. See
+[`evals/tasks/README.md`](../../../evals/tasks/README.md).
+
 ## Available Scenarios
 
 | Name | Turns | Sessions | Dimensions | Time est. |
