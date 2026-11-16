@@ -9,14 +9,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ArrowLeft, Camera, Check, Copy, ExternalLink, Download, Eye, FoldHorizontal, MoreHorizontal, Pencil,
-  UnfoldHorizontal, RefreshCw, X, RotateCcw, Plus, Sparkles, MessageSquare, Monitor, Undo2, Upload, Star,
+  UnfoldHorizontal, RefreshCw, X, RotateCcw, Plus, Sparkles, PenLine, ChevronRight, MessageSquare, Monitor, Undo2, Upload, Star,
   Folder as FolderIcon,
 } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { PageHeader, Badge, Btn, Input } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
 import { fmtNumber } from '../i18n/format'
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
+import { containedSelectionRange } from '../utils/selectionContainment'
+import { clearAnnotationHighlight, paintAnnotationHighlight } from '../utils/annotationHighlight'
+import { useQuickEditStatus } from './ArtifactQuickEditStatus'
+import { editQuotePreview, editShortcutPrompt, supportsEditShortcuts, usableEditQuote, type EditShortcutId } from '../components/artifactEditShortcuts.prompt'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import HoverTip from '../components/HoverTip'
 import { ArtifactSendToSessionSubmenu, useArtifactSendToSession } from '../components/ArtifactSendToSession'
@@ -142,6 +146,45 @@ function ArtifactPopoutMenuItems({ slug, name }: { slug: string; name: string })
   )
 }
 
+/** The More menu's "Quick edits": each item sends one preset instruction to the companion chat. */
+function QuickEditsSubmenu({ quote, onPick }: { quote: string; onPick: (id: EditShortcutId, action: string) => void }) {
+  const items: Array<[EditShortcutId, string]> = [
+    ['shorter', i18nT('pages.artifactDetailPage.quick_edit_shorter')],
+    ['longer', i18nT('pages.artifactDetailPage.quick_edit_longer')],
+    ['simpler', i18nT('pages.artifactDetailPage.quick_edit_simpler')],
+    ['proofread', i18nT('pages.artifactDetailPage.quick_edit_proofread')],
+  ]
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>
+        <PenLine size={13} className="shrink-0 text-muted" aria-hidden="true" />
+        <span>{i18nT('pages.artifactDetailPage.quick_edits')}</span>
+        <ChevronRight size={13} className="ml-auto shrink-0 text-muted" aria-hidden="true" />
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent className="min-w-[200px] max-w-[260px]">
+        <DropdownMenuLabel>
+          {quote
+            ? i18nT('pages.artifactDetailPage.quick_edit_scope_selection', { passage: editQuotePreview(quote) })
+            : i18nT('pages.artifactDetailPage.quick_edit_scope_document')}
+        </DropdownMenuLabel>
+        {items.map(([id, label]) => (
+          <DropdownMenuItem key={id} onSelect={() => onPick(id, label)}>{label}</DropdownMenuItem>
+        ))}
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <span>{i18nT('pages.artifactDetailPage.quick_edit_tone')}</span>
+            <ChevronRight size={13} className="ml-auto shrink-0 text-muted" aria-hidden="true" />
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            <DropdownMenuItem onSelect={() => onPick('tone_formal', i18nT('pages.artifactDetailPage.quick_edit_tone_formal'))}>{i18nT('pages.artifactDetailPage.quick_edit_tone_formal')}</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onPick('tone_casual', i18nT('pages.artifactDetailPage.quick_edit_tone_casual'))}>{i18nT('pages.artifactDetailPage.quick_edit_tone_casual')}</DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  )
+}
+
 /** The More menu's state: copy, open, send to a session and download. */
 export function useArtifactDetailPageMenu({
   stateRead, documentRead, composerRead, companionRead,
@@ -154,7 +197,8 @@ export function useArtifactDetailPageMenu({
   const { slug, editing, setSendToSessionError } = stateRead
   const { effectiveVersion, artifact, exportSrcdoc } = documentRead
   const { guardSendToSession } = composerRead
-  const { sendNav } = companionRead
+  const { sendNav, sendEditShortcut } = companionRead
+  const { previewRef, detailQuery } = documentRead
   // ── Copy raw content ──────────────────────────────────────────────────────
   // Copies the stored source (markdown/HTML/JSON/text as-is) of the version
   // currently on screen — `artifact` already resolves to the selected
@@ -205,6 +249,52 @@ export function useArtifactDetailPageMenu({
   // one place the failure is reported — is on screen.
   const [moreOpen, setMoreOpen] = useState(false)
   useEffect(() => { if (copyStatus === 'failed') setMoreOpen(false) }, [copyStatus])
+  // The passage the Quick edits apply to, read as the menu opens: the DOM selection
+  // inside the rendered body, else the passage the selection box was opened on (that
+  // box takes focus and collapses the real selection, so it kept its own copy), else
+  // the one an HTML body relayed. Empty = the whole document.
+  const [editQuote, setEditQuote] = useState('')
+  const iframeText = composerRead.iframeSelection?.text
+  const { openedPassage, guardSidebarLeave, confirmSidebarLeave } = composerRead
+  // Owns this menu's paint in the shared annotate highlight, beside the comment composer's.
+  const [quoteHighlightOwner] = useState(() => ({}))
+  const onMoreOpenChange = useCallback((open: boolean) => {
+    if (open) {
+      const sel = window.getSelection()
+      const root = previewRef.current
+      const range = sel && root && !sel.isCollapsed && sel.rangeCount > 0
+        ? containedSelectionRange(sel.getRangeAt(0), root)
+        : null
+      const quote = usableEditQuote(range ? range.toString() : openedPassage() || iframeText)
+      setEditQuote(quote)
+      // The menu takes focus, so the passage it quotes is painted in the body while it is open.
+      if (range && quote) paintAnnotationHighlight(quoteHighlightOwner, range)
+    }
+    setMoreOpen(open)
+  }, [previewRef, iframeText, openedPassage, quoteHighlightOwner])
+  useEffect(() => {
+    if (!moreOpen) clearAnnotationHighlight(quoteHighlightOwner)
+    return () => clearAnnotationHighlight(quoteHighlightOwner)
+  }, [moreOpen, quoteHighlightOwner])
+  // The chat panel replaces the comments sidebar, so a half-written comment there is asked about first.
+  const quickEditStatus = useQuickEditStatus(slug, detailQuery.data?.version)
+  const { track } = quickEditStatus
+  const editShortcut = useCallback((id: EditShortcutId, action: string) => {
+    if (!artifact) return
+    const instruction = editShortcutPrompt(id, artifact.name, artifact.slug, editQuote)
+    const whole = !editQuote
+    const visibleLine = i18nT(whole
+      ? 'pages.artifactDetailPage.quick_edit_sent_document'
+      : 'pages.artifactDetailPage.quick_edit_sent_selection', { action })
+    const version = detailQuery.data?.version ?? artifact.version
+    guardSidebarLeave(() => {
+      track(null)
+      void sendEditShortcut(instruction, visibleLine, confirmSidebarLeave).then((sent) => {
+        if (sent === 'busy') track({ slug, busy: true })
+        else if (sent) track({ slug, action, whole, version, ...sent })
+      })
+    })
+  }, [artifact, editQuote, sendEditShortcut, guardSidebarLeave, confirmSidebarLeave, detailQuery.data?.version, slug, track])
 
   const sendToSession = useArtifactSendToSession({
     name: artifact?.name ?? '',
@@ -268,7 +358,7 @@ export function useArtifactDetailPageMenu({
 
   return {
     copyStatus, copyError, setCopyError, handleCopyContent, copyLabel, moreOpen, setMoreOpen, sendToSession,
-    downloadAsHtml,
+    downloadAsHtml, onMoreOpenChange, editQuote, editShortcut, quickEditStatus,
   }
 }
 
@@ -305,7 +395,8 @@ export function ArtifactDetailPageHeader({
   } = editorRead
   const { guardCommentDraft } = composerRead
   const {
-    copyStatus, handleCopyContent, copyLabel, moreOpen, setMoreOpen, sendToSession, downloadAsHtml,
+    copyStatus, handleCopyContent, copyLabel, moreOpen, onMoreOpenChange, sendToSession, downloadAsHtml,
+    editQuote, editShortcut,
   } = menuRead
   // A key that closes the tag input unmounts the focused field, so the + Tag
   // button takes focus back as it mounts. Enter and Space would also activate
@@ -626,7 +717,7 @@ export function ArtifactDetailPageHeader({
             </>
           )}
 
-          <DropdownMenu open={moreOpen} onOpenChange={setMoreOpen} guideScope="menu:artifacts.detail.more">
+          <DropdownMenu open={moreOpen} onOpenChange={onMoreOpenChange} guideScope="menu:artifacts.detail.more">
             <HoverTip label={i18nT('pages.artifactDetailPage.more_actions')}>
               <DropdownMenuTrigger asChild>
                 <Btn
@@ -687,6 +778,9 @@ export function ArtifactDetailPageHeader({
               {!editing && (
                 <>
                   <DropdownMenuSeparator />
+                  {isCurrent && supportsEditShortcuts(artifact.kind) && (
+                    <QuickEditsSubmenu quote={editQuote} onPick={editShortcut} />
+                  )}
                   {artifact.kind !== 'webapp' && artifact.kind !== 'image' && (
                     <DropdownMenuItem onSelect={(e) => { e.preventDefault(); handleCopyContent() }}>
                       {copyStatus === 'copied'

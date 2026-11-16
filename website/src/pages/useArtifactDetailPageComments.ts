@@ -265,7 +265,7 @@ export function useArtifactDetailPageComposer({
     return ok
   }), [submitAnchored])
   const {
-    selectionComposer, iframeSelection, stageIframeSelection, clearSelectionState, guardCommentDraft, hasCommentDraft,
+    selectionComposer, iframeSelection, stageIframeSelection, clearSelectionState, guardCommentDraft, hasCommentDraft, openedPassage,
   } = useSelectionComposerAnchor<PendingAnchor>({
     resolveDomAnchor: resolveSelectionAnchor, quoteOf, quoteOnly, submit: submitAndRecord,
     draftKey: `mc-artifact-composer-draft:${slug}`, confirmDiscard: confirmDiscardDraft, onRefusedAfterClose,
@@ -346,6 +346,22 @@ export function useArtifactDetailPageComposer({
       void proceed((go) => { void discardDraftsBeforeLeaving().then((ok) => { if (ok) go() }) })
     })()
   }, [popout, discardDraftsBeforeLeaving])
+  // Opening the chat panel in place (a Quick edit) swaps the sidebar out and drops
+  // its boxes, popout or not: ask about those drafts alone, since the selection
+  // composer and the thread popover stay mounted across the switch.
+  const confirmSidebarLeave = useCallback(async (): Promise<boolean> => {
+    if (!sidebarDraftDirtyRef.current) return true
+    if (!(await confirmDiscardDraft())) return false
+    if (sidebarDraftDirtyRef.current) {
+      sidebarDraftDirtyRef.current = false
+      setSidebarDiscardSignal((n) => n + 1)
+    }
+    return true
+  }, [confirmDiscardDraft])
+  const guardSidebarLeave = useCallback((proceed: () => void) => {
+    if (!sidebarDraftDirtyRef.current) { proceed(); return }
+    void confirmSidebarLeave().then((ok) => { if (ok) proceed() })
+  }, [confirmSidebarLeave])
   // No row action beside the composer: the box already carries Add comment and
   // Close, and a third control would break the two-per-row cap. Copying the
   // selection is the composer's own Cmd/Ctrl+C while its input is empty.
@@ -370,8 +386,8 @@ export function useArtifactDetailPageComposer({
   const [openThread, setOpenThread] = useState<{ rootId: string; rect?: { x: number; y: number; w: number; h: number } } | null>(null)
 
   return {
-    selectionComposer, iframeSelection, clearSelectionState, guardCommentDraft, onSidebarDraftDirtyChange,
-    onThreadDraftDirtyChange, sidebarDiscardSignal, composerResetNonce, guardSendToSession, selectionActions,
+    selectionComposer, iframeSelection, clearSelectionState, guardCommentDraft, openedPassage, onSidebarDraftDirtyChange,
+    onThreadDraftDirtyChange, sidebarDiscardSignal, composerResetNonce, guardSendToSession, guardSidebarLeave, confirmSidebarLeave, selectionActions,
     handleIframeSelect, stageIframeSelection, openThread, setOpenThread, lastPosted,
   }
 }

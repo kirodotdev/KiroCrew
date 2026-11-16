@@ -85,7 +85,12 @@ export function useSelectionComposerAnchor<A>({
   guardCommentDraft: (proceed: () => void) => Promise<void>
   /** Whether the composer box currently holds unsaved text. */
   hasCommentDraft: () => boolean
+  /** The passage the open box was opened on, taken before focus moved into its
+   *  input (which collapses the real selection); '' while no box is open. */
+  openedPassage: () => string
 } {
+  const openedPassageRef = useRef('')
+  const openedPassage = useCallback(() => openedPassageRef.current, [])
   const pendingAnchorRef = useRef<A | null>(null)
   const stagedIframeAnchorRef = useRef<A | null>(null)
   const [iframeSelection, setIframeSelection] = useState<ExternalSelectionState | null>(null)
@@ -101,6 +106,7 @@ export function useSelectionComposerAnchor<A>({
   const clearSelectionState = useCallback(() => {
     generationRef.current += 1
     composerOpenRef.current = false
+    openedPassageRef.current = ''
     pendingAnchorRef.current = null
     stagedIframeAnchorRef.current = null
     setIframeSelection(null)
@@ -120,6 +126,7 @@ export function useSelectionComposerAnchor<A>({
   const handleComposerOpen = useCallback((text: string) => {
     generationRef.current += 1
     composerOpenRef.current = true
+    openedPassageRef.current = text
     const fromDom = resolveDomAnchor(highlightOwnerRef.current)
     const staged = stagedIframeAnchorRef.current
     stagedIframeAnchorRef.current = null
@@ -199,6 +206,6 @@ export function useSelectionComposerAnchor<A>({
 
   return {
     selectionComposer, iframeSelection, stageIframeSelection, clearSelectionState,
-    isComposerOpen, guardCommentDraft, hasCommentDraft,
+    isComposerOpen, guardCommentDraft, hasCommentDraft, openedPassage,
   }
 }

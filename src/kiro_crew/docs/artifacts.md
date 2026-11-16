@@ -37,6 +37,24 @@ are drawn in one column instead. Choose **Stop comparing**
 to go back to the document. Comparison works for text artifacts and is not offered for
 images, web apps or while you are editing.
 
+## Quick edits
+
+On a document artifact (markdown, plain text or HTML), the page's **More** menu has a
+**Quick edits** submenu: Shorter, Longer, Simpler wording, Proofread, and Change tone
+(More formal or More casual). Picking one sends a single preset instruction to the
+artifact's companion chat, for the text you had selected or, with no selection, the
+whole document. The chat shows only a short line such as "Shorter · selected passage";
+the instruction itself travels as background context. The agent makes the change
+through its normal artifact update, so it lands as a new version you can read or
+revert, and the menu says so. A line on the page follows the edit: working, saved as
+the new version, or finished without a new version. While the agent is still busy in
+that chat, a quick edit is not sent and the page asks you to try again when it
+finishes. A selection made
+with the mouse is kept while you open the menu, and the menu quotes the start of it so
+you can see which passage will be rewritten. If the comments panel holds a comment
+you have not sent, you are asked before the chat panel replaces it. Nothing is sent
+until you pick an item, and widgets and apps do not show the menu.
+
 ## Organizing
 
 Artifacts can be filed into folders, which nest. Moving an artifact or renaming a
