@@ -312,7 +312,8 @@ class LarkClient:
     ``send_reply`` uses ``run_in_executor`` so it never blocks the loop.
 
     The official SDK stores its WebSocket event loop in a module global. The
-    gateway imports the SDK on its own running loop, so the receiver thread must
+    global is bound to whichever loop was current when the SDK was imported,
+    which is not the receiver's, so the receiver thread must
     replace that global with a dedicated loop and construct ``ws.Client`` there
     before calling ``start``. ``close()`` prefers a future public ``stop()``
     method and otherwise shuts down the current 1.x SDK through its async

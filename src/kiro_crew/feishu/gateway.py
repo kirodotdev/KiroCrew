@@ -14,10 +14,13 @@ The turn itself runs on the shared ``TurnDriver`` (credential/exfil redaction
 
 from __future__ import annotations
 
+import asyncio
+import importlib
 import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew import extras
+from kiro_crew.config import live
 from kiro_crew.feishu.client import LarkClient
 from kiro_crew.feishu.transport import FeishuTransport
 from kiro_crew.feishu.transport_dispatch import FeishuDispatcher
@@ -27,6 +30,9 @@ if TYPE_CHECKING:
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
 logger = logging.getLogger(__name__)
+
+#: Every lark-oapi module LarkClient imports, preloaded off the event loop.
+_LARK_MODULES = ("lark_oapi", "lark_oapi.api.im.v1", "lark_oapi.ws")
 
 
 def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
@@ -56,6 +62,14 @@ async def maybe_start_feishu(orch: "GatewayOrchestrator") -> "LarkClient | None"
     try:
         assert orch.sessions is not None and orch.ctx_builder is not None
 
+        # lark-oapi loads about 11,000 modules on import, which can take tens of
+        # seconds on a slow filesystem. LarkClient imports it inline, so load it
+        # on a worker thread first: on the loop it would stall the gateway long
+        # enough for the loop-stall watchdog to restart it. Every later import
+        # is then a sys.modules hit. A missing extra still raises ImportError.
+        for module in _LARK_MODULES:
+            await asyncio.to_thread(importlib.import_module, module)
+
         allowed_open_ids: list[str] = list(getattr(orch, "_feishu_allowed_open_ids", []) or [])
         if not allowed_open_ids:
             logger.warning(
@@ -76,11 +90,30 @@ async def maybe_start_feishu(orch: "GatewayOrchestrator") -> "LarkClient | None"
             app_id=orch._feishu_app_id,
             app_secret=orch._feishu_app_secret,
         )
+        # With the config watcher running, the boot copy may be older than the
+        # config in force: an edit that landed during the preload found no
+        # transport and was dropped. Seed the transport from the adopted
+        # section instead, or with nobody authorized when the loader discarded
+        # that section, and let the replay below reconcile. Seeding (rather
+        # than starting empty) keeps the replay from auditing grants nobody
+        # made.
+        snap = live.snapshot()
+        watched = snap is not None
+        if snap is None:
+            seed_open_ids = allowed_open_ids
+            seed_allow_group = bool(getattr(orch, "_feishu_allow_group", False))
+            seed_group_ids = list(getattr(orch, "_feishu_allowed_group_ids", []) or [])
+        elif "feishu" in snap.degraded_sections:
+            seed_open_ids, seed_allow_group, seed_group_ids = [], False, []
+        else:
+            seed_open_ids = list(snap.feishu.allowed_open_ids)
+            seed_allow_group = bool(snap.feishu.allow_group)
+            seed_group_ids = list(snap.feishu.allowed_group_ids)
         transport = FeishuTransport(
             client,
-            allowed_open_ids=allowed_open_ids,
-            allow_group=bool(getattr(orch, "_feishu_allow_group", False)),
-            allowed_group_ids=list(getattr(orch, "_feishu_allowed_group_ids", []) or []),
+            allowed_open_ids=seed_open_ids,
+            allow_group=seed_allow_group,
+            allowed_group_ids=seed_group_ids,
             dispatch=dispatcher.handle_message,
         )
         # Inbound: client WS frame -> transport.receive (authorise + normalise)
@@ -91,6 +124,13 @@ async def maybe_start_feishu(orch: "GatewayOrchestrator") -> "LarkClient | None"
         # The dispatcher's config applier pushes reloaded authorization fields at
         # the transport; wired after construction, like ``client``.
         dispatcher.transport = transport
+        # No await separates this from the wiring above, so every later edit
+        # reaches the transport through the dispatcher's applier. A degraded
+        # section is deferred, and the transport keeps authorizing nobody until
+        # the applier accepts the section (the loader keeps a section it once
+        # saw degraded marked so until a restart).
+        if watched:
+            live.watch().replay(dispatcher._config_sub)
         dispatcher.dashboard_state = orch.dashboard_state
 
         # Keep the settings badge truthful: connect() only SPAWNS the receiver
