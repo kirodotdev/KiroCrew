@@ -3,7 +3,7 @@ import {
   DEFAULT_CREW_MODE_AGENT, autoOpenRows, crewModeAgent, crewModeView, openingHidesSessionList, isConductorAgent, isDefaultAgentName, runsCrewMode,
   memoryModeAllowsCrewMode, runsConductor, resetCrewModeCatalog, setCrewModeCatalog, withoutConductors, agentCycleTarget,
   gatewayRunsCrewMode, CREW_APPROVAL_SURFACES, crewApprovalDecidableHere, crewModeEnabled, crewModeRoot, crewRootOf,
-  mateThreadsHidingSessions, busySlotKeys,
+  mateThreadsHidingSessions, busySlotKeys, slackRowHidden,
 } from './crewMode'
 import { applyLockedControls } from '../utils/editionLocks'
 import { crewMemberKeys } from '../store/dashboard/unread'
@@ -343,6 +343,66 @@ describe("a Bot's sessions in the person's lists", () => {
     const listed = { dashboard: { slots: shown, unreadSlots: ['mw', 'plain'] }, chat: {} } as never
     expect(selectPersonSlots(listed).map(r => r.key)).toContain('mw')
     expect(select(listed)).toBe(2)
+  })
+})
+
+describe('the Slack session list setting (slack_list_hidden)', () => {
+  const rows = [
+    { key: 'slack_1.1', slack_list_hidden: true },
+    { key: 'slack_D0DM', slack_list_hidden: true },
+    { key: 'slack_2.2', slack_list_hidden: true, pending_approval: true },
+    { key: 'slack_3.3', slack_list_hidden: true, needs_input: true },
+    { key: 'chat-1', slack_linked: true },
+    { key: 'chat-code' },
+  ]
+
+  it('leaves no row out while no row is stamped (the default)', () => {
+    const plain = rows.map(({ key }) => ({ key }))
+    expect(crewModeView(plain)).toEqual(plain)
+    expect(slackRowHidden(plain[0])).toBe(false)
+    expect(autoOpenRows(plain)).toEqual(plain)
+    expect(crewMemberKeys(plain).size).toBe(0)
+  })
+
+  it('leaves stamped rows out and keeps the ones waiting on the person', () => {
+    expect(crewModeView(rows).map(r => r.key)).toEqual(['slack_2.2', 'slack_3.3', 'chat-1', 'chat-code'])
+  })
+
+  it('keeps the open session listed, and only that one', () => {
+    expect(crewModeView(rows, false, undefined, 'slack_1.1').map(r => r.key))
+      .toEqual(['slack_1.1', 'slack_2.2', 'slack_3.3', 'chat-1', 'chat-code'])
+    expect(slackRowHidden(rows[0], 'slack_1.1')).toBe(false)
+    expect(slackRowHidden(rows[1], 'slack_1.1')).toBe(true)
+  })
+
+  it('a hidden conversation waiting on an approval stays where the person sees it', () => {
+    // An approval or a question is what needs the person; the row stays listed
+    // so its status dot and the Needs you lists still show it.
+    expect(slackRowHidden(rows[2])).toBe(false)
+    expect(slackRowHidden(rows[3])).toBe(false)
+    expect(crewModeView(rows).find(r => r.key === 'slack_2.2')?.pending_approval).toBe(true)
+  })
+
+  it('the page never opens a stamped row on its own', () => {
+    expect(autoOpenRows(rows).map(r => r.key)).toEqual(['chat-1', 'chat-code'])
+  })
+
+  it('hidden rows add nothing to the unread count, and come back with the next slot list', () => {
+    const unreadSlots = ['slack_1.1', 'slack_D0DM', 'chat-1']
+    const select = selectUnreadByMode('')
+    const hidden = { dashboard: { slots: rows, unreadSlots }, chat: {} } as never
+    expect([...crewMemberKeys(rows)].sort()).toEqual(['slack_1.1', 'slack_D0DM'])
+    expect(select(hidden)).toBe(1)
+    const listed = rows.map(r => ({ ...r, slack_list_hidden: undefined }))
+    const shown = { dashboard: { slots: listed, unreadSlots }, chat: {} } as never
+    expect(select(shown)).toBe(3)
+  })
+
+  it('the person\'s list follows the open session without a new slot list', () => {
+    const slots = rows.slice(0, 2)
+    expect(selectPersonSlots({ dashboard: { slots }, chat: { activeSlot: null } } as never)).toEqual([])
+    expect(selectPersonSlots({ dashboard: { slots }, chat: { activeSlot: 'slack_D0DM' } } as never).map(r => r.key))
+      .toEqual(['slack_D0DM'])
   })
 })
 

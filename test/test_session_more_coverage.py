@@ -624,7 +624,7 @@ class TestGetBgSessionRespawn:
                 return True
 
             async def create_session(self, **kwargs):
-                return SimpleNamespace(session_id="sid-fresh")
+                return SimpleNamespace(session_id="sid-fresh", kas_memory_mode="")
 
             async def kill(  # pragma: no cover — replacement only
                 self, *, expected: bool = False, reason: str = ""
@@ -963,7 +963,7 @@ class TestOpenTaskSession:
             mgr._sessions[key] = _Session(
                 provider=winner_provider, first_turn=FirstTurnState.NOTHING_ARMED
             )
-            return SimpleNamespace(session_id="sid-dup")
+            return SimpleNamespace(session_id="sid-dup", kas_memory_mode="")
 
         runtime = SimpleNamespace(create_session=create_session)
         mgr._get_or_bootstrap_run_runtime = AsyncMock(return_value=runtime)

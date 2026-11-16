@@ -120,6 +120,18 @@ LEGIT_OAUTH_URLS: list[tuple[str, str]] = [
         "&state=abc123xyz"
         "&team=T9TK3CUKW",
     ),
+    # Slack MCP user-token consent (PKCE, localhost redirect), the
+    # authorization_endpoint at mcp.slack.com/.well-known/oauth-authorization-server.
+    (
+        "slack-mcp",
+        "https://slack.com/oauth/v2_user/authorize"
+        "?response_type=code&client_id=3336676.569200954261"
+        "&redirect_uri=http%3A%2F%2Flocalhost%3A48106%2Fcallback"
+        "&scope=search%3Aread.public%20channels%3Ahistory"
+        "&state=2tYwq0fXkC8L1v9Zr6pHsJ3mN5bQ7dEaUiOgTyRx_Ao"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256",
+    ),
     # Linear (a common MCP server) — generic OAuth 2.0 authorize shape.
     (
         "linear",

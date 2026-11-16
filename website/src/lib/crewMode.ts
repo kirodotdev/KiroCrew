@@ -281,9 +281,13 @@ export function crewApprovalDecidableHere(
  *  it on. A worker whose root is closed keeps its row: no panel lists it, and its
  *  own approval or question must still reach the person. `rootsOnly` keeps just
  *  the roots, for the session filter's Crew Mode chip. */
-export function crewModeView<T extends { key?: string; mode?: string; crew_root?: string; crew_mode_root?: boolean; mate_root?: string; show_sessions_in_list?: boolean }>(
-  rows: T[], rootsOnly = false, mateThreads?: ReadonlySet<string>,
+export function crewModeView<T extends { key?: string; mode?: string; crew_root?: string; crew_mode_root?: boolean; mate_root?: string; show_sessions_in_list?: boolean; slack_list_hidden?: boolean; pending_approval?: boolean; needs_input?: boolean }>(
+  rows: T[], rootsOnly = false, mateThreads?: ReadonlySet<string>, activeKey?: string | null,
 ): T[] {
+  // With `slack.show_in_session_list` off, a conversation that started in Slack
+  // leaves the list (the server's `slack_list_hidden` stamp), except the open
+  // session and one waiting on the person (`slackRowHidden`).
+  if (rows.some(r => r.slack_list_hidden)) rows = rows.filter(r => !slackRowHidden(r, activeKey))
   if (rootsOnly) return rows.filter(r => crewModeRoot(r))
   // A mate's session leaves the list while its mate thread is live (the mate's
   // Sessions tab lists it), unless its Bot shows its sessions in the person's list,
@@ -295,6 +299,22 @@ export function crewModeView<T extends { key?: string; mode?: string; crew_root?
   const listed = new Set<string>()
   for (const r of rows) if (r.key) listed.add(r.key)
   return rows.filter(r => !underListedRoot(r, key => listed.has(key)))
+}
+
+/** Whether the person's lists leave `row` out for `slack.show_in_session_list`:
+ *  the server stamped it (`slack_list_hidden`, a conversation that started in
+ *  Slack while the setting is off), it is not the open session (`activeKey`), so
+ *  the main pane always has its row, and it is not waiting on the person (a tool
+ *  approval or a question), so what needs them is never out of sight. A
+ *  person-list preference only: the slot stays in the store for every other
+ *  reader. */
+export function slackRowHidden(
+  row: { key?: string; slack_list_hidden?: boolean; pending_approval?: boolean; needs_input?: boolean } | null | undefined,
+  activeKey?: string | null,
+): boolean {
+  if (!row?.slack_list_hidden) return false
+  if (activeKey && row.key === activeKey) return false
+  return !row.pending_approval && !row.needs_input
 }
 
 /** A worker whose root is a row of the list: the one row `crewModeView` drops. */
@@ -317,9 +337,10 @@ export function openingHidesSessionList(row: { crew_root?: string } | null | und
  *  closed): never a mate's session, which its Bot's Sessions tab lists, and never
  *  a crew member, which is its conductor's to show and is opened
  *  from its Crew panel or by the person. A crew member opened on purpose stays
- *  open; only the page's own pick skips it. */
-export function autoOpenRows<T extends { crew_root?: string; mate_root?: string }>(rows: T[]): T[] {
-  return rows.filter(s => !crewRootOf(s) && !mateRootOf(s))
+ *  open; only the page's own pick skips it. A conversation the Slack list setting
+ *  leaves out (`slack_list_hidden`) is skipped the same way. */
+export function autoOpenRows<T extends { crew_root?: string; mate_root?: string; slack_list_hidden?: boolean }>(rows: T[]): T[] {
+  return rows.filter(s => !crewRootOf(s) && !mateRootOf(s) && !s.slack_list_hidden)
 }
 
 /** The agent the keyboard cycle lands on from `current`, `step` places along

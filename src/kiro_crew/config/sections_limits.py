@@ -145,8 +145,8 @@ class AutocompactPctError(ValueError):
 def parse_autocompact_pct(value: int | float, *, name: str = "pct") -> float:
     """``value`` as a per-session threshold, or :class:`AutocompactPctError`.
 
-    The one finite and range check shared by the slot's "Auto-compact at" route
-    and ``session_create``. The caller has already refused a non-number (and a
+    The one finite and range check shared by the slot's "Auto-compact at" route,
+    ``session_create`` and a crew's ``PUT /api/agents/{name}``. The caller has already refused a non-number (and a
     bool) with its own code. Refused rather than clamped: a caller that asked
     for 95 learns it instead of silently running at 90.
     """
@@ -163,6 +163,25 @@ def parse_autocompact_pct(value: int | float, *, name: str = "pct") -> float:
             "pct_out_of_range",
         )
     return pct
+
+
+def crew_autocompact_pct_refusal(value: object) -> str | None:
+    """Why *value* is not a crew compaction threshold ``PUT /api/agents/{name}`` may
+    store, or ``None``.
+
+    0 inherits the global; any other value takes :func:`parse_autocompact_pct`, so a
+    refusal says what is wrong instead of the loader clamping it on the next read. A
+    bool is refused although it is an ``int``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "autocompact_pct must be a number: 0 inherits session.autocompact_pct"
+    if value == 0:
+        return None
+    try:
+        parse_autocompact_pct(value, name="autocompact_pct")
+    except AutocompactPctError as exc:
+        return str(exc)
+    return None
 
 
 # ``session.compact_wait_secs``: 0 is the sentinel for "use the built-in

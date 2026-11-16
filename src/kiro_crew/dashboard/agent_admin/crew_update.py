@@ -372,6 +372,17 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 {"error": f"{_bool_field} must be a boolean", "code": f"invalid_{_bool_field}"},
                 status=400,
             )
+    # Imported here, not at module level: every global an owner function reads
+    # must be bound on the agents facade, which has no line to spare.
+    from kiro_crew.config.sections_limits import crew_autocompact_pct_refusal
+
+    autocompact_reason = (
+        crew_autocompact_pct_refusal(body["autocompact_pct"]) if "autocompact_pct" in body else None
+    )
+    if autocompact_reason is not None:
+        return web.json_response(
+            {"error": autocompact_reason, "code": "invalid_autocompact_pct"}, status=400
+        )
     if "memory_store" in body:
         memory_store_reason = _crew_memory_store_rejected(body["memory_store"])
         if memory_store_reason:
@@ -624,6 +635,11 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             harness_changed = pending_backend != (agent.acp_backend or "")
             agent.acp_backend = pending_backend
             changed.append("acp_backend")
+        if "autocompact_pct" in body:
+            # Validated above. 0 inherits; the crew's sessions read it live
+            # (``crew_autocompact_pct``), a session's own override still wins.
+            agent.autocompact_pct = float(body["autocompact_pct"])
+            changed.append("autocompact_pct")
         if "dynamic_capabilities" in body:
             # The per-crewmate preview (``kiro_crew.crewmate_dynamic_capabilities``);
             # validated above as a strict bool.

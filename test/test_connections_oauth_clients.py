@@ -108,6 +108,7 @@ def test_managed_secret_names_cover_every_shipped_preregistered_provider():
         "google-sheets",
         "google-docs",
         "google-slides",
+        "slack",
     }
 
 

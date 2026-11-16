@@ -203,13 +203,13 @@ class AcpError(Exception):
         # layer never parses the user-facing card wording.
         # ``None`` means unclassified: readers fall back to the message text.
         self.connection_failure: bool | None = None
-        # Whether a TRANSIENT failure is the provider throttling (429, "Too many
-        # requests", ThrottlingException), decided from the raw frame like
-        # ``connection_failure``. The interactive ladder waits longer for it and
-        # rewinds the failed prompt before re-sending. ``None`` means unclassified.
+        # Whether a TRANSIENT failure is the provider throttling (429, "Too many requests",
+        # ThrottlingException), from the raw frame like ``connection_failure``. The ladder
+        # waits longer for it and rewinds the failed prompt. ``None`` means unclassified.
         self.throttle: bool | None = None
-        # A TRANSIENT capacity/rollout refusal (raw frame); its card offers the picker.
-        self.model_unavailable: bool = False
+        self.server_error: bool | None = None  # a TRANSIENT provider 5xx, same rules
+        self.user_rate_limit: bool = False  # a throttle on Kiro's per-user limit (every model)
+        self.model_unavailable: bool = False  # TRANSIENT capacity/rollout refusal: offer the picker
         # Set by :func:`_raise_acp_error` when the frame's ``data`` names
         # ``errorKind: cloud_credential_error``: the process cached credentials
         # it cannot reload, so the remedy is a fresh process, not a retry.
@@ -1902,25 +1902,25 @@ def _raise_acp_error(
     _frame_kind = classify_provider_error(raw_data).kind
     err.connection_failure = bool(err.transient) and _frame_kind == PROVIDER_ERROR_CONNECTION
     err.throttle = bool(err.transient) and _frame_kind == PROVIDER_ERROR_THROTTLE
+    err.server_error = bool(err.transient) and _frame_kind == PROVIDER_ERROR_HTTP_5XX
     verdict = classify_provider_error(raw_data)
     err.auth_error_code = verdict.matched if verdict.kind == PROVIDER_ERROR_AUTH else ""
-    # Tag deterministic STRUCTURAL rejections so self-driving callers can
-    # stop resending identical context. Keep the classifier data-scoped: a phrase
-    # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error, except
-    # for the two anchored overflow sentences named below. The tag covers
+    # Tag deterministic STRUCTURAL rejections so self-driving callers stop resending
+    # identical context. Data-scoped: a phrase echoed only in JSON-RPC ``message``
+    # cannot stamp an unrelated error, except the anchored overflow sentences below. Covers
     # context overflow (kiro-cli's window, the claude adapter's input-too-long,
     # the model service's request size cap), malformed request, image validation
-    # failure, the many-image pixel-dimension cap, and kiro-cli's own refusal of a
-    # request it could not shrink to fit -- each reproduced exactly by re-sending
-    # the same context.
+    # failure, the many-image pixel-dimension cap, and kiro-cli's own refusal of a request
+    # it could not shrink to fit -- each reproduced exactly by re-sending the same context.
     raw_data_field = provider_data_text(error)  # the same field the verdict above read
     raw_message_field = str(error.get("message", "") or "") if isinstance(error, dict) else ""
     _data_kind = classify_provider_error(raw_data, data=raw_data_field).kind
     err.model_unavailable = bool(err.transient) and _data_kind == PROVIDER_ERROR_MODEL_UNAVAILABLE
-    # The claude adapter's overflow rides in ``message`` (anchored match, see
-    # _RE_ADAPTER_INPUT_TOO_LONG), and the model service's size cap may ride in
-    # either field (anchored, see _RE_REQUEST_SIZE_EXCEEDED); every other tag
-    # below stays data-scoped.
+    err.user_rate_limit = bool(err.throttle) and is_user_rate_limit(
+        f"{raw_data_field} {raw_message_field}"
+    )
+    # The claude adapter's overflow rides in ``message`` (anchored, _RE_ADAPTER_INPUT_TOO_LONG)
+    # and the size cap in either field (_RE_REQUEST_SIZE_EXCEEDED); other tags are data-scoped.
     _context_overflow = bool(
         _RE_CONTEXT_WINDOW_OVERFLOW.search(raw_data_field)
         or _RE_ADAPTER_INPUT_TOO_LONG.search(raw_message_field)

@@ -16,6 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from slack_code_channels_helpers import store_channel_binding
 
 from kiro_crew import pinned_fs
 from kiro_crew.dashboard.handlers import worktree as wt
@@ -54,7 +55,11 @@ def _feature_on(_floor_monkeypatch):
 
 
 def _cfg(on: bool):
-    return SimpleNamespace(slack=SimpleNamespace(code_channels=on))
+    # Every channel at its default activation (a refresh obeys Off and Review).
+    return SimpleNamespace(
+        slack=SimpleNamespace(code_channels=on),
+        channel_config=lambda channel_id: SimpleNamespace(activation=""),
+    )
 
 
 async def _until(predicate, timeout: float = FALLBACK_TIMEOUT_SECS) -> None:
@@ -113,6 +118,7 @@ class FakeBinding:
     project_dir: str | None = None
     title: str = "Fix the widget"
     archived_at: float = 0.0
+    origin_channel_id: str = ""  # a real Binding always carries it
 
 
 class FakeClient:
@@ -1220,7 +1226,7 @@ class FakeDashboard:
 
     def add_slot(self, key: str, folder_id: str, *, running: bool = False) -> SimpleNamespace:
         slot = SimpleNamespace(
-            folder_id=folder_id, turn_running=running, project="", _turn_generation=0
+            key=key, folder_id=folder_id, turn_running=running, project="", _turn_generation=0
         )
         self._slots[key] = slot
         return slot
@@ -1229,6 +1235,7 @@ class FakeDashboard:
 def _conductor_harness(tmp_path, monkeypatch):
     h = Harness(tmp_path)
     dash = FakeDashboard()
+    store_channel_binding(tmp_path, monkeypatch)
     made: list[tuple[str, str, str]] = []
 
     async def create_folder(state, parent_id, name, project_dir):
@@ -1550,6 +1557,7 @@ def test_core_plan_session_resolves_the_default_project_with_the_cores_own_helpe
     cfg = SimpleNamespace(
         slack=SimpleNamespace(code_channels=True),
         dashboard=SimpleNamespace(default_project=str(repo)),
+        channel_config=lambda channel_id: SimpleNamespace(activation=""),
     )
     monkeypatch.setattr(cc_binding, "live_config", lambda orch=None: cfg)
     seen: list[str] = []

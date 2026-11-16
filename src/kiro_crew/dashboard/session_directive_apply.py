@@ -72,6 +72,7 @@ from kiro_crew.dashboard.session_directive_apply_outcome import (
     _surface_arm_refusal,
 )
 from kiro_crew.dashboard.session_directive_apply_slot import (
+    _apply_chat_rename,
     _apply_chat_tag,
     _nothing_to_do,
     _refuse_unvouched_wake_reset,
@@ -296,8 +297,8 @@ async def apply_session_directive_outcome(
     # deactivated, by raising that bound (``_monitor_update``).
     # Everything else -- a cron injection, an app-driven turn, a
     # sub-agent sharing the slot -- carries neither mark and is refused. This is
-    # NOT the user-surface gate above: ``set_project`` / ``chat_tag`` stay
-    # human-only, a wake must never retarget the slot's project, and
+    # NOT the user-surface gate above: ``set_project`` / ``chat_tag`` /
+    # ``chat_rename`` stay human-only, a wake must never retarget the slot's project, and
     # ``reset_conversation`` admits a wake only through
     # ``_refuse_unvouched_wake_reset``.
     self_arm_ok = bool(producer_is_user_facing or producer_is_self_wake)
@@ -369,6 +370,10 @@ async def apply_session_directive_outcome(
                 )
         elif kind == "chat_tag":
             result = await _apply_chat_tag(state, slot, session_key, args)
+        elif kind == "chat_rename":
+            result = await _apply_chat_rename(
+                state, slot, session_key, args, producer_turn_actor=producer_turn_actor
+            )
         elif kind == "suggest_followup":
             result = await _suggest_followup(state, slot, args)
         elif kind == "nothing_to_do":
@@ -498,6 +503,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _surface_arm_success,
     )
     from kiro_crew.dashboard.session_directive_apply_slot import (  # noqa: F401
+        _SELF_RENAME_REFUSALS,
         QUIET_END_REFUSED_USER_TURN,
         _push,
         _slot_has_pending_interaction,

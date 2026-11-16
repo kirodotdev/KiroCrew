@@ -7,7 +7,7 @@ import {
   switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput,
 } from '../store/chatSlice'
 import { mergeReplyIntoDraft } from '../utils/chatDrafts'
-import type { ComposeSendResult } from '../components/chat/GrillCard'
+import type { ComposeSendOutcome, ComposeSendResult } from '../components/chat/GrillCard'
 import { DeliveryWarningStrip } from '../components/DeliveryWarningStrip'
 import { useDeliveryWarningStrip } from '../components/useDeliveryWarningStrip'
 import { mergeSentTurns, type SentTurnRestore } from './chat/page/composerSend'
@@ -803,9 +803,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Only for the chat this composer serves: a card from another pane is refused,
   // so it stays open instead of answering the wrong session. Where nothing can
   // go out (offline, a held crew composer, a force stop that clears the queue)
-  // the text is put in the chat box and the card says so. A send that fails
-  // later reports in the chat's own error row, as a chip's does.
-  const { composeSend } = useStableCallbackProps({ composeSend: (text: string, slot: string): ComposeSendResult | null => {
+  // the text is put in the chat box and the card says so. Otherwise the send is
+  // isolated (no error row, no text back in the box: the card is where the
+  // result shows) and `onOutcome` hears what it came to. A `false` with no
+  // undelivered call (a send that stopped before the POST) did not go out.
+  const { composeSend } = useStableCallbackProps({ composeSend: (text: string, slot: string, onOutcome: (o: ComposeSendOutcome, reason?: string) => void): ComposeSendResult | null => {
     // A split view draws a composer per cell (ChatPane takes its own cards).
     if ((splitMode && splitFeatureEnabled) || !slot || slot !== activeSlotRef.current || composerSlotRef.current !== slot) return null
     const stopState = currentSlot?.stop_state
@@ -816,8 +818,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // The composer's own busy reading (a turn, or only sub-agents running), so
     // the card steers, queues or starts a turn exactly where its Send would.
     const flag = busySteerFlag({ slotKey: slot, busy: composerBusy, turnRunning: !!slotRunning, stopState, jevAutoConsented, busyMode: currentCrewRoot && currentSlot ? 'steer-only' : undefined })
-    void send(text, slot, flag)
-    return 'sent'
+    // The refusal's framed reason too: an isolated send shows it nowhere else.
+    let undelivered: 'refused' | 'indeterminate' | undefined
+    let why: string | undefined
+    send(text, slot, flag, true, false, (kind, reason) => { undelivered = kind; why = reason }).then(
+      ok => onOutcome(ok ? 'sent' : undelivered ?? 'refused', why),
+      // send() is not meant to throw; if it does, the POST may already be out.
+      () => onOutcome('indeterminate'),
+    )
+    return 'pending'
   } })
   // Outside events feeding the side panel, the dock terminal and the composer,
   // then the cold file tabs' reads.

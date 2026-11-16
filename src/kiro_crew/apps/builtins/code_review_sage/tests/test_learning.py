@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from sage_lib import learning as L  # noqa: N812
 from sage_lib import store
 
@@ -39,13 +40,13 @@ class TestRenderParse(unittest.TestCase):
 
 
 class TestStaging(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        self.tmp = str(tmp_path)
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
         self.root = Path(self.tmp) / "apps" / "code-review-sage"
         store.ensure_layout(self.root)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_inadmissible_source_rejected(self):
         with self.assertRaises(ValueError):
@@ -72,13 +73,13 @@ class TestStaging(unittest.TestCase):
 
 
 class TestConsolidate(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        self.tmp = str(tmp_path)
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
         self.root = Path(self.tmp) / "apps" / "code-review-sage"
         store.ensure_layout(self.root)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_consolidate_replaces_common_and_clears_candidate(self):
         L.stage_learning(_pattern("Staged lesson"), "fix_introduce", self.root)
@@ -166,12 +167,12 @@ class TestConsolidate(unittest.TestCase):
 
 
 class TestSeed(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.root = Path(self.tmp) / "apps" / "code-review-sage"
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        self.tmp = str(tmp_path)
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+    def setUp(self):
+        self.root = Path(self.tmp) / "apps" / "code-review-sage"
 
     def test_seed_populates_common(self):
         n = L.seed_common(self.root)
@@ -408,13 +409,13 @@ class TestCandidateLockRefusesPlantedLockFile(unittest.TestCase):
 class TestConsolidationSnapshot(unittest.TestCase):
     """The pre-merge ruleset survives an apply that silently drops rules."""
 
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        self.tmp = str(tmp_path)
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
         self.root = Path(self.tmp)
         store.ensure_layout(self.root)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _live(self):
         return L.common_file(self.root, None)

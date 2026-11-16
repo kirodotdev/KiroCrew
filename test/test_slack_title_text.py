@@ -324,7 +324,7 @@ def _stored(base: Path, title: object, origin: str | None) -> None:
     (base / f"{_SLACK}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
 
 
-@pytest.mark.parametrize("origin", ["user", "member"])
+@pytest.mark.parametrize("origin", ["user", "member", "agent"])
 def test_a_renamed_slack_title_is_kept_as_typed(tmp_path: Path, origin: str) -> None:
     from types import SimpleNamespace
 

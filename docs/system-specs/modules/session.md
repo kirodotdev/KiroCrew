@@ -14,6 +14,8 @@ past its TTL, a dead one, and one started before a request was refused for a
 changed tools list (`kiro_cli.spawned_before_tools_list_refusal`), because that
 process read its Tool Search never-defer list before the refusal was known and
 may still defer Kiro Crew's own tools ([mcp](../../architecture/mcp.md#what-belongs-in-kirocrew-core-and-what-does-not)).
+While KAS orchestrator memory is enabled, KAS sessions bypass the pool because
+their requested memory mode is fixed when the engine session is created.
 
 Successful native ACP resume suppresses replay from both disk and the
 dashboard's live slot window. The runner honors the actual provider client's
@@ -4105,6 +4107,27 @@ when a switch is detected (stored SID exists AND providers differ).
    the premise the first-turn history settle already uses: a prompt kept by the
    live session is in its transcript once a later answer lands.
 
+**The same rotation, for a withdrawn engine memory grant.** KAS honours a
+session's stored memory record over anything a `session/load` names, so turning
+`agent.orchestrator_memory` off (or switching the chat to Temporary, or adding a
+second person to the Crew) cannot disable a session created while the setting
+granted recall. `SessionMap` records the mode of the actual mapped SID beside
+`provider` (`KAS_MEMORY_FIELD`, read through `get_kas_memory`). Clearing the SID
+clears its mode; `clear_sid` still answers True only when it dropped a SID or a
+pending native fork, not a leftover mode alone. `seed_conversation` omits the
+mode to preserve it on a mapped SID; if a compaction restart cannot start a
+successor, restoring the cleared SID records the kept provider's actual mode.
+When `acp.kas_memory.memory_plan` returns a plan with `MemoryPlan.rotate` set,
+`get_or_create` drops `resume_sid`, calls `clear_sid` and arms
+`provider_switch_replay` — the five steps above, for the same reason: the
+conversation has to move to a session the current answer applies to. A
+successful load retains and re-saves the mapped SID's actual mode; a fallback
+`session/new` uses the current requested mode. With the setting off, no
+request states a mode, so a resume re-saves none. Turning
+the setting ON rotates nothing, so an existing chat keeps the engine session it
+has. Contract:
+[memory-skills-hooks](memory-skills-hooks.md#the-engines-own-memory-store-agentorchestrator_memory).
+
 **Fresh first-turn history debt.** A fresh dashboard session has a second, separate
 lease, `_Session.first_turn_history_owed`, so the replay lease's SID-preservation
 role in `close_all` is untouched. The one-shot `first_turn` observation is spent
@@ -6141,7 +6164,7 @@ NOT-applied notice; acknowledgement alone never confirms activation. The
 subagent, caller, single-consumption and argument-matching fences still apply.
 
 
-The session-bound MCP tools in `session_directive.DIRECTIVE_TOOLS` (the monitor verbs, `autonudge_stop`, `set_project`, `suggest_followup`, `nothing_to_do`, `reset_conversation`, `chat_tag`) are **stateless**, so they need no per-process identity source and work with MCP-gateway pooling off (`ask_question` is not in the set: it blocks on the `/api/agent-ask/*` routes and returns the answers as its result): the tool validates its arguments and returns a *directive* — a human-readable confirmation line plus a machine-readable marker (`session_directive.encode`) carrying the validated payload and NO session key. The session-aware consumer, the `EVENT_TOOL_RESULT` phase `_on_tool_result` (`dashboard/chat_turn/tool_results.py`), decodes the marker (`session_directive.decode`) and applies the effect IN-PROCESS against ITS OWN `slot`/`session_key` via `dashboard/session_directive_apply.py`, then strips the marker from the stored transcript. This works with pooling OFF (the default) because the consumer already owns the session. The directives that act on the user's own surface (`_USER_SURFACE_DIRECTIVES`: `set_project`, `reset_conversation`, `chat_tag`) additionally require a user-turn provenance.
+The session-bound MCP tools in `session_directive.DIRECTIVE_TOOLS` (the monitor verbs, `autonudge_stop`, `set_project`, `suggest_followup`, `nothing_to_do`, `reset_conversation`, `chat_tag`, `chat_rename`) are **stateless**, so they need no per-process identity source and work with MCP-gateway pooling off (`ask_question` is not in the set: it blocks on the `/api/agent-ask/*` routes and returns the answers as its result): the tool validates its arguments and returns a *directive* — a human-readable confirmation line plus a machine-readable marker (`session_directive.encode`) carrying the validated payload and NO session key. The session-aware consumer, the `EVENT_TOOL_RESULT` phase `_on_tool_result` (`dashboard/chat_turn/tool_results.py`), decodes the marker (`session_directive.decode`) and applies the effect IN-PROCESS against ITS OWN `slot`/`session_key` via `dashboard/session_directive_apply.py`, then strips the marker from the stored transcript. This works with pooling OFF (the default) because the consumer already owns the session. The directives that act on the user's own surface (`_USER_SURFACE_DIRECTIVES`: `set_project`, `reset_conversation`, `chat_tag`, `chat_rename`) additionally require a user-turn provenance.
 
 Subagent isolation is therefore **structural, not cryptographic**: a subagent's tool result flows through the subagent's own runner and can only ever bind to the subagent's session, never its parent's — there is no `/proc` walk to get wrong. The tools still call `_resolve_session_key_strict()`, but only as a context guard to short-circuit sessions where a directive can never be applied (cron/hook/subagent) — not to bind the effect. `ask_question` is NOT a directive: it blocks on the strict `/api/agent-ask/*` routes, which attest the key the tool resolves and address the card to that session's own slot, so a sub-agent (no strict key) is refused before any card is shown.
 

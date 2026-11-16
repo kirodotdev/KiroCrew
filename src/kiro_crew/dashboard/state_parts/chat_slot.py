@@ -153,6 +153,7 @@ class _ChatSlot:
         "_saved_created_by",
         "_lineage_minted",
         "_reports_to_creator",
+        "_work_aggregate",
         "_revived_by",
         "_artifact",
         "_channel_folder_filed",
@@ -243,6 +244,7 @@ class _ChatSlot:
         "_fallback_candidate_idx",
         "_fallback_walked",
         "_fallback_walk_refused",
+        "_fallback_walk_server_error",
         "_active_fallback_model",
         "_fallback_primary_model",
         "_fallback_slot_model",
@@ -483,6 +485,7 @@ class _ChatSlot:
     _saved_created_by: str
     _lineage_minted: bool
     _reports_to_creator: bool
+    _work_aggregate: dict[str, Any] | None
     _revived_by: str
     _mcp_report: dict[str, Any] | None
     _mcp_report_session_id: str
@@ -682,6 +685,7 @@ class _ChatSlot:
     _fallback_candidate_idx: int
     _fallback_walked: list[str]
     _fallback_walk_refused: bool
+    _fallback_walk_server_error: bool
     _active_fallback_model: str
     _fallback_primary_model: str
     _fallback_slot_model: str

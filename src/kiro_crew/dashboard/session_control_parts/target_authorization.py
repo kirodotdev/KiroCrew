@@ -1009,7 +1009,7 @@ def _check_caller_slot_fields(
 
 
 def _live_target_refusal(
-    slot: "_ChatSlot", *, app_reachable: bool = False
+    slot: "_ChatSlot", *, allow_ephemeral: bool = False, app_reachable: bool = False
 ) -> tuple[str, str] | None:
     """The target-side containment refusal a LIVE slot earns, or ``None``.
 
@@ -1034,10 +1034,16 @@ def _live_target_refusal(
     turns actually run under its ``linked_session_key``, so the cancel would miss
     and the target would keep executing after a reported success. Refusing is the
     honest answer until the stop path resolves the effective key.
+
+    ``allow_ephemeral`` waives the memory-mode refusal alone, for a session acting
+    on its own sidebar label (``chat_rename``). An incognito or temporary session
+    is refused here because another session must not address it; renaming itself
+    addresses nothing else, and the background titler already names such
+    sessions.
     """
     if slot.key.casefold().startswith(UNATTENDED_SLOT_PREFIXES):
         return ("unattended sessions (scheduled runs) cannot be controlled", "unattended_target")
-    if getattr(slot, "memory_mode", "persistent") != "persistent":
+    if not allow_ephemeral and getattr(slot, "memory_mode", "persistent") != "persistent":
         return ("incognito and temporary sessions are not addressable", "ephemeral_target")
     if getattr(slot, "_app", "") and not app_reachable:
         return ("app-scoped sessions are not addressable", "app_scoped_target")

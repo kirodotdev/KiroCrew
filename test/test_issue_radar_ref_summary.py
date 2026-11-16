@@ -20,13 +20,11 @@ POSIX-only ``_gh_bin`` guard is never reached — these run on Windows too).
 import asyncio
 import json
 import os
-import shutil
-import tempfile
 import time
 import unittest
-from pathlib import Path
 from unittest import mock
 
+import pytest
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
@@ -108,9 +106,17 @@ class GetRefSummaryTest(unittest.TestCase):
 class RefSummaryCacheTest(unittest.TestCase):
     """The cache owns freshness, so a stale entry must read as a miss."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.root, True)
+        self.root = self._tmp_path
 
     def test_round_trips(self):
         store.write_ref_summary_cache("o", "r", 533, SUMMARY, root=self.root)

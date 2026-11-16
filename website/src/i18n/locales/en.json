@@ -6081,7 +6081,8 @@
       "esc_to_cancel_click_mic_to_finish": "Esc to cancel, click the mic to finish",
       "esc_to_cancel_click_mic_to_send": "Esc to cancel, Shift-click keeps a draft, click the mic to send",
       "esc_to_cancel_enter_to_send": "Esc to cancel, Enter to send",
-      "listening": "Listening"
+      "listening": "Listening",
+      "muted": "Muted"
     },
     "voiceDisabledModal": {
       "enable_it_under": "Enable it under",
@@ -6099,7 +6100,8 @@
       "voice_input_cannot_run": "Voice input can't run"
     },
     "voiceStatusBar": {
-      "recording": "Recording"
+      "recording": "Recording",
+      "muted": "Muted"
     },
     "webAppArtifactCard": {
       "acct": "acct",
@@ -6616,6 +6618,14 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (paused) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (paused)"
+    },
+    "voiceMuteButton": {
+      "mute": "Mute microphone",
+      "unmute": "Unmute microphone",
+      "shortcut_hint": "Alt+Shift+Q mutes or unmutes",
+      "shortcut_hint_mac": "⌃⇧M mutes or unmutes",
+      "mute_short": "Mute",
+      "unmute_short": "Unmute"
     }
   },
   "hooks": {
@@ -7557,6 +7567,7 @@
         "model_access_fallback": "Your account cannot use model {{rejected}} — running on {{model}} instead.",
         "model_unavailable": "{{model}} isn't offered right now — this session is running on auto instead. Pick another model from the composer, or leave it: your model choice is kept and will be used automatically once it's offered again.",
         "compaction_continuing": "The context was compacted mid-turn and the response stopped there — continuing automatically.",
+        "model_server_error_fallback": "{{primary}} keeps returning server errors — running on {{fallback}} until {{primary}} recovers.",
         "model_throttled_fallback": "{{primary}} is throttled — running on {{fallback}} until {{primary}} recovers.",
         "refusal_fallback_same_model": "Automatic retry was skipped because the fallback model (`agent.refusal_fallback_model`) is the same as your current model — retrying the same model hits the same filter. Pick a different model for the fallback to retry automatically.",
         "session_reconnecting": "The agent lost this chat's session — reconnecting…",
@@ -8422,6 +8433,11 @@
     },
     "developer": {
       "agentBackendTab": {
+        "orchestrator_memory_label": "Orchestrator memory",
+        "orchestrator_memory_description": "Use existing Kiro memories in personal chats. Changes apply when an agent session starts; start a new chat to use the updated setting.",
+        "orchestrator_memory_hint": "Uses memories saved in other Kiro clients alongside {{productName}}'s existing memory. Kiro memories are read-only here. {{productName}}'s learning behavior and each Bot's separate memory are unchanged. Kiro memories are available in Incognito chats, but excluded from Temporary chats.",
+        "orchestrator_memory_preview": "Preview",
+        "orchestrator_memory_save_failed": "Could not save orchestrator memory. Try again.",
         "approval_agent_spec": "Asks before each tool, because {{productName}} tells it to.",
         "approval_seeded_settings": "Asks before each tool only if its own settings say so. {{productName}} writes that setting and cannot confirm it took effect.",
         "approval_session_config": "Asks before it runs a command or changes a file. {{productName}} turns that on and checks it. Plain reads do not ask.",
@@ -9203,6 +9219,16 @@
       "profile_permissions": "Permissions",
       "profile_settings": "Settings",
       "profile_effort_hint": "Higher levels think longer, answer slower, and cost more.",
+      "profile_autocompact": "Summarize old messages at",
+      "profile_autocompact_inherited_hint": "Follows the default in Settings → Chat, now {{pct}}",
+      "profile_autocompact_inherited_harness": "{{backend}} summarizes these chats on its own schedule. Pick a percent to summarize sooner.",
+      "profile_autocompact_hint": "When {{name}}'s chats fill this share of the model's context window, older messages are summarized. Lower costs less each time {{name}} runs; higher keeps more detail.",
+      "profile_autocompact_thread_override": "This chat has its own threshold, {{pct}}, which stays in force here.",
+      "profile_autocompact_read_failed": "Couldn't read the current default for this chat.",
+      "profile_autocompact_inherited_default": "Follows the default in Settings → Chat",
+      "profile_autocompact_retry": "Try again",
+      "profile_autocompact_clear_thread": "Clear this chat's own threshold",
+      "profile_autocompact_clear_failed": "Couldn't clear this chat's own threshold.",
       "profile_settings_waiting": "These unlock once the chat with this bot is open.",
       "profile_permission_changed": "The permission changed elsewhere. This is the current setting.",
       "profile_mode_normal_desc": "{{name}} looks things up on its own, like reading files, searching the web or running read-only commands, and asks for the rest, in every chat with it.",

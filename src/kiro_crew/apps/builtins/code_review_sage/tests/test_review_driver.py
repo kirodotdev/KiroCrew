@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from sage_lib import discovery, results
 from sage_lib import review_driver as D  # noqa: N812
 from sage_lib import store
@@ -133,17 +134,17 @@ def _confirmed(_link, _units):
 
 
 class TestReviewDriver(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        self.tmp = str(tmp_path)
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
         self.root = Path(self.tmp) / "apps" / "code-review-sage"
         store.ensure_layout(self.root)
         self.calls = []
         self.lock = threading.Lock()
         self.archived = []
         _refuse_real_gh(self)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _fake_dispatch(self, verdict="PASS", write_records=True, max_seen=None,
                        coverage_complete=True):
@@ -1365,14 +1366,14 @@ class TestGithubPosting(unittest.TestCase):
     """GitHub draft posting = ONE PENDING (unsubmitted) review, never auto-submitted;
     the envelope is Python-built + redacted and the poster posts it verbatim."""
 
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        self.tmp = str(tmp_path)
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
         self.root = Path(self.tmp) / "apps" / "code-review-sage"
         store.ensure_layout(self.root)
         _refuse_real_gh(self)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_github_poster_prompt_is_pending_and_never_submits(self):
         p = D.build_post_task("https://github.com/o/r/pull/5")
@@ -1446,7 +1447,8 @@ class TestGithubPosting(unittest.TestCase):
         into a post failure -- the run reports it, the findings stay on disk for a
         retry after the record is repaired, and no draft is created.
         """
-        root = Path(tempfile.mkdtemp())
+        root = Path(self.tmp) / "unanchored"
+        root.mkdir()
         run_id = "r1"
         cid = "GH-acme-repo-1"
         rec = {
@@ -1479,7 +1481,6 @@ class TestGithubPosting(unittest.TestCase):
         after = results.read_result(cid, root, run_id) or {}
         self.assertFalse(after.get("post_ok"))
         self.assertIn("commit_id", after.get("post_error", ""))
-        shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":

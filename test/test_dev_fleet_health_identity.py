@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
+from dev_fleet_app_helpers import _reset_shutdown_admission_state  # noqa: F401 - fixture
 
 from kiro_crew.apps.builtins.dev_fleet import http_api, live, runtime, server
 from kiro_crew.testing.clock import ManualClock
@@ -188,6 +189,28 @@ async def test_concurrent_service_active_misses_share_one_probe(monkeypatch):
     assert (
         await await_until(asyncio.gather(*tasks), what="every probe answered") == [True] * _CALLERS
     )
+    assert backend.active_probes == 1
+    assert live._GATEWAY_SERVICE_ACTIVE is True
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_service_check_does_not_cancel_the_shared_probe(monkeypatch):
+    monkeypatch.setattr(live, "_GATEWAY_SERVICE_ACTIVE", None)
+    monkeypatch.setattr(live, "_GATEWAY_SERVICE_CHECK_AT", 0.0)
+    backend = _GatedBackend()
+    monkeypatch.setattr(live, "_gateway_backend", lambda: backend)
+    callers = _Callers()
+
+    dropped = asyncio.ensure_future(callers.service_active())
+    kept = asyncio.ensure_future(callers.service_active())
+    await _registered(callers, 2)
+    await until_parked(backend.release)
+    dropped.cancel()
+    await asyncio.wait([dropped], timeout=_BOUND)
+    assert dropped.cancelled()
+
+    backend.release.set()
+    assert await await_until(kept, what="the kept service check answered") is True
     assert backend.active_probes == 1
     assert live._GATEWAY_SERVICE_ACTIVE is True
 

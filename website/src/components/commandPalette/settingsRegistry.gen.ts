@@ -62,6 +62,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Each change is checked before it saves. Change a setting here, or follow its link to the page where it lives. A read-only row says why."
   },
   {
+    "id": "agent.orchestrator-memory",
+    "label": "Orchestrator memory",
+    "labelKey": "pages.developer.agentBackendTab.orchestrator_memory_label",
+    "description": "Use existing Kiro memories in personal chats. Changes apply when an agent session starts; start a new chat to use the updated setting.",
+    "hint": "Uses memories saved in other Kiro clients alongside Kiro Crew's existing memory. Kiro memories are read-only here. Kiro Crew's learning behavior and each Bot's separate memory are unchanged. Kiro memories are available in Incognito chats, but excluded from Temporary chats.",
+    "tab": "agent",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "agent.orchestrator_memory"
+  },
+  {
     "id": "agent.kiro-sign-in",
     "labelKey": "pages.developer.kiroSignInCard.search_label",
     "tab": "agent",
@@ -323,7 +334,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Code channels (Slack)",
     "labelKey": "pages.settings.slackPanel.slackCode.code_channels",
     "labelSuffix": "Slack",
-    "description": "On: lets the agent open a Slack channel for each coding task, with a context bar and a diff tab, invite you to it, and post and keep notes there under its own name. Your Slack app gets 5 permissions for this. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
+    "description": "On: lets the agent open a Slack channel for each coding task, with a context bar and a diff tab, invite you to it, and post and pin messages and keep notes there under its own name. Your Slack app gets 6 permissions for this. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
     "tab": "channels",
     "type": "toggle",
     "occurrence": 1,
@@ -825,6 +836,21 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "channel": "imessage"
     }
+  },
+  {
+    "id": "channels.show-slack-conversations-in-the-session-list-slack",
+    "label": "Show Slack conversations in the session list (Slack)",
+    "labelKey": "pages.settings.slackPanel.show_in_session_list",
+    "labelSuffix": "Slack",
+    "description": "Lists conversations that start in Slack with your other sessions.",
+    "hint": "Turn this off to leave conversations that start in Slack out of the session list. They keep working in Slack, stay in History and search, and come back when you turn this on again. The conversation you have open, and one waiting on your approval or answer, stay listed. Sessions you start in the dashboard and connect to Slack, and Slack code channel sessions with their helper agents, are always listed.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.show_in_session_list"
   },
   {
     "id": "channels.show-thinking-slack",
@@ -2169,6 +2195,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "type": "input",
     "occurrence": 1,
     "settingId": "connections-oauth-client-asana",
+    "label": "OAuth app",
+    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+  },
+  {
+    "id": "connections.oauth-client-slack",
+    "labelKey": "pages.settings.connectionsPanel.oauth_app",
+    "labelSuffix": "Slack",
+    "tab": "connections",
+    "type": "input",
+    "occurrence": 1,
+    "settingId": "connections-oauth-client-slack",
     "label": "OAuth app",
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },

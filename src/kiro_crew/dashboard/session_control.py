@@ -163,6 +163,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _MAX_SENDERS,
         _MAX_SLOTS,
         _NOT_A_CODE_CHANNEL,
+        AUDIENCE_UNREAD_REFUSAL,
         CONDUCTOR_GUIDANCE,
         CREATE_OPERATION,
         DISPATCH_OFF_REFUSAL,

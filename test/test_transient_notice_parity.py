@@ -256,6 +256,7 @@ def test_every_constant_and_legacy_row_is_parsed() -> None:
 _TOKENIZED_SITES = (
     "chat_api/slot_lifecycle.py archive_failed_turn_cancelled",
     "chat_turn/acp_recovery.py image_history_restarting",
+    "chat_turn/acp_recovery.py model_server_error_fallback",
     "chat_turn/acp_recovery.py model_throttled_fallback",
     "chat_turn/acp_recovery.py reasoning_mismatch_rebuilding",
     "chat_turn/eager_spawn.py eager_spawn_stopped",

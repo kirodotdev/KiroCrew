@@ -189,6 +189,30 @@ session actions menu later.
 
 Off by default. Applies to the next new session with no restart.
 
+## Slack conversations in the session list
+
+Conversations that start in Slack (threads, DMs and channel mentions) appear in
+the dashboard's session list next to your other sessions, so you can read or
+continue one from either side. Turn off **Show Slack conversations in the session
+list** at `/settings/channels/slack` (`slack.show_in_session_list`) to keep them
+out of that list. This setting changes the list only:
+
+- The conversations keep working in Slack exactly as before.
+- They stay in History and search. Open one from there, from a notification or
+  from a link, and it shows in the main pane with its row while it is the open
+  session.
+- One waiting on your approval or answer keeps its row until you answer, and
+  hidden conversations add nothing to unread counts.
+- Nothing is closed, archived or deleted. Turn the setting back on and they are
+  listed again, including conversations that started while it was off.
+- Sessions you start in the dashboard and connect to Slack, and Slack code
+  channel sessions with their helper agents, are always listed.
+
+On by default. Applies when saved, with no restart. The separate
+`dashboard.surface_channel_sessions` setting stops every messaging channel's
+conversations from being added to the session list at the next restart; this
+one is for Slack only and takes effect at once.
+
 ## OPTIONS Buttons
 
 When Kiro Crew presents choices, each one is a button: one click sends that
@@ -291,8 +315,21 @@ exactly as with the switch off, and the page says why under the switch.
   steps warn you there.
 - **Code channels** (`slack.code_channels`) lets the agent open a Slack code channel for
   coding work: one channel per task, with a context bar, a diff tab and channel commands.
+  When the channel's agent starts helper agents for pieces of the work (**Let code
+  channels start helper agents**), the channel also gets a pinned **work board**, kept
+  up to date in place: one line of counts ("2 working · 1 waiting on you · 1 of 4 done"),
+  then one task per helper agent with Slack's own status mark, what it is doing right
+  now (the command it is running or the file it is editing, with secrets and your
+  paths taken out), and how long it has been at it. A helper agent that needs you gets a threaded reply that mentions you, and the
+  channel's status shows it is waiting on you. **Stop** in the channel stops the
+  channel's own agent only: its helper agents keep going and keep the board up to
+  date, and you stop one from its chat (each board task links to it) with **Stop
+  generation**. A code channel adds no reactions to your
+  messages: its progress is the channel's status and the board. In the dashboard the helper agents sit under the channel's session, in
+  the channel's folder (a channel whose chat has conductor mode on keeps them out of folders, as conductor mode does everywhere).
   It adds the `code_channels:manage`, `chat:write.customize`, `canvases:write`,
-  `channels:write.invites` and `groups:write.invites` scopes. Your workspace must have
+  `channels:write.invites`, `groups:write.invites` and `pins:write` scopes (the last
+  lets the work board pin itself in its channel). Your workspace must have
   Slack code channels enabled.
 
 **Defaults for new code channels** (`slack.code_channel_defaults`, applied without a
