@@ -509,8 +509,9 @@ def _scan_mcp_processes() -> dict[str, object]:
               image. The final cmdline becomes "kiro-cli ..." and the
               "kirocrew_sandbox" string (only in the -f path arg) is lost.
               Sandbox count will be 0 even when sandboxes are running.
-      Windows: Win32_Process command lines from one PowerShell CIM query
-              (``system_windows_probes``), since there is no ``ps`` or ``/proc``.
+      Windows: process command lines read in this process, a Toolhelp snapshot
+              plus NtQueryInformationProcess (``system_windows_probes``), since
+              there is no ``ps`` or ``/proc``.
     """
     try:
         _my = os.getpid()
@@ -540,7 +541,7 @@ def _scan_mcp_processes() -> dict[str, object]:
                 if pid == _my:
                     continue
                 matched = False
-                # WQL LIKE matches case-insensitively, so this check does too.
+                # The reader matches case-insensitively, so this check does too.
                 folded = cmd.lower()
                 for sig, key in _win_sigs.items():
                     if sig in folded:
