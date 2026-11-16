@@ -361,9 +361,10 @@ const current = {
     + 'statement for the key-reference gate: every site listed here is one the gate cannot '
     + 'check. Ratchet DOWN by rewriting the site as an `as const` map access (see '
     + '`UPDATE_ERROR_KEYS` in pages/settings/AboutPanel.tsx); never raise it.',
-  _total: dynamicCount,
-  // The static-reference count and coverage percentage are deliberately NOT committed.
-  // The gate compares `files` only, so a committed copy of either would drift on every
+  // The dynamic-site total, the static-reference count and the coverage percentage are
+  // deliberately NOT committed. A stored total is one line two branches changing
+  // different files both rewrite, and land identically more often than not.
+  // The gate compares `files` only, so a committed copy of any of them would drift on every
   // ordinary PR that adds a resolvable key — going stale without failing anything, which
   // is worse than absent because a reader trusts it. Both are printed on every run
   // instead, where they cannot rot.

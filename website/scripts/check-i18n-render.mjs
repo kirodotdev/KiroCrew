@@ -1250,12 +1250,13 @@ function reconcile(all, baseAll, { partial, totalIsFallback = false, newSurfaces
   if (UPDATE) {
     if (partial) die('--update needs the full run; drop --surface/--locale')
     const ledger = {
+      // Per-surface entries only: a stored grand total is one line every regeneration
+      // rewrites, so two branches can merge it into a number neither measured.
       _comment: LEDGER_COMMENT,
-      _total: totals(counts),
       surfaces: counts,
     }
     writeFileSync(LEDGER, `${JSON.stringify(ledger, null, 2)}\n`)
-    const t = ledger._total
+    const t = totals(counts)
     out(`[i18n-render] ledger written: text=${t.text} layout=${t.layout} latent=${t.latent}`)
     return 0
   }
