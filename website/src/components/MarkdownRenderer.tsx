@@ -1271,7 +1271,9 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
     // e.target may be an inline child of the `/artifacts/<slug>` anchor (e.g.
     // <em>/<code>), so walk up with closest(). preventDefault stops the
     // relative href from navigating full-page instead of opening the panel.
-    if (onArtifactOpen && !e.shiftKey) {
+    // Only a PLAIN primary click: Cmd/Ctrl/Alt/Shift-click and middle-click
+    // keep the real href, so the browser can still open a new tab.
+    if (onArtifactOpen && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
       const anchor = el.closest('a[href^="/artifacts/"]') as HTMLAnchorElement | null
       if (anchor) {
         const slug = artifactSlugFromHref(anchor.getAttribute('href'))

@@ -79,6 +79,7 @@ interface MessageActionsOptions {
   showActionError: (message: string, title?: string) => void
   handleFileOpen: ReturnType<typeof useChatPageResourcesController>['handleFileOpen']
   handleFolderOpen: (dirPath: string) => void
+  handleArtifactOpen: (slug: string) => void
   search: ReturnType<typeof useChatPageResourcesController>['search']
   tabsCtl: ReturnType<typeof useChatPageResourcesController>['tabsCtl']
   sessionTitles: Map<string, string>
@@ -102,7 +103,7 @@ interface MessageActionsOptions {
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function useMessageActions({
-  dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, handleFileOpen, handleFolderOpen, search,
+  dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, handleFileOpen, handleFolderOpen, handleArtifactOpen, search,
   tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, embedChatFrame, setRegenerating,
 }: MessageActionsOptions) {
   // Reads `messagesRef`, not `messages`: the array is new on every streamed
@@ -174,6 +175,7 @@ export function useMessageActions({
       meta: mt,
       onFileOpen: handleFileOpen,
       onFolderOpen: handleFolderOpen,
+      onArtifactOpen: handleArtifactOpen,
       linkPreviews: linkPreviewsOn,
       onSessionOpen: selectSessionTab,
       sessions: connected ? sessionTitles : undefined,
@@ -182,7 +184,7 @@ export function useMessageActions({
       // resolves here, because slot numbers are reused.
       messageTs: ts,
     }),
-    [handleFileOpen, handleFolderOpen, linkPreviewsOn, selectSessionTab, connected, sessionTitles, activeSlot]
+    [handleFileOpen, handleFolderOpen, handleArtifactOpen, linkPreviewsOn, selectSessionTab, connected, sessionTitles, activeSlot]
   )
 
   useEffect(() => {

@@ -717,7 +717,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
           meta={m.meta}
           timestamp={formatTs(m.ts)}
           timestampTitle={fmtMessageTimeFull(m.ts)}
-          renderContent={(c, mt) => renderUserContent({ content: c, meta: mt, onFileOpen: ctx.onFileOpen, onFolderOpen: ctx.onFolderOpen })}
+          renderContent={(c, mt) => renderUserContent({ content: c, meta: mt, onFileOpen: ctx.onFileOpen, onFolderOpen: ctx.onFolderOpen, onArtifactOpen: ctx.onArtifactOpen })}
           continuesRun={continuesAuthorRun(ctx.messages, ctx.index)}
           onReplyInThread={replyInThreadFor(m, ctx)}
           onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
