@@ -663,10 +663,13 @@ def _handle_email_domains(raw: object) -> list[str]:
 
 
 def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
-    """The viewer's control plane URL, credential reference and Crew domain, or "" for a bad one.
+    """The viewer's control plane URL, credential reference and Crew domain, "" for a bad reference.
 
     The URL carries the person's sign-in, so it is held to the lease URL's rule:
-    https://, or http:// only for a loopback port-forward. The credential setting
+    https://, or http:// only for a loopback port-forward. A value that breaks it is
+    kept as set, with a warning, so the viewer refuses it as not set up instead of
+    reading it as empty (the built-in control plane); every reader checks it again.
+    The credential setting
     names where a credential is and never holds one, so a value that is not
     secret://NAME or an absolute path is dropped, and the warning does not repeat
     it. Imported here, not at module load, so config load pulls in no relay
@@ -683,7 +686,6 @@ def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
                 "tunnel.relay_viewer_cps_url ignored: %s",
                 problem.replace("lease service", "control plane"),
             )
-            url = ""
         if ref and credential_reference_problem(ref) is not None:
             logger.warning(
                 "tunnel.relay_viewer_credential ignored: it must be secret://NAME or the "

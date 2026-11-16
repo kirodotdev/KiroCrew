@@ -60,15 +60,22 @@ MAX_POLL_TRANSPORT_FAILURES = 3
 def _load_relay_viewer_cps_url() -> str:
     """``tunnel.relay_viewer_cps_url`` while ``tunnel.relay_viewer_enabled`` is on, else "".
 
-    The config build has already dropped a URL that is not https:// (or loopback
-    http://), so a non-empty value here is one the viewer itself would call. An
+    The config build keeps a URL that is not https:// (or loopback http://) as set,
+    with a warning, so it is checked here: such a URL answers "" and sign-in never
+    sends a token to it. A non-empty answer is one the viewer itself would call. An
     unreadable config answers "", which keeps the prod-only lookup.
     """
     tunnel = _load_tunnel()
     if getattr(tunnel, "relay_viewer_enabled", False) is not True:
         return ""
     url = getattr(tunnel, "relay_viewer_cps_url", "")
-    return url.strip() if isinstance(url, str) else ""
+    url = url.strip() if isinstance(url, str) else ""
+    if url:
+        from kiro_crew.relay_client.lease import lease_url_problem
+
+        if lease_url_problem(url) is not None:
+            return ""
+    return url
 
 
 def _load_oidc_scope_prefix() -> str:

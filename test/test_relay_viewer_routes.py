@@ -900,3 +900,111 @@ async def test_a_personal_crew_with_no_profile_is_minted_as_before_and_logs_no_v
     assert "has no profile" in caplog.text
     for value in (BEARER, ACCESS, PROFILE):
         assert value not in caplog.text
+
+
+#: A made-up profile ARN in a second region.
+EU_PROFILE = "arn:aws:codewhisperer:eu-central-1:000000000000:profile/EXAMPLEPROFILE"
+US_HOST = "https://management.us-east-1.kiro.dev/"
+
+
+def _recording_urls(monkeypatch) -> list[tuple[str, str]]:
+    """The fixture's list and mint fakes, recording the control plane URL each gets."""
+    urls: list[tuple[str, str]] = []
+    listed, minted = cps.list_crew_endpoints, cps.create_crew_access_token
+
+    async def _list(url, bearer, *, crew_domain, token_type=""):
+        urls.append(("list", url))
+        return await listed(url, bearer, crew_domain=crew_domain, token_type=token_type)
+
+    async def _mint(url, bearer, endpoint_id, *, token_type="", profile_arn=""):
+        urls.append(("mint", url))
+        return await minted(
+            url, bearer, endpoint_id, token_type=token_type, profile_arn=profile_arn
+        )
+
+    monkeypatch.setattr(cps, "list_crew_endpoints", _list)
+    monkeypatch.setattr(cps, "create_crew_access_token", _mint)
+    return urls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile", "credential", "host"),
+    [
+        (EU_PROFILE, "", "https://management.eu-central-1.kiro.dev/"),
+        (PROFILE, "", US_HOST),
+        # The test credential, and a sign-in with no profile of its own.
+        ("", "secret://RELAY_VIEWER_TEST", US_HOST),
+        ("", "", US_HOST),
+        ("not-a-profile-arn", "", US_HOST),
+    ],
+)
+async def test_an_empty_url_uses_the_built_in_control_plane_for_the_sign_ins_region(
+    viewer, monkeypatch, profile, credential, host
+) -> None:
+    urls = _recording_urls(monkeypatch)
+    viewer.tunnel.relay_viewer_cps_url = ""
+    viewer.tunnel.relay_viewer_credential = credential
+    viewer.profile_arn = profile
+    async with _client() as client:
+        listed = await client.get("/api/relay-viewer/crews")
+        assert listed.status == 200
+        assert (await _mint(client)).status == 200
+    assert urls == [("list", host), ("list", host), ("mint", host)]
+
+
+@pytest.mark.asyncio
+async def test_a_set_url_still_wins_over_the_built_in_control_plane(viewer, monkeypatch) -> None:
+    urls = _recording_urls(monkeypatch)
+    viewer.profile_arn = EU_PROFILE
+    async with _client() as client:
+        assert (await client.get("/api/relay-viewer/crews")).status == 200
+        assert (await _mint(client)).status == 200
+    set_url = "https://cps.example.test"
+    assert urls == [("list", set_url), ("list", set_url), ("mint", set_url)]
+
+
+# Captured at import, before the fixture fakes them, so a test can use the real client.
+_REAL_LIST, _REAL_MINT = cps.list_crew_endpoints, cps.create_crew_access_token
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("url", "code", "posted"),
+    [
+        ("http://cps.example.invalid/", "NOT_SET_UP", []),
+        ("", "UNREACHABLE", [US_HOST]),
+    ],
+    ids=["rejected", "empty"],
+)
+async def test_a_rejected_url_is_not_set_up_and_only_an_empty_one_uses_the_built_in_plane(
+    viewer, monkeypatch, tmp_path, url, code, posted
+) -> None:
+    import json
+
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    config_file = tmp_path / "config.json"
+    tunnel = {
+        "relay_viewer_enabled": True,
+        "relay_viewer_cps_url": url,
+        "relay_viewer_relay_domain": "relay.example.test",
+    }
+    config_file.write_text(json.dumps({"tunnel": tunnel}), encoding="utf-8")
+    monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: config_file)
+    monkeypatch.setattr(rv, "_load_tunnel", lambda: KiroCrewConfig.load().tunnel)
+    monkeypatch.setattr(cps, "list_crew_endpoints", _REAL_LIST)
+    monkeypatch.setattr(cps, "create_crew_access_token", _REAL_MINT)
+    urls: list[str] = []
+
+    async def _post(post_url, bearer, target, body, token_type):
+        urls.append(post_url)
+        raise cps.CpsRefused(cps.UNREACHABLE, "stand-in: no network in this test")
+
+    monkeypatch.setattr(cps, "_post", _post)
+    async with _client() as client:
+        listed = await client.get("/api/relay-viewer/crews")
+        minted = await _mint(client)
+        assert (await listed.json())["code"] == code
+        assert (await minted.json())["code"] == code
+    assert urls == posted * 2
