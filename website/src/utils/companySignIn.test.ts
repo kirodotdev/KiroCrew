@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   COMPANY_SIGN_IN_REGION_KEY,
   COMPANY_SIGN_IN_URL_KEY,
+  initialCompanySignIn,
   readCompanySignIn,
   rememberCompanySignIn,
   sameCompanyPortal,
@@ -44,6 +45,39 @@ describe('company sign-in persistence', () => {
     expect(localStorage.getItem(COMPANY_SIGN_IN_REGION_KEY)).toBeNull()
     expect(readCompanySignIn()).toEqual({ startUrl: '', region: '' })
   })
+})
+
+describe('the company sign-in form starts with', () => {
+  beforeEach(() => {
+    localStorage.removeItem(COMPANY_SIGN_IN_URL_KEY)
+    localStorage.removeItem(COMPANY_SIGN_IN_REGION_KEY)
+  })
+
+  const SERVER = { start_url: 'https://server-org.awsapps.com/start', region: 'us-east-1' }
+
+  it('the gateway default when this browser submitted nothing', () => {
+    expect(initialCompanySignIn(SERVER)).toEqual({
+      startUrl: 'https://server-org.awsapps.com/start',
+      region: 'us-east-1',
+      fromDefault: true,
+    })
+  })
+
+  it('what this browser last submitted, region included, over the gateway default', () => {
+    rememberCompanySignIn('https://mine.awsapps.com/start', '')
+    expect(initialCompanySignIn(SERVER)).toEqual({
+      startUrl: 'https://mine.awsapps.com/start',
+      region: '',
+      fromDefault: false,
+    })
+  })
+
+  it.each([undefined, { start_url: '', region: 'us-east-1' }])(
+    'nothing when neither has a URL: %j',
+    fallback => {
+      expect(initialCompanySignIn(fallback)).toEqual({ startUrl: '', region: '', fromDefault: false })
+    },
+  )
 })
 
 const PORTAL_VARIANTS = [

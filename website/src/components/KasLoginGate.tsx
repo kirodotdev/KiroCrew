@@ -30,7 +30,7 @@ import {
 } from './OnboardingChapterShell'
 import GithubLogo from './icons/GithubLogo'
 import { Btn } from './ui'
-import { readCompanySignIn, rememberCompanySignIn } from '../utils/companySignIn'
+import { initialCompanySignIn, rememberCompanySignIn } from '../utils/companySignIn'
 import ErrorNotice from './ErrorNotice'
 import { copyToClipboard } from '../utils/clipboard'
 import { safeHref } from '../utils/safeHref'
@@ -54,6 +54,7 @@ const LOOPBACK_POLL_INTERVAL_MS = 2_000
 const LOOPBACK_SLOW_HINT_MS = 30_000
 // The begin error's DOM id, so the SSO field it names can point at it.
 const SSO_ERROR_ID = 'kas-sso-begin-error'
+const SSO_PREFILLED_ID = 'kas-sso-start-url-prefilled'
 
 // `extra` keeps Company SSO's start URL and region, so Start over can begin the
 // same sign-in again without the form.
@@ -273,12 +274,15 @@ function Chooser({
   busy,
   beginError,
   beginErrorCode,
+  companyDefault,
   onPick,
 }: {
   busy: boolean
   beginError: string
   /** The begin refusal's `code`, or '' (see apiErrorCode). */
   beginErrorCode: string
+  /** The gateway's default company portal (`KasLoginStatus.company_sign_in`). */
+  companyDefault?: KasLoginStatus['company_sign_in']
   onPick: (provider: KasLoginProvider, extra?: KasLoginExtra) => void
 }) {
   // The company-SSO choice expands an inline form (start URL + region) instead of
@@ -286,10 +290,14 @@ function Chooser({
   // start until the user supplies it.
   const organisationOnly = useContext(OrganisationOnlyContext)
   const [ssoOpen, setSsoOpen] = useState(organisationOnly)
-  // Seeded from the last company sign-in submitted on this browser, so a reload
-  // or gateway restart does not hand back an empty field.
-  const [startUrl, setStartUrl] = useState(() => readCompanySignIn().startUrl)
-  const [region, setRegion] = useState(() => readCompanySignIn().region)
+  // Seeded from the last company sign-in submitted on this browser, else the
+  // gateway's default portal, so a person need not look the URL up.
+  const [initial] = useState(() => initialCompanySignIn(companyDefault))
+  const [startUrl, setStartUrl] = useState(initial.startUrl)
+  const [region, setRegion] = useState(initial.region)
+  // A URL the gateway filled in says where it came from, so a person trusts it
+  // enough to press Continue. The note goes once they edit the field.
+  const [urlFromDefault, setUrlFromDefault] = useState(initial.fromDefault)
   const startUrlReady = startUrl.trim().length > 0
   // The 400s the user fixes in this form: the error names the field (both, when
   // AWS's answer names neither) and is tied to it, instead of sending them to
@@ -382,14 +390,30 @@ function Chooser({
                 spellCheck={false}
                 aria-label={i18nT('components.kasLogin.sso_start_url_label')}
                 aria-invalid={startUrlBad || undefined}
-                aria-describedby={startUrlBad ? SSO_ERROR_ID : undefined}
+                aria-describedby={
+                  [urlFromDefault && SSO_PREFILLED_ID, startUrlBad && SSO_ERROR_ID]
+                    .filter(Boolean)
+                    .join(' ') || undefined
+                }
                 autoFocus
                 value={startUrl}
-                onChange={(e) => setStartUrl(e.target.value)}
+                onChange={(e) => {
+                  setStartUrl(e.target.value)
+                  setUrlFromDefault(false)
+                }}
                 placeholder={i18nT('components.kasLogin.sso_start_url_placeholder')}
                 className="focus-ring mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-[13px] font-normal text-text-strong placeholder:text-muted aria-invalid:border-danger"
               />
             </label>
+            {urlFromDefault && (
+              <p
+                id={SSO_PREFILLED_ID}
+                className="mt-1 text-[12px] leading-relaxed text-muted"
+                data-testid="kas-login-sso-prefilled"
+              >
+                {i18nT('components.kasLogin.sso_start_url_prefilled')}
+              </p>
+            )}
             <p className="mt-1 text-[12px] leading-relaxed text-muted">
               {i18nT('components.kasLogin.sso_helper')}
             </p>
@@ -1297,6 +1321,7 @@ function KasLoginFlow({
             : '')
         }
         beginErrorCode={apiErrorCode(beginDevice.error)}
+        companyDefault={status.company_sign_in}
         onPick={(provider, extra) => {
           beginDevice.reset()
           beginLoopback.reset()

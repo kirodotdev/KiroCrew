@@ -7741,6 +7741,7 @@
       "sso_start_url_label": "会社のサインイン URL",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "会社から提供された AWS アクセスポータルの URL を貼り付けてください。",
+      "sso_start_url_prefilled": "組織の設定から入力されています。違う場合は変更してください。",
       "sso_region_label": "AWS リージョン（任意）",
       "sso_region_invalid": "AWS リージョンを確認してください。リージョン名は us-east-1 のような形式です。",
       "sso_start_url_invalid": "会社のサインイン URL を確認してください。",

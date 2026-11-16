@@ -344,6 +344,9 @@ TEXT_EDIT_PATHS: frozenset[str] = frozenset(
         "mcp_gateway.keep_alive_servers",
         "knowledge.auto_ingest_artifact_kinds",
         "timezone",
+        # What the Company SSO sign-in form starts with (auth/company_sign_in.py).
+        "agent.kas_sso_start_url",
+        "agent.kas_sso_region",
     }
 )
 
@@ -565,8 +568,32 @@ def _timezone_error(value: str) -> str | None:
     return "must be an IANA timezone name such as America/Los_Angeles, or local"
 
 
+def _sso_start_url_error(value: str) -> str | None:
+    """Refuse a portal URL sign-in would refuse; ``""`` clears it to the edition's."""
+    from kiro_crew.auth.service import InvalidStartUrlError, _canonical_start_url
+
+    try:
+        _canonical_start_url(value)
+    except InvalidStartUrlError as exc:
+        return str(exc)
+    return None
+
+
+def _sso_region_error(value: str) -> str | None:
+    """Refuse a region outside the AWS region-name grammar; ``""`` clears it."""
+    from kiro_crew.auth.service import _REGION_RE
+
+    if value == "" or _REGION_RE.match(value):
+        return None
+    return "must be an AWS region name such as us-east-1"
+
+
 #: Free-text keys whose value must also mean something to its reader.
-_TEXT_CHECKS = {"timezone": _timezone_error}
+_TEXT_CHECKS = {
+    "timezone": _timezone_error,
+    "agent.kas_sso_start_url": _sso_start_url_error,
+    "agent.kas_sso_region": _sso_region_error,
+}
 
 
 def generic_value_error(path: str, value: object) -> str | None:

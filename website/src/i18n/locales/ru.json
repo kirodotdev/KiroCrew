@@ -8368,6 +8368,7 @@
       "sso_start_url_label": "URL входа твоей компании",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "Вставь URL портала доступа AWS, который дала твоя компания.",
+      "sso_start_url_prefilled": "Заполнено из настроек твоей организации. Измени, если это неверно.",
       "sso_region_label": "Регион AWS (необязательно)",
       "sso_region_invalid": "Проверь регион AWS. Название региона выглядит так: us-east-1.",
       "sso_start_url_invalid": "Проверь URL входа твоей компании.",

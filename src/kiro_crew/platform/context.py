@@ -638,6 +638,13 @@ def set_context(ctx: PlatformContext) -> None:
 # must contain the phrase ``no-context answer`` so the justification is greppable
 # and cannot dodge the question it exists to answer.
 PEEK_CALLERS: "dict[str, str]" = {
+    "auth/company_sign_in.py::company_sign_in_default": (
+        "no-context answer is an empty start URL and region pair, the form as it "
+        "was before edition defaults. The sign-in-only app runs without a composed "
+        "platform, so resolving one here would prevent sign-in. An edition default "
+        "only pre-fills an editable field and grants nothing; an installed "
+        "contributor's PlatformCompositionError still propagates."
+    ),
     "milestones.py::_policy_permits": (
         "no-context answer is 'not permitted': with no installed policy the "
         "milestone hooks count nothing, write no state and emit no metric, which "

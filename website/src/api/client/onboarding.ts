@@ -241,6 +241,13 @@ export interface KasLoginStatus {
    * login behind their back.
    */
   usable: boolean
+  /**
+   * What the Company SSO form starts filled in with when this browser has
+   * submitted none: the saved `agent.kas_sso_start_url` / `agent.kas_sso_region`,
+   * else the edition's default. Both '' when nothing supplies one; absent on an
+   * older gateway.
+   */
+  company_sign_in?: { start_url: string; region: string }
 }
 
 /** One stored sign-in as `/api/kas-login/sources` names it. No token, no ARN. */

@@ -644,6 +644,10 @@ class DefaultDashboardContributor:
         # None → the dashboard keeps its built-in /api/sso-login stub handler.
         return None
 
+    def company_sign_in_defaults(self) -> Dict[str, str]:
+        # The public edition knows no company portal: the form starts empty.
+        return {}
+
     def mixed_internal_api_paths(self) -> "frozenset[str]":
         # The public edition mounts no routes, so it has none to make reachable
         # by an internal loopback caller. Empty keeps the middleware's admitted

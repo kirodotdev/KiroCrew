@@ -890,6 +890,18 @@ class DashboardContributor(Protocol):
         """Return the SSO-login WS handler, or ``None`` to keep the core stub."""
         ...
 
+    def company_sign_in_defaults(self) -> Dict[str, str]:
+        """The start URL and region the Company SSO sign-in form starts with.
+
+        ``{"start_url": ..., "region": ...}``; either may be omitted. WIRED:
+        ``auth/company_sign_in.py`` reads it for ``GET /api/kas-login`` only when
+        the person has not saved ``agent.kas_sso_start_url``, and drops a URL or
+        region that sign-in would refuse. The form stays editable. ``{}`` (the
+        Default) leaves the field empty. v1 method addition (no
+        ``CONTRACT_VERSION`` bump); a contributor without it supplies nothing.
+        """
+        ...
+
     def mixed_internal_api_paths(self) -> "frozenset[str]":
         """Edition paths an internal loopback caller may reach (Default: empty).
 
