@@ -272,6 +272,48 @@ class TestSuccessorClaim:
         manager._agents[run_id] = failed
         return failed
 
+    def test_a_retry_refused_while_pending_leaves_the_run_retryable(self) -> None:
+        """Eviction during a retry's admission keeps the run, so a refused
+        admission hands it back and the next retry is granted."""
+        manager = _manager()
+        failed = self._failed(manager)
+        failed.started = 0.0
+        for i in range(50):
+            done = SubagentInfo(id=f"ok{i}", task="t", done=True)
+            done.started = float(i + 1)
+            manager._agents[done.id] = done
+        assert manager.claim_retry(failed) == ""
+        newest = SubagentInfo(id="ok50", task="t", done=True)
+        newest.started = 51.0
+        manager._agents[newest.id] = newest
+        evict_completed_agents(manager._agents)
+        manager.settle_retry(failed, None)
+        assert manager._agents.get(failed.id) is failed
+        assert manager.claim_retry(manager._agents[failed.id]) == ""
+
+    @pytest.mark.parametrize("kind", ["retry", "continuation"])
+    def test_a_claim_in_flight_survives_a_full_failed_pool(self, kind: str) -> None:
+        """Past the failed-run bound, an unclaimed failed run is dropped instead."""
+        manager = _manager()
+        failed = self._failed(manager)
+        failed.started = 0.0
+        for i in range(50):
+            other = SubagentInfo(id=f"f{i}", task="t", done=True, error="boom")
+            other.started = float(i + 1)
+            manager._agents[other.id] = other
+        if kind == "retry":
+            assert manager.claim_retry(failed) == ""
+        else:
+            assert manager._claim_continuation(failed.id, "x", "")[1] is None
+        evict_completed_agents(manager._agents)
+        if kind == "retry":
+            manager.settle_retry(failed, None)
+        else:
+            manager._settle_continuation(failed.id, failed, None)
+        assert manager._agents.get(failed.id) is failed
+        assert "f0" not in manager._agents
+        assert manager.claim_retry(failed) == ""
+
     # Every state a failed run's successor claim can be in, and whether a retry
     # and a continuation are each granted from it. The continuation column is
     # the claim alone: a live or queued continuation is refused one step later

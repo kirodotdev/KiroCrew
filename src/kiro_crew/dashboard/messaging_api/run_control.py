@@ -735,6 +735,31 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
                 return _queued_not_started()
         except QueuedReadUnavailable:
             return _queue_unreadable()
+        # The pump can register the run while that lookup awaited; the
+        # registry then answers, not the folder.
+        old = state.subagents.get(agent_id)
+    if not old:
+        try:
+            recorded = await asyncio.to_thread(read_state, agent_id)
+        except (OSError, ValueError):
+            recorded = None
+        if recorded is not None:
+            # Its record left memory (a gateway restart, or past the failed-run
+            # bound). The folder holds only the redacted task and not the run's
+            # approval mode, so a retry from it would run a different
+            # experiment: refused, not replayed.
+            logger.info("Retry of %s refused: run record not in memory", agent_id)
+            return web.json_response(
+                {
+                    "error": (
+                        f"run {agent_id} has no record in memory, so it cannot be "
+                        "retried as it ran; use spawn_continue on it, or spawn its "
+                        "task again"
+                    ),
+                    "code": "retry_unavailable",
+                },
+                status=409,
+            )
         return web.json_response({"error": "not found"}, status=404)
     if not old.done:
         return web.json_response({"error": "agent is still running"}, status=409)

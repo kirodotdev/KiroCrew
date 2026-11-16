@@ -52,6 +52,12 @@ SESSION_MAX_AGE_SECS = 86400 * 7  # 7 days
 # Max completed sub-agents retained in SubagentManager._agents dict.
 MAX_RETAINED_AGENTS = 50
 
+# Max failed sub-agents with no successor retained on top of
+# MAX_RETAINED_AGENTS. "Retry failed" reads the in-memory record only, since
+# the unredacted task is never written to disk, so these are kept until a
+# retry or continuation takes them, oldest dropped first past this bound.
+MAX_RETAINED_FAILED = 50
+
 
 def _result_budgets() -> tuple[int, int]:
     """How the byte budget splits: the first 20% (task context) and the last
@@ -211,20 +217,64 @@ def check_session_budget(session_dir: Path) -> bool:
     return total > SESSION_MAX_BYTES
 
 
-def evict_completed_agents(agents: dict, max_retained: int = MAX_RETAINED_AGENTS) -> int:
+def _retryable_failure(info: object) -> bool:
+    """A failed run with no established successor.
+
+    A retry or continuation still starting has not established one: its start
+    can be refused, which hands the run back as retryable, so it stays here.
+    """
+    from kiro_crew.subagent import SUCCESSOR_PENDING
+
+    if getattr(info, "outcome", "") != "failed":
+        return False
+    retried_as = getattr(info, "_retried_as", "")
+    return not (
+        (retried_as and retried_as != SUCCESSOR_PENDING) or getattr(info, "_continued_as", "")
+    )
+
+
+def _claim_in_flight(info: object) -> bool:
+    """A retry or continuation of *info* is starting and has not settled."""
+    from kiro_crew.subagent import SUCCESSOR_PENDING
+
+    return getattr(info, "_retried_as", "") == SUCCESSOR_PENDING or bool(
+        getattr(info, "_continuation_starting", False)
+    )
+
+
+def evict_completed_agents(
+    agents: dict,
+    max_retained: int = MAX_RETAINED_AGENTS,
+    max_retained_failed: int = MAX_RETAINED_FAILED,
+) -> int:
     """Remove oldest completed sub-agents from the agents dict.
+
+    Failed runs with no successor are counted against *max_retained_failed*
+    instead of *max_retained*, so newer finished runs do not push them out
+    before "Retry failed" can reach them. Each class drops its oldest first. A
+    failed run whose retry or continuation is still starting counts toward the
+    bound but is never dropped: its settle writes to this record, so the bound
+    is exceeded while every run over it is in flight.
 
     Returns number of evicted entries.
     """
-    completed = [(k, v) for k, v in agents.items() if v.done]
-    if len(completed) <= max_retained:
-        return 0
-    completed.sort(key=lambda x: x[1].started)
-    to_evict = len(completed) - max_retained
-    for k, _ in completed[:to_evict]:
+    completed = sorted(((k, v) for k, v in agents.items() if v.done), key=lambda x: x[1].started)
+    failed = [kv for kv in completed if _retryable_failure(kv[1])]
+    others = [kv for kv in completed if not _retryable_failure(kv[1])]
+    doomed = others[: max(0, len(others) - max_retained)]
+    doomed += [kv for kv in failed if not _claim_in_flight(kv[1])][
+        : max(0, len(failed) - max_retained_failed)
+    ]
+    for k, _ in doomed:
         del agents[k]
-    logger.info("Evicted %d completed sub-agents (kept %d)", to_evict, max_retained)
-    return to_evict
+    if doomed:
+        logger.info(
+            "Evicted %d completed sub-agents (bounds %d + %d failed)",
+            len(doomed),
+            max_retained,
+            max_retained_failed,
+        )
+    return len(doomed)
 
 
 def cleanup_stale_sessions() -> int:
