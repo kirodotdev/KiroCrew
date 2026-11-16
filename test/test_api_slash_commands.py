@@ -305,6 +305,29 @@ class TestSessionAdvertisedCommands:
         assert description.startswith("Post with ")
 
     @pytest.mark.asyncio
+    async def test_an_advertised_hint_reaches_the_menu(self):
+        payload, _ = await _get_for_slot(await _provider_after_frame())
+        by_name = {item["name"]: item for item in payload}
+
+        assert by_name["/greet-team"]["hint"] == "team name"
+        assert "hint" not in by_name["/release-notes-draft"]
+        # A row the dashboard lists keeps its own row, with no hint.
+        assert "hint" not in by_name["/compact"]
+        assert "hint" not in by_name["/goal"]
+        assert "/mcp" not in by_name
+
+    @pytest.mark.asyncio
+    async def test_an_advertised_hint_reaches_the_menu_scrubbed(self):
+        token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+        frame = copy.deepcopy(_ADVERTISED)
+        frame["params"]["update"]["availableCommands"][1]["input"] = {"hint": f"--as {token}"}
+        payload, _ = await _get_for_slot(await _provider_after_frame(frame=frame))
+        hint = {item["name"]: item for item in payload}["/greet-team"]["hint"]
+
+        assert token not in hint
+        assert hint.startswith("--as ")
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("case", ["no slot", "replaced session", "foreign app", "kiro"])
     async def test_the_list_stays_with_its_own_session(self, case):
         provider = await _provider_after_frame("" if case == "kiro" else "claude")

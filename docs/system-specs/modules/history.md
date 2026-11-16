@@ -2708,7 +2708,11 @@ oversight:
   session. It neither reads stored memory nor writes any, so neither of the two
   guarantees a non-persistent mode actually makes (`is_restricted` → no
   consolidation/lessons; `blocks_reads` → no memory-context injection) is
-  engaged by it.
+  engaged by it. The one exception is the claude harness's own title, which may
+  replace Crew's echo title (`chat_title_harness.py`): claude-agent-acp titles from
+  the prompt Crew sent, so in `persistent` and `incognito` mode a recalled memory
+  word can reach it; only `temporary` (`blocks_reads`) injects no memory into that
+  prompt.
 - Persisting the title discloses nothing new. `_save_slot_to_history` has no
   `memory_mode` gate, so an incognito/temporary slot already writes its **full
   transcript** to its session JSONL for tab recovery, gateway-restart restore and

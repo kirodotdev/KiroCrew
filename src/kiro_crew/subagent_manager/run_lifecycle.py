@@ -808,6 +808,11 @@ async def _fire_event_impl(
     if etype in ("subagent_retrying", "subagent_recovering"):
         info.stalled = False
         info._stall_suspect_at = 0.0
+    # Every terminal path reaches here: the run's own children's cards close first.
+    if etype == "subagent_done":
+        from kiro_crew.subagent_manager import native_child_cards
+
+        await native_child_cards.close_for(self._manager, info)
     if self._manager._on_event:
         try:
             await self._manager._on_event(etype, info, extra or {})

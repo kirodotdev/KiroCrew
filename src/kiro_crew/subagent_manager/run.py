@@ -41,6 +41,7 @@ from . import run_yields as _run_yields
 from ._component import ManagerComponent
 from .admission.taskq_bridge import _in_memory_queued_entries
 from .admission.types import WINDOW_ENTRY_RECOVERING
+from .native_child_cards import unless_withdrawn
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -970,17 +971,19 @@ class RunEventCoordinator(ManagerComponent):
         rows = SubagentRows(info.id)
         prompt = _ApprovalPrompt(self, info)
 
-        # Each approver is asked only while its responder reports it attached.
+        # Each approver is asked only while its responder reports it attached, and a
+        # Stop on the card of the native child that asked can end the wait.
         def _factory_approver() -> Callable[[LLMEvent], Awaitable[object]]:
             factory = cast(
                 "Callable[[SubagentInfo], Callable[[LLMEvent], Awaitable[bool]]]",
                 manager._on_tool_approval_factory,
             )
-            return factory(info)
+            approve = factory(info)
+            return lambda event: unless_withdrawn(info, event, approve(event))
 
         def _ask_parent(event: LLMEvent) -> Awaitable[object]:
             approve = cast("ToolApprovalCallback", manager._on_tool_approval)
-            return approve(event, ask_key)
+            return unless_withdrawn(info, event, approve(event, ask_key))
 
         def _ask_for_child(event: LLMEvent) -> Awaitable[object]:
             if manager._on_tool_approval_factory:

@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         synthesis_fire_verdict,
         teardown_hold_active,
         title_then_refresh,
+        titled_then_harness,
     )
     from kiro_crew.dashboard.chat_turn.agent_started import AGENT_STARTED_ACTOR
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
@@ -495,8 +496,11 @@ async def _finish_queue_cycle(
     # title (a URL/ticket-key echo — see chat_title._is_low_signal_title) can
     # still hold the in-flight guard here, and a direct maybe_refresh_title
     # would bounce off it — with no later chat_done for a one-message session
-    # to catch the early milestone.
-    title_task = asyncio.create_task(title_then_refresh(state, slot))
+    # to catch the early milestone. The harness's own title, on a backend that sends
+    # one, is offered only after that whole chain (chat_title_harness).
+    title_task = asyncio.create_task(
+        titled_then_harness(state, slot, title_then_refresh(state, slot))
+    )
     state._background_tasks.add(title_task)
     title_task.add_done_callback(state._background_tasks.discard)
 

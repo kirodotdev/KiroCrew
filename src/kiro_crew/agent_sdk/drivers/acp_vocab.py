@@ -3,7 +3,8 @@
 Stop classes and the stop-reason classifier, the tool-call, tool-call-update and
 tool-result event kinds, the stop reasons of a turn the backend did not finish, the
 structured-status frame and its wait reasons, the terminal tool-call statuses, the session-start and prompt timeouts, the
-native-child marker, the notice a harness reports for the person, the mark a dashboard
+native-child marker, the notice a harness reports for the person, the title it gave
+its session, the mark a dashboard
 turn's stream draws background work under and the background cards its harness still
 runs (and loses) are backend
 vocabulary a consumer compares against or raises on, and so is the continuation that hands a timed-out call back to the
@@ -41,7 +42,9 @@ from kiro_crew.acp.harness_notices import (
     HarnessNotice,
     title_ends_sentence,
 )
+from kiro_crew.acp.harness_title import session_title as harness_session_title
 from kiro_crew.acp.liveness import InFlightToolTracker
+from kiro_crew.acp.native_child_thinking import EVENT_SUBAGENT_THINKING
 from kiro_crew.acp.raw_sdk_tasks import (
     END_COMPLETED,
     END_FAILED,
@@ -54,11 +57,14 @@ from kiro_crew.acp.raw_sdk_tasks import live_card_ids as live_background_card_id
 from kiro_crew.acp.raw_sdk_tasks import on_cards_lost as on_background_cards_lost
 from kiro_crew.acp.raw_sdk_workflow_cards import BackgroundCardRow
 from kiro_crew.acp.session_handle import NATIVE_CHILD_NOT_RESUMABLE, AcpRequestTimeout
+from kiro_crew.acp.session_handle_native_children import NATIVE_CHILD_ROSTER_CAP
 from kiro_crew.acp.timed_out_continuation import continue_timed_out_calls, timed_out_continuation
 from kiro_crew.acp.types import (
     EVENT_HARNESS_NOTICE,
     EVENT_MODEL_FALLBACK,
     EVENT_STRUCTURED_STATUS,
+    EVENT_SUBAGENT_ACTIVITY,
+    EVENT_SUBAGENT_LIST,
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
     STATUS_EXTENSION_VERSION,
@@ -130,6 +136,9 @@ __all__ = [
     "NOTICE_KIND_MODE",
     "SEVERITY_WARNING",
     "title_ends_sentence",
+    # The title a harness gave its own session (``acp/harness_title.py``), which the
+    # dashboard may put in place of its echo of the first message.
+    "harness_session_title",
     # Claude Code's background work (``acp/raw_sdk_tasks.py``): the kinds of the two
     # notices it makes, how a task ended, the row type of a Workflow agent's card, the
     # mark that has a dashboard turn's stream draw them, the cards the harness still
@@ -143,6 +152,16 @@ __all__ = [
     "expect_dashboard_turn",
     "live_background_card_ids",
     "on_background_cards_lost",
+    # A harness-native child's roster and activity, which a Crew run draws as cards
+    # under its own (``subagent_manager.native_child_cards``).
+    "EVENT_SUBAGENT_ACTIVITY",
+    "EVENT_SUBAGENT_LIST",
+    # A harness-native child's thinking, drawn on that child's card by the chat
+    # stream (``dashboard/chat_turn/native_cards.py``).
+    "EVENT_SUBAGENT_THINKING",
+    # How many harness-native children one roster tracks, which bounds the cards
+    # that may stream thinking.
+    "NATIVE_CHILD_ROSTER_CAP",
     # A call whose own silence timer ended the turn, handed back to the model on
     # the same session (``acp/timed_out_continuation.py``) by a surface with no
     # tool-stall recovery queue of its own.

@@ -217,6 +217,7 @@ from kiro_crew.dashboard.persistence_watchdog import (
 from kiro_crew.dashboard.persistence_watchdog import (
     shutdown_exit_code as persistence_lost_exit_code,
 )
+from kiro_crew.dashboard.run_native_card_relay import relay_run_native_card
 from kiro_crew.dashboard.sign_in_refresher import drain_sign_in_refresher, run_sign_in_refresher
 from kiro_crew.dashboard.stale_asset_watchdog import (
     run_stale_asset_watchdog,
@@ -655,6 +656,7 @@ from kiro_crew.subagent_completion_meta import (
     wave_chunk_meta,
     wave_final_meta,
 )
+from kiro_crew.subagent_manager.native_child_cards import RELAY_EVENT as RUN_NATIVE_CARD_EVENT
 from kiro_crew.subagent_wait_reasons import (
     NEVER_STARTED_MEMORY_PREFIX,
     QUEUED_WAIT_EXPIRED_TEXT,

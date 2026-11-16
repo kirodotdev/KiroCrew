@@ -45,6 +45,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp import client_native_children as children
+from kiro_crew.acp import native_child_thinking
 from kiro_crew.acp.types import (
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
@@ -147,6 +148,10 @@ def _claude_child_events(
         events.extend(self._native_child_roster())
     if kind == children.UPDATE_SESSION_MESSAGE:
         return events + children._note_session_message(reader, child_sid, update), True
+    thought = native_child_thinking.child_thought_event(self.backend, child_sid, kind, update)
+    if thought is not None:
+        # The child's thinking goes to its card, never to the parent's thinking.
+        return events + [thought], True
     if frame_sid != child_sid:
         # A child's frame on the parent's session, stamped with the child's Agent call.
         if kind == UPDATE_TOOL_CALL:

@@ -168,7 +168,7 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
   ['mcpApps', mcpApps, ['mcpAppKey']],
   ['subagents', subagents, [
     'isActiveSubagent', 'isAwaitingSpawnApproval', 'isSpawnApprovalGone', 'isSpawnApprovalRetired', 'selectSidebarApprovalCounts', 'selectSidebarStartedSubagentCounts', 'selectSidebarSubagentCounts', 'selectSlotPendingSpawnApprovals',
-    'selectSlotSubagents', 'selectSlotSubagentsActive', 'selectSubagentActivityCount',
+    'selectSlotSubagents', 'selectSlotSubagentsActive', 'selectSubagentActivityCount', 'SUBAGENT_THINKING_CAP', 'SUBAGENT_THINKING_KEEP',
   ]],
   ['workflows', workflows, ['WORKFLOW_TERMINAL_STATUSES', 'isTerminalWorkflowStatus', 'selectSidebarWorkflowActive', 'selectSidebarWorkflowActiveKeys']],
   ['automations', automations, ['selectAutomationForSlot', 'selectSidebarAutomationRunningKeys']],

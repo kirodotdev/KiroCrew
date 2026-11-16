@@ -635,6 +635,14 @@ the parent, and no recovery path sends it. Pinned by
 `test_claude_raw_sdk_tasks_lifecycle.py::test_a_workflow_agent_is_refused_after_its_record_goes`
 and `test_claude_native_child_stop.py`.
 
+A child's thinking reaches its own card only (`ACP_BACKENDS_NATIVE_CHILD_THINKING`),
+never the parent's thinking; pinned by `test_claude_native_child_thinking.py`.
+
+A Crew run's own native children are still counted at the run's session only. On
+claude they are also drawn, display only, as cards under the run's card
+(`ACP_BACKENDS_RUN_NATIVE_CHILD_CARDS`): never admitted, scheduled or continued, and
+never an open native crew of a chat turn. Pinned by `test_claude_run_native_child_cards.py`.
+
 ## The CI half
 
 The added-line gate that enforces Group B on a diff is

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, useCallback, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Bot, ScrollText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Wrench, MessageCircleQuestionMark, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, CircleMinus, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
@@ -10,6 +10,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import StatusNotice from '../../components/StatusNotice'
 import type { SubagentActivity, ToolActivity, Artifact } from '../../types'
 import { countDiffStats } from '../../utils/diffLineCounts'
+import { nestUnderRuns } from '../../utils/subagentNesting'
 import { toApiDecision } from '../../utils/approvalDecision'
 import { approvalGoneKey } from '../../types/approvalTarget'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
@@ -54,6 +55,7 @@ const RemoteGitPanel = lazyRetry(() => import('./RemoteGitPanel'), {
   askAgent: false,
 })
 import SessionSummaryTab from './SessionSummaryTab'
+import ThinkingBlock from './ThinkingBlock'
 import { i18nT } from '../../i18n/t'
 import { isNeverStarted, neverStartedKind, queuedWaitText } from './subagentQueuedReason'
 import GitReposPanel from '../../components/GitReposPanel'
@@ -207,7 +209,7 @@ function CardElapsed({ running, startedAt, assumed, finalSecs }: { running: bool
   return <>{fmtElapsed(secs * 1000, { wholeSeconds: true })}</>
 }
 
-function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slot: string; onClick: () => void; selected?: boolean }) {
+function SubagentPane({ a, slot, onClick, selected, titleId, nestedUnder }: { a: SubagentActivity; slot: string; onClick: () => void; selected?: boolean; titleId?: string; nestedUnder?: { id: string; titleId: string } }) {
   const bodyRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
   const autoScroll = useRef(true)
@@ -401,8 +403,9 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
     // interactive controls (Cancel, collapse header) which carry the real
     // keyboard/AT semantics. The outer div carries the scroll-to anchor for
     // chip-selected cards.
-    <div ref={cardRef}>
-    <Clickable className={`mx-2 mb-3 rounded-lg border bg-card overflow-hidden shadow-sm transition-all animate-scale-in ${isRunning || isPending ? 'border-border-strong' : 'border-border opacity-60'}${selected ? ' ring-1 ring-accent' : ''}`} onClick={onClick}>
+    // A Crew run's own child draws indented under the run's card, named by its title.
+    <div ref={cardRef} {...(nestedUnder ? { className: 'ml-4 pl-2 pb-3 border-l-2 border-border', 'data-parent-id': nestedUnder.id } : {})}>
+    <Clickable className={`mx-2 ${nestedUnder ? '' : 'mb-3 '}rounded-lg border bg-card overflow-hidden shadow-sm transition-all animate-scale-in ${isRunning || isPending ? 'border-border-strong' : 'border-border opacity-60'}${selected ? ' ring-1 ring-accent' : ''}`} onClick={onClick} aria-describedby={nestedUnder?.titleId}>
       {/* Header — collapse toggle when the subagent is done */}
       <div
         className={`flex items-center gap-2 px-3 py-2.5${isDone ? ' cursor-pointer select-none hover:bg-bg-hover transition-colors' : ''}`}
@@ -419,7 +422,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
           : {})}
       >
         <span className="shrink-0 flex items-center">{STATUS[a.status]}</span>
-        <span className="text-[13px] font-semibold text-text truncate min-w-0" title={i18nT('pages.chat.activityViewer.subagent', { label: statusLabel })}>{statusLabel}</span>
+        <span id={titleId} className="text-[13px] font-semibold text-text truncate min-w-0" title={i18nT('pages.chat.activityViewer.subagent', { label: statusLabel })}>{statusLabel}</span>
         {identity && <code className="text-[11px] text-muted/50 bg-bg-hover px-1.5 py-0.5 rounded shrink-[3] min-w-0 max-w-[6.5rem] truncate inline-block align-middle" title={identity}>{identity}</code>}
         {waveTag && <code data-testid="subagent-batch" data-batch={a.batchId} className="text-[11px] text-muted/40 bg-bg-hover px-1.5 py-0.5 rounded shrink-[3] min-w-0 max-w-[6.5rem] truncate inline-block align-middle" title={waveTag}>{waveTag}</code>}
         {(() => {
@@ -519,6 +522,8 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
       {/* Output (streaming body) */}
       {!isPending && !retired && !collapsed && (
       <>
+      {/* The agent's reasoning, collapsed like the transcript's; never part of Output. */}
+      {a.thinking && <div className="px-3 pb-1" data-testid="subagent-thinking"><ThinkingBlock content={a.thinking} /></div>}
       <div className="px-3 pb-2">
         <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">{i18nT('pages.chat.activityViewer.output')}</div>
         {/* Sub-agent output is usually markdown (fences, lists, tables): render it
@@ -1146,7 +1151,8 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   // Exception-first ordering: agents needing attention (failed, stalled,
   // retrying, pending approval) sort to the top; the healthy/finished
   // majority follows. Stable within a rank (insertion order preserved).
-  const ids = useMemo(() => {
+  // A Crew run's own children follow the run, one level under it (`nestUnderRuns`).
+  const { ids, parentOf } = useMemo(() => {
     const rank = (a: SubagentActivity | undefined) => {
       if (!a) return 9
       if (a.status === 'error') return 0
@@ -1157,8 +1163,9 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
       if (a.status === 'stopped') return 5
       return 6 // done
     }
-    return Object.keys(subagents).sort((x, y) => rank(subagents[x]) - rank(subagents[y]))
+    return nestUnderRuns(Object.keys(subagents).sort((x, y) => rank(subagents[x]) - rank(subagents[y])), subagents)
   }, [subagents])
+  const paneIds = useId()
   const hasSubagents = ids.length > 0
   // Agents accepted but not yet started — queued behind the concurrency cap /
   // stagger gate, so they have no per-agent entry in `subagents` yet. Without
@@ -1420,15 +1427,20 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           )}
           {hasSubagents ? (
             <>
-              {visibleIds.map((id, i) => (
-                <SubagentPane
-                  key={id}
-                  a={subagents[id]}
-                  slot={slot}
-                  onClick={() => setSelected(i)}
-                  selected={id === selectedSubagentId}
-                />
-              ))}
+              {visibleIds.map((id, i) => {
+                const parent = parentOf.get(id)
+                return (
+                  <SubagentPane
+                    key={id}
+                    a={subagents[id]}
+                    slot={slot}
+                    onClick={() => setSelected(i)}
+                    selected={id === selectedSubagentId}
+                    titleId={`${paneIds}-title-${id}`}
+                    nestedUnder={parent ? { id: parent, titleId: `${paneIds}-title-${parent}` } : undefined}
+                  />
+                )
+              })}
               {cappedCount > 0 && (
                 <button
                   className="mx-2 mb-3 w-[calc(100%-16px)] text-[12px] text-muted hover:text-text py-2 rounded border border-dashed border-border cursor-pointer bg-transparent transition-colors"

@@ -12,8 +12,13 @@ import { i18nT } from '../../i18n/t'
 import type { ChatState } from './state'
 import { isUnsafeKey, safeKey } from './wire'
 import { jsonEqual } from '../../utils/structuralEqual'
+import { runParentOf } from '../../utils/subagentNesting'
 
 const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
+/** A card's reasoning past this many characters keeps only its newest
+ *  `SUBAGENT_THINKING_KEEP`, behind the truncation marker. */
+export const SUBAGENT_THINKING_CAP = 20_000
+export const SUBAGENT_THINKING_KEEP = 16_000
 /** Per-slot subagent map, falling back to the global active mirror — the
  *  read-only selector twin of the internal `getSlotSubs`. Exists so the
  *  Activity panel can subscribe to this itself instead of having ChatPage hold
@@ -439,12 +444,13 @@ export const selectSidebarApprovalCounts = createSelector(
  *  Stop card settles as stopped. The processes keep running (Stop all is a
  *  separate verb), but the UI dims the cards so they match the [Stopped] card.
  *  Agents live in slotActivity[slot].subagents when the slot is NOT active,
- *  and in state.subagents (the flat map) when it IS active -- mark both. */
+ *  and in state.subagents (the flat map) when it IS active -- mark both. A Crew
+ *  run's own child (`runParentOf`) is left alone: its parent is the run. */
 export function markParentStopped(state: ChatState, slot: string) {
   if (isUnsafeKey(slot)) return
   const key = safeKey(slot)
   for (const subs of [state.slotActivity[key]?.subagents, key === state.activeSlot ? state.subagents : undefined]) {
-    for (const a of Object.values(subs ?? {})) if (isActiveSubagent(a)) a.parentStopped = true
+    for (const [id, a] of Object.entries(subs ?? {})) if (isActiveSubagent(a) && !runParentOf(id, subs ?? {})) a.parentStopped = true
   }
 }
 
@@ -711,6 +717,7 @@ export const subagentReducers = {
       childSession: action.payload.child_session || undefined,
       batchId: action.payload.batch_id || existing?.batchId || undefined,
       status: 'running', streaming: existing?.streaming || '', lastTool: '', startedAt: existing?.startedAt || Date.now(), elapsed: 0,
+      ...(existing?.thinking ? { thinking: existing.thinking } : {}),
       // Reusing an entry's start time inherits whether that time was ASSUMED.
       // Rebuilding the entry without this would silently promote an assumption
       // to an assertion, because a spawn frame carries no start time of its own
@@ -793,12 +800,20 @@ export const subagentReducers = {
       }
     }
   },
-  /** One coalesced ~1s frame of concatenated streaming text per agent. */
-  sseSubagentBatchChunks(state: ChatState, action: PayloadAction<{ chunks: { id: string; slot: string; text: string }[] }>) {
+  /** One coalesced ~1s frame of concatenated streaming text per agent, and the
+   *  reasoning a `subagent_thinking` frame carried (`thinking`), kept apart from
+   *  the output. */
+  sseSubagentBatchChunks(state: ChatState, action: PayloadAction<{ chunks: { id: string; slot: string; text: string; thinking?: string }[] }>) {
     for (const c of action.payload.chunks || []) {
       const a = upsertSlotSub(state, c.slot, c.id)
       if (!a) continue
       a.retrying = false
+      if (c.thinking) {
+        const thinking = (a.thinking ?? '') + c.thinking
+        a.thinking = thinking.length > SUBAGENT_THINKING_CAP
+          ? i18nT('store.chatSlice.truncated') + '\n' + thinking.slice(-SUBAGENT_THINKING_KEEP)
+          : thinking
+      }
       a.streaming += c.text
       if (a.streaming.length > 50_000) {
         a.streaming = i18nT('store.chatSlice.truncated') + '\n' + a.streaming.slice(-40_000)
@@ -990,6 +1005,8 @@ export const subagentReducers = {
       // No replayed frame restores a Stop, so a reconnect keeps the mark it left.
       parentStopped: existing?.parentStopped || undefined,
       status: d.last_tool ? 'tool' : 'running', streaming: d.streaming, lastTool: d.last_tool,
+      // Reasoning is client-only: no snapshot carries it, so a replay keeps it.
+      ...(existing?.thinking ? { thinking: existing.thinking } : {}),
       // Replay applies the live tool-frame rule to a copy of a held timeline.
       // A card the replay creates seeds its timeline from the latest tool.
       toolCalls: existing?.toolCalls?.length

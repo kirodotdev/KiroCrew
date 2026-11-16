@@ -8,12 +8,17 @@ its state) and sends the request. The card then stays open, and the end the harn
 reports closes it, drawn as stopped (:data:`STOP_REQUESTED` on the child's tracker
 record). Any other card the caller closes itself.
 
+The card of a Crew run's own child (``native:<run id>:<child>``, registered with the
+run's id by ``run_native_card_relay``) is stopped through that run's client and record
+(:func:`run_card_owner`) instead, never the tab's.
+
 A child stopped while it waits on a person leaves that card open: the harness withdraws
 the request (``$/cancel_request``), which the turn, waiting on the card, never reads.
 So the Stop settles each card the child left waiting, as the chat's Stop settles its
 own: rejected, audited ``rejected_on_stop``, marked resolved and retired on every
 window. A permission is rejected for that call alone, so the turn's later requests,
-another child's included, are still put to the person.
+another child's included, are still put to the person. A run's child waits on the run's
+own ladder instead, whose wait the Stop ends (``RunNativeChildCards.withdraw``).
 """
 
 from __future__ import annotations
@@ -36,19 +41,28 @@ async def harness_stops_native_child(state: Any, card_info: dict[str, Any]) -> b
     client cannot stop a native child, or it declines this one (a Workflow agent, a
     child granted no cancel, one already ended). A failure to ask is False too: the
     caller then closes the card itself, so a Stop never raises. When it was asked, the
-    cards the child left waiting are settled (:func:`_settle_child_requests`).
+    cards the child left waiting are settled (:func:`_settle_child_requests`); for a
+    run's child, the run's wait on a person for its request ends instead.
     """
     slot: Any = None
     client: Any = None
+    owner: Any = None
     child_sid = str(card_info.get("session_id") or "")
     record: dict[str, Any] | None = None
     sent = False
     try:
-        slot = state.get_slot(card_info.get("slot", ""))
-        client = getattr(slot, "_acp_client", None)
+        owner = run_card_owner(state, card_info)
+        if owner is not None:
+            client = owner.client
+        elif not card_info.get("run_id"):
+            slot = state.get_slot(card_info.get("slot", ""))
+            client = getattr(slot, "_acp_client", None)
         cancel = getattr(client, "cancel_native_child", None)
         if inspect.iscoroutinefunction(cancel):
-            record = _open_record(slot, child_sid)
+            if owner is not None:
+                record = owner.open_record(child_sid)
+            else:
+                record = _open_record(slot, child_sid)
             if record is not None:
                 # Set before the request goes out: the end it causes can be read
                 # while the write is still being awaited.
@@ -62,10 +76,26 @@ async def harness_stops_native_child(state: Any, card_info: dict[str, Any]) -> b
             record.pop(STOP_REQUESTED, None)
         return False
     try:
-        _settle_child_requests(state, slot, client, child_sid)
+        if owner is not None:
+            owner.withdraw(child_sid)
+        else:
+            _settle_child_requests(state, slot, client, child_sid)
     except Exception:  # noqa: BLE001 - the child is stopping whatever its cards say
         logger.warning("settling a stopped native child's open cards failed", exc_info=True)
     return True
+
+
+def run_card_owner(state: Any, card_info: dict[str, Any]) -> Any:
+    """The cards (a ``RunNativeChildCards``) of the live Crew run whose own child the card
+    *card_info* draws, or None for a tab's card and for a run the manager does not hold."""
+    run_id = card_info.get("run_id")
+    manager = getattr(state, "subagents", None)
+    if not isinstance(run_id, str) or not run_id or manager is None:
+        return None
+    from kiro_crew.subagent_manager.native_child_cards import RunNativeChildCards
+
+    cards = getattr(manager.get(run_id), "_native_child_cards", None)
+    return cards if isinstance(cards, RunNativeChildCards) else None
 
 
 def _open_record(slot: Any, child_sid: str) -> dict[str, Any] | None:

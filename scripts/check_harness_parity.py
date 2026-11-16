@@ -506,12 +506,19 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR": "standard ACP: agent_message_chunk shape",
     "ACP_BACKENDS_PLAN_CHECKLIST": "standard ACP: legacy plan session update entries",
     "ACP_BACKENDS_HARNESS_NOTICES": "standard ACP: session.notices, notice and current_mode_update",
+    "ACP_BACKENDS_SESSION_TITLE": "standard ACP: session_info_update title",
     "ACP_BACKENDS_READ_PATH_ARG": "standard ACP: a read tool_call's kind and rawInput",
     "ACP_BACKENDS_SUMMARIZED_THINKING": "off the wire: adapter process environment at spawn",
     "ACP_BACKENDS_NATIVE_CHILD_CANCEL": (
         "standard ACP: session/cancel naming a subagents-form child that granted cancel"
     ),
+    "ACP_BACKENDS_NATIVE_CHILD_THINKING": (
+        "standard ACP: agent_thought_chunk on a subagents-form child session"
+    ),
     "ACP_BACKENDS_TOOL_TITLE_REFINEMENT": "standard ACP: a tool_call_update's title",
+    "ACP_BACKENDS_RUN_NATIVE_CHILD_CARDS": (
+        "standard ACP: subagents-form subagent_update on a Crew run's own session"
+    ),
     "ACP_BACKENDS_COMPACTION_SUMMARY": (
         "standard ACP: compaction_summary_chunk and a completed compaction_update's summary"
     ),

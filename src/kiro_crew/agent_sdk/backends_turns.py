@@ -683,6 +683,16 @@ ACP_BACKENDS_HARNESS_NOTICES = frozenset({ACP_BACKEND_CLAUDE})
 # background work in frames of their own.
 ACP_BACKENDS_RAW_SDK_TASKS = frozenset({ACP_BACKEND_CLAUDE})
 
+# Backends whose harness names its own session with a ``session_info_update``
+# ``title`` that ``AcpClient`` keeps (``acp.harness_title``), so the dashboard's
+# chat_done chain can put it in place of the echo of the first message Crew's own
+# titler leaves when it names nothing (``dashboard.chat_title_harness``). claude is
+# the member: claude-agent-acp sends ``{title, updatedAt}`` for every session with no
+# client capability (0.107.0 ``session-titles.js`` ``publish``; 0.94.0 capture
+# ``test/fixtures/acp_frames/claude/compact-live.jsonl``). Standard ACP. kiro-cli
+# and KAS send no title; no other harness's capture shows one.
+ACP_BACKENDS_SESSION_TITLE = frozenset({ACP_BACKEND_CLAUDE})
+
 # Backends whose read tool names the one file it reads in a ``file_path`` argument,
 # so ``AcpClient`` marks a ``read``-kind ``tool_call`` with that argument's name
 # (``acp.read_path_arg``, ``AcpEvent.read_path_arg``), the dashboard keeps the mark on
@@ -737,6 +747,20 @@ ACP_BACKENDS_SUMMARIZED_THINKING = frozenset({ACP_BACKEND_CLAUDE})
 # cancel there.
 ACP_BACKENDS_NATIVE_CHILD_CANCEL = frozenset({ACP_BACKEND_CLAUDE})
 
+# Backends whose native child's ``agent_thought_chunk`` is read as that child's
+# thinking (``acp.native_child_thinking``, ``EVENT_SUBAGENT_THINKING``), streamed to
+# its Subagents card only, never to the parent's thinking rows or the card's output.
+# claude is the member: claude-agent-acp 0.107.0 turns a subagent's non-empty
+# thinking block into ``agent_thought_chunk`` (``sdk-to-acp.js`` 218-232) stamped
+# ``_meta.claudeCode.parentToolUseId`` (504-507), and routes it to the child's
+# sessionId (``native-subagents.js`` ``routeUpdate`` 317-420) for a non-AIR client that
+# declares ``clientCapabilities.subagents`` (``v1/acp-agent.js`` 4545-4556,
+# 7273-7277). The text needs a non-empty thinking display, which
+# ``ACP_BACKENDS_SUMMARIZED_THINKING`` asks for. Standard ACP frames; no capture
+# carries one yet (0.94.0 ignores the display). Every other harness's child
+# thinking stays dropped: no capture shows one.
+ACP_BACKENDS_NATIVE_CHILD_THINKING = frozenset({ACP_BACKEND_CLAUDE})
+
 # Backends whose ``tool_call_update`` carries a call's real title after a first
 # ``tool_call`` that named it before its input had streamed, so a Crew-spawned
 # subagent's Subagents card takes the refined title for that call's row, as the
@@ -755,6 +779,18 @@ ACP_BACKENDS_NATIVE_CHILD_CANCEL = frozenset({ACP_BACKEND_CLAUDE})
 # ``acp_frames/kiro/`` captures), which would replace the better title on the card.
 # So does every harness no capture shows refining a generic first title.
 ACP_BACKENDS_TOOL_TITLE_REFINEMENT = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends whose Crew-spawned run draws its own harness-native children as cards under
+# the run's card (``SessionCapabilities.draws_run_native_child_cards``, read by
+# ``subagent_manager.native_child_cards``). claude is the member: a run's own
+# ``AcpClient`` declares ``subagents`` as a chat slot's does, so claude-agent-acp
+# announces the run's Agent-tool children on the run's own session (the H16 frames,
+# ``claude_native_subagents/agent-task-0.94.0.jsonl``), and the run's Workflow agents
+# come as the ``ACP_BACKENDS_RAW_SDK_TASKS`` rows (``claude/raw-sdk-workflow.jsonl``)
+# once the run marks each prompt. Display only: a grandchild is never admitted,
+# counted or continued as a Crew run. Every other harness stays out until a capture
+# shows a run's children drawn this way.
+ACP_BACKENDS_RUN_NATIVE_CHILD_CARDS = frozenset({ACP_BACKEND_CLAUDE})
 
 # Backends whose native compaction reports the summary the harness kept, so
 # ``AcpClient`` carries it on the ``completed`` compaction event

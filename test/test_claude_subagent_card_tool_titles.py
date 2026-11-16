@@ -282,14 +282,20 @@ async def test_interleaved_calls_each_rename_their_own_row() -> None:
 async def test_an_agent_call_names_its_childs_task_on_the_card() -> None:
     """The Agent call announced as "Task" reads as the task it handed its child, once
     however often the adapter repeats it; the child's own call is listed as the run's
-    calls are, and the child's roster and text draw nothing on the card."""
+    calls are, and the child's roster and text draw nothing on the card: they draw the
+    child's own card (``test_claude_run_native_child_cards.py``)."""
     info, fired = await _run(_agent_frames())
     assert _card(fired) == [
         ("Task", AGENT_CALL, False),
         ("say pong", AGENT_CALL, True),
         ("SubagentHandback", CHILD_CALL, False),
     ]
-    assert {kind for kind, _ in fired} == {"subagent_spawn", "subagent_tool", "subagent_chunk"}
+    assert {kind for kind, _ in fired} == {
+        "subagent_spawn",
+        "subagent_tool",
+        "subagent_chunk",
+        "run_native_card",
+    }
     assert info.last_tool == "SubagentHandback"
 
 

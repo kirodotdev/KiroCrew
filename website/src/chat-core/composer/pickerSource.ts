@@ -30,6 +30,12 @@ export interface SlashCommand {
    * sends `""` for a command missing from its description map.
    */
   description?: string
+  /**
+   * The argument syntax the chat's own session advertised (`input.hint`, e.g.
+   * `[interval] [prompt]`). Harness data: shown as text, never translated and
+   * never inserted into the composer.
+   */
+  hint?: string
 }
 
 /** A saved workflow as the `/workflow ` picker lists it. */

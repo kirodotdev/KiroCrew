@@ -94,6 +94,7 @@ from kiro_crew.agent_discovery import (
 )
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name  # noqa: F401
 from kiro_crew.agent_sdk.capabilities import capabilities_of
+from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_SUBAGENT_THINKING
 from kiro_crew.agent_sdk.spec_hooks import (
     invalidate_stale_kas_session,
     refuse_stale_switch,
@@ -128,6 +129,7 @@ from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop  # noqa: F401
 from kiro_crew.dashboard.chat_summary import generate_session_summary
 from kiro_crew.dashboard.chat_title import title_then_refresh
+from kiro_crew.dashboard.chat_title_harness import titled_then_harness
 from kiro_crew.dashboard.chat_turn.account_identity import (
     _mark_kiro_signed_out,
     _retire_sessions_on_identity_change,
@@ -180,10 +182,15 @@ from kiro_crew.dashboard.chat_turn.model_fallback import (  # noqa: F401
     _on_acp_model_access,
     _sync_served_model,
 )
-from kiro_crew.dashboard.chat_turn.native_cards import (
+from kiro_crew.dashboard.chat_turn.native_cards import (  # noqa: F401 - a run's child cards
+    NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+    _append_native_output,
     _expect_background_draw,
+    _native_subagent_close_all,
+    _native_subagent_sync,
     _on_subagent_activity,
     _on_subagent_list,
+    _on_subagent_thinking,
 )
 from kiro_crew.dashboard.chat_turn.permission_prompt import _on_permission_prompt
 from kiro_crew.dashboard.chat_turn.prompt_assembly import (  # noqa: F401
@@ -1298,6 +1305,8 @@ async def _run_chat(
                 await _on_subagent_list(turn, event)
             elif event.kind == EVENT_SUBAGENT_ACTIVITY:
                 await _on_subagent_activity(turn, event)
+            elif event.kind == EVENT_SUBAGENT_THINKING:
+                await _on_subagent_thinking(turn, event)
             elif event.kind == EVENT_COMPLETE:
                 _flow = await _on_complete(turn, event)
                 if _flow is _Flow.BREAK:

@@ -1,6 +1,12 @@
 """Harness-native sub-agent Activity cards (kiro-cli's, KAS's and Claude Code's) and the native
 AskUserQuestion card a dashboard turn shows, and the stream's native sub-agent arms
-(``_on_subagent_list``, ``_on_subagent_activity``).
+(``_on_subagent_list``, ``_on_subagent_activity``, ``_on_subagent_thinking``).
+
+A Claude child's thinking streams to its open card alone, through a per-card
+``StreamRedactor`` the turn holds (at most ``_NATIVE_THINKING_CARD_CAP``, the refusals
+counted and logged once a turn), as ``subagent_thinking`` to subagent subscribers. It is
+ephemeral, as the parent's ``chat_thinking`` is: never the card's output or result, the
+slot's rows, or a reconnect snapshot.
 
 A row Crew built from a harness's background-task messages (a ``BackgroundCardRow``, a
 Claude Code Workflow agent, ``acp.raw_sdk_workflow_cards``) carries four fields beyond
@@ -23,6 +29,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_sdk.drivers.acp_vocab import (
+    NATIVE_CHILD_ROSTER_CAP,
     STOP_REASON_CANCEL_UNACKED,
     STOP_REASON_TIMEOUT,
     BackgroundCardRow,
@@ -37,7 +44,7 @@ from kiro_crew.dashboard.state import (
     NATIVE_SUBAGENT_TERMINAL_KEEP,
     NATIVE_SUBAGENT_TERMINAL_TTL_SECS,
 )
-from kiro_crew.security import redact, redact_and_truncate
+from kiro_crew.security import StreamRedactor, redact, redact_and_truncate
 from kiro_crew.validation import ValidationError, validate_ask_user_question
 
 if TYPE_CHECKING:
@@ -62,6 +69,10 @@ _MAX_NATIVE_CARD_ERROR = 200
 
 
 _RE_TRAILING_REQUEST_ID = re.compile(r"\(request_id:\s*[0-9a-fA-F-]+\)\s*$")
+
+#: The most cards a turn redacts thinking for at once, one ``StreamRedactor`` each: the
+#: client's own bound on the children it tracks.
+_NATIVE_THINKING_CARD_CAP = NATIVE_CHILD_ROSTER_CAP
 
 
 def _clip_card_error(text: str, limit: int = _MAX_NATIVE_CARD_ERROR) -> str:
@@ -610,6 +621,54 @@ async def _on_subagent_list(turn: _ChatTurn, event) -> None:
         slot.key,
     )
     _native_subagent_sync(state, slot, event.subagents, _native_tracker, _native_card_output)
+    _flush_closed_card_thinking(turn)
+
+
+async def _on_subagent_thinking(turn: _ChatTurn, event) -> None:
+    """A Claude native child's thinking: redacted as a stream, sent to its open card alone.
+
+    Nothing keeps it: not the card's output or result, the slot, the transcript or a
+    snapshot. A child with no open card shows none. Past ``_NATIVE_THINKING_CARD_CAP``
+    redactors a new card gets none and the refusal is counted, logged at the first.
+    """
+    sid = event.sub_session_id
+    info = turn._native_tracker.get(sid) if sid else None
+    if info is None or info.get("done") or not event.text:
+        return
+    card_id = f"native:{_redact_tool_field(sid)}"
+    redactors = turn._native_thought_redactors
+    redactor = redactors.get(card_id)
+    if redactor is None:
+        if len(redactors) >= _NATIVE_THINKING_CARD_CAP:
+            turn._native_thought_overflow += 1
+            if turn._native_thought_overflow == 1:
+                logger.warning(
+                    "native card thinking refused at its bound of %d cards this turn; "
+                    "those cards show no thinking",
+                    _NATIVE_THINKING_CARD_CAP,
+                )
+            return
+        redactor = redactors[card_id] = StreamRedactor()
+    _send_card_thinking(turn, card_id, redactor.feed(event.text))
+
+
+def _send_card_thinking(turn: _ChatTurn, card_id: str, text: str) -> None:
+    """Send redacted thinking *text* to the card *card_id*, for subagent subscribers."""
+    if text:
+        turn.state.broadcast_ws_subagent_subscribers(
+            "subagent_thinking", {"id": card_id, "slot": turn.slot.key, "text": text}
+        )
+
+
+def _flush_closed_card_thinking(turn: _ChatTurn) -> None:
+    """Send the thinking each card a roster closed still holds back, and drop its redactor."""
+    redactors = turn._native_thought_redactors
+    if not redactors:
+        return
+    for sid, info in turn._native_tracker.items():
+        card_id = f"native:{_redact_tool_field(sid)}"
+        if info.get("done") and card_id in redactors:
+            _send_card_thinking(turn, card_id, redactors.pop(card_id).flush())
 
 
 async def _on_subagent_activity(turn: _ChatTurn, event) -> None:
