@@ -1290,3 +1290,59 @@ async def test_kiro_load_session_never_feeds_or_persists_the_advertised_model_ca
     assert handle.session_id == "sid-123"
     feed.assert_not_called()
     spy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_kas_resume_that_fails_after_the_load_keeps_the_stored_record(monkeypatch):
+    """A KAS resume refused after ``session/load`` answered must not delete the record.
+
+    Every failure arm past the load ends the session through ``terminate_session``,
+    whose KAS verb is ``_kiro/session/delete``. A dashboard chat whose first resume
+    after a gateway restart failed there lost its stored conversation, and the next
+    load replayed no earlier turn. The arm evicts with ``session/close`` instead.
+    """
+    from kiro_crew.acp.session_handle import AcpSessionHandle as _Handle
+    from kiro_crew.acp.types import METHOD_KAS_SESSION_DELETE, METHOD_SESSION_CLOSE
+
+    rt, _, _ = _make_runtime()
+    rt._can_load_session = True
+    rt._acp_backend = ACP_BACKEND_KAS
+    rt._dead = False
+    rt._process = MagicMock()
+    sent: list[str] = []
+
+    async def _fake_send(method, params, timeout=None):
+        sent.append(method)
+        if method == METHOD_SESSION_LOAD:
+            return {"modes": {"currentModeId": "kirocrew"}, "models": []}
+        return {}
+
+    async def _refuse(self):
+        raise AcpRuntimeError("permission routing refused")
+
+    from kiro_crew.acp.runtime import AcpRuntime
+
+    calls: list[str] = []
+    original = AcpRuntime.load_session
+
+    async def _counted(runtime, *args, **kwargs):
+        calls.append(args[1])
+        return await original(runtime, *args, **kwargs)
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+    monkeypatch.setattr(_Handle, "apply_session_permission_routing", _refuse)
+    monkeypatch.setattr(AcpRuntime, "load_session", _counted)
+
+    with pytest.raises(AcpRuntimeError, match="permission routing refused"):
+        await rt.load_session("", "sid-kept", agent="kirocrew")
+
+    # The keep-record scope adds no second call of the runtime's load_session, and
+    # the engine got one session/load.
+    assert calls == ["sid-kept"]
+    assert sent.count(METHOD_SESSION_LOAD) == 1
+
+    assert METHOD_KAS_SESSION_DELETE not in sent
+    assert METHOD_SESSION_CLOSE in sent
+    assert "sid-kept" not in rt._session_queues
+    # The scope ends with the load: a later teardown of the id deletes as before.
+    assert "sid-kept" not in rt._record_keeping_sessions
