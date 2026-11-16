@@ -123,6 +123,7 @@ import contextlib
 import gc
 import importlib
 import importlib.util
+import inspect
 import linecache
 import os
 import pathlib
@@ -524,6 +525,27 @@ _TESTS_SINCE_LINECACHE_CLEAR = 0
 #: the few hundred objects the interpreter had already frozen on its own.
 _FROZEN_AT_COLLECTION: int | None = None
 
+#: This process's RSS when pytest finished configuring, its VmHWM when collection
+#: finished, and how many items it collected before deselection, in KiB and items;
+#: ``None`` where ``/proc/self`` cannot be read. ``test_worker_memory_retention.py`` budgets the
+#: difference per collected item, so a change that makes every item heavier fails
+#: there instead of surfacing as a worker that no longer fits.
+_RSS_AT_CONFIGURE_KIB: int | None = None
+_HWM_AT_COLLECTION_KIB: int | None = None
+_ITEMS_AT_COLLECTION = 0
+
+
+def _proc_status_kib(field: str) -> int | None:
+    """One ``kB`` field of ``/proc/self/status``, or ``None`` off Linux."""
+    try:
+        with open("/proc/self/status", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith(field + ":"):
+                    return int(line.split()[1])
+    except (OSError, ValueError):
+        return None
+    return None
+
 
 #: Module nodeids whose COLLECTION built the process-global metrics recorder.
 #:
@@ -612,7 +634,8 @@ def pytest_configure(config: pytest.Config) -> None:
     _put_the_real_node_first_on_path()
     _gate_pytest_asyncio_fixture_scan()
     _hide_the_hosts_companion_plugins()
-    global _SESSION_CWD
+    global _SESSION_CWD, _RSS_AT_CONFIGURE_KIB
+    _RSS_AT_CONFIGURE_KIB = _proc_status_kib("VmRSS")
     try:
         _SESSION_CWD = os.getcwd()
     except OSError:  # pragma: no cover - pytest could not have started here
@@ -660,7 +683,8 @@ def pytest_collection_finish(session: pytest.Session) -> None:
     before this runs, so a bare "is anything frozen" assertion passes with this hook
     deleted.
     """
-    global _FROZEN_AT_COLLECTION
+    global _FROZEN_AT_COLLECTION, _HWM_AT_COLLECTION_KIB
+    _HWM_AT_COLLECTION_KIB = _proc_status_kib("VmHWM")
     gc.collect()
     before = gc.get_freeze_count()
     gc.freeze()
@@ -672,6 +696,7 @@ def pytest_collection_finish(session: pytest.Session) -> None:
 _SHARED_FIXTUREDEF_TUPLES: dict[tuple, tuple] = {}
 _SHARED_INITIALNAMES: dict[tuple, tuple] = {}
 _SHARED_NAME2FIXTUREDEFS: dict[tuple, dict] = {}
+_SHARED_NAMES_CLOSURES: dict[tuple, list] = {}
 _COMPACTED_FIXTUREINFO: set[int] = set()
 
 
@@ -698,8 +723,11 @@ def compact_collected_item(item: pytest.Item) -> None:
       (direct parametrization, before ``pytest_itemcollected``); at run time pytest
       writes only the per-request copy.
 
-    ``names_closure`` is deliberately NOT shared: it is ``item.fixturenames``, and
-    pytest-asyncio inserts ``event_loop`` into it at setup.
+    * Identical ``names_closure`` lists are shared, and each item's ``fixturenames``
+      (the same list) is pointed at the shared one, for every test that is not an
+      asyncio test. pytest-asyncio inserts ``event_loop`` into ``item.fixturenames`` at
+      setup of an ``asyncio``-marked test, so a coroutine test or one with the mark
+      keeps its own list. Nothing else writes the list after collection.
 
     Runs per item, not at collection finish, so the discarded copies are freed while
     collection is still allocating and the worker's PEAK falls with them: 5,295 ->
@@ -708,7 +736,13 @@ def compact_collected_item(item: pytest.Item) -> None:
     if getattr(item, "_request", None):
         item._request = False  # type: ignore[attr-defined]
     info = getattr(item, "_fixtureinfo", None)
-    if info is None or id(info) in _COMPACTED_FIXTUREINFO:
+    if info is None:
+        return
+    if id(info) in _COMPACTED_FIXTUREINFO:
+        # A parametrized sibling: its ``fixturenames`` was the same list as the first
+        # item's, so it follows that list to the shared copy.
+        if getattr(item, "fixturenames", None) is not info.names_closure:
+            item.fixturenames = info.names_closure  # type: ignore[attr-defined]
         return
     _COMPACTED_FIXTUREINFO.add(id(info))
     lookup = info.name2fixturedefs
@@ -720,9 +754,22 @@ def compact_collected_item(item: pytest.Item) -> None:
     )
     key = tuple((name, id(defs)) for name, defs in lookup.items())
     object.__setattr__(info, "name2fixturedefs", _SHARED_NAME2FIXTUREDEFS.setdefault(key, lookup))
+    closure = info.names_closure
+    if (
+        getattr(item, "fixturenames", None) is closure
+        and item.get_closest_marker("asyncio") is None
+        and not inspect.iscoroutinefunction(getattr(item, "obj", None))
+    ):
+        shared = _SHARED_NAMES_CLOSURES.setdefault(tuple(closure), closure)
+        object.__setattr__(info, "names_closure", shared)
+        item.fixturenames = shared  # type: ignore[attr-defined]
 
 
 def pytest_itemcollected(item: pytest.Item) -> None:
+    # Counted here, before ``-k``/``-m`` deselect anything: VmHWM pays for every
+    # collected item, so the per-item budget must divide by all of them.
+    global _ITEMS_AT_COLLECTION
+    _ITEMS_AT_COLLECTION += 1
     compact_collected_item(item)
 
 
