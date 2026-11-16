@@ -89,6 +89,8 @@ _SOURCES = (
     _SRC / "mcp_cron.py",
     *sorted(_SRC.glob("mcp_cron_*.py")),
     _SRC / "cli_commands_gateway_api.py",
+    _SRC / "cli_memory_provider.py",
+    _SRC / "memory_provider" / "conformance.py",
     _SRC / "cli_models.py",
     _SRC / "cli_server.py",
     _SRC / "cli_server_peer.py",
@@ -142,6 +144,11 @@ _KNOWN_UNRESOLVED = frozenset(
         "gateway.py:_patch",
         "gateway.py:_delete",
         "cron_script_context.py:_post",
+        # ``kirocrew learn`` while a memory provider replaces Crew's memory: the one
+        # helper that forwards its ``path`` to the gateway. Like ``gateway._send``,
+        # its own site takes the path as a parameter; ``_wrapper_path_arg_index``
+        # checks every caller's literal (``/api/lessons``).
+        "cli_memory_provider.py:_call",
         # The gateway liveness probe: its URL is assembled from a resolved port
         # via a helper, and the endpoint (/api/ready) carries no auth by
         # design — it answers before auth middleware exists so a starting

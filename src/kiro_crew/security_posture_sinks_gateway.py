@@ -339,6 +339,79 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "through the shared credential + exfiltration-URL chain before serialization.",
     ),
     (
+        "Memory provider item responses",
+        "dashboard/handlers/memory_provider.py",
+        "Item text an app's memory provider returns, served to the owner by the "
+        "provider browse routes. Each item's text passes "
+        "through the shared credential + exfiltration-URL chain before "
+        "serialization.",
+    ),
+    (
+        "Memory provider move and export responses",
+        "dashboard/handlers/memory_provider_migrations.py",
+        "Move plans (with their sampled item text) and the JSONL export of an app's "
+        "memory provider or Crew's own memory, served to the owner. Each job and "
+        "each export record passes through the shared credential + exfiltration-URL "
+        "chain before serialization.",
+    ),
+    (
+        "Memory provider benchmark responses",
+        "dashboard/handlers/memory_provider_bench.py",
+        "Benchmark plans, run states, reports and own-memory probe text, served to "
+        "the owner. Every body passes "
+        "through the shared credential + exfiltration-URL chain before serialization.",
+    ),
+    (
+        "Own-memory eval set",
+        "eval/bench/own_memory.py",
+        "A copy of the owner's memory taken for a benchmark. An item that either "
+        "redactor would change is dropped before anything is written, so no partly "
+        "masked secret reaches the eval set or a provider.",
+    ),
+    (
+        "Memory provider lesson responses",
+        "memory_provider/lesson_routes.py",
+        "Lesson rules, categories and supersession results a memory provider "
+        "returns, served by the lesson routes while a provider replaces Crew "
+        "memory. Each field passes through the shared credential + "
+        "exfiltration-URL chain before serialization.",
+    ),
+    (
+        "Model-written memory sent to a memory provider",
+        "memory_provider/migration.py",
+        "`redact_model_written`: the text and negative clause of memory a model wrote pass the "
+        "shared credential + exfiltration-URL chain before Crew sends them to an "
+        "app's memory provider.",
+    ),
+    (
+        "Consolidation items sent to a memory provider",
+        "memory_provider/consolidation.py",
+        "Facts, episodes and lessons a consolidation pass extracted pass the shared "
+        "credential + exfiltration-URL chain (`migration.redact_model_written`) before they are "
+        "put to a provider that replaces Crew memory.",
+    ),
+    (
+        "Task lessons and transcript spans sent to a memory provider",
+        "memory_provider/chokepoints.py",
+        "A task run's lesson and a consolidation transcript span pass the shared "
+        "credential + exfiltration-URL chain (`migration.redact_model_written`, "
+        "`_redact_memory_field`) before they are sent to a provider that replaces "
+        "Crew memory.",
+    ),
+    (
+        "Recall queries sent to a memory provider",
+        "memory_provider/recall.py",
+        "An agent's `memory_recall` query passes the shared credential + "
+        "exfiltration-URL chain before Crew sends it to a provider's search.",
+    ),
+    (
+        "Chat messages sent to a memory provider",
+        "memory_provider/render.py",
+        "The user's message, sent as the session-start context query and the "
+        "per-message lesson search, passes the shared credential + "
+        "exfiltration-URL chain before Crew sends it to a provider.",
+    ),
+    (
         "Bedrock Knowledge Base retrieval queries",
         "knowledge/connectors/bedrock_kb.py",
         "The user's knowledge-search query text as sent to the AWS Bedrock "

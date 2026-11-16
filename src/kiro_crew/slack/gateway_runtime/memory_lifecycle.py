@@ -367,6 +367,10 @@ def _repair_member_memory_once(self: GatewayOrchestrator) -> None:
     # healthy members. Cache access never creates or opens another store.
     self._memory_repair_cursor = name
     require_memory_store(name)
+    from kiro_crew.memory_provider.resolver import builtin_background_allowed
+
+    if not builtin_background_allowed(name):
+        return
     if name == DEFAULT_MEMORY_STORE:
         migration = self._auto_migrate_task
         if migration is not None and not migration.done():
@@ -404,6 +408,8 @@ async def _repair_member_memory(self: GatewayOrchestrator) -> None:
 
     loop = asyncio.get_running_loop()
     while not self._memory_repair_stop.is_set():
+        # Each visit asks per store: a store a provider replaces is left exactly as
+        # it is, and one pinned to Crew's own memory keeps its repair and Dreaming.
         try:
             await loop.run_in_executor(
                 memory_background_executor(), self._repair_member_memory_once
@@ -479,6 +485,11 @@ async def _auto_migrate_memory(self: GatewayOrchestrator) -> None:
 
     if memory_store_startup_error():
         logger.warning("Global memory migration deferred until owner recovery and restart")
+        return
+    from kiro_crew.memory_provider.resolver import builtin_background_allowed
+
+    if not await asyncio.to_thread(builtin_background_allowed):
+        logger.info("Memory migration and re-embedding wait: a provider replaces Crew's memory")
         return
 
     # Every dereference lives inside the try so the "never raises" contract

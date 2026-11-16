@@ -412,6 +412,11 @@ async def _run_inner_impl(
         await inherit_environment_for_subagent(info.parent_session_key, session_key)
     )
     info._remote_workspace = inherits_remote
+    if info.parent_session_key:
+        # The child reads and writes the memory its parent's chat is frozen to.
+        from kiro_crew.memory_provider.resolver import inherit_snapshot
+
+        await asyncio.to_thread(inherit_snapshot, session_key, info.parent_session_key)
     if info.keep:
         self._manager._sessions.mark_continuable(session_key)
         self._manager._conversations[session_key] = time.monotonic()

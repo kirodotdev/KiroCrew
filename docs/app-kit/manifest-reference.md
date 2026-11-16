@@ -1560,6 +1560,38 @@ click. A link clicked inside the frame goes nowhere; use `offerOpen`.
 64 KB or past its burst allowance, or navigates itself away is removed, and the
 popover says the app did not respond.
 
+### `contributes.memoryProviders` — Memory Your Backend Serves
+
+An app can offer Crew a memory provider: its backend serves a fixed JSON contract, and
+the owner picks it (`PUT /api/memory/provider`), as a replacement for Crew's
+memory or as a read-only extra source. Needs `backend.entryPoint`.
+
+```json
+{
+  "backend": { "entryPoint": "backend/server.py", "healthCheck": "/health" },
+  "contributes": {
+    "memoryProviders": [{
+      "id": "bridge",
+      "displayName": "My memory server",
+      "route": "/memory-provider",
+      "description": "Keeps memory in my own service.",
+      "settingsPage": "/settings"
+    }]
+  }
+}
+```
+
+| Field | Rule |
+|---|---|
+| `id` | `^[a-z][a-z0-9-]{0,31}$`, unique in the app; the provider is `app:<app id>/<id>` |
+| `displayName` | at most 60 characters |
+| `route` | a plain path below your app's API; the gateway posts `/api/<route>/v1/<op>` |
+| `description` | optional, at most 200 characters |
+| `settingsPage` | optional page of your app where the provider is connected |
+
+At most four providers per app; a malformed block refuses the install. The contract
+your backend answers is in [api-reference](api-reference.md#memory-provider-contract).
+
 ### `backend` — App Backend Process
 
 ```json
