@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
@@ -359,7 +360,7 @@ async def test_the_key_naming_rule_is_asked_only_under_enforce(monkeypatch, mode
     prompt, _ = await _prompt_for([], include_history=False)
     assert ('"kind": "fact" | "event" | "state"' in prompt) is named
     assert ("Will this still be true in a month?" in prompt) is named
-    assert ("never by PR, issue or round number" in prompt) is named
+    assert ("never by a work-item number" in prompt) is named
 
 
 # the member store
@@ -665,7 +666,7 @@ def test_a_new_rules_version_restarts_the_sample_window(tmp_path) -> None:
         store._write_meta(mkr.COUNTS_PREFIX + long_ago.date().isoformat(), "{}")
         mkr.record_kind_routing(store, _routing(2), "src", now=_T0)
         log = _kind_log(store)
-        assert log[mkr.RULES_VERSION_KEY] == mkr.RULES_VERSION == 3
+        assert log[mkr.RULES_VERSION_KEY] == mkr.RULES_VERSION == 4
         assert log[mkr.RULES_CHANGED_KEY] == _T0.isoformat()
         assert log[mkr.SHADOW_STARTED_KEY] == _T0.isoformat()
         assert len(log[mkr.SAMPLES_PREFIX + "2026-10-01"]) == 2
@@ -824,42 +825,62 @@ async def test_the_off_and_shadow_prompts_carry_no_kind_text(monkeypatch, includ
         assert phrase not in prompts["off"]
 
 
-#: The ``kind`` rules the enforce prompt carried before shadow trialled a
-#: candidate, copied byte for byte. Changing them is a promotion: its own change.
-_ADOPTED_KIND_RULES = (
+#: The ``kind`` rules both modes ask, copied byte for byte: a change to them is a
+#: change to what ``enforce`` drops, so it is made here too and bumps the version.
+_KIND_RULES = (
     "Tag every item with kind. Ask two questions: Will this still be true in a month? "
     "Can this be looked up somewhere else? "
     'kind "fact" = still true in a month and not looked up elsewhere '
     "(a decision, a root cause, how something works). "
     'kind "event" = something that happened, worth a dated record. '
-    'kind "state" = the current status of a PR, issue, CI run, branch, round or SHA, '
-    "which GitHub, git or the work ledger already holds. "
+    'kind "state" = the current status of tracked work, whatever its name or number: '
+    "a code change under review and its revisions, a ticket or task, a CI or build run, "
+    "a branch or SHA, or which chat or session owns it, "
+    "which a tracker, git or the work ledger already holds. "
+    'kind "state" also covers a next step, a pending action, what something is blocked on, '
+    "a count (tests, cycles, budgets), the local path of a worktree or scratch folder, "
+    "and a value marked final or latest that will change again. "
+    'An item is a "fact" only when it still reads true with every work-item number removed. '
     "pref.* and user.* items are always facts. "
 )
+_KEY_NAMING = "Name keys by topic, never by a work-item number. "
 
 
 @pytest.mark.asyncio
-async def test_the_enforce_prompt_keeps_the_adopted_rules(monkeypatch) -> None:
+async def test_the_enforce_prompt_asks_the_rules_shadow_labels_with(monkeypatch) -> None:
     from test_consolidation_semantic_cap import _prompt_for
 
-    assert mkr.ENFORCE_KIND_RULES == _ADOPTED_KIND_RULES
+    assert mkr.ENFORCE_KIND_RULES == mkr.SHADOW_KIND_RULES == _KIND_RULES
     prompts = {}
     for mode in ("shadow", "enforce"):
         monkeypatch.setattr(mkr, "configured_kind_routing_mode", lambda m=mode: m)
         prompts[mode], _ = await _prompt_for([], include_history=False)
-    assert _ADOPTED_KIND_RULES in prompts["enforce"]
-    assert mkr.CANDIDATE_STATE_RULES not in prompts["enforce"]
+    assert _KIND_RULES in prompts["enforce"]
     # Enforce is shadow (off's prompt) with only the tag field, the key-naming rule
-    # and the adopted rules added.
-    key_naming = "Name keys by topic, never by PR, issue or round number. "
+    # and the kind rules added.
     field = '"kind": "fact" | "event" | "state", '
     stripped = prompts["enforce"].replace(field, "", 1)
-    assert stripped.replace(key_naming + _ADOPTED_KIND_RULES, "", 1) == prompts["shadow"]
+    assert stripped.replace(_KEY_NAMING + _KIND_RULES, "", 1) == prompts["shadow"]
+
+
+def test_the_state_rules_name_tracked_work_in_no_one_tracker_s_words() -> None:
+    rules = mkr.ENFORCE_KIND_RULES
+    for phrase in (
+        "a code change under review and its revisions",
+        "a ticket or task",
+        "a CI or build run",
+        "a branch or SHA",
+        "which chat or session owns it",
+        'An item is a "fact" only when it still reads true with every work-item number removed.',
+    ):
+        assert phrase in rules
+    for words in (rules, _KEY_NAMING):
+        assert re.search(r"\b(?:PR|GitHub)\b", words) is None
 
 
 def test_the_wider_state_rules_name_what_shadow_found_mistagged() -> None:
-    rules = mkr.CANDIDATE_STATE_RULES
-    assert rules in mkr.SHADOW_KIND_RULES and rules not in mkr.ENFORCE_KIND_RULES
+    rules = mkr.WIDER_STATE_RULES
+    assert rules in mkr.SHADOW_KIND_RULES and rules in mkr.ENFORCE_KIND_RULES
     for phrase in (
         "a next step",
         "a pending action",
@@ -972,7 +993,7 @@ async def test_the_log_takes_the_label_not_the_answer_tag(tmp_path, monkeypatch)
         assert log[mkr.COUNTS_PREFIX + "2026-10-01"] == {"shadow": {"state": 3}}
         samples = log[mkr.SAMPLES_PREFIX + "2026-10-01"]
         assert {s["kind"] for s in samples} == {"state"} and len(samples) == 3
-        assert {s["rules"] for s in samples} == {3}
+        assert {s["rules"] for s in samples} == {4}
         assert "project.app.ci_status" in _facts(store), "a state label writes nothing new"
     finally:
         store.close()
@@ -1096,12 +1117,12 @@ def test_the_new_rules_version_starts_a_fresh_window_beside_the_old_samples(tmp_
         store._write_meta(mkr.SAMPLES_PREFIX + "2026-10-01", json.dumps(old))
         mkr.record_kind_routing(store, _routing(2), "src", now=_T0)
         log = _kind_log(store)
-        assert log[mkr.RULES_VERSION_KEY] == 3
+        assert log[mkr.RULES_VERSION_KEY] == 4
         assert log[mkr.SHADOW_STARTED_KEY] == _T0.isoformat()
         today = log[mkr.SAMPLES_PREFIX + "2026-10-01"]
         assert today[:3] == old
-        assert [s["rules"] for s in today[3:]] == [3, 3]
-        assert log[mkr.RESERVOIR_KEY] == {"day": "2026-10-01", "rules": 3, "seen": 2}
+        assert [s["rules"] for s in today[3:]] == [4, 4]
+        assert log[mkr.RESERVOIR_KEY] == {"day": "2026-10-01", "rules": 4, "seen": 2}
     finally:
         store.close()
 
