@@ -1652,6 +1652,10 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # ``apply_remote_report``, on an item already bound to that crew. It takes
         # no supplied identity; ``create_bound`` binds the caller's own item.
         "dashboard/handlers/remote_ingest.py",
+        # ``remote_ingest``'s owner of the report filing, split out of it with no logic
+        # change: it reads the bound item and writes it only through
+        # ``apply_remote_report``, exactly as ``remote_ingest.py`` did before the split.
+        "dashboard/handlers/remote_ingest_report.py",
         # Its background puller (rfc-conductor-remote-dispatch open question 1). It
         # takes no identity and writes nothing itself: it lists the boards holding an
         # open crew-bound item (``boards_with_open_remote``) and hands each to
