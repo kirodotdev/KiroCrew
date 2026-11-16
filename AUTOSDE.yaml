@@ -980,6 +980,13 @@ custom-rules:
         assertion: when a diff adds or edits such a list alongside prose
         (docstring, spec, comment) enumerating its members, expect a test
         asserting each documented member is actually in the list.
+      - A new module-level global that the gateway boot fills, directly or
+        from a job it hands to an executor and never joins, with no matching
+        change in `test/integration/conftest.py` (`_reset_home_bound_globals`,
+        plus a teardown wait when an unjoined job writes it) or in
+        `test_boot_smoke.py`'s `_KNOWN_SECOND_BOOT_CHANGES` with its reason.
+        The second-boot witness sees it only when the job lands late, so the
+        PR that adds it usually passes and later PRs go red.
 
       This rule is maintained by the pattern-harvest loop (fix PRs propose
       candidates in their "Pattern harvest" section; accepted ones land
