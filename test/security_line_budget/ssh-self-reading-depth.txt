@@ -1,0 +1,7 @@
++33
+The ssh-to-self floor reads each double-quoted `$( )` body, bound function body and
+carried value with another `_is_ssh_to_self` call, so a crafted command nested about
+1,000 levels deep raised RecursionError and aborted the turn (#37792). A decorator
+(`_bounded_ssh_reading`) counts the readings open at once in a context variable and
+refuses past `_MAX_SSH_READING_DEPTH`, and the facade manifest names the three new
+names.
