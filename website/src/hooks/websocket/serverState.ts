@@ -371,6 +371,15 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   // itself on this same reconnect (and must NOT be cleared here — it
   // holds the pane, and the draft typed into it).
   forgetUnobservedMemberThreads(queryClient)
+  // A read that failed while the socket was down (the gateway or the relay's
+  // host was gone) and never held a value shows its panel's error: refetch it,
+  // on every client, so the panels come back with the connection. Only those:
+  // a query that kept its last value may sit under an unsaved draft, which a
+  // refetch would overwrite (the same rule as the auth recovery in
+  // api/client.ts).
+  for (const client of new Set([queryClient, ...recoverableQueryClients()])) {
+    void client.invalidateQueries({ predicate: q => q.state.status === 'error' && q.state.data === undefined })
+  }
 }
 
 /** The owner flipped the credential-redaction switch, possibly in ANOTHER

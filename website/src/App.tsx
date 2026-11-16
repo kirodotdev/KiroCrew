@@ -56,7 +56,7 @@ import ArtifactDetailPage from './pages/ArtifactDetailPage'
 import { ChangelogModal, UpdateErrorDialogFrame } from './shell/updates/updateFlow'
 import KiroCrewNavBridge from './components/KiroCrewNavBridge'
 import InstancesViewport from './components/InstancesViewport'
-import { LocalOverlayRoot } from './components/overlayRoot'
+import { LocalOverlayRoot, OffScreenOverlayScope } from './components/overlayRoot'
 import EmbeddedHostBridge from './components/EmbeddedHostBridge'
 import AppConfirmHost from './components/AppConfirmHost'
 import EmbeddedDragRegionReporter from './components/EmbeddedDragRegionReporter'
@@ -408,7 +408,7 @@ export default function App() {
     colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
     topReservePx, focusActive, topPeek, railPeek, topPeekTrigger, railPeekTrigger, topChromeShown,
-    gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, relayRetrying, focusModeExitMsg, focusChromeInert,
+    gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, offlineCoverKind, focusModeExitMsg, focusChromeInert,
     localHeaderDragGaps, shellEntered, setShellEntered, shellRef, setMembersBar, advertisedNavItems,
     sortedAppGroup, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
@@ -417,6 +417,8 @@ export default function App() {
     setUpdateError, reportProblemOpen, setReportProblemOpen, effectiveCollapsed, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
   } = shell
+  // A calm offline view covers <main> and the docked terminal (see `offlineCover`).
+  const contentCovered = offlineCoverKind !== null
   // "Run in terminal" from a code block outside every chat, on any route.
   const runInTerminal = useRunInTerminalShellBridge(activeSlotProject, !isPopout && !isEmbed)
   usePinnedScrollOrigin(shellRef)
@@ -927,14 +929,19 @@ export default function App() {
           : { gridArea: 'content' }}
       >
         <div className={`relative flex min-h-0 min-w-0 flex-1 ${terminalPosition === 'right' ? 'flex-row' : 'flex-col'}`}>
-        {relayCrewWindow && <RelayReconnectingView active={relayRetrying} />}
+        {/* Mounted for the page's life in a relay Crew window, so its live
+            region exists before the drop; the host view joins it on a drop. */}
+        {(relayCrewWindow || offlineCoverKind === 'host') && <RelayReconnectingView cover={offlineCoverKind} />}
         {/* `outline-hidden`: main is a programmatic focus target (the skip
             link, and focus mode's hand-off when the chrome hides), not a
             control, so it opts out of the global :focus-visible ring the way
             the tabIndex={-1} page headings do. Inert while the reconnecting
             view covers it, so focus and keystrokes cannot reach a composer
             the user cannot see. */}
-        <main id="main-content" tabIndex={-1} {...hiddenChromeProps(relayRetrying)} className={`outline-hidden ${mainStackingClass({ isTerminalFullscreen: terminalFullscreen, terminalEnabled, terminalPoppedOut, relayRetrying })} flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
+        <main id="main-content" tabIndex={-1} {...hiddenChromeProps(contentCovered)} className={`outline-hidden ${mainStackingClass({ isTerminalFullscreen: terminalFullscreen, terminalEnabled, terminalPoppedOut, relayRetrying: contentCovered })} flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
+          {/* Inert does not reach what main portals out (the guide pill, a
+              link preview, a page's Modal): take those off screen with it. */}
+          <OffScreenOverlayScope offScreen={contentCovered}>
           <MigrationCheck />
           {/* Route-independent, unlike MigrationCheck: "you crashed" is true of
               the app, not of the page, and the launch after a crash rarely lands
@@ -981,6 +988,7 @@ export default function App() {
           </GuideProvider>
           </MobileRosterBarContext.Provider>
           </MobileNavRailContext.Provider>
+          </OffScreenOverlayScope>
         </main>
         {/* App-wide docked terminal panel — renders beside <main> (right) or
             below it (bottom). The detached bar (popped-out state) always renders
@@ -988,7 +996,7 @@ export default function App() {
         {terminalEnabled && !terminalPoppedOut && (
           // Inert under the reconnecting view like <main>. A maximized panel
           // (z-[51]) paints above that view's z-40, so it is left alone.
-          <div className="contents" {...hiddenChromeProps(relayRetrying && !terminalFullscreen)}>
+          <div className="contents" {...hiddenChromeProps(contentCovered && !terminalFullscreen)}>
             <BottomTerminalPanel />
           </div>
         )}

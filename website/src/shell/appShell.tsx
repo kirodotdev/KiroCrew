@@ -4,7 +4,8 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
-import { isRelayCrewPane, isRelayCrewWindow, isRelayRetrying, offlineReason } from '../utils/offlineReason'
+import { isRelayCrewPane, isRelayCrewWindow, offlineCover, offlineReason } from '../utils/offlineReason'
+import { useHostOfflineCover } from './useHostOfflineCover'
 import { prefillCrewAddForm, setActiveId } from '../store/instancesSlice'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
 import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
@@ -227,8 +228,15 @@ export function useAppShell() {
   // A relay Crew shown inside the desktop app's main window: that window's own
   // top bar is the only one, so App leaves this page's header out.
   const relayCrewPane = useRef(isRelayCrewPane()).current
-  const relayRetrying = relayCrewWindow && !connected && !gatewayConnecting && !authRequired
-    && isRelayRetrying(offlineCause, relayCrewWindow)
+  // The calm view over the content area while the connection is down (the
+  // relay window's reconnecting view, or the host's "not running" view): the
+  // one gate that hides every panel's own fetch error behind a single state.
+  const offlineCoverKind = useHostOfflineCover(offlineCover({
+    connected, connecting: gatewayConnecting, authRequired, cause: offlineCause,
+    relayCrewWindow, relayCrewPane, hostname: window.location.hostname,
+  }), connected)
+  const relayRetrying = offlineCoverKind === 'relay'
+  const contentCovered = offlineCoverKind !== null
   const gatewayStatusAnnounce = relayRetrying ? '' : gatewayStatusMsg
   // The retry makes <main> and the docked terminal inert, which drops their
   // focused element (usually the composer) to <body>. Remember it as the retry
@@ -237,7 +245,7 @@ export function useAppShell() {
   // hand-off, so the read lands before the browser's focus fixup for inert.
   const relayFocusReturn = useRef<HTMLElement | null>(null)
   useLayoutEffect(() => {
-    if (relayRetrying) {
+    if (contentCovered) {
       const active = document.activeElement
       relayFocusReturn.current = active instanceof HTMLElement && active !== document.body ? active : null
       return
@@ -246,7 +254,7 @@ export function useAppShell() {
     relayFocusReturn.current = null
     const focusLost = !document.activeElement || document.activeElement === document.body
     if (el && el.isConnected && focusLost) el.focus({ preventScroll: true })
-  }, [relayRetrying])
+  }, [contentCovered])
   // The chord that turns focus mode off, as the user has it bound RIGHT NOW. In
   // focus mode the top bar (and its toggle) is inert, so this chord is the only
   // keyboard route back; it is spoken when focus mode turns on and declared on
@@ -1131,7 +1139,7 @@ export function useAppShell() {
 
   return {
     isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, gatewayConnecting, updateAvailable, settingsDotLabel, authRequired, terminalEnabled,
-    gatewayStatusMsg, gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, relayRetrying,
+    gatewayStatusMsg, gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, relayRetrying, offlineCoverKind,
     focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
     hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,

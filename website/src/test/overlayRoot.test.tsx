@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { useState, type ReactNode } from 'react'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
-import { LocalOverlayRoot, OffScreenOverlayScope, OverlayPortal, useLocalCrewHidden } from '../components/overlayRoot'
+import { GlobalOverlayScope, LocalOverlayRoot, OffScreenOverlayScope, OverlayPortal, useCloseWhenCrewHidden, useLocalCrewHidden } from '../components/overlayRoot'
 import { Popover, PopoverContent, PopoverTrigger } from '../components/ui/popover'
 import { Dialog, DialogContent, DialogTitle } from '../components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../components/ui/dropdown-menu'
@@ -306,5 +306,36 @@ describe('off-screen overlay scope', () => {
     view.rerender(<OffScreenOverlayScope offScreen><Modal open onClose={onClose} title="Folder settings">body</Modal></OffScreenOverlayScope>)
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('closes a menu in a nested scope when only the outer scope goes off screen', () => {
+    const onClose = vi.fn()
+    function Menu() {
+      useCloseWhenCrewHidden(true, onClose)
+      return <Reader />
+    }
+    const tree = (outer: boolean) => (
+      <OffScreenOverlayScope offScreen={outer}><OffScreenOverlayScope offScreen={false}><Menu /></OffScreenOverlayScope></OffScreenOverlayScope>
+    )
+    const view = render(tree(false))
+    expect(onClose).not.toHaveBeenCalled()
+    view.rerender(tree(true))
+    expect(onClose).toHaveBeenCalled()
+    expect(screen.getByTestId('hidden').textContent).toBe('true')
+  })
+
+  it('leaves a menu inside a dialog open when the scope around the dialog goes off screen', () => {
+    const onClose = vi.fn()
+    function Menu() {
+      useCloseWhenCrewHidden(true, onClose)
+      return <Reader />
+    }
+    const tree = (outer: boolean) => (
+      <OffScreenOverlayScope offScreen={outer}><GlobalOverlayScope><Menu /></GlobalOverlayScope></OffScreenOverlayScope>
+    )
+    const view = render(tree(false))
+    view.rerender(tree(true))
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByTestId('hidden').textContent).toBe('false')
   })
 })

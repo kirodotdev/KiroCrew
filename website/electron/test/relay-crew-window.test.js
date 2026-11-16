@@ -384,7 +384,7 @@ test("logs: never carry the token", () => {
 
 // --- Reachability and the window's own notice ---
 
-const { UNREACHABLE_AFTER_MS } = require("../relay-crew-reachability");
+const { UNREACHABLE_AFTER_MS, HOST_GONE_AFTER_MS } = require("../relay-crew-reachability");
 
 function openWithClock() {
   const f = fakeDeps();
@@ -399,8 +399,8 @@ function openWithClock() {
   handle.onUnreachable(() => unreachable.push(t));
   const urlFor = (path, resourceType) =>
     `${resourceType === "webSocket" ? ORIGIN.replace(/^https:/, "wss:") : ORIGIN}${path}`;
-  const completed = (path, statusCode, resourceType = "xhr") =>
-    f.ses.completedRule.listener({ url: urlFor(path, resourceType), resourceType, statusCode });
+  const completed = (path, statusCode, resourceType = "xhr", responseHeaders = undefined) =>
+    f.ses.completedRule.listener({ url: urlFor(path, resourceType), resourceType, statusCode, responseHeaders });
   const failed = (path, error = "net::ERR_CONNECTION_CLOSED", resourceType = "xhr") =>
     f.ses.errorRule.listener({ url: urlFor(path, resourceType), resourceType, error });
   return { f, handle, unreachable, advance, completed, failed, crewView: f.views[0] };
@@ -408,13 +408,20 @@ function openWithClock() {
 
 // The page's pace while disconnected: a status probe every 3 s and a socket
 // attempt every 10 s once its backoff has reached the ceiling.
-function outage(w, ms, { statusAnswer = 502 } = {}) {
+function outage(w, ms, { statusAnswer = 502, headers = undefined, socketAccepted = false } = {}) {
   for (let elapsed = 0; elapsed < ms; elapsed += 3000) {
     w.advance(3000);
-    w.completed("/api/status", statusAnswer);
-    if (elapsed % 9000 === 0) w.failed("/api/ws", "net::ERR_CONNECTION_FAILED", "webSocket");
+    w.completed("/api/status", statusAnswer, "xhr", headers);
+    if (elapsed % 9000 !== 0) continue;
+    // With no host, the relay accepts the upgrade (101) and then closes it 4404.
+    if (socketAccepted) w.completed("/api/ws", 101, "webSocket");
+    else w.failed("/api/ws", "net::ERR_CONNECTION_FAILED", "webSocket");
   }
 }
+
+// The relay's answer for a Crew it holds no host connection for (relay protocol
+// v1, section 7: 503 with the typed reason header).
+const CREW_NOT_CONNECTED = { "X-Kiro-Relay-Error": ["crew_not_connected"], "Retry-After": ["5"] };
 
 test("window: the Crew's own session carries a relay-window marker in its user agent", () => {
   const f = fakeDeps();
@@ -443,11 +450,32 @@ test("window: a blip that recovers inside the cap stays quiet", () => {
   outage(w, 60_000);
   w.completed("/api/status", 200);
   outage(w, 60_000);
-  w.completed("/api/ws", 101, "webSocket");
+  w.completed("/api/slots", 200);
   outage(w, 60_000);
   assert.deepStrictEqual(w.unreachable, []);
   assert.deepStrictEqual(w.crewView.webContents.loaded, [`${ORIGIN}/`], "the page is never touched");
   w.handle.close();
+});
+
+test("window: a socket the relay accepts and then closes does not count as the host answering", () => {
+  const w = openWithClock();
+  outage(w, UNREACHABLE_AFTER_MS + 6000, { socketAccepted: true });
+  assert.strictEqual(w.unreachable.length, 1);
+  w.handle.close();
+});
+
+test("window: the relay saying it has no host connection ends the wait after the short bound", () => {
+  const w = openWithClock();
+  outage(w, HOST_GONE_AFTER_MS - 6000, { statusAnswer: 503, headers: CREW_NOT_CONNECTED, socketAccepted: true });
+  assert.deepStrictEqual(w.unreachable, [], "a relay move can answer it for a moment");
+  outage(w, 9000, { statusAnswer: 503, headers: CREW_NOT_CONNECTED, socketAccepted: true });
+  assert.strictEqual(w.unreachable.length, 1);
+  w.handle.close();
+  // A plain 503 with no relay reason waits out the full cap.
+  const plain = openWithClock();
+  outage(plain, HOST_GONE_AFTER_MS + 30_000, { statusAnswer: 503 });
+  assert.deepStrictEqual(plain.unreachable, []);
+  plain.handle.close();
 });
 
 test("window: a refused upgrade or no-token 401 counts, other paths and aborted requests do not", () => {
