@@ -58,11 +58,13 @@ function SkillDisclosureRow({
   index,
   disclosureKey,
   emptyBodyText,
+  onArtifactOpen,
 }: {
   skill: LoadedSkillSnapshot
   index: number
   disclosureKey?: string
   emptyBodyText: string
+  onArtifactOpen?: (slug: string) => void
 }) {
   const rowKey = disclosureKey ? `${disclosureKey}:skill:${index}` : undefined
   const [expanded, setExpanded] = useRowDisclosure(rowKey, false)
@@ -107,7 +109,7 @@ function SkillDisclosureRow({
           testId={`skill-load-card-body-${index}`}
         >
           <div className="skill-load-markdown min-w-0">
-            <MarkdownRenderer content={skill.body} />
+            <MarkdownRenderer content={skill.body} onArtifactOpen={onArtifactOpen} />
           </div>
         </MarkdownDisclosureBody>
       )}
@@ -118,9 +120,13 @@ function SkillDisclosureRow({
 export default memo(function SkillLoadCard({
   message,
   disclosureKey,
+  onArtifactOpen,
 }: {
   message: ChatMessage
   disclosureKey?: string
+  /** Opens an `/artifacts/<slug>` link in a skill body in the host's side
+   *  panel; absent, the link stays a plain new-tab anchor. */
+  onArtifactOpen?: (slug: string) => void
 }) {
   useLanguageGeneration()
   const skills = readSkillLoad(message)
@@ -142,7 +148,7 @@ export default memo(function SkillLoadCard({
       {skills.length === 1 ? (
         <div className="skill-load-markdown min-w-0 space-y-4">
           <section className="min-w-0" aria-label={skills[0].name}>
-            <MarkdownRenderer content={skills[0].body} />
+            <MarkdownRenderer content={skills[0].body} onArtifactOpen={onArtifactOpen} />
           </section>
         </div>
       ) : (
@@ -154,6 +160,7 @@ export default memo(function SkillLoadCard({
               index={index}
               disclosureKey={disclosureKey}
               emptyBodyText={emptyBodyText}
+              onArtifactOpen={onArtifactOpen}
             />
           ))}
         </div>
