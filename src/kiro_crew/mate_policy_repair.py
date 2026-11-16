@@ -46,11 +46,16 @@ def _strings(value: Any) -> list[str]:
 def _kept(base: dict[str, Any], old: dict[str, Any], mate_file: dict[str, Any]) -> list[str]:
     """What *old* restricts that the worker merged from *mate_file* does not keep."""
     from kiro_crew.mate_config_migration import dropped_restrictions
+    from kiro_crew.mate_spec_policy import fold_shell_settings
 
     try:
         merged = merge_worker_spec(base, worker_additions(base, mate_file))
     except SpecPolicyUncarried:
         merged = dict(base)
+    if "toolsSettings" in old:
+        # Carried the way the move carries it (``carried_policy``), so a `shell`
+        # entry folded into `execute_bash` is not read as a limit still missing.
+        old = {**old, "toolsSettings": fold_shell_settings(old["toolsSettings"])}
     return dropped_restrictions(base, old, merged)
 
 
