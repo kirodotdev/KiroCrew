@@ -4298,7 +4298,9 @@ the tightest host limit, and never set below 32768 unless that limit is itself
 lower. A failed host read falls back to the fixed 32768. The per-scope default
 stays a fixed 8192. `kirocrew doctor`'s
 Task ceilings section prints the values, their source and the live slice usage;
-it is advisory and never adds an issue.
+it is advisory and never adds an issue. Its headroom estimate divides by the
+observed per-runtime average, so it is left out when that average is 0 (scopes
+left behind by exited runtimes) rather than blanking the section.
 
 On macOS no mechanism bounds the agent tree's memory: the cgroup path is a no-op,
 and the session host's rlimit profile sets only `RLIMIT_NOFILE`, so `max_memory_mb`

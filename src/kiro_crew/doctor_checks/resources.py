@@ -808,7 +808,8 @@ def _task_ceiling_lines() -> list[str]:
                 f"  runtimes:    {scopes.scopes} scopes, {mean:.0f} tasks each on average, "
                 f"largest {scopes.largest}"
             )
-            if live_max > 0:
+            # A mean of 0 (scopes left by exited runtimes) has no headroom to estimate.
+            if live_max > 0 and mean > 0:
                 room = int((live_max - current) / mean)
                 note = f"  headroom:    about {room} more runtimes at the observed average"
                 if room < scopes.scopes:
