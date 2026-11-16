@@ -2694,6 +2694,18 @@ about the code. Each is a hermeticity gap, and each has one fix:
   on the host that cannot hold it.
 - **`"python3"` is not on PATH on Windows.** Spawn the interpreter as `sys.executable`; a
   literal name fails with cmd's 9009 and every verdict downstream reads as a plain failure.
+- **A run started under `nohup` ignores SIGHUP in every worker.** An ignored signal
+  stays ignored across `exec` (a handler does not), a POSIX shell cannot trap a signal it
+  started with ignored, and `push_guard.py` keeps an inherited ignore on purpose, as
+  `nohup` expects. So a test that hangs up its child waited out its timeout on a host where
+  the suite ran under `nohup`, and passed on CI. Spawn a child the test will interrupt
+  inside `spawn_test_helpers.unblocked_signals()`, which covers SIGINT, SIGTERM and SIGHUP.
+- **A system tool can be a script.** coreutils-single (Amazon Linux 2023, Fedora minimal
+  images) installs `sleep` as `#!/usr/bin/coreutils --coreutils-prog-shebang=sleep`, and
+  for a script the kernel reports the interpreter's argv, so `/proc/<pid>/cmdline` read
+  `/usr/bin/coreutils --coreutils-prog-shebang=sleep /usr/bin/sleep 300`. A test that
+  reads a live child's argv or name back spawns `spawn_test_helpers.plain_sleeper_argv()`:
+  `sleep` where it is a binary, this interpreter where it is a script.
 - **A child interpreter must import the tree under test, not the installed one.**
   `setup.cfg`'s `pythonpath = src` reaches only pytest's own interpreter; a
   `sys.executable -c` child resolves `kiro_crew` from the venv's install. On CI that is

@@ -12,22 +12,25 @@ import subprocess
 import sys
 
 import pytest
-from spawn_test_helpers import process_group_report, unblocked_signals
+from spawn_test_helpers import plain_sleeper_argv, process_group_report, unblocked_signals
 
 from kiro_crew import platform_compat
 from kiro_crew.testing.wait import default_timeout
+
+#: The interrupts a test hands a child: SIGHUP is the one a run under ``nohup`` ignores.
+_SIGNAL_NAMES = ("SIGINT", "SIGTERM", "SIGHUP")
 
 # Python puts its own SIGINT handler over a default (never over an ignore), so
 # "taken" is anything but SIG_IGN.
 _REPORT_DISPOSITIONS = (
     "import signal; "
-    "print(*(signal.getsignal(s) != signal.SIG_IGN for s in (signal.SIGINT, signal.SIGTERM)))"
+    f"print(*(signal.getsignal(getattr(signal, n)) != signal.SIG_IGN for n in {_SIGNAL_NAMES!r}))"
 )
 
 
 @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="POSIX signal dispositions")
 def test_an_inherited_ignore_does_not_reach_the_child_and_comes_back():
-    before = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    before = {getattr(signal, n): signal.getsignal(getattr(signal, n)) for n in _SIGNAL_NAMES}
     try:
         for number in before:
             signal.signal(number, signal.SIG_IGN)
@@ -44,8 +47,8 @@ def test_an_inherited_ignore_does_not_reach_the_child_and_comes_back():
     finally:
         for number, handler in before.items():
             signal.signal(number, handler)
-    assert out.split() == ["True", "True"], out
-    assert after == {signal.SIGINT: signal.SIG_IGN, signal.SIGTERM: signal.SIG_IGN}
+    assert out.split() == ["True"] * len(_SIGNAL_NAMES), out
+    assert after == dict.fromkeys(before, signal.SIG_IGN)
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
@@ -64,3 +67,26 @@ def test_the_group_report_names_each_member_and_its_signals():
     for key in ("State:", "SigBlk:", "SigIgn:", "SigPnd:", "wchan:"):
         assert key in report, report
     assert "no live member" in process_group_report(proc.pid)
+
+
+@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="POSIX sleep and shebang scripts")
+@pytest.mark.parametrize(
+    ("head", "expect_script"),
+    [(b"#!/usr/bin/coreutils --coreutils-prog-shebang=sleep\n", True), (b"\x7fELF\x02", False)],
+    ids=["coreutils-single-script", "plain-binary"],
+)
+def test_the_sleeper_steps_around_a_sleep_that_is_a_script(
+    tmp_path, monkeypatch, head, expect_script
+):
+    """A ``sleep`` script would show its interpreter's argv, so the helper avoids it."""
+    fake = tmp_path / "sleep"
+    fake.write_bytes(head)
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    argv = plain_sleeper_argv(7)
+
+    if expect_script:
+        assert argv == [sys.executable, "-c", "import time; time.sleep(7)"]
+    else:
+        assert argv == [str(fake), "7"]

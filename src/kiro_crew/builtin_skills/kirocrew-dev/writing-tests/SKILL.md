@@ -217,6 +217,12 @@ by **six days**, spinning at 1464% CPU between them:
   reference. A `try/finally` around the whole post-spawn body, not just the timeout
   branch, is what makes "every exit path" true.
 
+Two host traits a spawning test must not inherit. A suite started under `nohup` has
+SIGHUP ignored, and an ignore survives `exec`: spawn a child you will interrupt inside
+`spawn_test_helpers.unblocked_signals()`. And `sleep` can be a coreutils shebang script
+whose kernel-visible argv is the interpreter's: a test that reads a child's argv or name
+back spawns `plain_sleeper_argv()` instead.
+
 ### 1d. Background lifecycle — the one that beats every filesystem cleanup
 
 **A singleton with a daemon thread cannot be cleaned up by tidying files.** The worked
