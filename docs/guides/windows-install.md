@@ -1028,7 +1028,9 @@ supervision is a separate piece of work, proposed in
   `taskkill /F /PID` only after confirming a Kiro Crew executable or
   `python -m kiro_crew` process. Localized listener-state text is ignored.
   SSH forwards and unrelated processes are never terminated, and a failed or
-  timed-out `netstat` probe is treated as unknown rather than as a free port.
+  timed-out `netstat` probe is treated as unknown rather than as a free port:
+  the launcher then tries to bind the port itself and starts the gateway only
+  when that bind succeeds.
 - **`port-owner: :5476 held by NON-KiroCrew pid=...` naming our own
   `python.exe`** - the launcher binds Windows gateway identity to the executable
   path it resolved. An install reached through a directory junction (a Toolbox
