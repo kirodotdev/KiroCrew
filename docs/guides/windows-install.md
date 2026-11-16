@@ -112,6 +112,18 @@ Current status:
   bounded retry prompts. The build-time patch is
   pinned to the installed app-builder-lib version and fails closed if its NSIS
   template changes, so an upgrade cannot silently remove that fallback.
+- **An update never meets a file the old uninstaller cannot move** — an update
+  runs the previous version's uninstaller, which moves every installed file into
+  `%TEMP%\nsXXXX.tmp\old-install`, a path about 11 characters longer than the
+  installed one. Before it runs, `KiroClearUnmovableFiles` in
+  `website/electron/build/installer.nsh` measures every installed file against
+  that limit. A too-deep bytecode cache (a `.pyc` in `__pycache__`) is deleted,
+  since Python compiles the module from its source. Any other too-deep file stops
+  the installer with exit code 2 before anything moves, naming the file: the
+  installed version keeps working, and uninstalling then installing again (which
+  keeps your sessions and settings) gets the update. The release build also drops
+  over-budget caches and fails on any other over-budget file
+  (`packaging/check_windows_path_budget.py --prune-caches`).
 - **Uninstall removes the app and its caches, and keeps your data.** Removed:
   the install directory, the Start Menu shortcut, the uninstall registry key,
   and any “start with Windows” Run entry left by an earlier custom installer,

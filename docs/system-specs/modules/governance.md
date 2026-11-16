@@ -4461,7 +4461,11 @@ operation / item / reason are ALSO redacted via `redact_via_context` **before**
 `kirocrew policy {show | validate | explain <scope> <item> [--json] | explain --batch FILE | profile <name> | source | fetch [--force]}` —
 operator diagnostics; `source` and `fetch` are the central-distribution verbs. `show` reports the ceiling's **proven** provenance
 (`signed and verified` / `signed but UNVERIFIED` / `unsigned`) rather than a bare
-issuer string. `explain` traces the rule/layer/reason of `resolve(ceiling, profile, scope, item)` —
+issuer string. `validate` reads the profile store's unrecoverable set before it walks the
+profiles directory: a directory it could not list (a file at that path, or `EACCES`, recorded as a
+`<dir:...>` entry) prints INVALID and exits 1 under a policy ceiling, as the boot gate
+(`assert_profiles_within_ceiling`) would refuse it, and only warns on a standalone host; a missing
+directory still prints `(no profiles directory)`. `explain` traces the rule/layer/reason of `resolve(ceiling, profile, scope, item)` —
 the question `gate_decision`'s main loop asks of each pair, though its alias groups, deny-only
 aliases and `own_scopes` off-scope pairs refuse on an allow-mode miss less often (an explicit deny
 binds in all of them) — and, as `gate verdict`, `gate_decision` over the item read as a display

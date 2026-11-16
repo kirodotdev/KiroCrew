@@ -133,6 +133,7 @@ and never drive the verdict, or one flaky optional job would nudge forever.
 | Control | Where | Behavior |
 |---|---|---|
 | Push-disabled clone | `backend/clone_setup.py:_disable_push` + `profiles/github_repo/profile.py:RepoIsolation.push_disabled` | **Every** configured fetch/push URL is replaced with exactly one `DISABLED_NO_PUSH` value; setup and runtime fail closed on extra values. The real remote lives in config (`origin_url`), handed only to trusted publishers |
+| Clone pinned to its project | `backend/clone_setup.py:_clone_identity` + `_record_clone_identity` | A new clone records the SHA-256 of its lower-cased `host/path` as the local git config `kirocrew.cloneidentity`. Reusing an existing clone directory refuses when that value names another project or is ambiguous (more than one value), and records it once on a clone that predates it; setup fails closed when it cannot be written |
 | Draft-only PRs | `profiles/github_repo/pr_recipe.py` | `gh pr create --draft`; never `--web`, merge, ready, or auto-merge |
 | Generated head branch | same | `auto-improvement/<kind>-<fingerprint>`; never a human's branch |
 | Protected-branch denylist | `spine/push_policy.py` | non-overridable; a hand-edited config cannot widen it |

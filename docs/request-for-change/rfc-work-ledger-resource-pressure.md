@@ -1,6 +1,6 @@
 ---
 title: Host resource pressure goes on the work ledger and wakes the conductor, which pauses dispatch
-status: in-progress
+status: implemented
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-13
 last-audited: 2026-11-14
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Host resource pressure goes on the work ledger and wakes the conductor
 
-Status: in-progress, narrowed. **Withdrawn 2026-11-14 by the repository owner:**
+Status: implemented, narrowed. **Withdrawn 2026-11-14 by the repository owner:**
 the `host_pressure` record (§3.1, §3.2), the conductor wake (§3.3), the
 conductor pause rule (§3.4, the tight advice in §3.5) and the §12 amendment.
 The owner's words: "我的想法是缩小，其实只要给个简单指示，说明派活要先查资源，然后给AI工具查资源不就好了？为什么改那么多代码"
@@ -23,7 +23,7 @@ before it dispatches (the existing tool), and only one piece of code stays: a
 work-ledger `create` is refused 409 `host_memory_critical` while
 `admission_check()` refuses (critical memory). All of it shipped in
 [#36481](https://github.com/kirodotdev/KiroCrew/pull/36481). The trim
-[#37164](https://github.com/kirodotdev/KiroCrew/pull/37164) removes the
+[#37164](https://github.com/kirodotdev/KiroCrew/pull/37164) (`05aab93d27`) removes the
 withdrawn parts and renames the refusal code from `host_pressure_critical` to
 `host_memory_critical`, since nothing named `host_pressure` is left. This
 withdrawal lands first in its own PR, so that trim rebases onto it.

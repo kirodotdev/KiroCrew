@@ -1010,6 +1010,20 @@ an agent's `setting.change` card that raises the value is labelled `widen` and
 waits for the owner's Apply, and a hand-edited value above the range is clamped at
 load (`_SECURITY_BOUNDED_FIELDS`) with a SEL `config_bounds_clamped` event.
 
+**A Bot's own worker cap.** `agents.<name>.max_workers` (default 0 = no limit,
+else 1-32, `BOT_MAX_WORKERS_MAX` in `config/sections_session.py`) bounds how many of
+one Bot's own worker sessions, the ones on its worker template, are live at once.
+`session_create` (from the Bot's chat or a worker), `session_revive` and
+`session_fork` ask `worker_cap_refusal` (`dashboard/state_parts/bot_worker_cap.py`)
+with the execution record the new slot will run under, and a create past it is
+refused `bot_worker_cap_reached` (409) with nothing minted; a handoff opens nothing
+and is not asked. A worker counts while its slot is live, from its mint (so two
+parallel creates cannot both pass) until it is closed, and workers a restart brought
+back are counted from their saved records. A session a worker opens on another
+template is not counted here; the per-creator ceiling bounds it. The owner sets it
+on the Bot's settings page (**Workers at once**); no Bot tool writes it, and an
+unreadable value never refuses.
+
 **Deliberately not offered.** No `agent`, `model` or `mode` override: a
 transcript belongs to the memory boundary it was written in, and `chat_fork`
 binds the child's execution identity from the parent's for exactly that reason.

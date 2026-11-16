@@ -275,6 +275,9 @@ pause (`turn_limit`) and the default-model applied and failed notes
 and the notice that open tabs left the sidebar for History, one id for the startup
 restore budget (`moved_to_history_startup`) and one for the idle sweep
 (`moved_to_history_idle`), whose `count` param picks the catalog's plural form;
+and the note that a Bot's carried-over limits now ask a person
+(`bot_limits_held`, `dashboard/mate_thread_wakes.py::_notify_held`, with the
+Bot's `name` param and a link to its profile);
 every other producer still writes English only. `test_notification_dashboard_copy.py` pins the turn-ceiling
 producer, its English against the catalog and the meta refusal;
 `test_config_live_server_appliers.py` pins the default-model ids;

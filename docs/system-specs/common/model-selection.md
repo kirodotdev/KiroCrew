@@ -212,7 +212,7 @@ adapter does not pass it on and trusts Claude Code to have read the same setting
 After a resume, Claude Code can instead run its own built-in default while the
 report still names the settings model. A custom gateway that does not serve that
 default then refuses every turn until the user runs `/model`.
-`AcpClient._reassert_adapter_resolved_model` runs from `_ensure_served_default` on
+`ClaudeAcpClient._reassert_adapter_resolved_model` runs from `_ensure_served_default` on
 the claude backend. It sends the reported id back over `session/set_config_option`,
 the same write the picker and `/model` make, which the adapter always passes on.
 

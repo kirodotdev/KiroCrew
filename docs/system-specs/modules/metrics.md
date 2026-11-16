@@ -1864,7 +1864,7 @@ from fields the row store already carries — no new instrumentation:
 | sub-block | derivation |
 |-----------|-----------|
 | totals | `credits` summed over the window, plus the preceding window of equal length and the delta between them |
-| `by_model` | per-`model` credits, share, credits-per-turn, and per-model delta vs the prior window. **Every model, never truncated** — a top-N cut hides exactly the cheap-model-creep this block exists to show |
+| `by_model` | per-`model` credits, share, credits-per-turn, and per-model delta vs the prior window. **Every model, never truncated** — a top-N cut hides exactly the cheap-model-creep this block exists to show. The stored model is keyed through `model_registry.canonicalize_for_provider` with the row's `provider`, the same reading the daily chart and the series use, so a model stored under two ids across a provider's id migration is one row |
 | `by_channel` | same shape, keyed by `telemetry_channel_of(slot)` |
 | `context_bands` | mean credits per turn bucketed by absolute `context_used`, which is what makes the cost/context relationship legible (a turn at 900k costs ~4.7x one at 100k) |
 | `conversations` | EVERY session in the window (not a top-N), each with its `category`, the unollapsed `channel` beneath it, peak occupancy, span, per-turn growth rate, and a projected turns-to-compaction. Named `conversations` for payload compatibility; the entity is a session |
@@ -2798,7 +2798,8 @@ consent flow:
   it goes, then offers **Keep on** and **Turn off**, in the
   `OnboardingChapterShell` layout, so a new user sees what is recorded and sent
   and can turn it off before reaching the product. Every path out of chapter 1
-  routes through it, including "Skip all", and it offers no skip and no Escape.
+  routes through it, including "Skip all", and it offers no skip, and no Escape
+  until a save has failed (below).
   The text follows the effective state read from `GET /api/telemetry/beacon` and
   `GET /api/telemetry/collection`: with local recording on, "Performance metrics
   are on" and the recording list; with only the heartbeat on, "A daily heartbeat
@@ -2823,7 +2824,11 @@ consent flow:
   re-reads both effective states; only when both are off does it write the ack
   fields. An env var or a `config.local.json` entry that keeps either on leaves
   the chapter open, naming that setting. A failed write keeps the chapter open
-  with an `ErrorNotice` and marks nothing as seen.
+  with an `ErrorNotice` and marks nothing as seen. From then on the chapter
+  offers Close in its eyebrow row, and Escape does the same: both hide it
+  without recording a choice, as the Ask the agent hand-off does, so it opens
+  again at the next load (`onClose`). A Turn off held by a pin offers no Close,
+  since Keep on still saves.
 - **The notice is versioned.** `dashboard.privacy_ack_version` (int, default 0,
   never seeded from `privacy_acked`, `onboarded` or localStorage) means "told that
   local recording is on", and both writers apply that one rule: the chapter writes
@@ -2832,7 +2837,7 @@ consent flow:
   recording on (not on `disable`, and not when it leaves recording off because an
   export destination is configured); the dashboard's
   `PRIVACY_NOTICE_VERSION` (`components/privacyNotice.ts`) and
-  `beacon.PRIVACY_NOTICE_VERSION` are both 2 and a backend test pins them
+  `beacon.PRIVACY_NOTICE_VERSION` are both 3 and a backend test pins them
   together. An existing user whose stored version is lower sees the chapter once
   at the next dashboard load, decided once per page load, and only while local
   recording is on; a heartbeat-only or already-off user does not see it. A user

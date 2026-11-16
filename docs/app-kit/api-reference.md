@@ -966,6 +966,7 @@ a frontend consumer to extract:
 | `[OPTIONS: a \| b]` | follow-up choices, several may be picked |
 | `[OPTION: a \| b]` | follow-up choices, one only |
 | `[STEERING steer-<id>: …]` | the agent acknowledging a mid-turn steer |
+| `[GRILL: {json}]` | a conductor's proposed worker discussion, drawn by the dashboard as an editable card (one line of its own; invalid JSON, a field over its cap or a second marker leaves the line as prose) |
 
 Two failure modes matter, and both are the consumer's responsibility. Render the text unparsed and
 the user reads machine syntax. Strip the marker without offering the choices and the user's options
@@ -978,6 +979,7 @@ website/src/app-sdk/protocol/
   optionMarker.ts   the marker pattern (in-tree only) + stripPartialOptionMarker
   options.ts        parseOptions, deriveFollowUpOptions
   steering.ts       extractSteeringAcks
+  grillMarker.ts    the `[GRILL:]` card parser (in-tree only, not exported from the package)
 ```
 
 ### Using it from an app
@@ -1006,8 +1008,8 @@ function AgentTurn({ message }: { message: ChatMessage }) {
 
 To decide whether choices still apply to the *conversation* rather than to one message, use
 `deriveFollowUpOptions(messages, isStreaming)`. It walks back to the most recent real assistant turn
-and returns none while streaming, after a user reply, or after a queued send — so stale buttons do
-not linger:
+and returns none while streaming, after a user reply, after a queued send, or when that turn
+carries a valid `[GRILL:]` card (the card holds the choice) — so stale buttons do not linger:
 
 ```tsx
 const { followUpOptions } = deriveFollowUpOptions(messages, running)

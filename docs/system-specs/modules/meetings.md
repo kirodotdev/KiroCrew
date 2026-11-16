@@ -1009,10 +1009,13 @@ broadcast bar remains available when speech input is unavailable.
      a `<meta>` CSP is emitted as the first child of `<head>` (ahead of every
      model byte — a meta policy only binds from where it is parsed):
      `default-src 'none'`, `connect-src 'none'`, `img-src data:`, `font-src
-     data:`, `form-action 'none'`, `base-uri 'none'`, and `script-src` pinned to
-     the single vendored same-origin Mermaid FILE. The frame needs no network, so
-     it is granted none.
-  3. **Model script is stripped.** The CSP must grant `script-src
+     data:`, `form-action 'none'`, `base-uri 'none'`, `style-src
+     'unsafe-inline'`, and `script-src` pinned to the SHA-256 of Kiro Crew's own
+     Mermaid bootstrap plus the single vendored same-origin Mermaid FILE, with no
+     `'unsafe-inline'` (`cspFor`). An inline `<script>`, `on*` handler or
+     `javascript:` URL in the model's markup is refused by the browser. The frame
+     needs no network, so it is granted none.
+  3. **Model script is stripped.** The CSP once granted `script-src
      'unsafe-inline'` for the Mermaid bootstrap, which also let the *model's*
      inline script run — and script can loop `document.createElement('link')`
      with `rel="dns-prefetch"` to stream the transcript out through DNS lookups
@@ -1026,7 +1029,9 @@ broadcast bar remains available when speech input is unavailable.
      handler attributes are removed; and `javascript:`/`vbscript:`/non-image
      `data:` URLs are removed from URL attributes (matched after stripping
      whitespace and control characters, which the HTML URL parser ignores).
-     Remote-URL *fetches* are left to the CSP rather than pattern-matched.
+     Remote-URL *fetches* are left to the CSP rather than pattern-matched. Now
+     that `script-src` names hashes instead of `'unsafe-inline'`, the scrub stays
+     as defense in depth.
 
   Mermaid still renders, and this is what makes control 3 affordable: it is driven
   by Kiro Crew's own bootstrap from the declarative `div.mermaid` / fenced
@@ -1038,9 +1043,9 @@ broadcast bar remains available when speech input is unavailable.
 
   The Export item's file (`buildSketchExport`) is this same document: scrubbed,
   with the same policy first in `<head>`, the vendored Mermaid runtime inlined
-  (a file has no dashboard origin to load it from) and `script-src
-  'unsafe-inline'` naming no source, so it makes no network request while it
-  renders. Nothing of the sketch is mounted in the dashboard's DOM to export it.
+  (a file has no dashboard origin to load it from) and `script-src` naming the
+  SHA-256 of the bootstrap and of the inlined runtime, no URL and no
+  `'unsafe-inline'`, so it makes no network request while it renders. Nothing of the sketch is mounted in the dashboard's DOM to export it.
 * **A client-supplied FILE path exists in exactly one place** — the audio import —
   and that route is owner-only. It goes through `hooks.validate_file_path`, then
   pins the validated device/inode while copying through a component-by-component

@@ -168,6 +168,14 @@ founds its own process, which mounts the directory. The founding records the ent
 takes that entry (when it has room and is alive) before re-picking, so two
 restarts of one tree waiting on one launch still land on one process.
 
+**A restarted chat rejoins the process its tree lives on.** Before `acquire`, the
+chat share tries `join_on_tree`: the key with `shared_scratch` read as the
+founder's empty value, plus the tree the restart was recorded in. It takes a live
+runtime only when that runtime matches the key AND its `work_scratch_dir` is the
+tree, under the same room and same-session rule as `acquire`, and it never spawns;
+on no match the restart places through `acquire` as above
+(`providers/chat_share.py`, `_join_own_tree`).
+
 On the **chat** registration path a lease means the same thing as registry
 membership, which is why it is taken there rather than at provider start:
 `session_allocation.SessionAllocationService._get_or_create_impl` calls
