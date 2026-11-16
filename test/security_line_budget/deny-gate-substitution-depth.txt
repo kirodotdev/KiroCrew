@@ -1,0 +1,2 @@
++118
+The deny gate's substitution-depth cap: one linear pass in deny_gate that refuses a command nested more than 32 substitutions deep before any floor runs, because each floor re-walks every nested body once per level. Its refusal key is a self-guard key in deny_waiver, so no override card is offered for it.
