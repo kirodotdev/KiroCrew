@@ -209,6 +209,8 @@ class _ChatTurn:
     _native_child_tc: "set[str]"
     _native_result_seen: "set[str]"
     _native_tc_card: "dict[str, str]"
+    _native_thought_overflow: "int"
+    _native_thought_redactors: "dict[str, StreamRedactor]"
     _native_tracker: "dict[str, dict[Any, Any]]"
     _needs_reinjection: "bool"
     _noticed_leak: "bool"

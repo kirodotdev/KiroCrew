@@ -8,7 +8,7 @@ Instance fields of ``DashboardState`` this module reads and writes:
 
 Reads only: ``_ephemeral_keys``, ``_restricted_keys``, ``_slack_to_slot``, ``_slots``,
 ``_slots_under_construction``, ``owed_slot_keys_known``, ``restoring_open_slot_keys``,
-``restoring_open_slots``, ``sessions``, ``slot_list_rebuilding``,
+``restoring_open_slots``, ``sessions``, ``slot_list_rebuilding``, ``subagents``,
 ``unrestored_slot_keys``.
 
 A function whose first parameter is ``self`` is a ``DashboardState`` method: the
@@ -373,56 +373,33 @@ def native_subagent_snapshots(
 
     DashboardState owns the slot record shape. The WebSocket layer consumes
     these transport-ready snapshots without reaching into private slot data.
+    A Crew run's own child cards (``subagent_manager.native_child_cards``) are
+    replayed with them, in the tab the run's frames draw in, under the same TTL
+    and terminal cap.
     """
     now = time.time()
-    running: list[dict[str, object]] = []
-    done: list[dict[str, object]] = []
+    snapshots: list[dict[str, object]] = []
     for slot in list(self._slots.values()):
         output = slot._native_subagent_output
         for info in list(slot._native_subagent_tracker.values()):
             card_id = str(info.get("id") or "")
-            if not card_id:
-                continue
-            base: dict[str, object] = {
-                "id": card_id,
-                "slot": slot.key,
-                "task": str(info.get("task") or ""),
-                "agent": str(info.get("agent") or ""),
-            }
-            # The label and model a card's frames carry, when it has them.
-            base.update({key: str(info[key]) for key in ("label", "model") if info.get(key)})
-            if info.get("done"):
-                done_at = float(info.get("done_at") or 0.0)
-                if done_at and (now - done_at) > ttl_secs:
-                    continue
-                if info.get("stopped"):
-                    outcome = "stopped"
-                elif info.get("error"):
-                    outcome = "failed"
-                else:
-                    outcome = "completed"
-                done.append(
-                    {
-                        **base,
-                        "done": True,
-                        "elapsed": float(info.get("elapsed") or 0.0),
-                        "error": info.get("error"),
-                        "stopped": bool(info.get("stopped")),
-                        "outcome": outcome,
-                        "result": str(info.get("result") or ""),
-                        "done_at": done_at,
-                    }
+            if card_id:
+                snapshots += _native_snapshot(
+                    info, card_id, slot.key, output.get(card_id, []), now, ttl_secs
                 )
-            else:
-                running.append(
-                    {
-                        **base,
-                        "done": False,
-                        "streaming": native_subagent_output_tail(output.get(card_id, [])),
-                        "last_tool": str(info.get("last_tool") or ""),
-                        "started": float(info.get("started") or now),
-                    }
-                )
+    from kiro_crew.dashboard.chat_utils import subagent_event_slot
+    from kiro_crew.subagent_manager.native_child_cards import RunNativeChildCards
+
+    manager = getattr(self, "subagents", None)
+    for run in list(getattr(manager, "all_agents", None) or []):
+        cards = getattr(run, "_native_child_cards", None)
+        if not isinstance(cards, RunNativeChildCards):
+            continue
+        tab = subagent_event_slot(run.root_session_key or run.parent_session_key)
+        for card_id, info, held in cards.replay():
+            snapshots += _native_snapshot(info, card_id, tab, held, now, ttl_secs)
+    running = [snapshot for snapshot in snapshots if not snapshot["done"]]
+    done = [snapshot for snapshot in snapshots if snapshot["done"]]
     if terminal_limit >= 0 and len(done) > terminal_limit:
 
         def snapshot_done_at(snapshot: dict[str, object]) -> float:
@@ -432,6 +409,56 @@ def native_subagent_snapshots(
         done.sort(key=snapshot_done_at, reverse=True)
         done = done[:terminal_limit]
     return running + done
+
+
+def _native_snapshot(
+    info: dict[str, Any],
+    card_id: str,
+    slot_key: str,
+    output: list[str],
+    now: float,
+    ttl_secs: float,
+) -> list[dict[str, object]]:
+    """The replay snapshot of one native card's tracker record, or none past its TTL."""
+    base: dict[str, object] = {
+        "id": card_id,
+        "slot": slot_key,
+        "task": str(info.get("task") or ""),
+        "agent": str(info.get("agent") or ""),
+    }
+    # The label and model a card's frames carry, when it has them.
+    base.update({key: str(info[key]) for key in ("label", "model") if info.get(key)})
+    if not info.get("done"):
+        return [
+            {
+                **base,
+                "done": False,
+                "streaming": native_subagent_output_tail(output),
+                "last_tool": str(info.get("last_tool") or ""),
+                "started": float(info.get("started") or now),
+            }
+        ]
+    done_at = float(info.get("done_at") or 0.0)
+    if done_at and (now - done_at) > ttl_secs:
+        return []
+    if info.get("stopped"):
+        outcome = "stopped"
+    elif info.get("error"):
+        outcome = "failed"
+    else:
+        outcome = "completed"
+    return [
+        {
+            **base,
+            "done": True,
+            "elapsed": float(info.get("elapsed") or 0.0),
+            "error": info.get("error"),
+            "stopped": bool(info.get("stopped")),
+            "outcome": outcome,
+            "result": str(info.get("result") or ""),
+            "done_at": done_at,
+        }
+    ]
 
 
 def has_slot(self: DashboardState, name: str) -> bool:

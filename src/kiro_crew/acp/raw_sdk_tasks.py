@@ -62,13 +62,15 @@ as nothing. On a backend outside the set :func:`take` takes nothing.
 
 What the state makes waits in a bounded FIFO (:attr:`RawSdkState.pending`): a task's end
 notice, a retry notice (one at a time) and a Workflow run whose cards moved. Only a
-dashboard chat turn draws it. The dashboard announces its stream with
+dashboard chat turn draws it, and a Crew subagent run's prompt on its own client
+(``subagent_manager.native_child_cards``, which draws the cards and drops the notices).
+The dashboard announces its stream with
 :func:`expect_dashboard_turn`, and the dispatch that comes next
 (``client_turn._dispatch_events``) takes that mark in :func:`begin_draw` and takes what
 waits with :func:`pending_events` before each frame it handles: before its first, so a task's end
 read between prompts lands above the reply of the cycle Claude Code runs for it, and
 after each one, so the cards follow the run. Every other dispatch (a compaction's
-``/compact`` stream, a channel's, a cron job's or a Crew subagent's turn) draws nothing
+``/compact`` stream, a channel's or a cron job's turn) draws nothing
 and moves nothing, and neither does a text-only reader (``send_message``,
 ``send_message_stream``): the state and the FIFO wait for the next dashboard turn, and no
 card is marked shown.

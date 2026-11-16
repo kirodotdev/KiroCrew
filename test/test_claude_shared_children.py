@@ -16,11 +16,13 @@ import pytest
 from test_claude_shared_runtime import harness  # noqa: F401  (fixture, by name)
 from test_claude_shared_surfaces import _answer, _run, _turn, _update
 
+from kiro_crew.acp.native_child_thinking import EVENT_SUBAGENT_THINKING
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
     EVENT_TEXT_CHUNK,
+    EVENT_THINKING_CHUNK,
     EVENT_TOOL_CALL,
     METHOD_CANCEL,
 )
@@ -98,6 +100,20 @@ def test_a_childs_card_and_work_reach_only_its_own_chat(tmp_path):
     assert not [e for e in events_a if e.kind == EVENT_TEXT_CHUNK and "child" in (e.text or "")]
     assert not [e for e in events_a if e.kind == EVENT_TOOL_CALL]
     assert not [e for e in events_b if e.kind in (EVENT_SUBAGENT_LIST, EVENT_SUBAGENT_ACTIVITY)]
+
+
+def test_a_childs_thinking_goes_to_its_card_never_the_parents(tmp_path):
+    thought = _child(
+        {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "hmm, ls"}}
+    )
+
+    async def scenario(rt, chat_a, chat_b, stdout):
+        return await _turn(rt, chat_a, stdout, _turn_with(_announce({"state": "running"}), thought))
+
+    events = _run(tmp_path, scenario)
+    thinking = [e for e in events if e.kind == EVENT_SUBAGENT_THINKING]
+    assert [(e.sub_session_id, e.text) for e in thinking] == [(CHILD, "hmm, ls")]
+    assert not [e for e in events if e.kind == EVENT_THINKING_CHUNK]
 
 
 def test_a_childs_route_belongs_to_the_chat_that_announced_it(tmp_path):

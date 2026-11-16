@@ -1152,7 +1152,8 @@ class LLMProvider(ABC):
         return []
 
     def advertised_commands(self) -> list[dict[str, str]]:
-        """The slash commands the live session advertised, as ``name`` and ``description``.
+        """The slash commands the live session advertised: ``name``, ``description`` and
+        ``hint`` (the argument syntax), absent when none.
 
         Default empty: only a harness that runs its own commands keeps the list.
         """

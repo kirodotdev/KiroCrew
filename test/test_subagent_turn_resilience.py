@@ -978,6 +978,10 @@ def test_no_raw_cancel_outside_chokepoint():
         # cancelling it cannot trigger a respawn. Left pending it would complete after
         # the close and re-attach the connection this method exists to release.
         "taskq_open_task.cancel()",
+        # A Crew run's wait on a person's answer to one native child's request
+        # (``native_child_cards._ask``): an approver future, not a managed run, so
+        # no terminal marker applies and cancelling it cannot trigger a respawn.
+        "approval_wait.cancel()",
     )
     chokepoint_src = inspect.getsource(subagent_mod.SubagentManager._cancel_task_intentionally)
     assert "task.cancel()" in chokepoint_src

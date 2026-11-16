@@ -4,7 +4,9 @@
 chat gets; :func:`menu_with_session_commands` appends the commands the ``?slot=``
 chat's session listed in its last ``available_commands_update``, then the user's
 opted-in saved prompts. Only a harness that runs its own commands keeps that list
-(``LLMProvider.advertised_commands``), so on any other harness it adds nothing.
+(``LLMProvider.advertised_commands``), so on any other harness it adds nothing. Only
+those session rows carry the adapter's argument ``hint``; a row the dashboard lists
+keeps its own description and no hint.
 :func:`menu_backend` names the backend whose base list that chat gets.
 """
 
@@ -81,5 +83,9 @@ def _session_command_rows(request: web.Request, taken: set[str]) -> list[dict[st
         slash = "/" + command["name"]
         if slash not in taken:
             taken.add(slash)
-            added.append({"name": slash, "description": command["description"]})
+            row = {"name": slash, "description": command["description"]}
+            hint = command.get("hint")
+            if hint:
+                row["hint"] = hint
+            added.append(row)
     return added

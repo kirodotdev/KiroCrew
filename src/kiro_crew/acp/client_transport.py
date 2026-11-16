@@ -30,7 +30,7 @@ from contextlib import aclosing
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Awaitable, Callable, TypeVar
 
 from kiro_crew import kiro_sandbox_conflict
-from kiro_crew.acp import raw_sdk_tasks, transport_framing
+from kiro_crew.acp import harness_title, raw_sdk_tasks, transport_framing
 from kiro_crew.acp._dispatch import DRAIN_YIELD_AFTER_S, _loggable_request_id
 from kiro_crew.acp._frame_record import record_frame, record_sent_frame
 from kiro_crew.acp.client_spawn_env import _exit_origin
@@ -879,24 +879,28 @@ async def _read_message(
         self._last_activity = time.monotonic()
         if self.backend in ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS:
             self._note_advertised_commands(msg)
+        # The harness's own session title is kept here, once per frame off the wire;
+        # the frame still goes to the caller.
+        harness_title.note(self, msg)
         return msg
 
 
 #: Bounds on a kept command list, every field it retains: the commands kept, each
-#: name and description, and the session id it is kept under. A description is cut
-#: to its bound; a command whose name is over its bound is dropped whole, since a
-#: cut name would send one the backend never advertised.
+#: name, description and argument hint, and the session id it is kept under. A
+#: description or hint is cut to its bound; a command whose name is over its bound is
+#: dropped whole, since a cut name would send one the backend never advertised.
 ADVERTISED_COMMANDS_MAX = 256
 ADVERTISED_COMMAND_NAME_MAX_CHARS = 128
 ADVERTISED_COMMAND_DESCRIPTION_MAX_CHARS = 1024
+ADVERTISED_COMMAND_HINT_MAX_CHARS = 160
 ADVERTISED_COMMANDS_SESSION_ID_MAX_CHARS = 256
 
 
 def bounded_commands(session_id: str, commands: Any) -> list[dict[str, str]]:
-    """The name and description of each command in *commands*, scrubbed, within the
-    bounds.
+    """The name and description of each command in *commands*, and its argument hint
+    (``input.hint``) when it has one, scrubbed, within the bounds.
 
-    Both strings go to the dashboard, so they get the same two scrubs as every other
+    Every string goes to the dashboard, so they get the same two scrubs as every other
     string the harness reports back (``client_permissions._scrub_observed``). What a
     bound leaves out is counted and logged once per list.
     """
@@ -915,13 +919,17 @@ def bounded_commands(session_id: str, commands: Any) -> list[dict[str, str]]:
             continue
         description = command.get("description")
         text = description if isinstance(description, str) else ""
+        given = command.get("input")
+        hint = given.get("hint") if isinstance(given, dict) else None
+        hint = hint.strip() if isinstance(hint, str) else ""
         # Scrubbed whole, then cut: a credential the cut splits would pass the scrub.
-        kept.append(
-            {
-                "name": _scrubbed(name),
-                "description": _scrubbed(text)[:ADVERTISED_COMMAND_DESCRIPTION_MAX_CHARS],
-            }
-        )
+        row = {
+            "name": _scrubbed(name),
+            "description": _scrubbed(text)[:ADVERTISED_COMMAND_DESCRIPTION_MAX_CHARS],
+        }
+        if hint:
+            row["hint"] = _scrubbed(hint)[:ADVERTISED_COMMAND_HINT_MAX_CHARS]
+        kept.append(row)
     if omitted:
         logger.warning(
             "session %s advertised %d command(s) past the %d kept; the slash menu omits them",
@@ -966,7 +974,7 @@ def _scrubbed(text: str) -> str:
 
 
 def advertised_commands(self: AcpClient) -> list[dict[str, str]]:
-    """The commands this session last advertised: name and description, scrubbed.
+    """The commands this session last advertised: name, description and hint, scrubbed.
 
     Empty before the first ``available_commands_update``, and when the list names a
     session other than the one this process runs.

@@ -468,6 +468,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "gains. A wrong membership is a defect: a member's advisory is lost, or a "
         "tripwire's mode report is drawn as a routine change"
     ),
+    "ACP_BACKENDS_SESSION_TITLE": (
+        "which frame names a chat whose own title call left only the echo of its "
+        "first message -- the session_info_update title its session sends for this "
+        "set, the echo alone elsewhere. Every harness's chat is titled the same way, "
+        "so the membership selects a reader rather than a feature someone choosing a "
+        "harness gains. A wrong membership is a defect: a member's chat keeps the "
+        "echo, or a non-member's frame is read as a title"
+    ),
     "ACP_BACKENDS_RAW_SDK_TASKS": (
         "which wire frames carry a harness's background work to the Subagents panel "
         "and the chat's notice rows -- Claude Code's raw SDK task and retry messages "
@@ -502,6 +510,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "runs on after its card closes, or a non-member is sent a cancel naming a "
         "session it does not know"
     ),
+    "ACP_BACKENDS_NATIVE_CHILD_THINKING": (
+        "which frame carries a harness-native child's thinking to its Subagents card "
+        "-- an agent_thought_chunk on the child's session for this set; no other "
+        "harness's child is seen sending one. The card is the same on every harness, "
+        "so the membership selects a reader rather than a feature someone choosing a "
+        "harness gains. A wrong membership is a defect: a member's child reasoning is "
+        "dropped, or a non-member's frame is drawn as reasoning"
+    ),
     "ACP_BACKENDS_TOOL_TITLE_REFINEMENT": (
         "which frame names a call on a Crew-spawned subagent's Subagents card -- the "
         "tool_call_update that refines the call's first title for this set, the "
@@ -510,6 +526,15 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "a feature someone choosing a harness gains. A wrong membership is a defect: "
         "a member's card keeps a generic title, or a non-member's better title is "
         "replaced by a bare tool name"
+    ),
+    "ACP_BACKENDS_RUN_NATIVE_CHILD_CARDS": (
+        "which frames draw a Crew-spawned run's own harness-native children under its "
+        "Subagents card -- the subagents-form roster and the raw SDK Workflow rows on "
+        "the run's own session for this set; no other harness's run is seen sending "
+        "them. The cards are drawn the same way wherever they come from, so the "
+        "membership selects a reader rather than a feature someone choosing a harness "
+        "gains. A wrong membership is a defect: a member's grandchildren go undrawn, or "
+        "a non-member's frames are drawn as cards"
     ),
     "ACP_BACKENDS_COMPACTION_SUMMARY": (
         "which frames carry a harness's compaction summary to the chat's compaction card "

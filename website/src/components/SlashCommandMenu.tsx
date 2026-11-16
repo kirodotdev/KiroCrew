@@ -456,7 +456,10 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
           onMouseDown={e => { e.preventDefault(); onSelect(rowInsert(row)) }}
         >
           <span className="text-[13px] font-mono font-semibold text-accent shrink-0">{row.kind === 'cmd' ? row.cmd.name : row.workflow.slug}</span>
-          <span className="text-[12px] truncate">{row.kind === 'cmd' ? commandDescription(row.cmd) : (row.workflow.description || row.workflow.name || '')}</span>
+          {row.kind === 'cmd' && row.cmd.hint
+            ? <span className="text-[12px] font-mono text-muted shrink-0 max-w-[45%] truncate" title={row.cmd.hint}>{row.cmd.hint}</span>
+            : null}
+          <span className="text-[12px] truncate min-w-0">{row.kind === 'cmd' ? commandDescription(row.cmd) : (row.workflow.description || row.workflow.name || '')}</span>
         </button>
         ))}
         </>}

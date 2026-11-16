@@ -875,7 +875,10 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
     if agent_id.startswith("native:") and hasattr(state, "_native_cards"):
         card_info = getattr(state, "_native_cards", {}).get(agent_id)
         if card_info:
-            from kiro_crew.dashboard.native_child_stop import harness_stops_native_child
+            from kiro_crew.dashboard.native_child_stop import (
+                harness_stops_native_child,
+                run_card_owner,
+            )
 
             # A harness that can stop this one child is asked to, and the card
             # closes on the end the harness then reports, drawn as stopped.
@@ -908,7 +911,10 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
             # (native_subagent_snapshots) reconstructs this card as STOPPED for
             # reconnecting clients — not as still-running or completed.
             try:
-                _slot = state.get_slot(card_info["slot"])
+                # A Crew run's own child is recorded on the run, not the tab.
+                if (_owner := run_card_owner(state, card_info)) is not None:
+                    _owner.mark_stopped(str(card_info.get("session_id") or ""))
+                _slot = None if card_info.get("run_id") else state.get_slot(card_info["slot"])
                 _rec = (
                     _slot._native_subagent_tracker.get(card_info.get("session_id", ""))
                     if _slot is not None

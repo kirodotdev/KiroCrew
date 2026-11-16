@@ -13,7 +13,8 @@ This module turns those frames into the events the native Activity cards already
 read: an ``EVENT_SUBAGENT_LIST`` roster of this turn's children that have a task, in
 the kiro-cli shape, on every lifecycle change, and ``EVENT_SUBAGENT_ACTIVITY`` for a
 child's text and tool calls; an adapter notice addressed to a child is its text, in the
-notice's text form (``_child_text``). A child's
+notice's text form (``_child_text``). A child's thinking becomes
+``EVENT_SUBAGENT_THINKING`` (``native_child_thinking``), never its card text. A child's
 text never becomes the parent's text; a child's tool frames still continue to the
 ordinary tool path after their activity prefix, which is how a kiro-cli child's tool
 calls render too.
@@ -49,7 +50,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import transport_framing
+from kiro_crew.acp import native_child_thinking, transport_framing
 from kiro_crew.acp._dispatch import parse_text_chunk
 from kiro_crew.acp.harness_notices import parse_notice
 from kiro_crew.acp.native_child_stamp import parent_tool_use
@@ -354,7 +355,9 @@ def _native_child_events(self: AcpClient, msg: JsonRpcMessage) -> tuple[list[Acp
 
     Returns ``(events, consumed)``. ``consumed`` means the frame is not the parent's:
     every reader skips its ordinary handling. A child's tool frame is not consumed,
-    so after its activity prefix it reaches the tool path like any other call.
+    so after its activity prefix it reaches the tool path like any other call. A
+    tracked child's thought is consumed as its thinking event
+    (``native_child_thinking.child_thought_event``), or dropped off that set.
     """
     if not self._native_children_declared():
         return [], False
@@ -407,6 +410,10 @@ def _native_child_events(self: AcpClient, msg: JsonRpcMessage) -> tuple[list[Acp
         return events, False
     if kind == UPDATE_TOOL_CALL_UPDATE:
         return events, False
+    thought = native_child_thinking.child_thought_event(self.backend, child_sid, kind, update)
+    if thought is not None:
+        events.append(thought)
+        return events, True
     text = _child_text(self.backend, kind, update)
     if text:
         self._prompt_or_tool_seen = True
@@ -424,6 +431,7 @@ def _child_text(backend: str, kind: object, update: dict[str, Any]) -> str:
     stopped by the user: ``async-tasks.js`` routes it by the task's tool call) in the
     notice's text form (``harness_notices.transcript_block``), as a client without
     ``session.notices`` is sent it as the child's text. A card draws text, not notices.
+    A thought is never card text: it is read before this as the child's thinking.
     """
     if kind in (UPDATE_AGENT_MESSAGE_CHUNK, UPDATE_AGENT_THOUGHT_CHUNK):
         text, is_thinking = parse_text_chunk(update)

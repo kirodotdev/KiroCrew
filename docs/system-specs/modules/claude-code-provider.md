@@ -848,7 +848,9 @@ process. `AcpClient` declares `clientCapabilities.subagents` on this backend
 - `session_message` on the child session: the prompt the child was handed, whose
   `messageId` is the Agent call's `toolCallId`;
 - the child's own `tool_call`, `tool_call_update` and `agent_message_chunk` frames
-  under the child's sessionId, each stamped `_meta.claudeCode.parentToolUseId`.
+  under the child's sessionId, each stamped `_meta.claudeCode.parentToolUseId`;
+- (0.107.0, with a non-empty thinking display) the child's `agent_thought_chunk`,
+  stamped and routed the same way.
 
 `client_native_children` reads them in all three `AcpClient` readers. Each lifecycle
 change yields the roster of this turn's children that have a task, as `EVENT_SUBAGENT_LIST` in
@@ -859,9 +861,21 @@ failed with `cancelled`, or failed with its error. A
 child's text becomes `EVENT_SUBAGENT_ACTIVITY` on its card and never the parent's
 answer. A child's tool call yields its activity prefix and then renders as an
 ordinary tool row, as a kiro-cli child's does on `AcpClient`, so its approval, hooks
-and SEL record are unchanged. The child's other frames are dropped. A child call the
+and SEL record are unchanged. A child's thinking becomes `EVENT_SUBAGENT_THINKING`
+(`acp/native_child_thinking.py`, `ACP_BACKENDS_NATIVE_CHILD_THINKING`), never the
+parent's thinking or the card's text. The child's other frames are dropped. A child call the
 adapter left on the parent session is still attributed through the Agent call it
 serves.
+
+The thinking event leaves `AcpClient` unredacted, as the parent's does. The dashboard
+sink (`native_cards._on_subagent_thinking`) feeds it through a `StreamRedactor` per
+open card (at most `NATIVE_CHILD_ROSTER_CAP` a turn; a refusal is counted and logged
+once) and sends `subagent_thinking` `{id, slot, text}` to subagent subscribers. The
+roster that closes a card sends its held tail; a turn cut short drops it. Like
+`chat_thinking` it is ephemeral: never the card's output or result, a slot row, the
+transcript or a reconnect snapshot. The card draws it collapsed above Output
+(`ThinkingBlock`), at most 20,000 characters. A child the cap refused shows none.
+Contract tests: `test_claude_native_child_thinking.py`.
 
 A child's text is redacted as a stream, as the parent's answer is at its sink:
 `client_turn._redact_native_child_events` feeds each child's chunks through that
@@ -948,8 +962,13 @@ File") and sends its real `title` in a later `tool_call_update`. Because claude 
 `ACP_BACKENDS_TOOL_TITLE_REFINEMENT` (`SessionCapabilities.refines_tool_call_titles`),
 a run Crew spawns fires one more `subagent_tool` frame, marked `is_update`, with the
 refined title, redacted (`subagent_manager/card_tool_titles.py`), and the card renames
-that call's row (subagent, *What the card does not show of a claude run*). Contract
-tests: `test_claude_subagent_card_tool_titles.py`.
+that call's row. Contract tests: `test_claude_subagent_card_tool_titles.py`.
+
+The run's own Agent-tool children and Workflow agents draw cards one level under the
+run's card, `native:<run id>:<child>` (`ACP_BACKENDS_RUN_NATIVE_CHILD_CARDS`,
+`subagent_manager/native_child_cards.py`; subagent, *A claude run's harness-native
+children*). Contract tests: `test_claude_run_native_child_cards.py`,
+`test_run_native_card_relay.py`.
 
 ### Claude Code's checklist (TodoWrite and the Task* tools)
 
@@ -1001,7 +1020,8 @@ or the managed files: with no budget the adapter turns a display into
 `--thinking=adaptive` and an explicit display, which Claude Code 2.1.325 obeys over
 those settings. Each file is read alone, so a lower tier that decides thinking
 withholds it too. A `MAX_THINKING_TOKENS` in the spawn environment keeps the default.
-The files are read off the event loop. A native child's thinking stays off its card.
+The files are read off the event loop. A native child's thinking goes to its own card
+only (*Native subagents*).
 Contract tests: `test/test_claude_thinking_display.py`; the launch golden
 (`test/fixtures/acp_launch_goldens.json`) pins both defaults.
 
@@ -1056,9 +1076,27 @@ live capture, and the SDK scopes it to claude.ai subscription users.
 
 ### The adapter's session title
 
-Crew ignores claude-agent-acp's `session_info_update.title`: Crew titles a chat itself
-(`chat_title.py` `_maybe_auto_title`), before Claude does and in the UI language, leaves
-some slots untitled on purpose, and Claude's fallback title is Crew's system prompt.
+claude-agent-acp names every session with a standard `session_info_update`
+`{title, updatedAt}`, needing no capability (0.107.0 `session-titles.js` `publish`): at
+the first prompt of 10+ characters while it runs, else at turn end, and again after a
+resume. When generation fails it sends the session's summary, Crew's whole first
+prompt cut at 255 characters plus `…`; nothing on the wire marks which it is.
+
+Crew stays the title's owner. On a backend in `ACP_BACKENDS_SESSION_TITLE` (claude)
+`acp/harness_title.py` keeps the newest title of the reader's own session at
+`_read_message` (and the shared handle's `_own_update`): folded to one printable line,
+redacted, at most `MAX_HARNESS_TITLE_CHARS` (256); a longer one is dropped, counted and
+logged, and the frame passes on. After chat_done's whole title chain
+(`chat_title_harness.titled_then_harness`), `adopt_harness_title` puts it in place of
+Crew's echo of the first message only (origin `auto` and the title is
+`_fallback_title_from_messages`, locked or not). Crew's model title, a rename, a pinned
+or crewmate title, a fork, a slot Crew does not auto-title and a session holding an
+app's or restored turn are kept, so Crew still titles first and in the UI language,
+and an untitled-on-purpose slot stays untitled. A title over 80 characters or ending in
+`…` (the summary), one `_validate_title_reply` refuses, an echo or prefix of the opening
+message, and a low-signal one are refused. The adopted title is origin `auto`, bumps
+`_title_epoch` and stays refreshable at turns 8 and 24. Tests:
+`test/test_claude_session_title.py`, `test/test_chat_title_harness.py`.
 
 ### A compaction's summary
 
@@ -1098,9 +1136,12 @@ counted, said at the next drain with any task refused at `MAX_TRACKED_TASKS`), a
 a dashboard chat turn draws it: the turn marks the slot's client
 (`raw_sdk_tasks.expect_dashboard_turn`), and its `_dispatch_events` (`begin_draw`)
 yields `pending_events` before its first frame, so what was read between prompts lands
-above the reply, and after each frame. Every other dispatch (a `/compact` stream, a
-channel, cron or Crew subagent turn, the text-only readers) leaves it for the next
-dashboard turn. Neither notice below is visible output or reaches those readers.
+above the reply, and after each frame. A Crew subagent run on claude marks each of its
+own prompts the same way (`ACP_BACKENDS_RUN_NATIVE_CHILD_CARDS`), so its Workflow
+agents draw under its card; the task-end and retry notices it drains draw nowhere. Every
+other dispatch (a `/compact` stream, a channel or cron turn, the text-only readers)
+leaves it for the next dashboard turn. Neither notice below is visible output or reaches
+those readers.
 
 - **A Workflow run's agents are native cards.** A `local_workflow` task's
   `workflow_progress` rows merge into one card row per agent
@@ -1271,8 +1312,9 @@ The composer also names its chat (`?slot=`), and the menu then adds what that ch
 live claude session advertised: the transport keeps the session's last
 `available_commands_update` (`LLMProvider.advertised_commands`, recorded for
 `ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS` only), so the project and user
-`.claude/commands` files and skills appear with the adapter's own description, both
-strings scrubbed like every other one the harness reports back (`_scrub_observed`:
+`.claude/commands` files and skills appear with the adapter's own description and
+argument hint (`input.hint`), each scrubbed like every other string the harness
+reports back (`_scrub_observed`:
 credentials and exfiltration URLs). Each update replaces the list, and it is tied to
 its session id, so a `new_conversation` on the same process starts empty. A name the list above already carries keeps the
 dashboard's row; one the dashboard answers first (`_DASHBOARD_SERVED_SLASH_COMMANDS`),
@@ -1287,6 +1329,14 @@ gap. The capture is not in the corpus:
 `scripts/check_acp_frame_host_data.py` refuses a command inventory in a fixture, so
 the test builds the frame from five of its rows. Pinned by
 `test/test_api_slash_commands.py`.
+
+`client_transport.bounded_commands` also keeps each command's `input.hint`
+(stripped, scrubbed, then cut to `ADVERTISED_COMMAND_HINT_MAX_CHARS`, 160; no `hint`
+key when none) beside its name and description. Only a session row carries `hint` (absent
+when empty); a row the dashboard lists keeps its own, unhinted.
+The menu shows the hint as muted text after the name and inserts only `/name `.
+Pinned by `test/test_acp_advertised_command_rows.py` and
+`SlashCommandMenu.hint.test.tsx`.
 
 ### A tool-less session
 
@@ -1517,6 +1567,20 @@ switch that reads on is never blocked.
 409s, the 502 of both switches and each description shape;
 `ModelEffortDropdown.fastMode.test.tsx`, `ChatPane.pickerMenus.test.tsx` and
 `ChatPage.composerDock.test.tsx` pin the disabled switch and its hint.
+
+### Claude Code custom agents
+
+When the host has a custom agent (`.claude/agents`, a plugin's), claude-agent-acp
+advertises an `agent` select in `configOptions`, the main-thread persona. Crew reads
+it for nothing and never writes it, by `session/set_config_option` or as
+`_meta.claudeCode.options.agent`, and `selection-capabilities` carries no field for
+it. A switch applies the agent's prompt, tools and model at the next turn, and its
+definition may also set `permissionMode`, `mcpServers` and hooks; Crew pins the mode
+only at session start and the adapter reports no later change, so a switch could
+widen what a session may do without Crew seeing it. Unlike ultracode and Fast mode it
+can change which tools run and how they are approved. The model can still delegate to
+those agents through its own Agent tool. Pinned by
+`test_crew_neither_offers_nor_selects_a_claude_main_thread_agent`.
 
 ## Model registry
 

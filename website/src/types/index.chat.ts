@@ -683,6 +683,10 @@ export interface SubagentActivity {
   childSession?: string
   status: 'pending' | 'running' | 'tool' | 'done' | 'error' | 'stopped'
   streaming: string; lastTool: string
+  /** The agent's reasoning, from `subagent_thinking` frames (a Claude native
+   *  child's), drawn above the card's Output. Client-only and bounded, as the
+   *  chat's own thinking is: no snapshot or done frame carries it. */
+  thinking?: string
   startedAt: number; elapsed: number; credits?: number; error?: string
   /** True when `startedAt` was ASSUMED rather than observed, which is the case
    *  for an entry minted by `upsertSlotSub` from an incremental frame: that frame

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from kiro_crew.slack.gateway import (
         ORPHAN_NOTICE_OWED,
         OUTCOME_FAILED,
+        RUN_NATIVE_CARD_EVENT,
         SUBAGENT_COMPLETION_META_KEY,
         SUBAGENT_COMPLETION_PREFIX,
         Any,
@@ -48,6 +49,7 @@ if TYPE_CHECKING:
         redact_and_truncate,
         redact_credentials,
         redact_exfiltration_urls,
+        relay_run_native_card,
         resolve_max_subagents,
         safety_override,
         single_completion_meta,
@@ -449,6 +451,12 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
             and etype not in ("subagent_queued", "spawn_batch_started")
         ):
             base["slot"] = _event_slot(_root)
+        if etype == RUN_NATIVE_CARD_EVENT:
+            # A card of the run's own child, drawn in the run's tab and in no wave.
+            relay_run_native_card(
+                self.dashboard_state, self._subagent_coalescer(), base["slot"], info.id, extra
+            )
+            return
         # Batch identity rides every frame when present so the UI can
         # group/aggregate a wave without a lookup table. (Type guard:
         # test doubles pass MagicMock infos.)

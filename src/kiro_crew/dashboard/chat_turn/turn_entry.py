@@ -810,6 +810,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     slot._native_subagent_output = _native_card_output
     _native_card_output_len: dict[str, int] = {}
     turn._native_card_output_len = _native_card_output_len
+    # native card id -> the redactor of that open card's streamed thinking, and how
+    # many cards the bound refused one this turn (``native_cards._on_subagent_thinking``).
+    turn._native_thought_redactors = {}
+    turn._native_thought_overflow = 0
     needs_session_reset = False
     turn.needs_session_reset = needs_session_reset
     # Poisoned-conversation escalation: unlike needs_session_reset (which

@@ -67,6 +67,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_NATIVE_WORKFLOWS,
     ACP_BACKENDS_PLAN_CHECKLIST,
     ACP_BACKENDS_REMOTE_MCP_OAUTH,
+    ACP_BACKENDS_RUN_NATIVE_CHILD_CARDS,
     ACP_BACKENDS_TOOL_TITLE_REFINEMENT,
     model_registry_namespace,
 )
@@ -253,6 +254,12 @@ class SessionCapabilities:
     #: failed call carries the bare tool name, a worse title than the first.
     refines_tool_call_titles: bool
 
+    #: Whether a Crew-spawned run draws its own harness-native children (Agent-tool
+    #: children and Workflow agents) as cards under the run's card
+    #: (:data:`ACP_BACKENDS_RUN_NATIVE_CHILD_CARDS`). Display only. False leaves a
+    #: run's children undrawn, as every harness without a capture of them is.
+    draws_run_native_child_cards: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -284,6 +291,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         honors_remote_mcp_oauth=backend in ACP_BACKENDS_REMOTE_MCP_OAUTH,
         native_workflows=backend in ACP_BACKENDS_NATIVE_WORKFLOWS,
         refines_tool_call_titles=backend in ACP_BACKENDS_TOOL_TITLE_REFINEMENT,
+        draws_run_native_child_cards=backend in ACP_BACKENDS_RUN_NATIVE_CHILD_CARDS,
     )
 
 
@@ -318,6 +326,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     honors_remote_mcp_oauth=False,
     native_workflows=False,
     refines_tool_call_titles=False,
+    draws_run_native_child_cards=False,
 )
 
 

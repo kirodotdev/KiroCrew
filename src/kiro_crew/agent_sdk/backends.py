@@ -251,6 +251,9 @@ with no row here.
      - driver-internal (whether a claude session asks for the raw SDK messages of
        its background tasks and API retries, and ``AcpClient`` reads them as
        Workflow agent cards and notice rows)
+   * - ``ACP_BACKENDS_SESSION_TITLE``
+     - driver-internal (whether ``AcpClient`` keeps the harness's
+       ``session_info_update`` title the dashboard may put in place of its echo)
    * - ``ACP_BACKENDS_READ_PATH_ARG``
      - driver-internal (whether ``AcpClient`` marks a ``read`` tool call with the
        argument naming its file, ``AcpEvent.read_path_arg``, which the dashboard
@@ -263,6 +266,9 @@ with no row here.
        ``session/cancel`` naming a native child whose announce granted
        ``capabilities.cancel``; the dashboard's card Stop asks the client, never
        the set)
+   * - ``ACP_BACKENDS_NATIVE_CHILD_THINKING``
+     - driver-internal (whether ``AcpClient`` reads a native child's
+       ``agent_thought_chunk`` as ``EVENT_SUBAGENT_THINKING`` for its card)
    * - ``ACP_BACKENDS_COMPACTION_SUMMARY``
      - driver-internal (whether ``AcpClient`` carries a native compaction's
        summary, streamed or on its ``completed`` update, on the compaction event
@@ -270,6 +276,8 @@ with no row here.
    * - ``ACP_BACKENDS_TOOL_TITLE_REFINEMENT``
      - semantic question (``SessionCapabilities.refines_tool_call_titles``: whether
        a Crew-spawned subagent's card takes a ``tool_call_update``'s title)
+   * - ``ACP_BACKENDS_RUN_NATIVE_CHILD_CARDS``
+     - semantic question (``SessionCapabilities.draws_run_native_child_cards``)
    * - ``ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS``
      - semantic question (``SessionCapabilities.runs_own_slash_commands``)
    * - ``ACP_BACKENDS_NATIVE_WORKFLOWS``
@@ -1496,12 +1504,15 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_LOCAL_CLEAR,
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     ACP_BACKENDS_NATIVE_CHILD_CANCEL,
+    ACP_BACKENDS_NATIVE_CHILD_THINKING,
     ACP_BACKENDS_NATIVE_TODOS,
     ACP_BACKENDS_PLAN_CHECKLIST,
     ACP_BACKENDS_RAW_SDK_TASKS,
     ACP_BACKENDS_READ_PATH_ARG,
     ACP_BACKENDS_REPORT_USAGE,
+    ACP_BACKENDS_RUN_NATIVE_CHILD_CARDS,
     ACP_BACKENDS_SENT_IMAGE_RECORD,
+    ACP_BACKENDS_SESSION_TITLE,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
     ACP_BACKENDS_STEER_RETRACT,

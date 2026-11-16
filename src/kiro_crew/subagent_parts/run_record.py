@@ -649,6 +649,8 @@ class SubagentInfo:
     # on the _shared_provider directly.
     _session_sharing: bool = False
     _shared_provider: Any = None  # AcpSessionProvider when _session_sharing=True
+    # The cards of this run's own harness-native children (a RunNativeChildCards).
+    _native_child_cards: Any = field(default=None, repr=False, compare=False)
     # True when the run inherited a remote session environment: its cost samples
     # go to the ``@remote`` bucket.
     _remote_workspace: bool = False

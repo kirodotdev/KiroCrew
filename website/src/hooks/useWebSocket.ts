@@ -738,6 +738,12 @@ export function useWebSocket() {
             if (chunkSlot && chunkId && chunkText) buffers.bufferSubagentChunk(chunkSlot, chunkId, chunkText)
             break
           }
+          case 'subagent_thinking': {
+            // A native child's reasoning: buffered beside its card's text, kept apart.
+            const { slot: thinkSlot, id: thinkId, text: thinkText } = data as { slot: string; id: string; text: string }
+            if (thinkSlot && thinkId && typeof thinkText === 'string' && thinkText) buffers.bufferSubagentThinking(thinkSlot, thinkId, thinkText)
+            break
+          }
           case 'subagent_tool':
             dispatch(sseSubagentTool(data as { slot: string; id: string; tool: string; turns?: number; tool_count?: number; tool_call_id?: string; is_update?: boolean }))
             break

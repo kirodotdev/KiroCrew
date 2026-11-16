@@ -336,6 +336,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The refined call title a Crew subagent's card shows, redacted before
         # ``run_turn`` fires it through the same subagent output boundary.
         "subagent_manager/card_tool_titles.py",
+        # A Crew run's own child card text and tool line, redacted before the run fires
+        # them through the same subagent output boundary.
+        "subagent_manager/native_child_cards.py",
         "subagent_manager/run_yields.py",
         "subagent_manager/stop_hooks.py",
         "subagent_manager/terminal.py",
@@ -614,6 +617,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The same, for the task description, summary and retry reason a Claude Code
         # task-end or retry notice carries (``acp/raw_sdk_tasks.py``).
         "acp/raw_sdk_tasks.py",
+        # The title a harness gives its own session, redacted as the client reads it;
+        # a chat that takes it shows it through the slot title's sinks.
+        "acp/harness_title.py",
         "acp/transport_errors.py",
         # Split out of transport_errors to keep that file under the line cap; its
         # redact_text call scrubs a compaction-failure reason for the SAME

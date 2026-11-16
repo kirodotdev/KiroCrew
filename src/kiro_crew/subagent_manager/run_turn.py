@@ -566,11 +566,13 @@ async def _run_inner_impl(
     from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_TOOL_CALL_UPDATE
     from kiro_crew.agent_sdk.spec_hooks import PostToolIdentity, post_tool_identity
     from kiro_crew.hooks import pre_tool_match_names
+    from kiro_crew.subagent_manager import native_child_cards
     from kiro_crew.subagent_manager.card_tool_titles import CardToolTitles
 
     _pending_tool_ids: dict[str, PostToolIdentity] = {}
-    # The card rows a call's ``tool_call_update`` renames.
+    # The card rows a call's ``tool_call_update`` renames, and the run's own children.
     _card_titles = CardToolTitles(client)
+    _child_cards = await native_child_cards.RunNativeChildCards.start(self._manager, info, client)
     # The subagent's OWN spec hooks, when its OWN backend never receives them:
     # keyed on this run's agent and provider, never the parent's, so a
     # kiro-cli subagent (whose harness runs the field) gets none from Crew.
@@ -761,6 +763,7 @@ async def _run_inner_impl(
         msg = full_message
         while True:
             usage.begin(client)
+            _child_cards.begin_prompt()
             # A new prompt starts with nothing in flight. A call the last
             # attempt or turn never closed would otherwise wait in the
             # in-flight set and be handed the slot when a later call returns.
@@ -1403,6 +1406,8 @@ async def _run_inner_impl(
                 )
         elif event.kind == EVENT_TOOL_CALL_UPDATE:
             await _card_titles.refine(self._manager, info, event)
+        elif event.kind in native_child_cards.EVENTS:
+            await _child_cards.on_event(self._manager, info, event)
         elif event.kind == EVENT_TOOL_RESULT:
             # A FINAL result means the tool is done: drop the attribution
             # snapshot so a later idle stretch is not judged against a

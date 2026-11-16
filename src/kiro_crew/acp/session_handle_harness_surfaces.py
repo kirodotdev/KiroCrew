@@ -12,7 +12,9 @@ frames here, one session at a time, through the same readers:
 * a native compaction's summary (``acp.compaction_summary``): its streamed chunks are
   kept and are no frame of the turn, and the ``completed`` card's title carries it;
 * a claude Agent-tool child's frame (``session_handle_claude_children``), read before
-  any of these.
+  any of these;
+* the harness's title for this session (``acp.harness_title.note``), kept on the
+  handle, the frame passing on unchanged.
 
 Each reader checks its own ``ACP_BACKENDS_*`` set and that the frame names this
 session, so a frame of another session, or of a backend outside the sets, passes
@@ -32,7 +34,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import compaction_summary, harness_notices, plan_checklist
+from kiro_crew.acp import compaction_summary, harness_notices, harness_title, plan_checklist
 from kiro_crew.acp.compaction_summary import UPDATE_COMPACTION
 from kiro_crew.acp.read_path_arg import read_path_arg
 from kiro_crew.acp.types import (
@@ -73,6 +75,7 @@ def _own_update(handle: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent]
     # The readers take the per-chat client; they read the fields this handle names
     # alike (``_session_id``, ``backend``, ``_compaction_summaries``, the mode fields).
     reader: Any = handle
+    harness_title.note(reader, msg)
     kind = update.get("sessionUpdate")
     if kind == UPDATE_NOTICE:
         notice = harness_notices.adapter_notice(reader, msg)
