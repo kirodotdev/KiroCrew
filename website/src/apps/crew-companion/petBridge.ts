@@ -16,6 +16,7 @@ import { OPTIONAL_STATES, REQUIRED_STATES } from '../../lib/appearancePacks/type
 import type { AnimationFormat, PackMeta, SpriteConfig } from '../../lib/appearancePacks/types'
 import type { Reminder } from './types'
 import type { SpriteImportResult } from './spriteImportTypes'
+import { secureRandomId } from '../../utils/secureId'
 import { REMOVE_PATH, APPEARANCE_EXPORT_PATH, APPEARANCE_IMPORT_PATH, PETDEX_FETCH_PATH, APPEARANCES_PATH, APPEARANCE_COLOURS_PATH, APPEARANCE_DETAIL_PATH, APPEARANCE_SAVE_PATH, APPEARANCE_DELETE_PATH, CONFIG_PATH, REMINDERS_PATH } from './constants'
 
 /** The preload bridge, absent when this page is opened in an ordinary browser. */
@@ -625,7 +626,7 @@ export const petBridge: PetBridge = {
    */
   async gallerySaveSpritePack(data: SpriteImportResult) {
     const bare = (v: string) => (v.includes(',') ? v.slice(v.indexOf(',') + 1) : v)
-    const id = data.overwriteId || crypto.randomUUID()
+    const id = data.overwriteId || secureRandomId()
 
     const files: Record<string, string> = {}
     const states: Record<string, string> = {}

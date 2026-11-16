@@ -8,6 +8,7 @@ import { messageAuthor } from '../../api/sharedCrewUi'
 import { quoteBlock } from '../../chat-core/composer/messageQuote'
 import { isUnsafeKey, queueEntryAttachments, queueEntryBanner, queueEntryDecisionStrip, queueEntryKnowledgeEnvelope, queueEntryPastes, queueEntryQuote, queueEntryRelay, queueEntrySendId, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
 import type { PasteBlock } from '../../utils/pasteTokens'
+import { secureRandomId } from '../../utils/secureId'
 
 /** A queued row's paste blocks (`queueEntryPastes` put them there): what the
  *  user row the entry drains into receives. */
@@ -325,7 +326,7 @@ export const queueReducers = {
       appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...(tags.durable === false ? { durable: false } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryKnowledgeEnvelope(meta), ...queueEntryPastes(content, queueEntrySendId(meta).sendId) } })
     },
     prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; meta?: unknown }) {
-      return { payload: { ...payload, queueId: payload.queue_id || crypto.randomUUID() } }
+      return { payload: { ...payload, queueId: payload.queue_id || secureRandomId() } }
     },
   },
 }
