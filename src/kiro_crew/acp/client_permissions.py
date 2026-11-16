@@ -61,6 +61,7 @@ from kiro_crew.acp.types import (
     OPTION_ALLOW_ONCE,
     OUTCOME_CANCELLED,
     OUTCOME_SELECTED,
+    RECORDED_ALWAYS_ONLY,
     AcpEvent,
     JsonRpcMessage,
     rejection_reason_meta,
@@ -431,19 +432,19 @@ def _bridged_servers(client: AcpClient) -> tuple[str, ...]:
 def once_for_always(resolved_id: str, offered: dict[str, str]) -> str:
     """*resolved_id*, or the once id when it would answer allow-always.
 
-    The answer is always an id the frame offered, when it offered one: a harness
-    reads an id it never offered as a refusal, and KAS words that refusal as "The
-    user rejected this tool call." A frame with a single allow option records it
-    in both slots (KAS offers no allow-always on an explicit ``ask`` rule, which
-    is how every Crew-owned Connection call is asked), and that id is the answer.
-    The canonical once id is used only when the frame recorded no once id at all.
+    The answer is always an id the frame offered, when it offered a one-call
+    allow: a harness reads an id it never offered as a refusal, and KAS words
+    that refusal as "The user rejected this tool call." A frame with a single
+    allow option records it in both slots (KAS offers no allow-always on an
+    explicit ``ask`` rule, which is how every Crew-owned Connection call is
+    asked), and a one-call allow there is the answer. A frame that offered
+    allow-always alone, or recorded nothing, is answered with the canonical once
+    id, never with its allow-always.
     """
     if resolved_id not in (OPTION_ALLOW_ALWAYS, offered.get("always")):
         return resolved_id
-    # shortcut: a frame offering allow-always alone also records it in both slots,
-    # and is answered with it. For a Connection that fails closed: the harness stops
-    # asking, and the gateway proxy refuses each later call for want of an approval.
-    return offered.get("once") or OPTION_ALLOW_ONCE
+    once = offered.get("once")
+    return OPTION_ALLOW_ONCE if not once or offered.get(RECORDED_ALWAYS_ONLY) else once
 
 
 def _restore_withdrawn(

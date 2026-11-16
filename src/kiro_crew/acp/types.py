@@ -588,6 +588,10 @@ OUTCOME_SELECTED = "selected"
 OUTCOME_CANCELLED = "cancelled"
 OPTION_ALLOW_ONCE = "allow_once"
 OPTION_ALLOW_ALWAYS = "allow_always"
+#: Key of a request's recorded option map, present when the frame offered an
+#: ``allow_always`` option and no ``allow_once`` one: its "once" slot then holds
+#: the allow-always id, which a once-only answer must not send.
+RECORDED_ALWAYS_ONLY = "always_only"
 
 
 def rejection_reason_meta(reason: str) -> dict[str, Any] | None:
