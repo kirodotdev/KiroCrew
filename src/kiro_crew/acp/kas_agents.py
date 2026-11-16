@@ -196,7 +196,7 @@ from kiro_crew.acp.kas_tool_limits import (  # noqa: F401
     _KAS_DISCARDED_ENTRY_KEYS,
 )
 from kiro_crew.acp.kas_tool_limits import disabled_tool_exclusions as _disabled_tool_exclusions
-from kiro_crew.acp.kas_unread_commands import name_unreadable_entries
+from kiro_crew.acp.kas_unread_commands import name_unreadable_entries, trusted_over_limit_items
 from kiro_crew.agent_discovery import (
     AgentsDirMemo,
     AmbiguousAgentSpecError,
@@ -327,6 +327,8 @@ def spec_keys_without_carrier(
     named = name_unreadable_entries(
         tools_settings, [path for path in not_carried if path not in gate_carried]
     )
+    if "web_fetch.trusted" in gate_carried:
+        named += trusted_over_limit_items(tools_settings)
     # A `deniedCommands` KAS did not carry is enforced at Crew's gate
     # (`uncarried_denied_commands`): only the entries neither enforces are lost.
     deny_items = denied_command_items(tools_settings, translated)
