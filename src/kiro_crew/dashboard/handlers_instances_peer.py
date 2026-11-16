@@ -686,6 +686,11 @@ def _clean_peer_slot(row: object) -> dict[str, object] | None:
     # reads it. Only a real ``True`` counts: a string or number is dropped.
     if row.get("crew_mode_root") is True:
         out["crew_mode_root"] = True
+    # The peer's ``slack.show_in_session_list`` stamp on a Slack-born row, so this
+    # dashboard's person list leaves it out as the peer's own list does. Only a real
+    # ``True`` counts, and it can only hide the peer's own row.
+    if row.get("slack_list_hidden") is True:
+        out["slack_list_hidden"] = True
     return out
 
 

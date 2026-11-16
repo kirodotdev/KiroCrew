@@ -43,7 +43,9 @@ snapshot; the crew's own gate still decides.
    `bind`**. Name a crew with `crew=`, or omit it and the hub picks the
    connected crew with the most headroom after its own reservations; the reply
    then says which crew, and you pass that crew's id as `crew=` on every later
-   call.
+   call. When the work needs a login or a kind of machine, add
+   `requires={"logins": ["gh"], "tags": ["gpu"]}`: placement skips crews that
+   lack any of it, and a named crew is checked.
 3. `session_send` the seed with `crew=` and the returned key as `target`. The
    worker is on another machine and cannot see your checkout: the seed names
    the repo URL and the branch to push.
@@ -54,7 +56,11 @@ The crew create reply does not show the `patrol=` outcome; check with
 **No room.** A named crew short on memory, CPU or disk answers `crew_busy` and
 creates nothing. With no `crew=`, placement skips crews that are busy,
 unreachable, on another version or have the switch off, and answers
-`crew_none_available` when none admits the item. Either way the item stays open
+`crew_none_available` when none admits the item. With `requires`, a refusal
+`crew_requirements_unmet` names what each crew lacked (`login gh (expired)`,
+`tag gpu`): tell the user which crew to sign in or tag rather than retrying.
+A login named `still checking` is not a missing sign-in: retry once in a later
+owner turn. Either way the item stays open
 and unbound, and nothing falls back to this machine. Retry in a later owner
 turn; if it keeps failing, or a create is refused `crew_peer_lacks_work_items`,
 tell the user instead of retrying.

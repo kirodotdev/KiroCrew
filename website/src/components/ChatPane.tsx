@@ -449,6 +449,16 @@ export default function ChatPane({
     () => allMessages.filter(m => m.role === 'queued'),
     [allMessages],
   )
+  // The same rows for the transcript's discussion cards (`ctx.queued`), kept at
+  // one reference while the queue's rows are unchanged. A streaming flush
+  // replaces `allMessages` but not its queued rows, and a new array here would
+  // redraw every mounted row, since the list's row renderer depends on it.
+  const cardQueuedRef = useRef<typeof allQueuedMessages>([])
+  const cardQueued = useMemo(() => {
+    const prev = cardQueuedRef.current
+    if (prev.length !== allQueuedMessages.length || prev.some((m, i) => m !== allQueuedMessages[i])) cardQueuedRef.current = allQueuedMessages
+    return cardQueuedRef.current
+  }, [allQueuedMessages])
 
   // Follow-up [OPTIONS:] pills for this pane's composer — the same
   // derive-and-pass wiring ChatPage uses, adapted to the pane's own signals.
@@ -706,17 +716,18 @@ export default function ChatPane({
   // A reply card's Start / No thanks (GrillCard) in this pane: a deliberate
   // press, so it sends whatever Quick Send says. While busy it takes this pane's
   // default busy decision (steer, or queue behind the turn). Offline, or during
-  // a force stop (which clears the queue), the text goes into this pane's box. A card
-  // for another chat is left alone.
+  // a force stop (which clears the queue), the text goes into this pane's box.
+  // A send reports what it came to through the card's `onOutcome`. A card for
+  // another chat is left alone.
   useEffect(() => {
     const handler = (e: Event) => {
       const d = (e as CustomEvent<ComposeSendDetail>).detail
-      if (!d || d.result || d.slot !== slotKey || typeof d.text !== 'string' || !d.text || paneCrewRootClosed) return
+      if (!d || d.result || d.slot !== slotKey || typeof d.text !== 'string' || !d.text || typeof d.onOutcome !== 'function' || paneCrewRootClosed) return
       const text = d.text
       if (!connected || paneStopState === 'killing') { setInput(cur => mergeReplyIntoDraft(cur, text)); d.result = 'staged'; return }
       const flag = busySteerFlag({ slotKey, busy, turnRunning: running, stopState: paneStopState, jevAutoConsented, busyMode: composerBusyMode })
-      doSend(text, flag)
-      d.result = 'sent'
+      d.result = 'pending'
+      doSend(text, flag, d.onOutcome)
     }
     window.addEventListener(COMPOSE_SEND_EVENT, handler)
     return () => window.removeEventListener(COMPOSE_SEND_EVENT, handler)
@@ -966,6 +977,7 @@ export default function ChatPane({
           <ChatMessageList
             ref={listRef}
             messages={listMessages}
+            queued={cardQueued}
             // The slot's own liveness too, not only this session's stream: a
             // DM/member pane observing a turn driven elsewhere still follows.
             running={running || !!paneSlot?.running}

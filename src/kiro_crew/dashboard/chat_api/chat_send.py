@@ -393,11 +393,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    # Whether a PERSON typed this send. An app token never did, and neither did a
-    # hub conductor's send marked agent-origin (`agent_origin`), whose turn is
-    # the `crew` actor's. Every person-only grant below reads `_person_send`; the
-    # app-scope checks keep reading `request_app` as before.
+    # Whether a PERSON typed this send: not an app token, nor a hub conductor's send
+    # marked agent-origin (`agent_origin`, the `crew` actor's turn). Every person-only
+    # grant below reads `_person_send`; app-scope checks read `request_app`.
     from kiro_crew.dashboard.agent_origin import note_person_send, send_is_agent_origin
+    from kiro_crew.dashboard.headless_marker import apply as _headless
 
     _agent_origin = send_is_agent_origin(body)
     _person_send = not request.get("app", "") and not _agent_origin
@@ -412,14 +412,14 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         return not_string
     message = message.strip()
     if _agent_origin and isinstance(message, str):
-        # Not the session's own human's words, so the same redaction the queue
-        # drain gives a non-user entry (`queue_drain`, `deliver_as_typed`): the
-        # `user` row is served unredacted, and this text becomes both that row
-        # and the turn's input, here as on the queued path.
+        # Not the session's own human's words, so the same redaction the queue drain
+        # gives a non-user entry (`queue_drain`, `deliver_as_typed`): the `user` row is
+        # served unredacted, and this text is that row and the turn's input, as queued.
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
         message, _ = redact_exfiltration_urls(message)
         message, _ = redact_credentials(message)
+    message = _headless(request, body, message)  # owner headless opener; defangs typed copies
     agent = body.get("agent", "")
     slot_name = body.get("slot")
     color_theme = body.get("color_theme", "")

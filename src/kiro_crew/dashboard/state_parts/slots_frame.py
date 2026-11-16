@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from aiohttp import web
 
+from kiro_crew.dashboard.slack_session_list import slack_row_stamper
 from kiro_crew.dashboard.slot_row_memo import ROW_MEMO, RowMemoContext
 from kiro_crew.dashboard.state_parts.slot_directory import _is_genuine_slack_link
 from kiro_crew.messaging.link import (
@@ -1143,6 +1144,8 @@ def _build_rows(
     under_construction = getattr(self, "_slots_under_construction", None) or ()
     queued_by_slot = _published_queued_by_slot(subs)
     queued_reason_by_slot = _published_queued_reason_by_slot(subs)
+    # ``slack.show_in_session_list`` off: Slack-born rows carry the list filter's stamp.
+    stamp_slack = slack_row_stamper()
     # Per-slot row memos for this pass; their global key parts are read here,
     # once, BEFORE any row is built (see ``slot_row_memo``).
     memo_ctx = _row_memo_context(self)
@@ -1164,6 +1167,8 @@ def _build_rows(
             d["subagents_queued"] = queued_by_slot.get(s.key, 0)
             if d["subagents_queued"] and s.key in queued_reason_by_slot:
                 d["subagents_queued_reason"] = queued_reason_by_slot[s.key]
+            if stamp_slack is not None:
+                stamp_slack(s, d)
             out.append(d)
             yield
     finally:

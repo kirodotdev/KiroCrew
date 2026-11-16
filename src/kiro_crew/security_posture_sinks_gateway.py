@@ -1030,4 +1030,14 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "whoever can write the folder chose, so it passes `redact_via_context` "
         "before it leaves the gateway.",
     ),
+    (
+        "Crew tags a peer advertises to a dispatching hub",
+        "dashboard/remote_dispatch_headroom.py",
+        "The `tags` in this crew's remote-dispatch headroom, read by the owner's hub "
+        "on another machine. They come from `work_ledger.remote_dispatch_tags`, are "
+        "held to a short lower-case word shape, and a tag the exfiltration-URL and "
+        "credential redactors (`redact`) would change is dropped rather than sent, "
+        "because an operator can paste a token into the list. The login words "
+        "beside them are fixed constants.",
+    ),
 )

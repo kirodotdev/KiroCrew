@@ -155,6 +155,12 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
       // screen or not, so a turn watched to its end leaves no stale flag.
       const memberThread = !!data.slot && isMemberThreadSlot(data.slot, store.getState().dashboard.slots)
       const memberSpoke = memberThread && (takeMemberThreadSpoke(data.slot as string) || completionNeedsInput)
+      // The idle `slots` row that ended this same turn already dispatched the
+      // read (`useSlotListSync`): the refresh for the active slot, the warm for
+      // a pane on screen (a split pane warms through the off-screen callback
+      // below, a Crew Members thread through the on-screen warm). Taken once,
+      // for all three.
+      const idleRowRead = !!data.slot && takeIdleRowRefresh(data.slot, data)
       attendArrival(data.slot, (data as { ts?: string }).ts, reconnectingRef.current, slot => {
         // Criterion 7: a muted session never becomes unread from its own
         // activity -- no row dot, no folder rollup, nothing in the nav/tab/relay
@@ -162,7 +168,7 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         // user must see. Cache is still warmed so switching to the row renders
         // the finished answer instantly (criterion 5: rows stay readable).
         if ((!muted || turnErrored) && (!memberThread || memberSpoke)) dispatch(markSlotUnread({ slot, ts: (data as { ts?: string }).ts || undefined }))
-        dispatch(warmSlotCache(slot))
+        if (!idleRowRead) dispatch(warmSlotCache(slot))
       })
       // A pane on screen that is not the Redux active slot -- the Crew Members
       // DM thread is the standing case -- is reached by neither the off-screen
@@ -170,15 +176,13 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
       // A reply row that never reduced live would stay missing until a page
       // reload, so the turn end reconciles it to the server transcript the same
       // way a reconnect does. Reconnect replays are skipped: catch-up warms them.
-      if (data.slot && !reconnectingRef.current && data.slot !== store.getState().chat.activeSlot && isSlotOnScreen(data.slot)) {
+      if (data.slot && !idleRowRead && !reconnectingRef.current && data.slot !== store.getState().chat.activeSlot && isSlotOnScreen(data.slot)) {
         dispatch(warmSlotCache(data.slot))
       }
       if (data.slot) {
         dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'idle' }))
       }
-      // The idle `slots` row that ended this same turn already dispatched this
-      // refresh (`useSlotListSync`); any other `_done` refreshes.
-      if (data.slot && !takeIdleRowRefresh(data.slot, data)) dispatch(refreshSlot(data.slot))
+      if (data.slot && !idleRowRead) dispatch(refreshSlot(data.slot))
       if (data.slot) {
         const isActive = data.slot === store.getState().chat.activeSlot
         refreshPullRequestsAfterTurn(
