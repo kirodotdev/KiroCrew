@@ -2,7 +2,7 @@
   "config": {
     "embedder": "qwen3-embedding:0.6b@1024",
     "environment": {
-      "numpy": "2.5.4",
+      "numpy": "2.5.5",
       "platform": "linux-x86_64",
       "python": "3.12.16",
       "sqlite": "3.45.1"
@@ -39,7 +39,7 @@
     "turns": 2760,
     "variant": "locomo10[5i/allq]"
   },
-  "elapsed_s": 1769.91,
+  "elapsed_s": 1778.47,
   "ingest_totals": {
     "attempted": 2760,
     "dropped_fragments": 3,
