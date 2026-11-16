@@ -1462,7 +1462,8 @@ def test_cli_restores_the_venv_when_stopped_mid_rebuild(
             "exit 9",
         ]
     )
-    proc = subprocess.Popen(["sh", "-c", script], cwd=tmp_path, start_new_session=True)
+    with unblocked_signals():
+        proc = subprocess.Popen(["sh", "-c", script], cwd=tmp_path, start_new_session=True)
     try:
         wait_until(phase.exists, timeout=10, describe=lambda: "the stand-in never reached its gap")
         time.sleep(0.2)

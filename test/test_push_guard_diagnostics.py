@@ -31,6 +31,7 @@ from push_guard_helpers import (
     _run_push_guard,
     _run_push_guard_inprocess,
 )
+from spawn_test_helpers import unblocked_signals
 
 from kiro_crew import platform_compat
 from kiro_crew.testing.wait import default_timeout, wait_until
@@ -1027,14 +1028,17 @@ class TestPushGuardChildren:
     def test_the_child_dies_with_the_guard(self, repo_pair, tmp_path, how):
         clone_dir, _ = repo_pair
         env, pid_file = self._sleeping_fetch(tmp_path)
-        proc = subprocess.Popen(
-            [sys.executable, PUSH_GUARD, "--base", "main"],
-            cwd=clone_dir,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
+        # The guard keeps an inherited SIGHUP ignore, as nohup expects, so a worker
+        # started under nohup must not hand it one.
+        with unblocked_signals():
+            proc = subprocess.Popen(
+                [sys.executable, PUSH_GUARD, "--base", "main"],
+                cwd=clone_dir,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
         child = 0
         try:
             child = int(

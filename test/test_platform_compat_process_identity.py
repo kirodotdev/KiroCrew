@@ -22,6 +22,7 @@ import types
 from pathlib import Path
 
 import pytest
+from spawn_test_helpers import plain_sleeper_argv
 
 from kiro_crew import platform_compat as pc
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
@@ -241,13 +242,13 @@ class TestProcessArgvMatchesExact:
 
     def test_exact_argv_matches_and_near_misses_do_not(self):
         if pc.IS_POSIX:
-            # A plain binary that does NOT re-exec, so its kernel-visible argv
-            # is exactly the spawn argv on Linux AND macOS (a macOS framework
-            # python re-execs Python.app and rewrites argv[0], which is a
-            # property of the interpreter stand-in, not of the production
-            # targets — ssh and the aws v2 binary do not re-exec).
-            sleep_bin = shutil.which("sleep") or "/bin/sleep"
-            argv = [sleep_bin, "300"]
+            # A child that does NOT re-exec, so its kernel-visible argv is exactly
+            # the spawn argv on Linux AND macOS (a macOS framework python re-execs
+            # Python.app and rewrites argv[0], which is a property of the
+            # interpreter stand-in, not of the production targets — ssh and the
+            # aws v2 binary do not re-exec). ``sleep`` where it is a binary; where
+            # it is a script the helper picks this interpreter instead.
+            argv = plain_sleeper_argv(_PROBE_CHILD_LIFE_SECS)
             child = subprocess.Popen(argv, start_new_session=True, stderr=subprocess.DEVNULL)
         else:
             child, argv = self._spawn("kirocrew-argvexact-probe")
