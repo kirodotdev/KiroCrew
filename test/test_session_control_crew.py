@@ -202,7 +202,9 @@ def test_switch_off_advertises_exactly_todays_schemas(monkeypatch):
     monkeypatch.setattr("kiro_crew.remote_dispatch.remote_dispatch_enabled", lambda: False)
     # The session_harness preview filters `backend`; held on so only `crew` varies here.
     monkeypatch.setattr("kiro_crew.session_harness_preview.session_harness_enabled", lambda: True)
-    assert mcp_dashboard._list_tools() == mcp_dashboard.TABLE.list()
+    # `crew_list` is the one row the switch hides outright.
+    base = [t for t in mcp_dashboard.TABLE.list() if t["name"] != "crew_list"]
+    assert mcp_dashboard._list_tools() == base
     for tool in mcp_dashboard._list_tools():
         assert "crew" not in tool["inputSchema"].get("properties", {})
 

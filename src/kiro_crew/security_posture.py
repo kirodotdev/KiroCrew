@@ -1000,6 +1000,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # route (``dashboard/handlers/remote_dispatch_routes.py``, the registered
         # sink) already scrubbed, on its way into the tool reply.
         "mcp_session_crew.py",
+        # crew_list's MCP body: re-redacts the roster the gateway route
+        # (``dashboard/handlers/remote_crew_list.py``) built from already-redacted
+        # peer reads, on its way into the tool reply. Same class as above.
+        "mcp_crew_list.py",
         "mcp_dashboard_tag_runs.py",
         # Same class again: this stdio server redacts the ledger's own
         # worker-authored prose before returning it, but the egress boundary is

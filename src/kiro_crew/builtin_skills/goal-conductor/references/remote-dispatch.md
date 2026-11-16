@@ -31,7 +31,10 @@ reads it only at its next `work_brief`; nothing wakes it. When a remote worker
 needs a message, record the `decide`, tell the user, and send it in the next
 owner turn. Skip a remote item in the patrol drift check for the same reason.
 
-**Dispatch a remote item** (`work_dispatch` is local only):
+**Dispatch a remote item** (`work_dispatch` is local only). Call `crew_list`
+first (read-only, no arguments): it shows each registered crew's id, state,
+version match, headroom, `open_workers`, and agent and model names. It is a
+snapshot; the crew's own gate still decides.
 
 1. `work_ledger_record` `action=create`, as for a local item.
 2. `session_create` with `work_item=<item_id>`, `title` and

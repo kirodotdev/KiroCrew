@@ -249,6 +249,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/session-control/read",
         "/api/session-control/summary",
         "/api/session-control/queue",
+        "/api/session-control/crews",
         # MCP-only structured monitor inspection. The caller selects its
         # session identity through X-Session-Key, so cookie authentication can
         # never authorize this leaf.

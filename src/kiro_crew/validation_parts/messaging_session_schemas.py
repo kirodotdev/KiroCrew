@@ -674,6 +674,11 @@ SESSION_STATUS_SCHEMA = ToolSchema(
     fields=[],
 )
 
+CREW_LIST_SCHEMA = ToolSchema(
+    tool_name="crew_list",
+    fields=[],
+)
+
 SESSION_ADOPT_SCHEMA = ToolSchema(
     tool_name="session_adopt",
     fields=[

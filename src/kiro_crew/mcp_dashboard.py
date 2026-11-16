@@ -861,16 +861,19 @@ def _list_tools() -> list[dict[str, Any]]:
 
     Reaching this process at all means an agent spec referenced this server, so
     the assignment already happened; there is nothing left to gate here. The one
-    conditional parts are the ``crew`` argument on the five session tools, which is
-    advertised only while ``work_ledger.remote_dispatch`` is on, and ``backend`` on
+    conditional parts are the ``crew`` argument on the five session tools and the
+    ``crew_list`` tool, advertised only while ``work_ledger.remote_dispatch`` is
+    on, and ``backend`` on
     ``session_create`` / ``work_dispatch``, only while the ``session_harness``
     feature preview is on.
     """
+    from kiro_crew.mcp_crew_list import with_crew_list
     from kiro_crew.mcp_session_crew import with_crew_schema
     from kiro_crew.remote_dispatch import remote_dispatch_enabled
     from kiro_crew.session_harness_preview import session_harness_enabled, with_backend_schema
 
-    tools = with_crew_schema(TABLE.list(), remote_dispatch_enabled())
+    crew = remote_dispatch_enabled()
+    tools = with_crew_list(with_crew_schema(TABLE.list(), crew), crew)
     return with_backend_schema(tools, session_harness_enabled())
 
 
@@ -974,6 +977,7 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
         _folder_owner_app,
         _subtree_holds_foreign_folder,
     )
+    from kiro_crew.mcp_crew_list import crew_list_tool  # noqa: F401
     from kiro_crew.mcp_tools.dashboard_client import DashboardClient, DashboardError  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401
     from kiro_crew.sel import sel  # noqa: F401
