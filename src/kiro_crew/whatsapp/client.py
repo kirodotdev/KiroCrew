@@ -470,8 +470,15 @@ class WhatsAppClient:
         jid_str: str,
         text: str,
         on_sent: "Callable[[str], None] | None" = None,
+        *,
+        rendered: bool = False,
     ) -> list[str]:
         """Send ``text`` to a chat, chunked; returns the message IDs sent.
+
+        ``rendered`` marks ``text`` as ONE chunk :func:`render_chunks` already
+        produced (screened, converted and sized), sent as it is. Converting it
+        again is not a no-op: Markdown ``*x*`` is italic and WhatsApp's is bold, so
+        a second pass reads the first pass's bold as italic.
 
         ``on_sent`` is invoked with each message id the moment that chunk's send
         returns, before any further await. The echo tracker is what it is for:
@@ -495,7 +502,8 @@ class WhatsAppClient:
 
         jid = self._parse_jid(jid_str)
         ids: list[str] = []
-        for i, chunk in enumerate(await render_chunks_off_loop(text)):
+        chunks = [text] if rendered else await render_chunks_off_loop(text)
+        for i, chunk in enumerate(chunks):
             if i:
                 await asyncio.sleep(_INTER_CHUNK_DELAY_S)
             response = await self._client.send_message(jid, Message(conversation=chunk))

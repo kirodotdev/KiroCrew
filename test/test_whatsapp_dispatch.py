@@ -256,6 +256,10 @@ class FakeTransport:
         self.outbound.append("text")
         return "mid-1"
 
+    # The real transport sends an already-converted chunk as it is; this fake
+    # converts nothing either way.
+    send_rendered = send_message
+
     async def send_voice(self, jid: str, data: bytes, mimetype: str) -> str:
         self.voice.append((jid, data, mimetype))
         self.outbound.append("voice")

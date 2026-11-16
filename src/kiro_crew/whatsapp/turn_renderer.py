@@ -358,7 +358,9 @@ class WhatsAppRenderer(Renderer):
         return elapsed >= wa_client.EDIT_WINDOW_S
 
     async def _open_live(self, text: str) -> None:
-        message_id = await self._transport.send_message(self._chat, text)
+        # *text* is a chunk ``_rendered_chunks`` already converted, so it goes out
+        # as it is (``edit_text`` does the same).
+        message_id = await self._transport.send_rendered(self._chat, text)
         now = asyncio.get_running_loop().time()
         self._live_id = message_id
         self._live_sent_at = now
@@ -574,8 +576,12 @@ class WhatsAppRenderer(Renderer):
         # The fallback is screened rather than raw: a body that yields no chunks
         # never passed through ``to_whatsapp_text``, so it never met the display
         # screen either, and this branch would put the one form of the reply that
-        # was scanned only as literal bytes into the chat.
-        chunks = await self._rendered_chunks() or [display_safe_text(body)]
+        # was scanned only as literal bytes into the chat. It is CONVERTED here as
+        # well, because ``_show`` sends a chunk as it is: a thinking-only body
+        # renders to nothing, so nothing of its scratchpad is posted.
+        chunks = await self._rendered_chunks() or await render_chunks_off_loop(
+            display_safe_text(body), self.capabilities.max_message_chars, stable=True
+        )
         # Not the count: a streaming send that raised advanced it without landing,
         # and this is the last pass, so starting at the count would drop that
         # chunk for good. Re-sending from the earliest unlanded one can repeat a
