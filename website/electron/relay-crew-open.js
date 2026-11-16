@@ -41,6 +41,10 @@ const { NOTICE, NOTICE_FOR_CODE, noticeText } = require("./relay-crew-notice");
 // refused this shell's secret, which rotates per gateway start) backs off.
 const RENEWAL_CODE = Object.freeze({ RELAY_VIEWER_OFF: "NOT_SET_UP", UNAVAILABLE: "UNREACHABLE" });
 
+// Main to the opening dashboard: `{ endpointId, type: "chord", index }` or
+// `{ endpointId, type: "closed" }`. preload.js's `onPaneEvent` listens.
+const PANE_EVENT = "relay-crew:pane-event";
+
 // `openPane` puts the Crew in the main window instead of a window of its own
 // (the pane in relay-crew-window.js); `open` uses it only when handed a
 // pane. Its handle has the window's shape, so everything below serves both.
@@ -152,6 +156,18 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
         : openWindow(opts);
       wire({ win, renewal });
       win.onClosed(() => { if (windows.get(endpointId)?.win === win) windows.delete(endpointId); });
+      // A pane's switch chord and its close go to the dashboard that opened it,
+      // and to nothing else: the pane's own page has no preload to hear them.
+      if (pane) {
+        const tell = (event) => {
+          try {
+            const wc = pane.dashboard.webContents;
+            if (!wc.isDestroyed()) wc.send(PANE_EVENT, { endpointId, ...event });
+          } catch { /* mid-teardown */ }
+        };
+        win.onChord((index) => tell({ type: "chord", index }));
+        win.onClosed(() => tell({ type: "closed" }));
+      }
       // Registered once per window, not in wire(): a restart re-wires the same window.
       win.onUnreachable(() => {
         const entry = windows.get(endpointId);

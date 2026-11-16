@@ -1477,7 +1477,14 @@ function createIpcRegistrar({
     ipcMain.handle("relay-crew:pane-overlay", (event, endpointId, active) => {
       if (typeof active !== "boolean") return;
       const pane = paneForSender(event, "relay-crew:pane-overlay", endpointId);
-      if (pane) pane.setVisible(!active);
+      if (pane) pane.setOverlay(active);
+    });
+    // Another tab is in front of a warm pane: it stays loaded but hidden, and
+    // shows only once both this and the overlay are off.
+    ipcMain.handle("relay-crew:pane-inactive", (event, endpointId, inactive) => {
+      if (typeof inactive !== "boolean") return;
+      const pane = paneForSender(event, "relay-crew:pane-inactive", endpointId);
+      if (pane) pane.setInactive(inactive);
     });
     ipcMain.handle("relay-crew:pane-close", (event, endpointId) => {
       const pane = paneForSender(event, "relay-crew:pane-close", endpointId);

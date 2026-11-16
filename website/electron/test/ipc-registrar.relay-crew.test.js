@@ -83,6 +83,7 @@ function harness({ opener, gatewayLocal = true, portOwner = "kirocrew", main = n
     openPane: handlers.get("relay-crew:open-pane"),
     paneBounds: handlers.get("relay-crew:pane-bounds"),
     paneOverlay: handlers.get("relay-crew:pane-overlay"),
+    paneInactive: handlers.get("relay-crew:pane-inactive"),
     paneClose: handlers.get("relay-crew:pane-close"),
     probes,
     built,
@@ -165,7 +166,8 @@ function paneOpener(dashboard) {
   const steer = [];
   const handle = {
     setBounds: (r) => steer.push(["bounds", r]),
-    setVisible: (v) => steer.push(["visible", v]),
+    setOverlay: (v) => steer.push(["overlay", v]),
+    setInactive: (v) => steer.push(["inactive", v]),
     close: () => steer.push(["close"]),
   };
   return {
@@ -213,7 +215,7 @@ test("relay-crew:open-pane checks the ID, the local-dashboard gate, the main win
   }
 });
 
-test("pane bounds, overlay and close steer the pane only from the dashboard view that opened it", async () => {
+test("pane bounds, overlay, inactive and close steer the pane only from the dashboard view that opened it", async () => {
   const main = mainWindow();
   const wc = main._mcView.webContents;
   const o = paneOpener(main._mcView);
@@ -221,18 +223,24 @@ test("pane bounds, overlay and close steer the pane only from the dashboard view
   assert.equal(await h.paneBounds(from(wc), ID, { x: 10, y: 20, width: 300, height: 200 }, { width: 1000, height: 800 }), undefined);
   assert.equal(await h.paneOverlay(from(wc), ID, true), undefined);
   assert.equal(await h.paneOverlay(from(wc), ID, false), undefined);
+  assert.equal(await h.paneInactive(from(wc), ID, true), undefined);
+  assert.equal(await h.paneInactive(from(wc), ID, false), undefined);
   assert.equal(await h.paneClose(from(wc), ID), undefined);
   assert.deepEqual(o.steer, [
     ["bounds", { x: 10, y: 20, width: 300, height: 200 }],
-    ["visible", false],
-    ["visible", true],
+    ["overlay", true],
+    ["overlay", false],
+    ["inactive", true],
+    ["inactive", false],
     ["close"],
   ]);
   for (const active of ["true", 1, null, undefined]) {
     assert.equal(await h.paneOverlay(from(wc), ID, active), undefined);
+    assert.equal(await h.paneInactive(from(wc), ID, active), undefined);
   }
+  assert.equal(await h.paneInactive(from(wc), "not-an-endpoint", true), undefined);
   assert.equal(await h.paneClose(from(wc), "not-an-endpoint"), undefined);
-  assert.equal(o.steer.length, 4, "a bad argument changes nothing");
+  assert.equal(o.steer.length, 6, "a bad argument changes nothing");
 
   const remote = mainWindow({ url: "https://remote.example/chat" });
   const refusals = [
@@ -247,6 +255,7 @@ test("pane bounds, overlay and close steer the pane only from the dashboard view
     const r = harness({ opener: b, main: win });
     await r.paneBounds(ev, ID, { x: 0, y: 0, width: 10, height: 10 }, { width: 1000, height: 800 });
     await r.paneOverlay(ev, ID, true);
+    await r.paneInactive(ev, ID, true);
     await r.paneClose(ev, ID);
     assert.deepEqual(b.steer, [], label);
   }

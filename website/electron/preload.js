@@ -353,14 +353,27 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("fileOpenAPI", {
 // every relay Crew window, after this dashboard's Sign out or Switch account.
 // The pane calls show a Crew in this window instead, below the local top bar:
 // they carry the endpoint ID, the pane's rect with this page's viewport size,
-// or whether a local overlay covers the pane. Nothing calls them yet.
+// or whether a local overlay covers the pane or another tab is in front of it.
+// `onPaneEvent(cb)` hears a pane's switch chord or its close, as `{ type,
+// endpointId, index }` and nothing more, and returns its unsubscribe. Nothing
+// calls them yet.
 if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("relayCrewAPI", {
   open: (endpointId) => ipcRenderer.invoke("relay-crew:open", String(endpointId || "")),
   closeAll: () => ipcRenderer.invoke("relay-crew:close-all"),
   openPane: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:open-pane", String(endpointId || ""), rect, viewport),
   setPaneBounds: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:pane-bounds", String(endpointId || ""), rect, viewport),
   setPaneOverlay: (endpointId, active) => ipcRenderer.invoke("relay-crew:pane-overlay", String(endpointId || ""), !!active),
+  setPaneInactive: (endpointId, inactive) => ipcRenderer.invoke("relay-crew:pane-inactive", String(endpointId || ""), !!inactive),
   closePane: (endpointId) => ipcRenderer.invoke("relay-crew:pane-close", String(endpointId || "")),
+  onPaneEvent: (cb) => {
+    const handler = (_e, m) => cb({
+      type: String(m?.type || ""),
+      endpointId: String(m?.endpointId || ""),
+      index: Number.isInteger(m?.index) ? m.index : -1,
+    });
+    ipcRenderer.on("relay-crew:pane-event", handler);
+    return () => ipcRenderer.removeListener("relay-crew:pane-event", handler);
+  },
 });
 
 // Native folder chooser for the project picker's "Open system folder picker"
