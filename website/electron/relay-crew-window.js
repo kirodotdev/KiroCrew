@@ -79,19 +79,20 @@ function relayPartitionName(endpointId) {
   return `relay-crew-${endpointId}`; // no "persist:" prefix: in memory only
 }
 
-// The Crew's origin, or null unless `crewUrl` is a bare https origin whose
-// host is `<endpointId>.<relay domain>`.
-function crewOrigin(endpointId, crewUrl) {
-  if (!isEndpointId(endpointId)) return null;
+// The Crew's origin, or null unless `crewUrl` is a bare https origin on the
+// default port whose host is exactly `<endpointId>.<relayDomain>`. No relay
+// domain matches no Crew: the token goes to the relay's own names only.
+function crewOrigin(endpointId, crewUrl, relayDomain) {
+  if (!isEndpointId(endpointId) || typeof relayDomain !== "string" || !relayDomain) return null;
   let url;
   try {
     url = new URL(crewUrl);
   } catch {
     return null;
   }
-  if (url.protocol !== "https:" || url.username || url.password
+  if (url.protocol !== "https:" || url.username || url.password || url.port
     || url.pathname !== "/" || url.search || url.hash
-    || !url.hostname.startsWith(`${endpointId}.`)) {
+    || url.hostname !== `${endpointId}.${relayDomain}`) {
     return null;
   }
   return url.origin;
@@ -146,8 +147,8 @@ function installRelayHeaderRule(ses, origin, getToken) {
   });
 }
 
-function createRelayCrewView({ endpointId, crewUrl, getToken }, deps) {
-  const origin = crewOrigin(endpointId, crewUrl);
+function createRelayCrewView({ endpointId, crewUrl, relayDomain, getToken }, deps) {
+  const origin = crewOrigin(endpointId, crewUrl, relayDomain);
   if (!origin || typeof getToken !== "function") {
     throw new Error("relay crew: invalid endpoint or crew URL");
   }
@@ -225,14 +226,14 @@ function createNoticeView(deps, onAction) {
   return view;
 }
 
-function openRelayCrewWindow({ endpointId, crewUrl, title, getToken }, deps) {
+function openRelayCrewWindow({ endpointId, crewUrl, relayDomain, title, getToken }, deps) {
   const existing = openWindows.get(endpointId);
   if (existing && !existing.isClosed()) {
     existing.focus();
     return existing;
   }
   const { view, session: ses, origin } = createRelayCrewView(
-    { endpointId, crewUrl, getToken },
+    { endpointId, crewUrl, relayDomain, getToken },
     deps,
   );
   const log = crewLog(endpointId, deps);

@@ -882,10 +882,30 @@ function createIpcRegistrar({
       default: DEFAULT_GLOBAL_HOTKEY,
     }));
 
-    ipcMain.on("theme-accent-changed", (_event, hex) =>
-      windows.chrome.setThemeAccent(hex));
-    ipcMain.on("theme-splash-changed", (_event, image) =>
-      saveThemeSplash(app.getPath("userData"), image));
+    // The theme accent and splash art are written under userData for the next
+    // launch's first paint, so only the main window's dashboard reports them
+    // (assertMainWindowDashboard, below; called only after registration ends).
+    // A listener's throw would surface in main, so a refusal is logged and dropped.
+    const fromMainWindowDashboard = (event, channel) => {
+      try {
+        assertMainWindowDashboard(event, channel);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    ipcMain.on("theme-accent-changed", (event, hex) => {
+      if (fromMainWindowDashboard(event, "theme-accent-changed")) windows.chrome.setThemeAccent(hex);
+    });
+    ipcMain.on("theme-splash-changed", (event, image) => {
+      if (!fromMainWindowDashboard(event, "theme-splash-changed")) return;
+      // null (no splash) clears it; anything but { type, bytes } is dropped.
+      if (image !== null && (typeof image !== "object" || !(image.bytes instanceof Uint8Array)
+        || typeof image.type !== "string")) {
+        return;
+      }
+      saveThemeSplash(app.getPath("userData"), image);
+    });
     ipcMain.on("focus-mode-chrome", (event, visible) =>
       windows.chrome.focusMode(event.sender, visible));
     // Arm/disarm the off-window cursor poll that dismisses a focus-mode reveal.
@@ -1105,7 +1125,7 @@ function createIpcRegistrar({
     // preferences.
     const assertMainWindowDashboard = (event, channel) => {
       const refuse = (why) => {
-        log(`${channel} rejected: ${why}`);
+        logGateRejection(event.sender, `${channel} rejected: ${why}`);
         throw new Error(`${channel} is restricted to the main window's dashboard`);
       };
       const main = windows.getMainWindow();

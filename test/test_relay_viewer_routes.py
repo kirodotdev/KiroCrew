@@ -261,6 +261,7 @@ async def test_token_mints_for_main_with_the_local_secret(viewer, caplog) -> Non
         "renewInSeconds": 240.0,
         "serverDate": 1700.0,
         "crewUrl": CREW.crew_url,
+        "relayDomain": "relay.example.test",
         "name": "Build box",
         "signInMarker": _marker(FP_A),
     }
@@ -852,12 +853,18 @@ async def test_a_crew_is_kept_only_under_the_set_domain_or_with_none_set(
         minted_body = await minted.json()
     assert listed.status == 200
     assert [c["endpointId"] for c in listed_body["crews"]] == ([EP] if kept else [])
-    if kept:
+    if not domain.strip():
+        # Listed, but no token is minted until the relay domain is set.
+        assert (minted.status, minted_body["code"]) == (409, cps.NOT_SET_UP)
+        assert ("mint", EP) not in viewer.calls
+    elif kept:
         assert minted.status == 200 and minted_body["crewUrl"] == crew_url
     else:
         assert (minted.status, minted_body["code"]) == (403, "CREW_ACCESS_NOT_GRANTED")
         assert ("mint", EP) not in viewer.calls
-    assert "NOT_SET_UP" not in (listed_body.get("code"), minted_body.get("code"))
+    assert listed_body.get("code") != "NOT_SET_UP"
+    if domain.strip():
+        assert minted_body.get("code") != "NOT_SET_UP"
 
 
 @pytest.mark.asyncio

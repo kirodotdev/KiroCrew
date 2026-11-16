@@ -150,7 +150,6 @@ test("shell handlers preserve sender, argument, and return shapes", async () => 
   assert.deepEqual(lastCall(h.windowCalls, "menu.setDevMode").slice(1), [true]);
 
   const chromeCases = [
-    ["theme-accent-changed", "chrome.setThemeAccent", ["#8E48FF"]],
     ["focus-mode-chrome", "chrome.focusMode", [sender, false]],
     ["focus-mode-watch-cursor", "chrome.watchFocusCursor", [sender, true]],
     ["window-control", "chrome.windowControl", [sender, "maximize", senderFrame]],

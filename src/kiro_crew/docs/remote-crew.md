@@ -257,15 +257,20 @@ installed web app shows nothing new.
 
 ### Turning it on
 
-Two settings, both on the gateway the desktop app runs:
+Three settings, all on the gateway the desktop app runs:
 
 ```bash
 kirocrew config set tunnel.relay_viewer_enabled true
 kirocrew config set tunnel.relay_viewer_cps_url https://<control plane host>
+kirocrew config set tunnel.relay_viewer_relay_domain <relay domain>
 ```
 
+The desktop app opens a Crew, and sends its access token, only at exactly
+`https://<endpoint ID>.<relay domain>`. Without the relay domain the list still
+shows Crews, but opening one says Team Crews over the relay aren't set up.
+
 `kirocrew config set` saves through the gateway's own writer, and the gateway reads
-both settings on every request, so the change takes effect at the next request with
+these settings on every request, so the change takes effect at the next request with
 no restart. The settings page can't change them: the dashboard's config route
 refuses `tunnel.relay_viewer_enabled` as not editable.
 

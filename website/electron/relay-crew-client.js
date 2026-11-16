@@ -29,7 +29,7 @@ const refused = (code, retryAfter = null) => ({ ok: false, code, retryAfter });
 const finiteOrNull = (n) => (Number.isFinite(n) ? n : null);
 
 /**
- * @returns {Promise<{ok: true, grant: object, crewUrl: string, name: string}
+ * @returns {Promise<{ok: true, grant: object, crewUrl: string, relayDomain: string, name: string}
  *   | {ok: false, code: string, retryAfter: number|null}>}
  */
 async function requestRelayCrewToken({
@@ -73,6 +73,8 @@ async function requestRelayCrewToken({
         serverDate: finiteOrNull(body.serverDate),
       },
       crewUrl: body.crewUrl,
+      // The configured relay domain; the window opens only its exact host.
+      relayDomain: typeof body.relayDomain === "string" ? body.relayDomain : "",
       name: typeof body.name === "string" ? body.name : "",
       // Names the sign-in (not a secret). Kept out of the grant, so renewal never sees it.
       signInMarker: typeof body.signInMarker === "string" && body.signInMarker ? body.signInMarker : null,
