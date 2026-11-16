@@ -300,8 +300,12 @@ still renews its lease but whose tunnel is down shows **reconnecting**, any othe
 shows **offline**, and either may also show when it was last seen. A row that
 isn't online is dimmed, and choosing it does nothing. If the list can't be loaded,
 the group says why, with the request ID as plain text when there is one. The list
-is read again about once a minute while the dashboard is open, and it never
-carries an access token. The group appears only once your account has at least
+is read again each time you open the switcher (unless it was read in the last
+few seconds), every 15 seconds while a listed Crew isn't online, and about once
+a minute otherwise, and it never carries an access token. The control plane can
+itself take a minute or two after a host connects to report its tunnel
+connected, so a Crew can read offline for that long whatever the dashboard
+does. The group appears only once your account has at least
 one Team Crew, or when it has a sign-in or load problem to show.
 
 **Settings → Remote Crew** shows the same list in a **Shared Crews** card, read

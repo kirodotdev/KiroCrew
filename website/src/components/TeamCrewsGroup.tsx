@@ -130,15 +130,19 @@ function RelayListRefusalNotice({ refusal, onRetry, retrying }: {
   )
 }
 
-export function TeamCrewsGroup({ crews, refusal, retry, retrying, close }: {
+export function TeamCrewsGroup({ crews, refusal, retry, retrying, refreshOnOpen, close }: {
   crews: RelayCrewEntry[]
   refusal: RelayListRefusal | null
   retry: () => void
   retrying: boolean
+  /** Reads the list again; the group mounts each time the menu opens. */
+  refreshOnOpen: () => void
   /** Closes the switcher's menu. */
   close: () => void
 }) {
   const { t } = useTranslation()
+  // The menu shows what it last read, so a Crew that came online since would still read offline.
+  useEffect(() => { refreshOnOpen() }, [refreshOnOpen])
   const [refusals, setRefusals] = useState<Record<string, string>>({})
   const onOpen = useCallback((endpointId: string) => {
     setRefusals(prev => {
@@ -170,13 +174,13 @@ export function TeamCrewsGroup({ crews, refusal, retry, retrying, close }: {
 /** The top bar's Crew switcher with the Team Crews group, while the relay viewer is on
  *  and the group has a Crew or a notice (sign-in, setup or load failure) to show. */
 export default function TeamCrewsSwitcher({ variant }: { variant: 'strip' | 'inline' }) {
-  const { hidden, crews, refusal, retry, retrying } = useRelayViewerCrews()
+  const { hidden, crews, refusal, retry, retrying, refreshOnOpen } = useRelayViewerCrews()
   return (
     <InstanceTabBar
       variant={variant}
       // An empty list passes nothing, so the bar stays as it is without the relay.
       extraGroups={hidden || (refusal === null && crews.length === 0) ? undefined : close => (
-        <TeamCrewsGroup crews={crews} refusal={refusal} retry={retry} retrying={retrying} close={close} />
+        <TeamCrewsGroup crews={crews} refusal={refusal} retry={retry} retrying={retrying} refreshOnOpen={refreshOnOpen} close={close} />
       )}
     />
   )
