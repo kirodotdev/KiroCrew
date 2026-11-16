@@ -5082,7 +5082,10 @@ corrupt existing document as described above.
 - Missing fields → individual defaults: each is the default declared on its DTO
   field, apart from the departures listed under "Defaults come from the DTO fields"
   above
-- An enum value outside its set → that field's default, with a logged line
+- An enum value outside its set → that field's default, with a logged line. A
+  nullable (`X | None`) enum field's schema `enum` carries `null` as a member, so
+  its unset default validates silently; the flattened `ConfigEntry.enum_values`
+  leaves `null` out and `nullable` says it instead
 - An out-of-range number → clamped (see "Security-Bounded Config Clamp")
 
 ### Editable choices (`enum`)
