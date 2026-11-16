@@ -20,8 +20,9 @@ import hashlib
 import hmac
 import json
 import os
-import tempfile
 import unittest
+
+import pytest
 
 from kiro_crew.apps.builtins.ops_mission_control.backend.providers import (
     set_top_level,
@@ -48,17 +49,21 @@ def _body(**kw: object) -> bytes:
 class _Env(unittest.TestCase):
     """Isolated data home, drained queue, provider enabled + secret set.
 
-    The home is isolated HERE rather than by a fixture: these tests live under
-    ``src/``, so ``test/conftest.py`` (whose autouse fixture pins ``KIROCREW_HOME``)
+    The home is isolated HERE rather than by ``test/conftest.py``: these tests live
+    under ``src/``, so that conftest (whose autouse fixture pins ``KIROCREW_HOME``)
     never loads for them — the sibling app tests all do the same. Without it a
     "no secret configured must reject" assertion passes only because another test
     wrote one, which is exactly what a fail-closed test must not do.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory as the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
         self._prev = os.environ.get("KIROCREW_HOME")
-        os.environ["KIROCREW_HOME"] = self._tmp.name
+        os.environ["KIROCREW_HOME"] = str(self._tmp_path)
         webhook.reset_spool()
 
     def tearDown(self) -> None:
@@ -67,7 +72,6 @@ class _Env(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        self._tmp.cleanup()
 
     @staticmethod
     def _enable(*, secret: str | None = _SECRET) -> None:

@@ -21,6 +21,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from kiro_crew import security
 from kiro_crew.apps.builtins.ops_mission_control.backend import secrets
 from kiro_crew.testing.synthetic_credentials import github_classic, synth
@@ -240,17 +242,14 @@ class TestRedaction(unittest.IsolatedAsyncioTestCase):
 class TestSecretBackend(unittest.TestCase):
     """The store is write-only over the API: values go in, only names come out."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dir(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the secrets file."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        import tempfile
-        from pathlib import Path
-
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         self.backend = secrets.KeystoneFileBackend(self.tmp / "secrets.json")
-
-    def tearDown(self):
-        import shutil
-
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_put_then_get(self):
         self.backend.put("pagerduty", "api_token", "u+secretvalue")

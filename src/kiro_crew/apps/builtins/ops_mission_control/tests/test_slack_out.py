@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import threading
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
+
+import pytest
 
 from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store, slack_out, store
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
@@ -89,17 +90,20 @@ class _HomeIsolated(unittest.IsolatedAsyncioTestCase):
     alone. Same convention the other async tests here already document.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory as the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
         self._prev = os.environ.get("KIROCREW_HOME")
-        os.environ["KIROCREW_HOME"] = self._tmp.name
+        os.environ["KIROCREW_HOME"] = str(self._tmp_path)
 
     def tearDown(self) -> None:
         if self._prev is None:
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        self._tmp.cleanup()
 
 
 class TestConfiguration(_HomeIsolated):
@@ -128,7 +132,7 @@ class TestConfiguration(_HomeIsolated):
     def test_channel_id_is_not_written_to_the_secret_store(self) -> None:
         """A channel ID is not a credential; it belongs in plain config."""
         slack_out.set_settings(enabled=True, channel_id="C0123456789")
-        secrets = Path(self._tmp.name) / "ops_mission_control_secrets.json"
+        secrets = self._tmp_path / "ops_mission_control_secrets.json"
         self.assertFalse(secrets.exists(), "Slack output must add no secret material")
 
 

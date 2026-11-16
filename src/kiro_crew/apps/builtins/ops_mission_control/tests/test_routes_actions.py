@@ -9,11 +9,10 @@ contract itself (registration, the enabled gate, write-only secrets) is in ``tes
 """
 
 import json
-import shutil
-import tempfile
 import unittest
 from unittest import mock
 
+import pytest
 from aiohttp import web
 
 from kiro_crew.apps.builtins.ops_mission_control.backend import routes
@@ -32,10 +31,15 @@ class TestAnActionSchedulesItsOwnVerification(unittest.IsolatedAsyncioTestCase):
     done and when to look again, and says which of the two it is doing.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory as the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -46,7 +50,6 @@ class TestAnActionSchedulesItsOwnVerification(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _incident(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend import models, store
@@ -239,10 +242,15 @@ class TestAuthorityIsPerProvider(unittest.IsolatedAsyncioTestCase):
     right; the code did not act on what the gate had approved.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory as the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -253,7 +261,6 @@ class TestAuthorityIsPerProvider(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _webhook_incident(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend import models, store
@@ -330,10 +337,15 @@ class TestProposeLoop(unittest.IsolatedAsyncioTestCase):
     binds to the exact terms shown, and executes those, not whatever the request supplies.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory as the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -344,7 +356,6 @@ class TestProposeLoop(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _incident(self, mode=None):
         from kiro_crew.apps.builtins.ops_mission_control.backend import models, store
@@ -659,13 +670,18 @@ class TestTheAutonomyGateIsAChokepoint(unittest.IsolatedAsyncioTestCase):
     of thing a later refactor removes without noticing.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory as the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
         # Own data home, like every other store-touching class here. Without it
         # `store.claim` writes against whatever home the previous test left behind and can
         # return None — which is how the behavioural case below first failed.
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -676,7 +692,6 @@ class TestTheAutonomyGateIsAChokepoint(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_only_one_function_calls_sink_execute(self):
         """A second call site would be a write that skipped the permit."""
@@ -785,10 +800,15 @@ class TestOutboundNotesAreRedacted(unittest.IsolatedAsyncioTestCase):
     outbound surface and the one without it.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory as the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -799,7 +819,6 @@ class TestOutboundNotesAreRedacted(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     async def test_a_token_in_the_note_never_reaches_the_sink(self):
         from aiohttp.test_utils import TestClient, TestServer
@@ -911,10 +930,15 @@ class TestOnlyOneApprovalCanWin(unittest.IsolatedAsyncioTestCase):
     uses, for the same "exactly one winner" reason.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory as the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -925,7 +949,6 @@ class TestOnlyOneApprovalCanWin(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _proposed(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend import models, store
@@ -1018,10 +1041,15 @@ class TestApprovedProposalSchedulesVerification(unittest.IsolatedAsyncioTestCase
     the incident record and postmortem showed a write that "never happened". Found in review.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory as the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -1032,7 +1060,6 @@ class TestApprovedProposalSchedulesVerification(unittest.IsolatedAsyncioTestCase
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     async def _run(self, action, *, simulated, suppressed_secs=0, native_id="p-1"):
         # Both halves of the ceiling: app mode `act` AND a rule matching this signal.
