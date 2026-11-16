@@ -41,6 +41,7 @@ from kiro_crew.agent_sdk.mcp_problems import (
     session_mcp_problems,
     wait_for_declared_mcp,
 )
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import (
     DENY_CAUSE_AUDIT_UNAVAILABLE,
@@ -503,6 +504,11 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             {"error": "agent must be a string", "code": "agent_not_a_string"}, status=400
         )
     deliver = body.get("deliver", True)
+    if isinstance(deliver, str):
+        # A JSON string such as "false" is truthy, so it delivered anyway. The
+        # shared reader maps the usual spellings; any other value keeps the
+        # same truth test as before.
+        deliver = _coerce_bool(deliver, bool(deliver))
     try:
         timeout_secs = max(
             60,
