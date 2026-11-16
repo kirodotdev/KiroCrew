@@ -752,7 +752,14 @@ class TestSandboxedSeams:
 
 class TestInstallStop:
     def test_a_stop_ends_a_running_install(self, tmp_path, monkeypatch):
-        """A deactivation mid-install kills the installer instead of waiting it out."""
+        """A deactivation mid-install kills the installer instead of waiting it out.
+
+        The stop is set from inside the first poll of the running installer, and
+        the installer's own ``communicate`` and ``kill`` are recorded: the next
+        wait on it must follow a kill and be bounded by the stop grace. A further
+        poll of a live installer after the stop, or an unbounded wait on it, is
+        refused on the spot.
+        """
         import sys
 
         monkeypatch.setattr(
@@ -760,13 +767,38 @@ class TestInstallStop:
         )
         monkeypatch.setattr(lr, "STOP_GRACE_SECS", 5)
         stop = threading.Event()
-        threading.Timer(0.5, stop.set).start()
-        started = time.monotonic()
+        events: list = []
+        procs: list = []
+        real_popen = lr.popen_limited
+
+        def _popen(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            real_communicate, real_kill = proc.communicate, proc.kill
+
+            def communicate(*c_args, timeout=None, **c_kwargs):
+                killed = ("kill",) in events
+                events.append(("communicate", timeout))
+                if not killed and (timeout is None or stop.is_set()):
+                    real_kill()  # the refusal leaves no installer behind
+                    raise AssertionError(f"waited on the installer after the stop: {events}")
+                stop.set()
+                return real_communicate(*c_args, timeout=timeout, **c_kwargs)
+
+            def kill():
+                events.append(("kill",))
+                real_kill()
+
+            proc.communicate, proc.kill = communicate, kill
+            procs.append(proc)
+            return proc
+
+        monkeypatch.setattr(lr, "popen_limited", _popen)
         code, out = lr._sandboxed_run(
             [sys.executable, "-c", "import time; time.sleep(60)"], 120, tmp_path, stop=stop
         )
         assert code != 0 and "stopped" in out
-        assert time.monotonic() - started < 15
+        assert events == [("communicate", lr.RUN_POLL_SECS), ("kill",), ("communicate", 5)], events
+        assert len(procs) == 1 and procs[0].returncode is not None, "the installer was not reaped"
 
     def test_an_install_without_a_stop_still_returns_its_output(self, tmp_path, monkeypatch):
         import sys

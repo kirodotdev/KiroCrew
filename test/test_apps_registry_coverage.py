@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -961,16 +961,33 @@ class TestRunAppBuild:
         """Declare `B -> .` plus ``backend.entryPoint: "B/B/.../B/server.py"`` with
         *depth* components and put it through the three judgements the install
         makes of a declared entry -- the runtime's own file check, the build gate
-        and the final gate -- timed together. Returns the runtime's refusal (``""``
-        when it accepts the path), the build result, the final refusal and the
-        elapsed seconds."""
+        and the final gate. Returns the runtime's refusal (``""`` when it accepts
+        the path), the build result, the final refusal and, for every preview the
+        gates copied, the checkout's and the preview's entries as ``(relative
+        path, link text or None)``, read right after the copy, links unfollowed."""
         from kiro_crew.apps.manifest import file_entry_point_refusal
 
         (tmp_path / "B").symlink_to(Path("."))
         (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
         deep = "/".join(["B"] * depth) + "/server.py"
         spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
-        started = time.monotonic()
+        previews: list[tuple[list[tuple[str, str | None]], list[tuple[str, str | None]]]] = []
+        real_copy = registry.copy_app_tree_as_installed
+
+        def _entries(top):
+            found = []
+            for root, dirs, files in os.walk(top):
+                for name in sorted(dirs + files):
+                    path = os.path.join(root, name)
+                    link = os.readlink(path) if os.path.islink(path) else None
+                    found.append((os.path.relpath(path, top).replace(os.sep, "/"), link))
+            return found
+
+        def _recording_copy(source, dest, **kwargs):
+            real_copy(source, dest, **kwargs)
+            previews.append((_entries(source), _entries(dest)))
+
+        monkeypatch.setattr(registry, "copy_app_tree_as_installed", _recording_copy)
         runtime_refusal = file_entry_point_refusal(deep, tmp_path)
         result = await registry._run_app_build(
             tmp_path, "demo", [], manifest=_asgi_backend(deep), self_managed=False
@@ -978,9 +995,8 @@ class TestRunAppBuild:
         final = registry._desktop_build_refusal(
             tmp_path, _asgi_backend(deep), self_managed=False, final=True
         )
-        elapsed = time.monotonic() - started
         assert spawned == []  # nothing planned either way
-        return runtime_refusal, result, final, elapsed
+        return runtime_refusal, result, final, previews
 
     @requires_symlinks
     @pytest.mark.timeout(60)
@@ -991,13 +1007,20 @@ class TestRunAppBuild:
     ):
         """`B -> .` under ``backend.entryPoint: "B/B/.../B/server.py"`` is judged in bounded time.
 
-        The install copy keeps `B` as one link, so the judgment is linear in the path,
+        The install copy keeps `B` as one link and never walks through it, so the
+        work is the same at every depth and the kernel resolves the path in one pass,
         and the final pass agrees with the runtime's `file_entry_point_refusal`. Which
         way a 60-link path goes belongs to the host (POSIX symlink budget, Windows hop
         budget), so no single verdict is asserted."""
-        runtime_refusal, result, final, elapsed = await self._judge_a_deep_self_link(
+        runtime_refusal, result, final, previews = await self._judge_a_deep_self_link(
             tmp_path, monkeypatch, depth
         )
+        # Every preview the gates judged is the checkout as written: `B` one link
+        # whose text is `.`, nothing copied through it, whatever the depth.
+        assert previews, "no preview was copied"
+        for checkout, preview in previews:
+            assert ("B", ".") in checkout, checkout
+            assert preview == checkout, (checkout, preview)
         # Each judge answers with a verdict it owns -- never an escape, since the
         # link points at its own directory, and never an ordinary install error.
         assert runtime_refusal in (
@@ -1017,7 +1040,6 @@ class TestRunAppBuild:
         # entry that is merely absent, the final pass refuses it -- so a refusal
         # from the build pass is always the final pass's desktop refusal.
         assert result["ok"] or final == registry._DESKTOP_BUILD_REFUSAL, (result, final)
-        assert elapsed < 20, f"the desktop gate took {elapsed:.1f}s on a {depth}-component path"
 
     @requires_symlinks
     @pytest.mark.skipif(

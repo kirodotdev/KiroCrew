@@ -66,16 +66,72 @@ def _run(tmp_path: Path, env: dict[str, str]) -> tuple[subprocess.CompletedProce
     return proc, time.monotonic() - started
 
 
+def _record_waits(tmp_path: Path, env: dict[str, str]) -> Path:
+    """Put a recording ``sleep`` first on PATH; return the file it writes.
+
+    Every wait the script makes is a ``sleep`` (the watchdog's and the backoff's), so
+    each one is recorded as ``wait <secs>``, and one longer than the budget is refused
+    (``refused <secs>``) and returns at once instead of holding the run.  A fake
+    ``xcrun`` hangs with ``NOTARIZE_DRILL_HANG=1 sleep``: that sleep records
+    ``hang <pid>`` when it starts and ``stopped <pid>`` when a SIGTERM reaches it, which
+    can be before it records ``hang`` (an early cancel).
+    """
+    real_sleep = shutil.which("sleep")
+    assert real_sleep is not None
+    record = tmp_path / "waits"
+    sleep = tmp_path / "bin" / "sleep"
+    sleep.write_text(
+        "#!/usr/bin/env bash\n"
+        f'record="{record}"\n'
+        'if [ -n "${NOTARIZE_DRILL_HANG:-}" ]; then\n'
+        # ``$!`` names the real sleep from the moment it is forked, so a SIGTERM at
+        # any point stops it; one before the fork stops nothing and orphans nothing.
+        '  trap \'echo "stopped $$" >> "$record"; [ -z "$!" ] || kill "$!" 2>/dev/null; exit 143\' TERM\n'
+        '  echo "hang $$" >> "$record"\n'
+        f'  "{real_sleep}" "$1" &\n'
+        '  wait "$!"\n'
+        "  exit 0\n"
+        "fi\n"
+        'if awk -v a="$1" -v b="$NOTARIZE_BUDGET_SECS" \'BEGIN { exit !(a + 0 > b + 0) }\'; then\n'
+        '  echo "refused $1" >> "$record"\n'
+        "  exit 0\n"
+        "fi\n"
+        'echo "wait $1" >> "$record"\n'
+        f'exec "{real_sleep}" "$1"\n',
+        encoding="utf-8",
+    )
+    sleep.chmod(0o755)
+    return record
+
+
+def _assert_waits_within_budget(record: Path) -> None:
+    """No wait exceeded the 2 s budget, and every hanging call was signalled.
+
+    A ``stopped`` with no ``hang`` is an early cancel and is valid; a ``hang`` with no
+    ``stopped`` from the same shim is a hanging call the budget never stopped.
+    """
+    lines = record.read_text(encoding="utf-8").splitlines() if record.exists() else []
+    assert not [
+        line for line in lines if line.startswith("refused")
+    ], f"waited past the budget: {lines}"
+    stopped = {line.split()[1] for line in lines if line.startswith("stopped ")}
+    unstopped = [
+        line for line in lines if line.startswith("hang ") and line.split()[1] not in stopped
+    ]
+    assert not unstopped, f"a hanging call was not stopped: {lines}"
+
+
 def test_hanging_submit_is_stopped_at_the_budget(tmp_path: Path) -> None:
     # The very first call hangs: no submission id ever comes back.
-    env = _fake_xcrun(tmp_path, "exec sleep 300\n")
-    proc, took = _run(tmp_path, env)
+    env = _fake_xcrun(tmp_path, "NOTARIZE_DRILL_HANG=1 exec sleep 300\n")
+    record = _record_waits(tmp_path, env)
+    proc, _ = _run(tmp_path, env)
+    # The watchdog waited at most the budget, then stopped the hanging call.
+    _assert_waits_within_budget(record)
     assert proc.returncode == 1, proc.stderr
     assert "budget of 2s exhausted" in proc.stderr
     assert "submission: <none>" in proc.stderr
     assert "notarytool submit hung" in proc.stdout
-    # Well inside the 300s the fake would have slept and far below any job timeout.
-    assert took < 30
 
 
 def test_hanging_info_is_stopped_at_the_budget(tmp_path: Path) -> None:
@@ -84,15 +140,16 @@ def test_hanging_info_is_stopped_at_the_budget(tmp_path: Path) -> None:
         tmp_path,
         'case "$2" in\n'
         '  submit) echo \'{"id":"sub-1"}\' ;;\n'
-        "  *) exec sleep 300 ;;\n"
+        "  *) NOTARIZE_DRILL_HANG=1 exec sleep 300 ;;\n"
         "esac\n",
     )
-    proc, took = _run(tmp_path, env)
+    record = _record_waits(tmp_path, env)
+    proc, _ = _run(tmp_path, env)
+    _assert_waits_within_budget(record)
     assert proc.returncode == 1, proc.stderr
     assert "budget of 2s exhausted" in proc.stderr
     assert "submission: sub-1" in proc.stderr
     assert "notarytool info hung" in proc.stdout
-    assert took < 30
 
 
 def test_healthy_path_still_accepts(tmp_path: Path) -> None:
@@ -113,11 +170,13 @@ def test_transient_error_before_budget_is_retried_then_bounded(tmp_path: Path) -
     # A call that FAILS fast stays a retryable transient; the retry sleeps are
     # what run into the budget, so the verdict is still budget-exhausted.
     env = _fake_xcrun(tmp_path, "echo 'The request timed out.' >&2\nexit 1\n")
-    proc, took = _run(tmp_path, env)
+    record = _record_waits(tmp_path, env)
+    proc, _ = _run(tmp_path, env)
+    # Every backoff and watchdog wait stayed inside the budget.
+    _assert_waits_within_budget(record)
     assert proc.returncode == 1, proc.stderr
     assert "treating as transient" in proc.stdout
     assert "budget of 2s exhausted" in proc.stderr
-    assert took < 30
 
 
 def test_a_file_notarytool_refuses_is_not_retried(tmp_path: Path) -> None:
