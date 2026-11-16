@@ -221,8 +221,11 @@ class _PackageTable:
     def rebuild(self) -> None:
         modules = sys.modules
         self.root = modules.get("kiro_crew")
+        # Copy the items in one C-level call before filtering: a thread a test left
+        # running can import a submodule, which binds a new attribute on the package
+        # while a Python-level loop over the live dict is still walking it.
         self.root_items = (
-            [(k, v) for k, v in vars(self.root).items() if not k.startswith("__")]
+            [(k, v) for k, v in list(vars(self.root).items()) if not k.startswith("__")]
             if self.root is not None
             else []
         )
