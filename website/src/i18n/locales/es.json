@@ -8527,6 +8527,7 @@
       "format_markdown": "Copiar Markdown",
       "expand_table": "Ensanchar tabla",
       "narrow_table": "Estrechar tabla",
+      "table_region": "Tabla",
       "expand_table_word": "Ensanchar",
       "collapse_table_word": "Estrechar",
       "table_width_not_saved": "No se pudo guardar el ancho de la tabla en este navegador",

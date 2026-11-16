@@ -8318,6 +8318,7 @@
       "format_markdown": "Markdown kopieren",
       "expand_table": "Tabelle verbreitern",
       "narrow_table": "Tabelle schmaler machen",
+      "table_region": "Tabelle",
       "expand_table_word": "Breiter",
       "collapse_table_word": "Schmaler",
       "table_width_not_saved": "Die Tabellenbreite konnte in diesem Browser nicht gespeichert werden",

@@ -3178,6 +3178,7 @@
       "format_markdown": "Copy Markdown",
       "expand_table": "Widen table",
       "narrow_table": "Narrow table",
+      "table_region": "Table",
       "expand_table_word": "Widen",
       "collapse_table_word": "Narrow",
       "table_width_not_saved": "Couldn't save the table width in this browser",
