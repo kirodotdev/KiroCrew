@@ -20,6 +20,8 @@ superseded-by: []
   (`acp/launch.py`), Shared Crew states "There are no roles and no per-session ACLs" and reports
   containment as `best_effort` (`docs/system-specs/modules/shared-crew.md` §1,
   §4 Containment), and terminal routes require the dashboard owner.
+- Amended 2026-11-16 in R5 and R9. §15 records what changed, why, and who
+  agreed. Nothing else in the rules changed.
 
 Shared Crew lets several people work in one Crew. Today every agent, MCP server,
 shell and terminal still runs as the host account that owns the gateway. So when
@@ -150,7 +152,10 @@ less sandboxed than an owner runtime.
 **R5. The Crew never reads a person's credentials.** Credential checks run as
 the person and return a status (valid, expiring, missing), never a value. A
 check is an edition adapter (CPP slot), public no-op; an LTS edition
-plugs its own sign-in check there.
+plugs its own sign-in check there. One kind of grant is not a person's
+credential in this sense: a grant issued to the Crew's own OAuth app for a
+person (a Connection token). The gateway holds it, uses it only in that
+person's runs (R7, R9), and it never enters their runtime.
 
 **R6. Ask the kernel, do not imitate it.** Whether a person may read a folder is
 answered by doing the read as them through the helper, not by re-implementing
@@ -167,9 +172,10 @@ agent questions from a run-as runtime can be answered only by that principal.
 Other collaborators see the card read-only.
 
 **R9. Using someone's identity for someone else needs their consent, every
-time it is used.** A cron job or channel answer that runs as Ana when Ben set
-it up needs Ana's standing consent, checked at save AND at every fire, against
-everyone who shaped the job. Each such use is logged where Ana can see it.
+time it is used.** A cron job, a Bot's own wake or a channel answer that runs
+as Ana when Ben set it up needs Ana's standing consent, checked at save AND at
+every fire, against everyone who shaped the job or the Bot. Each such use is
+logged where Ana can see it.
 
 **R10. Unknown people are never the owner.** Work for an unlinked channel user
 or a guest runs as a dedicated guest account with no enterprise credentials,
@@ -462,3 +468,25 @@ this RFC
   start is an SEL record, and the session shows whose account it runs on.
 - The owner keeps root on the host. This design protects people from each other
   and from the agent, not from the host owner. Say so in the UI.
+
+## 15. Amendments
+
+- 2026-11-16: R5 and R9 amended. Agreed by the repository owner (buluoray);
+  the author's agreement is recorded by approving the pull request that made
+  this change. Why it changes: the Crew-owned sign-in redesign (§7.4 of the
+  RFC proposed in
+  [#38119](https://github.com/kirodotdev/KiroCrew/pull/38119)) gives each
+  person in a shared Crew their own Connection token. That
+  token is issued to the Crew's own OAuth app, the gateway runs its flow and
+  holds it, and only the gateway's proxy adds it to a call
+  ([rfc-crew-owned-oauth.md](rfc-crew-owned-oauth.md) §3). R5 as written
+  covered every credential of a person with no exception, and R9 named cron
+  jobs and channel answers but not a Bot's own wake, which can spend a
+  person's token with no person sending. New consequence: R5 names a grant
+  issued to the Crew's own OAuth app for a person as gateway-held, used only
+  in that person's runs, and never in their runtime. R9 names a Bot's own
+  wake next to cron jobs and channel answers, so its consent is checked at
+  save and at every wake, against everyone who shaped the Bot. What does not
+  change: the Crew still never reads a person's own credentials (their model
+  login, cloud or ssh keys); R1 to R4 and R6 to R11; the roles in §7; the
+  phases in §10; the status of this document.
