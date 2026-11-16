@@ -626,6 +626,46 @@ async def test_assignment_is_revalidated_and_revocation_unbinds(env: Env) -> Non
     assert env.store.get_binding("C0CODE") is None
 
 
+async def test_a_revocation_takes_an_owed_code_tab_down_after_it_unbinds(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lead's row 20, GPT's race: the tab comes down once no send gate admits the board."""
+    from kiro_crew.slack.code_channels.board import source
+    from kiro_crew.slack.code_channels.workspace import core as workspace
+
+    taken: list[tuple[str, str, bool]] = []
+
+    async def take_down(team: str, channel: str) -> bool:
+        taken.append((team, channel, source._still_the_stored_binding(bound)))
+        return True
+
+    monkeypatch.setattr(workspace, "service", lambda: SimpleNamespace(_take_down_owed=take_down))
+    _bind(env)
+    bound = env.store.get_binding("C0CODE")
+    assert source._still_the_stored_binding(bound)  # a refresh's send gate admits it now
+    env.info("C0CODE", bots=("UOTHERBOT",))
+    event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "301.0", "text": "hi"}
+    assert (await _gate(env, event)).gate is Gate.PASS
+    assert taken and taken[0][1:] == ("C0CODE", False)  # no send gate admits it any more
+    assert env.store.get_binding("C0CODE") is None
+
+
+async def test_a_revocation_unbinds_even_when_the_takedown_raises(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew.slack.code_channels.workspace import core as workspace
+
+    async def take_down(team: str, channel: str) -> bool:
+        raise RuntimeError("slack down")
+
+    monkeypatch.setattr(workspace, "service", lambda: SimpleNamespace(_take_down_owed=take_down))
+    _bind(env)
+    env.info("C0CODE", bots=("UOTHERBOT",))
+    event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "302.0", "text": "hi"}
+    assert (await _gate(env, event)).gate is Gate.PASS
+    assert env.store.get_binding("C0CODE") is None
+
+
 async def test_a_revoked_channels_anchor_thread_no_longer_reaches_the_old_session(
     env: Env,
 ) -> None:

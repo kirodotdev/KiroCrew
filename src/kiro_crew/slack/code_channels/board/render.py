@@ -2,8 +2,8 @@
 
 Pure functions of a :class:`~.model.BoardSnapshot`. Every string that reaches
 Slack was already reduced to the published set by :mod:`.source` (titles and
-summaries redacted and de-pinged); the branch names added here are git-derived
-and pass the same redaction before they are used.
+summaries redacted and de-pinged); the branch names and PR URLs added here are
+forge- or git-derived and pass the same redaction before they are used.
 """
 
 from __future__ import annotations
@@ -13,11 +13,15 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from kiro_crew.platform.context import redact_via_context
+from kiro_crew.slack.code_channels import wrapup as _wrapup
 from kiro_crew.slack.code_channels.board import model
 
 #: Builds a dashboard deep link for a worker slot key ("" when none can be built).
 LinkFor = Callable[[str], str]
 
+#: The wrap-up's own words for a PR's state and its CI, so every surface agrees.
+PR_WORDS = _wrapup._PR_WORDS
+CI_WORDS = _wrapup._CI_WORDS
 
 FALLBACK_PREFIX = "Work board"
 
@@ -42,6 +46,34 @@ def _link(url: str, text: str) -> str:
     return f"<{url}|{_escape(text)}>"
 
 
+def pr_text(row: model.WorkerRow) -> str:
+    """``"PR #12 open · tests passing"`` as plain text (CI only for a live PR), or ``""``.
+
+    The one wording of a worker's PR, used by the wrap-up and the Code tab's
+    worker headers.
+    """
+    if not row.pr_number:
+        return ""
+    head = f"PR #{row.pr_number} {PR_WORDS.get(row.pr_state, '')}".strip()
+    ci = CI_WORDS.get(row.pr_ci, "")
+    return f"{head} · {ci}" if ci and row.pr_state in {"open", "draft"} else head
+
+
+def pr_words(row: model.WorkerRow) -> str:
+    """:func:`pr_text` as mrkdwn, the ``PR #n`` part linked when the forge confirmed it."""
+    text = pr_text(row)
+    if not text:
+        return ""
+    label = f"PR #{row.pr_number}"
+    return _link(_pr_url(row), label) + _escape(text[len(label) :])
+
+
+def _pr_url(row: model.WorkerRow) -> str:
+    """The row's PR URL when it may be linked: forge-confirmed, https, left whole."""
+    url = row.pr_url
+    return url if url.startswith("https://") and _linkable(url) else ""
+
+
 def row_text(row: model.WorkerRow, link_for: LinkFor, *, now: datetime | None = None) -> str:
     """One worker's mrkdwn (the fallback look): title, then the same details and output."""
     when = now or datetime.now(timezone.utc)
@@ -52,6 +84,9 @@ def row_text(row: model.WorkerRow, link_for: LinkFor, *, now: datetime | None = 
     meta: list[str] = []
     if row.branch:
         meta.append(f"`{_code_safe(redact_via_context(row.branch))}`")
+    output = "".join(_mrkdwn(e) for e in _output(row))
+    if output:
+        meta.append(output)
     link = link_for(row.session_key) if row.session_key else ""
     if link:
         meta.append(_link(link, "Open in dashboard"))
@@ -66,7 +101,7 @@ def _code_safe(text: str) -> str:
 
 
 def _mrkdwn(element: dict) -> str:
-    """A rich-text element of :func:`_details` as mrkdwn."""
+    """A rich-text element of :func:`_details` / :func:`_output` as mrkdwn."""
     text = str(element.get("text") or "")
     if element.get("type") == "link":
         return _link(str(element.get("url") or ""), text)
@@ -242,6 +277,39 @@ def _details(row: model.WorkerRow, now: datetime) -> list[dict]:
     return [{"type": "text", "text": text}]
 
 
+def _ci_counts(row: model.WorkerRow) -> str:
+    """``CI 4/6 passing · 2 running`` for a live PR, else its CI word, or ``""``."""
+    if row.pr_state not in {"open", "draft"}:
+        return ""
+    if row.pr_checks is None:
+        return CI_WORDS.get(row.pr_ci, "")
+    passed, total, running = row.pr_checks
+    if not total:
+        return ""
+    text = f"CI {passed}/{total} passing"
+    if row.pr_ci == "failed":
+        text += f" · {total - passed - running} failing"
+    return f"{text} · {running} running" if running else text
+
+
+def _output(row: model.WorkerRow) -> list[dict]:
+    """The row's PR and CI as rich text (``PR #12`` linked, ``merged``, CI counts)."""
+    if not row.pr_number:
+        return []
+    label = f"PR #{row.pr_number}"
+    url = _pr_url(row)
+    out: list[dict] = [
+        {"type": "link", "url": url, "text": label} if url else {"type": "text", "text": label}
+    ]
+    state = PR_WORDS.get(row.pr_state, "") if row.pr_state != "open" else ""
+    if state:
+        out.append({"type": "text", "text": f" {state}"})
+    ci = _ci_counts(row)
+    if ci:
+        out.append({"type": "text", "text": f" · {ci}"})
+    return out
+
+
 def plan_block(snapshot: model.BoardSnapshot, link_for: LinkFor, *, now: datetime) -> dict:
     """One ``plan`` with one task per worker (Slack's own status marks, no emoji)."""
     shown = list(snapshot.plan_rows)
@@ -282,6 +350,11 @@ def plan_block(snapshot: model.BoardSnapshot, link_for: LinkFor, *, now: datetim
                 ]
         if details:
             task["details"] = _rich(details)
+        output = _output(row)
+        if output:
+            task["output"] = _rich(output)
+        if _pr_url(row):
+            task["sources"] = [{"type": "url", "url": row.pr_url, "text": f"PR #{row.pr_number}"}]
         tasks.append(task)
     if more:
         tasks.append(
@@ -343,6 +416,20 @@ def idle_stop_text(helpers: list[tuple[str, str]], link_for: LinkFor, lead_key: 
     else:
         how = f"open it from {where}"
     return f"{text} To stop one, {how} and press *Stop generation* in its chat."
+
+
+def outcome_line(row: model.WorkerRow) -> str:
+    """One wrap-up line: ``• Fix login: PR #12 merged`` / ``rejected, PR #9 closed``."""
+    pr = pr_words(row)
+    if row.state == model.CLOSED:
+        outcome = _escape(row.closed_as or "closed")
+        if pr:
+            outcome += f", {pr}"
+    elif pr:
+        outcome = pr
+    else:
+        outcome = f"{_escape(model.row_label(row))}, no PR"
+    return f"• {_escape(row.title)}: {outcome}"
 
 
 def needs_you_text(row: model.WorkerRow, owner_id: str, link_for: LinkFor) -> str:

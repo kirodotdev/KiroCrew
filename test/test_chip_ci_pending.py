@@ -126,7 +126,9 @@ async def test_github_chip_read_marks_failed_rollup_still_running(monkeypatch) -
 
     status = await source._fetch_check_status(PR_URL)
 
-    assert status == {"ci": "failed", "ciPending": "1", "state": "open"}
+    # ``ciCounts`` (passed/total/running) is the work board's internal marker,
+    # stripped before the chip cache (test_slack_code_channel_board_diff.py).
+    assert status == {"ci": "failed", "ciPending": "1", "ciCounts": "0/2/1", "state": "open"}
 
 
 def test_carry_known_ci_moves_the_marker_with_ci() -> None:

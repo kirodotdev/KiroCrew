@@ -200,6 +200,18 @@ class BoardCache:
         except Exception:
             return False
 
+    @staticmethod
+    def _worker_projects(board: Any) -> dict[str, str]:
+        """``slot key -> project`` of each board row's live worker session (on the loop)."""
+        from kiro_crew.slack.code_channels import surface
+        from kiro_crew.slack.code_channels.workspace.service import _find_slot
+
+        state = surface.dashboard_state()
+        slots = {
+            r.session_key: _find_slot(state, r.session_key) for r in getattr(board, "rows", ())
+        }
+        return {k: str(getattr(s, "project", "") or "") for k, s in slots.items() if s is not None}
+
     def running_helpers(self, binding: Any) -> list[tuple[str, str]]:
         """``(session key, board title)`` per helper agent the watch last saw running.
 

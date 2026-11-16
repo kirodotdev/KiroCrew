@@ -47,7 +47,7 @@ import os
 import re
 import socket
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 #: Longest summary line the board shows.
 SUMMARY_CHARS = 140
@@ -842,6 +842,14 @@ class WorkerRow:
     #: For an ``approval`` wait: a short digest of the pending approval's request
     #: id (never shown), so a second approval in the same report pages again.
     approval_key: str = ""
+    #: The worker's PR: the number it reported (``artifacts["pr"]``), then what the
+    #: workspace refresh read from the channel's own repository (URL, state, CI).
+    pr_number: int = 0
+    pr_url: str = ""
+    pr_state: str = ""
+    pr_ci: str = ""
+    #: ``(passed, total, running)`` for the PR's checks (``None``: not known).
+    pr_checks: tuple[int, int, int] | None = None
 
     @property
     def needs_owner(self) -> bool:
@@ -850,6 +858,18 @@ class WorkerRow:
     @property
     def settled(self) -> bool:
         return self.state in {DONE, CLOSED}
+
+    def with_pr(
+        self,
+        number: int,
+        url: str,
+        state: str,
+        ci: str,
+        checks: tuple[int, int, int] | None = None,
+    ) -> WorkerRow:
+        return replace(
+            self, pr_number=number, pr_url=url, pr_state=state, pr_ci=ci, pr_checks=checks
+        )
 
 
 #: Slack's limit on tasks in one plan block.
@@ -1009,11 +1029,11 @@ def aggregate_line(
     dropped_done: int = 0,
     dropped_closed: int = 0,
 ) -> str:
-    """``"2 working · 1 waiting on you · 1 of 4 done"``: the one-line status.
+    """``"2 working · 1 waiting on you · 1 of 4 done · 1 PR open"``: the one-line status.
 
     Only non-zero counts are named, in urgency order after "working"; the done
-    count always follows. Settled items not kept as rows count too. An empty
-    board says so.
+    count always follows, then the open PRs when there are any. Settled items
+    not kept as rows count too. An empty board says so.
     """
     total = len(rows) + dropped_done + dropped_closed
     if not total:
@@ -1028,6 +1048,9 @@ def aggregate_line(
     if counts[CLOSED]:
         parts.append(f"{counts[CLOSED]} closed")
     parts.append(f"{counts[DONE]} of {total} done")
+    open_prs = sum(1 for r in rows if r.pr_number and r.pr_state in {"open", "draft"})
+    if open_prs:
+        parts.append(f"{open_prs} PR{'' if open_prs == 1 else 's'} open")
     return " · ".join(parts)
 
 

@@ -10,6 +10,7 @@ pinned channel; nothing here chooses one.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from kiro_crew.slack.code_channels.client import CodeChannelsClient, _error_code, _response_data
@@ -49,7 +50,12 @@ class SurfaceClient(CodeChannelsClient):
     """Views, canvas, commands, summary, rename, status and archive."""
 
     async def _call(
-        self, method: str, body: dict[str, Any], *, query: bool = False
+        self,
+        method: str,
+        body: dict[str, Any],
+        *,
+        query: bool = False,
+        gate: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Every surface call goes through the channel policy first.
 
@@ -77,7 +83,9 @@ class SurfaceClient(CodeChannelsClient):
         # nothing more, whichever await the Stop landed in.
         if channel and not surface.commit_if_not_stopped(channel):
             raise CodeChannelApiError(method, STOPPED)
-        return await super()._call(method, body, query=query)
+        # A write carrying the board's workers asks its *gate* last of all, in
+        # the base ``_call`` right before the raw send (no await between).
+        return await super()._call(method, body, query=query, gate=gate)
 
     async def set_view(
         self,

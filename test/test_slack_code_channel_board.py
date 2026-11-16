@@ -31,6 +31,8 @@ from kiro_crew.slack.code_channels import binding as cc_binding
 from kiro_crew.slack.code_channels import board as board_pkg
 from kiro_crew.slack.code_channels import surface, surface_store
 from kiro_crew.slack.code_channels.board import model, publisher, render, source
+from kiro_crew.slack.code_channels.client import SCOPE_REFUSED
+from kiro_crew.slack.code_channels.models import CodeChannelApiError
 from kiro_crew.slack.code_channels.store import Binding
 from kiro_crew.slack.code_channels.workspace import git_ops, service
 from kiro_crew.slack.code_channels.workspace.pr import PrLookup
@@ -303,7 +305,7 @@ def test_read_board_projects_only_the_published_set_with_liveness():
     first, second, third, fourth = snap.rows
     assert first.state == model.WAITING_ON_YOU and first.branch == "feat/login"
     assert first.summary == "Which OAuth app?" and "<!here>" not in first.title
-    assert first.session_key == "chat-w1"  # the reported PR number is not shown
+    assert first.pr_number == 12 and first.session_key == "chat-w1"
     assert second.state == model.LOST  # its session is gone and it never said done
     assert second.branch == ""  # an option-shaped branch is never kept
     assert third.state == model.IDLE and third.session_key == ""  # not dispatched yet
@@ -324,6 +326,12 @@ def test_read_board_projects_only_the_published_set_with_liveness():
         "step",
         "turn_started_at",
         "approval_key",  # a digest only for the alert token, never rendered
+        # The worker's PR: its reported number, then the channel repository's read.
+        "pr_number",
+        "pr_url",
+        "pr_state",
+        "pr_ci",
+        "pr_checks",
     }
 
 
@@ -781,7 +789,9 @@ class _FakeClient:
     async def set_context_bar(self, channel_id, items):
         self.calls.append(("set_context_bar", {"items": items}))
 
-    async def set_diff_view(self, channel_id, content, *, base_branch="", head_branch=""):
+    async def set_diff_view(self, channel_id, content, *, base_branch="", head_branch="", gate):
+        if gate is not None and not gate():
+            raise CodeChannelApiError("agents.conversations.setView", SCOPE_REFUSED)
         self.calls.append(("set_diff_view", {"content": content}))
         return "V1"
 
@@ -810,6 +820,10 @@ class _Harness:
             self.pr_queries.append(branch)
             return self.prs.get(branch, PrLookup("none"))
 
+        async def find_pr_number(repo, number):
+            self.pr_queries.append(f"#{number}")
+            return self.prs.get(f"#{number}", PrLookup("unavailable"))
+
         async def read_board(binding):
             return self.snapshot
 
@@ -822,6 +836,7 @@ class _Harness:
             store=WorkspaceStore(tmp_path / "ws.json"),
             set_project=set_project,
             find_pr=find_pr,
+            find_pr_number=find_pr_number,
             read_board=read_board,
             publish_board=publish_board,
         )

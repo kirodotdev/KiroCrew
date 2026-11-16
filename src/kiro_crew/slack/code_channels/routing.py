@@ -402,6 +402,16 @@ async def _inbound_gate(
                 await asyncio.to_thread(store().drop_binding, channel)
             except StoreWriteError:
                 logger.warning("code channel %s: unbind not saved; retried next message", channel)
+            # Then a Code tab that may carry helper agents' commits comes down, best
+            # effort: after the unbind, so no refresh's send gate (which reads the
+            # stored binding) admits their content past this takedown.
+            try:
+                from kiro_crew.slack.code_channels.workspace import core as workspace
+
+                if (service := workspace.service()) is not None:
+                    await service._take_down_owed(binding.team_id or "", channel)
+            except Exception:
+                logger.warning("code channel %s: Code tab not taken down", channel, exc_info=True)
             _audit(
                 sender_id, "slack.code_channel.unbind", "denied", f"channel={channel}", kind.value
             )

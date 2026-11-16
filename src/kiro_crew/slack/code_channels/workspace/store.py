@@ -65,6 +65,10 @@ class WorkspaceRecord:
     folder_id: str = ""
     diff_hash: str = ""
     view_id: str = ""
+    #: The Code tab up was built with the work board, so it may carry helper
+    #: agents' commits: owed a channel-only tab, or none, once the board's
+    #: scope refuses them (kept across a restart).
+    diff_workers: bool = False
     bar_hash: str = ""
     pr_number: int = 0
     pr_url: str = ""
@@ -190,7 +194,15 @@ class WorkspaceStore:
         return out
 
     def _write(self, records: dict[str, WorkspaceRecord]) -> None:
-        ordered = sorted(records.values(), key=lambda r: r.updated_at, reverse=True)[:MAX_RECORDS]
+        # A record that still owes a Code tab takedown (``diff_workers``) is kept
+        # whatever the cap: dropping it would forget a tab Slack may still show.
+        owed = [r for r in records.values() if r.diff_workers]
+        rest = sorted(
+            (r for r in records.values() if not r.diff_workers),
+            key=lambda r: r.updated_at,
+            reverse=True,
+        )[: max(0, MAX_RECORDS - len(owed))]
+        ordered = sorted(owed + rest, key=lambda r: r.updated_at, reverse=True)
         path = self._file()
         os.makedirs(path.parent, exist_ok=True)
         payload = {"version": 1, "records": [asdict(r) for r in ordered]}

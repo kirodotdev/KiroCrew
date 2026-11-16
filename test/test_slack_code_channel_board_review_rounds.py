@@ -1354,8 +1354,9 @@ def test_a_display_cut_never_shows_part_of_a_path(monkeypatch):
 def test_a_structured_path_is_redacted_whole_before_it_is_shortened(monkeypatch):
     _on_posix(monkeypatch)
     key = SAMPLE_SLACK_BOT_TOKEN
-    step = _published_step(monkeypatch, "read", f"/opt/x/{key}/notes.txt")
-    assert key not in step and key[-8:] not in step and step.startswith("Reading ")
+    # The key in the segment the shortening keeps (M3), so only the redaction removes it.
+    step = _published_step(monkeypatch, "read", f"/opt/x/{key}.txt")
+    assert key not in step and key[-8:] not in step and step.startswith("Reading …/")
 
 
 @pytest.mark.parametrize(

@@ -22,6 +22,7 @@ from kiro_crew import pinned_fs
 from kiro_crew.dashboard.handlers import worktree as wt
 from kiro_crew.slack import features
 from kiro_crew.slack.code_channels import binding as cc_binding
+from kiro_crew.slack.code_channels.client import SCOPE_REFUSED
 from kiro_crew.slack.code_channels.models import CodeChannelApiError
 from kiro_crew.slack.code_channels.workspace import diff as diff_mod
 from kiro_crew.slack.code_channels.workspace import git_ops, service
@@ -133,7 +134,10 @@ class FakeClient:
         self.calls: list[tuple[str, str, dict]] = []
         self.fail: dict[str, str] = {}
 
-    async def _record(self, method: str, channel_id: str, **kwargs):
+    async def _record(self, method: str, channel_id: str, gate=None, **kwargs):
+        if gate is not None and not gate():
+            # The real client asks the gate last, right before the send.
+            raise CodeChannelApiError(f"agents.conversations.{method}", SCOPE_REFUSED)
         self.calls.append((method, channel_id, kwargs))
         code = self.fail.get(method)
         if code:
@@ -144,10 +148,11 @@ class FakeClient:
     async def set_context_bar(self, channel_id, items):
         return await self._record("set_context_bar", channel_id, context_bar_items=items)
 
-    async def set_diff_view(self, channel_id, content, *, base_branch="", head_branch=""):
+    async def set_diff_view(self, channel_id, content, *, base_branch="", head_branch="", gate):
         return await self._record(
             "set_diff_view",
             channel_id,
+            gate=gate,
             content=content,
             base_branch=base_branch,
             head_branch=head_branch,
@@ -1123,7 +1128,9 @@ def test_the_core_client_sends_the_workspace_writes_and_latches_refusals():
     client = CodeChannelsClient(api_call)
     items = [{"key": "repo", "label": "a/b", "icon": "folder", "url": "https://github.com/a/b"}]
     asyncio.run(client.set_context_bar("C1", items))
-    view_id = asyncio.run(client.set_diff_view("C1", "diff --git a/x b/x\n", base_branch="main"))
+    view_id = asyncio.run(
+        client.set_diff_view("C1", "diff --git a/x b/x\n", base_branch="main", gate=None)
+    )
     assert sent[0] == (
         "agents.conversations.setProperties",
         {"channel_id": "C1", "code_channel": {"context_bar_items": items}},
@@ -1144,7 +1151,7 @@ def test_the_core_client_sends_the_workspace_writes_and_latches_refusals():
     assert err.value.code == "missing_scope"
     assert not features.code_channels_available()  # the client latched it itself
     with pytest.raises(CodeChannelRequestError):
-        asyncio.run(client.set_diff_view("C1", "x" * 1_000_001))
+        asyncio.run(client.set_diff_view("C1", "x" * 1_000_001, gate=None))
     assert len(sent) == 3  # refused locally, never sent
 
 
