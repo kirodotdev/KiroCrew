@@ -335,20 +335,111 @@ def neutralize_background_context_frame(text: str) -> str:
 # ... ``=== End Restored Context ===``. Not in ``_STRUCTURAL_MARKER_RES``, for the
 # member-marker reason above: the genuine frame rides the user turn, which that
 # scrub covers. The webhook payload and the saved context are scrubbed of it
-# instead, before the frame is minted. Two shapes, matched once each rather than
-# word by word: the phrase anywhere (any non-word run may sit between its two
-# words), and any line that opens with an ``==`` run, so a banner line cannot be
-# forged whatever words, look-alike letters or punctuation it carries. ``===``
-# inside a line (code such as ``a === b``) is left alone.
-_RESTORED_CONTEXT_FRAME_RES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"RESTORED[\W_]*CONTEXT", re.IGNORECASE),
-    re.compile(r"^[^\w\n]*={2,}", re.MULTILINE),
+# instead, before the frame is minted. Two shapes: the phrase anywhere, with any
+# run of spaces, line breaks, symbols or invisible characters between its two
+# words but no sentence punctuation (``Service restored. Context: ...`` is
+# prose, not a banner); and the leading ``==`` run of every line that opens with
+# one, unless the line is a known-plain shape (see :func:`_banner_line_is_plain`).
+# ``===`` inside a line (``a === b``) is left alone.
+_RESTORED_CONTEXT_PHRASE_RE = re.compile(r"RESTORED(?:_|[^\w.,;:!?])*CONTEXT", re.IGNORECASE)
+# A banner opens a line, or follows a separator other than ``\n`` inside one.
+_BANNER_OPEN_RE = re.compile(
+    r"(?:^|(?<=[\x00-\x08\x0b-\x1f\x7f\x85\u2028\u2029]))"
+    r"[^\w\n\x00-\x08\x0b-\x1f\x7f\x85\u2028\u2029]*={2,}"
 )
+_BANNER_ARROW_RE = re.compile(r"[^\w\n=]*={2,}>")  # disjoint classes: linear
+# What disqualifies a ``==>`` log arrow: a digit or symbol inside a word
+# (``R3st0red``), or either frame word once only letters are kept (``R e s t o
+# r e d``); a frame word may continue on the next line.
+_ARROW_SPLIT_WORD_RE = re.compile(r"[A-Za-z][^A-Za-z\s]+[A-Za-z]")
+_ARROW_FRAME_WORD_RE = re.compile(r"RESTOR|CONTEXT", re.IGNORECASE)
+# Separators other than ``\n`` that a reader may still show inside one line:
+# a banner line holding one is never plain (``===\x0cEnd R3st0red ...``).
+_INLINE_BREAK_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\x85\u2028\u2029]")
+# The words of a pytest run banner (``===== 3 failed, 10 passed in 2.1s =====``,
+# ``==== short test summary info ====``); ``s`` is the seconds unit.
+_TEST_RUN_BANNER_WORDS = frozenset(
+    {
+        "deselected",
+        "durations",
+        "error",
+        "errors",
+        "failed",
+        "failures",
+        "in",
+        "info",
+        "no",
+        "passed",
+        "passes",
+        "rerun",
+        "s",
+        "session",
+        "short",
+        "skipped",
+        "slowest",
+        "starts",
+        "summary",
+        "test",
+        "tests",
+        "warning",
+        "warnings",
+        "xfailed",
+        "xpassed",
+    }
+)
+
+
+def _banner_line_is_plain(line: str) -> bool:
+    """Whether a ``==``-opening *line* is a shape that cannot pass for the frame.
+
+    Fails closed: a banner line keeps its opening only when it is positively
+    known, never by guessing whether its words resemble the frame (look-alike
+    letters, misspellings, synonyms and reordering defeat any such guess). After
+    NFKC with invisible characters dropped, the line must be ASCII and either
+    a ``==>`` log arrow (``==> Building image``) with no ``=`` after the arrow,
+    no digit or symbol inside a word and neither frame word, or
+    carry no words outside the pytest run-banner words: which covers setext
+    underlines and merge-conflict markers (no words at all) and ``===== 3
+    failed, 10 passed in 2.1s =====``. Any other ``==`` banner (``=== RUN
+    TestX``, ``== Notes ==``) loses its leading run, and so does a line holding
+    a control character or a line separator other than ``\n``.
+    shortcut: an arrow line with misspelled frame words (``==> End Restoored
+    Contxt``) keeps its ``==``; drop the arrow carve-out if that is ever seen.
+    """
+    line = line.removesuffix("\n").removesuffix("\r")
+    if _INLINE_BREAK_RE.search(line):
+        return False
+    if not line.isascii():
+        line = "".join(
+            ch for ch in unicodedata.normalize("NFKC", line) if not _is_marker_ignorable(ch)
+        )
+        if not line.isascii():
+            return False
+    arrow = _BANNER_ARROW_RE.match(line)
+    if arrow:
+        rest = line[arrow.end() :]
+        return not (
+            "=" in rest
+            or _ARROW_SPLIT_WORD_RE.search(rest)
+            or _ARROW_FRAME_WORD_RE.search(re.sub(r"[^A-Za-z]+", "", rest))
+        )
+    return all(word in _TEST_RUN_BANNER_WORDS for word in re.findall(r"[a-z]+", line.lower()))
 
 
 def neutralize_restored_context_frame(text: str) -> str:
     """*text* with every look-alike restored-context frame neutralized."""
-    return _apply_marker_spans(text, _marker_spans(text, _RESTORED_CONTEXT_FRAME_RES))
+    spans = _marker_spans(text, (_RESTORED_CONTEXT_PHRASE_RE,))
+    offset = 0
+    # Split on ``\n`` only: other separators stay inside the line they break,
+    # so the plain-shape test judges the whole line a reader sees.
+    for line in text.split("\n"):
+        # Every banner holds ``=`` (NFKC folds the wide forms to it).
+        if "=" in line or not line.isascii():
+            opening = _marker_spans(line, (_BANNER_OPEN_RE,))
+            if opening and not _banner_line_is_plain(line):
+                spans.extend((offset + s, offset + e) for s, e in opening)
+        offset += len(line) + 1
+    return _apply_marker_spans(text, _merge_overlapping_spans(spans))
 
 
 def _merge_overlapping_spans(raw: list[tuple[int, int]]) -> list[tuple[int, int]]:
