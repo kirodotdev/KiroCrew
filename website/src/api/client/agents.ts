@@ -101,6 +101,9 @@ export interface MemberRosterRow {
   /** How many worker sessions this Bot may have open at once: 1-32, or 0 (the
    *  default) for no limit. Only the owner sets it; the session verbs refuse past it. */
   max_workers?: number
+  /** The crewmate's "Auto-compact at", in percent; 0 inherits the global
+   *  `session.autocompact_pct`. A thread's own override still wins. */
+  autocompact_pct?: number
   /** The per-crewmate Dynamic capabilities preview (default off). */
   dynamic_capabilities?: boolean
   /** Optional presentation label shown in place of `name`. `name` stays the
