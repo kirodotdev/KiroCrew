@@ -45,6 +45,8 @@ def _no_background_puller(_floor_monkeypatch):
     from kiro_crew.dashboard.handlers import remote_puller
 
     _floor_monkeypatch.setattr(remote_puller, "ensure_running", lambda state: None)
+    # Each test closes its retired slots afresh, as test_remote_dispatch_retire does.
+    _floor_monkeypatch.setattr(remote_ingest, "_CLOSE_TRIED", set())
 
 
 @pytest.fixture
@@ -591,7 +593,12 @@ def test_a_retired_binding_clears_the_cursor_and_its_reports_are_never_pulled(re
         before = len(work_ledger.read_events(CONDUCTOR, item_id))
         peer.report("done", "shipped", "2026-10-29T10:05:00+00:00")
         await _read(peer)
-        assert len(work_ledger.read_events(CONDUCTOR, item_id)) == before
+        # The read also closes the retired peer slot in a background task, which
+        # records ``destroy``; wait for it so the count below does not race it.
+        if remote_ingest._CLOSE_TASKS:
+            await asyncio.gather(*list(remote_ingest._CLOSE_TASKS))
+        added = [e.kind for e in work_ledger.read_events(CONDUCTOR, item_id)[before:]]
+        assert added == ["destroy"]
 
     asyncio.run(go())
 
