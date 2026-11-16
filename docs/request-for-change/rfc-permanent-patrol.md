@@ -106,11 +106,14 @@ A model that arms a loop today also picks when the loop dies.
   A report whose status repeats the event right before it wakes nothing
   either (`ledger_wake.py` `repeats_status`, read by `conductor_wake.py` and
   `probes/work_ledger.py`): five `blocked` reports in a row wake once. The
-  first report, a new status, and any report after a `progress` or after the
-  conductor's own `decision` still wake, and so does every `question` or
-  `reply`, since each is a new ask (only `blocked` and `done` repeats are
-  suppressed). A new summary or pr on the same
-  status does not; the next read of the board shows it.
+  first report, a new status, and any report after a `progress` still wake.
+  In the probe, a `blocked` or `question` that repeats the worker's previous
+  report wakes nothing even with the conductor's own `decision` between them
+  (`ledger_wake.py` `repeats_wait`), unless its `reason` differs from the
+  cause last delivered or, for a `question`, its summary changed. Every
+  `reply` is a new ask and wakes. A new summary or pr on the same `blocked`
+  status does not; the next read of the board shows it. A stall wakes once per
+  episode (`ledger_wake.py` `stall_episode`), not once per `progress` report.
 - **Pull request.** A gated loop naming one PR is read each tick against its own
   wake criteria, or the shipped default brief (`autonudge_judge.py`
   `DEFAULT_WAKE_WHEN`): a blocker, a failing check, a settled board, a question,
