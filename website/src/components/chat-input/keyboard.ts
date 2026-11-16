@@ -171,9 +171,10 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     // Tab / Shift+Tab on a list line indents or outdents that line, and over a
     // selection of several lines every list line in it (composerListIndent).
     // Everything else keeps Tab's focus move, as does a Tab straight after
-    // Escape, and an open suggestion menu owns Tab even when it has no rows.
+    // Escape or in a read-only composer, and an open suggestion menu owns Tab
+    // even when it has no rows.
     if (e.key === 'Tab' && !escaped && !e.metaKey && !e.ctrlKey && !e.altKey &&
-      !optimizingRef.current && !anyPickerOpenRef.current) {
+      !optimizingRef.current && !e.currentTarget.readOnly && !anyPickerOpenRef.current) {
       const ta = e.currentTarget
       const edit = listIndentEdit(valueRef.current, ta.selectionStart ?? 0, ta.selectionEnd ?? 0, e.shiftKey)
       if (edit) {
@@ -199,10 +200,10 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     // leaves a half-reference whose chip then silently unstages (#14675). Runs
     // in the same slot as the paste-token atom, before Enter/history, so the
     // mention never reaches the default one-character edit. Skipped while the
-    // optimizer runs: the textarea is readOnly then, so a Backspace next to a
-    // mention must not unstage its chip and make the optimizer discard its
+    // textarea is readOnly (optimizing, disabled): a Backspace next to a
+    // mention must not unstage its chip, nor make the optimizer discard its
     // result on the now-shorter draft (crew-pr-reviewer).
-    if (onMentionKey && !ime.isComposing(e) && !optimizingRef.current) {
+    if (onMentionKey && !ime.isComposing(e) && !optimizingRef.current && !e.currentTarget.readOnly) {
       const ta = e.currentTarget
       const mods = { meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey }
       const edit = onMentionKey(valueRef.current, ta.selectionStart ?? 0, ta.selectionEnd ?? 0, e.key, mods)
