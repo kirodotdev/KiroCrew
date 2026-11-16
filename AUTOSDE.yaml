@@ -349,14 +349,19 @@ custom-rules:
       accumulate across runs, exhausting inodes — and inode exhaustion returns
       ENOSPC to every other process on the machine while 90% of the BYTES are
       still free, so it does not look like a disk problem. Use pytest's
-      `tmp_path` fixture, or pair every `mkdtemp()` with
-      `self.addCleanup(shutil.rmtree, path, ignore_errors=True)` ON THE LINE
-      AFTER IT. An `rmtree` in `tearDown` is NOT equivalent and is the shape that
-      actually leaks: `unittest` skips `tearDown` entirely when `setUp` raises,
-      so it leaks on every setUp failure — the failing run nobody is watching
-      closely. The rule is: if you create it, you must register its destruction
-      in the same scope. `ignore_errors=True` also SWALLOWS a cleanup that could
-      not finish, so it is not evidence the directory is gone.
+      `tmp_path` (or `tmp_path_factory.mktemp`); in a `unittest.TestCase`, an
+      autouse fixture method that sets `self.root = tmp_path / ...`
+      (`test_issue_radar_deps.py::_per_test_dirs`). A `with
+      tempfile.TemporaryDirectory()` block is fine only when nothing it starts
+      (a thread, a child, a store that mkdirs on read) can outlive the block.
+      `semgrep/test-determinism.yaml`'s `kirocrew.test-shared-tmp-dir` refuses a
+      new `mkdtemp()` or a `TemporaryDirectory()` held outside a `with`. An
+      `rmtree` in `tearDown` is the shape that actually leaks: `unittest` skips
+      `tearDown` entirely when `setUp` raises, so it leaks on every setUp
+      failure — the failing run nobody is watching closely. `addCleanup` does
+      not help when a late reader re-creates the directory after it ran, and
+      `ignore_errors=True` SWALLOWS a cleanup that could not finish, so it is not
+      evidence the directory is gone.
 
       NEVER use relative `Path("src/...")` or bare string paths to read source
       files from a test. Under pytest-xdist, workers may change CWD, making
