@@ -77,9 +77,8 @@ _turn_approver: Callable[[str], Any] | None = None
 def set_turn_approver(factory: Callable[[str], Any] | None) -> None:
     """Register the gateway's approval prompt for every app turn (``None`` clears it).
 
-    Without one, a call the hook gate neither denies nor grants would fall to
-    ``stream_and_collect``'s caller-less default and be approved unseen; with one
-    it asks the owner, as a cron job's call does.
+    Without one, a call the hook gate neither denies nor grants is refused; with
+    one it asks the owner, as a cron job's call does.
     """
     global _turn_approver
     _turn_approver = factory
@@ -88,6 +87,11 @@ def set_turn_approver(factory: Callable[[str], Any] | None) -> None:
 def _approver_for(app: str) -> Any:
     factory = _turn_approver
     return factory(app) if factory is not None else None
+
+
+async def _refuse_unsettled(_event: Any) -> bool:
+    """The approver of a turn with no gateway prompt: a call nobody can ask about is refused."""
+    return False
 
 
 def _default_agent() -> str:
@@ -146,7 +150,8 @@ class AgentTurnSDK:
         """*sessions* and *hooks* return the gateway's session manager and hook manager.
 
         The hook manager may be ``None`` (a bare test application); the turn then
-        falls back to the always-enforced deny checks of ``stream_and_collect``.
+        keeps the always-enforced deny checks of ``stream_and_collect``, and every
+        other call goes to the approver.
         """
         if not isinstance(app_name, str) or not app_name:
             raise ValueError("an agent turn SDK needs the app's name")
@@ -266,7 +271,7 @@ class AgentTurnSDK:
             raise
         app = self._app
         hooks = self._hooks()
-        approver = _approver_for(app)
+        approver = _approver_for(app) or _refuse_unsettled
 
         async def _run_turn() -> str:
             from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser

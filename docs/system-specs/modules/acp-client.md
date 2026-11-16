@@ -1670,6 +1670,9 @@ creator too, so a `session_send` or a ledger `bind` of its batch that names a
 session key nobody has seen is refused. A to-the-second time (`07:30:45Z`) is never a token
 but counts as such proof. A token in a non-write peer's own arguments (the PR a
 read views) is not unseen; one only another write of the batch carries is.
+A batched write the guard fails to judge (an error inside `BatchWindow.refusal_for`,
+or a `tool_call` or permission request the window could not record) is refused
+with `UNJUDGED_REFUSAL`, which tells the model to send it again alone.
 Known gaps: a review id written as a letter prefix, a dash and digits is not a
 token (no such system is named here); a token glued to a word by `_` is not read;
 and `git merge`/`git tag`, `curl -X POST` and `bash -c '...'` are not

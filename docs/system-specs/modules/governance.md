@@ -4269,7 +4269,11 @@ rule alone, in memory with no file read: a governance profile does not narrow th
 two modes, and one (or a policy `fallback`) that denies either is refused at load
 (`ScopeSpec.profile_always_permitted`), as before this scope governed them. While a ceiling is being installed and when the rule
 cannot be read, both are denied only if the installed ceiling
-has a rule refusing one of them; with no such rule they stay permitted. Set sites
+has a rule refusing one of them; with no such rule they stay permitted. Before any
+ceiling is installed, a read whose context cannot be composed
+(`PlatformCompositionError` on a non-standalone profile, or any other error) denies
+both, since the rule cannot be read; the failure is not cached, so the next read
+tries again. Set sites
 refuse a denied mode before any mutation: `api_chat_mode` and `apply_approval_mode`
 (every dashboard, cron `set_session_mode`, crewmate Profile and workflow write), the
 approval card's Trust and Trust-reads actions (`api_chat_slot_approve`), the crewmate

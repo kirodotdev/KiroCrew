@@ -7378,7 +7378,8 @@ self._interactive_approval("app", requester=f"app {app}"))`, so a call the gate
 neither denies nor grants asks the owner as a cron job's does (`"app"` is in
 `_BACKGROUND_APPROVAL_SOURCES`, the deny-fast unattended window) instead of reaching
 `_resolve_permission`'s caller-less default approve. With no prompt registered (a
-bare test application) the turn passes none. The turn is admitted through
+bare test application) the turn passes an approver that refuses, so a call the gate
+does not settle is rejected, with or without a hook manager. The turn is admitted through
 `run_admitted_or_raise(automation=True,
 operation=BACKGROUND)`. Session acquisition is outside the budget; past it, or on
 the caller's cancellation, the provider is asked to cancel and the session is reset

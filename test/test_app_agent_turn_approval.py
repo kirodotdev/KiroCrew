@@ -121,9 +121,9 @@ def one_tool_call(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(llm_helpers, "stream_and_collect", _stream)
 
 
-def _run_turn() -> _Provider:
+def _run_turn(hooks: Any = HookManager) -> _Provider:
     provider = _Provider()
-    sdk = AgentTurnSDK(APP, lambda: _Manager(provider), HookManager)
+    sdk = AgentTurnSDK(APP, lambda: _Manager(provider), hooks)
     asyncio.run(asyncio.wait_for(sdk.run(f"{APP}-n-1", "a line"), _BOUND))
     return provider
 
@@ -157,11 +157,18 @@ def test_an_unsettled_call_the_prompt_approves_runs(monkeypatch, one_tool_call):
     assert (provider.approved, provider.rejected) == (["r1"], [])
 
 
-def test_control_with_no_prompt_registered_the_turn_keeps_todays_default(one_tool_call):
-    """A bare application registers no prompt; the turn behaves as before."""
+def test_with_no_prompt_registered_an_unsettled_call_is_refused(one_tool_call):
+    """A bare application registers no prompt: nobody can be asked, so the call is refused."""
     provider = _run_turn()
 
-    assert (provider.approved, provider.rejected) == (["r1"], [])
+    assert (provider.approved, provider.rejected) == ([], ["r1"])
+
+
+def test_with_no_hook_gate_and_no_prompt_a_call_is_refused(one_tool_call):
+    """No hook manager and no prompt: the call is refused, never approved by default."""
+    provider = _run_turn(lambda: None)
+
+    assert (provider.approved, provider.rejected) == ([], ["r1"])
 
 
 def test_the_gateway_registers_its_cron_style_prompt_for_app_turns(monkeypatch):

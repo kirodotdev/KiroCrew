@@ -16,7 +16,8 @@ Fail closed only where a rule could narrow the scope: while a new ceiling is bei
 installed and when the rule cannot be read, both modes
 are denied (a person is asked instead) IF the installed ceiling has a rule refusing
 one of them (:func:`_rule_may_narrow`). With no such rule, those same moments permit
-both modes, as on main: nothing could deny them.
+both modes, as on main: nothing could deny them. Before any ceiling is installed, a
+context that cannot be composed denies both: its policy could not be read.
 """
 
 from __future__ import annotations
@@ -171,16 +172,19 @@ def _resolve_now(*, from_install: bool = False) -> None:
 
 
 def _bootstrap() -> None:
-    """First read with no install pushed yet (a late import, a CLI, a test)."""
-    global _denied, _resolved
-    try:
-        from kiro_crew.platform.context import current_context
+    """First read with no install pushed yet (a late import, a CLI, a test).
 
+    A context that cannot be composed (``PlatformCompositionError`` on a
+    non-standalone host, or any other error) means the policy could not be read:
+    both modes are denied for this read (``_denied`` is the deny-all placeholder
+    while nothing is resolved), and the next read tries again.
+    """
+    from kiro_crew.platform.context import current_context
+
+    try:
         current_context()
     except Exception:
-        # No installed ceiling, so no rule exists that could deny either mode (as main).
-        logger.debug("no installed ceiling for the trust verdict", exc_info=True)
-        _denied, _resolved = _ceiling_denied(), True
+        logger.debug("no platform context for the trust verdict; denying trust", exc_info=True)
         return
     if not _resolved:
         _resolve_now()
@@ -219,7 +223,7 @@ def ensure_resolved() -> None:
     if _installing:
         _install_done.wait(_INSTALL_WAIT_SECS)
     if not _installing and not _resolved:
-        _resolve_now()
+        _bootstrap()
 
 
 def clamp_session_mode(mode: str) -> str:
