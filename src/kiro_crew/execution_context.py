@@ -641,6 +641,60 @@ def validate_execution(
     return execution
 
 
+def is_bot_own_execution(execution: ExecutionContext | None, config: Any = None) -> bool:
+    """Whether *execution* runs on what is a Bot's own: its memory store or its chat.
+
+    A record bound to a store other than the shared one runs on a Bot's private
+    store, whatever its selection kind and whether or not it carries the Bot's
+    id: a Bot's worker (a ``template`` record with the Bot's id), a legacy Bot
+    on a named store (a ``template`` record with no id). A ``member`` record on
+    the shared store is a Bot's own when it carries a Bot's id or chats on the
+    conductor (a Bot with its own file, ``mate_worker.is_conductor_execution``).
+    A record of either kind whose template is a Bot's own file
+    (``mate_worker.is_mate_owned_agent``) runs that Bot's prompt, servers and
+    tools. A record on the shared store with a plain template (the reserved
+    ``default`` row, a row the agent sync wrote) has nothing of its own. The rule
+    an app is held to wherever it names an agent: it does not reach a Bot's own
+    by naming the Bot (``apps.cron_sdk``, ``apps.spawn_sdk``, ``slot_ownership``).
+    """
+    if execution is None:
+        return False
+    from kiro_crew import mate_worker
+    from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+
+    if execution.member_id is not None or execution.store.store_id != DEFAULT_MEMORY_STORE:
+        return True
+    return mate_worker.is_mate_owned_agent(
+        execution.template_id
+    ) or mate_worker.is_conductor_execution(execution, config)
+
+
+def is_same_bot(caller: ExecutionContext | None, target: ExecutionContext | None) -> bool:
+    """Whether *caller* already runs as the Bot *target* names, so handing *target*
+    work is the caller handing work to itself.
+
+    Both records must be present and on the same store. A store other than the
+    shared one belongs to one Bot, and :class:`MemoryStoreRef` equality also
+    compares its ``member_id``, so the same named store is the same Bot. Every
+    record on the shared store has the same ``MemoryStoreRef("default", None)``,
+    so there the store says nothing: two such records are the same Bot only when
+    both are ``member`` selections of the same non-empty ``selection_name``. A
+    ``template`` record on the shared store names no Bot, so it is never one.
+    """
+    if caller is None or target is None or caller.store != target.store:
+        return False
+    from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+
+    if caller.store.store_id != DEFAULT_MEMORY_STORE:
+        return True
+    return (
+        caller.selection_kind == "member"
+        and target.selection_kind == "member"
+        and bool(caller.selection_name)
+        and caller.selection_name == target.selection_name
+    )
+
+
 def derive_execution(
     parent: ExecutionContext,
     *,

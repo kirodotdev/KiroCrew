@@ -2530,6 +2530,43 @@ reads the gateway-injected caller context, the MAC-signed per-session token, the
 a session's own kiro-cli process carries its key and its run controls are
 unaffected.
 
+**An app token is not the owner.** A request that carries an app claim and no
+`internal_auth` reaches only a run recorded under its own app: the live run's
+`app`, a queued row's `app`, or the persisted record's
+(`subagent_persistence._record_app`), whatever session started the run. A queued
+run's synthetic terminal record retains its `app` when policy re-entry refuses
+it, its wait expires, or it is cancelled before startup. Every
+route behind `_spawn_scope_refusal` answers 404 `task_scope_denied` for any
+other run, a native card included, and `spawn_list` drops the live rows of other
+apps and of the owner as its queued and persisted halves already do.
+`spawn`, `spawn_continue`, `lost` and `mark-collected` refuse a nonempty
+`parent_session` that is not the app's own (409 `member_identity_unavailable`).
+`token_auth_callers.app_owner_of_session_key` resolves that exact key in its
+namespace: `cron:<id>` and `cron:<id>:<run>` use only the job's `created_by`;
+`subagent:<id>` uses only the run's `app`; `dashboard:<name>` uses the named
+slot's `_app` only when it has no `linked_session_key`. Other keys require an
+exact slot `linked_session_key` match. A colliding slot name or linked slot
+cannot supply ownership of a cron or subagent key. An empty parent stays allowed.
+For `lost`, the batch's recorded owner must be the calling app and the supplied
+parent. The gate records that owner (`_batch_owner`, `(app, parent session key)`)
+wherever it counts a submission, from the app the route handed it, so the record
+covers every member whatever its state: running, queued with no run yet, refused,
+finished or evicted. Both counting sites check and claim the batch synchronously,
+without yielding. A conflicting submission involving an app is refused before
+counting and leaves the recorded owner and expected total unchanged. Its refusal
+carries no batch id, so it cannot announce task text or failures into that wave.
+Owner-only members may span parents; those batches have no single owner.
+`finalize_batch` drops the record. The owner's batch, another
+app's, a mixed batch and one with no recorded owner answer the same 409 without
+changing accounting or announcing a completion; the internal reaper retains its
+lost-submission backstop. `mark-collected` checks every supplied run id against
+the app and parent before marking any run. Both refusals audit `spawn.batch`.
+`spawn` applies the same batch ownership check to an existing `batch_id` before
+calling the manager, with audit operation `spawn.create`; an id absent from the
+owner record, the run records and submission accounting starts a new batch and
+is allowed.
+Only a request with an empty app claim and no `internal_auth` is the owner's.
+
 - `running -> list[SubagentInfo]` — currently running agents
 - `count -> int` — number of running agents
 - `max_concurrent -> int` — the EFFECTIVE capacity limit (`min(user cap, adaptive cap)`)
@@ -4083,7 +4120,12 @@ the row (`DEFERRED_QUEUED_REASONS`); a row waiting only for a slot or the stagge
 keeps `spawned`. Optional keys are `effort_dropped` / `effort_applied` for a
 `reasoning_effort` request and `conversation` for a continuable spawn. Refusals carry a
 `code`: `400 invalid_target_member` (conflicting `target_member` and `crew`),
-`404 unknown_member`, `409 member_identity_unavailable`, `429` with `counted: true` at
+`400 spawn_rejected` (an app token that names no `agent`; a named agent that is not the
+app's own is the manager's rejection below, because the route hands it the app),
+`404 unknown_member` (also a Bot's own named by a caller with an app claim),
+`409 member_identity_unavailable` (also a parent session that is a Bot's, named by such
+a caller, and one that is not the app's own, named by an app token; crew-mode.md,
+"An app's session never runs as a Bot"), `429` with `counted: true` at
 capacity, and `400` with the rejection's `code` and `counted: true` for a spawn rejected
 inside the manager.
 

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         QueuedReadUnavailable,
         QueuedRunListing,
         _agent_dir,
+        _app_token_caller,
         _audit_allow,
         _audit_deny,
         _queue_unreadable,
@@ -416,8 +417,13 @@ async def api_spawn_list(request: web.Request) -> web.Response:
         queued_listing = await _queued_runs(
             state, caller if internal else None, app=str(request.get("app") or "") or None
         )
+    # An app token is not the owner: the live half lists only the runs recorded
+    # under its app, the bound the queued and persisted halves apply below.
+    app_token = _app_token_caller(request)
     for info in state.subagents.all_agents:
         if internal and not _run_belongs_to_caller(caller, info.id, info.parent_session_key):
+            continue
+        if app_token and str(getattr(info, "app", "") or "") != app_token:
             continue
         entry: dict[str, object] = {
             "id": info.id,

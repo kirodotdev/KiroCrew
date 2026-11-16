@@ -22,6 +22,10 @@ if TYPE_CHECKING:
         DashboardState,
         KiroCrewConfig,
         ValidationError,
+        _app_token_batch_refusal,
+        _app_token_caller,
+        _app_token_parent_refusal,
+        _record_isolation_denial,
         _redact,
         _session_turn_holding,
         _spawn_scope_refusal,
@@ -455,6 +459,83 @@ async def _light_tier_pins(
     return pin_model or model, pin_effort or effort, note, warning
 
 
+def _app_bot_spawn_refusal(
+    request: web.Request, own: Any, admitted: Any, *, crew: str, config: Any = None
+) -> web.Response | None:
+    """The answer for an app caller whose run would be a Bot's, or ``None``.
+
+    An app does not reach a Bot's own memory or chat by naming the Bot, the rule
+    the App Kit SDK's spawn holds (``apps.spawn_sdk``). The claim is the request's
+    own: an app token, or an agent that runs in an app's session, scheduled run
+    or background run. *admitted* is the execution the run would take, from the
+    ``crew`` / ``target_member`` it names or from the parent session it names;
+    *own* is the caller's attested execution, which an app token does not have.
+    A caller that already runs as that Bot keeps handing work to itself
+    (``execution_context.is_same_bot``), and a row on the shared store with
+    nothing of a Bot's own is not judged
+    (``execution_context.is_bot_own_execution``).
+
+    A named Bot answers as a member that does not exist, and a Bot's parent
+    session as an identity this caller cannot vouch for: the two bodies the route
+    already gives. Nothing has been handed to the subagent manager yet, so
+    neither carries ``counted``.
+    """
+    app = request.get("app")
+    if not isinstance(app, str) or not app:
+        return None
+    from kiro_crew.execution_context import is_bot_own_execution, is_same_bot
+
+    if not is_bot_own_execution(admitted, config) or is_same_bot(own, admitted):
+        return None
+    _record_isolation_denial(
+        app,
+        "spawn.create",
+        f"crew={crew}" if crew else "parent_session",
+        "an app's run cannot be a Bot's",
+    )
+    if crew:
+        return web.json_response(
+            {"error": "The target member does not exist.", "code": "unknown_member"}, status=404
+        )
+    return web.json_response(
+        {
+            "error": "The execution identity is unavailable; Global memory was not used.",
+            "code": "member_identity_unavailable",
+        },
+        status=409,
+    )
+
+
+def _app_token_spawn_refusal(
+    request: web.Request, agent: str, parent_session: str
+) -> web.Response | None:
+    """The answer for an app token whose spawn the App Kit SDK would refuse.
+
+    An app token is not the owner. Its run is held to what ``apps.spawn_sdk``
+    holds an app's run to: it names one of the app's own agents, and it reports
+    into no session but the app's own (:func:`_app_token_parent_refusal`). An
+    empty name is refused here because it would run the host's default agent and
+    skip the agent checks; a name that is not the app's own is refused by the
+    gate, which the route hands the app (``app=``) so the same gate also judges
+    the spawn under the app's profile and records the run under the app.
+    ``approval_mode: "auto"`` is then what the SDK passes for the same run: an
+    unattended run of the app's own agent, bounded by that agent's tools.
+    Nothing has reached the subagent manager, so neither body carries
+    ``counted``.
+    """
+    app = _app_token_caller(request)
+    if not app:
+        return None
+    if not agent.strip():
+        reason = (
+            f"spawn for app {app!r} requires a named agent: an app starts only its own "
+            f"agents ({app}--*)"
+        )
+        _record_isolation_denial(app, "spawn.create", "agent=", reason)
+        return web.json_response({"error": reason, "code": _SPAWN_REJECTED_CODE}, status=400)
+    return _app_token_parent_refusal(request, parent_session, "spawn.create")
+
+
 async def api_spawn(request: web.Request) -> web.Response:
     """POST /api/spawn — spawn a subagent.
 
@@ -553,6 +634,8 @@ async def api_spawn(request: web.Request) -> web.Response:
     _, refusal = await internal_memory_scope(
         request, "spawn.create", claimed_session=spawn_parent_claim(request, parent_session)
     )
+    if refusal is None:
+        refusal = _app_token_spawn_refusal(request, cleaned.get("agent") or "", parent_session)
     if refusal is not None:
         return refusal
     try:
@@ -680,6 +763,11 @@ async def api_spawn(request: web.Request) -> web.Response:
             config=config,
             requested_mode=admitted_mode,
         )
+        refused = _app_bot_spawn_refusal(
+            request, caller.execution, admitted_execution, crew=crew, config=config
+        )
+        if refused is not None:
+            return refused
         child_memory_store = admitted_execution.store.legacy_name
     except (OSError, ValueError) as exc:
         return web.json_response(
@@ -705,6 +793,16 @@ async def api_spawn(request: web.Request) -> web.Response:
     batch_id = str(body.get("batch_id", "") or "")[:32]
     if batch_id and not batch_id.isalnum():
         return web.json_response({"error": "batch_id must be alphanumeric"}, status=400)
+    if batch_id:
+        refusal = _app_token_batch_refusal(
+            request,
+            parent_session,
+            batch_id=batch_id,
+            allow_new_batch=True,
+            operation="spawn.create",
+        )
+        if refusal is not None:
+            return refusal
     # The ``spawn_sub_agents`` call this member belongs to (transport-layer, set
     # by kirocrew-core): validated like batch_id, bounded, never LLM-schema.
     call_id = body.get("call_id", "") or ""
@@ -783,6 +881,10 @@ async def api_spawn(request: web.Request) -> web.Response:
             include_project=cleaned.get("include_project", True) is not False,
             memory_store=child_memory_store,
             crew=crew,
+            # An app token's run is the app's: the gate then holds a named agent to
+            # the app's own, judges the spawn under the app's profile and records
+            # the run under the app, as it does for the App Kit SDK.
+            **({"app": app_token} if (app_token := _app_token_caller(request)) else {}),
             _memory_mode=admitted_mode,
             _execution_context=admitted_execution.to_record(),
             _parent_spawn_policy=parent_spawn_policy,
@@ -1034,6 +1136,8 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     refusal = await _spawn_scope_refusal(
         request, claimed_session=spawn_parent_claim(request, parent_session)
     )
+    if refusal is None:
+        refusal = _app_token_parent_refusal(request, parent_session, "spawn.continue")
     if refusal is not None:
         return refusal
     try:

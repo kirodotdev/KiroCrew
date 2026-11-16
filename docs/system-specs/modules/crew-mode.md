@@ -243,6 +243,74 @@ record, once written, stays authoritative. The kind is part of every binding
 tuple the race guards compare (`_slot_binding`, `_current_binding`, the
 agent-conflict compare), so a kind change is a binding change.
 
+An app's session never runs as a Bot. The owner approves the paths an app may
+call (`permissions.api`), never a Bot, so owning a session gives an app no claim
+on what is a Bot's own: its memory store, and its chat with the Permissions
+that chat takes. `apps.cron_sdk` and `apps.spawn_sdk` hold the same rule for a
+job and a background run, and the HTTP entries hold it for every caller with an
+app claim (an app token, or an agent running in an app's session, scheduled run
+or background run): `POST /api/crons` and the `cron_add` tool behind
+`POST /api/crons/tools` refuse a create whose `agent` or `member_id` selects a
+Bot's own (`cron_service.identity.app_schedule_names_bot`), and
+`POST /api/spawn` refuses a run that `crew` / `target_member`, or the parent
+session it names, would make a Bot's (`messaging_api/spawn._app_bot_spawn_refusal`).
+Both judge the execution the create would store with `execution_context.is_bot_own_execution`,
+and both let a caller that already runs as that Bot go on as itself
+(`execution_context.is_same_bot`: the same named store, or on the shared store a
+`member` selection of the same name).
+What counts is one test, `execution_context.is_bot_own_execution`, on an
+execution record: a record bound to a store other than the shared one counts
+whatever its kind (a Bot's id or not, `member` or `template`), and a `member`
+record on the shared store counts when it carries a Bot's id or its chat runs
+on the conductor (a Bot with its own file). A record of either kind whose
+template is a Bot's own file (`mate_worker.is_mate_owned_agent`) counts too:
+that file carries the Bot's prompt, servers and tools.
+`slot_ownership.selects_bot_identity` answers True for bindings that run a
+Bot's own file in either namespace, answers with that test whenever the
+resolved bindings carry a record, and applies it to a `config.agents` row with
+no record: bound to a store other than the shared one, or chatting on the
+conductor. A record on the
+shared store with a plain template -- the reserved `default` row, a row the
+agent sync wrote -- has nothing of its own to give: it names a template with a
+workspace and a model pin on the memory a template session already has, so an
+app that sends `default` as its agent, or as `model` on
+`/v1/chat/completions`, runs as before. Turn admission is the floor
+(`chat_turn/app_agent_binding.app_session_selects_bot`, called from
+`_turn_admit` before the store is attached or a record is written): on a slot
+with an app (`slot._app`) the turn ends on one error row, with the
+`app_agent_refused` kind so the dashboard offers no Resume. That covers a name
+stamped by any route and a record written earlier, by anyone; it starts no
+provider, and the eager start stands down on the same test. A `template` stamp
+on a name a Bot shares still runs the template, unless that name is the Bot's
+own file. The four routes that take an
+agent name from an app answer the request itself with the 404 an app gets for
+anything it may not reach (`slot_ownership.app_names_bot`; request contract in
+[learn-cron-dashboard](learn-cron-dashboard.md) → Chat). A person's own
+session, and a Bot's thread an app reaches through `sessionApproval` with the
+`memberThreads` scope, are not the app's sessions and are not judged here.
+
+An app token is not the owner on the run routes either. `POST /api/spawn` from
+an app token is held to what `apps.spawn_sdk` holds an app's run to
+(`messaging_api/spawn._app_token_spawn_refusal`): it names an agent, the route
+hands the manager the app so the gate proves the agent is the app's own, judges
+the spawn under the app's profile and records the run under the app, and a
+parent session must be the app's own
+(`run_control._app_token_parent_refusal`, by
+`token_auth_callers.app_owner_of_session_key`). The key's namespace decides
+ownership: cron jobs and subagent runs use only their own registries; a
+`dashboard:` key requires its named slot to have no linked session; other keys
+require an exact `linked_session_key` match. A slot name cannot grant ownership
+of a cron or subagent key. The per-run routes and the live half
+of the listing then reach only a run recorded under that app
+([subagent](subagent.md) → Properties). A job an app created takes nothing of a
+Bot's at fire time: a name it stores that is a Bot's own row is dispatched as a
+template, not collapsed onto the Bot's agent, workspace and crew identity
+(`cron_fire._app_job_names_bot`, for the single run and for each
+`agent_sequence` step). A job that captured a Bot's execution before the
+create refused it, or that stores a name which is a Bot's own file, is refused
+when it fires (`cron_fire._app_job_runs_as_bot`,
+`fire_time_denied`, so it does not feed the auto-pause counter).
+
 ## Template names the harness cannot activate
 
 A Bot's private copy is named after the Bot, and a published or
@@ -5753,7 +5821,11 @@ refuses a name that is not a key of `config.agents` with `404 unknown_member`,
 and otherwise derives the member's execution (its store and template) through
 `derive_execution` → `resolve_member_execution` before the spawn reaches
 `subagent._validate_agent`. A crew name therefore never quietly runs the
-default agent under a stale name.
+default agent under a stale name. A caller with an app claim that names a Bot
+with a memory store or a chat of its own gets the same `404 unknown_member`,
+and one whose parent session is such a Bot's gets
+`409 member_identity_unavailable`; neither reaches the manager ("An app's
+session never runs as a Bot", above).
 
 ## Crew capability drafts
 

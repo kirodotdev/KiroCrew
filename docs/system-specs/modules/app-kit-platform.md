@@ -2882,6 +2882,8 @@ never mints or holds a member slot -- `app_reserved_key_reason` stands down for
 a `member-` key only when a live Bot thread holds exactly that key on a
 grant route (`app_new_key_refusal(..., session_grant_route=True)`), so a send
 to a member key with no live thread is the uniform 404 and creates nothing.
+An app's own session does not run as a Bot either, whatever agent name the app
+puts on it: crew-mode.md, "An app's session never runs as a Bot".
 An app's existing access to its own slots is
 unchanged. On a user-owned session a `POST /api/chat` from the app sends a
 turn: a send carrying a change to the session's agent binding, persona settings,
