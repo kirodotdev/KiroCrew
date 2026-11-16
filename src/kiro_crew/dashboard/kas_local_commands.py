@@ -571,9 +571,14 @@ async def _kas_call(provider: Any, command: str, params: dict[str, Any]) -> dict
         return None
     try:
         answer = await call(command, params)
-    except Exception:  # noqa: BLE001 - a dead or refusing engine is shown, not raised
-        # The exception text can carry local detail; log it, show a fixed line.
+    except Exception as exc:  # noqa: BLE001 - a dead or refusing engine is shown, not raised
         logger.warning("KAS %s command failed", command, exc_info=True)
+        # Matched by name, as chat_threads._is_auth_required does: the ACP type
+        # sits behind the agent-SDK import boundary. Its text is the host-written
+        # sign-in remedy, so it is shown. Any other exception text can carry
+        # local detail, so it gets a fixed line.
+        if type(exc).__name__ == "AcpAuthRequired":
+            return {"success": False, "message": redact(str(exc))}
         return {"success": False, "message": "The engine could not run the command."}
     return answer if isinstance(answer, dict) else None
 

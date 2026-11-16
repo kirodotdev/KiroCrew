@@ -765,6 +765,26 @@ class TestKasVerbs:
         assert logged and "secret detail" in str(logged[0].exc_info[1])
 
     @pytest.mark.asyncio
+    async def test_a_signed_out_engine_shows_the_sign_in_remedy(self, tmp_path) -> None:
+        """RED before the fix: the host's sign-in remedy became the fixed line."""
+        from kiro_crew.acp.transport_errors import AcpAuthRequired
+        from kiro_crew.agent_sdk.host_auth import signed_out_message
+
+        state, slot, client, calls = _live(tmp_path)
+        client.cwd = str(tmp_path)
+        remedy = signed_out_message(ACP_BACKEND_KAS)
+        client.kas_command_call = AsyncMock(
+            side_effect=AcpAuthRequired(remedy, backend=ACP_BACKEND_KAS)
+        )
+
+        await _run_chat(state, slot, "/context clear")
+
+        _assert_local(state, calls)
+        text = _reply(slot)
+        assert remedy in text, text
+        assert "The engine could not run the command." not in text, text
+
+    @pytest.mark.asyncio
     async def test_an_engine_without_the_verb_says_so(self, tmp_path) -> None:
         state, slot, client, calls = _live(tmp_path)
         self._verb(client, tmp_path, None)
