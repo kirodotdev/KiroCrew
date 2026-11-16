@@ -552,6 +552,30 @@ def test_the_arming_template_carries_the_in_flight_guard() -> None:
     assert "cancel" not in thirty.lower()
 
 
+def test_a_clean_re_check_keeps_the_rebase_local() -> None:
+    """Exit 30 is a reason to test, not to push.
+
+    With strict up-to-date checks off, a push that only moves the base buys no
+    mergeability, re-runs CI on an unchanged patch and dismisses approvals. Only a
+    re-check that conflicts or goes red earns a push, and both the skill and the
+    arming template (the only copy a woken cycle reads) must say so. The re-check
+    runs in a throwaway worktree so a red one leaves the measured HEAD on the
+    published head: otherwise the next cycle reads 0 and the red is never pushed.
+    """
+    skill = " ".join((_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+    thirty = (
+        " ".join(_template_text().split()).split("green_age 30:", 1)[1].split("pr_status 10:")[0]
+    )
+
+    assert "**Green: do NOT push**" in skill
+    assert "Green: do NOT push" in thirty
+    assert "conflict or a red" in thirty
+    assert "When main is red" in thirty
+    assert "throwaway detached worktree" in skill
+    assert "throwaway detached worktree" in thirty
+    assert "still reads 30" in thirty
+
+
 # --- the helpers the classes are built from ----------------------------------
 
 
