@@ -31,8 +31,11 @@ change. The teardown Crew sends is ``session/close``, and it evicts: after it th
 sessionId stops answering, so a session Crew drops actually leaves the process. That
 is what admits codex to ``ACP_BACKENDS_SESSION_EVICTION``, and through it to every
 path that creates and destroys sessions on a shared process -- the high-churn
-background handles (``session._bg_runtime_backends``), warm pooled reuse, the
-entitlement probe. One teardown verb answers for all of them, which is the point of
+background handles (``session._bg_runtime_backends``), the entitlement probe.
+A fresh conversation on a live process is the exception:
+``AcpSessionProvider.new_conversation`` refuses codex, because the closed session's
+stdio MCP servers from ``config.toml`` keep running, so pooled reuse and a chat's
+fresh conversation respawn the process instead. One teardown verb answers for all of them, which is the point of
 declaring it on the harness rather than gating each caller.
 
 **One thing is global on a shared process, and a caller has to know it.**
