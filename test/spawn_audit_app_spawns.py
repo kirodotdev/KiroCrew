@@ -59,7 +59,8 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         # worktree of a push-disabled clone, which is where its blast radius is
         # contained; these calls are the harness around it, not the agent's hands.
         "apps/builtins/auto_improvement/backend/clone_setup.py::_disable_push",
-        "apps/builtins/auto_improvement/backend/clone_setup.py::_origin_urls",
+        "apps/builtins/auto_improvement/backend/clone_setup.py::_local_config_values",
+        "apps/builtins/auto_improvement/backend/clone_setup.py::_record_clone_identity",
         "apps/builtins/auto_improvement/backend/clone_setup.py::_repository_is_safe",
         "apps/builtins/auto_improvement/backend/clone_setup.py::_gh_prefers_ssh",
         "apps/builtins/auto_improvement/profiles/gitlab_repo/glab_cli.py::glab_prefers_ssh",
@@ -85,6 +86,8 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         "::test_extra_origin_value_refuses_reuse",
         "apps/builtins/auto_improvement/tests/test_clone_setup_idempotent.py"
         "::test_disable_push_replaces_every_url_value",
+        "apps/builtins/auto_improvement/tests/test_clone_setup_idempotent.py"
+        "::test_a_clone_made_before_identities_were_recorded_is_adopted",
         # A FIXED argv of `[sys.executable, "-c", <literal>]` — the interpreter running the
         # test plus a constant source string with no interpolation, so neither the command
         # nor its args are agent-influenced. The child only imports a module and prints
