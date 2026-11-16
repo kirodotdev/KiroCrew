@@ -3727,7 +3727,7 @@ Every piece of text a Bot is told lives in one file,
 `src/kiro_crew/crewmate_prompts.json` (package data, listed in `setup.cfg`
 and `MANIFEST.in`): the conductor's member section (`conductor.*`, assembled by
 `context_assembly/member.py:build_member_section` and `operating_mode_block`),
-the worker's principles (`worker.principles`, `mate_worker.MATE_WORKER_PROMPT`),
+the worker's principles (`worker.principles`, `mate_worker.mate_worker_prompt()`),
 every gateway wake (`wake.preamble` and `reminder.*` in
 `dashboard/goal_reminder.py`; `goal_setup.*` in
 `dashboard/goal_setup.py`; `worker_report.*` and `rebind_notice` in
@@ -4452,9 +4452,9 @@ parts:
   worker lacks" below). It mounts `kirocrew-work` the same way as the
   conductor, granting only the worker's verbs (`agent._WORKER_WORK_GRANTS`:
   `work_brief`, `work_report`), so a worker bound to an item in its
-  Bot's ledger can read its brief and report on it (`worker.principles` tells
-  it to call `work_brief` first and to report on the item it names with
-  `work_report`); it is a base server,
+  Bot's ledger can read its brief and report on it (`worker.principles`
+  carries the same work protocol `kirocrew-worker` does, "The two workers stay
+  in step" below); it is a base server,
   so a Bot's file cannot replace its entry (a switch-off is still a
   restriction, below). Each server an edition contributes
   (`McpToolingProvider.extra_mcp_servers()`) that the worker mounts gets an
@@ -4645,6 +4645,30 @@ by default, the root conductor compared above. A `kirocrew-team-lead` that
 test holds each rule to anchor phrases in `goal-conductor/SKILL.md`
 (`CONDUCTOR_MODE_SKILL_ANCHORS`), or to a named gap with a reason
 (`CONDUCTOR_MODE_GAPS`, empty today), and fails on a gap the skill has closed.
+
+**The two workers stay in step.** `kirocrew-worker` and `kirocrew-mate-worker`
+both work one item for a conductor through `work_brief` and `work_report`, from
+different prompt sources. The work protocol both need (brief first, the plan as
+the first `progress` report, a false premise and a `budget:` as `question`, the
+statuses and `reason`, which reports wake the conductor and `progress` before
+parking, `done` as a claim, the `summary` bar, `decision` as the one instruction
+field, dependent calls in a later step) is written once, in
+`agent_parts/spec_prompts.py` `_LEDGER_WORKER_RULES`: `_WORKER_SYSTEM_PROMPT` is
+assembled from it (`_WORKER_PROMPT_SECTIONS`) and `worker.principles` names each
+as a placeholder (`mate_worker.mate_worker_prompt()`), after one line telling the
+Bot's worker that its Bot is the conductor those rules name. A rule that is not
+true as written for a Bot's worker stays a section of `kirocrew-worker`'s own: a
+Bot's worker's turn end also wakes its Bot with a `[Worker report]`, so it is
+never told that the report is the only wake or that a silent turn wakes nobody,
+and is told instead that its Bot reads its reply too while only what it reports
+reaches the ledger. `test/test_mate_worker_parity.py` fails on a worker section
+that is neither a shared rule rendered for the Bot's worker nor allowlisted with
+a reason, on a `worker.principles` placeholder that names no shared rule, on a
+Bot piece that copies worker text, and on a stale allowlist entry. The worker
+mount and grants are held by `test/test_mate_work_ledger_mount.py`. The ask core and worker tail
+(`context_assembly/output_contract.py` `ASK_CORE`, `WORKER_ASK_TAIL`) are not
+part of these rules: both workers append them after the coding rules (Ask cases
+and reroute).
 
 **A stale worker is released, not capped.** A Bot opens as many workers as
 its work needs; memory is bounded by the cgroup `max_memory_mb`. A worker idle
@@ -5087,7 +5111,7 @@ waits for its next turn end, like a pending report
 a skill says so in its report; it has no request tool (its spec lists
 `@kirocrew-mate/request_capabilities` and `@kirocrew-mate/find_capabilities` in
 `excludedTools`, `mate_worker.MATE_WORKER_EXCLUDED_TOOLS`). Its source-defined
-prompt is the default prompt followed by `mate_worker.MATE_WORKER_PROMPT`
+prompt is the default prompt followed by `mate_worker.mate_worker_prompt()`
 (`service_agents._install_mate_worker_agent`): a task that needs a tool, server
 or skill it does not have is reported, not worked around, on a first line
 `MISSING CAPABILITY: <what> -- <why>` (`mate_worker.MISSING_CAPABILITY_PREFIX`).
@@ -5707,7 +5731,7 @@ again at agent rank, through five seams:
 | kind | seam | text |
 |---|---|---|
 | Bot conductor (`kirocrew-mate-conductor`) | `context_assembly/agent_spec.py`, appended to `[AGENT SYSTEM PROMPT]` after the sub-agent span swap | core + conductor tail |
-| Bot worker (`kirocrew-mate-worker`) | `mate_worker.py` `MATE_WORKER_PROMPT` | core + worker tail |
+| Bot worker (`kirocrew-mate-worker`) | `mate_worker.py` `mate_worker_prompt()` | core + worker tail |
 | Team lead (`kirocrew-team-lead`, conductor mode when `agent.crew_mode_agent` names it) | `agent_materialization/conductor_agents.py` `with_conductor_ask()`, appended at install by `service_agents._install_team_lead_agent` | core + conductor tail |
 | Conductor-mode conductor (`kirocrew-conductor`, `kirocrew-ledger-conductor`) | `with_conductor_ask()`, appended at install by `conductor_agents._conductor_spec` | core + conductor tail |
 | Conductor-mode worker (`kirocrew-worker`) | `agent_materialization/worker_agent.py` `worker_prompt()` | core + worker tail |
@@ -5758,6 +5782,7 @@ at nothing for it. None of the four kinds sets the flag.
 | `test/test_chat_send_agent_model_default.py` | The crew model default a new session starts on |
 | `test/test_cron_conductor_scripted.py` | A scripted `cron_add` from a Bot's conductor is dispatched like any caller's |
 | `test/test_mate_conductor_parity.py` | Every section of the root conductor's charter is a shared rule the Bot's conductor is told, a heading, or allowlisted with a reason; no Bot piece copies charter text; every MCP server, tool, auto-approve grant and mapped skill of `kirocrew-conductor` is on `kirocrew-mate-conductor`, both read through the per-session projection, or allowlisted; no allowlist entry is stale; a planted root-only section, server, tool, grant or skill is caught; every shared rule has its anchor phrases in `goal-conductor/SKILL.md` (the skill `kirocrew-team-lead` follows when `agent.crew_mode_agent` names it) or a named gap that is still a gap |
+| `test/test_mate_worker_parity.py` | Every section of `kirocrew-worker`'s prompt is a shared work-protocol rule the Bot's worker is told or allowlisted with a reason; `worker.principles` names only shared rules and copies no worker text; the Bot's worker is told its reply reaches its Bot and never that a silent turn wakes nobody; both workers carry the same coding rules; no allowlist entry is stale; a planted worker-only section and a reworded copy are caught |
 | `test/test_mate_config_migration.py` | The upgrade migration carries a shared template's or a `crew-<hex>` copy's kit and nothing the worker base has, gives a default-template Bot a file that adds nothing, gives the conductor-bound first Bot what a default-template Bot gets, leaves a binding without a `member_id` alone without a log line above DEBUG, records the kit's source, skips and logs a Bot whose worker would differ (binding and disk untouched), changes nothing on a second run, leaves a hand-made rollback alone, and the carried capabilities read as already there |
 | `test/test_mate_thread_wakes.py` | A worker's turn end wakes its Bot once; no wake for a session the Bot did not create or that this process did not witness; a busy thread gets one report (the latest, with the turn count) after its turn ends; a held report waits for the thread's next turn end; the excerpt's end marker cannot be forged; only the creator's send witnesses the link; a quiet worker end (`nothing_to_do`, no text) reports nothing and leaves a pending report as it was, while an empty reply without it or a reply with text still reports; every top-level turn end reaches the wake path with its quiet-end fact |
 | `test/test_mate_upgrade_notice.py` | A moved Bot's notice is posted once and never on a later start, never by a Bot created after the upgrade or on a thread whose binding names another member, reaches a thread not open at startup at its next turn end, and is owed only by Bots the migration moved |

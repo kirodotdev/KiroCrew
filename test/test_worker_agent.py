@@ -1714,20 +1714,3 @@ def test_a_withheld_pattern_says_which_verbs_it_reached(tmp_path, monkeypatch):
     assert hits, f"no record names the withheld pattern: {records}"
     assert "reaches" in str(hits[0]["resources"])
     assert "cron_add" in str(hits[0]["resources"])
-
-
-def test_both_workers_carry_the_same_coding_rules() -> None:
-    """kirocrew-worker and a crewmate's worker read one text, so they cannot drift."""
-    from kiro_crew import crewmate_prompts
-    from kiro_crew.mate_worker import MATE_WORKER_PROMPT
-
-    rules = crewmate_prompts.text("worker.coding_rules")
-    assert "smallest complete change" in rules
-    assert "`shortcut: <the limit>, <when to upgrade>`" in rules
-    from kiro_crew.context_assembly.output_contract import ASK_CORE, WORKER_ASK_TAIL
-
-    # Both end with the coding rules, then the shared ask core and worker tail.
-    tail = f"{rules}\n\n{ASK_CORE}{WORKER_ASK_TAIL}"
-    assert worker_prompt().startswith(agent._WORKER_SYSTEM_PROMPT.rstrip())
-    assert worker_prompt().endswith(tail)
-    assert MATE_WORKER_PROMPT.endswith(tail)

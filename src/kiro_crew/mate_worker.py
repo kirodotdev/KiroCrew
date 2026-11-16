@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -53,19 +54,42 @@ MATE_CONDUCTOR_AGENT = Path(MATE_CONDUCTOR_AGENT_FILENAME).stem
 #: (``mate_thread_wakes.report_prompt``).
 MISSING_CAPABILITY_PREFIX = "MISSING CAPABILITY:"
 
-#: The worker's own principles, appended to its source-defined prompt
-#: (``service_agents._install_mate_worker_agent``). Its crewmate is the one that
-#: can ask the user for a tool, so a gap goes back to it, named. The coding rules
-#: after them are the same text ``kirocrew-worker`` carries, and so is the shared
-#: ask core and worker tail at the end (``context_assembly.output_contract``).
-MATE_WORKER_PROMPT = (
-    crewmate_prompts.fill("worker.principles", missing_prefix=MISSING_CAPABILITY_PREFIX)
-    + "\n\n"
-    + crewmate_prompts.text("worker.coding_rules")
-    + "\n\n"
-    + ASK_CORE
-    + WORKER_ASK_TAIL
-)
+
+@lru_cache(maxsize=1)
+def mate_worker_prompt() -> str:
+    """The worker's own principles, appended to its source-defined prompt
+    (``service_agents._install_mate_worker_agent``), then the coding rules.
+
+    Its crewmate is the one that can ask the user for a tool, so a gap goes back to
+    it, named. Every other placeholder is a work-protocol rule ``kirocrew-worker`` is
+    assembled from too (``agent._LEDGER_WORKER_RULES``), so the two workers cannot
+    drift; a placeholder naming no rule raises ``KeyError`` at the first read. The
+    coding rules are the same text ``kirocrew-worker`` carries, and so is the shared
+    ask core and worker tail at the end (``context_assembly.output_contract``). A
+    function, not a module constant: the rules live behind the ``agent`` facade,
+    which this module does not import at load.
+    """
+    # Not a top-level import: only the facade may import ``agent_parts``
+    # (``test_agent_parts.py``), and loading the facade here would pull it into
+    # every importer of this module.
+    from kiro_crew import agent as agent_mod
+
+    rules = agent_mod._LEDGER_WORKER_RULES
+    names = crewmate_prompts.placeholders("worker.principles") - {"missing_prefix"}
+    principles = crewmate_prompts.fill(
+        "worker.principles",
+        missing_prefix=MISSING_CAPABILITY_PREFIX,
+        **{name: rules[name].strip() for name in names},
+    )
+    return (
+        principles
+        + "\n\n"
+        + crewmate_prompts.text("worker.coding_rules")
+        + "\n\n"
+        + ASK_CORE
+        + WORKER_ASK_TAIL
+    )
+
 
 #: The sub-agent tools a crewmate's conductor does not mount. Its hand-off is a
 #: worker session (``session_create`` / ``session_send`` /

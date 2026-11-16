@@ -318,7 +318,7 @@ class TestTheWorkerSpecIsSourceDefined:
         assert MATE_WORKER_AGENT_FILENAME in OWNED_KIRO_AGENT_FILES
 
     def test_its_base_is_the_default_templates_shape(self, installed):
-        from kiro_crew.mate_worker import MATE_WORKER_PROMPT
+        from kiro_crew.mate_worker import mate_worker_prompt
 
         template = agent.build_agent_config()
         # The work-ledger mount only adds (``test_mate_work_ledger_mount.py``).
@@ -334,7 +334,7 @@ class TestTheWorkerSpecIsSourceDefined:
             t for t in installed["allowedTools"] if not t.startswith("@kirocrew-work/")
         ] == template["allowedTools"]
         # The default prompt, then the worker's own principles after it.
-        assert installed["prompt"] == f"{template['prompt'].rstrip()}\n\n{MATE_WORKER_PROMPT}"
+        assert installed["prompt"] == f"{template['prompt'].rstrip()}\n\n{mate_worker_prompt()}"
 
     def test_its_prompt_says_how_to_report_a_missing_capability(self, installed):
         from kiro_crew.mate_worker import MISSING_CAPABILITY_PREFIX

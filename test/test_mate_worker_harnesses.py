@@ -394,13 +394,13 @@ def test_codex_gets_the_crewmates_prompt_in_the_context_block(pixel_worker):
     """The codex mirror projects no spec prompt, so the block carries the worker's
     principles and the crewmate's prompt, as on claude."""
     from kiro_crew.context_assembly.agent_spec import _crewmate_worker_prompt
-    from kiro_crew.mate_worker import MATE_WORKER_PROMPT
+    from kiro_crew.mate_worker import mate_worker_prompt
 
     with_prompt = {**PIXEL, "prompt": "Follow the release SOP."}
     (pixel_worker / "pixel.json").write_text(json.dumps(with_prompt), encoding="utf-8")
     _served_by(ACP_BACKEND_CODEX, "dashboard:chat-9")
     block = _crewmate_worker_prompt(MATE_WORKER_AGENT, BASE["prompt"], "dashboard:chat-9")
-    assert block == f"You are the worker.\n\n{MATE_WORKER_PROMPT}\n\nFollow the release SOP."
+    assert block == f"You are the worker.\n\n{mate_worker_prompt()}\n\nFollow the release SOP."
 
 
 def test_a_crewmate_turning_off_single_tools_names_the_server(pixel_worker):
@@ -459,9 +459,9 @@ def test_a_default_template_crewmate_adds_no_stub_to_the_block(pixel_worker, mon
     so claude's block gains nothing either: no stub text inside the block."""
     from kiro_crew.agent_parts.spec_build import _NATIVE_PROMPT_STUB
     from kiro_crew.context_assembly.agent_spec import _crewmate_worker_prompt
-    from kiro_crew.mate_worker import MATE_WORKER_PROMPT
+    from kiro_crew.mate_worker import mate_worker_prompt
 
-    disk_base = {**BASE, "prompt": f"{_NATIVE_PROMPT_STUB}\n\n{MATE_WORKER_PROMPT}"}
+    disk_base = {**BASE, "prompt": f"{_NATIVE_PROMPT_STUB}\n\n{mate_worker_prompt()}"}
     (pixel_worker / f"{MATE_WORKER_AGENT}.json").write_text(json.dumps(disk_base), encoding="utf-8")
     stub_file = {**PIXEL, "prompt": _NATIVE_PROMPT_STUB}
     (pixel_worker / "pixel.json").write_text(json.dumps(stub_file), encoding="utf-8")
@@ -471,7 +471,7 @@ def test_a_default_template_crewmate_adds_no_stub_to_the_block(pixel_worker, mon
     # claude: the block is the contract plus the principles, and nothing more.
     _served_by(ACP_BACKEND_CLAUDE, "dashboard:chat-9")
     block = _crewmate_worker_prompt(MATE_WORKER_AGENT, "The full contract.", "dashboard:chat-9")
-    assert block == f"The full contract.\n\n{MATE_WORKER_PROMPT}"
+    assert block == f"The full contract.\n\n{mate_worker_prompt()}"
     assert _NATIVE_PROMPT_STUB not in block
 
 
@@ -480,13 +480,13 @@ def test_the_agent_system_prompt_block_carries_the_crewmates_prompt(pixel_worker
     ``[AGENT SYSTEM PROMPT]`` block, so it carries the worker's own principles and
     the crewmate's prompt too, in the order the on-disk worker base has them."""
     from kiro_crew.context_assembly.agent_spec import _crewmate_worker_prompt
-    from kiro_crew.mate_worker import MATE_WORKER_PROMPT
+    from kiro_crew.mate_worker import mate_worker_prompt
 
     with_prompt = {**PIXEL, "prompt": "Follow the release SOP."}
     (pixel_worker / "pixel.json").write_text(json.dumps(with_prompt), encoding="utf-8")
     _served_by(ACP_BACKEND_CLAUDE, "dashboard:chat-9")
     block = _crewmate_worker_prompt(MATE_WORKER_AGENT, BASE["prompt"], "dashboard:chat-9")
-    assert block == f"You are the worker.\n\n{MATE_WORKER_PROMPT}\n\nFollow the release SOP."
+    assert block == f"You are the worker.\n\n{mate_worker_prompt()}\n\nFollow the release SOP."
     # KAS's wire spec already carries both, so its block keeps the base.
     _served_by(ACP_BACKEND_KAS, "dashboard:chat-9")
     assert _crewmate_worker_prompt(MATE_WORKER_AGENT, BASE["prompt"], "dashboard:chat-9") == (
@@ -529,14 +529,14 @@ def test_the_resolved_contract_block_carries_the_crewmates_prompt(
             session_start=True,
         )
 
-    from kiro_crew.mate_worker import MATE_WORKER_PROMPT
+    from kiro_crew.mate_worker import mate_worker_prompt
 
     _served_by(ACP_BACKEND_CLAUDE, "dashboard:chat-9", "dashboard:other")
     block = resolve("dashboard:chat-9")
-    assert block.endswith(f"\n\n{MATE_WORKER_PROMPT}\n\nFollow the release SOP.")
+    assert block.endswith(f"\n\n{mate_worker_prompt()}\n\nFollow the release SOP.")
     # A session with no crewmate record still runs the worker's own principles.
     other = resolve("dashboard:other")
-    assert MATE_WORKER_PROMPT in other and "Follow the release SOP." not in other
+    assert mate_worker_prompt() in other and "Follow the release SOP." not in other
     # On KAS the wire spec carries the worker's prompt; the block is the base alone.
     _served_by(ACP_BACKEND_KAS, "dashboard:chat-9")
     assert resolve("dashboard:chat-9") == "You are the worker."
@@ -678,7 +678,7 @@ def test_the_prompt_channel_follows_the_live_provider_not_the_config(
     ``agent.member_acp_backend`` changes: the re-injected block after a compaction is
     the one the start built (claude: both prompts; KAS: the base alone)."""
     from kiro_crew.context_assembly.agent_spec import _crewmate_worker_prompt
-    from kiro_crew.mate_worker import MATE_WORKER_PROMPT
+    from kiro_crew.mate_worker import mate_worker_prompt
 
     with_prompt = {**PIXEL, "prompt": "Follow the release SOP."}
     (pixel_worker / "pixel.json").write_text(json.dumps(with_prompt), encoding="utf-8")
@@ -695,7 +695,7 @@ def test_the_prompt_channel_follows_the_live_provider_not_the_config(
     after_compaction = _crewmate_worker_prompt(MATE_WORKER_AGENT, BASE["prompt"], key)
     assert after_compaction == at_start
     if started_on == ACP_BACKEND_CLAUDE:
-        assert MATE_WORKER_PROMPT in at_start and "Follow the release SOP." in at_start
+        assert mate_worker_prompt() in at_start and "Follow the release SOP." in at_start
     else:
         assert at_start == BASE["prompt"]
 

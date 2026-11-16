@@ -28,7 +28,7 @@ from kiro_crew.context_assembly.output_contract import (
     WORKER_ASK_TAIL,
 )
 from kiro_crew.dashboard.state_parts.injected_turns import build_refusal_recovery_prompt
-from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_PROMPT
+from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, mate_worker_prompt
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
 
@@ -96,7 +96,7 @@ def test_every_conductor_carries_the_core_and_the_conductor_tail(builder, tmp_pa
 
 def test_both_workers_carry_the_core_and_the_worker_tail():
     ask = ASK_CORE + WORKER_ASK_TAIL
-    assert MATE_WORKER_PROMPT.endswith(ask)
+    assert mate_worker_prompt().endswith(ask)
     assert worker_prompt().endswith(ask)
     # After the work_brief line, which must stay first.
     text = worker_prompt()
@@ -160,7 +160,7 @@ def test_the_core_names_what_is_not_an_ask(phrase, builder):
         with_conductor_ask(agent._TEAM_LEAD_SYSTEM_PROMPT),
         with_conductor_ask(agent._CONDUCTOR_SYSTEM_PROMPT),
         _bc_prompt(builder),
-        MATE_WORKER_PROMPT,
+        mate_worker_prompt(),
         worker_prompt(),
     ):
         assert phrase in " ".join(prompt.split())

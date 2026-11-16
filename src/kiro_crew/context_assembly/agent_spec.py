@@ -738,8 +738,8 @@ def _crewmate_worker_prompt(agent: str, base_prompt: str, session_key: str) -> s
     """
     from kiro_crew.mate_worker import (
         MATE_WORKER_AGENT,
-        MATE_WORKER_PROMPT,
         WorkerKitUnreadable,
+        mate_worker_prompt,
         worker_prompt_in_context_block,
         worker_session_spec,
     )
@@ -748,7 +748,7 @@ def _crewmate_worker_prompt(agent: str, base_prompt: str, session_key: str) -> s
         return base_prompt
     if not worker_prompt_in_context_block(session_key):
         return base_prompt
-    worker_base = f"{base_prompt.rstrip()}\n\n{MATE_WORKER_PROMPT}"
+    worker_base = f"{base_prompt.rstrip()}\n\n{mate_worker_prompt()}"
     from kiro_crew.agent_sdk.agent_specs import AgentSpecUnreadable
     from kiro_crew.mate_config_migration import _worker_base
 
