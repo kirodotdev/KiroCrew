@@ -1128,15 +1128,16 @@ class TestBoolValidator:
             assert (await _patch(c, "telemetry.beacon_enabled", "off")).status == 400
 
     @pytest.mark.asyncio
-    async def test_beacon_endpoint_is_not_editable(self, tmp_config) -> None:
-        """Only the boolean opt-out is reachable from the dashboard.
-
-        Exposing ``beacon_endpoint`` would let a dashboard caller redirect the
-        heartbeat to an arbitrary host, so it stays CLI/config-file-only.
-        """
+    async def test_beacon_endpoint_takes_only_an_https_address(self, tmp_config) -> None:
+        """The owner may point the heartbeat elsewhere from Settings -> Advanced,
+        under its risk line, but only to an https:// address: a plaintext
+        heartbeat would reveal which hosts run this software to any on-path
+        observer."""
         async with TestClient(TestServer(_make_app())) as c:
-            resp = await _patch(c, "telemetry.beacon_endpoint", "https://evil.example")
+            resp = await _patch(c, "telemetry.beacon_endpoint", "http://beacon.example")
             assert resp.status == 400
+            resp = await _patch(c, "telemetry.beacon_endpoint", "https://beacon.example")
+            assert resp.status == 200
 
     @pytest.mark.asyncio
     async def test_governance_pin_refuses_a_re_enable(self, tmp_config, monkeypatch) -> None:

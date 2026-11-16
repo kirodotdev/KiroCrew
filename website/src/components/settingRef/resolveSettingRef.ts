@@ -43,6 +43,8 @@ export interface AllSettingsRecord {
   values?: unknown[]
   min?: number
   max?: number
+  /** Longest text a `str` row takes; above 256 the row is a multi-line box. */
+  max_len?: number
   /** `PATCH ... { unset: true }` may remove the stored value. */
   resettable?: boolean
   /** Registry id of the owning Settings control, for `mode: 'control'`. */
@@ -51,6 +53,9 @@ export interface AllSettingsRecord {
   page?: { tab: string; sub?: string; highlight?: string }
   /** Why a `mode: 'readonly'` row cannot be changed here. */
   reason?: 'safety' | 'sign_in' | 'reach' | 'share' | 'owned' | 'marker' | 'alias' | 'text' | 'locked' | 'compound'
+  /** For an `edit` row the owner may change despite its risk: what kind of risk.
+   *  The row shows that key's own risk line under the control. */
+  risk?: 'safety' | 'sign_in' | 'reach' | 'share'
 }
 
 export type SettingRefResolution =

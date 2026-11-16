@@ -14,10 +14,12 @@ This module answers, per schema path:
 
 Booleans, numbers and enums are editable unless :data:`READONLY_PATHS` names
 them, a channel tag marks them, or this build locks them. Free text and string
-lists stay read-only unless :data:`TEXT_EDIT_PATHS` names them, because a path,
-a URL or a command line is where a careless value does the most harm. A key that
-changes who may reach the agent, what it may run or what it may skip asking is
-read-only here: its own page does the checks a plain write cannot.
+lists are editable when :data:`TEXT_EDIT_PATHS` names them, each with a check
+that fits its type (an absolute path, an http(s) URL, a one-line name). A key
+that changes who may reach the agent, what it may run, what it may skip asking or
+what is sent elsewhere is editable only when :data:`RISK_NOTE_PATHS` names it,
+and its row then carries a one-line note on what the change risks; the others in
+:data:`READONLY_REASONS` stay read-only.
 
 A generic rule is never added to ``_EDITABLE_CONFIG``, so a change card (which
 reads only that table) cannot propose one of these keys.
@@ -26,7 +28,17 @@ reads only that table) cannot propose one of these keys.
 from __future__ import annotations
 
 import functools
+from collections.abc import Callable
 from typing import Any
+
+from kiro_crew.dashboard.handlers.config_all_settings_checks import RISK_CHECKS as _RISK_CHECKS
+from kiro_crew.dashboard.handlers.config_all_settings_checks import (
+    TEXT_CHECKS as _EXTRA_TEXT_CHECKS,
+)
+from kiro_crew.dashboard.handlers.config_all_settings_checks import stored_value as _stored_value
+from kiro_crew.dashboard.handlers.config_all_settings_checks import (
+    text_max_len,
+)
 
 #: Why a read-only row cannot be changed here, as the code the page turns into
 #: plain words (``settings.advanced.why_<code>``).
@@ -123,6 +135,8 @@ READONLY_REASONS: dict[str, str] = {
     # Outbound activity reports.
     "wakatime.enabled": WHY_SHARE,
     "wakatime.send_heartbeats": WHY_SHARE,
+    # Where those reports and the WakaTime API key go.
+    "wakatime.api_base_url": WHY_SHARE,
     # Lets memory and knowledge text leave this machine for a remote Ollama host.
     "memory.ollama_allow_remote": WHY_SHARE,
     # On, each turn's spans go to the collector the config or the gateway's
@@ -147,10 +161,160 @@ READONLY_REASONS: dict[str, str] = {
     # write to the top-level path would change nothing.
     "observe_max_messages": WHY_ALIAS,
     "observe_ttl_hours": WHY_ALIAS,
+    "slack_dm_activation": WHY_ALIAS,
+    # The old name of mcp_gateway.stub_servers, read only while that key is absent.
+    "mcp_gateway.poolable_servers": WHY_ALIAS,
+    # Free text that decides what the agent may run, read or write.
+    # Directories the OS sandbox keeps read-only, the holes in them, and where a
+    # subagent may be started.
+    "agent.sandbox_readonly_paths": WHY_SAFETY,
+    "agent.sandbox_readonly_exceptions": WHY_SAFETY,
+    "agent.subagent_cwd_allowed_roots": WHY_SAFETY,
+    # Where MCP server programs are looked up, and the agent specs each session loads.
+    "mcp.extra_path_dirs": WHY_SAFETY,
+    "mcp_gateway.overlay_dir": WHY_SAFETY,
+    # The Strands project's code runs outside the tool gate; the fingerprint is the
+    # person's confirmation of the version that may run.
+    "agent.strands_project": WHY_SAFETY,
+    "agent.strands_project_sha256": WHY_SAFETY,
+    # Roots an artifact may be moved into, beyond the home directory.
+    "publish.relocate_roots": WHY_SAFETY,
+    # Free text that decides who or what can be reached.
+    # The logo route serves this file to anyone who can open the sign-in page.
+    "dashboard.avatar": WHY_REACH,
+    "dashboard.tailscale.allowed_logins": WHY_REACH,
+    "knowledge.doc_ingest_hosts": WHY_REACH,
+    "dashboard.github_hosts": WHY_REACH,
+    "dashboard.gitlab_hosts": WHY_REACH,
+    "dashboard.jira_hosts": WHY_REACH,
+    "dashboard.bitbucket_server_hosts": WHY_REACH,
+    "dashboard.gerrit_hosts": WHY_REACH,
+    "mcp_gateway.socket_path": WHY_REACH,
+    "tunnel.relay_lease_url": WHY_REACH,
+    "tunnel.relay_viewer_cps_url": WHY_REACH,
+    "tunnel.relay_viewer_relay_domain": WHY_REACH,
+    "tunnel.relay_handle_email_domains": WHY_REACH,
+    # Free text that decides how a sign-in or a shared credential is used.
+    "tunnel.relay_lease_token_type": WHY_SIGN_IN,
+    "tunnel.relay_viewer_oidc_scope_prefix": WHY_SIGN_IN,
+    "mcp_gateway.pool_identity_env": WHY_SIGN_IN,
+    # Free text that names where activity is sent.
+    "telemetry.beacon_endpoint": WHY_SHARE,
+    "publish.allowed_destinations": WHY_SHARE,
+    # PUT /api/config/default-agent writes it: a template name goes to
+    # agent.default_agent, and a name that is no Bot alias is refused, since the
+    # loader would replace it with another Bot on the next load.
+    "default_agent": WHY_OWNED,
+    # POST /api/mcp-gateway/servers/stub writes it after freezing the resolved
+    # set, so a server the deprecated alias still stubs is not dropped.
+    "mcp_gateway.stub_servers": WHY_OWNED,
+    # Written together with apps_trusted on Settings -> Security -> Apps.
+    "agent.apps_trusted_local": WHY_OWNED,
+    # PUT /api/config/theme writes it, and the browser's theme state reads it.
+    "dashboard.theme_color": WHY_OWNED,
+    # The memory setup writes it with the model's stamp
+    # (memory_embeddings.py api_memory_enable_embeddings).
+    "memory.embed_model_id": WHY_OWNED,
+    # Kiro Crew records an app here once it installed it by default; removing a
+    # name (or Reset) installs that app again on the next start
+    # (apps/default_installs.py reconcile_default_installs).
+    "agent.apps_default_installs_applied": WHY_MARKER,
+    # Managed by the memory setup as a model is applied.
+    "memory.embed_rebuild_generation": WHY_MARKER,
+    "memory.embed_model_legacy_ids": WHY_MARKER,
 }
 
-#: Every key the page never changes by name (the reasons table's keys).
-READONLY_PATHS: frozenset[str] = frozenset(READONLY_REASONS)
+#: Keys in :data:`READONLY_REASONS` whose reason is safety, sign-in, reach or
+#: share, and which the page may change anyway (never the declared skip-all
+#: approvals grant, ``agent.dangerously_skip_permissions``: the repository's
+#: backend-security-controls rule gives it no dashboard toggle): the owner chose to let a person
+#: change them here with no extra step. Each row shows one plain line under its
+#: control saying what the change risks (``settings.advanced.risk.*`` in the
+#: website catalog, matched to these paths by ``allSettingsRisk.ts``). A key joins
+#: only with that line written; ``test_config_all_settings_risk.py`` checks both
+#: sides. The write is the same owner-only PATCH as every Settings write.
+RISK_NOTE_PATHS: frozenset[str] = frozenset(
+    {
+        # What the agent may run, read or write.
+        "agent.conductor_own_child_verbs",
+        "agent.deny_override",
+        "agent.interactive_command_policy",
+        "agent.jail",
+        "agent.kas_fail_closed_web_fetch_blocked",
+        "agent.sandbox_allow_no_isolation",
+        "agent.sandbox_allow_unsandboxed_exec",
+        "agent.sandbox_readonly_exceptions",
+        "agent.sandbox_readonly_paths",
+        "agent.strands_project",
+        "agent.strands_project_sha256",
+        "agent.subagent_cwd_allowed_roots",
+        "agent.subagent_timeout_secs",
+        "hooks.batch_write_guard",
+        "mcp.extra_path_dirs",
+        "mcp_gateway.overlay_dir",
+        "publish.relocate_roots",
+        "skills.generate_scripts",
+        "skills.project_skills_enabled",
+        # How sign-ins and credentials are kept.
+        "agent.kas_persist_mcp_sign_in",
+        "agent.kas_refuse_plain_http_mcp_headers",
+        "agent.mcp_registry_mode",
+        "browser.live.mask_passwords",
+        "dashboard.audit_secret_reads",
+        "dashboard.qr_session_persist_across_restart",
+        "dashboard.qr_session_until_restart",
+        "dashboard.sso_login_flags",
+        "mcp_gateway.pool_identity_env",
+        "tunnel.relay_lease_token_type",
+        "tunnel.relay_viewer_oidc_scope_prefix",
+        "wakatime.oauth_client_id",
+        # Who or what can reach this machine, the agent or a session.
+        "agent.crew_panel",
+        "agent.member_dispatch",
+        "agent.session_control",
+        "agent.session_manager_chain",
+        "agent.session_sharing",
+        "dashboard.avatar",
+        "dashboard.bitbucket_server_hosts",
+        "dashboard.gerrit_hosts",
+        "dashboard.github_hosts",
+        "dashboard.gitlab_hosts",
+        "dashboard.jira_hosts",
+        "dashboard.shared_crew.containment_enabled",
+        "dashboard.shared_crew.hard_limits",
+        "dashboard.shared_crew.ssm_port",
+        "dashboard.tailscale.allowed_logins",
+        "dashboard.tailscale.bind_refresh_chains",
+        "dashboard.tailscale.pin_scope",
+        "instances.crew_reads_enabled",
+        "knowledge.doc_ingest_hosts",
+        "mcp_gateway.enabled",
+        "mcp_gateway.forward_declared_env",
+        "mcp_gateway.socket_path",
+        "messaging.dm_scope",
+        "tunnel.enabled",
+        "tunnel.name_mode",
+        "tunnel.relay_enabled",
+        "tunnel.relay_handle_email_domains",
+        "tunnel.relay_lease_url",
+        "tunnel.relay_viewer_cps_url",
+        "tunnel.relay_viewer_enabled",
+        "tunnel.relay_viewer_relay_domain",
+        # What is sent to another service.
+        "hooks.return_answer",
+        "memory.ollama_allow_remote",
+        "publish.allowed_destinations",
+        "telemetry.beacon_endpoint",
+        "telemetry.traces_enabled",
+        "wakatime.api_base_url",
+        "wakatime.enabled",
+        "wakatime.send_heartbeats",
+    }
+)
+
+#: Every key the page never changes by name: the reasons table's keys, less the
+#: ones :data:`RISK_NOTE_PATHS` makes editable.
+READONLY_PATHS: frozenset[str] = frozenset(READONLY_REASONS) - RISK_NOTE_PATHS
 
 #: Keys whose control lives on a Settings page that the settings registry does
 #: not tie to the key (no ``configKey`` on the control): the row links to that
@@ -282,6 +446,13 @@ _OWNING_PAGES: dict[str, dict[str, str]] = {
         "sub": "feature-previews",
         "highlight": "developer.decisions",
     },
+    # PUT /api/decisions/provider writes it with the endpoint, under its lock and
+    # consent carry; a model saved alone would split that pair.
+    "decisions.provider.model": {
+        "tab": "developer",
+        "sub": "feature-previews",
+        "highlight": "developer.decisions",
+    },
 }
 
 #: Channels with a page of their own under Settings -> Channels, by schema tag.
@@ -344,8 +515,11 @@ def owning_page(entry: Any) -> dict[str, str] | None:
     )
 
 
-#: Free-text and string-list keys the page may change. Each value is a plain name
-#: or label, never a path, URL, host or command.
+#: Free-text and string-list keys the page may change. Each runs its reader's own
+#: check, or the one ``config_all_settings_checks.TEXT_CHECKS`` names for it: a
+#: path must be absolute after ``~`` is expanded, a URL must carry its reader's
+#: scheme, a name must be one line. A key whose text decides what the agent may
+#: run or who can reach it is in :data:`READONLY_REASONS` instead.
 TEXT_EDIT_PATHS: frozenset[str] = frozenset(
     {
         "mcp_gateway.keep_alive_servers",
@@ -354,6 +528,8 @@ TEXT_EDIT_PATHS: frozenset[str] = frozenset(
         # What the Company SSO sign-in form starts with (auth/company_sign_in.py).
         "agent.kas_sso_start_url",
         "agent.kas_sso_region",
+        "memory.extraction_instructions",
+        *_EXTRA_TEXT_CHECKS,
     }
 )
 
@@ -426,10 +602,10 @@ def _control_from_schema(entry: Any) -> dict[str, Any] | None:
     if entry.type == "number":
         low_f = float(default) if isinstance(default, (int, float)) and default < 0 else 0.0
         return {"type": "float", "min": low_f, "max": float(_INT_LIMIT)}
-    if entry.path not in TEXT_EDIT_PATHS:
+    if entry.path not in TEXT_EDIT_PATHS and entry.path not in RISK_NOTE_PATHS:
         return None
     if entry.type == "string":
-        return {"type": "str", "max_len": _STR_MAX_LEN}
+        return {"type": "str", "max_len": text_max_len().get(entry.path, _STR_MAX_LEN)}
     if _is_string_list(entry):
         return {
             "type": "str_list",
@@ -491,7 +667,7 @@ def _blocked(entry: Any) -> bool:
         entry.path in READONLY_PATHS
         or _own_control(entry) is not None
         or entry.path.startswith(_READONLY_PREFIXES)
-        or bool(entry.tags)
+        or (bool(entry.tags) and entry.path not in RISK_NOTE_PATHS)
         or entry.path in _MOVED_CONFIG_FIELDS
         or config_path_locked(entry.path)
     )
@@ -563,6 +739,9 @@ def descriptor(entry: Any) -> dict[str, Any] | None:
     for key in ("values", "min", "max", "max_len", "max_items", "max_item_len"):
         if key in spec:
             out[key] = spec[key]
+    if entry.path in RISK_NOTE_PATHS:
+        # The page draws the key's own risk line under the control.
+        out["risk"] = _readonly_reason(entry)
     return out
 
 
@@ -596,10 +775,12 @@ def _sso_region_error(value: str) -> str | None:
 
 
 #: Free-text keys whose value must also mean something to its reader.
-_TEXT_CHECKS = {
+_TEXT_CHECKS: dict[str, Callable[[Any], str | None]] = {
     "timezone": _timezone_error,
     "agent.kas_sso_start_url": _sso_start_url_error,
     "agent.kas_sso_region": _sso_region_error,
+    **_EXTRA_TEXT_CHECKS,
+    **_RISK_CHECKS,
 }
 
 
@@ -609,8 +790,8 @@ def generic_value_error(path: str, value: object) -> str | None:
     The type check is ``kiro_crew config set``'s own (``cli_config._declared_type_error``):
     the curated branches of the PATCH route coerce (``int("3")``, ``float(True)``)
     for their older callers, and a generic key gets exactly the type its schema
-    declares. A free-text key named in ``_TEXT_CHECKS`` is checked by its reader's
-    own validator too.
+    declares. A free-text or string-list key named in ``_TEXT_CHECKS`` is checked
+    by its reader's own validator too.
     """
     from kiro_crew.cli_config import _declared_type_error
 
@@ -620,8 +801,20 @@ def generic_value_error(path: str, value: object) -> str | None:
     reason = _declared_type_error(entry, value)
     if reason:
         return reason
+    if isinstance(value, list) and any(not isinstance(item, str) for item in value):
+        # The schema check reads only the list itself; a check below reads items as text.
+        return "each item must be text"
     check = _TEXT_CHECKS.get(path)
-    return check(value) if check and isinstance(value, str) else None
+    return check(value) if check and value is not None else None
+
+
+def generic_stored_value(path: str, value: object) -> object:
+    """The value to save at *path* once :func:`generic_value_error` passed it.
+
+    A path is saved with its ``~`` expanded, because not every reader expands it.
+    """
+    check = _TEXT_CHECKS.get(path)
+    return _stored_value(check, value) if check else value
 
 
 def attach_descriptor(serialized: dict[str, Any], entry: Any) -> dict[str, Any]:

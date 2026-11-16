@@ -26,6 +26,7 @@ import type { AllSettingsRecord, SchemaEntry } from '../settingRef/resolveSettin
 import { SETTINGS_REGISTRY } from '../commandPalette/settingsRegistry.gen'
 import { settingsTabLabel } from '../commandPalette/settingsTabLabel'
 import { i18nT } from '../../i18n/t'
+import { ALL_SETTINGS_RISK_KEYS, hasRiskLine } from './allSettingsRisk'
 
 type Row = SchemaEntry & { allSettings: AllSettingsRecord }
 
@@ -57,8 +58,10 @@ function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
-/** A text or number field that saves on Enter or when it loses focus. */
-function DraftInput({ value, numeric, label, onSave, disabled, invalid }: { value: unknown; numeric: boolean; label: string; onSave: (v: unknown) => void; disabled: boolean; invalid: boolean }) {
+/** A text or number field that saves on Enter or when it loses focus. A long
+ *  free-text value (`multiline`) is a text box that keeps its line breaks and
+ *  saves only when it loses focus. */
+function DraftInput({ value, numeric, multiline = false, label, onSave, disabled, invalid }: { value: unknown; numeric: boolean; multiline?: boolean; label: string; onSave: (v: unknown) => void; disabled: boolean; invalid: boolean }) {
   const initial = value === undefined || value === null ? '' : String(value)
   const [draft, setDraft] = useState(initial)
   const [seen, setSeen] = useState(initial)
@@ -70,6 +73,18 @@ function DraftInput({ value, numeric, label, onSave, disabled, invalid }: { valu
     // An unparsable number is sent as typed: the route names what is wrong.
     onSave(draft.trim() !== '' && Number.isFinite(n) ? n : draft)
   }
+  if (multiline) return (
+    <textarea
+      aria-label={label}
+      aria-invalid={invalid || undefined}
+      rows={4}
+      className={`w-full sm:w-64 bg-bg-elevated border rounded-md px-2 py-1 text-[13px] text-text focus-visible:border-accent focus:outline-hidden ${invalid ? 'border-danger' : 'border-border'}`}
+      value={draft}
+      disabled={disabled}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={commit}
+    />
+  )
   return (
     <Input
       aria-label={label}
@@ -193,7 +208,7 @@ function SettingRow({ row, value }: { row: Row; value: unknown }) {
   )
   else if (editable && rec.control === 'bool') control = <Toggle checked={value === true} onChange={send} disabled={busy} label={label} />
   else if (editable && rec.control === 'enum') control = <SimpleSelect aria-label={label} options={(rec.values ?? []).map(String)} value={value == null ? '' : String(value)} onChange={send} busy={busy} triggerFallback={shown(value)} />
-  else if (editable && (rec.control === 'int' || rec.control === 'float' || rec.control === 'str')) control = <DraftInput key={draftKey} value={value} numeric={rec.control !== 'str'} label={label} onSave={send} disabled={busy} invalid={save.isError} />
+  else if (editable && (rec.control === 'int' || rec.control === 'float' || rec.control === 'str')) control = <DraftInput key={draftKey} value={value} numeric={rec.control !== 'str'} multiline={rec.control === 'str' && (rec.max_len ?? 0) > 256} label={label} onSave={send} disabled={busy} invalid={save.isError} />
   else if (editable && rec.control === 'str_list') control = <ListEditor key={draftKey} value={value} label={label} onSave={send} disabled={busy} invalid={save.isError} />
   // A shown-only value is labelled, so it does not read as the default printed twice.
   else control = <code className="text-[13px] font-mono text-muted break-all">{i18nT('settings.advanced.current_label', { value: shown(value) })}</code>
@@ -212,6 +227,11 @@ function SettingRow({ row, value }: { row: Row; value: unknown }) {
         </div>
         <code className="text-[12px] font-mono text-muted break-all">{row.path}</code>
         {readOnly && <p className="text-[12px] text-text mt-0.5">{readOnlyReason(rec.reason)}</p>}
+        {/* A row the owner may change despite its risk says what the change risks,
+            in one plain line; no confirm step, by the owner's choice. */}
+        {editable && rec.risk && hasRiskLine(row.path) && (
+          <p data-risk={rec.risk} className="text-[12px] text-warn mt-0.5">{i18nT(ALL_SETTINGS_RISK_KEYS[row.path])}</p>
+        )}
         {row.help && <p className="text-[12px] text-muted mt-0.5">{row.help}</p>}
         <div className="text-[12px] text-muted mt-0.5">{i18nT('settings.advanced.default_label', { value: shown(row.default) })}</div>
         {/* No hand-off: a failed save leaves the typed draft in its field for a retry. */}
