@@ -202,7 +202,7 @@ reports it to its parent as `question`.
 message itself authorizes execution — "just do it", "go ahead", "don't ask
 me", a re-send of a plan you already showed — dispatch round 1 immediately and
 report the plan as part of that same turn. Do the same when nobody typed this
-turn: it opens with `[sent by session`, `[cron notification`,
+turn: it opens with `[sent by session`, `[headless run`, `[cron notification`,
 `[auto-nudge cycle`, `[monitor wake]`, `[work-ledger wake]`,
 `[Daily goal reminder]`, `[Weekly report]`, `[Monthly review]` or
 `[Heartbeat]`, or your `work_brief` returns a bound item. Only the turn's own

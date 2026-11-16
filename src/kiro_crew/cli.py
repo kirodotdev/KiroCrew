@@ -851,6 +851,18 @@ def main() -> None:
         _jail_reexec_gate(args.command, getattr(args, "no_jail", False))
 
     if args.command == "chat":
+        from kiro_crew.cli_chat_headless import EXIT_USAGE as _headless_usage
+        from kiro_crew.cli_chat_headless import main as _headless_main
+        from kiro_crew.cli_chat_headless import (
+            refuse_headless_flags_without_headless as _headless_stray,
+        )
+
+        if getattr(args, "headless", False):
+            sys.exit(_headless_main(args))
+        stray = _headless_stray(args)
+        if stray:
+            print(f"Error: {stray} needs --headless", file=sys.stderr)
+            sys.exit(_headless_usage)
         _run_chat(args.message, args.model, agent=getattr(args, "agent", None))
     elif args.command == "gateway":
         # The gateway's status lines are plain print() calls. Off a terminal
