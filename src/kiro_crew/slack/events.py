@@ -112,6 +112,7 @@ from kiro_crew.slack.blocks import (
 from kiro_crew.slack.channel_policy import SlackChannelRefused
 from kiro_crew.slack.code_channels import install as install_code_channels
 from kiro_crew.slack.code_channels import lifecycle as code_channel_lifecycle
+from kiro_crew.slack.code_channels.creation import PERSON_SUBTYPES
 from kiro_crew.slack.code_channels.routing import Gate as CodeChannelGate
 from kiro_crew.slack.code_channels.routing import dispatch as code_channel_dispatch
 from kiro_crew.slack.code_channels.routing import inbound_gate as code_channel_gate
@@ -426,7 +427,7 @@ async def init_socket_mode(
                 error=_deny_error,
             )
             return
-        if _subtype and _subtype != "file_share":
+        if _subtype and _subtype not in PERSON_SUBTYPES:
             if not (_from_trusted_bot and _subtype == "bot_message"):
                 return
 

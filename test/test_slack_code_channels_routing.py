@@ -1506,6 +1506,16 @@ async def test_a_follow_up_is_classified_once_however_often_slack_delivers_it(en
     assert len(env.slack.reactions) == 1  # acknowledged once, before the decision
 
 
+@pytest.mark.parametrize("subtype", ["file_share", "thread_broadcast"])
+async def test_a_persons_reply_with_a_file_or_sent_to_the_channel_is_classified(
+    env: Env, subtype: str
+) -> None:
+    env.orch.sessions = _Sessions(_ROOT)
+    env.decision = RouteDecision("stay")
+    assert await _dispatch_reply(env, _reply(subtype=subtype)) is False
+    assert env.classified == ["grab an issue from the backlog"]
+
+
 @pytest.mark.parametrize(
     "extra",
     [
