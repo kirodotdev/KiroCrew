@@ -15493,6 +15493,8 @@
         "chat_runtime_sharing_harness_claude_desc": "オン：1 つのプログラムを共有し、メモリを節約します。オフ：新しいチャットごとに専用のプログラムを使います。",
         "chat_runtime_sharing_harness_goose": "Goose を使うチャット",
         "chat_runtime_sharing_harness_goose_desc": "オン：このハーネスの新しいチャットが 1 つのバックグラウンドプログラムを共有し、メモリを節約します。オフ：チャットごとに専用のプログラムを使います。",
+        "chat_runtime_sharing_harness_deepseek": "DeepSeek Harness を使うチャット",
+        "chat_runtime_sharing_harness_deepseek_desc": "オン：このハーネスの新しいチャットが 1 つのバックグラウンドプログラムを共有し、メモリを節約します。オフ：チャットごとに専用のプログラムを使います。",
         "chat_runtime_sharing_harness_save_failed": "スイッチを保存できませんでした。もう一度お試しください。",
         "chat_runtime_sharing_harness_load_failed": "これらのスイッチを読み込めませんでした。",
         "chat_runtime_sharing_desc_summary": "複数のチャットを 1 つのバックグラウンドプログラムで動かし、パソコンのメモリを節約します。共有するチャットの種類は下で選べます。チャットは同時に返信し、互いのメッセージは見られません。オフにすると、新しいチャットはまた専用のプログラムを使います。",

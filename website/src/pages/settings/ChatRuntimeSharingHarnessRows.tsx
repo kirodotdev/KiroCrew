@@ -53,6 +53,12 @@ export const CHAT_SHARING_HARNESSES: ReadonlyArray<{
     label: () => i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing_harness_goose'),
     description: () => i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing_harness_goose_desc'),
   },
+  {
+    name: 'deepseek',
+    defaultOn: false,
+    label: () => i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing_harness_deepseek'),
+    description: () => i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing_harness_deepseek_desc'),
+  },
 ]
 
 export const CHAT_SHARING_HARNESSES_CONFIG_KEY = 'agent.chat_runtime_sharing_harnesses'

@@ -1203,7 +1203,17 @@ class DeepseekHarness(MembershipHarness):
         memory_mode: str,
         options: Mapping[str, Any] | None = None,
     ) -> Any:
-        """This session's own gate ledger."""
+        """This session's own gate ledger.
+
+        A Side Chat session is refused here: its READ_ONLY proof is the process's
+        read-back, recorded for one process per session, so a shared process cannot
+        speak for it. The placement refuses such a chat before it gets here.
+        """
+        if options and options.get("side_read_only"):
+            raise AcpToolGateUnroutable(
+                "a DeepSeek Harness Side Chat session needs its own read-only proof, "
+                "which a shared process cannot give it; it runs on a process of its own."
+            )
         return _DeepseekSession()
 
     def permission_refusal(
