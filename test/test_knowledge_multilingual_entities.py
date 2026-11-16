@@ -663,6 +663,71 @@ class TestAddEntityAliasesSaturation:
             store.add_entity_aliases("no-such-id", ["y"])
 
 
+class TestEntityTextStaysOutOfLogs:
+    """Entity names and aliases are document text; logs carry the entity id only."""
+
+    def test_the_cap_warning_names_the_id_not_the_entity(self, store, caplog):
+        from kiro_crew.knowledge.store import MAX_ENTITY_ALIASES
+
+        eid = store.add_entity(
+            "Jane Private", "person", aliases=[f"a{i}" for i in range(MAX_ENTITY_ALIASES)]
+        )
+        # An imported bundle keeps its ids as written, so one can hold a newline.
+        forged = "id\nWARNING forged"
+        store.db.execute("UPDATE entities SET id = ? WHERE id = ?", (forged, eid))
+        with caplog.at_level("WARNING", logger="kiro_crew.knowledge.store"):
+            store.add_entity_aliases(forged, ["one more"])
+        assert repr(forged) in caplog.text
+        assert "Jane Private" not in caplog.text and "\nWARNING forged" not in caplog.text
+
+    def test_a_damaged_aliases_error_does_not_echo_the_stored_value(self, store):
+        import pytest
+
+        eid = store.add_entity("Jane Private", "person")
+        store.db.execute(
+            "UPDATE entities SET aliases = ? WHERE id = ?", ('{"secret": "J. P."}', eid)
+        )
+        with pytest.raises(ValueError, match="invariant violation") as raised:
+            store.add_entity_aliases(eid, ["JP"])
+        assert "J. P." not in str(raised.value)
+
+    def _pipeline(self, store):
+        from kiro_crew.knowledge.ingestion import IngestionPipeline
+
+        return IngestionPipeline(
+            store=store, extractor=None, chunker=None, reader=None, embedder=None
+        )
+
+    def test_a_skipped_alias_enrichment_logs_the_id_and_error_type(self, store, caplog):
+        eid = store.add_entity("Jane Private", "person")
+        store.db.execute(
+            "UPDATE entities SET aliases = ? WHERE id = ?", ('{"secret": "J. P."}', eid)
+        )
+        item = store.add_item("doc", "text", "document")
+        extraction = {
+            "entities": [{"name": "Jane Private", "type": "person", "aliases": ["JP"]}],
+            "relations": [],
+        }
+        with caplog.at_level("WARNING", logger="kiro_crew.knowledge.ingestion"):
+            self._pipeline(store)._store_entities(extraction, item)
+        assert f"{eid!r}: ValueError" in caplog.text
+        assert "Jane Private" not in caplog.text and "J. P." not in caplog.text
+
+    def test_too_many_extracted_aliases_logs_the_source_not_the_name(self, store, caplog):
+        from kiro_crew.knowledge.store import MAX_ENTITY_ALIASES
+
+        item = store.add_item("doc", "text", "document")
+        aliases = [f"alias {i}" for i in range(MAX_ENTITY_ALIASES + 1)]
+        extraction = {
+            "entities": [{"name": "Jane Private", "type": "person", "aliases": aliases}],
+            "relations": [],
+        }
+        with caplog.at_level("WARNING", logger="kiro_crew.knowledge.ingestion"):
+            self._pipeline(store)._store_entities(extraction, item)
+        assert "alias evidence exceeds limit" in caplog.text
+        assert repr(item) in caplog.text and "Jane Private" not in caplog.text
+
+
 def test_an_unbindable_alias_does_not_fail_an_import_or_an_add(store, store_factory):
     """A lone surrogate survives json.loads but not a SQLite bind: it indexes nothing."""
     store.add_entity("Seoul", "place", aliases=["서울"])

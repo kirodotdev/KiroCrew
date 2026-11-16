@@ -690,7 +690,10 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             status = "✅" if j.enabled else "⏸️"
             sched = _format_schedule(j.schedule, tz_name=job_zone_name(j))
             folder = _cron_folder_label(j.folder_id or "", folder_names)
-            print(f"  {status} {j.id}  {j.name}  ({sched})  [folder: {folder}]  {j.message[:60]}")
+            # Name and message are agent-authored, like the folder name.
+            name = safe_terminal_line(j.name)
+            message = safe_terminal_line(j.message)[:60]
+            print(f"  {status} {j.id}  {name}  ({sched})  [folder: {folder}]  {message}")
             # Ownership is printed because it decides which surfaces can manage
             # the job at all: a job with no owning session is outside every chat
             # session's scope, so `cron_list` from chat does not list it and the
