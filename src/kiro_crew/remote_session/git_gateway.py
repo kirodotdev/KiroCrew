@@ -999,14 +999,32 @@ def _strict_refusal(what: str, *, unverifiable: bool) -> str:
     )
 
 
+async def lending_refusal() -> str:
+    """Why no gateway login reaches an agent here: ``unsupported``, ``withheld`` or "".
+
+    ``unsupported`` on a Windows gateway that cannot verify its own account,
+    ``withheld`` under the ``strict`` sandbox tier. The one gate both
+    :func:`git_readiness` and remote-dispatch headroom read.
+    """
+    if await lending_unverifiable_off_loop():
+        return "unsupported"
+    if not await asyncio.to_thread(gateway_logins_lent):
+        return "withheld"
+    return ""
+
+
+def readiness_tool(host: str) -> Optional[str]:
+    """The CLI whose sign-in :func:`login_status` asks for *host*, or None when it asks none."""
+    return next((name for name in HOSTS[host].sources if name in _STATUS_ARGV), None)
+
+
 async def git_readiness() -> dict[str, str]:
     """Per proxied host: ``login_status``, ``withheld`` for all under ``strict``, or
     ``unsupported`` for all on a Windows gateway that cannot verify its own account
     (no source is asked)."""
-    if await lending_unverifiable_off_loop():
-        return {host: "unsupported" for host in HOSTS}
-    if not await asyncio.to_thread(gateway_logins_lent):
-        return {host: "withheld" for host in HOSTS}
+    refusal = await lending_refusal()
+    if refusal:
+        return {host: refusal for host in HOSTS}
     return dict(zip(HOSTS, await asyncio.gather(*(login_status(h) for h in HOSTS))))
 
 

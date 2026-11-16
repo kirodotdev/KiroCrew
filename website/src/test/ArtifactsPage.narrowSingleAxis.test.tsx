@@ -108,13 +108,13 @@ function setViewport(width: number) {
   Object.defineProperty(window, 'innerWidth', { value: width, configurable: true, writable: true })
 }
 
-async function renderWith(count: number) {
+async function renderWith(count: number, route?: string) {
   vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
     artifacts: Array.from({ length: count }, (_, i) => artifact(i)),
   })
   vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({ docs: [] })
   vi.mocked(api).artifact = vi.fn().mockResolvedValue(artifact(0))
-  renderWithProviders(<ArtifactsPage />)
+  renderWithProviders(<ArtifactsPage />, route ? { route } : {})
   await waitFor(() => expect(contentColumn()).toBeTruthy())
 }
 
@@ -192,18 +192,19 @@ describe('ArtifactsPage keeps the axis on the page at one column', () => {
     expect(document.querySelector('[class*="max-h-["]')).toBeNull()
   })
 
-  it('keeps the masonry, and its scroller, once there are real columns', async () => {
+  it('gives a desktop the card grid in page flow, with one scroller', async () => {
     setViewport(1280)
     mobile = false
-    await renderWith(VIRTUALIZE_AT + 5)
-    await waitFor(() => expect(screen.getByTestId('masonry')).toBeTruthy())
-    // The waterfall is real from two columns up, so nothing changes there: the
-    // masonry owns its scroller and the page column yields, exactly as before.
-    expect(screen.queryByTestId('artifacts-gallery-list')).toBeNull()
+    // A desktop opens on Home; the gallery is the "All artifacts" view.
+    await renderWith(VIRTUALIZE_AT + 5, '/artifacts?scope=all')
+    await waitFor(() => expect(screen.getByTestId('artifacts-card-grid')).toBeTruthy())
+    // The equal-height grid is not virtualized, so it never owns a scroller:
+    // the page column scrolls and nothing above the cards is capped.
+    expect(screen.queryByTestId('masonry')).toBeNull()
     const col = contentColumn()
-    expect(col.className).toMatch(/overflow-hidden/)
-    expect(col.className).not.toMatch(/overflow-y-auto/)
-    expect(document.querySelector('[class*="max-h-["]')).toBeTruthy()
+    expect(col.className).toMatch(/overflow-y-auto/)
+    expect(col.className).not.toMatch(/overflow-hidden/)
+    expect(document.querySelector('[class*="max-h-["]')).toBeNull()
   })
 
   it('puts the page header inside the scroller, without doubling the gutter', async () => {

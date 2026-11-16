@@ -403,6 +403,11 @@ describe('the recovery, cancelled-replay, end-of-turn and admission rows', () =>
       text: 'p is throttled — running on f until p recovers.',
       tone: 'warn',
     })
+    expect(resolveGatewayNotice(row('notice', 'model_server_error_fallback', { primary: 'p', fallback: 'f' }), [], 0)).toEqual({
+      card: 'notice',
+      text: 'p keeps returning server errors — running on f until p recovers.',
+      tone: 'warn',
+    })
     // The mode a harness's session moved to, by the name the session advertised.
     expect(resolveGatewayNotice(row('notice', 'harness_mode_changed', { mode: 'Plan' }), [], 0)).toEqual({
       card: 'notice',

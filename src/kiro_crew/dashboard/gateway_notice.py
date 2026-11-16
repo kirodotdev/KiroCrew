@@ -56,6 +56,7 @@ GATEWAY_NOTICE_COMPACTION_CONTINUING = "compaction_continuing"
 GATEWAY_NOTICE_MODEL_ACCESS_FALLBACK = "model_access_fallback"
 GATEWAY_NOTICE_MODEL_UNAVAILABLE = "model_unavailable"
 GATEWAY_NOTICE_MODEL_THROTTLED_FALLBACK = "model_throttled_fallback"
+GATEWAY_NOTICE_MODEL_SERVER_ERROR_FALLBACK = "model_server_error_fallback"
 # Refusal-fallback (`agent.refusal_fallback_model`) ``notice`` row: the
 # configured fallback equals the model that just refused, so the one retry is
 # skipped (`_refusal_fallback_is_same_model`). A separate row from the terminal
