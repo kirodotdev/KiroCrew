@@ -7,7 +7,7 @@ import {
   switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput,
 } from '../store/chatSlice'
 import { mergeReplyIntoDraft } from '../utils/chatDrafts'
-import { tryQuickSend } from '../lib/quickSend'
+import type { ComposeSendResult } from '../components/chat/GrillCard'
 import { DeliveryWarningStrip } from '../components/DeliveryWarningStrip'
 import { useDeliveryWarningStrip } from '../components/useDeliveryWarningStrip'
 import { mergeSentTurns, type SentTurnRestore } from './chat/page/composerSend'
@@ -64,7 +64,7 @@ import { useComposerTypingLock } from './chat/shared-crew/useComposerTypingLock'
 import { SessionPresence, usePresentOthers } from './chat/shared-crew/PresenceChips'
 import { useComposerEditWithTyping } from './chat/shared-crew/typingSignal'
 import ChatSidePanels from './chat/page/ChatSidePanels'
-import { slotBusySteer } from '../components/chat-input/busySend'
+import { busySteerFlag, slotBusySteer } from '../components/chat-input/busySend'
 import { useSessionAutomation } from './chat/page/sessionAutomation'
 import { useTranscriptJumps } from './chat/page/transcriptJumps'
 import { useTranscriptWidth } from './chat/TranscriptScrollShell'
@@ -797,18 +797,27 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     activeSlot, currentSlot, followupTsRef, followupBranchFor, openFollowupSession, setActionError,
   })
 
-  // A reply card's text (the `[GRILL:]` discussion card) goes out the way a
-  // follow-up chip's does: sent with Quick Send on and the slot idle, else staged.
+  // A reply card's Start / No thanks (the `[GRILL:]` discussion card) is a
+  // deliberate press, so it sends whatever Quick Send says. While a turn runs it
+  // takes the composer's own busy decision: steer, or queue behind the turn.
   // Only for the chat this composer serves: a card from another pane is refused,
-  // so it stays open instead of answering the wrong session. Offline, send()
-  // returns before it sends or reports anything, so the text is staged instead.
-  // A send that fails later reports in the chat's own error row, as a chip's does.
-  const { composeSend } = useStableCallbackProps({ composeSend: (text: string, slot: string): 'sent' | 'staged' | null => {
+  // so it stays open instead of answering the wrong session. Where nothing can
+  // go out (offline, a held crew composer, a force stop that clears the queue)
+  // the text is put in the chat box and the card says so. A send that fails
+  // later reports in the chat's own error row, as a chip's does.
+  const { composeSend } = useStableCallbackProps({ composeSend: (text: string, slot: string): ComposeSendResult | null => {
     // A split view draws a composer per cell (ChatPane takes its own cards).
     if ((splitMode && splitFeatureEnabled) || !slot || slot !== activeSlotRef.current || composerSlotRef.current !== slot) return null
-    if (connected && tryQuickSend(text, dashCfg?.quick_send, false, !!slotRunning, followUpPickedRef.current.size, t => { void send(t, slot) })) return 'sent'
-    dispatch(setPendingInput(mergeReplyIntoDraft(inputRef.current, text)))
-    return 'staged'
+    const stopState = currentSlot?.stop_state
+    if (!connected || crewModeSwitching || crewRootClosed || stopState === 'killing') {
+      dispatch(setPendingInput(mergeReplyIntoDraft(inputRef.current, text)))
+      return 'staged'
+    }
+    // The composer's own busy reading (a turn, or only sub-agents running), so
+    // the card steers, queues or starts a turn exactly where its Send would.
+    const flag = busySteerFlag({ slotKey: slot, busy: composerBusy, turnRunning: !!slotRunning, stopState, jevAutoConsented, busyMode: currentCrewRoot && currentSlot ? 'steer-only' : undefined })
+    void send(text, slot, flag)
+    return 'sent'
   } })
   // Outside events feeding the side panel, the dock terminal and the composer,
   // then the cold file tabs' reads.

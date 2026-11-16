@@ -211,7 +211,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     return true
   }, [input, slotKey, openSideChat, agentLocked, paneAgentName, readPastes, setPasteBlocks, dispatch, composerRef, mountedRef, slotKeyRef, inputRef, setInput])
 
-  const doSend = useCallback((optionText?: string, steerNow?: boolean) => {
+  const doSend = useCallback((optionText?: string, steerNow?: boolean | 'auto') => {
     // `optionText` mirrors ChatPage.send's first parameter: the follow-up
     // bar's direct-send gesture (double-click / split button) hands the option
     // label here so it bypasses the setInput race, superseding any composer
@@ -333,7 +333,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // `response-late` proves no refusal either; restoring either one here could
     // invite a retry that duplicates a turn already in flight, side effects
     // included, so the optimistic composer row stays pending.
-    void sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: true } : {}) }).then((receipt) => {
+    void sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: steerNow } : {}) }).then((receipt) => {
       // Receipt policy, owned once in chat-core (issue #9457). This is the
       // PARTIAL copy: doSend is a full send, not only a steer, so the rulings
       // applySteerReceipt owns (echo short-circuit, refused/response-late/
