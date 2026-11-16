@@ -1106,6 +1106,13 @@ def test_a_live_mcp_call_is_named_by_its_tool_not_its_fused_title() -> None:
     assert permission.harness_tool_id == "antigravity#@probe/echo_probe"
 
 
+def test_an_mcp_call_that_fuses_into_a_native_name_meets_only_mcp_matchers() -> None:
+    """``@view/file`` fuses into the native ``view_file``; no read hook may run on it."""
+    from kiro_crew.acp.harness_tool_names import harness_tool_match_names
+
+    assert harness_tool_match_names("antigravity#@view/file") == ("@view/file", "mcp__view__file")
+
+
 @pytest.mark.parametrize("backend", ["", "opencode", "goose", "copilot", "kas"])
 def test_only_harnesses_that_run_unasked_name_the_starting_event(backend: str) -> None:
     from kiro_crew.acp.harness_tool_names import start_event_tool_id

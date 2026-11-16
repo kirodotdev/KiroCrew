@@ -572,10 +572,11 @@ def harness_tool_match_names(tool_id: str) -> tuple[str, ...] | None:
             server, _, tool = split[1:].partition("/")
             forms += [split, f"mcp__{server}__{tool}"]
             fused.append(f"{_fused_server_spelling(backend, server)}_{tool}")
-        if backend in ENVELOPE_NAMED_TOOL_BACKENDS:
-            # The envelope proved an MCP server's tool: only its MCP forms name it.
-            # The fused spelling is opencode's, and on this harness ``web_fetch``
-            # fused from ``@web/fetch`` is not the built-in a ``web_fetch`` hook means.
+        if backend in ENVELOPE_NAMED_TOOL_BACKENDS or backend == ACP_BACKEND_ANTIGRAVITY:
+            # The envelope (or Antigravity's trusted ``_meta.mcp`` pair) proved an MCP
+            # server's tool: only its MCP forms name it. The fused spelling is
+            # opencode's, and here ``web_fetch`` fused from ``@web/fetch`` (or
+            # ``view_file`` from ``@view/file``) is not the built-in its hook means.
             return tuple(dict.fromkeys(forms))
         table = HARNESS_TOOL_TABLES[backend]
         native_tools = [f for f in dict.fromkeys(fused) if any(f in ids for ids in table.values())]
