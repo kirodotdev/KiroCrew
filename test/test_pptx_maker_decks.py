@@ -19,8 +19,6 @@ No engine, no subprocess.
 import inspect
 import json
 import os
-import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -32,8 +30,13 @@ from kiro_crew.testing.synthetic_credentials import ALNUM, github_classic, synth
 
 
 class _DeckTree(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory, which pytest reclaims even
+        when ``setUp`` fails before ``tearDown`` could run."""
+        self.tmp = tmp_path
+
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
         self.root = self.tmp / "decks"
         self.root.mkdir(parents=True)
         self._prev = os.environ.get(paths.DECK_ROOT_ENV)
@@ -44,7 +47,6 @@ class _DeckTree(unittest.TestCase):
             os.environ.pop(paths.DECK_ROOT_ENV, None)
         else:
             os.environ[paths.DECK_ROOT_ENV] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _deck(self, deck_id: str) -> Path:
         deck = self.root / deck_id
