@@ -786,11 +786,27 @@ async def send_message(self: AcpClient, message: str, timeout: float | None = No
     timeout = await _effective_prompt_timeout_async(timeout)
     self._cancelled = False
     self._turn_done.clear()
-    async with launch_tuning.switch_barrier(self):
-        await self.ensure_ready()
-
-    req_id = await self._send_prompt(message)
+    try:
+        async with launch_tuning.switch_barrier(self):
+            await self.ensure_ready()
+        req_id = await self._send_prompt(message)
+    except BaseException:
+        _release_unsent_turn(self)
+        raise
     return await self._read_prompt_response(req_id, timeout)
+
+
+def _release_unsent_turn(client: AcpClient) -> None:
+    """End the turn a prompt entry opened and left before its prompt was sent.
+
+    The entry cleared ``_turn_done``, and the turn's read (``_prompt_loop``) sets
+    it again. Left clear, a ``wait_turn_done`` waiter waits out its whole budget,
+    and the idle reader, which starts only once the turn is done, stays off: a
+    reply the agent then sends on its own waits in the pipe and shows under the
+    next prompt.
+    """
+    client._turn_done.set()
+    client._maybe_start_idle_reader()
 
 
 async def send_message_stream(
@@ -805,10 +821,13 @@ async def send_message_stream(
     # streaming subagent adopts this method, mirror that Pre/Post instrumentation here.
     self._cancelled = False
     self._turn_done.clear()
-    async with launch_tuning.switch_barrier(self):
-        await self.ensure_ready()
-
-    req_id = await self._send_prompt(message)
+    try:
+        async with launch_tuning.switch_barrier(self):
+            await self.ensure_ready()
+        req_id = await self._send_prompt(message)
+    except BaseException:
+        _release_unsent_turn(self)
+        raise
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
     self._reset_native_child_turn()
     self._engine_fallback.begin_prompt(self)
@@ -938,9 +957,13 @@ async def stream_events(
     timeout = await _effective_prompt_timeout_async(timeout)
     self._cancelled = False
     self._turn_done.clear()
-    async with launch_tuning.switch_barrier(self):
-        await self.ensure_ready()
-    req_id = await self._send_prompt(message, allow_image=allow_image, prompt_gate=prompt_gate)
+    try:
+        async with launch_tuning.switch_barrier(self):
+            await self.ensure_ready()
+        req_id = await self._send_prompt(message, allow_image=allow_image, prompt_gate=prompt_gate)
+    except BaseException:
+        _release_unsent_turn(self)
+        raise
     # aclosing(): a consumer that closes this stream early must close the
     # dispatcher too, so its finally records the turn's unanswered steers
     # as orphans before the next _send_prompt settles them.
