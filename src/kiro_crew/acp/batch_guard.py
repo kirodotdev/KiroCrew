@@ -131,6 +131,12 @@ OPEN_MEMBER_TTL_SECS = 600.0
 AUDIT_SOURCE = "batch_guard"
 OUTCOME_REJECTED_BATCH_GUARD = "rejected_batch_guard"
 AUDIT_MECHANISM = "batch_write_guard"
+#: The refusal for a batched write the guard failed to judge (fail closed).
+UNJUDGED_REFUSAL = (
+    "Blocked by the batch guard: this write-class call could not be checked against "
+    "the other calls in its parallel tool batch. Nothing ran. Send this call again "
+    "on its own in your next step."
+)
 
 # ── Tables ──
 
@@ -767,6 +773,10 @@ class BatchWindow:
         #: echoes it (a refusal-recovery prompt quotes the refused call) does not
         #: make it seen. Bounded by :data:`MAX_BATCH_TOKENS`, oldest first.
         self._refused: OrderedDict[str, None] = OrderedDict()
+        #: Keys of calls whose ``tool_call`` could not be recorded (an error while
+        #: classifying it): a write among them is refused, not passed unjudged.
+        #: Bounded like the members; cleared each prompt turn.
+        self._unrecorded: set[str] = set()
 
     def _refused_filter(self) -> Callable[[str], bool]:
         """Whether a token names a refused guess: one a refusal named, or a cut
@@ -933,6 +943,12 @@ class BatchWindow:
             )
             self._members[key] = self._merged(self._members[key], new)
 
+    def mark_unrecorded(self, call_id: str) -> None:
+        """*call_id*'s ``tool_call`` could not be recorded; its write is refused."""
+        key = liveness_key(call_id)
+        if key and len(self._unrecorded) < MAX_ACTIVE_TOOL_CALLS:
+            self._unrecorded.add(key)
+
     def settled(self, call_id: str, output: str = "") -> None:
         """*call_id* reached a terminal status, with *output* its result text. It
         stays a member of its batch."""
@@ -1012,6 +1028,7 @@ class BatchWindow:
         self._absorb()
         self._open.clear()
         self._overflowed = False
+        self._unrecorded.clear()
 
     def refusal_for(
         self, call_id: str, klass: str, extra_write_commands: tuple[str, ...] = ()
@@ -1023,15 +1040,15 @@ class BatchWindow:
         read or a creator (with a complete :attr:`seen` set), or a returned peer
         that is not a plain write printed that token beyond its own arguments
         (proof). A to-the-second time refuses
-        only on proof. Never raises.
+        only on proof. Never raises: a write it cannot judge is refused.
         """
         if klass != WRITE:
             return None
         try:
             return self._refusal(liveness_key(call_id), extra_write_commands)
         except Exception:
-            logger.debug("batch guard: could not judge a write", exc_info=True)
-            return None
+            logger.warning("batch guard: could not judge a write; refusing it", exc_info=True)
+            return UNJUDGED_REFUSAL
 
     def _refusal(self, key: str, extra_write_commands: tuple[str, ...]) -> str | None:
         member = self._members.get(key)
@@ -1117,10 +1134,12 @@ def note_dispatched(window: BatchWindow | None, event: Any) -> None:
     """Feed a ``tool_call`` (or its refinement) into *window*. Never raises."""
     if window is None:
         return
+    call_id = ""
     try:
+        call_id = str(getattr(event, "tool_call_id", "") or "")
         command = _command_of(event) if _is_shell_call(event) else ""
         window.dispatched(
-            str(getattr(event, "tool_call_id", "") or ""),
+            call_id,
             classify(event),
             command,
             text=_input_text(event),
@@ -1129,7 +1148,8 @@ def note_dispatched(window: BatchWindow | None, event: Any) -> None:
             paths=_edit_paths(event) if is_file_edit(event) else frozenset(),
         )
     except Exception:
-        logger.debug("batch guard: could not classify a tool call", exc_info=True)
+        logger.warning("batch guard: could not classify a tool call", exc_info=True)
+        window.mark_unrecorded(call_id)
 
 
 def note_text(window: BatchWindow | None, text: Any) -> None:
@@ -1391,26 +1411,41 @@ async def screen_approval(transport: Any, event: Any) -> str | None:
     # Every approval, a read's included, refreshes the call's own member: the
     # permission request may resolve a tool its tool_call frame named only by
     # server, and a later write in the batch is judged against that.
+    key = liveness_key(call_id)
+    # A call whose arguments could not be recorded cannot be judged: a write
+    # among them is refused (fail closed), not judged on a stale or missing record.
+    unjudged = key in window._unrecorded
     try:
         command = _command_of(event) if _is_shell_call(event) else ""
         window.refresh(
             call_id, classify(event), command, text=_input_text(event), creator=is_creator(event)
         )
     except Exception:
-        logger.debug("batch guard: could not refresh a member", exc_info=True)
-    if len(window) < 2:
+        logger.warning("batch guard: could not refresh a member", exc_info=True)
+        unjudged = True
+    member = key in window._members
+    if not member and not unjudged:
         return None
-    if liveness_key(call_id) not in window._members:
+    # An unrecorded call's batch is the calls still open beside it: a finished
+    # batch's members do not make a solo call batched.
+    if (len(window) - 1 if member else len(window._open)) < 1:
         return None
     enabled, extra_write_commands = await asyncio.to_thread(guard_settings)
     if not enabled:
         return None
+    reason: str | None
     if (
         _backend_of(transport) == ACP_BACKEND_KAS
         and _is_shell_call(event)
         and window.open_edit_before(call_id)
     ):
-        reason: str | None = WRITE_RUN_REFUSAL
+        reason = WRITE_RUN_REFUSAL
+    elif unjudged:
+        try:
+            klass = classify(event, extra_write_commands)
+        except Exception:
+            klass = WRITE
+        reason = UNJUDGED_REFUSAL if klass == WRITE else None
     else:
         reason = window.refusal_for(
             call_id, classify(event, extra_write_commands), extra_write_commands

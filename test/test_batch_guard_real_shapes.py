@@ -608,3 +608,95 @@ def test_a_client_learns_a_result_streamed_before_an_outputless_terminal(tmp_pat
     assert not window._open
     member = next(iter(window._members.values()))
     assert _SHA in member.output
+
+
+def test_a_batched_write_the_guard_cannot_judge_is_refused(monkeypatch):
+    guard = _guard()
+    window = guard.BatchWindow()
+    window.dispatched("r", guard.READ, text=_args(item_id=_ITEM))
+    window.dispatched("w", guard.WRITE, text=_args(item_id=_ITEM, decision=_SHA))
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("judge failed")
+
+    monkeypatch.setattr(window, "_refusal", _boom)
+    reason = window.refusal_for("w", guard.WRITE)
+    assert reason is not None and "could not be checked" in reason
+    assert window.refusal_for("r", guard.READ) is None
+
+
+def _write_ask(call_id: str) -> AcpEvent:
+    return _ask(7, call_id, _WORK, "work_ledger_record", {"item_id": _ITEM})
+
+
+async def _screen(window, event) -> str | None:
+    from types import SimpleNamespace
+
+    transport = SimpleNamespace(_batch_window=window, backend="kiro", steer=AsyncMock())
+    return await _guard().screen_approval(transport, event)
+
+
+@pytest.mark.asyncio
+async def test_a_batched_write_whose_tool_call_was_not_recorded_is_refused(monkeypatch):
+    guard = _guard()
+    monkeypatch.setattr(guard, "guard_settings", lambda: (True, ()))
+    monkeypatch.setattr("kiro_crew.deny_notice.steer_refusal_notice", AsyncMock())
+    window = guard.BatchWindow()
+    window.dispatched("r", guard.READ, text=_args(item_id=_ITEM))
+    real = window.dispatched
+
+    def _fails_for_w(call_id, *a, **kw):
+        if call_id == "w":
+            raise RuntimeError("could not record")
+        return real(call_id, *a, **kw)
+
+    monkeypatch.setattr(window, "dispatched", _fails_for_w)
+    guard.note_dispatched(window, _write_ask("w"))
+    monkeypatch.setattr(window, "refresh", lambda *a, **kw: None)
+    assert await _screen(window, _write_ask("w")) == guard.UNJUDGED_REFUSAL
+
+
+@pytest.mark.asyncio
+async def test_a_batched_write_whose_refresh_failed_is_refused(monkeypatch):
+    guard = _guard()
+    monkeypatch.setattr(guard, "guard_settings", lambda: (True, ()))
+    monkeypatch.setattr("kiro_crew.deny_notice.steer_refusal_notice", AsyncMock())
+    window = guard.BatchWindow()
+    window.dispatched("r", guard.READ, text=_args(item_id=_ITEM))
+    window.dispatched("w", guard.WRITE, text="")
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("could not refresh")
+
+    monkeypatch.setattr(window, "refresh", _boom)
+    assert await _screen(window, _write_ask("w")) == guard.UNJUDGED_REFUSAL
+
+
+@pytest.mark.asyncio
+async def test_a_batched_call_whose_classification_raises_is_refused_not_left_unanswered(
+    monkeypatch,
+):
+    guard = _guard()
+    monkeypatch.setattr(guard, "guard_settings", lambda: (True, ()))
+    monkeypatch.setattr("kiro_crew.deny_notice.steer_refusal_notice", AsyncMock())
+    window = guard.BatchWindow()
+    window.dispatched("r", guard.READ, text=_args(item_id=_ITEM))
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("could not classify")
+
+    monkeypatch.setattr(guard, "classify", _boom)
+    guard.note_dispatched(window, _write_ask("w"))
+    assert await _screen(window, _write_ask("w")) == guard.UNJUDGED_REFUSAL
+
+
+@pytest.mark.asyncio
+async def test_an_unrecorded_call_after_its_batch_ended_is_not_refused(monkeypatch):
+    guard = _guard()
+    monkeypatch.setattr(guard, "guard_settings", lambda: (True, ()))
+    window = guard.BatchWindow()
+    window.dispatched("r", guard.READ, text=_args(item_id=_ITEM))
+    window.settled("r", "done")
+    window.mark_unrecorded("w")
+    monkeypatch.setattr(window, "refresh", lambda *a, **kw: None)
+    assert await _screen(window, _write_ask("w")) is None

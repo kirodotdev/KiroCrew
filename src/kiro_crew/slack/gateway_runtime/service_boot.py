@@ -695,7 +695,7 @@ def _init_task_runner(self: GatewayOrchestrator) -> None:
 
     # An app turn (``AgentTurnSDK.run``: a meeting's agents) passes this prompt as
     # its approver, as a cron job does. Without it a call the hook gate neither
-    # denies nor grants is approved with nobody asked.
+    # denies nor grants is refused, since nobody can be asked.
     from kiro_crew.apps import agent_turn_sdk
 
     agent_turn_sdk.set_turn_approver(
