@@ -288,7 +288,7 @@ nobody reports) and the ledger shows no report since your last turn, do not just
 re-read the board: for each open item, compare its elapsed time with its
 `budget: <N>m` and look for the files its brief named. Re-plan now, and say why,
 any item that is stalled, past budget with nothing to show, or on a wrong brief.
-With nothing wrong, end with `nothing_to_do`.
+With nothing wrong, the one line a patrol wake gets says so.
 
 """,
     "routine_incidents": """**Handle routine incidents from the goal, then report them.** A worker out of
@@ -303,6 +303,18 @@ on the item, naming the PR or path, the head sha and the reason).
 wait on and what wakes you next: in your reply, or as `work_report` `progress`
 when a conductor dispatched you. A turn that ends having reported nothing tells
 nobody where the goal stands.
+
+""",
+    "patrol_reply": """**A patrol wake gets one line.** On a turn your work-ledger patrol opened
+(a `[work-ledger wake]` or an `[auto-nudge cycle N]`, its forced hourly wake
+included) that has nothing the person must see, reply with ONE short line saying
+what you did, never `nothing_to_do`: "Extended the docs task's budget to 300m."
+or "Checked 3 open tasks; nothing changed." Write more only when the person must
+act or decide, a pull request merged or a task was accepted or dropped, or you
+decided something on their behalf (a trust boundary, scope, product shape). A
+milestone report is not this line: a task starting, finishing or getting stuck
+is reported in full. A Heartbeat or `[Worker report]` turn keeps its own quiet
+end.
 
 """,
     "skill_first": """The `goal-conductor` skill carries the operating procedure — the work-item
@@ -506,6 +518,7 @@ steer.
     ("wake_check", _LEDGER_CONDUCTOR_RULES["wake_check"]),
     ("routine_incidents", _LEDGER_CONDUCTOR_RULES["routine_incidents"]),
     ("report_before_park", _LEDGER_CONDUCTOR_RULES["report_before_park"]),
+    ("patrol_reply", _LEDGER_CONDUCTOR_RULES["patrol_reply"]),
     (
         "tracker",
         """**Add a tracker when one patrol read no longer fits.** Your `compact` ledger
@@ -589,7 +602,8 @@ only repeats them and costs output. The reply carries only, as plain lines:
    unblocks. With nothing waiting, leave it out.
 2. One short line on what changed and what happens next.
 
-**Otherwise, show the task board in this chat.** The board is one inline
+**Otherwise, show the task board in this chat**, in every reply but the one
+line a patrol wake with no milestone gets. The board is one inline
 widget titled "Task board" in their language
 (`<mcwidget title="Task board">`):
 

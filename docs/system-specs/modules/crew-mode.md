@@ -3880,7 +3880,9 @@ every assembled prompt, offline; the fixtures and their goldens are in
 A member-mode slot's transcript is the Bot's whole working record: the
 `[auto-nudge cycle N]` turns of its patrol loop, `[Cron notification …]` and
 `[Subagent completion event]` envelopes, every tool call, and the say-nothing
-reply a quiet patrol ends on. The Members page's chat pane shows **only what
+reply a quiet Heartbeat or `[Worker report]` turn ends on. A work-ledger patrol
+wake with nothing for the user ends on one visible line of what the Bot did
+(`patrol_reply`), which the chat pane shows. The Members page's chat pane shows **only what
 the Bot says to the user** and the user's own messages. Everything else stays in the slot's history and is filtered at render time by `filterCrewmateChat`
 (`website/src/components/chat/crewmateBubbles.ts`), which `ChatPane` applies
 when its host passes `crewmate`. Ordinary chats never pass it and are drawn
@@ -3889,7 +3891,7 @@ unchanged.
 What is hidden: rows with role `nudge`, `inject`, `subagent`, `tool`,
 `tool_call`, `tool_result`, `thinking`; and an `assistant` row that is not
 speech — invisible-only content (the bare U+200B the model is instructed to
-answer a quiet patrol with, `isHiddenInvisibleAssistantRow`), a gateway system
+answer a quiet turn with, `isHiddenInvisibleAssistantRow`), a gateway system
 notice written under the assistant role (compaction, session reload), or an
 injected workflow completion. A turn that ends without addressing the user is
 therefore a turn whose final assistant text is empty: the model's own silence
@@ -4675,7 +4677,8 @@ reading the `goal-conductor` skill before acting on a goal and again after a
 compaction, and the long-task and
 team rules every turn needs: the item budget, one owner per file and one
 integrator per output, merging two lines, the plan reviewer, the `pr_merged` bar,
-the hourly check on a quiet wake, routine incidents, and reporting before a park) are written once,
+the hourly check on a quiet wake, routine incidents, reporting before a park, and
+the one-line reply on a patrol wake that has nothing the person must see) are written once,
 in `agent_parts/spec_prompts.py` `_LEDGER_CONDUCTOR_RULES`: the root charter is
 assembled from them (`_CONDUCTOR_PROMPT_SECTIONS`) and `conductor.patrol` names
 each as a placeholder (`context_assembly.member.ledger_rules_block`).

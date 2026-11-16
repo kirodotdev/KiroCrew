@@ -499,6 +499,33 @@ def test_the_long_task_and_team_rules_are_shared() -> None:
     assert set(_NEW_SHARED) <= crewmate_prompts.placeholders(_MATE_PIECE)
 
 
+def test_a_patrol_wake_gets_one_line_on_both_conductors(specs) -> None:
+    """The one-line patrol reply is a shared rule both installed conductors carry, and
+    no quiet-end wording tells a patrol wake to stay silent, so neither side is told
+    two things."""
+    root_spec, _mate = specs
+    rule = agent._LEDGER_CONDUCTOR_RULES["patrol_reply"].strip()
+    assert "patrol_reply" in crewmate_prompts.placeholders(_MATE_PIECE)
+    for side, text in (
+        (_ROOT, root_spec["prompt"]),
+        ("kirocrew-mate-conductor", _mate_ledger_text()),
+    ):
+        assert rule in text, f"{side} lacks the patrol_reply rule"
+    assert "nothing_to_do" not in agent._LEDGER_CONDUCTOR_RULES["wake_check"]
+    assert "its wakes are the one exception" in _words(
+        crewmate_prompts.text("conductor.how_you_work")
+    )
+    assert 'never post "nothing changed"' not in _skill_text("goal-conductor")
+    # The one line is for a wake with no news only: milestones keep their full
+    # report (and the root's in-chat board), and the Bot's Heartbeat and
+    # [Worker report] turns keep their own quiet end.
+    words = _words(rule)
+    assert "a task starting, finishing or getting stuck is reported in full" in words
+    assert "a heartbeat or [worker report] turn keeps its own quiet end" in words
+    talking = dict(agent._CONDUCTOR_PROMPT_SECTIONS)["talking_to_the_person"]
+    assert "patrol wake with no milestone" in _words(talking)
+
+
 def test_the_render_check_sees_a_rule_lost_on_one_side(
     specs, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -631,6 +658,7 @@ SKILL_POINTERS: dict[str, str] = {
     "bar_pr_merged": "as your prompt's rule on landed code says",
     "plan_reviewer": "as your prompt's plan-reviewer rule says",
     "wake_check": "a wake with no news is a check, as your prompt's rule says",
+    "patrol_reply": "as your prompt's patrol-reply rule says",
 }
 
 
