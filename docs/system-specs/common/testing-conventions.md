@@ -4561,11 +4561,23 @@ freed copies are reused while collection is still allocating; a hook at collecti
 finish would leave the peak where it was. `test/test_worker_memory_retention.py`
 pins it, including that every item but the running one holds no request.
 
-The hook bounds what each autouse fixture costs; it does not make one free. Every
-autouse name still adds a slot to each function's `names_closure` (shared only
-between a function's own parametrizations, because pytest-asyncio inserts into
-it) and a setup and teardown to every test. Merge a new guard into an existing
-autouse fixture of the same scope before adding a name.
+The hook bounds what each autouse fixture costs; it does not make one free. It also
+shares identical `names_closure` lists (each item's `fixturenames`) between tests that
+are not asyncio tests: pytest-asyncio inserts `event_loop` into an `asyncio` test's
+list at setup, so those keep their own. Every autouse name still adds a setup and a
+teardown to every test. Merge a new guard into an existing autouse fixture of the same
+scope before adding a name.
+
+**The per-item cost is budgeted.** The rootdir conftest records the process RSS after
+configure and the VmHWM at collection finish, and
+`test_worker_memory_retention.py::TestCollectionCostPerItem` fails when collection
+spends more than 600 MiB plus 16 KiB per collected item (measured ~11 KiB per item on
+the full Linux suite; ~19 KiB before the fixture bookkeeping was shared). It is a
+per-item budget, so adding tests never trips it; it runs wherever a process collects at
+least 5,000 items, which includes every CI file shard.
+
+The shapes that cost the most, each with a wrong and a right example and its measured
+saving, are in [Writing a test that is cheap on memory](#writing-a-test-that-is-cheap-on-memory).
 
 Every layer that remains is live: the item tree, the closures and the rewritten
 modules are retained for the whole session by design.
@@ -4635,6 +4647,86 @@ and both fail silently if skipped: naming files on the command line bypasses
 the way `scripts/ci-surface-tests.py` does, and files sharing an `xdist_group`
 (`subprocess_spawn`, `mcp_gateway`, `serial`) must land in the same process or they
 lose the serialization the mark exists to provide.
+
+### Writing a test that is cheap on memory
+
+Every xdist worker imports every test module it collects and keeps it for the whole
+run, so a byte a test module holds is paid once per worker. A test that pins its own
+state after it ends is paid until something replaces it. Each rule below was measured
+on one r7i.8xlarge with the same command before and after the fix, and the fix passed
+the repository's boot smoke (`test/integration/test_boot_smoke.py`).
+
+**1. Build a large payload inside the test, never at import.** A module-level or
+`parametrize` value is built when the module is imported and kept alive by the module
+or by the mark, in every worker.
+
+```python
+# Wrong: 30 MiB in every worker for the whole run
+_HOSTILE = {"entry_too_large": [(_entry("big.bin"), bytes(range(256)) * (26 * 4096))]}
+
+# Right: built by the test that reads it
+_HOSTILE = {"entry_too_large": [(_entry("big.bin"), lambda: bytes(range(256)) * (26 * 4096))]}
+```
+
+Measured: five such modules held 80 MiB per worker (`--collect-only` of those modules,
+286,804 -> 206,284 KiB). A corpus several tests share goes in a `scope="module"`
+fixture, which pytest frees at the module's teardown.
+
+**2. Do not keep a whole-tree read in a module-level memo.** pytest keeps every test
+module for the session, so an `lru_cache` of every test file's text in a test module
+lives for the rest of the worker.
+
+```python
+# Wrong: the test tree's text, held by the module for the whole run
+@functools.lru_cache(maxsize=1)
+def _family_test_texts():
+    return tuple((p, p.read_text()) for p in _test_tree_files())
+
+# Right: the same memo, in a module whose tests carry a tree_scan xdist group
+pytestmark = pytest.mark.xdist_group(name="tree_scan_<module>")
+```
+
+`test/conftest.py` clears every module-level `lru_cache` of a `tree_scan_*` group's
+modules when the worker leaves the group. Measured: 361 -> 51 MiB retained after
+`test_facade_mirror_guards.py` (`-n0`, tracemalloc after `gc.collect()`). Outside a
+`tree_scan` group, stream the read or clear the memo from a module-scoped fixture.
+
+**3. Never leave a closure over a test's state in a module global.** A setter such as
+`set_share_tree_reader(lambda key: ...)` keeps the state, and every `MagicMock` call it
+recorded, until something overwrites the global.
+
+```python
+# Wrong: the 2,000-slot state and its mocks live until the next test builds a state
+set_share_tree_reader(lambda key: _share_tree_root(self, key))
+
+# Right (test side): put back what the test inherited
+monkeypatch.setattr(sharing, "_tree_root_reader", sharing._tree_root_reader)
+```
+
+A global that production wires once at boot belongs in the floor's
+`_BOOT_WIRED_GLOBALS`, which restores it after every test. Measured: 319 -> 18 MiB
+retained after `test_slots_pass_work.py`, and 195 -> 0 MiB added by
+`test_slots_diff_budget.py`.
+
+**4. Do not add an autouse fixture for what an existing one can do.** Each autouse
+name is resolved for every collected item (~280k) and set up and torn down for every
+test.
+
+```python
+# Wrong: a new name every item pays for
+@pytest.fixture(autouse=True)
+def _reset_my_cache():
+    yield
+    my_module._cache.clear()
+
+# Right: add the reset to an existing autouse fixture of the same scope
+```
+
+Measured: before the rootdir conftest shared the per-item fixture bookkeeping, the
+~130 fixtures each item resolves cost 2,971 MiB of a 5,295 MiB worker's collection
+(5,295 -> 2,957 MiB once shared). Sharing the `names_closure` lists as well took a full
+collection from 3,248 to 3,126 MiB. `TestCollectionCostPerItem` budgets what is left
+per item.
 
 ### Where the temp root points, and what else is running
 

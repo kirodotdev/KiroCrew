@@ -530,15 +530,25 @@ that was pytest's per-item fixture bookkeeping; the rootdir conftest's
 `compact_collected_item` shares it, for a 2,957 MiB peak
 (`testing-conventions.md` § Running on a machine with little RAM).
 
-The consequence for how you write a test:
+The consequence for how you write a test (each with a wrong and a right example and
+its measured saving in `testing-conventions.md` § Writing a test that is cheap on
+memory):
 
 - **A new autouse fixture is paid by every item.** Each one adds a slot to every test
   function's fixture closure and a setup and teardown to every test, ~280k times. Add
   the guard to an existing autouse fixture of the same scope instead of a new name.
 - **A module-level memo of a whole-tree read lives for the worker.** An
   `lru_cache`d `(path, text)` corpus in a test module is never released: pytest keeps
-  the module object for the session. Stream the read, or clear the memo from a
-  module-scoped fixture once the module's tests are done.
+  the module object for the session. Put the module in a `tree_scan_*` xdist group (the
+  conftest clears its module memos when the group ends), stream the read, or clear the
+  memo from a module-scoped fixture.
+- **A closure over a test's state in a module global outlives the test.** A setter
+  such as `set_share_tree_reader(lambda key: ...)` keeps the state, and every mock call
+  it recorded, until something overwrites the global. Restore the global with
+  `monkeypatch`, or have the floor restore it when production wires it once at boot.
+- **Collection is budgeted per item**
+  (`test_worker_memory_retention.py::TestCollectionCostPerItem`): a change that makes
+  every collected item heavier fails there, not in a swapping worker.
 - **An allocation at module scope is multiplied by every worker, and outlives the
   test.** A big literal inside `@pytest.mark.parametrize` is the worst shape: it is
   built while the module is IMPORTED and the mark keeps it alive on the function
