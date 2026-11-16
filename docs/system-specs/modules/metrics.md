@@ -243,7 +243,7 @@ destination, so a standalone build behaves as it
 did when this module constructed that exporter itself. It then adds each
 `otlp_endpoints` entry and the built-in `kiro-telemetry` destination
 (`metrics/kiro_export.py`): the `PRODUCT_METRICS` preset to a fixed Kiro telemetry
-endpoint, with `ClientType=kiro-crew` on every point, a reduced resource (no
+endpoint, with `ClientType=kiro-crew` and `machineId` (the header's hash) on every point, a reduced resource (no
 install id, pid, `os.type` or `host.*`), delta temporality, no process-wide OTel credentials,
 and a session that adds only `x-kiro-machineid` (a hash of the install id). It is
 the one destination that exports under the recording default
@@ -612,7 +612,7 @@ the wrapper sits:
 
 **A point-attribute key is refused, not dropped.** Keys are checked at
 construction against `destination_filter.ALLOWED_POINT_ATTRIBUTE_KEYS`
-(`ClientType` only today), and an unreviewed key raises. `_build_otlp_reader`
+(`ClientType` and `machineId` today), and an unreviewed key raises. `_build_otlp_reader`
 turns that into "this destination gets no reader", so the cost is one
 destination's egress and local collection continues. Dropping the label instead
 would publish a series the receiving side cannot route, with only a debug line to
