@@ -486,14 +486,20 @@ export function isClearSwipe(dir: TrackpadSwipeDir, sumX: number, sumY: number):
  *  `root` can still scroll horizontally in the direction `dx` moves it. Takes
  *  the event's composed path, which crosses shadow roots, or a bare target to
  *  walk up from. */
-export function canScrollX(from: EventTarget | null | readonly EventTarget[], dx: number, root: Element | null): boolean {
+/** The elements from the event's target upward: its composed path, which
+ *  crosses shadow roots, or a bare target's parent chain. */
+export function elementChain(from: EventTarget | null | readonly EventTarget[]): Element[] {
   const chain: Element[] = []
   if (Array.isArray(from)) {
     for (const n of from as readonly EventTarget[]) if (n instanceof Element) chain.push(n)
   } else {
     for (let n = from instanceof Element ? from : null; n; n = n.parentElement) chain.push(n)
   }
-  for (const n of chain) {
+  return chain
+}
+
+export function canScrollX(from: EventTarget | null | readonly EventTarget[], dx: number, root: Element | null): boolean {
+  for (const n of elementChain(from)) {
     const max = n.scrollWidth - n.clientWidth
     if (max > 1) {
       const style = getComputedStyle(n)
@@ -523,15 +529,28 @@ export function shownWithin(el: Element, container: Element): boolean {
  *  an open `<dialog>` (`isModalLayer`, the test the phone drawer walks up
  *  with too), so the next dialog needs no attribute of its own. */
 export function inModalLayer(from: EventTarget | null | readonly EventTarget[], root: Element | null): boolean {
-  const chain: Element[] = []
-  if (Array.isArray(from)) {
-    for (const n of from as readonly EventTarget[]) if (n instanceof Element) chain.push(n)
-  } else {
-    for (let n = from instanceof Element ? from : null; n; n = n.parentElement) chain.push(n)
-  }
-  for (const n of chain) {
+  for (const n of elementChain(from)) {
     if (n === root) break
     if (isModalLayer(n)) return true
+  }
+  return false
+}
+
+/** Marks a region whose sideways runs are always its own, whether or not it
+ *  can scroll further that way right now: at its end, with nothing to scroll,
+ *  or over a control beside its scroller (a chip row's arrow buttons).
+ *  `canScrollX` alone hands such a run to the panel the moment the scroller
+ *  has no room left. */
+export const OWNS_SCROLL_X_ATTR = 'data-owns-scroll-x'
+/** Spread on a region to mark it with {@link OWNS_SCROLL_X_ATTR}. */
+export const OWNS_SCROLL_X_PROPS = { [OWNS_SCROLL_X_ATTR]: '' } as const
+
+/** Whether an element on the way from the event's target up to (not past)
+ *  `root` carries {@link OWNS_SCROLL_X_ATTR}. */
+export function inScrollXOwner(from: EventTarget | null | readonly EventTarget[], root: Element | null): boolean {
+  for (const n of elementChain(from)) {
+    if (n === root) break
+    if (n.hasAttribute(OWNS_SCROLL_X_ATTR)) return true
   }
   return false
 }
@@ -619,6 +638,8 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
     /** Bumped by every event of an owned run. */
     let seq = 0
     let quietFrame: number | undefined
+    /** Whether the current run started sideways: its axis, latched on its first sample. */
+    let pinRun = false
     const onQuiet = () => {
       quiet = undefined
       // Wait one frame first: after a slow frame the timer can fire ahead of
@@ -658,6 +679,11 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
         // and a later sideways drift would start a drag in the middle of a
         // scroll. The old run's hold goes too; a run the page takes holds
         // again below.
+        // The axis is latched on the run's first sample, native or relayed from
+        // a frame: a run that started vertical is axis-locked by the browser, so
+        // no history swipe can start under it, and cancelling a later sideways
+        // sample would drop its deltaY.
+        pinRun = !s.ctrl && Math.abs(s.dx) > Math.abs(s.dy) && !pinchZoomed()
         window.clearTimeout(quiet)
         quiet = undefined
         if (quietFrame !== undefined) cancelAnimationFrame(quietFrame)
@@ -695,8 +721,16 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       // A run that starts inside a modal layer is the layer's: the page behind
       // it must not move (a swipe over the What's New dialog opened the panel).
       // A pinch-zoomed page is the browser's too: the swipe pans the zoomed view.
-      const owned = pinchZoomed() || inModalLayer(path.length ? path : e.target, root)
-        || (e.deltaX !== 0 && canScrollX(path.length ? path : e.target, e.deltaX, root))
+      const zoomedIn = pinchZoomed()
+      // Built once and shared by the three walks below.
+      const from = elementChain(path.length ? path : e.target)
+      const scrolls = e.deltaX !== 0 && canScrollX(from, e.deltaX, root)
+      // A marked region with no room left that way keeps the run too: nothing
+      // on the page scrolls with it, so the wheel is cancelled below and the
+      // browser's history swipe does not start under it. A pinch (`ctrlKey`)
+      // stays the browser's zoom, and a mostly vertical wheel stays a scroll.
+      const pinnable = !zoomedIn && Math.abs(e.deltaX) > Math.abs(e.deltaY) && !e.ctrlKey && !scrolls && inScrollXOwner(from, root)
+      const owned = zoomedIn || inModalLayer(from, root) || scrolls || pinnable
       // The event's own time, not the time it is handled: wheels queued behind a
       // slow frame arrive in a burst, and handling time would read that frame
       // as a gap in the fingers and end the drag under them.
@@ -704,7 +738,9 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       // The reader reads the fingers: undo Natural scrolling's sign here.
       const sign = fingerSign((e as WheelEvent & { webkitDirectionInvertedFromDevice?: unknown }).webkitDirectionInvertedFromDevice, naturalScrolling())
       const sample = { dx: sign * e.deltaX, dy: e.deltaY, mode: e.deltaMode, ctrl: e.ctrlKey, owned, at: when }
-      if (run(sample)) e.preventDefault()
+      // Owner and room are judged per sample, so a sideways run that reaches a
+      // marked region's edge mid-run is cancelled from there on.
+      if (run(sample) || (pinRun && pinnable)) e.preventDefault()
     }
     /** Tell a relaying frame whether this host is listening. A frame that is
      *  not armed leaves every wheel to the browser, so a run nobody would act on

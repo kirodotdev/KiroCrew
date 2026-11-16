@@ -18,6 +18,7 @@ import { ThemeProvider } from '../hooks/useTheme'
 import { __resetPanelTabs } from '../hooks/usePanelTabs'
 import { setSidePanelDock } from '../hooks/useSidePanelDock'
 import { switchSlot, openActivityPanel } from '../store/chatSlice'
+import FollowUpBar from '../components/FollowUpBar'
 import { swipeTiming, SWIPE_GESTURE_IDLE_MS, SWIPE_THRESHOLD_PX } from '../hooks/useTrackpadSwipe'
 import { MotionGlobalConfig, frame, frameData } from 'framer-motion'
 
@@ -742,6 +743,81 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
     // Room to scroll on (deltaX > 0 raises scrollLeft).
     expect(swipe(scroller(container, 'ltr', 0), 20, 5)).toBe(0)
     expect(column()).toBeNull()
+  })
+
+  /** The follow-up options row (scroll layout) mounted in the chat, its
+   *  scroller sized to `scrollWidth` x 300 at `scrollLeft`. */
+  const optionsRow = (container: HTMLElement, scrollWidth: number, scrollLeft: number) => {
+    const host = document.createElement('div')
+    chat(container).appendChild(host)
+    render(<FollowUpBar layout="scroll" options={['Alpha', 'Beta', 'Gamma', 'Delta']} picked={new Set()} onSelect={() => {}} />, { container: host })
+    const row = host.querySelector<HTMLElement>('.overflow-x-auto')!
+    Object.defineProperty(row, 'scrollWidth', { value: scrollWidth, configurable: true })
+    Object.defineProperty(row, 'clientWidth', { value: 300, configurable: true })
+    Object.defineProperty(row, 'scrollLeft', { value: scrollLeft, configurable: true, writable: true })
+    act(() => { row.dispatchEvent(new Event('scroll')); window.dispatchEvent(new Event('resize')) })
+    return { host, row }
+  }
+
+  it('sets no overscroll rule on the options row, so with the swipe off the browser keeps its back/forward gesture', () => {
+    const { container } = renderChat()
+    const { row } = optionsRow(container, 900, 600)
+    expect(row.style.overscrollBehaviorX).toBe('')
+    expect(row.style.overscrollBehavior).toBe('')
+  })
+
+  it('keeps a sideways run over the options row scrolled to its end off the panel and the browser', () => {
+    const { store, container } = renderChat()
+    const { row } = optionsRow(container, 900, 600)
+    expect(swipe(row.querySelector('button')!, 20, 30)).toBe(30)
+    expect(column()).toBeNull()
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('leaves a pinch over an options row whose chips all fit to the browser', () => {
+    const { store, container } = renderChat()
+    const { row } = optionsRow(container, 300, 0)
+    let taken = 0
+    act(() => {
+      for (let i = 0; i < 12; i++) {
+        const ev = new WheelEvent('wheel', { deltaX: 1, deltaY: 60, bubbles: true, cancelable: true })
+        // The constructor drops `ctrlKey` (see usePinchZoom.trackpad.test.tsx).
+        Object.defineProperty(ev, 'ctrlKey', { value: true })
+        Object.defineProperty(ev, 'timeStamp', { value: SWIPE_AT })
+        row.querySelector('button')!.dispatchEvent(ev)
+        if (ev.defaultPrevented) taken++
+      }
+    })
+    expect(taken).toBe(0)
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('leaves a mostly vertical scroll over an options row whose chips all fit to the page', () => {
+    const { store, container } = renderChat()
+    const { row } = optionsRow(container, 300, 0)
+    expect(swipe(row.querySelector('button')!, 1, 12, 40)).toBe(0)
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('keeps a sideways run that starts on an options row arrow button off the panel and the browser', async () => {
+    const { store, container } = renderChat()
+    const { host } = optionsRow(container, 900, 600)
+    const arrow = await waitFor(() => {
+      const b = host.querySelector<HTMLElement>('button[aria-label]:not(.overflow-x-auto button)')
+      expect(b).not.toBeNull()
+      return b!
+    })
+    expect(swipe(arrow, 20, 30)).toBe(30)
+    expect(column()).toBeNull()
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('keeps a sideways run over an options row whose chips all fit off the panel and the browser', () => {
+    const { store, container } = renderChat()
+    const { row } = optionsRow(container, 300, 0)
+    expect(swipe(row.querySelector('button')!, 20, 30)).toBe(30)
+    expect(column()).toBeNull()
+    expect(store.getState().chat.activityOpen).toBe(false)
   })
 
   it('reads a right-to-left scroller at its start (scrollLeft 0) as having room for a negative deltaX', async () => {
