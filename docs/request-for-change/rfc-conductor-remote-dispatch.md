@@ -162,7 +162,9 @@ The tunnel only opens hub → peer, so the peer cannot call the hub back.
 - Pushing anything from the peer to the hub, or any new transport.
 - Uploading source to the peer, or moving any large file between machines. The
   worker clones from the repo URL in its seed.
-- Sending any credential from the hub, or checking logins before dispatch.
+- Sending any credential from the hub, or the hub running a login check of its
+  own before dispatch. Placement may filter on the login words a peer reports
+  about itself (§2b `requires`, §4).
 - A per-crew paged "space" view in the sidebar. A separate follow-up.
 - Worker-to-worker messages. Every handoff goes through the conductor.
 
@@ -285,6 +287,16 @@ peer's own check, because only the peer can measure the peer.
 | Memory | last snapshot's memory free ≥ one estimate |
 | CPU | last snapshot's `load_per_cpu` is below the CPU threshold (below) |
 | Disk | last snapshot's disk free ≥ one estimate |
+| Requires | when the create carries `requires`, the snapshot lists every `requires.tags` word in `tags` and reports `valid` for every `requires.logins` tool in `logins` |
+
+`requires: {"tags": [...], "logins": [...]}` is optional on
+`session_create(work_item=)` and on `crew=`. It filters before ranking. When
+no crew that answered meets it, and none that meets it is merely short, the
+create is refused `crew_requirements_unmet`, naming what each crew lacked
+(`tag gpu`, `login gh (expired)`); there is no fallback to a crew without it.
+A named `crew=` is checked the same way, and a crew whose headroom cannot be
+read is refused, never assumed to qualify. `requires` stays on the hub; the
+peer never sees it.
 
 There is **no repo or checkout check.** Workers are self-contained (§2c), so any
 connected crew can run any item.
@@ -327,7 +339,8 @@ peer's current snapshot:
 | `posture` | `ResourceStatus.posture` |
 | `disk_free_gb` | free space under `scratch_root()` |
 | `open_workers` | peer slots bound to a `hub:` mailbox item and not closed |
-| `logins` | optional, §4: `{"gh": "valid"}` and the like |
+| `tags` | `work_ledger.remote_dispatch_tags`: the operator's own words, each 1-32 of `a-z0-9_-` with a letter, so no path, dotted host or bare account number fits |
+| `logins` | §4: `{"gh": "valid"}` and the like, for `gh`, `glab` and `az`; `unknown` while a first check runs; a tool whose check cannot tell is absent. On `GET api/chat/headroom` only, so no create waits on a login check |
 | `measured_at` | the peer's clock |
 
 **Read before the first create.** A new read-only route
@@ -488,15 +501,29 @@ ones.
   is redacted the same way.
 - **Credentials stay on each crew.** The worker uses the peer's own credentials
   (for example its `gh` login) to clone and push. No credential is ever sent
-  from the hub, and the hub runs no login check before dispatch. A worker stuck
+  from the hub, and the hub runs no login check of its own before dispatch; it
+  only reads the words the peer reports (below) when an item names
+  `requires.logins`. A worker stuck
   on a login reports `blocked` with reason `needs_human`. The conductor first
   redispatches the item to another crew (§5b), and asks the person only when no
   crew works.
 - **Risk: login status in headroom.** The headroom reply MAY carry per-login
   status flags, one word per named tool (`valid`, `expired`), such as
   `{"gh": "valid"}`. It never carries a token, a user name, a path, or any other
-  credential content. The peer fills it from the tool's own status command and
-  maps the result to a word; the hub stores only the word.
+  credential content. The peer fills it from the git proxy's own readiness
+  probe (`git_gateway.login_status`, the one `git_readiness` runs: each
+  tool's status command by exit code, output discarded unread), keyed by
+  the tool it asks (`git_gateway.readiness_tool`): `signed_in` is `valid`,
+  `not_signed_in` is `expired`, any other answer is absent, and a check still
+  running on a cold reading is `unknown` (the hub names it "still checking",
+  not "sign in"). A crew that lends no login to its agents
+  (`git_gateway.lending_refusal`: the strict sandbox, or a Windows gateway
+  that cannot verify its account) reports none; that gate is read on every
+  request, never cached. Each host's reading is reused for 120 s, so a
+  sign-in or sign-out can take up to two minutes to show, and the bind-time
+  re-check does not read logins. A headroom read waits at most 3 s for stale
+  readings, each refreshed on its own. A tag the redactors would change is
+  dropped before it leaves. The hub keeps only the word, for that placement.
 - **What the remote worker may NOT do.** It holds no hub credential: none is
   sent, and the proxy strips the hub's `?token=`. It cannot reach the hub: the
   tunnel opens hub → peer only, and its ledger writes land in the peer's store.

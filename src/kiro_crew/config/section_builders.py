@@ -149,7 +149,7 @@ from kiro_crew.stt.limits import MIN_IDLE_EVICT_SECS as _STT_IDLE_EVICT_SECS_MIN
 from kiro_crew.stt.limits import MIN_PARTIAL_INTERVAL_MS as _STT_MIN_PARTIAL_INTERVAL_MS
 from kiro_crew.stt.limits import MIN_SILENCE_MS as _STT_MIN_SILENCE_MS
 from kiro_crew.stt.limits import MIN_TIMEOUT_SECS as _STT_MIN_TIMEOUT_SECS
-from kiro_crew.work_vocab import WORK_MAX_DEPTH_MAX, WORK_MAX_DEPTH_MIN
+from kiro_crew.work_vocab import WORK_MAX_DEPTH_MAX, WORK_MAX_DEPTH_MIN, coerce_dispatch_tags
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -245,6 +245,9 @@ def _build_work_ledger_config(work_ledger_data: dict) -> WorkLedgerConfig:
         remote_dispatch_disk_gb=_positive_gb(work_ledger_data, "remote_dispatch_disk_gb"),
         remote_dispatch_retire_minutes=_positive_gb(
             work_ledger_data, "remote_dispatch_retire_minutes"
+        ),
+        remote_dispatch_tags=list(
+            coerce_dispatch_tags(work_ledger_data.get("remote_dispatch_tags"))
         ),
     )
 

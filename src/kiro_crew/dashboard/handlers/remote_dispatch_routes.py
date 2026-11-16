@@ -81,8 +81,11 @@ CREW_VERBS = ("create", "send", "read", "stop", "close")
 #: (folder, reasoning_effort, autocompact_pct, dry_run) names a local-only
 #: behaviour and is refused rather than dropped. ``agent_kind`` crosses with its
 #: one local value, ``template``, so a ``kirocrew-worker`` lands on the peer's
-#: shared template even where a crew member carries that name.
-_CREATE_FIELDS = frozenset({"crew", "title", "agent", "agent_kind", "model", "work_item"})
+#: shared template even where a crew member carries that name. ``requires`` is
+#: read on this hub only (``remote_placement``) and never sent to the peer.
+_CREATE_FIELDS = frozenset(
+    {"crew", "title", "agent", "agent_kind", "model", "work_item", "requires"}
+)
 
 #: A peer slot key this hub will put in a path: one plain segment. A peer is
 #: untrusted, and its create reply names the key every later path is built from,
@@ -923,6 +926,10 @@ async def handle_crew_call(request: web.Request, verb: str, body: dict[str, Any]
                 state, caller, board, instance_id, body.get("target"), verb
             )
         await check_version(mgr, instance_id)
+        if verb == "create" and body.get("requires") is not None:
+            from kiro_crew.dashboard.handlers import remote_placement
+
+            await remote_placement.check_crew_requires(mgr, instance_id, name, body["requires"])
         if verb == "create" and body.get("work_item") is not None:
             # Counted in flight so a placement running meanwhile sees it (wave 5).
             from kiro_crew.dashboard.handlers import remote_placement

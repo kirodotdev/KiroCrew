@@ -358,6 +358,8 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
     preview_off = mcp_refusal(args)
     if preview_off is not None:
         return preview_off
+    if args.get("requires") is not None and "crew" not in args and not args.get("work_item"):
+        return "Error: requires is taken only with crew or work_item."
     if args.get("work_item") and "crew" not in args:
         from kiro_crew.remote_dispatch import remote_dispatch_enabled
 

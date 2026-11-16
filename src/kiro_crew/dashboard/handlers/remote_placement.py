@@ -6,6 +6,11 @@ and the peer gate (wave 3) alone admits. ``crew_busy`` tries the next crew; any 
 refusal stops, since that create may have reached the peer. The rules are spelled
 out in ``docs/system-specs/modules/session-control.md`` ("Wave 5"). Reached only
 while ``work_ledger.remote_dispatch`` is on.
+
+An optional ``requires: {"tags": [...], "logins": [...]}`` filters crews before
+they are ranked: a crew qualifies only when its headroom lists every tag and
+reports ``valid`` for every login. When none qualifies the create is refused
+``crew_requirements_unmet`` naming what each crew lacked; there is no blind pick.
 """
 
 from __future__ import annotations
@@ -23,6 +28,8 @@ from kiro_crew.dashboard.remote_dispatch_headroom import (
     CPU_LOAD_THRESHOLD,
     remote_dispatch_settings,
 )
+from kiro_crew.remote_dispatch import LOGIN_EXPIRED, LOGIN_UNKNOWN, LOGIN_VALID
+from kiro_crew.work_vocab import DISPATCH_TAG_RE, MAX_DISPATCH_TAGS
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
@@ -31,6 +38,15 @@ logger = logging.getLogger(__name__)
 
 #: The refusal when no connected crew has room for the item.
 CREW_NONE_AVAILABLE = "crew_none_available"
+
+#: The refusal when a ``requires`` is malformed.
+REQUIRES_INVALID = "requires_invalid"
+
+#: The refusal when connected crews answered but none meets ``requires``.
+CREW_REQUIREMENTS_UNMET = "crew_requirements_unmet"
+
+#: :func:`_candidate`'s answer for a crew that meets ``requires`` but has no room.
+_NO_ROOM = "no_room"
 
 #: ``TunnelState.CONNECTED.value``.
 _CONNECTED = "connected"
@@ -46,6 +62,111 @@ class Candidate:
     name: str
     mem_free_gb: float
     disk_free_gb: float
+
+
+@dataclass(frozen=True)
+class Requires:
+    """What a crew must advertise to take an item: every tag, a ``valid`` login per tool."""
+
+    tags: tuple[str, ...] = ()
+    logins: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.tags or self.logins)
+
+
+@dataclass(frozen=True)
+class Unmet:
+    """A crew that answered its headroom but lacks part of ``requires``."""
+
+    name: str
+    missing: tuple[str, ...]
+
+
+def parse_requires(raw: object) -> Requires:
+    """*raw* (the create's ``requires``) as :class:`Requires`; raises ``requires_invalid``.
+
+    Absent or ``{}`` requires nothing. Unknown keys, a non-list, a name that is
+    not a tag-shaped word, a login tool this hub does not know, or more than
+    :data:`MAX_DISPATCH_TAGS` names are refused rather than dropped, so a typo
+    never widens placement.
+    """
+    from kiro_crew.dashboard.handlers import remote_dispatch_routes as routes
+
+    if raw is None:
+        return Requires()
+    if not isinstance(raw, dict):
+        raise routes.CrewCallError(400, REQUIRES_INVALID, "requires must be an object")
+    extra = sorted(str(k) for k in raw if k not in ("tags", "logins"))
+    if extra:
+        raise routes.CrewCallError(
+            400, REQUIRES_INVALID, f"requires takes only tags and logins, not {', '.join(extra)}"
+        )
+    from kiro_crew.remote_session import git_gateway
+
+    # The tools a crew can report: the ones its git proxy readiness checks.
+    tools = sorted({t for h in git_gateway.HOSTS if (t := git_gateway.readiness_tool(h))})
+    out: dict[str, tuple[str, ...]] = {}
+    for key in ("tags", "logins"):
+        names = raw.get(key, [])
+        if not isinstance(names, list) or len(names) > MAX_DISPATCH_TAGS:
+            raise routes.CrewCallError(
+                400,
+                REQUIRES_INVALID,
+                f"requires.{key} must be a list of at most {MAX_DISPATCH_TAGS}",
+            )
+        for name in names:
+            if not isinstance(name, str) or not DISPATCH_TAG_RE.fullmatch(name):
+                raise routes.CrewCallError(
+                    400,
+                    REQUIRES_INVALID,
+                    f"requires.{key} names must be 1-32 characters of a-z, 0-9, '_' or '-' "
+                    "with at least one letter",
+                )
+            if key == "logins" and name not in tools:
+                raise routes.CrewCallError(
+                    400,
+                    REQUIRES_INVALID,
+                    f"requires.logins names a tool crews do not report; use {', '.join(tools)}",
+                )
+        out[key] = tuple(dict.fromkeys(names))
+    return Requires(tags=out["tags"], logins=out["logins"])
+
+
+def missing(requires: Requires, payload: dict[str, Any]) -> tuple[str, ...]:
+    """What of *requires* the headroom *payload* lacks, as ``tag X`` / ``login X`` words.
+
+    The payload is a peer's and untrusted: only a list of strings counts as tags
+    and only the exact word ``valid`` counts as a login. A peer older than
+    ``tags``/``logins`` lacks every name it is asked for.
+    """
+    tags = payload.get("tags")
+    have_tags = {t for t in tags if isinstance(t, str)} if isinstance(tags, list) else set()
+    logins = payload.get("logins")
+    logins = logins if isinstance(logins, dict) else {}
+    lacks = [f"tag {t}" for t in requires.tags if t not in have_tags]
+    for tool in requires.logins:
+        raw_word = logins.get(tool)
+        word = raw_word if isinstance(raw_word, str) else ""
+        state = {LOGIN_EXPIRED: "expired", LOGIN_UNKNOWN: "still checking; retry shortly"}.get(
+            word, "not reported"
+        )
+        if word != LOGIN_VALID:
+            lacks.append(f"login {tool} ({state})")
+    return tuple(lacks)
+
+
+def _lacks(unmet: list[Unmet]) -> str:
+    return "; ".join(f"{u.name} lacks {', '.join(u.missing)}" for u in unmet)
+
+
+def unmet_message(unmet: list[Unmet]) -> str:
+    """The ``crew_requirements_unmet`` prose: each crew and what it lacked."""
+    shown = _lacks(unmet)
+    return (
+        f"no connected crew meets this item's requires ({shown}); it stays open and "
+        "unbound. Sign in or tag a crew, or drop the requirement"
+    )
 
 
 #: Seconds one crew's version and headroom reads may take. Crews are probed at once,
@@ -81,9 +202,16 @@ def _connected(mgr: Any, instance_id: str) -> bool:
 
 
 async def _candidate(
-    state: "DashboardState", mgr: Any, row: Any, mem_gb: float, disk_gb: float
-) -> Candidate | None:
-    """*row* as a :class:`Candidate`, or ``None`` when it is not eligible."""
+    state: "DashboardState",
+    mgr: Any,
+    row: Any,
+    mem_gb: float,
+    disk_gb: float,
+    requires: Requires = Requires(),
+) -> Candidate | Unmet | str | None:
+    """*row* as a :class:`Candidate`; :class:`Unmet` when its headroom lacks part of
+    *requires*; :data:`_NO_ROOM` when it meets *requires* but is short; ``None``
+    when it is not connected or its headroom cannot be read."""
     from kiro_crew.dashboard.handlers import remote_dispatch_routes as routes
 
     instance_id = str(getattr(row, "id", "") or "")
@@ -107,16 +235,52 @@ async def _candidate(
         return None
     if not 200 <= status < 300 or not isinstance(payload, dict):
         return None
+    name = str(getattr(row, "name", "") or instance_id)
+    lacks = missing(requires, payload)
+    if lacks:
+        # Filtered before it is ranked: a crew without the capability is never
+        # picked, however much room it has.
+        return Unmet(name, lacks)
     mem, disk = (
         _number(payload.get("mem_free_gb")),
         _number(payload.get("disk_free_gb")),
     )
     load = _number(payload.get("load_per_cpu"))
     if mem is None or disk is None or mem < mem_gb or disk < disk_gb:
-        return None
+        return _NO_ROOM
     if load is not None and load >= CPU_LOAD_THRESHOLD:
-        return None
-    return Candidate(instance_id, str(getattr(row, "name", "") or instance_id), mem, disk)
+        return _NO_ROOM
+    return Candidate(instance_id, name, mem, disk)
+
+
+async def check_crew_requires(mgr: Any, instance_id: str, name: str, raw: object) -> None:
+    """For an explicit ``crew=`` create: refuse when that crew lacks *raw*'s ``requires``.
+
+    No ``requires`` reads nothing. A crew whose headroom cannot be read is refused
+    too: an unchecked requirement is never treated as met.
+    """
+    from kiro_crew.dashboard.handlers import remote_dispatch_routes as routes
+
+    requires = parse_requires(raw)
+    if not requires:
+        return
+    try:
+        status, payload = await asyncio.wait_for(
+            routes.peer_call(mgr, instance_id, "GET", "api/chat/headroom"), PROBE_TIMEOUT_S
+        )
+    except asyncio.TimeoutError:
+        status, payload = 0, None
+    if not 200 <= status < 300 or not isinstance(payload, dict):
+        raise routes.CrewCallError(
+            503,
+            CREW_REQUIREMENTS_UNMET,
+            f"{name} did not answer its headroom, so this item's requires cannot be checked",
+        )
+    lacks = missing(requires, payload)
+    if lacks:
+        raise routes.CrewCallError(
+            503, CREW_REQUIREMENTS_UNMET, unmet_message([Unmet(name, lacks)])
+        )
 
 
 def _score(c: Candidate, reserved: int, mem_gb: float, disk_gb: float) -> float:
@@ -193,6 +357,7 @@ async def place(
         )
 
         raise routes.CrewCallError(403, REMOTE_DISPATCH_DISABLED, REMOTE_DISPATCH_DISABLED_MESSAGE)
+    requires = parse_requires(body.get("requires"))
     mem_gb, disk_gb = settings.memory_gb, settings.disk_gb
     from kiro_crew.dashboard.handlers import remote_ingest
 
@@ -206,8 +371,15 @@ async def place(
     # Wave 8: a crew this item was retired from is never placed on again (RFC §5b).
     skipped = remote_ingest.retired_crews(item)
     rows = [r for r in rows if str(getattr(r, "id", "") or "") not in skipped]
-    found = await asyncio.gather(*(_candidate(state, mgr, r, mem_gb, disk_gb) for r in rows))
-    pool = [c for c in found if c is not None]
+    found = await asyncio.gather(
+        *(_candidate(state, mgr, r, mem_gb, disk_gb, requires) for r in rows)
+    )
+    pool = [c for c in found if isinstance(c, Candidate)]
+    unmet = [c for c in found if isinstance(c, Unmet)]
+    if unmet and not pool and _NO_ROOM not in found:
+        # No crew that answered has the capability: name what each lacks, and
+        # never fall back to a crew without it.
+        raise routes.CrewCallError(503, CREW_REQUIREMENTS_UNMET, unmet_message(unmet))
     busy: list[str] = []
     stopped = False
     while pool:
@@ -231,6 +403,8 @@ async def place(
             result["previous_branch"] = item.retired_bindings[-1].get("branch")
         return result, pick.name
     tried = f" ({', '.join(busy)} answered crew_busy)" if busy else ""
+    if unmet:
+        tried += f"; {_lacks(unmet)}"
     if stopped:
         tried += f"; placement stopped after {PLACEMENT_BUDGET_S:g} s"
     raise routes.CrewCallError(

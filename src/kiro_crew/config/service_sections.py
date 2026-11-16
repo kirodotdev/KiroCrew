@@ -473,6 +473,18 @@ class WorkLedgerConfig:
             "on; a value that is not a positive number uses the default.",
         ),
     )
+    remote_dispatch_tags: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Remote dispatch tags",
+            'Words this crew advertises to a dispatching hub, such as ["gpu", "docker"]. '
+            "A work item whose requires.tags names a word this list lacks is never "
+            "placed here. Each tag is 1-32 characters of a-z, 0-9, '_' or '-', "
+            "starting with a letter or digit and holding at least one letter; at most "
+            "16. Anything else is dropped. Do not put a host or account name here. "
+            "Used only with remote_dispatch on.",
+        ),
+    )
 
 
 #: ``power.on_battery`` values. ``normal`` ignores the power source.
