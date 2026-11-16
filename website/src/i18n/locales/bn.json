@@ -7939,6 +7939,7 @@
       "sso_start_url_label": "কোম্পানির সাইন-ইন URL",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "আপনার কোম্পানির দেওয়া AWS অ্যাক্সেস পোর্টাল URL এখানে পেস্ট করুন।",
+      "sso_start_url_prefilled": "তোমার প্রতিষ্ঠানের সেটিংস থেকে পূরণ করা হয়েছে। ভুল হলে বদলে দাও।",
       "sso_region_label": "AWS রিজিয়ন (ঐচ্ছিক)",
       "sso_region_invalid": "AWS রিজিয়ন পরীক্ষা করো। রিজিয়নের নাম দেখতে us-east-1-এর মতো।",
       "sso_start_url_invalid": "কোম্পানির সাইন-ইন URL পরীক্ষা করো।",

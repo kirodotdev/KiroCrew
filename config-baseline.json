@@ -36,6 +36,8 @@
         "kas_refuse_plain_http_mcp_headers": false,
         "kas_fail_closed_web_fetch_blocked": false,
         "kas_bundle_url": "https://kas.crew.kiro.dev",
+        "kas_sso_start_url": "",
+        "kas_sso_region": "",
         "native_skill_projection": true,
         "default_agent": "",
         "crew_mode_agent": "kirocrew-conductor",
@@ -524,6 +526,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "https://kas.crew.kiro.dev"
+    },
+    {
+      "path": "agent.kas_sso_start_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: company SSO start URL",
+      "help": "The IAM Identity Center access portal URL the Company SSO sign-in form starts filled in with, such as https://your-company.awsapps.com/start. The form stays editable, and the URL this browser last submitted still comes first. Empty uses the edition's default; the public build has none, so the field starts empty. A URL sign-in would refuse is ignored.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "agent.kas_sso_region",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: company SSO region",
+      "help": "The AWS region the Company SSO sign-in form starts filled in with, such as us-east-1. Used only together with agent.kas_sso_start_url. Empty leaves the region field empty.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "agent.native_skill_projection",

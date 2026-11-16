@@ -515,6 +515,36 @@ async def test_patch_stores_a_loadable_timezone(tmp_config, value) -> None:
     assert _stored(tmp_config)["timezone"] == value
 
 
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ("agent.kas_sso_start_url", "http://example-org.awsapps.com/start"),
+        ("agent.kas_sso_start_url", "https://example-org.awsapps.com/start?x=1"),
+        ("agent.kas_sso_region", "evil.com/"),
+    ],
+)
+async def test_patch_refuses_a_company_sign_in_value_sign_in_would_refuse(
+    tmp_config, path, value
+) -> None:
+    status, body = await _send({"path": path, "value": value})
+    assert status == 400, body
+    assert path.split(".")[1] not in _stored(tmp_config).get("agent", {})
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ("agent.kas_sso_start_url", "https://example-org.awsapps.com/start"),
+        ("agent.kas_sso_start_url", ""),
+        ("agent.kas_sso_region", "us-east-1"),
+    ],
+)
+async def test_patch_stores_a_company_sign_in_value(tmp_config, path, value) -> None:
+    status, body = await _send({"path": path, "value": value})
+    assert status == 200, body
+    assert _stored(tmp_config)["agent"][path.split(".")[1]] == value
+
+
 def test_a_key_another_action_owns_is_read_only() -> None:
     """A field whose help says a plain config write must not set it stays read-only."""
     owned = [

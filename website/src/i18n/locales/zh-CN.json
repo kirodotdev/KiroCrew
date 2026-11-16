@@ -7730,6 +7730,7 @@
       "sso_start_url_label": "公司登录网址",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "粘贴公司提供给你的 AWS 访问门户网址。",
+      "sso_start_url_prefilled": "已按你所在组织的设置填好。如有误，请修改。",
       "sso_region_label": "AWS 区域（可选）",
       "sso_region_invalid": "检查 AWS 区域。区域名称形如 us-east-1。",
       "sso_start_url_invalid": "检查公司登录网址。",

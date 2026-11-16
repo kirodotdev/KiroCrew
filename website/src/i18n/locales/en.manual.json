@@ -2927,6 +2927,7 @@
       "sso_start_url_label": "Company sign-in URL",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "Paste the AWS access portal URL your company gave you.",
+      "sso_start_url_prefilled": "Filled in from your organization's settings. Change it if it's wrong.",
       "sso_region_label": "AWS Region (optional)",
       "sso_region_invalid": "Check the AWS Region. A Region name looks like us-east-1.",
       "sso_start_url_invalid": "Check the company sign-in URL.",

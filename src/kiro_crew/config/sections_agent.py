@@ -387,6 +387,26 @@ class AgentConfig:
             "accepted; redirects that leave the host are refused.",
         ),
     )
+    kas_sso_start_url: str = field(
+        default="",
+        metadata=_meta(
+            "KAS: company SSO start URL",
+            "The IAM Identity Center access portal URL the Company SSO sign-in form "
+            "starts filled in with, such as https://your-company.awsapps.com/start. "
+            "The form stays editable, and the URL this browser last submitted still "
+            "comes first. Empty uses the edition's default; the public build has "
+            "none, so the field starts empty. A URL sign-in would refuse is ignored.",
+        ),
+    )
+    kas_sso_region: str = field(
+        default="",
+        metadata=_meta(
+            "KAS: company SSO region",
+            "The AWS region the Company SSO sign-in form starts filled in with, "
+            "such as us-east-1. Used only together with agent.kas_sso_start_url. "
+            "Empty leaves the region field empty.",
+        ),
+    )
     native_skill_projection: bool = field(
         default=True,
         metadata=_meta(

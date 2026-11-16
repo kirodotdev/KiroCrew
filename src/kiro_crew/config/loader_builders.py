@@ -807,6 +807,8 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
             "kas_fail_closed_web_fetch_blocked", _safe_bool
         ),
         kas_bundle_url=_sections.coerce_kas_bundle_url(section.get("kas_bundle_url")),
+        kas_sso_start_url=str(section.get("kas_sso_start_url") or "").strip(),
+        kas_sso_region=str(section.get("kas_sso_region") or "").strip(),
         native_skill_projection=section.read("native_skill_projection", _safe_bool),
         default_agent=section.get("default_agent"),
         crew_mode_agent=_crew_mode_agent_or_default(section.get("crew_mode_agent")),
