@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 import traceback
 from collections.abc import Callable
@@ -688,6 +689,33 @@ class TestRuntimeSpawnCarriesItsInstance:
 
 
 class TestRuntimeProjectedLaunchDocuments:
+    @pytest.fixture(autouse=True)
+    def _inline_path_screen(self, _floor_monkeypatch):
+        # The launch record screens each path through the bounded sensitive-path
+        # resolver, which fails closed when a loaded runner misses its budget and
+        # leaves the record empty. These tests own what the record holds, not that
+        # screen, whose budget contract test_llm_helpers_tool_input_offload covers.
+        from kiro_crew import member_essential_context
+
+        _floor_monkeypatch.setattr(member_essential_context, "validate_file_path", os.path.realpath)
+
+    @pytest.mark.asyncio
+    async def test_the_class_screen_holds_while_the_path_resolver_misses_its_budget(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A saturated resolver, as on a loaded runner, must not reach this class:
+        without the inline screen above, this record comes back empty."""
+        from kiro_crew import security
+
+        def _saturated(*_args, **_kwargs):
+            raise TimeoutError("no resolver child took the request")
+
+        monkeypatch.setattr(security.paths, "_resolve_on_calling_thread", _saturated)
+        runtime, _calls = await self._drive(monkeypatch, tmp_path, inherits=False)
+
+        guide = tmp_path / "workspace" / ".kiro" / "steering" / "guide.md"
+        assert runtime._native_launch_sources == {str(guide): ""}
+
     @staticmethod
     async def _drive(
         monkeypatch,
