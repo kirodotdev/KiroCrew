@@ -12,7 +12,7 @@ import { Badge, Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MATE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -133,7 +133,6 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_REMOTE_CREW_CHAT: return i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew')
     case PREVIEW_LAYOUT_HARNESS: return i18nT('pages.developer.featurePreviewsTab.layout_harness')
     case PREVIEW_FOLDER_CONDUCTOR: return i18nT('pages.developer.featurePreviewsTab.folder_conductor')
-    case PREVIEW_MATE_SESSIONS: return i18nT('pages.developer.featurePreviewsTab.mate_sessions')
     case PREVIEW_DASHBOARD_STALE_FIELDS: return i18nT('pages.developer.featurePreviewsTab.dashboard_stale_fields')
     case PREVIEW_DASHBOARD_STALE_WAKE: return i18nT('pages.developer.featurePreviewsTab.dashboard_stale_wake')
     case PREVIEW_BRIDGE_APPROVALS: return i18nT('pages.developer.featurePreviewsTab.bridge_approvals')
@@ -193,7 +192,6 @@ export function FeaturePreviewsSection() {
   const remoteCrewChat = useRemoteCrewChat()
   const layoutHarness = usePreviewFlag(PREVIEW_LAYOUT_HARNESS)
   const folderConductor = usePreviewFlag(PREVIEW_FOLDER_CONDUCTOR)
-  const mateSessions = usePreviewFlag(PREVIEW_MATE_SESSIONS)
   const dashboardStaleFields = usePreviewFlag(PREVIEW_DASHBOARD_STALE_FIELDS)
   const dashboardStaleWake = usePreviewFlag(PREVIEW_DASHBOARD_STALE_WAKE)
   const bridgeApprovals = usePreviewFlag(PREVIEW_BRIDGE_APPROVALS)
@@ -380,17 +378,6 @@ export function FeaturePreviewsSection() {
             hint={i18nT('pages.developer.featurePreviewsTab.folder_conductor_desc')}
             checked={folderConductor}
             onChange={v => setPreviewFlag(PREVIEW_FOLDER_CONDUCTOR, v)}
-          />
-        )}
-        {/* A crewmate's sessions leave the person's lists for the mate's Sessions
-            tab. NO ingress button: the change is to lists the reader already sees. */}
-        {!previewsOff && (
-          <SettingsToggle
-            label={i18nT('pages.developer.featurePreviewsTab.mate_sessions')}
-            description={i18nT('pages.developer.featurePreviewsTab.mate_sessions_desc_summary')}
-            hint={i18nT('pages.developer.featurePreviewsTab.mate_sessions_desc')}
-            checked={mateSessions}
-            onChange={v => setPreviewFlag(PREVIEW_MATE_SESSIONS, v)}
           />
         )}
         {/* Worker grill (`worker_grill`): a gateway switch read per conductor turn

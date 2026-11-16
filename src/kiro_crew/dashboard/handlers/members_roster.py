@@ -467,6 +467,9 @@ async def api_members(request: web.Request) -> web.Response:
                 # Whether a Dashboard-tab button may send its reply in one click
                 # (card_send); the Profile tab's switch reads and writes it.
                 "dashboard_card_send": bool(agent_cfg.dashboard_card_send),
+                # Whether the sessions its thread opens stay in the person's own
+                # session list (crew_mode.list_view); the Profile tab's switch.
+                "show_sessions_in_list": bool(agent_cfg.show_sessions_in_list),
                 # Whether the PERSON created this crewmate: the crew manager's
                 # own origin (`source == "kirocrew"`) AND a member id, which is
                 # assigned when its member memory is allocated. Both create

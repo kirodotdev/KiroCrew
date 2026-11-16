@@ -19,8 +19,8 @@ import { useMoveSlotToFolder } from '../../../hooks/useMoveSlotToFolder'
 import { setFileDraft } from '../../../utils/chatFileDrafts'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { crewModeView } from '../../../lib/crewMode'
-import { useCrewMode, useMateSessionsHidden } from '../../../hooks/usePreviewFlag'
-import { selectLiveMateThreads } from '../../../store/dashboardSlice'
+import { useCrewMode } from '../../../hooks/usePreviewFlag'
+import { selectMateThreadsHidingSessions } from '../../../store/dashboardSlice'
 import { useConnectionsUiEnabled } from '../../../hooks/useConnectionsUi'
 import { isChatPageSurface } from '../../../utils/channelOrigin'
 import { useGuidePredicate, useGuideSelection } from '../../../guide/guidePredicates'
@@ -34,8 +34,8 @@ export function chatPageSlots<T extends ChatSlot>(slots: T[], bound?: string | n
   return slots.filter(s => s.key === bound || isChatPageSurface(s.surface ?? s.mode))
 }
 
-/** The person's rows of that list: crew members, and with the mate sessions
- *  preview on a live mate thread's sessions, left out (`crewModeView`; the
+/** The person's rows of that list: crew members, and a live mate thread's
+ *  sessions its Bot does not show in this list, left out (`crewModeView`; the
  *  server keeps them in the slot frame under `?crew=all`, and their root's Crew
  *  panel shows them). What the collapsed-sidebar flyout lists and the unread count
  *  counts; the sidebar applies the same function at its own door. */
@@ -155,13 +155,12 @@ export function useChatPageEnvironment({
   // The person's rows: what the collapsed-sidebar flyout lists and the unread
   // count counts. The sidebar filters its own prop the same way.
   // Keyed on whether this build offers conductor mode too, which decides whether
-  // crew members are left out: off (LTS), `crewModeView` hands the rows back unchanged.
+  // crew members are left out. The mate threads come from the full store, since
+  // `chatPageSlots` leaves them out.
   const crewMode = useCrewMode()
-  // And on the mate sessions preview; the mate threads come from the full store,
-  // since `chatPageSlots` leaves them out.
-  const mateHidden = useMateSessionsHidden()
-  const mateThreads = useAppSelector(selectLiveMateThreads)
-  const personSlots = useMemo(() => (crewMode || mateHidden ? personChatPageSlots(filteredSlots, mateThreads) : filteredSlots), [filteredSlots, crewMode, mateHidden, mateThreads])
+  const mateThreads = useAppSelector(selectMateThreadsHidingSessions)
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the read crewModeView makes
+  const personSlots = useMemo(() => personChatPageSlots(filteredSlots, mateThreads), [filteredSlots, crewMode, mateThreads])
   const filteredSlotsRef = useRef(filteredSlots)
   filteredSlotsRef.current = filteredSlots
   // Live guide predicates the sessions sidebar toggle needs to be drawn (see

@@ -76,6 +76,7 @@ OWNER_PRIVATE = (
     "approval_mode",
     "dynamic_capabilities",
     "dashboard_card_send",
+    "show_sessions_in_list",
     "triggers",
     # Who has written in the owner's DM thread.
     "participants",

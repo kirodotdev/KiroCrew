@@ -12,7 +12,7 @@ import { bumpLastTsOverlay, dropCaughtUpLastTs, pruneLastTsOverlay, slotLastTsOf
 import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName } from '../utils/sessionColors'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { slotListHoldTest } from '../utils/slotListHold'
-import { crewModeEnabled, mateSessionsHidden } from '../lib/crewMode'
+import { crewModeEnabled } from '../lib/crewMode'
 import { closeWatchReducer, isCloseWatchAction } from './dashboard/closeWatch'
 import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, crewMemberKeys, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince, retireSharedUnreadIfUnchanged, sharedUnreadWatermark } from './dashboard/unread'
 import type { DashboardState } from './dashboard/state'
@@ -21,7 +21,7 @@ import type { DashboardState } from './dashboard/state'
  *  fix on its own: its token could not be renewed (`session_ended`), or the
  *  relay refused it with a code from its own block (`refused`). */
 export type OfflineCause = 'session_ended' | 'refused'
-export { selectLiveMateThreads, selectPersonSlots } from './personSlots'
+export { selectMateThreadsHidingSessions, selectPersonSlots } from './personSlots'
 
 /** The two user-owned mute flags on a slot. */
 export type MuteFlag = 'mutes_opened' | 'muted'
@@ -813,8 +813,8 @@ const applySlots = (state: DashboardState, rawRows: ChatSlot[]): void => {
   })
   if (changed) {
     state.slots = merged
-    // A listed slot can turn a held orphan back into a counted session.
-    relayUnreadIfHolding(state)
+    // Slot visibility changes and returning held orphans can change the hub count.
+    relayUnreadCount(state)
   }
   dropCaughtUpLastTs(state, merged)
 }
@@ -1778,8 +1778,7 @@ const _unreadByModeCache = new Map<string, UnreadByModeSelector>()
 export function selectUnreadByMode(mode: string): UnreadByModeSelector {
   let sel = _unreadByModeCache.get(mode)
   if (!sel) {
-    // Conductor mode (off in LTS) and the mate sessions preview decide whether crew members and a
-    // mate's sessions count (`crewMemberKeys`).
+    // Conductor mode (off in LTS) decides whether crew members count (`crewMemberKeys`).
     // It is passed as an argument, not read inside an input selector: the
     // selector memoizes on its arguments, so a flip with the same state would
     // otherwise answer from the cache.
@@ -1790,11 +1789,10 @@ export function selectUnreadByMode(mode: string): UnreadByModeSelector {
       (state: { dashboard: DashboardState }) => state.dashboard.slotsHoldChannels,
       (state: { dashboard: DashboardState }) => state.dashboard.slotsListPartial,
       (_state: { dashboard: DashboardState }, crewMode: boolean) => crewMode,
-      (_state: { dashboard: DashboardState }, _crewMode: boolean, mateSessions: boolean) => mateSessions,
       (slots, unread, heldKeys, holdChannels, listPartial) =>
         countUnreadByMode(slots, unread, mode, heldKeys ?? [], holdChannels === true, listPartial === true),
     )
-    sel = state => count(state, crewModeEnabled(), mateSessionsHidden())
+    sel = state => count(state, crewModeEnabled())
     _unreadByModeCache.set(mode, sel)
   }
   return sel

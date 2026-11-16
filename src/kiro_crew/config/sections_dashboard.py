@@ -61,7 +61,6 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "explore",
     "folder_conductor",
     "layout_harness",
-    "mate_sessions",
     "remote_crew_chat",
     "secrets_vault",
     "session_environments",
