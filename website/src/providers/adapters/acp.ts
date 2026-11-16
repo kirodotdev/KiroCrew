@@ -62,6 +62,37 @@ const MODELS_CACHE_TTL_MS = 24 * 60 * 60 * 1000 // 24h — bound stale-model exp
 interface CachedModels {
   ts: number
   models: ModelInfo[]
+  /** The signed-in account the list was fetched for (`noteKiroAccount`), when known. */
+  account?: string
+}
+
+// The opaque tag of the signed-in Kiro account, as `/api/sessions/usage` last
+// reported it. A `kiro-cli login` to another account happens outside the
+// dashboard, so this is the only way the browser learns of it; the last-good list
+// above is served only for the account it was fetched for.
+const ACCOUNT_KEY = 'kc.acp.account.v1'
+/** The tag this page last saw, kept apart from the one storage shares across tabs. */
+let pageAccount: string | null = null
+/** Whether this page fetched the configured list before its first tag arrived: that
+ *  answer may be for an account the first tag already replaced. */
+let fetchedBeforeTag = false
+
+function seenAccount(): string | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage.getItem(ACCOUNT_KEY)
+  } catch {
+    return null
+  }
+}
+
+function readCacheEntry(): CachedModels | null {
+  try {
+    if (typeof localStorage === 'undefined') return null
+    const raw = localStorage.getItem(MODELS_CACHE_KEY)
+    return raw ? (JSON.parse(raw) as CachedModels) : null
+  } catch {
+    return null
+  }
 }
 
 /** Read the last-good live model list from localStorage, or null if absent,
@@ -70,11 +101,10 @@ interface CachedModels {
  *  so the caller falls through to auto-only. */
 function readCachedModels(): ModelInfo[] | null {
   try {
-    if (typeof localStorage === 'undefined') return null
-    const raw = localStorage.getItem(MODELS_CACHE_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as CachedModels
+    const parsed = readCacheEntry()
     if (!parsed || typeof parsed.ts !== 'number' || !Array.isArray(parsed.models)) return null
+    // Another account's list is never this account's fallback.
+    if ((parsed.account ?? null) !== seenAccount()) return null
     const age = Date.now() - parsed.ts
     // Reject a stale cache AND a future timestamp: a cache written while the
     // clock was ahead yields a negative age after the clock is corrected, which
@@ -117,14 +147,45 @@ export function clearCachedModels(): void {
 
 /** Persist a live model list with a timestamp. Best-effort — storage errors
  *  (quota, disabled, SSR) are swallowed so caching never breaks the picker. */
-function writeCachedModels(models: ModelInfo[]): void {
+function writeCachedModels(models: ModelInfo[], account: string | null): void {
   try {
     if (typeof localStorage === 'undefined') return
-    const payload: CachedModels = { ts: Date.now(), models }
+    // The account moved while this list was in flight: it may be the old one's.
+    if (account !== seenAccount()) return
+    const payload: CachedModels = { ts: Date.now(), models, ...(account ? { account } : {}) }
     localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(payload))
   } catch {
     /* quota exceeded / storage disabled — non-fatal */
   }
+}
+
+/** Record the signed-in account tag `/api/sessions/usage` reports. Returns true
+ *  when the model list on screen may be another account's (the tag changed, or
+ *  the last-good list was fetched for another account); the last-good list is
+ *  then already dropped, and the caller refetches. An absent tag (an older
+ *  gateway, an unreadable store) changes nothing. */
+export function noteKiroAccount(account: unknown): boolean {
+  if (typeof account !== 'string' || account === '') return false
+  // Compared with what THIS page last saw: another tab may already have written
+  // the new tag to storage and dropped the list, and this page must still learn
+  // that its own in-memory list is the old account's. Storage stands in only
+  // before this page has seen any tag (a reload after a switch).
+  const firstOnPage = pageAccount === null
+  const seen = pageAccount ?? seenAccount()
+  pageAccount = account
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(ACCOUNT_KEY, account)
+  } catch {
+    /* storage disabled — the check below still runs */
+  }
+  const cached = readCacheEntry()
+  const foreignCache = cached !== null && cached.account !== account
+  if (foreignCache) clearCachedModels()
+  // The first tag this page sees cannot say whether a list it fetched before is this
+  // account's (another tab may have handled a switch meanwhile), so that list is re-read.
+  const unknownBefore = firstOnPage && fetchedBeforeTag
+  fetchedBeforeTag = false
+  return (seen !== null && seen !== account) || foreignCache || unknownBefore
 }
 
 /** Raw daily-usage entry from /api/usage/kiro. */
@@ -426,6 +487,8 @@ export class AcpAdapter implements ProviderAdapter {
     // list neither reads it (wrong ids) nor writes it (every other picker reads it).
     const configured = backend === undefined
     const health = modelHealthKey(this.id, backend)
+    const account = seenAccount()
+    if (configured && pageAccount === null) fetchedBeforeTag = true
     try {
       const models = await api.models(backend)
       if (!Array.isArray(models) || models.length === 0) {
@@ -457,7 +520,10 @@ export class AcpAdapter implements ProviderAdapter {
           rateMultiplier: rowMultiplier(m),
         }
       })
-      if (configured) writeCachedModels(result) // remember this good live list for next hiccup
+      // The account moved while this was in flight: the list (and its health) may be the
+      // old account's, and the request that replaced it owns both.
+      if (configured && account !== seenAccount()) return result
+      if (configured) writeCachedModels(result, account) // remember this good live list for next hiccup
       markModelsDegraded(health, false) // live success → self-heal can stop polling
       return result
     } catch (err) {

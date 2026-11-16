@@ -770,6 +770,7 @@ for _owner in _OWNERS:
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.core_config_models import (
         _KAS_VAULT_IDENTITY_KEY,
+        _LIVE_IDENTITY_KEY,
         _ROLE_PIN_REVALIDATING,
         _ROLE_PIN_REVALIDATION_MAX_RESELECTS,
         _active_advertised_ids,
@@ -781,6 +782,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _provider_backend,
         _read_kas_vault_identity,
         _revalidate_role_pin_evidence,
+        _spawned_for_another_account,
         _validate_role_model,
     )
     from kiro_crew.dashboard.handlers.core_config_patch import (

@@ -11,6 +11,7 @@ refresh logic itself is pinned in test_session_usage.py and its topic siblings.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,6 +26,7 @@ from session_usage_helpers import (
 )
 
 import kiro_crew.dashboard.handlers.sessions as sessions_mod
+from kiro_crew.dashboard import kiro_readiness
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -102,6 +104,168 @@ class TestPollNeverRefreshesInsideTheInterval:
         assert not hasattr(sessions_mod, "_auth_store_changed")
         assert not hasattr(sessions_mod, "_usage_auth_fingerprint")
         assert not hasattr(sessions_mod.kiro_usage_api, "auth_store_fingerprint")
+
+
+class TestAccountSwitchDropsTheReading:
+    """A `kiro-cli login` to another account must not leave its plan on the pill.
+
+    The trigger is the stable sign-in claims (``live_kiro_identity``), which a
+    sign-in to another account changes and chat traffic, token refreshes and a
+    same-account re-login leave alone. The 10-minute interval stays for anything
+    else.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        _reset_usage_globals()
+        yield
+        _reset_usage_globals()
+
+    def _request(self):
+        request = MagicMock()
+        request.app = {"state": SimpleNamespace(_background_tasks=set())}
+        return request
+
+    async def _get(self, request, fingerprint):
+        with (
+            patch.object(sessions_mod, "reject_if_kiro_unverified", AsyncMock(return_value=None)),
+            patch.object(sessions_mod, "_vault_owns_usage", AsyncMock(return_value=False)),
+            patch.object(kiro_readiness, "live_kiro_identity", AsyncMock(return_value=fingerprint)),
+            patch.object(sessions_mod, "_fetch_usage_bg", AsyncMock()) as fetch,
+        ):
+            resp = await sessions_mod.api_sessions_usage(request)
+            tasks = list(request.app["state"]._background_tasks)
+            if tasks:
+                await await_until(asyncio.gather(*tasks), what="usage refresh")
+        return json.loads(resp.body), fetch
+
+    @pytest.mark.asyncio
+    async def test_another_account_drops_the_plan_and_refreshes_now(self):
+        request = self._request()
+        sessions_mod._usage_cache = {"credits_plan": 50.0, "subscription": "Free"}
+        # flake-ok: stamps the cache fresh against the product's own clock, as the class above does
+        sessions_mod._usage_cache_ts = time.time()
+        first, fetch = await self._get(request, "a" * 64)
+        assert first["usage"]["credits_plan"] == 50.0
+        fetch.assert_not_called()
+        switched, fetch = await self._get(request, "b" * 64)
+        assert switched["usage"] == {"available": False}
+        assert sessions_mod._usage_cache == {"available": False}
+        fetch.assert_called_once()
+        assert switched["account"] and switched["account"] != first["account"]
+
+    @pytest.mark.asyncio
+    async def test_same_account_or_unreadable_store_keeps_the_reading(self):
+        request = self._request()
+        sessions_mod._usage_cache = {"credits_plan": 50.0}
+        # flake-ok: stamps the cache fresh against the product's own clock, as the class above does
+        sessions_mod._usage_cache_ts = time.time()
+        first, _ = await self._get(request, "a" * 64)
+        for fingerprint in ("a" * 64, "", "a" * 64):
+            body, fetch = await self._get(request, fingerprint)
+            assert body["usage"]["credits_plan"] == 50.0
+            assert body["account"] == first["account"]
+            fetch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_poll_between_logout_and_login_does_not_hide_the_switch(self):
+        # kiro-cli store A plus a Crew vault; a poll lands after `kiro-cli logout`
+        # (vault only), then the login to B. B is still compared with A.
+        request = self._request()
+        vault = "+crew:" + "v" * 64
+        sessions_mod._usage_cache = {"credits_plan": 50.0}
+        # flake-ok: stamps the cache fresh against the product's own clock, as the class above does
+        sessions_mod._usage_cache_ts = time.time()
+        await self._get(request, "a" * 64 + vault)
+        body, fetch = await self._get(request, vault)
+        assert body["usage"]["credits_plan"] == 50.0
+        fetch.assert_not_called()
+        body, fetch = await self._get(request, "b" * 64 + vault)
+        assert body["usage"] == {"available": False}
+        fetch.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_polls_never_serve_the_old_plan_after_the_switch(self):
+        request = self._request()
+        sessions_mod._usage_cache = {"credits_plan": 50.0}
+        # flake-ok: stamps the cache fresh against the product's own clock, as the class above does
+        sessions_mod._usage_cache_ts = time.time()
+        await self._get(request, "a" * 64)
+        gate = asyncio.Event()
+
+        async def _slow_read(_request):
+            await gate.wait()
+            return "b" * 64
+
+        with (
+            patch.object(sessions_mod, "reject_if_kiro_unverified", AsyncMock(return_value=None)),
+            patch.object(sessions_mod, "_vault_owns_usage", AsyncMock(return_value=False)),
+            patch.object(kiro_readiness, "live_kiro_identity", _slow_read),
+            patch.object(sessions_mod, "_fetch_usage_bg", AsyncMock()),
+        ):
+            first = asyncio.ensure_future(sessions_mod.api_sessions_usage(request))
+            second = asyncio.ensure_future(sessions_mod.api_sessions_usage(request))
+            await asyncio.sleep(0)
+            gate.set()
+            responses = await await_until(
+                asyncio.gather(first, second), what="concurrent usage GETs"
+            )
+            await await_until(
+                asyncio.gather(*request.app["state"]._background_tasks), what="usage refresh"
+            )
+        for resp in responses:
+            assert json.loads(resp.body)["usage"] == {"available": False}
+
+    @pytest.mark.asyncio
+    async def test_a_manual_refresh_records_the_account_it_reads(self):
+        # After a switch, the modal's Refresh reads the new account; the next GET
+        # must not take that for a move and drop the fresh reading.
+        sessions_mod._usage_account_fp = "a" * 64
+        sessions_mod._usage_cache = {"credits_plan": 50.0}
+        request = self._request()
+        with (
+            patch.object(sessions_mod, "_vault_owns_usage", AsyncMock(return_value=False)),
+            patch.object(sessions_mod, "reject_if_kiro_unverified", AsyncMock(return_value=None)),
+            patch.object(kiro_readiness, "live_kiro_identity", AsyncMock(return_value="b" * 64)),
+            patch.object(sessions_mod, "_fetch_usage_bg", AsyncMock()),
+            patch.object(sessions_mod, "_alert_on_cached_reading", AsyncMock()),
+        ):
+            await sessions_mod.api_sessions_usage_refresh(request)
+        assert sessions_mod._usage_account_fp == "b" * 64
+        # A's reading is gone before the refresh runs, so no concurrent GET serves it.
+        assert sessions_mod._usage_cache == {"available": False}
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_that_straddled_the_switch_is_dropped(self, monkeypatch):
+        # The refresh began for account A; a poll saw B before it published.
+        sessions_mod._usage_account_fp = "a" * 64
+
+        async def _refresh(**_kwargs):
+            sessions_mod._usage_account_fp = "b" * 64
+            sessions_mod._publish_usage({"credits_plan": 50.0})
+
+        monkeypatch.setattr(sessions_mod, "_fetch_usage_bg", _refresh)
+        alert = AsyncMock()
+        monkeypatch.setattr(sessions_mod, "_alert_on_cached_reading", alert)
+        await sessions_mod._fetch_usage_then_alert(SimpleNamespace(), vault_owned=False)
+        assert sessions_mod._usage_cache == {"available": False}
+        assert sessions_mod._usage_cache_ts == 0.0
+        alert.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_vault_reading_survives_a_kiro_cli_switch_during_its_refresh(self, monkeypatch):
+        # KAS with a Crew vault sign-in: a `kiro-cli login` moves only the store
+        # part, and the vault refresh already checked its own fingerprint.
+        sessions_mod._usage_account_fp = "a" * 64
+
+        async def _refresh(**_kwargs):
+            sessions_mod._usage_account_fp = "b" * 64
+            sessions_mod._publish_usage({"credits_plan": 50.0}, vault_fp="v")
+
+        monkeypatch.setattr(sessions_mod, "_fetch_usage_bg", _refresh)
+        monkeypatch.setattr(sessions_mod, "_alert_on_cached_reading", AsyncMock())
+        await sessions_mod._fetch_usage_then_alert(SimpleNamespace(), vault_owned=True)
+        assert sessions_mod._usage_cache == {"credits_plan": 50.0}
 
 
 def _refresh_app():

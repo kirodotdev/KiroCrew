@@ -202,7 +202,8 @@ export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: Client
   }
 
   const creditUsage = {
-    sessionsUsage: () => fetch('/api/sessions/usage').then(j) as Promise<{ usage?: KiroUsagePayload }>,
+    /** `account` is an opaque tag of the signed-in account (absent when unknown). */
+    sessionsUsage: () => fetch('/api/sessions/usage').then(j) as Promise<{ usage?: KiroUsagePayload; account?: string }>,
     /**
      * Refresh the credit reading now (the account modal's Refresh button). Same
      * `{usage}` envelope as `sessionsUsage`, so `parseKiroUsagePayload` reads
