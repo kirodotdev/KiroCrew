@@ -279,7 +279,6 @@ def test_claude_leaves_each_per_session_field_out_of_the_key(field):
         acp_backend=ACP_BACKEND_CLAUDE,
         tool_search=None,
         memory_mode="persistent",
-        shared_scratch=None,
         mcp_gateway_overlay=None,
         mcp_gateway_socket=None,
         tree_root=LEAD,
