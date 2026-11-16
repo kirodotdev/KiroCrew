@@ -1297,6 +1297,8 @@ def _determinism_audit_hook(event: str, args: tuple) -> None:
     state = _AUDIT
     if not state.active:
         return
+    if state.thread is not None and state.thread != threading.get_ident():
+        return
     try:
         if os.getpid() != state.pid:
             return
