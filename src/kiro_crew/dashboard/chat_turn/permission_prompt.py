@@ -7,7 +7,11 @@ import asyncio
 import json
 from typing import TYPE_CHECKING, Literal
 
-from kiro_crew.dashboard.chat_utils import _tool_identity_fields, slack_mirror_is_paused
+from kiro_crew.dashboard.chat_utils import (
+    HOST_DECLINE_CAUSE_META_KEY,
+    _tool_identity_fields,
+    slack_mirror_is_paused,
+)
 from kiro_crew.dashboard.deny_override import (
     deny_key_note_label,
     deny_override_enabled,
@@ -478,6 +482,7 @@ async def _on_permission_prompt(
                     "this Slack thread, so I auto-declined it. Please retry, or "
                     "approve from the dashboard.",
                     "msg msg-a",
+                    meta={HOST_DECLINE_CAUSE_META_KEY: DENY_CAUSE_APPROVAL_UNDELIVERABLE},
                 )
                 state.push_slots_update()
                 fut.set_result("rejected")
@@ -753,7 +758,12 @@ async def _on_permission_prompt(
             try:
                 # Stays English: ``_approval_card`` is the approval formatter's
                 # own output (the tool and its decision), carried verbatim.
-                slot.append("error", _approval_card, "msg msg-err")
+                slot.append(
+                    "error",
+                    _approval_card,
+                    "msg msg-err",
+                    meta={HOST_DECLINE_CAUSE_META_KEY: _host_deny_cause},
+                )
             except Exception:
                 logger.debug("Failed to render approval card", exc_info=True)
         _owns_approval = slot.unregister_approval(str(event.request_id), fut)
