@@ -319,16 +319,20 @@ def _walk_server_paths(server: str, entry: dict) -> list[DeadPath]:
     return dead
 
 
-def _walk_spec(spec_path: Path) -> tuple[list[DeadPath], str | None]:
+def _walk_spec(spec_path: Path) -> tuple[list[DeadPath], str | None] | None:
     """Read one spec file and collect its dead paths (fail-open per file).
 
     Returns ``(dead_paths, unreadable_reason)``. An unreadable / non-object /
     malformed spec yields ``([], reason)`` rather than raising, so one bad file
-    never aborts the whole check.
+    never aborts the whole check. Returns ``None`` for a markdown file with no
+    opening frontmatter fence (a README, a prompt fragment): it is not a spec,
+    and every other agents-folder reader skips it through
+    :func:`~kiro_crew.agent_discovery.plain_markdown_document`. A fenced file
+    that fails to parse is still reported as malformed.
     """
     # Deferred: agent_discovery reaches config.loader through hooks, and this
     # module is imported by the doctor before that load has run.
-    from kiro_crew.agent_discovery import read_agent_spec_strict
+    from kiro_crew.agent_discovery import plain_markdown_document, read_agent_spec_strict
 
     form = "frontmatter" if is_markdown_spec(spec_path) else "JSON"
     try:
@@ -344,6 +348,8 @@ def _walk_spec(spec_path: Path) -> tuple[list[DeadPath], str | None]:
         # aborting the whole walk, keeping the check fail-open per file.
         return [], f"not valid UTF-8 ({exc})"
     except ValueError as exc:
+        if is_markdown_spec(spec_path) and plain_markdown_document(spec_path):
+            return None
         return [], f"malformed {form} ({exc})"
     if not isinstance(data, dict):
         return [], f"top-level {form} is not an object"
@@ -425,7 +431,10 @@ def check_dead_paths(*, agents_dir: Path | None = None, repair=_default_repair) 
 
     for spec_path in iter_agent_spec_files(agents_dir):
         managed = spec_path.name in managed_names
-        dead, unreadable = _walk_spec(spec_path)
+        walked = _walk_spec(spec_path)
+        if walked is None:
+            continue
+        dead, unreadable = walked
         result = SpecResult(spec=spec_path.name, managed=managed, dead=dead, unreadable=unreadable)
         report.results.append(result)
         if managed and dead:
@@ -446,7 +455,12 @@ def check_dead_paths(*, agents_dir: Path | None = None, repair=_default_repair) 
     for result in report.results:
         if not (result.managed and result.dead):
             continue
-        dead_after, unreadable_after = _walk_spec(agents_dir / result.spec)
+        # A managed spec is never a plain markdown document; treat one that
+        # became so after the repair as unreadable rather than as repaired.
+        dead_after, unreadable_after = _walk_spec(agents_dir / result.spec) or (
+            [],
+            "not an agent spec",
+        )
         result.repaired = not dead_after and unreadable_after is None
         if not result.repaired:
             # Surface what survived so a stuck repair is still diagnosable.
