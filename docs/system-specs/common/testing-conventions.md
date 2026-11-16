@@ -2691,8 +2691,16 @@ about the code. Each is a hermeticity gap, and each has one fix:
   `pin_kiro_cli` looks in the fixed install directories (`~/.local/bin` among them), so
   an unpinned writer gate spawned the host's `kiro-cli --version` inside the sandbox,
   whose ceiling seal created `<data home>/profiles` between a preview and its save, and
-  the save failed `stale_revision`. A test that reaches the spec-permissions gate pins
-  `installed_kiro_cli_version` (`agent_capabilities_helpers._accepting_kiro_cli`).
+  the save failed `stale_revision`. The same real binary wrote `mcs-telemetry-l1-*.log`
+  and `kiro-log` into `$TMPDIR` from whichever test probed it first in a worker, so every
+  shard ended with a temp-residue red. The rootdir floor's `_hide_the_operators_kiro_cli`
+  now drops the directories under the REAL account home from `known_kiro_cli_dirs` at
+  every module binding (`_KIRO_CLI_DIR_BINDINGS`, ratcheted by
+  `test_floor_operators_kiro_cli.py`), so a test that never chose a kiro-cli sees "not
+  installed", as on CI. A test that wants one passes its own home or plants it through
+  `KIROCREW_KIRO_BIN`. A test that reaches the spec-permissions gate still pins
+  `installed_kiro_cli_version` (`agent_capabilities_helpers._accepting_kiro_cli`), which
+  states the version it means.
 - **Who owns a binary, and where a home's stores point, are the host's.** The grep
   endpoint refuses a ripgrep owned by another user (a dev image's `/usr/local/bin/rg`
   owned by uid 1001). A test whose subject is the rg ENGINE's answer pins
