@@ -9,21 +9,23 @@ never touches GitHub.
 """
 import json
 import os
-import shutil
-import tempfile
 import time
 import unittest
-from pathlib import Path
+
+import pytest
 
 from kiro_crew.apps.builtins.issue_radar.backend import store
 
 
 class TestRepoSettings(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        """Hand each test pytest's per-test directory as the store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self.tmp = tmp_path
 
     def test_defaults_when_unset(self):
         store.add_connected_repo("o", "r", root=self.tmp)
@@ -122,11 +124,14 @@ class TestRepoSettings(unittest.TestCase):
 
 
 class TestWatchState(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        """Hand each test pytest's per-test directory as the store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self.tmp = tmp_path
 
     def test_absent_returns_empty(self):
         # Never-observed repo → {} so the watcher seeds without notifying.
@@ -144,11 +149,14 @@ class TestWatchState(unittest.TestCase):
 
 
 class TestDisconnect(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        """Hand each test pytest's per-test directory as the store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self.tmp = tmp_path
 
     def test_remove_drops_repo_and_cache(self):
         store.add_connected_repo("o", "r", root=self.tmp)
@@ -171,11 +179,14 @@ class TestDisconnect(unittest.TestCase):
 
 
 class TestRecommendationsAndLabelCache(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        """Hand each test pytest's per-test directory as the store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self.tmp = tmp_path
 
     def test_recommendations_roundtrip(self):
         store.add_connected_repo("o", "r", root=self.tmp)
