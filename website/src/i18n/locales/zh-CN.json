@@ -11196,14 +11196,17 @@
       "not_sent": "这里没有聊天框，发不出去。",
       "question": "问题",
       "send_decline": "不用讨论了",
+      "send_failed": "没发出去，请再试一次。",
       "send_must": "必须：{{text}}",
       "send_question": "问题：{{text}}",
       "send_skip": "不讨论：{{text}}",
       "send_start": "开始讨论",
+      "sending": "发送中…",
       "sent": "已发出。",
       "skip": "不讨论",
       "staged": "已放进聊天框，请从那里发送。",
       "start": "开始",
+      "unconfirmed": "未确认。可能已经发出。聊天里没有的话，刷新页面再试。",
       "who": "谁来聊"
     }
   },

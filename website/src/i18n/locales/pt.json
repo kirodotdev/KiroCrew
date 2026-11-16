@@ -11712,14 +11712,17 @@
       "not_sent": "Esta visualização não tem caixa de chat para enviar.",
       "question": "Pergunta",
       "send_decline": "Não precisa de discussão",
+      "send_failed": "Não foi enviado. Tente de novo.",
       "send_must": "Deve: {{text}}",
       "send_question": "Pergunta: {{text}}",
       "send_skip": "Fora da discussão: {{text}}",
       "send_start": "Começa a discussão",
+      "sending": "Enviando…",
       "sent": "Enviado.",
       "skip": "Fora da discussão",
       "staged": "Colocado na caixa de chat. Envie a partir dela.",
       "start": "Começar",
+      "unconfirmed": "Não confirmado. Pode já ter sido enviado. Se não estiver no chat, recarregue a página para tentar de novo.",
       "who": "Quem participa"
     }
   },

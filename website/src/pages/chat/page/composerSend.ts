@@ -363,8 +363,12 @@ export function useComposerSend({
     // collaborator's send accepted while this one is on its way is still unseen.
     const baseAtPress = baseRevisionFor(entrySendSlot)
     // An app's supplied text is not the human's answer to a pending card.
-    // Null captures keep all composer-owned completion effects inert.
-    const askAtSend = isolated ? null : capturePendingAskId(store.getState().chat.pendingQuestions, entrySendSlot)
+    // Null captures keep all composer-owned completion effects inert. An
+    // isolated send that reports its own failure is a person's press (a
+    // discussion card's Start, a follow-up Start): like a typed send it
+    // releases a blocking question, or a queued send waits behind the parked
+    // turn until the question expires.
+    const askAtSend = isolated && !ownsFailureReport ? null : capturePendingAskId(store.getState().chat.pendingQuestions, entrySendSlot)
     // Entry-time capture of the folder-suggestion card, ONLY when it was
     // actually on screen for this send: the card renders solely in this page's
     // composer band for the ACTIVE slot, so a targeted send into another slot —
@@ -977,6 +981,10 @@ export function useComposerSend({
         content: refusalReason ?? i18nT('pages.chatPage.send_failed'),
         cls: '',
       })
+      // An isolated send that reports its own failure adds no error row here,
+      // so its bubble would stand alone in the transcript looking delivered.
+      // Nothing of it was accepted, so it goes, as a race-lost send's does.
+      if (isolated && ownsFailureReport && slot) dispatch(resolveOptimisticSteer({ slot, sendId, outcome: 'queued' }))
       // The server explicitly accepted neither (`ok` nor `queued`), so nothing
       // was sent — recovering the composer cannot duplicate a delivered turn.
       restoreComposerAfterFailedSend()

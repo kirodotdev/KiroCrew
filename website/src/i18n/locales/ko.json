@@ -11196,14 +11196,17 @@
       "not_sent": "이 화면에는 보낼 채팅 입력란이 없습니다.",
       "question": "질문",
       "send_decline": "토론은 필요 없어",
+      "send_failed": "보내지 못했습니다. 다시 시도하세요.",
       "send_must": "반드시: {{text}}",
       "send_question": "질문: {{text}}",
       "send_skip": "다루지 않음: {{text}}",
       "send_start": "토론을 시작해 줘",
+      "sending": "보내는 중…",
       "sent": "보냈습니다.",
       "skip": "다루지 않음",
       "staged": "채팅 입력란에 넣었습니다. 거기서 보내세요.",
       "start": "시작",
+      "unconfirmed": "확인되지 않았습니다. 이미 보내졌을 수 있습니다. 채팅에 없으면 페이지를 새로고침한 뒤 다시 시도하세요.",
       "who": "참여자"
     }
   },

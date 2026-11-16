@@ -49,6 +49,7 @@ import AgentNoToolsNotice from '../pages/chat/AgentNoToolsNotice'
 import StopEventCard from '../pages/chat/StopEventCard'
 import { warmBriefBodyOf } from '../components/chat/WarmBriefCard'
 import { grillRowId } from '../components/chat/GrillCard'
+import { grillKeysSentAfter } from './protocol/grillMarker'
 import { ToolDetails } from '../pages/chat/ToolDetails'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { REASONING_ROLES, stripAppEnvelope } from '../pages/chat/groupDisplayItems'
@@ -87,6 +88,10 @@ export interface MessageRenderContext {
    *  redraws a row when any other row changes EXCEPT a streaming row's text
    *  growing (chat-core/transcript/transcriptVersion). */
   messages: ChatMessage[]
+  /** The session's queued entries, for a host whose `messages` leaves them
+   *  out (a split pane draws them in its queue stack). A reply's discussion
+   *  card reads them: a queued Start already answered it. */
+  queued?: readonly ChatMessage[]
   /** Whether the session is currently producing output. */
   running: boolean
   /** Stable React key the list computed for this row. */
@@ -648,6 +653,8 @@ export function renderAssistantBubble(
       // inside this same bubble, so it keeps the timestamp and row actions.
       body={warmBriefBodyOf(m)}
       grillRowId={grillRowId(m)}
+      grillMid={threadMidOf(m)}
+      grillSent={grillKeysSentAfter(ctx.messages, ctx.index, ctx.queued)}
     />
   )
   // The column's child is the bubble itself unless this message has a thread
