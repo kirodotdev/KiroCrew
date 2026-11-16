@@ -372,12 +372,33 @@ class _ConsoleQueueListener(QueueListener):
         try:
             self.bounded.put(None, timeout=deadline)  # None is QueueListener's stop sentinel
         except queue.Full:
-            return  # the reader is stuck; nothing queued after this would land
+            _forget_at_shutdown(self.handlers)  # the reader is stuck; nothing more would land
+            return
         thread = self._thread
         if thread is not None:
             thread.join(max(0.0, end - time.monotonic()))
-            if not thread.is_alive():
+            if thread.is_alive():
+                _forget_at_shutdown(self.handlers)
+            else:
                 self._thread = None  # what QueueListener.stop leaves behind
+                _release_own_streams(self.handlers)
+
+
+def _forget_at_shutdown(handlers: "tuple[logging.Handler, ...]") -> None:
+    """Take abandoned console handlers off ``logging.shutdown``'s list.
+
+    The stuck write still holds each handler's lock, and ``logging.shutdown``
+    (the last atexit hook) takes every registered handler's lock, so exit
+    would wait on the terminal after all. ``_handlerList`` and ``_lock`` are
+    private but stable across 3.12-3.14.
+    """
+    abandoned = {id(h) for h in handlers}
+    with logging._lock:  # type: ignore[attr-defined]
+        logging._handlerList[:] = [  # type: ignore[attr-defined]
+            ref
+            for ref in logging._handlerList  # type: ignore[attr-defined]
+            if id(ref()) not in abandoned
+        ]
 
 
 def _stop_console_queue_listener(timeout: float | None = None) -> None:
@@ -406,10 +427,52 @@ def _move_console_echo_off_loop() -> None:
         return
     for handler in console:
         root.removeHandler(handler)
+        _own_stream(handler)
     bounded: "queue.Queue[logging.LogRecord | None]" = queue.Queue(maxsize=_CONSOLE_QUEUE_MAX)
     _CONSOLE_QUEUE_LISTENER = _ConsoleQueueListener(bounded, *console)
     _CONSOLE_QUEUE_LISTENER.start()
     root.addHandler(_ConsoleQueueHandler(bounded))
+
+
+def _own_stream(handler: logging.StreamHandler) -> None:  # type: ignore[type-arg]
+    """Point a console handler at its own copy of stderr's descriptor.
+
+    A write stuck on the terminal holds the stream's buffer lock. On ``sys.stderr``
+    that lock is the one interpreter finalization flushes under, and it aborts
+    after a second when it cannot take it; on a private stream it blocks nothing.
+    """
+    if handler.stream is not sys.stderr:
+        return
+    try:
+        fd = sys.stderr.fileno()
+        own = open(  # noqa: SIM115 -- lives as long as the handler
+            os.dup(fd),
+            "w",
+            buffering=1,
+            encoding=sys.stderr.encoding or "utf-8",
+            errors="backslashreplace",
+        )
+    except (AttributeError, OSError, ValueError):
+        return  # no real descriptor (a test capture, a closed stream): keep the original
+    handler.setStream(own)
+    setattr(handler, _OWN_STREAM_ATTR, own)
+
+
+_OWN_STREAM_ATTR = "_kirocrew_own_stream"
+
+
+def _release_own_streams(handlers: "tuple[logging.Handler, ...]") -> None:
+    """After a clean drain, point handlers back at ``sys.stderr`` and close their copies."""
+    for handler in handlers:
+        own = getattr(handler, _OWN_STREAM_ATTR, None)
+        if own is None or not isinstance(handler, logging.StreamHandler):
+            continue
+        delattr(handler, _OWN_STREAM_ATTR)
+        try:
+            handler.setStream(sys.stderr)  # flushes the copy first
+            own.close()
+        except (OSError, ValueError):
+            pass  # a broken stream must not block shutdown
 
 
 def _stop_log_queue_listener(timeout: float | None = None) -> None:
@@ -629,6 +692,11 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     except OSError as exc:
         if detached:
             raise
+        # The console is now the only log; a server still must not write it
+        # from the event loop. Move it first, so the warning below is queued too.
+        if command in _CONSOLE_OFF_LOOP_COMMANDS:
+            _move_console_echo_off_loop()
+            atexit.register(_stop_log_queue_listener)
         logging.getLogger("kiro_crew").warning(
             "persistent log file %s unavailable (%s); continuing with console logging only",
             log_file,
