@@ -18391,12 +18391,16 @@
         "friendly_hauntings_only": "nur freundliches Spuken",
         "kiro_ghost_haunt_animation": "Animation des Kiro-Geisterspuks",
         "kiro_ghost_haunt_text_overlay": "Text-Overlay des Kiro-Geisterspuks",
-        "kiro_haunt": "Kiro-Spuk"
+        "kiro_haunt": "Kiro-Spuk",
+        "tooltip_active": "Spukt im Code herum",
+        "tooltip_idle": "Schwebt durch Wände"
       },
       "missionControl": {
         "missionControlScene": {
           "lv_level_title": "Lv.{{level}} {{title}}",
-          "mission_control_scene": "Kontrollzentrum-Szene"
+          "mission_control_scene": "Kontrollzentrum-Szene",
+          "tooltip_active": "Vibe-Coding",
+          "tooltip_idle": "Scrollt durch TikTok"
         }
       },
       "neuralConstellationScene": {
@@ -18404,7 +18408,9 @@
         "idle": "inaktiv",
         "neural_constellation_animation": "Animation der neuronalen Konstellation",
         "neural_constellation_text_overlay": "Text-Overlay der neuronalen Konstellation",
-        "neural_network": "Neuronales Netz"
+        "neural_network": "Neuronales Netz",
+        "tooltip_active": "Verarbeitet neuronale Pfade",
+        "tooltip_idle": "Wartet auf Signal"
       },
       "officeScene": {
         "active": "Aktiv",
@@ -18414,24 +18420,70 @@
         "no_tasks": "Keine Aufgaben",
         "office_scene": "Büroszene",
         "office_scene_labels": "Beschriftungen der Büroszene",
-        "to_do": "Zu erledigen"
+        "to_do": "Zu erledigen",
+        "tooltip_active": "Schuftet an PRs",
+        "tooltip_idle": "Wartet auf CR-Freigabe",
+        "new_audiobook": "Neues Hörbuch?",
+        "adding_to_lib": "Kommt in die Bibliothek!",
+        "ch_5_has_a_bug": "Kap. 5 hat einen Bug",
+        "narrating_fix": "Fix wird eingesprochen!",
+        "deploy_ready": "Deploy bereit?",
+        "ship_it": "Raus damit!",
+        "review_the_pr": "PR anschauen?",
+        "lgtm": "LGTM!",
+        "metadata_sync": "Metadaten-Sync?",
+        "ingested": "Eingelesen!",
+        "latency_up": "Latenz steigt…",
+        "scaling_now": "Skaliere gerade!",
+        "coffee_break": "Kaffeepause?",
+        "always": "Immer!",
+        "a_b_test_done": "A/B-Test fertig",
+        "plus_12_listens": "+12 % Hörer!"
       },
       "pandaOfficeScene": {
         "panda_den": "🐼 Panda-Höhle",
         "panda_office_scene": "Panda-Büroszene",
-        "panda_office_scene_labels": "Beschriftungen der Panda-Büroszene"
+        "panda_office_scene_labels": "Beschriftungen der Panda-Büroszene",
+        "token_expired": "Token abgelaufen?",
+        "refreshing": "Wird erneuert!",
+        "cr_approved": "CR freigegeben!",
+        "ship_it": "Raus damit! 🐼",
+        "deploy_ready": "Deploy bereit?",
+        "bamboo_break": "Bambuspause?",
+        "review_the_pr": "PR anschauen?",
+        "lgtm": "LGTM!",
+        "aztec_timeout": "Aztec-Timeout",
+        "scaling_now": "Skaliere gerade!",
+        "latency_up": "Latenz steigt…",
+        "checking_aao": "Prüfe AAO",
+        "chess_later": "Später Schach?",
+        "always": "Immer!",
+        "pull_ups": "Klimmzüge?",
+        "after_deploy": "Nach dem Deploy!",
+        "pull_ups_sign": "Klimmzüge"
       },
       "underwaterLabScene": {
         "deep_sea_lab": "Tiefseelabor",
+        "vacant": "frei",
         "research_station": "Forschungsstation",
         "underwater_lab_scene": "Unterwasserlabor-Szene",
-        "underwater_lab_scene_labels": "Beschriftungen der Unterwasserlabor-Szene"
+        "underwater_lab_scene_labels": "Beschriftungen der Unterwasserlabor-Szene",
+        "tooltip_active": "Erkundet die Tiefe",
+        "tooltip_idle": "Taucht zum Luftholen auf",
+        "scanning": "Scanne…",
+        "all_clear": "Alles klar",
+        "signal_ok": "Signal OK",
+        "depth_200m": "Tiefe: 200 m",
+        "sync_done": "Sync fertig",
+        "data_recv": "Daten empfangen"
       },
       "wateringHoleScene": {
         "on_the_savanna": "{{n}}/{{total}} in der Savanne",
         "watering_hole": "Wasserloch",
         "watering_hole_scene": "Wasserloch-Szene",
-        "watering_hole_scene_labels": "Beschriftungen der Wasserloch-Szene"
+        "watering_hole_scene_labels": "Beschriftungen der Wasserloch-Szene",
+        "tooltip_active": "Unterwegs",
+        "tooltip_idle": "Ruht sich aus"
       },
       "wizardTowerScene": {
         "arcane_academy": "Arkane Akademie",
@@ -18440,7 +18492,9 @@
         "i_see": "Aha!",
         "resting": "ruht",
         "wizard_tower_scene": "Zauberturm-Szene",
-        "wizard_tower_spell_text": "Zauberspruchtext des Zauberturms"
+        "wizard_tower_spell_text": "Zauberspruchtext des Zauberturms",
+        "tooltip_active": "Wirkt Zauber",
+        "tooltip_idle": "Studiert das Grimoire"
       }
     },
     "schedulePage": {

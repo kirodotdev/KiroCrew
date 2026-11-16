@@ -17911,12 +17911,16 @@
         "friendly_hauntings_only": "仅限友好出没",
         "kiro_ghost_haunt_animation": "Kiro 幽灵出没动画",
         "kiro_ghost_haunt_text_overlay": "Kiro 幽灵出没文字浮层",
-        "kiro_haunt": "Kiro 出没"
+        "kiro_haunt": "Kiro 出没",
+        "tooltip_active": "在代码库里出没",
+        "tooltip_idle": "穿墙飘荡"
       },
       "missionControl": {
         "missionControlScene": {
           "lv_level_title": "{{level}} 级 {{title}}",
-          "mission_control_scene": "任务控制中心场景"
+          "mission_control_scene": "任务控制中心场景",
+          "tooltip_active": "Vibe coding 中",
+          "tooltip_idle": "刷 TikTok 中"
         }
       },
       "neuralConstellationScene": {
@@ -17924,7 +17928,9 @@
         "idle": "空闲",
         "neural_constellation_animation": "神经星座动画",
         "neural_constellation_text_overlay": "神经星座文字浮层",
-        "neural_network": "神经网络"
+        "neural_network": "神经网络",
+        "tooltip_active": "处理神经通路",
+        "tooltip_idle": "等待信号"
       },
       "officeScene": {
         "active": "进行中",
@@ -17934,24 +17940,70 @@
         "no_tasks": "暂无任务",
         "office_scene": "办公室场景",
         "office_scene_labels": "办公室场景标签",
-        "to_do": "待办"
+        "to_do": "待办",
+        "tooltip_active": "肝 PR 中",
+        "tooltip_idle": "等待 CR 批准",
+        "new_audiobook": "新有声书？",
+        "adding_to_lib": "加进库里！",
+        "ch_5_has_a_bug": "第 5 章有 bug",
+        "narrating_fix": "正在录修复！",
+        "deploy_ready": "可以部署了？",
+        "ship_it": "发！",
+        "review_the_pr": "看下 PR？",
+        "lgtm": "LGTM！",
+        "metadata_sync": "元数据同步？",
+        "ingested": "已入库！",
+        "latency_up": "延迟升高…",
+        "scaling_now": "马上扩容！",
+        "coffee_break": "喝咖啡？",
+        "always": "必须的！",
+        "a_b_test_done": "A/B 测试结束",
+        "plus_12_listens": "收听 +12%！"
       },
       "pandaOfficeScene": {
         "panda_den": "🐼 熊猫窝",
         "panda_office_scene": "熊猫办公室场景",
-        "panda_office_scene_labels": "熊猫办公室场景标签"
+        "panda_office_scene_labels": "熊猫办公室场景标签",
+        "token_expired": "Token 过期了？",
+        "refreshing": "刷新中！",
+        "cr_approved": "CR 批了！",
+        "ship_it": "发！🐼",
+        "deploy_ready": "可以部署了？",
+        "bamboo_break": "吃竹子去？",
+        "review_the_pr": "看下 PR？",
+        "lgtm": "LGTM！",
+        "aztec_timeout": "Aztec 超时",
+        "scaling_now": "马上扩容！",
+        "latency_up": "延迟升高…",
+        "checking_aao": "查 AAO 中",
+        "chess_later": "待会下棋？",
+        "always": "必须的！",
+        "pull_ups": "做引体？",
+        "after_deploy": "部署完再说！",
+        "pull_ups_sign": "引体向上"
       },
       "underwaterLabScene": {
         "deep_sea_lab": "深海实验室",
+        "vacant": "空闲",
         "research_station": "研究站",
         "underwater_lab_scene": "水下实验室场景",
-        "underwater_lab_scene_labels": "水下实验室场景标签"
+        "underwater_lab_scene_labels": "水下实验室场景标签",
+        "tooltip_active": "探索深海",
+        "tooltip_idle": "上浮换气",
+        "scanning": "扫描中…",
+        "all_clear": "一切正常",
+        "signal_ok": "信号正常",
+        "depth_200m": "深度：200 米",
+        "sync_done": "同步完成",
+        "data_recv": "收到数据"
       },
       "wateringHoleScene": {
         "on_the_savanna": "{{n}}/{{total}} 只在草原上",
         "watering_hole": "水源地",
         "watering_hole_scene": "水源地场景",
-        "watering_hole_scene_labels": "水源地场景标签"
+        "watering_hole_scene_labels": "水源地场景标签",
+        "tooltip_active": "行进中",
+        "tooltip_idle": "休息中"
       },
       "wizardTowerScene": {
         "arcane_academy": "秘法学院",
@@ -17960,7 +18012,9 @@
         "i_see": "原来如此！",
         "resting": "休息中",
         "wizard_tower_scene": "巫师塔场景",
-        "wizard_tower_spell_text": "巫师塔法术文字"
+        "wizard_tower_spell_text": "巫师塔法术文字",
+        "tooltip_active": "施法中",
+        "tooltip_idle": "研读魔法书"
       }
     },
     "schedulePage": {

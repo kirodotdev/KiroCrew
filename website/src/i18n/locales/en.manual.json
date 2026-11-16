@@ -8764,12 +8764,16 @@
         "kiro_ghost_haunt_animation": "Kiro ghost haunt animation",
         "kiro_ghost_haunt_text_overlay": "Kiro ghost haunt text overlay",
         "friendly_hauntings_only": "friendly hauntings only",
-        "kiro_haunt": "Kiro Haunt"
+        "kiro_haunt": "Kiro Haunt",
+        "tooltip_active": "Haunting the codebase",
+        "tooltip_idle": "Drifting through walls"
       },
       "missionControl": {
         "missionControlScene": {
           "mission_control_scene": "Mission control scene",
-          "lv_level_title": "Lv.{{level}} {{title}}"
+          "lv_level_title": "Lv.{{level}} {{title}}",
+          "tooltip_active": "Vibe coding",
+          "tooltip_idle": "Doomscrolling TikTok"
         }
       },
       "neuralConstellationScene": {
@@ -8777,7 +8781,9 @@
         "idle": "idle",
         "neural_constellation_animation": "Neural constellation animation",
         "neural_constellation_text_overlay": "Neural constellation text overlay",
-        "neural_network": "Neural Network"
+        "neural_network": "Neural Network",
+        "tooltip_active": "Processing neural pathways",
+        "tooltip_idle": "Awaiting signal"
       },
       "officeScene": {
         "active": "Active",
@@ -8787,24 +8793,70 @@
         "no_tasks": "No tasks",
         "office_scene": "Office scene",
         "office_scene_labels": "Office scene labels",
-        "to_do": "To Do"
+        "to_do": "To Do",
+        "tooltip_active": "Grinding PRs",
+        "tooltip_idle": "Waiting for CR approval",
+        "new_audiobook": "New audiobook?",
+        "adding_to_lib": "Adding to lib!",
+        "ch_5_has_a_bug": "Ch.5 has a bug",
+        "narrating_fix": "Narrating fix!",
+        "deploy_ready": "Deploy ready?",
+        "ship_it": "Ship it!",
+        "review_the_pr": "Review the PR?",
+        "lgtm": "LGTM!",
+        "metadata_sync": "Metadata sync?",
+        "ingested": "Ingested!",
+        "latency_up": "Latency up...",
+        "scaling_now": "Scaling now!",
+        "coffee_break": "Coffee break?",
+        "always": "Always!",
+        "a_b_test_done": "A/B test done",
+        "plus_12_listens": "+12% listens!"
       },
       "pandaOfficeScene": {
         "panda_office_scene": "Panda office scene",
         "panda_office_scene_labels": "Panda office scene labels",
-        "panda_den": "🐼 Panda Den"
+        "panda_den": "🐼 Panda Den",
+        "token_expired": "Token expired?",
+        "refreshing": "Refreshing!",
+        "cr_approved": "CR approved!",
+        "ship_it": "Ship it! 🐼",
+        "deploy_ready": "Deploy ready?",
+        "bamboo_break": "Bamboo break?",
+        "review_the_pr": "Review the PR?",
+        "lgtm": "LGTM!",
+        "aztec_timeout": "Aztec timeout",
+        "scaling_now": "Scaling now!",
+        "latency_up": "Latency up...",
+        "checking_aao": "Checking AAO",
+        "chess_later": "Chess later?",
+        "always": "Always!",
+        "pull_ups": "Pull-ups?",
+        "after_deploy": "After deploy!",
+        "pull_ups_sign": "pull-ups"
       },
       "underwaterLabScene": {
         "deep_sea_lab": "Deep Sea Lab",
+        "vacant": "vacant",
         "research_station": "research station",
         "underwater_lab_scene": "Underwater lab scene",
-        "underwater_lab_scene_labels": "Underwater lab scene labels"
+        "underwater_lab_scene_labels": "Underwater lab scene labels",
+        "tooltip_active": "Exploring the deep",
+        "tooltip_idle": "Surfacing for air",
+        "scanning": "Scanning…",
+        "all_clear": "All clear",
+        "signal_ok": "Signal OK",
+        "depth_200m": "Depth: 200m",
+        "sync_done": "Sync done",
+        "data_recv": "Data recv"
       },
       "wateringHoleScene": {
         "on_the_savanna": "{{n}}/{{total}} on the savanna",
         "watering_hole": "Watering Hole",
         "watering_hole_scene": "Watering hole scene",
-        "watering_hole_scene_labels": "Watering hole scene labels"
+        "watering_hole_scene_labels": "Watering hole scene labels",
+        "tooltip_active": "On the move",
+        "tooltip_idle": "Resting"
       },
       "wizardTowerScene": {
         "arcane_academy": "Arcane Academy",
@@ -8813,7 +8865,9 @@
         "i_see": "I see!",
         "resting": "resting",
         "wizard_tower_scene": "Wizard tower scene",
-        "wizard_tower_spell_text": "Wizard tower spell text"
+        "wizard_tower_spell_text": "Wizard tower spell text",
+        "tooltip_active": "Casting spells",
+        "tooltip_idle": "Studying grimoire"
       }
     },
     "schedulePage": {

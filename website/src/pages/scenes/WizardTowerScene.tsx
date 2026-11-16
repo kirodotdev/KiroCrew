@@ -8,7 +8,10 @@ import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useScen
 import { i18nT } from '../../i18n/t'
 import { sliceCodePoints } from '../../utils/codePoints'
 
-const WIZARD_THEME: SceneTooltipTheme = { active: 'Casting spells', idle: 'Studying grimoire' }
+const WIZARD_THEME: SceneTooltipTheme = {
+  get active() { return i18nT('pages.scenes.wizardTowerScene.tooltip_active') },
+  get idle() { return i18nT('pages.scenes.wizardTowerScene.tooltip_idle') },
+}
 
 /* ── Types ── */
 interface Wizard {

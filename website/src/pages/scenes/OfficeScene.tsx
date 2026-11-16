@@ -8,7 +8,10 @@ import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useScen
 import { i18nT } from '../../i18n/t'
 import { sliceCodePoints } from '../../utils/codePoints'
 
-const OFFICE_THEME: SceneTooltipTheme = { active: 'Grinding PRs', idle: 'Waiting for CR approval' }
+const OFFICE_THEME: SceneTooltipTheme = {
+  get active() { return i18nT('pages.scenes.officeScene.tooltip_active') },
+  get idle() { return i18nT('pages.scenes.officeScene.tooltip_idle') },
+}
 
 /* ── Types ── */
 interface OfficeAgent {
@@ -61,10 +64,14 @@ const COL = {
   mug: '#e74c3c', photo: '#f1c40f', notebook: '#3498db', headphones: '#555',
 }
 const CHAT_LINES = [
-  ['New audiobook?', 'Adding to lib!'], ['Ch.5 has a bug', 'Narrating fix!'],
-  ['Deploy ready?', 'Ship it!'], ['Review the PR?', 'LGTM!'],
-  ['Metadata sync?', 'Ingested!'], ['Latency up...', 'Scaling now!'],
-  ['Coffee break?', 'Always!'], ['A/B test done', '+12% listens!'],
+  ['pages.scenes.officeScene.new_audiobook', 'pages.scenes.officeScene.adding_to_lib'],
+  ['pages.scenes.officeScene.ch_5_has_a_bug', 'pages.scenes.officeScene.narrating_fix'],
+  ['pages.scenes.officeScene.deploy_ready', 'pages.scenes.officeScene.ship_it'],
+  ['pages.scenes.officeScene.review_the_pr', 'pages.scenes.officeScene.lgtm'],
+  ['pages.scenes.officeScene.metadata_sync', 'pages.scenes.officeScene.ingested'],
+  ['pages.scenes.officeScene.latency_up', 'pages.scenes.officeScene.scaling_now'],
+  ['pages.scenes.officeScene.coffee_break', 'pages.scenes.officeScene.always'],
+  ['pages.scenes.officeScene.a_b_test_done', 'pages.scenes.officeScene.plus_12_listens'],
 ]
 const COFFEE_MACHINE = { x: 390, y: 240 }
 const WHITEBOARD = { x: 350, y: 14, w: 60, h: 36 }
@@ -398,7 +405,7 @@ export default function OfficeScene({ agents, visible = true }: { agents: AgentS
 
       // Nameplate on cubicle wall (if occupied, filled by agent draw)
       if (!occupied) {
-        drawLabel(T, 'empty', (dx + 15) * S, (dy + 1) * S, { role: 'label', color: '#555', bgColor: '#333', align: 'center', scale: S })
+        drawLabel(T, i18nT('pages.scenes.wizardTowerScene.empty'), (dx + 15) * S, (dy + 1) * S, { role: 'label', color: '#555', bgColor: '#333', align: 'center', scale: S })
       }
     }
 
@@ -466,7 +473,7 @@ export default function OfficeScene({ agents, visible = true }: { agents: AgentS
       X.fillText(kindEmoji, (bx + 8) * S, (by - 5 + bob) * S)
 
       // Status label
-      drawLabel(T, a.running ? 'active' : 'idle', (bx + 4) * S, (by - 10 + bob) * S, { role: 'status', color: a.running ? '#4f4' : '#888', bgColor: 'rgba(0,0,0,0.5)', align: 'center', scale: S })
+      drawLabel(T, a.running ? i18nT('pages.scenes.neuralConstellationScene.active') : i18nT('pages.scenes.neuralConstellationScene.idle'), (bx + 4) * S, (by - 10 + bob) * S, { role: 'status', color: a.running ? '#4f4' : '#888', bgColor: 'rgba(0,0,0,0.5)', align: 'center', scale: S })
       // Real-message speech bubble — appears when the session's latest message changes
       if (a.lastMessage && Date.now() - a.msgAt < SPEECH_BUBBLE_MS) {
         const msgAge = Date.now() - a.msgAt
@@ -572,7 +579,7 @@ export default function OfficeScene({ agents, visible = true }: { agents: AgentS
         const minTimer = Math.min(ca.actTimer, cb.actTimer)
         if (bothArrived && minTimer === 60) {
           const lines = CHAT_LINES[Math.random() * CHAT_LINES.length | 0]
-          speechRef.current = { a: lines[0], b: lines[1] }
+          speechRef.current = { a: i18nT(lines[0]), b: i18nT(lines[1]) }
         }
       }
 

@@ -17911,12 +17911,16 @@
         "friendly_hauntings_only": "友好的な幽霊だけ",
         "kiro_ghost_haunt_animation": "Kiro ゴーストの出没アニメーション",
         "kiro_ghost_haunt_text_overlay": "Kiro ゴーストの出没テキストオーバーレイ",
-        "kiro_haunt": "Kiro ゴースト"
+        "kiro_haunt": "Kiro ゴースト",
+        "tooltip_active": "コードベースに出没中",
+        "tooltip_idle": "壁をすり抜け中"
       },
       "missionControl": {
         "missionControlScene": {
           "lv_level_title": "Lv.{{level}} {{title}}",
-          "mission_control_scene": "ミッションコントロールのシーン"
+          "mission_control_scene": "ミッションコントロールのシーン",
+          "tooltip_active": "バイブコーディング中",
+          "tooltip_idle": "TikTok を延々スクロール中"
         }
       },
       "neuralConstellationScene": {
@@ -17924,7 +17928,9 @@
         "idle": "アイドル",
         "neural_constellation_animation": "ニューラル星座のアニメーション",
         "neural_constellation_text_overlay": "ニューラル星座のテキストオーバーレイ",
-        "neural_network": "ニューラルネットワーク"
+        "neural_network": "ニューラルネットワーク",
+        "tooltip_active": "ニューラル経路を処理中",
+        "tooltip_idle": "信号待ち"
       },
       "officeScene": {
         "active": "アクティブ",
@@ -17934,24 +17940,70 @@
         "no_tasks": "タスクなし",
         "office_scene": "オフィスのシーン",
         "office_scene_labels": "オフィスシーンのラベル",
-        "to_do": "未着手"
+        "to_do": "未着手",
+        "tooltip_active": "PR を黙々と処理中",
+        "tooltip_idle": "CR 承認待ち",
+        "new_audiobook": "新しいオーディオブック？",
+        "adding_to_lib": "ライブラリに追加！",
+        "ch_5_has_a_bug": "5 章にバグ",
+        "narrating_fix": "修正をナレーション中！",
+        "deploy_ready": "デプロイできる？",
+        "ship_it": "出そう！",
+        "review_the_pr": "PR 見てくれる？",
+        "lgtm": "LGTM！",
+        "metadata_sync": "メタデータ同期？",
+        "ingested": "取り込み完了！",
+        "latency_up": "レイテンシ上昇…",
+        "scaling_now": "スケール中！",
+        "coffee_break": "コーヒー休憩？",
+        "always": "もちろん！",
+        "a_b_test_done": "A/B テスト完了",
+        "plus_12_listens": "再生 +12%！"
       },
       "pandaOfficeScene": {
         "panda_den": "🐼 パンダのすみか",
         "panda_office_scene": "パンダオフィスのシーン",
-        "panda_office_scene_labels": "パンダオフィスシーンのラベル"
+        "panda_office_scene_labels": "パンダオフィスシーンのラベル",
+        "token_expired": "トークン切れ？",
+        "refreshing": "更新中！",
+        "cr_approved": "CR 承認！",
+        "ship_it": "出そう！🐼",
+        "deploy_ready": "デプロイできる？",
+        "bamboo_break": "竹休憩？",
+        "review_the_pr": "PR 見てくれる？",
+        "lgtm": "LGTM！",
+        "aztec_timeout": "Aztec タイムアウト",
+        "scaling_now": "スケール中！",
+        "latency_up": "レイテンシ上昇…",
+        "checking_aao": "AAO 確認中",
+        "chess_later": "あとでチェス？",
+        "always": "もちろん！",
+        "pull_ups": "懸垂する？",
+        "after_deploy": "デプロイ後に！",
+        "pull_ups_sign": "懸垂"
       },
       "underwaterLabScene": {
         "deep_sea_lab": "深海ラボ",
+        "vacant": "空き",
         "research_station": "研究ステーション",
         "underwater_lab_scene": "海中ラボのシーン",
-        "underwater_lab_scene_labels": "海中ラボシーンのラベル"
+        "underwater_lab_scene_labels": "海中ラボシーンのラベル",
+        "tooltip_active": "深海を探索中",
+        "tooltip_idle": "息継ぎに浮上中",
+        "scanning": "スキャン中…",
+        "all_clear": "異常なし",
+        "signal_ok": "信号 OK",
+        "depth_200m": "深度：200m",
+        "sync_done": "同期完了",
+        "data_recv": "データ受信"
       },
       "wateringHoleScene": {
         "on_the_savanna": "サバンナに {{n}}/{{total}}",
         "watering_hole": "水飲み場",
         "watering_hole_scene": "水飲み場のシーン",
-        "watering_hole_scene_labels": "水飲み場シーンのラベル"
+        "watering_hole_scene_labels": "水飲み場シーンのラベル",
+        "tooltip_active": "移動中",
+        "tooltip_idle": "休憩中"
       },
       "wizardTowerScene": {
         "arcane_academy": "魔法学院",
@@ -17960,7 +18012,9 @@
         "i_see": "なるほど！",
         "resting": "休憩中",
         "wizard_tower_scene": "魔法使いの塔のシーン",
-        "wizard_tower_spell_text": "魔法使いの塔の呪文テキスト"
+        "wizard_tower_spell_text": "魔法使いの塔の呪文テキスト",
+        "tooltip_active": "呪文を詠唱中",
+        "tooltip_idle": "魔導書を研究中"
       }
     },
     "schedulePage": {

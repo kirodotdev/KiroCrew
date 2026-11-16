@@ -16332,17 +16332,17 @@
         "bridge_approvals_desc": "Quand une approbation d'outil s'ouvre, {{productName}} envoie une note à son sujet aux apps de chat que dessert le pont de notifications. La cloche du tableau de bord ne sonne pas pour elle et la note n'a pas encore de boutons : réponds donc à l'approbation dans le tableau de bord.",
         "bridge_approvals_desc_summary": "Prévient une app de chat connectée quand un outil a besoin d'une approbation.",
         "chat_runtime_sharing": "Partage du runtime ACP",
-        "chat_runtime_sharing_desc": "Les chats dont l'interrupteur ci-dessous est activé partagent un programme en arrière-plan et répondent en même temps\u202f: une longue réponse dans un chat ne fait jamais attendre les autres. Si le programme partagé s'arrête, tous ses chats redémarrent. Les chats ne voient jamais les messages des autres. Un programme exécute jusqu'à 10 chats par défaut. Les chats Kiro CLI, les chats KAS sur un moteur plus ancien et les chats dont l'interrupteur est désactivé gardent chacun leur programme. S'applique aux chats démarrés après le changement. Désactivé, chaque nouveau chat lance son propre programme, qui utilise plus de mémoire.",
+        "chat_runtime_sharing_desc": "Les chats dont l'interrupteur ci-dessous est activé partagent un programme en arrière-plan et répondent en même temps : une longue réponse dans un chat ne fait jamais attendre les autres. Si le programme partagé s'arrête, tous ses chats redémarrent. Les chats ne voient jamais les messages des autres. Un programme exécute jusqu'à 10 chats par défaut. Les chats Kiro CLI, les chats KAS sur un moteur plus ancien et les chats dont l'interrupteur est désactivé gardent chacun leur programme. S'applique aux chats démarrés après le changement. Désactivé, chaque nouveau chat lance son propre programme, qui utilise plus de mémoire.",
         "chat_runtime_sharing_harness_kas": "Discussions avec Kiro Agent",
-        "chat_runtime_sharing_harness_kas_desc": "Activé\u202f: les nouvelles discussions de ce harness partagent un programme en arrière-plan et utilisent moins de mémoire. Désactivé\u202f: chaque discussion a son propre programme.",
+        "chat_runtime_sharing_harness_kas_desc": "Activé : les nouvelles discussions de ce harness partagent un programme en arrière-plan et utilisent moins de mémoire. Désactivé : chaque discussion a son propre programme.",
         "chat_runtime_sharing_harness_codex": "Discussions avec OpenAI Codex",
-        "chat_runtime_sharing_harness_codex_desc": "Activé\u202f: les nouvelles discussions de ce harness partagent un programme en arrière-plan et utilisent moins de mémoire. Désactivé\u202f: chaque discussion a son propre programme.",
+        "chat_runtime_sharing_harness_codex_desc": "Activé : les nouvelles discussions de ce harness partagent un programme en arrière-plan et utilisent moins de mémoire. Désactivé : chaque discussion a son propre programme.",
         "chat_runtime_sharing_harness_claude": "Discussions avec Claude Code",
-        "chat_runtime_sharing_harness_claude_desc": "Activé\u202f: elles partagent un programme et utilisent moins de mémoire. Désactivé\u202f: chaque nouvelle discussion a le sien.",
+        "chat_runtime_sharing_harness_claude_desc": "Activé : elles partagent un programme et utilisent moins de mémoire. Désactivé : chaque nouvelle discussion a le sien.",
         "chat_runtime_sharing_harness_goose": "Discussions avec Goose",
-        "chat_runtime_sharing_harness_goose_desc": "Activé\u202f: les nouvelles discussions de ce harness partagent un programme en arrière-plan et utilisent moins de mémoire. Désactivé\u202f: chaque discussion a son propre programme.",
+        "chat_runtime_sharing_harness_goose_desc": "Activé : les nouvelles discussions de ce harness partagent un programme en arrière-plan et utilisent moins de mémoire. Désactivé : chaque discussion a son propre programme.",
         "chat_runtime_sharing_harness_deepseek": "Discussions avec DeepSeek Harness",
-        "chat_runtime_sharing_harness_deepseek_desc": "Activé\u202f: les nouvelles discussions de ce harness partagent un programme en arrière-plan et utilisent moins de mémoire. Désactivé\u202f: chaque discussion a son propre programme.",
+        "chat_runtime_sharing_harness_deepseek_desc": "Activé : les nouvelles discussions de ce harness partagent un programme en arrière-plan et utilisent moins de mémoire. Désactivé : chaque discussion a son propre programme.",
         "chat_runtime_sharing_harness_save_failed": "Impossible d’enregistrer l’interrupteur. Réessaie.",
         "chat_runtime_sharing_harness_load_failed": "Impossible de charger ces interrupteurs.",
         "chat_runtime_sharing_desc_summary": "Économise la mémoire de l'ordinateur en exécutant plusieurs chats dans un même programme en arrière-plan. Tu choisis quels types de chat le partagent. Ils répondent en même temps et ne voient pas les messages des autres. Désactivé, chaque nouveau chat retrouve son propre programme.",
@@ -18871,12 +18871,16 @@
         "friendly_hauntings_only": "hantises amicales uniquement",
         "kiro_ghost_haunt_animation": "Animation du fantôme Kiro",
         "kiro_ghost_haunt_text_overlay": "Superposition de texte du fantôme Kiro",
-        "kiro_haunt": "Repaire hanté de Kiro"
+        "kiro_haunt": "Repaire hanté de Kiro",
+        "tooltip_active": "Hante le code",
+        "tooltip_idle": "Traverse les murs"
       },
       "missionControl": {
         "missionControlScene": {
           "lv_level_title": "Niv.{{level}} {{title}}",
-          "mission_control_scene": "Scène du centre de contrôle"
+          "mission_control_scene": "Scène du centre de contrôle",
+          "tooltip_active": "Vibe coding",
+          "tooltip_idle": "Scrolle TikTok sans fin"
         }
       },
       "neuralConstellationScene": {
@@ -18884,7 +18888,9 @@
         "idle": "inactif",
         "neural_constellation_animation": "Animation de constellation neuronale",
         "neural_constellation_text_overlay": "Superposition de texte de la constellation neuronale",
-        "neural_network": "Réseau neuronal"
+        "neural_network": "Réseau neuronal",
+        "tooltip_active": "Traite les voies neuronales",
+        "tooltip_idle": "En attente de signal"
       },
       "officeScene": {
         "active": "Actif",
@@ -18894,24 +18900,70 @@
         "no_tasks": "Aucune tâche",
         "office_scene": "Scène de bureau",
         "office_scene_labels": "Étiquettes de la scène de bureau",
-        "to_do": "À faire"
+        "to_do": "À faire",
+        "tooltip_active": "Bûche sur des PR",
+        "tooltip_idle": "Attend l'approbation du CR",
+        "new_audiobook": "Nouveau livre audio ?",
+        "adding_to_lib": "Ajout à la bibli !",
+        "ch_5_has_a_bug": "Bug au chap. 5",
+        "narrating_fix": "Fix en cours de narration !",
+        "deploy_ready": "Déploiement prêt ?",
+        "ship_it": "On envoie !",
+        "review_the_pr": "Tu relis la PR ?",
+        "lgtm": "LGTM !",
+        "metadata_sync": "Sync des métadonnées ?",
+        "ingested": "Ingéré !",
+        "latency_up": "La latence monte…",
+        "scaling_now": "Je scale !",
+        "coffee_break": "Pause café ?",
+        "always": "Toujours !",
+        "a_b_test_done": "Test A/B terminé",
+        "plus_12_listens": "+12 % d'écoutes !"
       },
       "pandaOfficeScene": {
         "panda_den": "🐼 Repaire des pandas",
         "panda_office_scene": "Scène du bureau des pandas",
-        "panda_office_scene_labels": "Étiquettes de la scène du bureau des pandas"
+        "panda_office_scene_labels": "Étiquettes de la scène du bureau des pandas",
+        "token_expired": "Token expiré ?",
+        "refreshing": "Je rafraîchis !",
+        "cr_approved": "CR approuvée !",
+        "ship_it": "On envoie ! 🐼",
+        "deploy_ready": "Déploiement prêt ?",
+        "bamboo_break": "Pause bambou ?",
+        "review_the_pr": "Tu relis la PR ?",
+        "lgtm": "LGTM !",
+        "aztec_timeout": "Timeout Aztec",
+        "scaling_now": "Je scale !",
+        "latency_up": "La latence monte…",
+        "checking_aao": "Je vérifie AAO",
+        "chess_later": "Échecs plus tard ?",
+        "always": "Toujours !",
+        "pull_ups": "Tractions ?",
+        "after_deploy": "Après le déploiement !",
+        "pull_ups_sign": "tractions"
       },
       "underwaterLabScene": {
         "deep_sea_lab": "Laboratoire abyssal",
+        "vacant": "libre",
         "research_station": "station de recherche",
         "underwater_lab_scene": "Scène du laboratoire sous-marin",
-        "underwater_lab_scene_labels": "Étiquettes de la scène du laboratoire sous-marin"
+        "underwater_lab_scene_labels": "Étiquettes de la scène du laboratoire sous-marin",
+        "tooltip_active": "Explore les profondeurs",
+        "tooltip_idle": "Remonte respirer",
+        "scanning": "Scan en cours…",
+        "all_clear": "Rien à signaler",
+        "signal_ok": "Signal OK",
+        "depth_200m": "Profondeur : 200 m",
+        "sync_done": "Sync terminée",
+        "data_recv": "Données reçues"
       },
       "wateringHoleScene": {
         "on_the_savanna": "{{n}}/{{total}} dans la savane",
         "watering_hole": "Point d’eau",
         "watering_hole_scene": "Scène du point d’eau",
-        "watering_hole_scene_labels": "Étiquettes de la scène du point d’eau"
+        "watering_hole_scene_labels": "Étiquettes de la scène du point d’eau",
+        "tooltip_active": "En déplacement",
+        "tooltip_idle": "Au repos"
       },
       "wizardTowerScene": {
         "arcane_academy": "Académie des arcanes",
@@ -18920,7 +18972,9 @@
         "i_see": "Je vois !",
         "resting": "au repos",
         "wizard_tower_scene": "Scène de la tour du magicien",
-        "wizard_tower_spell_text": "Texte de sort de la tour du magicien"
+        "wizard_tower_spell_text": "Texte de sort de la tour du magicien",
+        "tooltip_active": "Lance des sorts",
+        "tooltip_idle": "Étudie le grimoire"
       }
     },
     "schedulePage": {
