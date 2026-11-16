@@ -664,6 +664,65 @@ def pytest_collection_finish(session: pytest.Session) -> None:
     _FROZEN_AT_COLLECTION = gc.get_freeze_count() - before
 
 
+#: One canonical object per distinct fixture lookup, shared by every collected item.
+#: Keys hold ``id()`` of FixtureDefs the fixture manager keeps alive for the session.
+_SHARED_FIXTUREDEF_TUPLES: dict[tuple, tuple] = {}
+_SHARED_INITIALNAMES: dict[tuple, tuple] = {}
+_SHARED_NAME2FIXTUREDEFS: dict[tuple, dict] = {}
+_COMPACTED_FIXTUREINFO: set[int] = set()
+
+
+def compact_collected_item(item: pytest.Item) -> None:
+    """Share one item's fixture bookkeeping with every item that resolved the same fixtures.
+
+    Every test here resolves ~130 fixtures, most of them autouse floors, and pytest
+    stores that resolution per item: a fresh ``(FixtureDef,)`` tuple per name per test
+    function, a ``name2fixturedefs`` dict per function, and a COPY of that dict in the
+    ``TopRequest`` each item gets at construction. Measured over a full collection
+    (283,605 items, 186,161 distinct test functions, ``--collect-only -n0``), those
+    structures are 2,971 MiB of a 5,295 MiB worker, and every xdist worker holds
+    its own copy.
+
+    Three steps, each leaving pytest's view unchanged:
+
+    * The per-item ``TopRequest`` is dropped by setting ``item._request = False``,
+      the state ``_pytest.runner.runtestprotocol`` leaves after every test, and which it
+      re-initialises at the start of the next protocol (the path pytest-rerunfailures
+      relies on). The request is rebuilt from ``name2fixturedefs`` just before setup.
+    * Identical value tuples and ``initialnames`` tuples are interned: equal elements
+      by identity, so lookups return the same FixtureDefs in the same order.
+    * Identical ``name2fixturedefs`` dicts are shared. Only collection writes them
+      (direct parametrization, before ``pytest_itemcollected``); at run time pytest
+      writes only the per-request copy.
+
+    ``names_closure`` is deliberately NOT shared: it is ``item.fixturenames``, and
+    pytest-asyncio inserts ``event_loop`` into it at setup.
+
+    Runs per item, not at collection finish, so the discarded copies are freed while
+    collection is still allocating and the worker's PEAK falls with them: 5,295 ->
+    2,957 MiB VmHWM on the same collection.
+    """
+    if getattr(item, "_request", None):
+        item._request = False  # type: ignore[attr-defined]
+    info = getattr(item, "_fixtureinfo", None)
+    if info is None or id(info) in _COMPACTED_FIXTUREINFO:
+        return
+    _COMPACTED_FIXTUREINFO.add(id(info))
+    lookup = info.name2fixturedefs
+    for name, defs in lookup.items():
+        lookup[name] = _SHARED_FIXTUREDEF_TUPLES.setdefault((name, *map(id, defs)), defs)
+    # FuncFixtureInfo is a frozen dataclass; these replace fields with equal values.
+    object.__setattr__(
+        info, "initialnames", _SHARED_INITIALNAMES.setdefault(info.initialnames, info.initialnames)
+    )
+    key = tuple((name, id(defs)) for name, defs in lookup.items())
+    object.__setattr__(info, "name2fixturedefs", _SHARED_NAME2FIXTUREDEFS.setdefault(key, lookup))
+
+
+def pytest_itemcollected(item: pytest.Item) -> None:
+    compact_collected_item(item)
+
+
 def pytest_runtest_logfinish(nodeid: str, location) -> None:
     """Periodically drop ``linecache``'s copy of every source file that was read.
 
