@@ -25,7 +25,7 @@ from kiro_crew import crew_mode
 from kiro_crew import runtime_ownership as ro
 from kiro_crew.acp import chat_runtime_sharing as sharing
 from kiro_crew.acp.chat_runtime_sharing import ChatRuntimeKey, share_tree_root_of
-from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.providers import chat_share
 from kiro_crew.providers.chat_share import resolve_chat_share
 from kiro_crew.runtime_ownership import RuntimeOwnership
@@ -263,10 +263,76 @@ def test_kas_leaves_each_per_session_field_out_of_the_key(field):
 
 
 def test_only_listed_harnesses_take_fields_per_session():
-    """The one table a harness joins tree sharing through; KAS is the only entry."""
-    assert set(sharing.PER_SESSION_FIELDS_BY_BACKEND) == {ACP_BACKEND_KAS}
+    """The one table a harness joins tree sharing through: KAS and claude."""
+    assert set(sharing.PER_SESSION_FIELDS_BY_BACKEND) == {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE}
     assert sharing.per_session_fields(ACP_BACKEND_KAS) == sharing.KAS_PER_SESSION_FIELDS
+    assert sharing.per_session_fields(ACP_BACKEND_CLAUDE) == sharing.CLAUDE_PER_SESSION_FIELDS
     assert sharing.per_session_fields(ACP_BACKEND_KIRO) == frozenset()
+
+
+@pytest.mark.parametrize("field", sorted(sharing.CLAUDE_PER_SESSION_FIELDS))
+def test_claude_leaves_each_per_session_field_out_of_the_key(field):
+    base = dict(
+        work_dir="/w",
+        agent="a",
+        sandbox_mode="auto",
+        extra_env={},
+        acp_backend=ACP_BACKEND_CLAUDE,
+        tool_search=None,
+        memory_mode="persistent",
+        shared_scratch=None,
+        mcp_gateway_overlay=None,
+        mcp_gateway_socket=None,
+        tree_root=LEAD,
+    )
+    assert ChatRuntimeKey.build(**base) == ChatRuntimeKey.build(**{**base, field: "else"})
+    # The scope and the process inputs still split it.
+    assert ChatRuntimeKey.build(**base) != ChatRuntimeKey.build(**{**base, "tree_root": "x"})
+    assert ChatRuntimeKey.build(**base) != ChatRuntimeKey.build(**{**base, "work_dir": "/v"})
+
+
+def test_only_a_founder_decided_tool_surface_keys_the_spec():
+    """claude takes each session's MCP array in its own session/new, so no spec of its
+    sessions pins the process; KAS decides it once at initialize."""
+    assert sharing.keys_tool_surface(ACP_BACKEND_KAS) is True
+    assert sharing.keys_tool_surface(ACP_BACKEND_CLAUDE) is False
+    assert sharing.keys_tool_surface(ACP_BACKEND_KIRO) is False
+
+
+def _claude_placement(session_key: str, tree_root: str, **overrides):
+    """A claude placement of *session_key* in *tree_root*'s tree, confirmed as read."""
+    args = dict(session_key=session_key, tree_root=tree_root)
+    args.update(overrides)
+    p = make_placement(provider=_PlacementProvider(backend=ACP_BACKEND_CLAUDE), **args)
+    p._read_confirmation = confirming(
+        (p._spec_generation, "acct-A", "auto", False, p._kas_telemetry)
+    )
+    return p
+
+
+def test_a_claude_lead_and_workers_with_different_agents_land_on_one_process():
+    """A tool-surface reader that would pin every spec is never asked on claude."""
+    tree = [
+        _claude_placement(
+            LEAD, LEAD, agent="kirocrew-team-lead", configured_model="opus", spec_generation="l"
+        ),
+        _claude_placement(
+            WORKER_A, LEAD, agent="kirocrew-worker", configured_model="sonnet", spec_generation="w"
+        ),
+        _claude_placement(
+            WORKER_B, LEAD, agent="kirocrew-worker", configured_model="", spec_generation="w2"
+        ),
+    ]
+    placed = _place_all(tree, pins=lambda w, a, t: True)
+    assert len({rt.pid for rt in placed}) == 1
+    assert [p.joined for p in tree] == [False, True, True]
+
+
+def test_claude_trees_never_share():
+    lead = _claude_placement(LEAD, LEAD, agent="kirocrew-team-lead")
+    other = _claude_placement("dashboard:other-root", "dashboard:other-root", agent="kirocrew")
+    placed = _place_all([lead, other])
+    assert placed[0].pid != placed[1].pid
 
 
 def test_kas_still_splits_on_the_work_directory():
