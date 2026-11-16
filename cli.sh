@@ -166,6 +166,18 @@ ARTIFACT_BASE="${ARTIFACT_BASE%/}"
 
 err() { echo "kirocrew-install: $*" >&2; exit 1; }
 
+# Git Bash, MSYS2 and Cygwin are where a Windows user pastes this one-liner,
+# and none of them can run what it installs: there is no managed Python for
+# them and the gateway is not supported there. Say so before any network I/O,
+# instead of failing later with advice to install Python and re-run.
+case "$(uname -s 2>/dev/null || true)" in
+  MINGW*|MSYS*|CYGWIN*)
+    err "this installer does not support Git Bash, MSYS2 or Cygwin ($(uname -s)).
+On Windows, install the desktop app: https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-Setup.exe
+Windows guide: https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/windows-install.md
+Or run this command inside WSL." ;;
+esac
+
 # ── Progress output ──────────────────────────────────────────────────────────
 # The slow steps (the wheel download, pip resolving and fetching every
 # dependency, `python -m venv` running ensurepip) take a minute or more; a
