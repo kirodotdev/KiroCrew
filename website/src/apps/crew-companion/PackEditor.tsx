@@ -20,6 +20,7 @@ import { entryContent, entryFormat } from './packAnimation'
 import { DRAG_REGION, NO_DRAG_REGION } from './appRegion'
 import { slotLabel } from './slotLabel'
 import { errorText } from './errorText'
+import { secureRandomId } from '../../utils/secureId'
 import './gallery.css'
 
 const api = galleryApi
@@ -538,7 +539,7 @@ export const PackEditor: React.FC<PackEditorProps> = ({ existingPack, onSave, on
           // minted only on `asNew`, but `triggerSave` sends a first-time save through
           // `doSave(false)` (there is no existing pack to prompt an overwrite against),
           // so new packs hit the `''` branch and every save failed with "needs a name".
-          id: asNew || !existingPack ? crypto.randomUUID() : existingPack.id,
+          id: asNew || !existingPack ? secureRandomId() : existingPack.id,
           name: name.trim(),
           author: author.trim() || i18nT('apps.crewCompanion.editor.unknownAuthor'),
           description: description.trim(),
