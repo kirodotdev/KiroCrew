@@ -54,6 +54,7 @@ from kiro_crew.knowledge.folder_watcher import (
     walk_filters,
 )
 from kiro_crew.knowledge.ingestion import _redact
+from kiro_crew.knowledge.kiroignore import MAX_RULES
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.spend import source_spend
 from kiro_crew.knowledge.store import AUTO_REGISTRATION_RETIRED_PROP
@@ -70,6 +71,22 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.knowledge")
 
 # Max length for a user-editable source display name (rename endpoint).
 _MAX_SOURCE_NAME_LEN = 200
+
+# Ceilings on a folder source's ``ignore_patterns`` at write time. Every scan
+# matches every pattern against every file, so an unbounded list costs each
+# sweep. The count matches ``.kiroignore``'s rule cap. A stored list over
+# either cap still loads; only new writes are refused.
+_MAX_IGNORE_PATTERNS = MAX_RULES
+_MAX_IGNORE_PATTERN_LEN = 1024
+
+
+def _ignore_patterns_limit_error(patterns: list[str]) -> str | None:
+    """The limit a list of ignore patterns breaks, else None."""
+    if len(patterns) > _MAX_IGNORE_PATTERNS:
+        return f"ignore_patterns can hold at most {_MAX_IGNORE_PATTERNS} patterns"
+    if any(len(p) > _MAX_IGNORE_PATTERN_LEN for p in patterns):
+        return f"each ignore pattern must be {_MAX_IGNORE_PATTERN_LEN} characters or fewer"
+    return None
 
 
 def _create_source_audited(store, source_type: str, **kwargs) -> tuple[str, bool]:
@@ -437,6 +454,11 @@ def _add_source_shape_error(body: dict) -> str | None:
         nested = properties.get("namespace")
         if nested is not None and not isinstance(nested, str):
             return "namespace must be a string"
+        patterns = properties.get("ignore_patterns")
+        if patterns is not None:
+            if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
+                return "ignore_patterns must be a list of strings"
+            return _ignore_patterns_limit_error(patterns)
     return None
 
 
@@ -1100,6 +1122,11 @@ async def rename_source(request: web.Request) -> web.Response:
                     "code": "ignore_patterns_invalid",
                 },
                 status=400,
+            )
+        limit_error = _ignore_patterns_limit_error(patterns)
+        if limit_error is not None:
+            return web.json_response(
+                {"error": limit_error, "code": "ignore_patterns_too_large"}, status=400
             )
         patterns = [p.strip() for p in patterns if p.strip()]
     result: dict = {"ok": True}
