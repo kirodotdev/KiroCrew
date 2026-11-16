@@ -108,7 +108,6 @@ BUDGET: dict[str, int] = {
     "test/test_start_priority.py": 1,
     "test/test_stderr_redact_then_tail.py": 1,
     "test/test_steer_requeue.py": 4,
-    "test/test_subagent_stop_reason_consistency.py": 1,
     "test/test_turn_duration_recorded.py": 1,
     "test/test_turn_metric_all_surfaces.py": 2,
     "test/test_wake_judge_feedback_service.py": 1,

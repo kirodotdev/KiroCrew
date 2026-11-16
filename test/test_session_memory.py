@@ -450,16 +450,24 @@ class _FakeRuntime:
         return self._alive
 
 
-def test_runtime_pids_includes_runtimes_held_only_on_the_manager() -> None:
+def test_runtime_pids_includes_runtimes_held_only_on_the_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """``_bg_runtime`` and companion runtimes are real trees, not rounding error.
 
     Both live only as SessionManager attributes, outside ``_sessions``; skipping them
     understates "Kiro Crew Used" by 200-400 MB per runtime.
     """
-    import time as _time
+    import types
+
+    # Both clocks the projection reads are pinned through the facade, so the age is
+    # exact and no pause between the stamp and the read can move it.
+    wall, monotonic = 1_000_000.0, 5_000.0
+    clock = types.SimpleNamespace(time=lambda: wall, monotonic=lambda: monotonic)
+    monkeypatch.setattr("kiro_crew.session_allocation.time", clock)
 
     mgr = _manager()
-    mgr._bg_runtime = _FakeRuntime(4711, spawn=_time.monotonic() - 90.0)
+    mgr._bg_runtime = _FakeRuntime(4711, spawn=monotonic - 90.0)
     mgr._subagent_runtimes = {"dashboard:parent": _FakeRuntime(4712)}
 
     rows = {r["key"]: r for r in mgr.runtime_pids()}
@@ -473,7 +481,7 @@ def test_runtime_pids_includes_runtimes_held_only_on_the_manager() -> None:
     # the consumer's `now - created_at` yields a real age.
     created = rows["Background runtime"]["created_at"]
     assert isinstance(created, float)
-    assert 85.0 < (_time.time() - created) < 95.0
+    assert created == wall - 90.0
     # A runtime with no spawn stamp reads as unknown uptime, never as "just now".
     assert rows["Subagent runtime (dashboard:parent)"]["created_at"] is None
 

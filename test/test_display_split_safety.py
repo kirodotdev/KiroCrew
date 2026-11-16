@@ -649,22 +649,33 @@ class TestInteriorRunBoundMutation:
     def test_severs_a_credential_on_2451_pieces_finishes_within_budget(
         self,
     ) -> None:
-        """Cost measurement for the 2451-piece (5000-backtick) path at cap=43.
+        """The interior-run cap keeps the readings linear in the piece count.
 
-        A 5000-backtick run at budget 100 produces about 2451 pieces.  At cap=4
-        each start yielded at most 3 interior windows; at cap=43 it yields up to
-        42, a roughly 14x increase in window count.  Backtick pieces contain no
-        credential pattern, so the redactor pre-filter returns quickly for every
-        window.  The test pins that this call still finishes; the CI output shows
-        the actual elapsed seconds for the PR cost record.
+        A 5000-backtick run at budget 100 produces about 2451 pieces.  At cap=43
+        each start yields up to 42 interior windows, a fixed number per piece, so
+        the readings graded grow linearly with the pieces; without the cap they grow
+        with its square.  Every reading is one call to the redactor, so the calls are
+        counted at three equally spaced piece counts and must grow linearly, which
+        reads the code and not the host.
         """
-        import time
+        from denied_commands_security_helpers import _linear_work
 
-        pieces = ["``"] * 2451  # two backticks per piece approximates the actual chunks
-        start = time.perf_counter()
-        result = severs_a_credential(pieces, _default_redactor)
-        elapsed = time.perf_counter() - start
-        assert not result, "bare backtick pieces must not look like a credential"
-        # Report timing so it appears in the CI log for PR review.
-        print(f"\nsevers_a_credential(2451 pieces, cap={_INTERIOR_RUN_PIECES}): {elapsed:.3f}s")
-        assert elapsed < 120.0  # flake-ok: ceiling is for CI safety, log holds real elapsed
+        def readings(count: int) -> int:
+            calls = 0
+
+            def counting(text: str) -> str:
+                nonlocal calls
+                calls += 1
+                return _default_redactor(text)
+
+            # two backticks per piece approximates the actual chunks
+            assert not severs_a_credential(
+                ["``"] * count, counting
+            ), "bare backtick pieces must not look like a credential"
+            return calls
+
+        work = [readings(count) for count in (100, 200, 300)]
+        assert _linear_work(work), (
+            f"redactor calls {work} grow faster than the piece count -- "
+            f"the {_INTERIOR_RUN_PIECES}-piece interior-run cap is gone"
+        )
