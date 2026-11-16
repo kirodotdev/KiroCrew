@@ -1735,6 +1735,25 @@ describe('a provider that needs attention', () => {
     expect(within(slack).getByRole('button', { name: /Disconnect/ })).toBeInTheDocument()
     expect(within(slack).queryByRole('button', { name: /Reconnect/ })).not.toBeInTheDocument()
   })
+
+  it('says a hand-written mcp.json row is the user\'s to change instead of "not found"', async () => {
+    // The stored-spec read finds only Kiro Crew's own rows, so a row the user
+    // wrote in their global mcp.json answers 404.
+    mcpServers.mockResolvedValue([server({ status: 'needs_auth', url: `${NOTION_URL}/` })])
+    mcpCustomGet.mockRejectedValue(new ApiError(404, "server 'notion' not found"))
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: /Reconnect|Connect/ })))
+
+    await waitFor(() => expect(within(card('notion')).getByRole('alert')).toHaveTextContent(
+      'Notion is set up by hand in your own mcp.json as "notion", which Kiro Crew does not change.',
+    ))
+    expect(within(card('notion')).getByRole('alert')).not.toHaveTextContent('not found')
+    // Nothing is written and no sign-in starts against a file Kiro Crew does not own.
+    expect(mcpCustomUpdate).not.toHaveBeenCalled()
+    expect(mcpApply).not.toHaveBeenCalled()
+    expect(connectionsMint).not.toHaveBeenCalled()
+  })
 })
 
 // Provider brand marks. The art inventory and the card roster are maintained

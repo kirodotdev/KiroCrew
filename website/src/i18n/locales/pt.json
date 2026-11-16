@@ -15663,6 +15663,7 @@
       "disconnect_entry_left_alone": "A configuração do seu servidor não foi alterada. Você pode gerenciar esta entrada na aba Servidores MCP.",
       "disconnect_spec_not_rewritten": "Esta cópia do {{productName}} não conseguiu atualizar a configuração do agente, então os novos chats ainda carregam esta conexão. Abra a página “Logs” para ver o motivo.",
       "disconnect_entry_not_ours": "A autorização armazenada foi removida. A configuração do seu servidor não foi alterada. Você pode gerenciar esta entrada na aba Servidores MCP.",
+      "connect_hand_written_row": "{{provider}} está configurado manualmente no seu próprio mcp.json como \"{{name}}\", que o {{productName}} não altera. Remova essa entrada e clique em Conectar para adicionar {{provider}} aqui.",
       "disconnect_grant_shared": "A autorização armazenada foi mantida porque o mesmo endpoint também está configurado por: {{names}}. Revogá-la no provedor também cortaria o acesso deles.",
       "disconnect_grant_survived": "Parte da autorização armazenada não pôde ser removida. Revogue o acesso no provedor.",
       "disconnected_locally": "Desconectado localmente. Revogue o acesso no provedor para cancelar totalmente a autorização.",

@@ -7268,6 +7268,7 @@
       "disconnect_entry_left_alone": "Your server configuration was left unchanged. You can manage this entry from the MCP Servers tab.",
       "disconnect_spec_not_rewritten": "This copy of {{productName}} could not update the agent config, so new chats still load this connection. Open the Logs page to see why.",
       "disconnect_entry_not_ours": "The stored grant was removed. Your server configuration was left unchanged. You can manage this entry from the MCP Servers tab.",
+      "connect_hand_written_row": "{{provider}} is set up by hand in your own mcp.json as \"{{name}}\", which {{productName}} does not change. Remove that entry there, then press Connect to add {{provider}} here.",
       "disconnect_grant_shared": "The stored grant was kept because the same endpoint is also configured by: {{names}}. Revoking at the provider would cut off their access too.",
       "disconnect_grant_survived": "Part of the stored grant could not be removed. Revoke access at the provider.",
       "disconnected_locally": "Disconnected locally. Revoke access at the provider to cancel the grant completely.",

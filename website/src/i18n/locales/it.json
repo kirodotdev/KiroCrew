@@ -15663,6 +15663,7 @@
       "disconnect_entry_left_alone": "La configurazione del server non è stata modificata. Puoi gestire questa voce dalla scheda Server MCP.",
       "disconnect_spec_not_rewritten": "Questa copia di {{productName}} non è riuscita ad aggiornare la configurazione dell’agente, quindi le nuove chat caricano ancora questa connessione. Apri la pagina «Log» per vedere il motivo.",
       "disconnect_entry_not_ours": "L'autorizzazione memorizzata è stata rimossa. La configurazione del server non è stata modificata. Puoi gestire questa voce dalla scheda Server MCP.",
+      "connect_hand_written_row": "{{provider}} è configurato a mano nel tuo mcp.json come \"{{name}}\", che {{productName}} non modifica. Rimuovi quella voce, poi premi Connetti per aggiungere {{provider}} qui.",
       "disconnect_grant_shared": "L'autorizzazione memorizzata è stata mantenuta perché lo stesso endpoint è configurato anche da: {{names}}. Revocarla presso il provider taglierebbe anche il loro accesso.",
       "disconnect_grant_survived": "Parte dell'autorizzazione memorizzata non è stata rimossa. Revoca l'accesso presso il provider.",
       "disconnected_locally": "Disconnesso localmente. Revoca l’accesso presso il provider per annullare completamente l’autorizzazione.",

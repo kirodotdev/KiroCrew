@@ -553,7 +553,18 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
       // Round-trip the stored spec and only overlay the url: a `{ url }`-only
       // PUT is authoritative for the OAuth hints, so it would clear configured
       // `scopes`/`clientId` (and any other stated field) on every reconnect.
-      const stored = await api.mcpCustomGet(existing.name)
+      // The read finds only a row Kiro Crew stores itself; a 404 is a row the
+      // user wrote in their own mcp.json, which is not Kiro Crew's to rewrite,
+      // so say where it lives and what to change instead of "not found".
+      const stored = await api.mcpCustomGet(existing.name).catch((error: unknown) => {
+        if (error instanceof ApiError && error.status === 404) {
+          throw new Error(t('pages.connectionsPage.connect_hand_written_row', {
+            provider: provider.name,
+            name: existing.name,
+          }))
+        }
+        throw error
+      })
       await api.mcpCustomUpdate(existing.name, { ...stored.spec, url: provider.mcp_url })
       // Editing a spec deliberately preserves the disabled flag ("editing is
       // not consent to run") — but Reconnect IS consent, so re-enable the
