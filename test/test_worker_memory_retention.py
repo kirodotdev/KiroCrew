@@ -9,6 +9,7 @@ The rootdir conftest is reached through the plugin manager: ``import conftest`` 
 
 from __future__ import annotations
 
+import array
 import gc
 import linecache
 import pathlib
@@ -264,6 +265,19 @@ class TestCollectedFixtureBookkeepingIsShared:
         assert b.name2fixturedefs is a.name2fixturedefs
         assert b.initialnames is a.initialnames
         assert b.name2fixturedefs == {"floor": (floor,), "home": (home,)}
+
+    def test_a_shared_lookup_is_keyed_by_one_packed_id_per_name(self, fresh_tables) -> None:
+        """8 bytes per name: a ``(name, id)`` tuple per name cost 347 MiB of a collection.
+
+        One value is a list, as pytest's direct parametrization leaves it.
+        """
+        item = self._item({"floor": (object(),), "home": [object()]})
+
+        fresh_tables.compact_collected_item(item)
+
+        (key,) = fresh_tables._SHARED_NAME2FIXTUREDEFS
+        values = item._fixtureinfo.name2fixturedefs.values()
+        assert key == array.array("Q", map(id, values)).tobytes()
 
     def test_a_different_resolution_keeps_its_own_lookup(self, fresh_tables) -> None:
         """Sharing is by identity of the FixtureDefs, so an override is never merged away."""
