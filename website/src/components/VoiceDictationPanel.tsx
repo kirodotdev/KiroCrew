@@ -5,6 +5,7 @@ import { useReducedMotion } from '../hooks/useReducedMotion'
 import type { AudioSample } from '../hooks/mic'
 import MicSourceMenu from './MicSourceMenu'
 import RecordingElapsed from './RecordingElapsed'
+import VoiceMuteButton from './VoiceMuteButton'
 import { downloadLabel } from '../lib/sttProviders'
 import type { SttModelProgress } from '../lib/sttProviders'
 import { i18nT } from '../i18n/t'
@@ -182,6 +183,10 @@ interface Props {
    * running would count time that is not being recorded.
    */
   captureEnded?: boolean
+  /** The recording is muted: the mic is open, nothing is sent, the timer runs. */
+  muted?: boolean
+  /** Mute or unmute the recording. The control is shown only when this is set. */
+  onToggleMute?: () => void
 }
 
 /**
@@ -191,7 +196,7 @@ interface Props {
  * backend is solid, the in-flight partial hypothesis is muted. Both come from
  * the composer's own value, so what is shown here is exactly what will be sent.
  */
-export default function VoiceDictationPanel({ sampleRef, value, partial, deviceLabel, deviceId, onSelectDevice, deviceSwitchIsLive, streaming, gestureDriven, submitOnRelease, download, captureEnded }: Props) {
+export default function VoiceDictationPanel({ sampleRef, value, partial, deviceLabel, deviceId, onSelectDevice, deviceSwitchIsLive, streaming, gestureDriven, submitOnRelease, download, captureEnded, muted = false, onToggleMute }: Props) {
   // Split committed vs partial without coupling to STT internals: the partial
   // is appended to the composer value, so it is the suffix — but only trust
   // that when it actually matches (the user may have typed since).
@@ -221,16 +226,21 @@ export default function VoiceDictationPanel({ sampleRef, value, partial, deviceL
             ~300px) the keyboard hint no longer competes with the device picker
             for one row — the hint drops to its own line whole, and the picker
             keeps enough width to read its provider name instead of "Fa…". */}
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] font-medium text-danger">
+        <div className={`flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] font-medium ${muted ? 'text-muted' : 'text-danger'}`}>
           <span className="relative flex h-2 w-2 shrink-0" aria-hidden="true">
-            <span className="absolute inline-flex h-full w-full rounded-full bg-danger opacity-60 animate-ping" />
-            <span className="relative inline-flex h-2 w-2 rounded-full bg-danger" />
+            {!muted && <span className="absolute inline-flex h-full w-full rounded-full bg-danger opacity-60 animate-ping" />}
+            <span className={`relative inline-flex h-2 w-2 rounded-full ${muted ? 'bg-muted' : 'bg-danger'}`} />
           </span>
-          <span aria-live="polite">{i18nT('components.voiceDictationPanel.listening')}</span>
+          <span aria-live="polite">{i18nT(muted ? 'components.voiceDictationPanel.muted' : 'components.voiceDictationPanel.listening')}</span>
           {/* Outside the live region beside it, and the same shadow floor as
               the hint: the reading sits over the shader like the rest of this
               row. */}
           <RecordingElapsed frozen={captureEnded} className="font-mono text-[11px] [text-shadow:0_1px_12px_var(--bg),0_0_3px_var(--bg)]" />
+          {/* Opts back into pointer events like the picker. Hidden once capture
+              has ended: there is no microphone left to mute. */}
+          {onToggleMute && !captureEnded && (
+            <VoiceMuteButton muted={muted} onToggle={onToggleMute} className={`pointer-events-auto hover:text-text ${muted ? 'text-text' : 'text-muted'}`} />
+          )}
           {/* The overlay is `pointer-events-none` so the shader stays visible and
               un-clickable; the picker is the one interactive child, so it opts
               itself back in. Still gated on a known label, preserving this

@@ -228,6 +228,14 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // keydown.preventDefault() cannot cancel a composed character — this chord
   // fires from inside the composer, so it must not be able to leave one behind.
   { id: 'toggle-focus-mode', group: 'actions', dispatch: 'registry', defaults: both({ key: 'm', alt: true, shift: true }) },
+  // Mute or unmute the dictation in progress (lib/dictationMute). Fires from
+  // inside the composer, where dictation lands. The macOS chord carries no
+  // Option: the default push-to-talk key there is a bare right Option, and a
+  // press of it during a recording stops the recording, so an Option chord
+  // would end the dictation it was meant to pause. Off macOS the push-to-talk
+  // default is a chord of its own, which Alt+Shift+Q does not match.
+  { id: 'toggle-dictation-mute', group: 'actions', dispatch: 'registry',
+    defaults: mac({ key: 'm', ctrl: true, shift: true }, { key: 'q', alt: true, shift: true }) },
   // ⌘O / Ctrl+O ("out") — pop the current session out to its own window, or
   // focus that window when it is already out (#28521): the keyboard twin of the
   // chat header's pop-out button. Not browser-reserved: a browser tab hands the

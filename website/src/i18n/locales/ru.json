@@ -7238,6 +7238,7 @@
       "queue_message": "Добавить в очередь",
       "queue_run_after_the_current_work_finishes_enter": "В очередь — выполнить после завершения текущей работы (Enter)",
       "recording_click_mic_to_stop": "Запись… нажми на микрофон, чтобы остановить",
+      "muted_click_mic_to_stop": "Микрофон выключен… нажми на микрофон, чтобы остановить",
       "reference_a_file": "Сослаться на файл",
       "reject": "Отклонить",
       "reject_all": "Отклонить все",
@@ -10342,7 +10343,8 @@
       "esc_to_cancel_click_mic_to_finish": "Esc — отмена, нажмите микрофон, чтобы закончить",
       "esc_to_cancel_click_mic_to_send": "Esc — отмена, Shift+клик — оставить черновик, нажми на микрофон, чтобы отправить",
       "esc_to_cancel_enter_to_send": "Esc — отмена, Enter — отправить",
-      "listening": "Слушаю"
+      "listening": "Слушаю",
+      "muted": "Микрофон выключен"
     },
     "voiceDisabledModal": {
       "enable_it_under": "Включите его в",
@@ -10371,7 +10373,8 @@
       "retry_transcription": "Повторить",
       "save_recording": "Сохранить запись",
       "discard_recording": "Удалить запись",
-      "recording_actions": "Другие действия с записью"
+      "recording_actions": "Другие действия с записью",
+      "muted": "Микрофон выключен"
     },
     "webAppArtifactCard": {
       "acct": "аккаунт",
@@ -11979,6 +11982,14 @@
       "staged": "Добавлено в поле чата. Отправь его оттуда.",
       "start": "Начать",
       "who": "Кто участвует"
+    },
+    "voiceMuteButton": {
+      "mute": "Выключить микрофон",
+      "unmute": "Включить микрофон",
+      "shortcut_hint": "Alt+Shift+Q выключает или включает",
+      "shortcut_hint_mac": "⌃⇧M выключает или включает",
+      "mute_short": "Выключить",
+      "unmute_short": "Включить"
     }
   },
   "hooks": {
@@ -12053,7 +12064,8 @@
       "toggle_terminal": "Показать или скрыть терминал",
       "toggle_side_terminal": "Показать или скрыть терминал боковой панели",
       "previous_terminal": "Предыдущий терминал",
-      "next_terminal": "Следующий терминал"
+      "next_terminal": "Следующий терминал",
+      "toggle_dictation_mute": "Выключить или включить микрофон диктовки"
     },
     "useNativeNotification": {
       "new_notifications_few": "{{count}} новых уведомления",
