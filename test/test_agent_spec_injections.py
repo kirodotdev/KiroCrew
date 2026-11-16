@@ -100,3 +100,15 @@ def test_a_filter_needs_a_name(name):
 def test_a_filter_must_be_callable():
     with pytest.raises(TypeError):
         injections.register_spec_injection_filter("f", "not callable")  # type: ignore[arg-type]
+
+
+def test_without_registered_injections_removes_only_a_matching_injection():
+    injections.register_spec_injection_filter("drop-extra", _drop_extra)
+    spec = {"name": "x", "extra": 1}
+
+    assert injections.without_registered_injections(spec) == {"name": "x"}
+    assert spec == {"name": "x", "extra": 1}
+    assert injections.without_registered_injections({"name": "x", "extra": 2}) == {
+        "name": "x",
+        "extra": 2,
+    }

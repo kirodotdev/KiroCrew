@@ -10,7 +10,10 @@ registered every caller behaves as it did before.
 A filter is a judgement about one exact shape, never a grant. Callers accept its
 answer only when the filtered spec is strictly equal to the spec Kiro Crew would
 write (:func:`only_registered_injection`), and then use their own template, not the
-filter's output, so a filter cannot add anything to what runs.
+filter's output, so a filter cannot add anything to what runs. The dashboard-author
+ownership digest is taken over :func:`without_registered_injections`, so a file that
+carries a registered injection still reproduces it, and a rebuild still rewrites the
+file from the template.
 """
 
 from __future__ import annotations
@@ -72,3 +75,22 @@ def only_registered_injection(spec: object, expected: dict[str, Any]) -> str | N
         if filtered is not None and strict_json_equal(filtered, expected):
             return name
     return None
+
+
+def without_registered_injections(spec: dict[str, Any]) -> dict[str, Any]:
+    """A copy of *spec* with every registered filter's injection removed.
+
+    Filters run in registration order, each on the previous result. A filter that
+    raises, or answers ``None`` (its injection is not there in exactly its shape),
+    leaves the spec as it was.
+    """
+    result = copy_json_document(spec)
+    for name, spec_filter in registered_spec_injection_filters():
+        try:
+            filtered = spec_filter(copy_json_document(result))
+        except Exception:
+            logger.debug("spec injection filter %r raised; treating it as no match", name)
+            continue
+        if isinstance(filtered, dict):
+            result = filtered
+    return result
