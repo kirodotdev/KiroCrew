@@ -18952,7 +18952,6 @@
         "rename": "Renommer",
         "ungrouped": "Non groupées"
       },
-      "d_ago": "il y a {{n}} j",
       "delete": "Supprimer",
       "delete_2": "Supprimer {{n}}",
       "delete_failed": "Échec de la suppression",
@@ -18967,7 +18966,6 @@
       "failed": "Échec",
       "failed_to_load_jobs": "Échec du chargement des tâches",
       "filter_jobs": "Filtrer les tâches…",
-      "h_ago": "il y a {{n}} h",
       "hide_message": "Masquer le message",
       "id": "ID",
       "job_could_not_be_deleted_many": "{{failed}} tâches sur {{count}} n’ont pas pu être supprimées",
@@ -18978,7 +18976,6 @@
       "last_error": "Dernière erreur",
       "last_output": "Dernière sortie",
       "last_run": "Dernière exécution",
-      "m_ago": "il y a {{n}} min",
       "manage_recurring_cron_jobs_and_scheduled_tasks": "Gérez les tâches cron récurrentes et les tâches planifiées",
       "message": "Message",
       "name": "Nom",

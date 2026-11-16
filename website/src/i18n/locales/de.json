@@ -18468,7 +18468,6 @@
         "rename": "Umbenennen",
         "ungrouped": "Nicht gruppiert"
       },
-      "d_ago": "vor {{n}} Tg.",
       "delete": "Löschen",
       "delete_2": "{{n}} löschen",
       "delete_failed": "Löschen fehlgeschlagen",
@@ -18483,7 +18482,6 @@
       "failed": "Fehlgeschlagen",
       "failed_to_load_jobs": "Jobs konnten nicht geladen werden",
       "filter_jobs": "Jobs filtern…",
-      "h_ago": "vor {{n}} Std.",
       "hide_message": "Nachricht ausblenden",
       "id": "ID",
       "job_could_not_be_deleted_one": "{{failed}} von {{count}} Job konnte nicht gelöscht werden",
@@ -18493,7 +18491,6 @@
       "last_error": "Letzter Fehler",
       "last_output": "Letzte Ausgabe",
       "last_run": "Letzte Ausführung",
-      "m_ago": "vor {{n}} Min.",
       "manage_recurring_cron_jobs_and_scheduled_tasks": "Wiederkehrende Cron-Jobs und geplante Aufgaben verwalten",
       "message": "Nachricht",
       "name": "Name",

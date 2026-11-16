@@ -18952,7 +18952,6 @@
         "rename": "Rinomina",
         "ungrouped": "Non raggruppate"
       },
-      "d_ago": "{{n}} g fa",
       "delete": "Elimina",
       "delete_2": "Elimina {{n}}",
       "delete_failed": "Eliminazione non riuscita",
@@ -18967,7 +18966,6 @@
       "failed": "Non riuscito",
       "failed_to_load_jobs": "Caricamento dei job non riuscito",
       "filter_jobs": "Filtra i job…",
-      "h_ago": "{{n}} h fa",
       "hide_message": "Nascondi il messaggio",
       "id": "ID",
       "job_could_not_be_deleted_many": "Impossibile eliminare {{failed}} job su {{count}}",
@@ -18978,7 +18976,6 @@
       "last_error": "Ultimo errore",
       "last_output": "Ultimo output",
       "last_run": "Ultima esecuzione",
-      "m_ago": "{{n}} min fa",
       "manage_recurring_cron_jobs_and_scheduled_tasks": "Gestisci i job cron ricorrenti e le attività pianificate",
       "message": "Messaggio",
       "name": "Nome",
