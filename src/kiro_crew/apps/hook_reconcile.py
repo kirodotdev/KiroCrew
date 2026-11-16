@@ -66,6 +66,7 @@ from kiro_crew.apps.bridges import (
     deregister_app_crons_reporting_failures,
     pending_reload_cron_rollback,
 )
+from kiro_crew.apps.builtin_adoption_gate import refresh_gate_app_trust
 from kiro_crew.apps.frame_sources import refresh_frame_sources
 from kiro_crew.apps.hooks_integration import (
     clear_loaded_hook_signature,
@@ -566,6 +567,9 @@ async def _reconcile_loop() -> None:
             # CLI enable/disable or a trust grant edited in config.json lands too.
             await asyncio.to_thread(refresh_frame_sources)
             await asyncio.sleep(POLL_INTERVAL_SECS)
+            # The gate's own-server sets, for a CLI install, uninstall or adoption
+            # this process never saw (in-process changes refresh them at once).
+            await asyncio.to_thread(refresh_gate_app_trust)
             # list_apps walks the apps dir + reads two files per app — off loop.
             installed = await asyncio.to_thread(list_apps)
             # Run the pass as a tracked task and await it SHIELDED: if the loop is

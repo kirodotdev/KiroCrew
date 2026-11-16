@@ -503,6 +503,10 @@ def install_app(
             _restore_approved_grants(name, prior_grants_text)
         except OSError as undo_exc:
             logger.error("Failed to undo the install record of app %s: %s", name, undo_exc)
+        # The record's write asked for a refresh that may have read it; ask again.
+        from kiro_crew.apps.hidden_sessions import request_hiding_refresh
+
+        request_hiding_refresh()
         sel().log_api_access(
             caller="app_install",
             operation="install",

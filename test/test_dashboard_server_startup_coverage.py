@@ -295,6 +295,15 @@ async def _start_dashboard(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
 
     monkeypatch.setattr(_hooks, "_lifecycle_dispatcher", None)
     monkeypatch.setattr(_hooks, "_route_registry", None)
+    # The boot warm marks the gate's app-own-server sets warmed, after which every
+    # app refresh on this worker republishes them in the background; put the mark
+    # and the three sets back so a later gate test that sets them by hand keeps them.
+    from kiro_crew import hooks as _gate
+    from kiro_crew.apps import builtin_adoption_gate as _adoption_gate
+
+    monkeypatch.setattr(_adoption_gate, "_warmed", _adoption_gate._warmed)
+    for name in ("_BUILTIN_APP_NAMES", "_BUILTIN_APP_MCP_SERVERS", "_BUILTIN_APP_AGENTS"):
+        monkeypatch.setattr(_gate, name, getattr(_gate, name))
     # POSIX-only extra transport; irrelevant to the wiring under test and it
     # would bind a real socket in the data home.
     monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
