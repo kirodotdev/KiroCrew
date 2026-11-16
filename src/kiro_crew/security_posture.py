@@ -584,6 +584,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # client_model_selection before it moved to the opencode client's owner; the
         # refusal reaches the browser through the chat's own sinks.
         "acp/client_opencode_session.py",
+        # The MiMo Code hosted fall-back refusal's model id, scrubbed the same way.
+        "acp/client_mimocode_session.py",
         "acp/client_permissions.py",
         "acp/client_start.py",
         "acp/client_tool_events.py",

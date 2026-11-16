@@ -40,6 +40,7 @@ from kiro_crew.acp.client import (
     ClaudeAcpClient,
     DeepseekAcpClient,
     GooseAcpClient,
+    MimocodeAcpClient,
     OpencodeAcpClient,
 )
 from kiro_crew.acp.transport_errors import AcpError
@@ -550,6 +551,17 @@ _DEEPSEEK_MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_tool_call_ids_repeat_in_turn": ("data", False, "", ""),
 }
 
+#: ``MimocodeAcpClient``'s own members: the ``AcpClient`` hook it fills, bound from the
+#: MiMo Code owner.
+_MIMOCODE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
+    "_refuse_harness_default_model": (
+        "function",
+        False,
+        "b60c5fea256e",
+        "client_mimocode_session",
+    ),
+}
+
 #: Class-level annotations the split adds: fields first set by a member an owner defines,
 #: declared in the class so type checkers know them. An annotation creates no attribute.
 _DECLARED = frozenset(
@@ -574,6 +586,7 @@ _INVENTORIES: dict[type, dict[str, tuple[str, object, str, str]]] = {
     GooseAcpClient: _GOOSE_MEMBERS,
     OpencodeAcpClient: _OPENCODE_MEMBERS,
     DeepseekAcpClient: _DEEPSEEK_MEMBERS,
+    MimocodeAcpClient: _MIMOCODE_MEMBERS,
 }
 
 #: Every member name some client class binds.
@@ -583,6 +596,7 @@ _ALL_MEMBERS = (
     | frozenset(_GOOSE_MEMBERS)
     | frozenset(_OPENCODE_MEMBERS)
     | frozenset(_DEEPSEEK_MEMBERS)
+    | frozenset(_MIMOCODE_MEMBERS)
 )
 
 
@@ -1120,7 +1134,8 @@ def test_the_backend_picks_the_client_class() -> None:
     assert type(AcpClient(acp_backend="deepseek")) is DeepseekAcpClient
     assert type(AcpClient(acp_backend="")) is AcpClient
     assert type(AcpClient(acp_backend="opencode")) is OpencodeAcpClient
-    assert type(AcpClient(acp_backend="mimocode")) is AcpClient
+    assert type(AcpClient(acp_backend="mimocode")) is MimocodeAcpClient
+    assert type(AcpClient(acp_backend="pi")) is AcpClient
     assert type(AcpClient.__new__(AcpClient)) is AcpClient
 
     class EditionClient(AcpClient):
