@@ -15475,6 +15475,7 @@
       "connection_unreachable": "No se pudo contactar con {{provider}} para comprobar esta conexión.",
       "connections": "Conexiones",
       "could_not_load_status": "No se pudo cargar el estado de las conexiones. Las tarjetas pueden estar desactualizadas.",
+      "crew_sign_in_not_owned_help": "Tu propia entrada de {{provider}} en <mcpLink>Servidores MCP</mcpLink> inicia sesión por sí sola, así que no hay nada que hacer aquí.",
       "disconnect": "Desconectar",
       "disconnect_census_incomplete": "Se conservó la autorización almacenada porque no se pudo leer una fuente de configuración para descartar que otro servidor la use. Revisa la configuración de tu servidor y vuelve a desconectar.",
       "disconnect_census_incomplete_source": "Se conservó la autorización almacenada porque no se pudo leer {{source}} para descartar que otro servidor la use. Corrige o elimina ese archivo y vuelve a desconectar.",
@@ -15493,6 +15494,7 @@
       "grant_unproven_help": "El inicio de sesión guardado de {{provider}} ya no funciona. Conéctate para volver a iniciar sesión.",
       "invalid_return_address": "Pega la dirección completa http://127.0.0.1:PORT/…?code=… de tu navegador.",
       "managed_by_connections": "Gestionado por Conexiones",
+      "managed_in_mcp_servers": "Gestionado en Servidores MCP",
       "mint_failure_grant_unproven": "No se pudo confirmar el inicio de sesión guardado. Intenta conectarte de nuevo.",
       "mint_failure_process_gone": "El proceso de autorización se detuvo antes de que terminara la aprobación. Intenta conectarte de nuevo.",
       "mint_failure_kiro_cli_missing": "Para conectar, kiro-cli debe estar instalado y con la sesión iniciada en este equipo. Instala kiro-cli, ejecuta kiro-cli login y vuelve a intentar la conexión.",
@@ -15562,6 +15564,8 @@
       "chat_use_lacks_oauth": "Guardado para los chats que lo admiten. Algunos chats aún no pueden usar este tipo de inicio de sesión.",
       "chat_use_kas_sign_in": "Los chats inician sesión por su cuenta: escribe {{word}} una vez en un chat.",
       "set_up_provider": "Configurar {{provider}}",
+      "needs_crew_sign_in_help": "{{provider}} inicia sesión a través de {{productName}}. Para conectarlo: (1) usa el botón para activar el inicio de sesión con {{productName}}, (2) en <settingsLink>Configuración</settingsLink>, haz que los chats se ejecuten en Kiro Agent.",
+      "open_crew_sign_in_setting": "Activar el inicio de sesión con {{productName}}",
       "google_entry_name": "Google",
       "choose_google_products": "Elegir productos de Google",
       "google_entry_step_set_up": "Primero configura abajo la aplicación OAuth de Google. Después pulsa Conectar en cada producto que quieras.",
@@ -15576,7 +15580,8 @@
       "prerequisite_google_calendar": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Conexiones. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
       "prerequisite_google_sheets": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Conexiones. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
       "prerequisite_google_docs": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Conexiones. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
-      "prerequisite_google_slides": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Conexiones. La página de consentimiento de Google muestra esa app; apruébala para continuar."
+      "prerequisite_google_slides": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Conexiones. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
+      "prerequisite_slack": "Slack no admite el registro dinámico de clientes, así que Conectar usa la app de Slack registrada en Ajustes → Conexiones, con su ID de cliente y su secreto de cliente. La página de consentimiento de Slack muestra esa app; apruébala para continuar."
     },
     "contextBreakdown": {
       "axis_turn_n": "Turno {{n}}",
@@ -17644,6 +17649,7 @@
         "sign_in_kas_chat_again_note": "Los chats en Kiro Agent aún no usan este inicio de sesión. Vuelve a iniciar sesión para guardarlo para ellos.",
         "sign_in_unsupported_on_kas": "Este servidor aún no puede iniciar sesión con el motor Kiro Agent. Se configuró con sus propios ajustes de inicio de sesión, que Kiro Agent no puede usar.",
         "sign_in_unavailable": "Inicio de sesión no disponible",
+        "sign_in_needs_oauth_app": "{{provider}} necesita su aplicación OAuth antes de que alguien pueda iniciar sesión.",
         "oauth_not_a_static_token": "Este servidor inicia sesión con OAuth, por lo que una cabecera Authorization estática no le sirve. Quita y vuelve a añadir este servidor sin la cabecera, actívalo y luego inicia una sesión de chat nueva para iniciar sesión.",
         "sign_in_required_next": "Una vez aprobado, usa el botón Sondear servidores MCP situado encima de esta tabla; la fila pasará entonces a Sesión iniciada.",
         "signed_in": "Sesión iniciada",

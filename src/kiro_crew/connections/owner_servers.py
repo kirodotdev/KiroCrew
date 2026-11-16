@@ -67,22 +67,76 @@ def recorded_url(config: object, name: str) -> str | None:
     return remote_url(servers.get(name))
 
 
-def is_signable_name(name: object) -> bool:
+def card_yields(provider: Mapping[str, Any]) -> bool:
+    """Whether a Connections card leaves its slug and URL to an owner-added server. Blocking.
+
+    Only for a provider whose source entries hold the user's own client
+    (``oauth_clients.keeps_user_client``, Slack), and only while its card can do
+    nothing: no OAuth Apps record resolves and Crew holds no grant under the
+    slug. The owner's server then signs in and is routed exactly as it was
+    before the card existed. Once an app is saved, or a grant is held under the
+    slug, the card owns the slug and the URL again. Anything unreadable reads as
+    "the card owns it".
+    """
+    from kiro_crew.config import config_dir
+    from kiro_crew.config.loader import read_config_for_update
+    from kiro_crew.connections import crew_oauth
+    from kiro_crew.connections.oauth_clients import keeps_user_client, oauth_client_view
+    from kiro_crew.connections.registry import is_preregistered
+    from kiro_crew.secrets import SecretVault
+
+    slug = str(provider["slug"])
+    if not is_preregistered(provider) or not keeps_user_client(slug):  # type: ignore[arg-type]
+        return False
+    try:
+        config = read_config_for_update()
+        names = set(SecretVault(config_dir()).list_names())
+    except Exception:  # noqa: BLE001 -- an unreadable record proves nothing
+        return False
+    view = oauth_client_view(provider, config=config, vault_names=names)  # type: ignore[arg-type]
+    return not view.get("configured") and crew_oauth.holds_grant(slug) is False
+
+
+def is_signable_name(name: object, entry: object = None) -> bool:
     """Whether ``name`` can carry an owner-added server's dashboard sign-in.
 
-    A name that is also a registry slug is refused, so the registry path and
-    this one never share a mint row under different URLs. A name that
-    ``mcp_server_alias`` would rewrite (one with a ``/``, say) is refused,
-    because the mint matches the engine's challenge by the spec key. The row
-    flag and the mint both apply this, so the table never offers a sign-in the
-    mint would refuse.
+    A name that is also a registry slug, in any letter case, is refused, so the
+    registry path and this one never share a mint row under different URLs. Two
+    exceptions: a slug whose card leaves it to the owner (:func:`card_yields`),
+    because that card cannot start a mint; and a letter-case variant of a slug
+    whose card keeps the user's own client
+    (``oauth_clients.keeps_user_client``, Slack) that the sealed owner record
+    names at the card's own URL, because that card routes the exact slug only.
+    A name that ``mcp_server_alias`` would rewrite (one with a ``/``, say) is
+    refused, because the mint matches the engine's challenge by the spec key.
+    The row flag and the mint both apply this, with the same *entry*, so the
+    table never offers a sign-in the mint would refuse.
     """
     from kiro_crew.connections.registry import get_provider
     from kiro_crew.mcp_utils import mcp_server_alias
 
-    if not isinstance(name, str) or not name:
+    if not isinstance(name, str) or not name or mcp_server_alias(name) != name:
         return False
-    return mcp_server_alias(name) == name and get_provider(name.lower()) is None
+    provider = get_provider(name.lower())
+    return provider is None or card_yields(provider) or _owners_case_variant(name, provider, entry)
+
+
+def _owners_case_variant(name: str, provider: Mapping[str, Any], entry: object) -> bool:
+    """Whether *entry* is the owner's server at *provider*'s URL under a case variant. Blocking."""
+    from kiro_crew.config.loader import read_config_for_update
+    from kiro_crew.connections.oauth_clients import keeps_user_client
+
+    slug = str(provider["slug"])
+    url = remote_url(entry)
+    if name == slug or not keeps_user_client(slug) or url is None:
+        return False
+    if url.rstrip("/") != str(provider["mcp_url"]).rstrip("/"):
+        return False
+    try:
+        config = read_config_for_update()
+    except Exception:  # noqa: BLE001 -- an unreadable record proves nothing
+        return False
+    return is_owner_server(config, name, entry)
 
 
 def is_owner_server(config: object, name: str, entry: object) -> bool:

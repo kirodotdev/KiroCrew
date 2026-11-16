@@ -253,6 +253,7 @@ _OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
         # the registry test maps issuer host to consent host for these two.
         ("www.figma.com", "/oauth/mcp"),
         ("mixpanel.com", "/oauth/authorize"),
+        ("slack.com", "/oauth/v2_user/authorize"),  # issuer mcp.slack.com (user token)
     }
 )
 
