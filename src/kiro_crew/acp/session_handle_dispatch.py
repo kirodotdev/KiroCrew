@@ -11,12 +11,12 @@ and a patch of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_awaiting_permission``, ``_codex_compaction_pending``,
 ``_compaction_failed_at``, ``_drained_child_events``, ``_input_wait_emitted``, ``_last_stop_reason``,
 ``_mcp_sign_in_completed``, ``_oauth_emitted_servers``, ``_prompt_or_tool_seen``,
-``_stale_probe``, ``_tool_dispatched``, ``active_agent``, ``last_compaction_transient``.
+``_stale_eligible``, ``_stale_probe``, ``_tool_dispatched``, ``active_agent``, ``last_compaction_transient``.
 
 Instance fields read: ``_awaited_responses``, ``_cancel_grace_secs``, ``_cancel_ts``,
 ``_cancelled``, ``chat_shared``, ``_engine_fallback``, ``_ingress_seq``, ``_kas_compact_turn``,
 ``_keepalive_parked``, ``_keepalive_ts``, ``_own_ingress_seq``, ``_parked_total``, ``_queue``,
-``_runtime``, ``_session_id``, ``_skill_reads``, ``_stale_eligible``, ``_steers_proven``,
+``_runtime``, ``_session_id``, ``_skill_reads``, ``_steers_proven``,
 ``_tool_call_diff_path``, ``_tool_call_harness_tool_name``, ``_tool_call_input_redacted``,
 ``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
 ``_tool_call_raw_params``, ``_tool_call_tool_name``, ``_turn_done``, ``_watchdog``,
@@ -49,7 +49,7 @@ from kiro_crew.acp.client import (
     compaction_failure_is_transient,
     format_command_result,
 )
-from kiro_crew.acp.client_transport import _ends_agent_started_turn
+from kiro_crew.acp.client_transport import _ends_agent_started_turn, _starts_agent_turn
 from kiro_crew.acp.engine_fallback import normalize_kiro_v2
 from kiro_crew.acp.liveness import (
     EVIDENCE_ESTABLISHED_FLAT,
@@ -752,6 +752,23 @@ async def _dispatch_events(
                 # (a co-tenant's), and only the runtime knows which.
                 last_own_data_ts = last_data_ts
                 parked_at_own_data = parked_at_data
+                if (
+                    req_id == AGENT_STARTED_REQUEST_ID
+                    # A native child's frame is its own work: its tool calls
+                    # are re-tagged as child activity and never disarm the gate.
+                    and str((msg.params or {}).get("sessionId") or "") == self._session_id
+                    and _starts_agent_turn(
+                        msg, str(getattr(self._runtime, "acp_backend", "") or "")
+                    )
+                ):
+                    # A cycle the agent runs on its own ends on its closing
+                    # usage_update, which claude-agent-acp sends only when an
+                    # assistant message set usage. One that goes quiet after a
+                    # thought, a plan or an answered permission request sends
+                    # none, so the stale-turn gate arms from each activity
+                    # frame, not only after text. Set before the frame is
+                    # handled, so a tool call it opens disarms it again.
+                    self._stale_eligible = self._no_tool_in_flight()
             else:
                 # Fanned out to several sessions: the runtime is shared, so a
                 # kiro-cli sub-agent of this session, whose frames carry its own
