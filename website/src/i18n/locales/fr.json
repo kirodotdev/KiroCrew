@@ -23600,7 +23600,12 @@
       "advanced_title": "Avancé",
       "api_call_label": "Appel d’API",
       "owner_only": "Seul le propriétaire de la Crew peut voir ou modifier les secrets.",
-      "relay_unavailable": "Les secrets ne peuvent être consultés et modifiés que sur l'ordinateur de la Crew, pas via Remote Control."
+      "relay_unavailable": "Les secrets ne peuvent être consultés et modifiés que sur l'ordinateur de la Crew, pas via Remote Control.",
+      "rotate_by_label": "Renouveler avant le (facultatif)",
+      "rotate_by_hint": "Affiche « Renouvellement requis » après cette date. Pour renouveler, enregistre ici une nouvelle valeur sous le même nom. Sans date, le rappel est supprimé.",
+      "rotate_by_note": "Renouveler avant le {{date}}",
+      "rotation_due": "Renouvellement requis",
+      "rotation_due_aria": "Renouvellement requis pour {{name}} : la date de renouvellement {{date}} est passée"
     }
   },
   "store": {

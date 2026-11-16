@@ -16,6 +16,7 @@ const UNUSED_REASON_KEYS = {
 } as const
 
 import { SECRETS_AUTHORIZE_COMMAND, SECRETS_SERVER_GRANT } from './secretsAuthorizeCommand'
+import { RotateByNote } from './RotateByNote'
 import { Btn, IconButton, Input, PanelSectionHeader } from '../../components/ui'
 import { api, isAuthExpiredError, type ManagedSecret, type SecretsListResponse } from '../../api/client'
 import { i18nT } from '../../i18n/t'
@@ -124,6 +125,7 @@ function ManagedSecretRow({
   onDraftChange,
   onPendingChange,
   frozenByAdd,
+  rotateBy,
 }: {
   secret: ManagedSecret
   configured: boolean
@@ -131,6 +133,7 @@ function ManagedSecretRow({
   onDraftChange: (name: string, hasDraft: boolean) => void
   onPendingChange: (name: string, isPending: boolean) => void
   frozenByAdd: boolean
+  rotateBy?: string
 }) {
   const queryClient = useQueryClient()
   const [value, setValue] = useState('')
@@ -242,6 +245,7 @@ function ManagedSecretRow({
       {copy && (
         <code className="mt-1 block truncate text-[12px] text-muted">{secret.name}</code>
       )}
+      <RotateByNote name={secret.name} rotateBy={rotateBy} />
       {(!configured || editing) && (
         <Btn
           primary
@@ -288,6 +292,7 @@ export function SecretsPanelLegacy() {
   const [showAdd, setShowAdd] = useState(false)
   const [newName, setNewName] = useState('')
   const [newValue, setNewValue] = useState('')
+  const [newRotateBy, setNewRotateBy] = useState('')
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
   const [managedDraftNames, setManagedDraftNames] = useState<Set<string>>(() => new Set())
   const [managedPendingNames, setManagedPendingNames] = useState<Set<string>>(() => new Set())
@@ -299,13 +304,14 @@ export function SecretsPanelLegacy() {
   const ownerOnly = useSecretsOwnerOnly(listError)
 
   const setMutation = useMutation({
-    mutationFn: (params: { name: string; value: string }) =>
-      api.secretsSave(params.name, params.value),
+    mutationFn: (params: { name: string; value: string; rotateBy?: string }) =>
+      api.secretsSave(params.name, params.value, params.rotateBy),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['secrets'] })
       setShowAdd(false)
       setNewName('')
       setNewValue('')
+      setNewRotateBy('')
     },
   })
 
@@ -327,6 +333,9 @@ export function SecretsPanelLegacy() {
   const managedNames = new Set(managed.map(secret => secret.name))
   const otherNames = names.filter(name => !managedNames.has(name))
   const unusedReasons = new Map((data?.unused ?? []).map(item => [item.name, item.reason]))
+  // A Map keeps the lookup to the entries the list carried: a name such as
+  // `constructor` finds no inherited member of a plain object.
+  const rotateByDates = new Map(Object.entries(data?.rotate_by ?? {}))
   const foldedNewName = newName.trim().toUpperCase()
   const addManagedTarget = managed.find(secret => secret.name.toUpperCase() === foldedNewName)
   const handleManagedDraftChange = useCallback((name: string, hasDraft: boolean) => {
@@ -360,7 +369,11 @@ export function SecretsPanelLegacy() {
   const handleAdd = () => {
     if (addTargetPending) return
     if (newName.trim() && newValue) {
-      setMutation.mutate({ name: addManagedTarget?.name ?? newName.trim(), value: newValue })
+      setMutation.mutate({
+        name: addManagedTarget?.name ?? newName.trim(),
+        value: newValue,
+        rotateBy: newRotateBy,
+      })
     }
   }
 
@@ -368,6 +381,7 @@ export function SecretsPanelLegacy() {
     setMutation.reset()
     setNewName('')
     setNewValue('')
+    setNewRotateBy('')
     setShowAdd(true)
   }
 
@@ -375,6 +389,7 @@ export function SecretsPanelLegacy() {
     setShowAdd(false)
     setNewName('')
     setNewValue('')
+    setNewRotateBy('')
     setMutation.reset()
   }
 
@@ -511,6 +526,7 @@ export function SecretsPanelLegacy() {
                     onDraftChange={handleManagedDraftChange}
                     onPendingChange={handleManagedPendingChange}
                     frozenByAdd={pendingAddManagedName === secret.name}
+                    rotateBy={rotateByDates.get(secret.name)}
                   />
                   )
                 ))}
@@ -548,6 +564,7 @@ export function SecretsPanelLegacy() {
                           <span className="truncate font-mono text-sm">{name}</span>
                           <span className="shrink-0 text-[13px] text-muted">••••••••</span>
                         </div>
+                        <RotateByNote name={name} rotateBy={rotateByDates.get(name)} />
                         {unusedReasons.get(name) && (
                           <p className="mt-1 text-[12px] text-warn">
                             {i18nT(UNUSED_REASON_KEYS[unusedReasons.get(name)!])}
@@ -642,6 +659,19 @@ export function SecretsPanelLegacy() {
                     className="font-mono"
                     aria-label={i18nT('settings.secrets.secret_value_aria')}
                   />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[13px] font-medium text-muted" htmlFor="secret-rotate-by-input">
+                    {i18nT('settings.secrets.rotate_by_label')}
+                  </label>
+                  <Input
+                    id="secret-rotate-by-input"
+                    type="date"
+                    value={newRotateBy}
+                    onChange={e => setNewRotateBy(e.target.value)}
+                    className="font-mono"
+                  />
+                  <p className="mt-1 text-[12px] text-muted">{i18nT('settings.secrets.rotate_by_hint')}</p>
                 </div>
                 <div className="flex gap-2">
                   <Btn primary onClick={handleAdd} disabled={!newName.trim() || !newValue || setMutation.isPending || deleteMutation.isPending || addTargetPending}>

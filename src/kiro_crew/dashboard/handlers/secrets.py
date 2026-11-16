@@ -42,6 +42,7 @@ from kiro_crew.dashboard.source_providers.gerrit import (
 )
 from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.secrets import SecretVault, items
+from kiro_crew.secrets.vault import parse_rotate_by
 
 logger = logging.getLogger(__name__)
 
@@ -539,6 +540,11 @@ async def api_secrets_list(request: web.Request) -> web.Response:
     )
     if listed is not None:
         payload["items"] = listed
+    # Present only when an entry carries a date, so a vault with none answers
+    # exactly as before the field existed.
+    rotate_by = await asyncio.to_thread(vault.rotate_by_dates)
+    if rotate_by:
+        payload["rotate_by"] = rotate_by
     if unused:
         payload["unused"] = unused
     if managed_config_error:
@@ -645,10 +651,22 @@ async def api_secrets_set(request: web.Request) -> web.Response:
 
     cfg_dir = config_dir()
     vault = SecretVault(cfg_dir)
+    # An optional rotate-by date: absent, null or "" stores none, as before the
+    # field existed. A malformed one is dropped and logged; the value is saved
+    # either way.
+    raw_rotate_by = body.get("rotate_by")
+    rotate_by = parse_rotate_by(raw_rotate_by)
+    if rotate_by is None and raw_rotate_by not in (None, ""):
+        logger.warning(
+            "Vault entry '%s': rotate_by was dropped: it must be a date written YYYY-MM-DD",
+            _sanitize_for_log(name),
+        )
     # The revision names THIS write (a digest of its ciphertext, never the
     # value), so a caller that may delete it later can delete exactly it.
     try:
-        revision = await vault.set_item_with_revision(name, item_type, fields)
+        # Passed only when there is one, so a write without a date makes main's call.
+        dated = {"rotate_by": rotate_by} if rotate_by is not None else {}
+        revision = await vault.set_item_with_revision(name, item_type, fields, **dated)
     except items.ItemError as exc:
         # Validated inside the vault write, after a field the request left
         # out has been filled from the stored item (items.KEPT_WHEN_ABSENT).

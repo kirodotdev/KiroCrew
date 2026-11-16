@@ -23039,7 +23039,12 @@
       "advanced_title": "Erweitert",
       "api_call_label": "API-Aufruf",
       "owner_only": "Nur der Besitzer der Crew kann Geheimnisse sehen oder ändern.",
-      "relay_unavailable": "Secrets lassen sich nur auf dem Computer der Crew ansehen und ändern, nicht über Remote Control."
+      "relay_unavailable": "Secrets lassen sich nur auf dem Computer der Crew ansehen und ändern, nicht über Remote Control.",
+      "rotate_by_label": "Rotieren bis (optional)",
+      "rotate_by_hint": "Zeigt nach diesem Datum „Rotation fällig“ an. Zum Rotieren speicherst du hier einen neuen Wert unter demselben Namen. Speicherst du ohne Datum, entfällt die Erinnerung.",
+      "rotate_by_note": "Rotieren bis {{date}}",
+      "rotation_due": "Rotation fällig",
+      "rotation_due_aria": "Rotation fällig für {{name}}: Das Rotationsdatum {{date}} ist verstrichen"
     }
   },
   "store": {
