@@ -29,7 +29,7 @@ import os
 import re
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -1834,26 +1834,22 @@ async def _deliver_first_turn(
 # ── Stop ──────────────────────────────────────────────────────────────────
 
 
-def _idle_stop_text(binding: Binding | None) -> str:
+def _idle_stop_text(binding: Binding | None, link_for: Callable[[str], str]) -> str:
     """The answer to a Stop while the channel's own session is idle.
 
     A Stop stops only that session, so helper agents still running are named,
-    with where to stop one (their chat, linked from the work board).
+    each linked to its chat (:func:`~.board.render.idle_stop_text`). Synchronous:
+    the helpers are read, under the board's scope check, right before the send.
     """
+    from kiro_crew.slack.code_channels.board import render
     from kiro_crew.slack.code_channels.workspace import core as workspace
 
     try:
         service = workspace.service()
-        n = service.running_helpers(binding) if service is not None and binding else 0
+        helpers = service.running_helpers(binding) if service is not None and binding else []
     except Exception:
-        n = 0
-    if not n:
-        return "Nothing running."
-    agents = "1 helper agent still is" if n == 1 else f"{n} helper agents still are"
-    return (
-        f"This channel's session isn't running, but {agents}. To stop one, open it "
-        "from the work board and press *Stop generation* in its chat."
-    )
+        helpers = []
+    return render.idle_stop_text(helpers, link_for, str(getattr(binding, "session_key", "") or ""))
 
 
 async def _stop_bound(
@@ -1890,7 +1886,12 @@ async def _stop_bound(
             if service is not None:
                 service._forget_worker_status(binding)
         if say_idle:
-            await _post(orch, channel, _idle_stop_text(binding), None)
+            from kiro_crew.slack.code_channels.board import links
+
+            link_for = await asyncio.to_thread(links.link_builder)
+            # No await from here to the raw send: the helpers named are the ones
+            # the board's scope admits when the reply goes out.
+            await _post(orch, channel, _idle_stop_text(binding, link_for), None)
         return "idle"
     from kiro_crew.dashboard.chat_handlers import stop_slot_turn
 

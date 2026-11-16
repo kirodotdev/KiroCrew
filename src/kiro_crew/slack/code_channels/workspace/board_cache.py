@@ -200,19 +200,29 @@ class BoardCache:
         except Exception:
             return False
 
-    def running_helpers(self, binding: Any) -> int:
-        """How many of the channel's helper agents the watch last saw running.
+    def running_helpers(self, binding: Any) -> list[tuple[str, str]]:
+        """``(session key, board title)`` per helper agent the watch last saw running.
 
-        The sessions of its last pass (the conductor's workers and the sessions
-        filed in its folder), the channel's own session left out. ``0`` when the
-        board's scope refuses the channel: the reply points at a board it is not
-        shown, and the count would say what that board withholds.
+        The sessions of its last pass (the bound session's workers), the
+        channel's own session left out, in a stable order. The title is the one
+        the channel's last board shows for that session (already made
+        publishable there), ``""`` when the board has no row for it. ``[]`` when
+        the board's scope refuses the channel: the reply would name what that
+        board withholds.
         """
         if not self._board_still_admitted(binding):
-            return 0
+            return []
         key = f"{binding.team_id or ''}:{binding.channel_id or ''}"
         own = str(binding.session_key or "").removeprefix("dashboard_")
         seen = self._seen.get(key, {})
-        return sum(
-            1 for k, (run, _g) in seen.items() if run and k.removeprefix("dashboard_") != own
-        )
+        board = self._cached_board(key)
+        titles = {
+            str(row.session_key): str(row.title or "")
+            for row in (board.rows if board is not None else ())
+            if row.session_key
+        }
+        return [
+            (k, titles.get(k, ""))
+            for k, (run, _g) in sorted(seen.items())
+            if run and k.removeprefix("dashboard_") != own
+        ]

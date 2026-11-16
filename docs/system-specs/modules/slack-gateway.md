@@ -2438,10 +2438,20 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
   fenced by their admission alone, and the next helper-agent turn start or end,
   approval, ledger move or re-arm republishes the board and the needs-you
   replies. A `!stop` while the session is idle but helper agents run
-  answers "This channel's session isn't running, but N helper agents still are",
-  pointing at the work board, where each one's chat has **Stop generation**.
+  answers "This channel's session isn't running, but N helper agents still are" and
+  names them (`render.idle_stop_text` over `BoardCache.running_helpers`): up to
+  `render.STOP_NAMED` (5) by their board title, each linked to its chat with the board's
+  own link builder (no click token; a URL `_linkable` refuses leaves the escaped title
+  in bold), the rest, and any the board has no row for, folded into "and N more" and
+  pointed at the lead session (linked when it can be). With no dashboard origin it
+  names them and says to open them from the lead session in the dashboard. It never
+  sends anyone to the board for a link: there only a waiting-on-you row carries one.
+  Each one's chat has **Stop generation**.
 - **When a board write goes out.** The board's four writes (post, edit, pin and a
-  needs-you reply) are its only writes of the helper agents' content. Each
+  needs-you reply) are its only writes of the helper agents' content, besides the
+  idle `!stop` reply's helper titles, which `_stop_bound` reads under the board's
+  scope check (`BoardCache.running_helpers`) after its last await, right before the
+  send. Each board write
   re-checks the board's scope and the Stop right before its raw send, with no await
   between: the publisher asks `_writable` right before the raw client's call, which
   awaits nothing before its HTTP request. `test_slack_code_channel_commit_point.py`
