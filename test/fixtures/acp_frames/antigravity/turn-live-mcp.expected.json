@@ -1,0 +1,309 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "\n\n### Details\n- **Error encountered**:\n  > `denied by pre-tool hook: Denied by"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\n\n### Details\n- **Error encountered**:\n  > `denied by pre-tool hook: Denied by",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " user (*).`\n  (Triggered when attempting to run search commands via `run_command`).\n- **What could not"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " user (*).`\n  (Triggered when attempting to run search commands via `run_command`).\n- **What could not",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "1114/workspace`.\n- **Verified vs. Unverified**:\n  - **Verified files checked**:\n    - [dec"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "1114/workspace`.\n- **Verified vs. Unverified**:\n  - **Verified files checked**:\n    - [dec",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "114/workspace/decoy.txt): Previously contained `decoy`, but was overwritten earlier in this session with"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "114/workspace/decoy.txt): Previously contained `decoy`, but was overwritten earlier in this session with",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " `captured`. It currently does not contain the word.\n    - [SKILL.md](file://~/"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " `captured`. It currently does not contain the word.\n    - [SKILL.md](file://~/",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "system/run-workflow/SKILL.md): Checked lines 1–192; does not contain the word"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "system/run-workflow/SKILL.md): Checked lines 1–192; does not contain the word",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " `decoy`.\n  - **Unverified**: Any other files in the workspace.\n- **Recommended command**:"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " `decoy`.\n  - **Unverified**: Any other files in the workspace.\n- **Recommended command**:",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " You can run the search directly in your terminal:\n  ```bash\n  grep -rn \"decoy\" ~/"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " You can run the search directly in your terminal:\n  ```bash\n  grep -rn \"decoy\" ~/",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      51755,
+      1048576
+    ],
+    "usage_cost": null
+  },
+  {
+    "frame": "response",
+    "id": 8,
+    "prompt_tokens": [
+      99090,
+      620,
+      87113,
+      0
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      54017,
+      1048576
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "mcp_identity_trusted": true,
+        "mcp_server_name": "probe",
+        "raw_tool_params": {
+          "arguments": {
+            "text": "hi"
+          },
+          "text": "hi"
+        },
+        "title": "probe_echo_probe",
+        "tool_call_id": "call-12",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"arguments\": {\n    \"text\": \"hi\"\n  },\n  \"text\": \"hi\"\n}",
+        "tool_kind": "other",
+        "tool_name": "echo_probe",
+        "wire_title": "probe_echo_probe"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "mcp_server_name": "probe",
+        "options": [
+          {
+            "id": "allow_always",
+            "label": "Allow Always"
+          },
+          {
+            "id": "allow",
+            "label": "Allow"
+          },
+          {
+            "id": "deny",
+            "label": "Deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "arguments": {
+            "text": "hi"
+          },
+          "text": "hi"
+        },
+        "request_id": "permission-8",
+        "shell_classified": true,
+        "title": "probe_echo_probe",
+        "tool_call_id": "call-12",
+        "tool_input": "{\n  \"arguments\": {\n    \"text\": \"hi\"\n  },\n  \"text\": \"hi\"\n}",
+        "tool_kind": "other",
+        "tool_name": "echo_probe"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow",
+      "reject": "deny"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "arguments": {
+            "text": "hi"
+          },
+          "text": "hi"
+        },
+        "title": "probe_echo_probe",
+        "tool_call_id": "call-12",
+        "tool_input": "{\n  \"arguments\": {\n    \"text\": \"hi\"\n  },\n  \"text\": \"hi\"\n}",
+        "tool_kind": "other",
+        "wire_title": "probe_echo_probe"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      55241,
+      1048576
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-12",
+        "tool_final": true,
+        "tool_output": "Call echo_probe tool",
+        "tool_output_bytes": 20,
+        "tool_output_digest": "d7b5671dab8f85119932612ccb5a856c964f9a1a906d475172cdb9a9ceb7c2b0",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      55969,
+      1048576
+    ],
+    "usage_cost": null
+  },
+  {
+    "frame": "response",
+    "id": 9,
+    "prompt_tokens": [
+      86218,
+      163,
+      78487,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

@@ -37,7 +37,6 @@ from kiro_crew.acp._dispatch import (
     is_rendered_edit_diff,
     log_unrenderable_content,
     make_unified_diff,
-    qualified_harness_tool_id,
     redact_text,
 )
 from kiro_crew.acp._dispatch import select_tool_title as _select_tool_title
@@ -53,10 +52,10 @@ from kiro_crew.acp.harness.copilot import (
     TOOL_CALL_CACHE_MAX_KEY_CHARS,
     note_copilot_identity_record,
 )
+from kiro_crew.acp.harness_tool_names import start_event_tool_id
 from kiro_crew.acp.native_child_stamp import parent_tool_use
 from kiro_crew.acp.read_path_arg import read_path_arg
 from kiro_crew.acp.types import (
-    ACP_BACKEND_CODEX,
     CC_PERMISSION_MODE_AUTO,
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
@@ -68,7 +67,10 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
 )
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
+    ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
+)
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import HOOK_EVENT_POST_TOOL_USE, fire_tool_hooks, get_global_hook_store
@@ -638,6 +640,15 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
                 and self.backend in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL
             ):
                 self._tool_call_identity_unreadable[tool_call_id] = True
+            # Antigravity's bounded ``_meta.mcp`` channel: the mark describes the
+            # frame the identity caches above were just written from, so a later
+            # frame under the same id sets or clears it with them, as the
+            # handle's store does. ``_build_permission_event`` refuses on it.
+            elif self.backend == ACP_BACKEND_ANTIGRAVITY:
+                if identity.identity_unreadable:
+                    self._tool_call_identity_unreadable[tool_call_id] = True
+                else:
+                    self._tool_call_identity_unreadable.pop(tool_call_id, None)
             # Copilot only (H13): it names an MCP call nowhere but its title.
             if self._is_copilot and not identity.mcp_server_name and not is_shell:
                 self._recover_copilot_mcp_identity(tool_call_id, update)
@@ -650,15 +661,16 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
                     event_mcp_server = recovered_server
                     event_tool_name = self._tool_call_tool_name.get(tool_call_id, "")
                     event_tool_trusted = event_mcp_trusted = True
-        # codex runs most calls without a permission request, so the event that
-        # starts the call names it too, for its PostToolUse spec hooks. The
-        # other backends are named by their permission request alone.
-        _event_tool_id = (
-            qualified_harness_tool_id(
-                ACP_BACKEND_CODEX, stated_harness_tool_name(self.backend, update)
-            )
-            if self.backend == ACP_BACKEND_CODEX
-            else ""
+        # A harness that runs calls without a permission request (codex,
+        # Antigravity's reads) names them on the event that starts the call, for
+        # its PostToolUse spec hooks. The other backends are named by their
+        # permission request alone.
+        _event_tool_id = start_event_tool_id(
+            self.backend,
+            stated_harness_tool_name(self.backend, update),
+            tool_kind=kind if isinstance(kind, str) else "",
+            mcp_server=event_mcp_server,
+            mcp_tool=event_tool_name,
         )
         title = _select_tool_title(title, raw_input, kind, is_shell=is_shell) or ""
         if title:
