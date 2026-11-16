@@ -80,8 +80,8 @@ _OWNERS = tuple(
         "route_guards",
         "workspace",
         "skill_roots",
-        "skill_listing",
         "skill_catalog",
+        "skill_listing",
         "memory_stores",
         "config_followups",
     )

@@ -22,8 +22,8 @@ from kiro_crew import _facade_mirror
 #   ``_shared_route_guards`` -- shared route refusals and the owner-surface guard
 #   ``_shared_workspace`` -- the caller's memory, lessons, skills and active project
 #   ``_shared_skill_roots`` -- the trusted skill roots and skill-path containment
-#   ``_shared_skill_listing`` -- the installed-skills list and the agents loading each
 #   ``_shared_skill_catalog`` -- the skill catalog, agent skill mappings, skill files
+#   ``_shared_skill_listing`` -- the installed-skills list and the agents loading each
 #   ``_shared_memory_stores`` -- the memory store a request addresses and its tiers
 #   ``_shared_config_followups`` -- the agent-spec rebuild and optional-extra commands
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
@@ -36,8 +36,8 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers._shared_route_guards",
     "kiro_crew.dashboard.handlers._shared_workspace",
     "kiro_crew.dashboard.handlers._shared_skill_roots",
-    "kiro_crew.dashboard.handlers._shared_skill_listing",
     "kiro_crew.dashboard.handlers._shared_skill_catalog",
+    "kiro_crew.dashboard.handlers._shared_skill_listing",
     "kiro_crew.dashboard.handlers._shared_memory_stores",
     "kiro_crew.dashboard.handlers._shared_config_followups",
 )
@@ -183,12 +183,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _collect_skills_under,
         _dir_mtime_ns,
         _skill_key_roots,
+        _walk_package_roots,
+        _walk_skill_root,
         agent_skill_keys,
         agent_skill_views,
         agent_unmanaged_skill_uris,
         apply_skill_mapping,
         enumerate_skill_catalog,
         list_skill_tree,
+        package_skill_catalog,
         read_skill_file,
         skill_key_for_uri,
         skill_uri_for_key,
@@ -211,6 +214,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _load_parsed_agents,
         _one_row_per_skill_file,
         _parse_skill_description,
+        _qualify_colliding_package_rows,
         _resolve_loaded_by_agents,
         _row_is_editable,
         _row_rank,
@@ -233,6 +237,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resolve_package_skill_path,
         _resolve_skill_root,
         _resolved_set,
+        fold_package_keys,
+        package_root_qualifier,
+        resolved_skill_file,
     )
     from kiro_crew.dashboard.handlers._shared_workspace import (  # noqa: F401
         _get_active_workspace,
@@ -279,6 +286,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.security import is_sensitive_path  # noqa: F401
     from kiro_crew.security import redact_credentials  # noqa: F401
     from kiro_crew.security import redact_exfiltration_urls  # noqa: F401
+    from kiro_crew.skill_package_key import _HEX  # noqa: F401
+    from kiro_crew.skill_package_key import _PACKAGE_QUALIFIER_BYTES  # noqa: F401
+    from kiro_crew.skill_package_key import split_package_key  # noqa: F401
     from kiro_crew.skill_trust import is_project_trusted as _is_project_trusted  # noqa: F401
     from kiro_crew.skills import _trusted_skill_roots  # noqa: F401
     from kiro_crew.skills import _with_canonical_globs  # noqa: F401
