@@ -66,6 +66,7 @@ from kiro_crew.agent import (  # noqa: F401
     _spec_path_is_safe,
     agents_spec_lock,
     clear_model_pin,
+    dashboard_author_ownership_digest,
     emission_eligible_mcp_servers,
     get_shipped_tools,
     install_agent,
