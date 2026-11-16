@@ -307,7 +307,8 @@ nobody where the goal stands.
 """,
     "skill_first": """The `goal-conductor` skill carries the operating procedure — the work-item
 tests, the dispatch steps, the patrol cycle, the stop conditions. Read it before
-acting on a goal. """,
+acting on a goal. When a turn carries a REINJECTED AFTER COMPACTION block, the
+skill text you read is gone: read it again before you act. """,
 }
 
 
