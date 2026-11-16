@@ -471,15 +471,20 @@ export function PageHeader({ title, subtitle, actions }: { title: React.ReactNod
   )
 }
 
-export function Toggle({ checked, onChange, disabled, busy, label, describedBy, tone = 'accent', 'data-ui-auto': uiAuto }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean; /** Opt-in: the switch is writing its own change right now. It stays in the tab order (not `tabIndex={-1}`, which drops a keyboard user to the page) and ignores presses while the write runs, announced as `aria-disabled` + `aria-busy`. Default unset keeps today's behaviour. `busy` wins when both are set. */ busy?: boolean; label?: string; describedBy?: string; tone?: 'accent' | 'muted'; /** The build's auto-tier marker (scripts/lib/ui-auto-stamp.mjs), put on the switch a guide points at. */ 'data-ui-auto'?: string }) {
+export function Toggle({ checked, onChange, disabled, busy, label, describedBy, id, tone = 'accent', 'data-ui-auto': uiAuto }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean; /** Opt-in: the switch is writing its own change right now. It stays in the tab order (not `tabIndex={-1}`, which drops a keyboard user to the page) and ignores presses while the write runs, announced as `aria-disabled` + `aria-busy`. Default unset keeps today's behaviour. `busy` wins when both are set. */ busy?: boolean; label?: string; describedBy?: string; /** Lets a `<label htmlFor>` point at the switch, so a click on the label's text presses it. */ id?: string; tone?: 'accent' | 'muted'; /** The build's auto-tier marker (scripts/lib/ui-auto-stamp.mjs), put on the switch a guide points at. */ 'data-ui-auto'?: string }) {
   // While busy the switch refuses presses but stays focusable, so it keeps a
   // tab stop; a non-busy `disabled` leaves the tab order as before.
   const inert = disabled || busy
   return (
-    <div
+    // A real <button>, so a <label> can be tied to it and the row around a
+    // switch needs no click handler of its own. `type="button"` keeps it from
+    // submitting a form it sits in.
+    <button
+      type="button"
       role="switch"
+      id={id}
       data-ui-auto={uiAuto}
-      ref={autoSiteRef<HTMLDivElement>(uiAuto)}
+      ref={autoSiteRef<HTMLButtonElement>(uiAuto)}
       aria-checked={checked}
       // Without this a screen reader announces a disabled switch as actionable:
       // the disabled state was carried only by `tabIndex={-1}` and an opacity
@@ -497,6 +502,8 @@ export function Toggle({ checked, onChange, disabled, busy, label, describedBy, 
       // A switch is the one control whose physical twin clicks under the thumb, so
       // it gets a tap where the device can give one (phones); elsewhere no-op.
       onClick={() => { if (!inert) { haptic(); onChange(!checked) } }}
+      // The key is handled here and its default stopped, so the button's own
+      // press-to-click does not flip the switch a second time.
       onKeyDown={e => { if (!inert && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); haptic(); onChange(!checked) } }}
       // `muted` is for a LIST of switches, where an accent fill on every row
       // shouts and duplicates a state the row's own grouping already carries.
@@ -504,8 +511,10 @@ export function Toggle({ checked, onChange, disabled, busy, label, describedBy, 
       // the hue. Accent stays the default so a lone switch keeps its emphasis.
       className={`w-9 h-5 rounded-full relative transition-colors shrink-0 cursor-pointer ${inert ? 'opacity-40 cursor-not-allowed' : ''} ${checked ? (tone === 'muted' ? 'bg-border-strong' : 'bg-accent') : 'bg-border'}`}
     >
-      <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
-    </div>
+      {/* `left-0` is spelled out: a button centres its content, and an
+          absolutely placed child with no `left` would start from that centre. */}
+      <span className={`absolute left-0 top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+    </button>
   )
 }
 

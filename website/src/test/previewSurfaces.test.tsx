@@ -460,8 +460,9 @@ describe('Settings > Developer > Feature Previews', () => {
     //
     // Counted as `<button>` ELEMENTS rather than by accessible name: the name of
     // a link that no longer exists is not in any catalog, so a name query could
-    // never fail. `SettingsToggle`'s own row is a `div role="button"`, so it is
-    // correctly not counted here. The "See what it looks like" button each card
+    // never fail. A row's switch is a `button role="switch"`: it flips a setting
+    // and never opens a page, so it is excluded by that role. The "See what it
+    // looks like" button each card
     // may carry (`FeaturePreviewIntroButton`) is excluded by its test id: it is
     // not an ingress — it opens an explainer dialog, never the page — and it is
     // present on either side of the toggle by design.
@@ -482,7 +483,7 @@ describe('Settings > Developer > Feature Previews', () => {
      */
     const realButtons = () =>
       Array.from(
-        container.querySelectorAll('button:not([data-testid="feature-preview-intro-button"])'),
+        container.querySelectorAll('button:not([data-testid="feature-preview-intro-button"]):not([role="switch"])'),
       )
     /**
      * The Decisions card is WALKED, not allowed for.
@@ -508,7 +509,7 @@ describe('Settings > Developer > Feature Previews', () => {
     const decisionsButtons = () =>
       Array.from(
         decisionsFrame()?.querySelectorAll(
-          'button:not([data-testid="feature-preview-intro-button"])',
+          'button:not([data-testid="feature-preview-intro-button"]):not([role="switch"])',
         ) ?? [],
       )
         .map(nameOf)

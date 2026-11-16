@@ -325,12 +325,13 @@ describe('PrivacyPanel metric-recording switch', () => {
     // into one priority chain let the pin hide the fact that metrics leave the box.
     mount({ enabled: true, env_pinned: true, env_var: 'KIROCREW_TELEMETRY', otlp_configured: true })
     const sw = await screen.findByRole('switch', { name: LABEL })
-    // Both notes are announced, not just the first. Assert through the idrefs
-    // rather than by text: the panel also prints KIROCREW_TELEMETRY_DISABLED in
-    // its CLI section, so a text query would be ambiguous.
+    // Both notes are announced after the row's own text, not just the first.
+    // Assert through the idrefs rather than by text: the panel also prints
+    // KIROCREW_TELEMETRY_DISABLED in its CLI section, so a text query would be
+    // ambiguous.
     await waitFor(() => {
       const ids = (sw.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)
-      expect(ids).toHaveLength(2)
+      expect(ids).toHaveLength(3)
     })
     const ids = (sw.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)
     const texts = ids.map(id => document.getElementById(id)?.textContent ?? '')
@@ -354,16 +355,14 @@ describe('PrivacyPanel metric-recording switch', () => {
     mount({ env_pinned: true })
     const sw = await screen.findByRole('switch', { name: LABEL })
     await waitFor(() => expect(sw).toHaveAttribute('aria-disabled', 'true'))
-    const describedBy = sw.getAttribute('aria-describedby')
-    expect(describedBy).toBeTruthy()
-    const note = document.getElementById(describedBy as string)
-    expect(note?.textContent ?? '').toMatch(/KIROCREW_TELEMETRY environment variable/)
+    expect(sw).toHaveAccessibleDescription(/KIROCREW_TELEMETRY environment variable/)
   })
 
-  it('drops the description link when nothing is pinning the switch', async () => {
+  it('drops the pin and egress notes when nothing is pinning the switch', async () => {
     mount()
     const sw = await screen.findByRole('switch', { name: LABEL })
     await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
-    expect(sw).not.toHaveAttribute('aria-describedby')
+    // Only the row's own text is left as the description.
+    expect(sw.getAttribute('aria-describedby') ?? '').not.toMatch(/record-metrics-(pin|egress)-note/)
   })
 })
