@@ -650,6 +650,17 @@ def build_message(
                 ),
             )
         )
+        # A conductor lost the goal-conductor body it read; the index above only
+        # names the skill. Minimal turns get no skills back, so no pointer either.
+        if not minimal_context:
+            _reread_part = _turn.conductor_reread_part(
+                agent=agent,
+                mode=mode,
+                session_key=session_key,
+                dispatch_mounted=member_dispatch_mounted,
+            )
+            if _reread_part:
+                parts.append(_reread_part)
         # The session's durable work state, which a monitor cycle already gets
         # and an interactive turn lost with the compaction. A minimal turn is
         # read by other people, and a read-blocked (incognito) turn keeps no
