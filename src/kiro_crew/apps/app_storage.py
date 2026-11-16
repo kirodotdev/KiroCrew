@@ -95,10 +95,12 @@ def _encode_key(key: str) -> str:
     every unsafe character and leaves the marker as the component's head so the
     result is not a device name.
 
-    A key whose percent-encoded name would pass :data:`_MAX_FILENAME_BYTES` gets
-    the fixed-width digest form instead, so the name a key maps to is bounded
-    however long the key is. Only an unsafe key can reach either encoding, so a
-    safe key's filename is never rewritten by length.
+    A key whose name would pass :data:`_MAX_FILENAME_BYTES` gets the fixed-width
+    digest form instead, so the name a key maps to is bounded however long the
+    key is. A safe key goes there straight from its own name: escaping only adds
+    bytes. Where the limit is counted in characters (NTFS) an older build could
+    store such a key under its own name, and :meth:`AppStorage._legacy_paths`
+    still finds that file.
 
     A key with an upper-case letter is encoded too, and its ASCII capitals are
     escaped (``Foo`` becomes ``.enc-%46oo``), so no two keys map to names that
@@ -107,12 +109,14 @@ def _encode_key(key: str) -> str:
     and ``ς``) still keeps its own names; escape non-ASCII too if one is reported.
     """
     if _key_is_filename_safe(key) and key == key.lower():
-        return key
-    escaped = _ENCODED_STEM_PREFIX + "".join(
-        f"%{ord(char):02X}" if "A" <= char <= "Z" else quote(char, safe="") for char in key
-    )
-    if len(f"{escaped}.json".encode()) <= _MAX_FILENAME_BYTES:
-        return escaped
+        if len(f"{key}.json".encode()) <= _MAX_FILENAME_BYTES:
+            return key
+    else:
+        escaped = _ENCODED_STEM_PREFIX + "".join(
+            f"%{ord(char):02X}" if "A" <= char <= "Z" else quote(char, safe="") for char in key
+        )
+        if len(f"{escaped}.json".encode()) <= _MAX_FILENAME_BYTES:
+            return escaped
     digest = hashlib.blake2b(key.encode(), digest_size=_DIGEST_BYTES).hexdigest()
     return _DIGEST_STEM_PREFIX + digest
 
