@@ -74,8 +74,10 @@ from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
 from kiro_crew.constants import (  # noqa: F401 - read by the owners
     DENY_CAUSE_APPROVAL_TIMEOUT,
     DENY_CAUSE_POLICY,
+    OPTIONS_RE_LINE,
     STEER_NOTICE_BOUND_SECS,
     is_control_tag_tail,
+    relocate_glued_tail_marker,
     strip_control_comments,
 )
 from kiro_crew.context import (
@@ -396,8 +398,10 @@ from kiro_crew.slack.handler_runtime.stream import (  # noqa: F401
     _comment_hold_is_protocol,
     _filter_options_brackets,
     _resolve_comment_hold,
+    _resolve_options_hold,
     _safe_final_update,
     _safe_update,
+    _settle_options_head,
     _ts_before,
 )
 from kiro_crew.slack.handler_runtime.turn import (  # noqa: F401
