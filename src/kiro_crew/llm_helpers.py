@@ -157,11 +157,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.llm_helpers_parts.tool_approval import (  # noqa: F401
         ToolApprovalPolicy,
+        _approval_expired,
         _body_field_link_origin,
         _orphan_reject_done,
         _orphan_rejects,
         _resolve_permission,
         _steer_host_deny,
+        approval_expiry_watch,
+        note_approval_expired,
     )
     from kiro_crew.llm_helpers_parts.tool_input_denials import (  # noqa: F401
         _DIFF_TRUNCATION_MARK,
@@ -249,6 +252,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         KiroCrewConfig,
     )
     from kiro_crew.constants import (  # noqa: F401
+        DENY_CAUSE_APPROVAL_TIMEOUT,
         DENY_CAUSE_INVALID_NAME,
         DENY_CAUSE_POLICY,
         DENY_CAUSE_SURFACE_POLICY,

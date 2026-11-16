@@ -371,6 +371,12 @@ awaits `deny_notice.steer_refusal_notice` through the module's
 - `unreadable_identity` — the MCP identity the backend reported could not be
   read; the notice names the check that fired
   (`deny_notice.UNREADABLE_IDENTITY_REASONS`) and says to use another tool.
+- `approval_timeout` — the interactive approver's prompt expired with nobody
+  answering (a cron or other background turn's short window, on Slack or the
+  dashboard). Its `False` is the same value a person's no gives, so the funnel
+  watches the wait (`llm_helpers.approval_expiry_watch`), the code where the
+  window closes marks it (`llm_helpers.note_approval_expired`), and the row's
+  reason is `approval_expired` rather than `interactive_rejected`.
 
 The one genuine user rejection on that funnel (the interactive approver said no)
 sends no notice. Two orderings are load-bearing at every site and are pinned by
@@ -497,6 +503,9 @@ every site. Per site:
   precedes a mid-stream compaction send no notice: the first is the person's
   verdict, the second tears the turn down to re-run it, so there is no
   continuing turn for a notice to correct.
+- the handler's prompt expiring with nobody answering — `approval_timeout`,
+  under the `approval_expired` rung: `tool_permission.CallbackResponder` watches
+  the wait (`llm_helpers.approval_expiry_watch`) as the headless funnel does.
 
 `task_planner.decompose` (the decomposition turn) denies inline, audit → steer →
 reject: the stored hooks' `deny` — `policy`; the deny-by-default when the phase
@@ -528,6 +537,8 @@ Per site:
   absent (`child_low_fidelity`, no approver attached) — `surface_policy`.
 - the approvers' no (the per-subagent factory, the gateway fallback, the
   child-request approver) send no notice: the person's verdict is the truth.
+  An approver's prompt that expired with nobody answering is the host's
+  refusal instead — `approval_timeout`, under the `approval_expired` rung.
   The rejects that precede a `turn_limit` / `child_escalation_limit` / `stopped`
   bail send none either: the run ends there, so no continuing turn exists for a
   notice to correct.

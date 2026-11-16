@@ -32,7 +32,11 @@ from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.agent_sdk.spec_hooks import TurnSpecHooks
-from kiro_crew.constants import DENY_CAUSE_POLICY, DENY_CAUSE_SURFACE_POLICY
+from kiro_crew.constants import (
+    DENY_CAUSE_APPROVAL_TIMEOUT,
+    DENY_CAUSE_POLICY,
+    DENY_CAUSE_SURFACE_POLICY,
+)
 from kiro_crew.hooks import TOOL_ALLOW, TOOL_AUTO_APPROVE, TOOL_DENY, ToolHookResult
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.providers.acp import AcpProvider
@@ -1242,6 +1246,34 @@ async def test_a_cancelled_wait_closes_as_a_host_decline_and_leaves_the_wire_alo
 
 
 @pytest.mark.asyncio
+async def test_a_prompt_nobody_answered_is_a_host_decline_with_the_timeout_notice():
+    log: list = []
+
+    async def window_closed(event):
+        llm_helpers.note_approval_expired()
+        return False
+
+    responder = CallbackResponder(
+        lambda: window_closed, attended=lambda: True, name="callback", watch=_Watch(log)
+    )
+    wire = RecordingWire(log)
+    settled = await settle(Ask(_event(), wire, "k"), _policy(log, responders=(responder,)))
+
+    assert (settled.rung, settled.by, settled.cause) == (
+        "approval_expired",
+        "host",
+        DENY_CAUSE_APPROVAL_TIMEOUT,
+    )
+    assert log[-5:] == [
+        ("closed", "token", "rejected", "host"),
+        ("narrate", "refusing", "approval_expired"),
+        ("audit", "refused", "approval_expired"),
+        ("steer", DENY_CAUSE_APPROVAL_TIMEOUT, "the approval prompt went unanswered"),
+        ("reject", "req-1"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_attended_is_asked_of_the_responder_each_time():
     attached: list = []
     responder = CallbackResponder(
@@ -1358,6 +1390,12 @@ _SUB_REFUSALS = [
     ),
     (Refusal.person("callback"), "rejected", "", None),
     (
+        Refusal.host("approval_expired", "x", DENY_CAUSE_APPROVAL_TIMEOUT),
+        "rejected",
+        "",
+        {"subagent_id": "a1", "reason": "approval_expired"},
+    ),
+    (
         Refusal.host("headless", "x", DENY_CAUSE_SURFACE_POLICY),
         "rejected",
         "",
@@ -1473,6 +1511,10 @@ def _step() -> tuple[Project, Task]:
             {"outcome": "rejected", "metadata": {"reason": "context_overflow", "pct": 92.5}},
         ),
         (Refusal.person("responder"), {"outcome": "rejected"}),
+        (
+            Refusal.host("approval_expired", "x", DENY_CAUSE_APPROVAL_TIMEOUT),
+            {"outcome": "rejected", "metadata": {"reason": "approval_expired"}},
+        ),
         (
             Refusal.host("headless", "x", DENY_CAUSE_SURFACE_POLICY),
             {"outcome": "rejected", "metadata": {"reason": "headless_no_authorization"}},
@@ -1890,6 +1932,9 @@ async def _ladder_rungs(policy: Policy, ask: Ask) -> tuple[set[str], set[str]]:
         # A person's yes is approved under the responder's name, a no refused under it.
         refusals.add(responder.name)
         approvals.add(responder.name)
+    if responders:
+        # A prompt whose window closed with nobody answering is the host's refusal.
+        refusals.add("approval_expired")
     return refusals, approvals
 
 
