@@ -313,6 +313,14 @@ home goes to the top level. At most 500 folders are kept, and the import warns
 with how many folders it did not add. Installed apps and their data are not
 carried yet.
 
+The dashboard export leaves out folders that tools rebuild inside your
+workspace folder (`node_modules`, `.venv`, `venv` and tool caches such as
+`.pytest_cache`), and the import skips them in an older archive. A backup that
+unpacks to more than 2 GiB is accepted when no single file is over 2 GiB, the
+total stays under 64 GiB and at most 100 times the archive's own size, and the
+disk has room for it twice plus 1 GiB. When one is refused, the message names
+its biggest folders.
+
 #### Known limitation: the knowledge database is not row-merged
 
 `workspace/knowledge/knowledge.db` follows the file rule above rather than the

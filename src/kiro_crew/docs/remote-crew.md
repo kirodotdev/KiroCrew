@@ -304,6 +304,13 @@ is read again about once a minute while the dashboard is open, and it never
 carries an access token. The group appears only once your account has at least
 one Team Crew, or when it has a sign-in or load problem to show.
 
+**Settings → Remote Crew** shows the same list in a **Shared Crews** card, read
+from the same request, so the two can't disagree. Unlike the switcher group, it
+shows every Crew in the list and says so when there are none. Choosing an online
+row opens the Crew as the switcher does. A **Set up a new Shared Crew** card
+under it links to the AWS Management Console, where an admin creates Shared
+Crews. Both cards are hidden while the feature is off or outside the desktop app.
+
 ### What opening a Crew does
 
 Choosing an online row sends only the Crew's endpoint ID to the desktop app's

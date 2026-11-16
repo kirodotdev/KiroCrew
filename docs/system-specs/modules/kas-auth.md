@@ -280,6 +280,15 @@ reads the code, not the text: `invalid_region`, `invalid_start_url` and
 both, and those inputs are marked `aria-invalid` and described by the error; every
 other begin error keeps the "Check your connection" headline.
 
+The company SSO form starts filled in from `GET /api/kas-login`'s `company_sign_in`
+(`{start_url, region}`, both `""` when nothing supplies one;
+`auth/company_sign_in.company_sign_in_default`): the saved `agent.kas_sso_start_url` /
+`agent.kas_sso_region` pair first, then the edition's
+`DashboardContributor.company_sign_in_defaults()` (the public default supplies none).
+The pair travels together, and each value is checked the way a submitted one is, so
+a URL sign-in would refuse fills nothing. The form stays editable, and the URL this
+browser last submitted still comes first (`website/src/utils/companySignIn.ts`).
+
 An approved IdC token carries no profile ARN, so `_poll_oidc` resolves it with the
 control plane's `ListAvailableProfiles` (`auth/login/control_plane.py`). The Identity
 Center region does not name the control plane that serves the profile (a `us-east-1`

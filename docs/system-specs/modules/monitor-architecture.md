@@ -475,8 +475,13 @@ nothing, a turn's end arms it toward its deadline, and the reconciler skips it.
 A pull request that merged or closed during a gated loop's hold settles the
 loop as `monitor_terminal`, records the outcome on its monitor and sends the
 expiry notice. An ungated loop is never settled by a held read, because
-`gate=False` promises a terminal reading never ends it. A channel loop settles
-there too, because a held loop delivers no turn to carry the news.
+`gate=False` promises a terminal reading never ends it. A held loop settles
+there on any surface, because a held loop delivers no turn to carry the news.
+Outside a hold, a gated loop whose pull request merged or closed owes the
+session one final turn (`MonitorState.terminal_pending`, its opening line
+`terminal_note`, rendered by `terminal_wake_line`) on every surface, and settles
+once that turn is delivered; `monitor_update` on a loop that ended this way is
+refused (`_finished_watch`).
 
 A tool's “requested” response proves receipt only. The gateway's applied notice
 and a subsequent `monitor_inspect` prove activation. For crew/member sessions,

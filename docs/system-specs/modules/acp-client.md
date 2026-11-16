@@ -24,6 +24,7 @@ error chains and tracebacks still name the path callers import it from.
 | `acp/transport_errors.py` | the `AcpError` family and the reading of a harness failure: the stderr, auth, throttle and sandbox classifiers, `classify_provider_error`, and the text and retry verdict `_format_acp_error` / `_raise_acp_error` produce, with the `auth_error_code` tag (the AWS exception name of a credential rejection, read from the raw frame through `classify_provider_error`, so a caller compares a code instead of the prose) |
 | `acp/oversized_request_errors.py` | the three refusals of a request too large to send (`_RE_OVERSIZED_REQUEST`, `_RE_ADAPTER_INPUT_TOO_LONG`, `_RE_REQUEST_SIZE_EXCEEDED`), read by `transport_errors` |
 | `acp/model_registry_errors.py` | the engine's model-list refusal (`ModelRegistryUnavailableError`) and its wording, read by `transport_errors` so it is never worded as an HTTP 5xx |
+| `acp/user_rate_limit_errors.py` | Kiro's per-user request-rate limit (`USER_REQUEST_RATE_EXCEEDED`) and its wording, read by `transport_errors` so it carries no switch-model advice; the retry verdict stays the throttle's |
 | `acp/thinking_binding_errors.py` | the preserved-thinking signature refusal (`_is_thinking_binding_mismatch`) and its changed-`tools`-list reason (`_is_tools_list_refusal`), read by `transport_errors` |
 | `acp/error_frames.py` | `raw_error_detail`, the redacted, bounded one-line rendering of the raw error frame kept on `AcpError.raw_detail` |
 | `acp/runtime_models.py` | the advertised model catalog: `DEFAULT_MODEL`, `model_is_unusable`, `resolve_usable_model`, `resolve_pin_spelling`, `resolve_pin_spelling_on`, `pick_served_default`, the model-substitution advisory |
@@ -63,20 +64,39 @@ namespaces: `acp/client.py` keeps binding every name it bound before, and a writ
 through it reaches every owner binding the same object (`kiro_crew._facade_mirror`).
 `test/test_client_bindings.py` pins the member inventory, the binding and the reach.
 
+A backend whose session contract differs gets a client class of its own:
+`ClaudeAcpClient`, `GooseAcpClient`, `OpencodeAcpClient` and `DeepseekAcpClient`
+(`acp/client_{claude,goose,opencode,deepseek}.py`) subclass `AcpClient` with
+`serves=<backend>`, which `__init_subclass__` records in
+`_client_class_by_backend`; `AcpClient.__new__` then builds that class for the
+backend, so no caller names it. `AcpClient` declares each hook with the behaviour
+every other backend keeps (`_harness_session_mcp_servers`,
+`_refuse_harness_default_model`, `_defers_shell_permission` /
+`_defer_shell_permission`, `_gate_tripwire_remedy`), the subclass fills it from its
+`acp/client_<backend>_session.py` owner, and `__new__` refuses to build a class that
+lacks a hook its backend needs (settings seeding, session-mode read-back, shell
+permission deferral).
+
 | Client owner | Owns |
 |---|---|
 | `acp/client_timeouts.py` | every protocol timeout and turn budget of the direct client, the respawn backoff, and the resolution of a prompt's timeout from its ceiling or deadline |
 | `acp/client_spawn_env.py` | a spawn before the process exists: kiro-cli and codex-acp binary resolution, the child's environment repair (pod HOME remap, bundle swap, session identity), `finish_suspended_spawn` and the `_exit_origin` reading of how a child exited, the launch tools, and the workspace, `agent.env` and `--agent` argv staging |
-| `acp/client_claude_session.py` | the claude-agent-acp session contract: adapter version floors, leaving a project-owned settings file out of the setting sources, the `_meta` envelope, Side Chat read-deny rules and the starting-mode pin |
-| `acp/client_claude_seed.py` | the session's `settings.local.json` seed: render, create, adopt, re-seed, share and retract |
-| `acp/client_seed_ownership.py` | proving and handing back Crew's ownership of the seed on disk: bounded no-follow reads, move-aside and restore, settle, discard and release |
+| `acp/client_claude.py` | `ClaudeAcpClient`, the `AcpClient` subclass a claude-agent-acp session is built as (see above): its constructor fields, the three seed static methods, and the bindings of the claude owners below |
+| `acp/client_claude_turn.py` | what only a claude prompt turn reads, bound on `ClaudeAcpClient`: its compaction notices and native `compaction_update`, the `_session/steering` floor, a turn whose only unfinished calls are background agents', and the debug line for an unhandled session update |
+| `acp/client_claude_session.py` | the claude-agent-acp session contract `ClaudeAcpClient` binds: adapter version floors, leaving a project-owned settings file out of the setting sources, the `_meta` envelope, Side Chat read-deny rules and the starting-mode pin |
+| `acp/client_opencode_session.py` | the opencode session contract (`OpencodeAcpClient`): holding a shell permission back until its command reaches the security cache, refusing a session left on opencode's hosted fall-back model, and its MCP array |
+| `acp/client_deepseek_session.py` | the DeepSeek Harness session contract (`DeepseekAcpClient`, whose constructor holds the gate nonce and READ_ONLY proof the launch records): its MCP array and its gate tripwire remedy (`DEEPSEEK_GATE_TRIPWIRE_REMEDY`) |
+| `acp/client_claude_seed.py` | the `ClaudeAcpClient` session's `settings.local.json` seed: render, create, adopt, re-seed, share and retract |
+| `acp/client_seed_ownership.py` | proving and handing back Crew's ownership of the seed on disk, bound on `ClaudeAcpClient`: bounded no-follow reads, move-aside and restore, settle, discard and release |
 | `acp/client_model_selection.py` | the session's model: advertised list and entitlement re-probe, served-default correction, `set_model`, the config-option push ladder (`_push_model_via_effort_split`, `_is_config_value_rejection`) and effort levels |
-| `acp/client_permissions.py` | permission requests and in-band tool restrictions: the permission event, approve and reject, the auto-approve identity gate, zero-tool and spec-disabled refusals, identity-drift refusals, the pi, DeepSeek and goose-mode tripwires, MiMo Code's unasked-call tripwire and the routing read-back |
+| `acp/client_permissions.py` | permission requests and in-band tool restrictions: the permission event, approve and reject, the auto-approve identity gate, zero-tool and spec-disabled refusals, identity-drift refusals, the pi and DeepSeek tripwires and the dispatch to a client class's own mode tripwire, MiMo Code's unasked-call tripwire and the routing read-back |
+| `acp/client_goose.py` | `GooseAcpClient`, the `AcpClient` subclass a goose session is built as, binding the owner below |
+| `acp/client_goose_session.py` | the goose session contract `GooseAcpClient` binds: the permission-mode read-back off the `session/new` and `session/load` answers, the mid-session mode tripwire, the note of a goose release outside the verified range, and the session's MCP array |
 | `acp/client_elicitation.py` | an MCP server's elicitation on this client: the parse-or-decline of a request on either wire, the decline without a consumer or on a text-only prompt API, `answer_elicitation` with its form validation, and the cancel of what is still pending at a turn boundary (see *MCP elicitation*) |
 | `acp/client_mcp_array.py` | the session's `mcpServers` array: member mounts, pooled broker stubs, the per-harness translations, the pi handoff, pruning of servers that cannot start, the MCP registration report and the spec's zero-tools answer |
 | `acp/client_transport.py` | JSON-RPC over the child's stdio: request ids, bounded request and response writes, frame reads, waiting for a response while deferring other frames, draining notifications, and the idle reader between turns with its stdout claims |
 | `acp/client_tool_events.py` | tool-call frames: text chunk, tool call, update and refinement extraction with their provenance caches, the ACP-layer SEL audit record, the Pre/PostToolUse hook fires and the tool results read back from kiro-cli's session JSONL |
-| `acp/client_usage.py` | usage, metadata and compaction frames: usage and prompt-token updates, context-window metadata, claude and codex inline compaction and `wait_for_compaction` |
+| `acp/client_usage.py` | usage, metadata and compaction frames: usage and prompt-token updates, context-window metadata, codex inline compaction and `wait_for_compaction` (claude's is in `acp/client_claude_turn.py`) |
 | `acp/client_turn_control.py` | a turn controlled from outside it: kiro, claude, goose and opencode steers, cancel, slash commands and the turn-state queries callers poll |
 | `acp/client_start.py` | the session start: the spawn (kiro-cli's own arm, and every other host's plan through the launch tail both drivers share), the `initialize` handshake and its params, new, loaded, forked and substituted sessions, and `ensure_ready` |
 | `acp/client_turn.py` | the turn loop: sending the prompt, `_prompt_loop`, reading the prompt response, dispatching and processing frames, `send_message`, `send_message_stream`, `stream_events` and `stream_unsolicited`, the tool-interrupted marker, OpenCode's and MiMo Code's deferred shell permission and the liveness consult |
@@ -95,10 +115,10 @@ through it reaches every owner binding the same object (`kiro_crew._facade_mirro
 The class statement sets `__module__ = "kiro_crew.acp.client"`, so reprs, pickles and
 `typing.get_type_hints` name the facade, and `acp/client.py` re-exports it:
 `kiro_crew.acp.client.AcpClient` is the same class object, and a patch of it reaches
-the class's own code. The class keeps the three seed static methods that read the
-`AcpClient` global (`_settings_path_holds`, `_claim_pathname_if_ours`,
-`_restore_aside_without_clobber`) and `is_process_alive` (the pid-reader ratchet counts
-its name). The class homes of `AcpRuntime` and `AcpSessionHandle` are below. `acp/client.py`
+the class's own code. The class keeps `is_process_alive` (the pid-reader ratchet counts
+its name). `ClaudeAcpClient` keeps the three seed static methods that read the `ClaudeAcpClient`
+global (`_settings_path_holds`, `_claim_pathname_if_ours`,
+`_restore_aside_without_clobber`). The class homes of `AcpRuntime` and `AcpSessionHandle` are below. `acp/client.py`
 keeps `_mise_which`, `_resolve_ssh_auth_sock` and `_resolve_spawn_env` (the spawn audit,
 the subprocess-encoding baseline and the cross-platform gate key them on this path) and
 the compatibility facade. The session start reads `_resolve_spawn_env` as a global of
@@ -3142,7 +3162,10 @@ spec the same way kiro-cli v2 does where the wire allows it:
   read as the engine's tool filter reads it: `tools` is `"*"` or holds an entry
   equal to the tool's id or one of its tags (`@builtin`, `@subagent`), or a `*` or
   `?` pattern matching one, and no `excludedTools` entry does the same. An
-  omitted list leaves the engine's own roster. A literal name is resolved like the
+  omitted list leaves the engine's own roster, and the session-start notice names
+  each agent file that roster skips for the kiro-cli shape above
+  (`_skipped_by_engine`), with the fix: name it in
+  `toolsSettings.subagent.availableAgents`. A literal name is resolved like the
   session's agent (fork governance, nearest-first with a checkout's spec trusted
   for nothing) and projected by the same
   `build_kas_custom_agents`, with its own switched-off tools, its own `mcp.json`

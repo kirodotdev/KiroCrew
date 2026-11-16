@@ -1,12 +1,12 @@
 ---
 title: Crew API — a stable, versioned HTTP API for clients of the Kiro Crew gateway
-status: accepted
+status: partial
 author: headless-crew (crewmate), with kirocrew-worker
 created: 2026-10-31
 last-audited: 2026-10-31
 audited-at: 4e605b0d2b
 doc-pr:
-implementation-prs: []
+implementation-prs: [34104]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Crew API
 
-- Status: accepted. A maintainer accepted the design on 2026-11-14, with open question Q7 decided. Nothing is built. This document changes no code.
+- Status: partial. A maintainer accepted the design on 2026-11-14, with open question Q7 decided. The first Owner-tier route is built: [#34104](https://github.com/kirodotdev/KiroCrew/pull/34104) serves `GET /v1/crew/owner/bots` (`src/kiro_crew/dashboard/routes/crew_api.py`), the twin of `GET /api/members`. The rest is not built. This document changes no code.
 - Machine-readable contract: the OpenAPI 3.1 drafts in [`assets/crew-api/`](assets/crew-api/crew-public.yaml):
   `crew-public.yaml` (the Public tier), `crew-owner.yaml` (the Owner tier) and `components.yaml`
   (shared schemas). Both `openapi-spec-validator` and `@redocly/cli lint` pass on them with the

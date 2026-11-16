@@ -1639,6 +1639,19 @@ import also refuses a member that did not land under its own top directory. The
 manifest is capped at `_MAX_SETTINGS_DOCUMENT_BYTES` (8 MiB, the budget the export
 sizes its own manifest to, session times included) before it is decoded.
 
+**Size limits and rebuildable folders.** Both `validate_import_zip` and
+`apply_import_zip` judge size through one function,
+`portability.import_size_problem`. No member may unpack to more than
+`_MAX_IMPORT_UNCOMPRESSED` (2 GiB), and a total at or under that is accepted. A
+larger total is still accepted while it is at most
+`_MAX_IMPORT_COMPRESSION_RATIO` (100) times the archive's own size, stays under
+`_MAX_IMPORT_UNCOMPRESSED_CEILING` (64 GiB), and the data home's disk has twice
+the total plus `_IMPORT_DISK_RESERVE` (1 GiB) free. A refusal names the biggest
+folders and how to make a smaller export. Files inside a `REBUILDABLE_DIRS`
+folder (`node_modules`, `.venv`, `venv`, tool caches) under `workspace/` are
+left out of the export and skipped by the import, and not counted against these
+limits (`portability._in_rebuildable_dir`, read by both sides).
+
 The dashboard export (`portability.create_export_zip`) carries every document a
 Settings choice is persisted in: `config.json`, `config.local.json`,
 `ui-prefs.json` and `notification_settings.json`. The snapshot `config`
@@ -4013,7 +4026,7 @@ pass `--profile`.
   else, a repository cloned inside the worktree included, matches as itself. A
   path with no `worktrees` folder in it runs no git, and a git failure leaves the
   path as it is.
-- **Injection.** `SessionAllocation._get_or_create_impl` resolves the binding
+- **Injection.** `SessionAllocationService._get_or_create_impl` resolves the binding
   against the final `effective_cwd`. This happens after capability preparation and
   before the warm-pool decision. `bound_profile_env` sets both `AWS_PROFILE` and
   `AWS_DEFAULT_PROFILE` in `extra_env` to the bound name, unless the caller's

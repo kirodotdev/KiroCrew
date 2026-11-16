@@ -1,6 +1,6 @@
 ---
 title: One reroute-first ask policy for every crew kind
-status: accepted
+status: implemented
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-15
 last-audited: 2026-11-15
@@ -14,9 +14,9 @@ superseded-by: []
 
 # RFC: One reroute-first ask policy for every crew kind
 
-Status: accepted. Asked for 2026-11-15 by the repository owner in the conductor
-chat; takes effect when this document merges. The code ships in
-[#37609](https://github.com/kirodotdev/KiroCrew/pull/37609). Every citation was
+Status: implemented. Asked for 2026-11-15 by the repository owner in the conductor
+chat; the code shipped in
+[#37609](https://github.com/kirodotdev/KiroCrew/pull/37609) (`88dc33ccd6`). Every citation was
 read on `origin/main` at `0fc6bc69d6`; the plan-gate lines in section 5.7 are
 on that PR's head `27ae3b155efe`.
 

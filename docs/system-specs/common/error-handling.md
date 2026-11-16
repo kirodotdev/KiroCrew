@@ -403,6 +403,13 @@ never touch AWS, so naming Bedrock sent their users chasing throttling that does
 not exist. The verb stays "throttling" in both forms so
 `llm_helpers._TRANSIENT_MARKERS` ("throttl") still classifies the formatted
 message as transient; the retry verdict is unchanged, only the subject noun moves.
+Kiro's **per-user request-rate limit** (HTTP 429 reason `USER_REQUEST_RATE_EXCEEDED`,
+or the engine's "sending requests faster than your rate limit allows") is worded
+ahead of that branch by `acp/user_rate_limit_errors.py`: the limit is per user, not
+per model, so `USER_RATE_LIMIT_TEXT` says a model switch will not help and to wait,
+instead of the throttle row's switch-model advice. Only the wording is its own; the
+retry verdict and the throttle tag still come from the frame's throttle tokens, and
+the text keeps "throttling" for the same `_TRANSIENT_MARKERS` reason.
 
 A **network-path drop** is the one transient class that waits by time rather
 than by count. `AcpError.connection_failure` is set from the raw frame when the
