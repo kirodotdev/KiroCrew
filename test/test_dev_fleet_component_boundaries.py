@@ -205,8 +205,8 @@ def test_server_remains_a_thin_composition_facade() -> None:
 
 def test_route_manifest_and_http_adapter_ownership_are_stable() -> None:
     expected = [
-        ("HEAD", "/health", "api_health"),
-        ("GET", "/health", "api_health"),
+        ("HEAD", "/health", "api_liveness"),
+        ("GET", "/health", "api_liveness"),
         ("HEAD", "/api/health", "api_health"),
         ("GET", "/api/health", "api_health"),
         ("HEAD", "/api/fleet", "api_dev_fleet_fleet"),
