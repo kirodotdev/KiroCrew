@@ -124,6 +124,20 @@ async def test_a_process_beyond_the_ancestry_limit_is_not_admitted_by_the_backen
 
 
 @pytest.mark.asyncio
+async def test_a_descendant_reparented_to_pid_1_is_refused_because_the_host_leg_says_no(
+    monkeypatch, fake_sel, caller, signed
+) -> None:
+    """A double-forked descendant leaves the ancestry walk, so only the host leg refuses it."""
+    caller(False)
+    _backend_registry(monkeypatch, "demo-app", {_PEER_PID: 800, 800: 1})
+    assert bmod.spawned_backend_owner(_PEER_PID) is None
+    response, row = await _mint(fake_sel)
+    assert response.status == 403
+    assert signed == []
+    assert row["resources"] == "unverified-owner-process"
+
+
+@pytest.mark.asyncio
 async def test_a_host_process_still_gets_an_owner_token_without_an_app_claim(
     monkeypatch, fake_sel, caller, signed
 ) -> None:
