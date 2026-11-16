@@ -59,7 +59,7 @@ from kiro_crew.dashboard.handlers.work_ledger import (
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.platform.context import redact_via_context
-from kiro_crew.work_vocab import WORK_BLOCKED_REASONS
+from kiro_crew.work_vocab import waits_on_person
 
 logger = logging.getLogger(__name__)
 
@@ -382,11 +382,8 @@ def awaits_person(
     A running turn means the worker moved on: the conductor messaged it or a loop
     woke it, and neither writes a ledger answer. A tool approval it waits on mid-turn
     has its own approval card, so it is not lost here."""
-    return (
-        not running
-        and item.status in work_ledger.WAITING_STATUSES
-        and item.reason in WORK_BLOCKED_REASONS
-        and not answered_since_report(item, events)
+    return waits_on_person(
+        item.status, item.reason, answered=answered_since_report(item, events), running=running
     )
 
 

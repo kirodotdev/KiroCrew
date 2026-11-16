@@ -66,6 +66,24 @@ WORK_REMOTE_DISPATCH_SETTING: str = "work_ledger.remote_dispatch"
 WORK_BLOCKED_REASONS: tuple[str, ...] = ("approval", "needs_human")
 #: The statuses a ``reason`` may ride on.
 WORK_REASON_STATUSES: tuple[str, ...] = ("blocked", "question")
+
+
+def waits_on_person(
+    status: object, reason: object, *, answered: bool, running: bool = False
+) -> bool:
+    """Whether an OPEN item's last report waits on the PERSON: a ``blocked`` /
+    ``question`` naming one of :data:`WORK_BLOCKED_REASONS`, not answered since (a
+    conductor ``decide`` or a person's ``steer`` after the report), and its worker's
+    turn not *running*. The one rule behind every "needs you" count: the Board and
+    sidebar (``work_ledger_board.awaits_person``) and the crew-log workstreams fold."""
+    return (
+        not running
+        and not answered
+        and status in WORK_REASON_STATUSES
+        and reason in WORK_BLOCKED_REASONS
+    )
+
+
 #: ``steer`` is a person's own text typed into a worker (actor ``person``). A person's
 #: steer outranks the conductor's decision: the conductor reads new steer events
 #: before it decides and never overrules them. ``retire`` is the hub moving a remote
