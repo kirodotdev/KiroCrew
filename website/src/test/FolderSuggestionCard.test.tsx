@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import FolderSuggestionCard from '../pages/chat/FolderSuggestionCard'
+import { COMPOSER_RADIUS } from '../components/composerRadius'
 import type { ChatFolder } from '../types'
 import reducer, { setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, startLocalTurn, confirmOptimisticSend, FOLDER_SUGGESTION_MAX_TURNS } from '../store/chatSlice'
 
@@ -40,6 +41,11 @@ function renderCard(over: Partial<React.ComponentProps<typeof FolderSuggestionCa
 const select = () => screen.getByTestId('folder-suggestion-select') as HTMLSelectElement
 
 describe('FolderSuggestionCard', () => {
+  it('is as round as the composer it sits on', () => {
+    renderCard()
+    expect(screen.getByTestId('folder-suggestion-card').style.borderRadius).toBe(`${COMPOSER_RADIUS}px`)
+  })
+
   it('prefills the dropdown with the suggested folder, named by the visible prompt', () => {
     renderCard()
     // The sentence is a real <label htmlFor>, so it is the select's accessible

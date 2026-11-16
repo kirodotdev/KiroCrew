@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { TipCard, useTipTrigger } from '../components/TipCard'
 import { api } from '../api/client'
+import { COMPOSER_RADIUS } from '../components/composerRadius'
 
 const mockTip = {
   id: 'test-tip',
@@ -116,6 +117,11 @@ describe('TipCard (pill that opens into a card)', () => {
     fireEvent.click(collapse)
     expect(screen.queryByTestId('tip-body')).toBeNull()
     expect(document.activeElement).toBe(screen.getByRole('button', { name: /Schedule recurring tasks/i }))
+  })
+
+  it('opens into a card as round as the composer it sits on', () => {
+    renderOpen(<TipCard tip={mockTip} onDismiss={onDismiss} />)
+    expect(screen.getByTestId('tip-card').style.borderRadius).toBe(`${COMPOSER_RADIUS}px`)
   })
 
   it('keeps the same pane element when the pill opens into the card', () => {

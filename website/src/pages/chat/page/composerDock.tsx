@@ -7,6 +7,7 @@ import { FolderGit2 } from 'lucide-react'
 
 import ErrorNotice from '../../../components/ErrorNotice'
 import { Glass } from '../../../components/Glass'
+import { COMPOSER_RADIUS } from '../../../components/composerRadius'
 import { setMovedSlot, useMovedSlot } from '../../../hooks/useMoveSlotToFolder'
 import { pathBasename } from '../../../utils/pathBasename'
 import { TipCard, type useTipTrigger } from '../../../components/TipCard'
@@ -127,8 +128,8 @@ export function useComposerAboveBand({
        input box and an options row sits above it. */}
       {folderDir && (
         <div className="pt-1.5" key="folder-project-hint">
-          <Glass variant="chip" radius={6} role="status" data-testid="folder-project-hint"
-            className="glass-accent glass-shadow w-full flex flex-wrap items-center gap-x-2.5 gap-y-1.5 px-4 py-2 rounded-md text-xs">
+          <Glass variant="chip" radius={COMPOSER_RADIUS} role="status" data-testid="folder-project-hint"
+            className="glass-accent glass-shadow w-full flex flex-wrap items-center gap-x-2.5 gap-y-1.5 px-4 py-2 text-xs">
             <FolderGit2 size={14} className="shrink-0" aria-hidden="true" style={{ color: 'var(--accent)' }} />
             <span className="flex-1 text-[12px] leading-tight min-w-0 break-words" style={{ color: 'var(--text)' }}>
               {i18nT('components.folderProjectHint.differs', { current: pathBasename(slotProject || '') || '—', folder: pathBasename(folderDir) })}
