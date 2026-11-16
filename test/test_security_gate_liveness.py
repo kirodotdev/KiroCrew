@@ -852,7 +852,10 @@ def _url_payload_command(n: int) -> str:
 #: ``exfil_bash.audit_bash_exfiltration`` (each exfil refusal names its rule and
 #: span); the ``exfil`` facade manifest lists the new name. No deny pattern or rule
 #: is removed. Re-measured.
-_PACKAGE_LINE_BUDGET = 36_891
+#: Raised by 6, from 36,891, to 36,897, for ``memory_provider_consent.json`` on the
+#: crew secret-leaf list, beside ``decisions_consent.json``: the record authorizes
+#: memory to leave the machine, so the file-tool gate fences it like that one.
+_PACKAGE_LINE_BUDGET = 36_897
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -52,6 +52,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KAS,
     ACP_BACKENDS_CHAT_RUNTIME_SHARING,
     CHAT_RUNTIME_SHARING_HARNESSES,
@@ -610,6 +611,10 @@ class ChatRuntimeKey:
     ``work_dir`` stays in the key on KAS too: the spawn mounts and enters the
     founder's work directory and runs the derived-spec gate against it, and each
     session's payload gates read the process's work directory, not the session's.
+
+    On claude the same five are left EMPTY (:data:`CLAUDE_PER_SESSION_FIELDS`):
+    claude-agent-acp takes no ``--agent`` and no ``--model``, and each session's own
+    seed, envelope and freshness gate are its own (``ClaudeHarness.prepare_session``).
     """
 
     work_dir: str
@@ -715,13 +720,39 @@ KAS_PER_SESSION_FIELDS: Final[frozenset[str]] = frozenset(
     {"agent", "model", "reasoning_effort", "spec_generation", "launch_agent"}
 )
 
+#: The key fields a claude session carries per session, so a claude key leaves them
+#: empty. claude-agent-acp takes no ``--agent`` and no ``--model``: the spawn
+#: (``ClaudeHarness.resolve_spawn``) reads none of them, each session writes its own
+#: settings seed and ``_meta.claudeCode`` envelope from its own agent and model
+#: (``ClaudeHarness.prepare_session``, which also runs the spec freshness gate for
+#: that agent), and sets its model and effort with ``session/set_model`` and
+#: ``session/set_config_option``.
+CLAUDE_PER_SESSION_FIELDS: Final[frozenset[str]] = frozenset(
+    {"agent", "model", "reasoning_effort", "spec_generation", "launch_agent"}
+)
+
 #: Per harness: the key fields its sessions carry per session, so sessions that
 #: differ only in them may share one process (a whole session tree). The one place
 #: a harness opts into tree sharing; a harness not listed keys every field, so its
 #: sessions share only when everything matches. A harness joins with its own PR.
 PER_SESSION_FIELDS_BY_BACKEND: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
-    {ACP_BACKEND_KAS: KAS_PER_SESSION_FIELDS}
+    {ACP_BACKEND_KAS: KAS_PER_SESSION_FIELDS, ACP_BACKEND_CLAUDE: CLAUDE_PER_SESSION_FIELDS}
 )
+
+#: Harnesses whose founder's spec decides the process's MCP tool surface at
+#: ``initialize`` (:func:`agent_pins_tool_surface`). claude-agent-acp takes each
+#: session's MCP array and tools in that session's own ``session/new``, so no spec
+#: of its sessions pins the process.
+FOUNDER_TOOL_SURFACE_BACKENDS: Final[frozenset[str]] = frozenset({ACP_BACKEND_KAS})
+
+
+def keys_tool_surface(backend: str) -> bool:
+    """Whether a session of *backend* may have to key its spec for the tool surface:
+    the harness takes the spec per session, and its founder's spec decides the
+    process's tool surface."""
+    return backend in FOUNDER_TOOL_SURFACE_BACKENDS and bool(
+        per_session_fields(backend) & TOOL_SURFACE_FIELDS
+    )
 
 
 def per_session_fields(backend: str) -> frozenset[str]:
@@ -1030,6 +1061,8 @@ def agent_spawns_native_subagents(
 __all__ = [
     "CHAT_RUNTIME_SHARING_PREVIEW",
     "KAS_CHAT_SHARING_MIN_ENGINE",
+    "CLAUDE_PER_SESSION_FIELDS",
+    "FOUNDER_TOOL_SURFACE_BACKENDS",
     "KAS_PER_SESSION_FIELDS",
     "PER_SESSION_FIELDS_BY_BACKEND",
     "TOOL_SURFACE_FIELDS",
@@ -1041,6 +1074,7 @@ __all__ = [
     "chat_runtime_sharing_enabled",
     "chat_runtime_sharing_harness_enabled",
     "chat_sharing_ineligible_reason",
+    "keys_tool_surface",
     "per_session_fields",
     "eligible_for_chat_sharing",
     "engine_shares_chats",

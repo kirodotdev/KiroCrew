@@ -40,6 +40,7 @@ _INJECTED_PREFIXES = (
     "[subagent batch completion event]",
     "[auto-nudge cycle",
     "[monitor wake]",
+    "[monitor finished]",
     "[work-ledger wake]",
     "[tool refusal",
     "[tool stall",

@@ -2691,8 +2691,16 @@ about the code. Each is a hermeticity gap, and each has one fix:
   `pin_kiro_cli` looks in the fixed install directories (`~/.local/bin` among them), so
   an unpinned writer gate spawned the host's `kiro-cli --version` inside the sandbox,
   whose ceiling seal created `<data home>/profiles` between a preview and its save, and
-  the save failed `stale_revision`. A test that reaches the spec-permissions gate pins
-  `installed_kiro_cli_version` (`agent_capabilities_helpers._accepting_kiro_cli`).
+  the save failed `stale_revision`. The same real binary wrote `mcs-telemetry-l1-*.log`
+  and `kiro-log` into `$TMPDIR` from whichever test probed it first in a worker, so every
+  shard ended with a temp-residue red. The rootdir floor's `_hide_the_operators_kiro_cli`
+  now drops the directories under the REAL account home from `known_kiro_cli_dirs` at
+  every module binding (`_KIRO_CLI_DIR_BINDINGS`, ratcheted by
+  `test_floor_operators_kiro_cli.py`), so a test that never chose a kiro-cli sees "not
+  installed", as on CI. A test that wants one passes its own home or plants it through
+  `KIROCREW_KIRO_BIN`. A test that reaches the spec-permissions gate still pins
+  `installed_kiro_cli_version` (`agent_capabilities_helpers._accepting_kiro_cli`), which
+  states the version it means.
 - **Who owns a binary, and where a home's stores point, are the host's.** The grep
   endpoint refuses a ripgrep owned by another user (a dev image's `/usr/local/bin/rg`
   owned by uid 1001). A test whose subject is the rg ENGINE's answer pins
@@ -4518,8 +4526,27 @@ do not quote a layer's absolute number as current. Re-ablate before optimizing o
   host-mutation floor, so the only version of that saving is merging guards behind
   fewer fixture *names* while every guard still runs.
 
-Every layer is live: the item tree, the closures and the rewritten modules are
-retained for the whole session by design, so none of the floor is reclaimable.
+**Re-measured at 283,605 items, the fixture bookkeeping had become the biggest
+layer.** A `--collect-only -n0` worker peaked at 5,295 MiB, and `tracemalloc` put
+2,971 MiB of it in pytest's per-item fixture structures: each item resolves ~130
+fixtures, and pytest kept a fresh `(FixtureDef,)` tuple per name per test function
+(1,084 MiB), a `name2fixturedefs` dict per function (577 MiB), and a copy of that
+dict in every item's `TopRequest` (884 MiB). Almost all of them are identical. The
+rootdir conftest's `pytest_itemcollected` hook (`compact_collected_item`) now shares
+the identical tuples and dicts and drops each item's request until pytest rebuilds
+it at setup, which took the collection peak to 2,957 MiB. It runs per item so the
+freed copies are reused while collection is still allocating; a hook at collection
+finish would leave the peak where it was. `test/test_worker_memory_retention.py`
+pins it, including that every item but the running one holds no request.
+
+The hook bounds what each autouse fixture costs; it does not make one free. Every
+autouse name still adds a slot to each function's `names_closure` (shared only
+between a function's own parametrizations, because pytest-asyncio inserts into
+it) and a setup and teardown to every test. Merge a new guard into an existing
+autouse fixture of the same scope before adding a name.
+
+Every layer that remains is live: the item tree, the closures and the rewritten
+modules are retained for the whole session by design.
 
 So the full suite genuinely needs multiple gigabytes. On an 8–16 GiB Linux or Windows
 laptop with a browser open it may not fit; on macOS the 16 GiB reservation often clamps

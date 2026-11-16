@@ -1065,6 +1065,7 @@ from kiro_crew.work_ledger_records import (  # noqa: E402, F401
     logger,
 )
 from kiro_crew.work_ledger_remote import (  # noqa: E402, F401
+    _EVENT_ID_SHAPE,
     CODE_RETIRED_HISTORY_FULL,
     CREW_STATES,
     MAX_INSTANCE_ID_CHARS,
@@ -1087,6 +1088,7 @@ from kiro_crew.work_ledger_remote import (  # noqa: E402, F401
     apply_remote_retire,
     binding_id,
     boards_with_open_remote,
+    is_peer_event_id,
     item_liveness,
     open_remote_bindings,
     read_remote_state,

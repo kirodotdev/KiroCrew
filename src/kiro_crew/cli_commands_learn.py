@@ -174,6 +174,49 @@ def _learn(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    # A memory provider that replaces Crew's memory is reached only through the
+    # gateway, so the lesson verbs go through its /api/lessons routes.
+    from kiro_crew import cli_memory_provider
+
+    if action in ("add", "list", "remove") and cli_memory_provider.provider_replaces():
+        if action == "add":
+            # The same origin gate the builtin branch below runs: a call from a shell
+            # inside an agent session is a learn_add no person triggered, whichever
+            # memory takes the lesson.
+            from kiro_crew.config.memory_sections import lesson_origin_gate_mode_from
+
+            origin_mode = lesson_origin_gate_mode_from(
+                getattr(cfg.memory, "lesson_origin_gate", None)
+            )
+            if origin_mode != "off":
+                from kiro_crew.cloud.aws import _in_agent_session
+                from kiro_crew.memory_origin_gate import (
+                    PATH_CLI_LEARN_ADD,
+                    TURN_AUTOMATIC,
+                    gate_learn_add_turn,
+                )
+
+                if _in_agent_session():
+                    gated = gate_learn_add_turn(
+                        cleaned_add.get("applies") or None,
+                        TURN_AUTOMATIC,
+                        origin_mode,
+                        rule=cleaned_add["rule"],
+                        path=PATH_CLI_LEARN_ADD,
+                    )
+                    cleaned_add = dict(cleaned_add)
+                    if gated.applies:
+                        cleaned_add["applies"] = gated.applies
+                    if gated.drop_negative:
+                        cleaned_add.pop("negative", None)
+        cli_memory_provider.learn(
+            action,
+            cleaned_add,
+            remove_query,
+            getattr(args, "port", None),
+            getattr(args, "repo_scope", None),
+        )
+        return
     # No verb: print the usage line before the vector store below is built, since
     # init() creates memory.db on a fresh data home.
     if action not in ("add", "list", "remove"):

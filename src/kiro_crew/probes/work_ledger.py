@@ -339,15 +339,36 @@ class WorkLedgerProbe(irq.Probe):
         # A tail longer than ``_EVENT_TAIL`` carries one extra, oldest event that is
         # only the next one's predecessor, never a wake of its own.
         first = 1 if len(events) > _EVENT_TAIL else 0
+        newest_report = max(
+            (i for i, e in enumerate(events) if (e.kind or "").strip() == "report"), default=-1
+        )
         for index in range(first, len(events)):
             event = events[index]
             previous = events[index - 1] if index else None
-            if previous is not None and ledger_wake.repeats_status(
+            prior = ledger_wake.previous_report(events, index)
+            cause = ""
+            if prior is not None and ledger_wake.repeats_wait(
+                prior.status, prior.text, event.status, event.text
+            ):
+                # The same wait as the worker's report before it, even with the
+                # conductor's own decide between them. Only the newest report's
+                # reason is known (the item's), so it alone is checked against the
+                # cause last delivered: a new reason is news.
+                if index != newest_report or ledger_wake.already_woke(
+                    conductor_key,
+                    item.item_id,
+                    ledger_wake.cause_token(event.status, item.reason),
+                    watcher=self._watcher,
+                ):
+                    continue
+            elif previous is not None and ledger_wake.repeats_status(
                 previous.kind, previous.status, event.status
             ):
                 # Same status as the report just before: the conductor already woke
                 # on that one (``ledger_wake.repeats_status``).
                 continue
+            if index == newest_report and (event.status or "").strip() in ("blocked", "question"):
+                cause = ledger_wake.cause_token(event.status, item.reason)
             if remote_dispatch is None and (event.status or "").strip() in (
                 WORK_REMOTE_DISPATCH_STATUSES
             ):
@@ -361,7 +382,7 @@ class WorkLedgerProbe(irq.Probe):
             # reset on a revision: the key already cannot recur, and clearing it
             # when some OTHER item reports would re-fire a wake this one already
             # delivered.
-            if not self._spend(conductor_key, item.item_id, event.id):
+            if not self._spend(conductor_key, item.item_id, event.id, cause=cause):
                 continue
             found.append(
                 irq.Observation(
@@ -402,7 +423,11 @@ class WorkLedgerProbe(irq.Probe):
             looping=self._worker_looping,
             held=self._worker_loop_held,
         )
-        if work_ledger.is_stale(
+        # An open ``ask`` record says the conductor is waiting on a person for this
+        # item, so its silence is not the worker's to explain. The board's own
+        # ``stale`` flag is left alone, and a closed worker session still raises.
+        waits_on_person = bool(item.ask) and not closed
+        if not waits_on_person and work_ledger.is_stale(
             item,
             worker_running=running,
             worker_closed=closed,
@@ -413,12 +438,22 @@ class WorkLedgerProbe(irq.Probe):
             # quiet past the window -- or the worker's session gone, which needs no
             # window -- AND the worker not running AND its last word still leaving the
             # move with it. Restating any part of it here would be a second copy of a
-            # shipped rule.
-            token = f"{_STALL_KEY}:{item.last_report_at or 'none'}"
+            # shipped rule. The token is the stall's episode
+            # (``ledger_wake.stall_episode``), not the last report's stamp: a
+            # ``progress`` that keeps the status is not a second stall.
+            episode = ledger_wake.stall_episode(
+                item,
+                events,
+                closed=closed,
+                handed_back=work_ledger._decided_after_report(item),
+            )
+            token = f"{_STALL_KEY}:{episode}"
             if self._spend(conductor_key, item.item_id, token, replaces=f"{_STALL_KEY}:"):
                 found.append(
                     irq.Observation(
-                        f"{_STALL_KEY}:{item.item_id}:{item.last_report_at or 'none'}",
+                        # The episode, not the report stamp: the kernel masks a key
+                        # for ``realert_secs``, so a re-armed stall needs a new one.
+                        f"{_STALL_KEY}:{item.item_id}:{episode}",
                         irq.Severity.WAKE,
                         ledger_wake.stall_brief(
                             item_id=item.item_id,
@@ -429,7 +464,15 @@ class WorkLedgerProbe(irq.Probe):
                 )
         return found
 
-    def _spend(self, conductor_key: str, item_id: str, token: str, *, replaces: str = "") -> bool:
+    def _spend(
+        self,
+        conductor_key: str,
+        item_id: str,
+        token: str,
+        *,
+        replaces: str = "",
+        cause: str = "",
+    ) -> bool:
         """Whether this item may wake now, charging the budget if it does.
 
         A *token* that already woke the conductor never wakes it again while the item
@@ -456,7 +499,12 @@ class WorkLedgerProbe(irq.Probe):
             )
             return False
         if not ledger_wake.note_wake(
-            conductor_key, item_id, token=token, replaces=replaces, watcher=self._watcher
+            conductor_key,
+            item_id,
+            token=token,
+            replaces=replaces,
+            watcher=self._watcher,
+            cause=cause,
         ):
             logger.warning(
                 "work-ledger probe: item %s's wake could not be charged; folding "

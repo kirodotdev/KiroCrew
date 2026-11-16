@@ -443,6 +443,47 @@ def test_a_resumed_session_sends_its_own_envelope(harness, tmp_path):
     assert not _seed(tmp_path).exists()
 
 
+def test_a_session_seeds_its_own_model_over_the_runtimes(harness, tmp_path):
+    """On a process a session tree shares, the runtime's model is the founder's."""
+
+    async def _run() -> Any:
+        return await harness.prepare_session(
+            work_dir=tmp_path,
+            agent="kirocrew",
+            model="founder-model",
+            session_key="dashboard:worker",
+            channel_id="",
+            memory_mode="persistent",
+            options={"model": "worker-model"},
+        )
+
+    state = asyncio.run(_run())
+    try:
+        assert state._model == "worker-model"
+    finally:
+        asyncio.run(harness.end_session(state))
+
+
+def test_a_session_whose_own_spec_is_stale_is_refused_before_its_seed(
+    harness, tmp_path, monkeypatch
+):
+    """The spawn's freshness gate covers the founder's agent; a joiner's runs here."""
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.acp.session_handle import AcpRuntimeError
+
+    asked: list[tuple[Any, Any]] = []
+
+    def _stale(agent: Any, work_dir: Any) -> None:
+        asked.append((agent, work_dir))
+        raise agent_mod.DerivedSpecStale("the worker spec is stale")
+
+    monkeypatch.setattr(agent_mod, "require_fresh_derived_spec", _stale)
+    with pytest.raises(AcpRuntimeError, match="stale"):
+        asyncio.run(_prepare(harness, tmp_path))
+    assert asked and asked[0][0] == "kirocrew"
+    assert not _seed(tmp_path).exists()
+
+
 def test_the_kiro_start_never_reaches_the_per_session_seams(monkeypatch):
     """harness-parity H13: kiro-cli reads the flag and goes on."""
     from kiro_crew.acp.runtime import AcpRuntime
@@ -504,6 +545,7 @@ def test_a_claude_chat_takes_the_runtime_arm_only_with_a_placement(tmp_path, mon
         "permission_mode": "acceptEdits",
         "side_read_only": True,
         "include_memory": False,
+        "model": "",
     }
 
 

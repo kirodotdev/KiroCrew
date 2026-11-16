@@ -4365,6 +4365,268 @@ learned-rule operations address the exact prepared SQLite service. V1 retains
 workspace Markdown, JSONL fallback and separate FTS; its startup context is the
 bounded admission described above, with earlier activity behind `memory_recall`.
 
+## Memory providers (`memory_provider/`)
+
+Crew's memory has one seam with two implementations: Crew's own memory (everything
+above) and a provider an installed App Kit app serves. `memory.provider` picks one of
+three modes:
+
+| Mode | Reads | Writes | Crew's own memory |
+|---|---|---|---|
+| `builtin` (default) | Crew | Crew | in use, byte for byte as without the seam |
+| `replace` | the provider | the provider | on disk, untouched; comes back on a switch back |
+| `augment` | Crew, then the provider's read-only block and recall hits | Crew | in use |
+
+**One selection point.** `resolver.route_for(store_id, session_key=...)` is the only
+place a provider is chosen; no caller branches on a provider id. A caller asks
+`route.builtin_answers` (run today's code), `route.replaces` or `route.augments`. With
+mode `builtin` and no id, `route_for` answers the shared `BUILTIN_ROUTE` without
+reading anything but the loaded config, so an install that never chose a provider
+takes exactly the path it took before.
+
+**Frozen per session.** The first `route_for` for a session writes
+`memory_provider_snapshot` (mode, id, app version, API version, and the named stores
+pinned to `provider_mode: builtin` at that moment) into its metadata
+record, and that session keeps it: a switch applies to new chats and never mixes two
+providers in one conversation, including a switch that pins a store. A provider choice
+is used only once it is saved: if the metadata write fails, nothing is cached, the route
+is unavailable for that call (`SnapshotNotRecorded`) and the next call tries again. A session record that exists but cannot be read (`get_metadata_status` answers unreadable) is never frozen from config, since it may hold another provider's pin: the route is unavailable for that call, neither Crew's memory nor a provider answers, and the next call reads it again (`SnapshotUnreadable`). A session created before `memory.provider.switched_at`
+freezes to `builtin`. Child work inherits its parent's choice before its first context
+build (`resolver.inherit_snapshot`, called from the subagent run; best effort, so an
+unreadable parent record leaves the child to freeze from config).
+`memory.provider.id` is kept when the owner switches back to `builtin`, so frozen chats
+stay on their provider.
+
+**No silent fallback.** A provider whose app is disabled or missing, whose backend the
+health watch does not report healthy, that sends memory off the machine without the owner's consent, that cannot isolate a
+Bot's store (`multi_store: false` for a store other than `default`), or that is asked
+for in a Shared Crew, gives a route with `unavailable` set. Prompts then carry
+`[Memory unavailable] <name> did not answer (...)`, recall carries a notice, and
+`learn_add` answers `refused` / `provider_unavailable`. Crew's own memory never stands
+in. A resolver fault for a configured provider reads the same way
+(`chokepoints.session_route`).
+
+**Contract.** `contract.py` (contract v1; it has not shipped, so it changes in place):
+`ProviderScope` (built by Crew from the execution record: `store_id`, `member_id`,
+`memory_mode` persistent or incognito, `session_id`, `project`, `principal`),
+`MemoryItem` / `NewItem`, `WriteResult` (the lesson vocabulary: `inserted`, `enriched`,
+`unchanged`, `deduped`, `refused`; `delete` answers `deleted` or `unchanged`),
+`Capabilities`, `Changes`, `Revision`, and the errors `ProviderUnavailable`,
+`ProviderRefused`, `ProviderReadOnly`, `ProviderNotSupported`, `ProviderConflict`,
+`ProviderInvalidResponse` (each may carry `retry_after_secs`). Every answer is
+validated; an answer over 200 items or 512 KB is invalid.
+
+- **`connect`** is the first call. Crew sends `crew.api_versions`, `crew.want_mode`
+  and the kinds it speaks; the provider answers its name and version, `egress`,
+  `read_only`, `ops`, `kinds`, `search` (lexical, semantic, filters), `writes`
+  (`verbatim`, `preserves_timestamps`, `keeps_origin`, `idempotent`, `dry_run_put`,
+  `max_batch`, `max_text`), `history` (`revisions`, `retired`, `changes`), `ingest`
+  (`none` / `raw` / `items`), `isolation` (`multi_store`, `principal_auth`),
+  `documents` (`none` / `read` / `readwrite`), `steering` (only `none` in v1) and
+  `max_page`. A read-only answer drops its write ops; `changes` and `revisions` count
+  only with their `history` flag. `AppMemoryProvider` keeps the answer for ten
+  minutes and asks again on a switch and on `GET /?probe=1`.
+- **Ops.** Required: `connect`, `health`, `context`. Then `search`, `get`, `list`
+  (cursor, kinds, `status` `active`/`draft`/`retired`/`all`, `updated_after`), `put`
+  (`idempotency_key`, `item_id`, `expected_revision`, `dry_run`), `delete`; optional
+  `put_batch` (per-entry results, at most `max_batch`), `changes` (upserts and deletes
+  since a cursor), `revisions`, `ingest`. Deadlines: `context`
+  `memory.provider.timeout_secs` (default 3, 0.5 to 10); `connect`, `health`, `search`,
+  `get`, `list`, `revisions` 5 s; `put`, `delete`, `changes` 10 s; `put_batch` 30 s;
+  `ingest` 60 s. Each deadline bounds the whole exchange: every read gets only the time
+  left, and a timer shuts the socket at the deadline, so reads inside `http.client`
+  (repeated `100 Continue` heads, chunk framing) cannot outlast it.
+- **Envelope.** Kinds `preference`, `fact`, `episode`, `summary`, `rule`, `finding`,
+  `index`, `note` and `document` (one whole Markdown document, `meta["crew.doc"]`
+  `preferences` or `projects`). Items carry `created_at` / `updated_at` on writes too,
+  `origin` (`provider`, `store`, `id` it was first written under), an optional
+  `revision`, `status` (`active`, `draft`, `retired`; Crew's superseded, expired and
+  forgotten become `retired` plus `meta["crew.retired_reason"]`) and reserved meta keys
+  `crew.source`, `crew.confidence`, `crew.importance`, `crew.written_by`,
+  `crew.session_key`, `crew.derived_from`, `crew.category`, `crew.retired_reason`,
+  `crew.doc`, `crew.value_json` (a fact whose text is its JSON value), `crew.tags` (an
+  episode's tags as a JSON list; tags and `crew.importance` are written back on import) and `negative`,
+  which a provider returns as written (at most 50 pairs). A fact Crew deleted is refused
+  by an import (`deleted_in_crew`), never restored behind the owner.
+  Timestamps are Unix seconds up to the end of year 9999 (a millisecond value is an invalid answer). Text caps: 8,000 characters, 64,000 for a `document`; longer text is cut and marked on
+  read and refused on write. Embeddings never cross the wire: a provider ranks with its
+  own index.
+- **Mode gaps.** `Capabilities.mode_gaps(mode)` names what a mode lacks. `augment`
+  needs `context` or `search`. `replace` needs a writable provider with `get`, `list`,
+  `put`, `delete` and `search`, the kinds `rule`, `finding`, `preference`, `fact`,
+  `writes.verbatim` and `writes.idempotent`; `ingest: none` is allowed once the owner
+  acknowledges that automatic learning stops. A Bot store needs `isolation.multi_store`;
+  a Shared Crew needs `isolation.principal_auth`. Global V1's Markdown documents move
+  only to `documents: readwrite`; otherwise they stay in Crew and the plan says so.
+
+**What stays Crew's.** Identity and routing (the provider gets `store_id` and
+`member_id` and never picks them), memory modes (`temporary` never reaches a provider:
+`scope_for` returns `None`; `incognito` never reaches `put`/`delete`/`ingest`),
+governance, the write switches, route auth, budgets and block framing, content screens
+(the volatile-fact refusal and injection scan run before `put`; what a model wrote, a
+consolidation item or raw transcript span, an agent's or a task's lesson, a recall query and the
+user's message sent as the context query or the per-message lesson search, has credentials
+and exfiltration URLs redacted from every field (text, title, scopes, meta) before it is sent (`migration.redact_model_written`), while an
+owner's own move or import is sent as written; every item's text and the
+provider's display name go through `markers._scrub_turn_lesson` and the fence
+neutralizer before a block), the sandbox, egress consent, steering, and manual member
+documents (persona, rules, briefing, guides).
+
+**Harness memory pin.** `harness_pin.harness_memory_settings` answers
+`{"userMemoryOptIn": {"enabled": false}}` while `memory.provider.mode` is `replace`, and
+nothing otherwise. The spawn handshake (`runtime_spawn_launch._handshake_client_capabilities`)
+merges it into `_meta.kiro.settings` only inside its `client_meta_settings` branch, a
+positive capability of the harness, so a harness without that channel is sent nothing,
+and in `builtin` and `augment` mode the harness keeps deciding as before. The pin is
+judged once per spawn from config, because `initialize` is per process: a process
+spawned before a switch keeps what it was sent until it restarts.
+
+**Each path in `replace` mode.**
+
+| Path | Replace |
+|---|---|
+| Member essentials | Crew (Bot configuration) |
+| Preferences, facts, activity index, `[Memory activity]` | provider `context`, rendered by `render.session_parts` into the same budgets. Global V1's `preferences.md` and `projects.md` stay in Crew for a provider without `documents: readwrite` and are still read (`chokepoints._crew_documents_parts`); Crew's facts and lessons never stand in |
+| `[Learned corrections]` / `[Learned experience]` | `rule` / `finding` items, the rule and findings allowances |
+| `[Memory tools]` | Crew, naming the provider |
+| Per-message lessons | provider `search(kinds={rule})`, max 3, 2,000 characters |
+| Post-compaction lessons | the session's cached rules block, no new call; one context call when this process has none cached (a chat resumed after a restart, `render.rebuilt_rules_block`) |
+| Early reads (`prefetch_session_memory`, `embed_startup_query`) | skipped; the build asks the provider itself |
+| `memory_recall` | provider `search`, active items only, narrowed by the call's `kind`, `since`, `until` and `as_of` (an undated item does not answer a timed query); the recall decision point's keep hook still narrows episodes |
+| `learn_add` / `learn_list` / `learn_remove` / `learn_update` | `put` / `list` / `delete` / `put(item_id)` (`lesson_routes.py`), same names and answers. Each call sends its own idempotency key, so a lesson removed and added again is stored again; `learn_update` changes only the tier and keeps the rest of the item, written against the item's `revision` (`expected_revision`; a provider that gives no revision answers `unsupported`, a stale one `conflict`). `learn_remove` and `learn_update` change nothing when the lesson scan stops at its bound (`too_many_lessons`) |
+| Consolidation | triggers, lease, snapshot, retry gate and marker stay Crew's; publication goes to `consolidation.publish`: `ingest: raw` gets the span, `ingest: items` gets Crew's own extraction (without Crew's stored memory in the prompt) through `put`, each keyed by the session, span and the item's own kind and text, so a retried span extracted in another order replays no item's write for another; `ingest: none` takes nothing. The preference-only pass is done without a call, so its window moves on |
+| Dashboard editors, records, bulk, promote, retired restore, seed | 409 `memory_provider_active` (Crew's memory stays readable) |
+| Change-card history line, built-in app episode import | skipped with a log line (`resolver.note_skip`) |
+| Task-runner lessons, onboarding import | provider `put` |
+| CLI `learn` | through the gateway's `/api/lessons`, after the same lesson origin gate the builtin path runs for a call from an agent's shell; gateway down is exit 2. `memory migrate`/`carve`/`dream`/`import`/`forget`/`restore` and `memory retired --restore` refuse when a provider replaces the store the verb names (`--store`, else the global store) |
+| Embedding repair, Dreaming, migration and backfill, V1 history prune | paused (`builtin_background_allowed`); embedding repair and Dreaming ask per store, so a store pinned to `provider_mode: builtin` keeps both |
+| Backups, snapshot, portability | Crew's own data only; the UI says the provider backs up its own |
+
+`augment` changes two rows: session start adds `[Memory from <name> (read-only)]` after
+Crew's blocks, at most a quarter of the discretionary pool, and `memory_recall` appends
+the provider's hits after Crew's. Every writer stays Crew's.
+
+`test_memory_provider_writer_coverage.py` names every chokepoint and secondary writer by
+module and function and fails when one stops reaching the resolver.
+
+**Crew's own memory through the contract.** `builtin.BuiltinMemoryProvider` maps the
+contract onto today's functions (lessons via `write_lesson` / `delete_lesson`, facts via
+`set_semantic` / `delete_semantic`, episodes via `write_episodic` / `delete_episodic`),
+with ids `lesson:<key>`, `lesson:jsonl.<n>` (Global V1's lessons file), `fact:<key>`,
+`episode:<id>`, `doc:preferences` / `doc:projects` (one `document` item per Global V1
+file) and `doc:history.<date>` (one `summary` per history day, `created_at` that day).
+`list` returns timestamps and provenance in reserved meta; `revisions` reads
+`memory_revisions`. A move writes a document into an empty file and refuses a different
+one with `document_differs`; an explicit edit replaces it. A Memory V2 store lists no
+documents (its anchors are member documents). It does not keep timestamps or origins on
+write (`preserves_timestamps` and `keeps_origin` are false), and it refuses an item that
+is not `active` (`status_<status>_not_kept`), since its writers keep no draft or retired
+state. Every `inserted` answer names the new id. The prompt builders and the
+recall route do not use it; the host item routes, moves and the conformance kit do.
+
+**Moves.** `migration.py` runs a move between any two providers as a persisted job:
+
+| Phase | What happens | Writes |
+|---|---|---|
+| Plan (`dry_run`) | refused like the run when the target takes no writes or does not replay keys; lists the source page by page; an item read already cut (past its kind's cap) is `refused:too_long`, never moved short; counts per kind and planned outcome (`would_write`, `refused:content_screen`, `refused:too_long`, `skipped:kind`, `skipped:from_target`, `skipped:documents_stay`, `skipped:retired`); keeps 20 samples per kind (300 characters, in memory only); asks a `dry_run_put` target for its dedup answer on them | none |
+| Run | only into a target that replays a repeated key (`writes.idempotent`); `put_batch` (or `put`) in the target's `max_batch`, keyed `crew-move:<job>:<hash of origin and source id>` (two source records can share a kept first origin); each batch appends one ledger line per item (`origin_id`, `target_id`, `outcome`, `text_sha256`) as it lands (the wire refuses an `inserted` answer without an id, so the batch stays pending), and each page saves the checkpoint. While a page is in flight the job also saves the counts at the committed cursor (`page_start`), and a resume after a restart restores them before it reads that page again, so the page is counted once. A resume settles a pending batch before it pages again. Only a missing ledger reads as empty; a damaged or unreadable one fails verify and undo. A batch retried after a lost reply, or a page a resumed job sends again, replays its keys; the contract has a replay answer the key's first outcome and id with `replayed: true`, so an item this job inserted stays on the rollback list and one that already existed (`deduped`) never joins it. An item over its kind's text cap is refused by name (`refused:too_long`), never shortened; an import refuses such a line the same way. A provider that asks to wait more than 5 times on one batch pauses the job, and a cancel is honoured between attempts. A page is counted whole: a page that pauses or fails gives back its counts, so a resume counts it once. A finished plan keeps its samples in the gateway's memory (the last 20 plans), never on disk. Plans and moves are kept 20 each, apart, so a plan never evicts a move's ledger | target only |
+| Verify | reads back 2% of the inserted ids (20 to 200) and compares text hashes; a mismatch or an id that cannot be read leaves the job `failed` (resume or undo), never `done` | none |
+| Rollback | deletes from the target every id the ledger marks `inserted` by this job, nothing else. Each batch's source ids are saved in the checkpoint (`pending_ids`, ids only) before the send and cleared once it is ledgered. A rollback first settles a batch whose reply was lost: it reads those items again (from the source, or for an import from the same file sent with the undo, else 409 `unacknowledged_writes`) and replays their keys, which answer the first application's outcome and id, so a cancelled move is settled too. A pending item no longer in the source keeps the undo open (`rollback_failed`) rather than be dropped. A refused delete leaves the item there and the job `rollback_failed`. A cancel during an undo stops it before the next delete (`rollback_failed`, ledger kept, so undoing again finishes it). A cancel while a resume or undo is still being prepared reaches the runner that starts (`_cancel_requested`), so it never runs over the cancel. A rollback that fails or is interrupted is `rollback_failed` and continues only as a rollback, never as a resume, so undoing a move cannot run it again | target only |
+
+Every written item carries its first `origin`, so a switch back skips what came from the
+target, unless it was changed while away (kind, text, scopes, status, title, negative
+clause, category, value type, an episode's tags or importance differ from the target's own item): that is `conflict:changed_since_copy`, reported and
+never written over the original. A failed read of the original fails the job (it pauses or fails), never reads as "gone". Crew's content screens run on every item before it is written. A provider error
+with `retry_after_secs` waits that long (at most 300 s); three `unavailable` answers in a
+row pause the job. Job state and ledger file IO runs off the gateway loop. State lives in `memory_provider_migrations/` (`<job>.json`,
+`<job>.ledger.jsonl`; counts, ids and hashes, never text), the last 20 jobs kept; a job
+found running at start reads as `paused` and resumes from its checkpoint. The directory
+is READONLY in the sandbox and withheld from a foreign harness: a writable ledger would
+let an agent choose what a rollback deletes. A move never switches memory, and no job
+deletes from Crew's own memory; moving into it is refused while a provider replaces it.
+
+**Export, import.** Export is JSONL `kirocrew-memory/1`: a header (`provider`, `store`,
+`member_id`, `exported_at`, `crew_version`, `include`), one wire item per line
+(`?include=retired,revisions` adds retired items and history), and a trailer with the
+item count, the count per kind, the count of `cut` lines and the SHA-256 of the item
+lines. A line whose item was read past its kind's cap carries `cut: true`, and an import
+refuses it by name rather than restore it short. An import whose trailer does not match
+is refused as cut off or changed; one without a trailer imports with a warning. Import (32 MB at most) runs as a move job from `file:<hash>`.
+
+**Conformance kit.** `conformance.run(provider, write=...)` checks connect, health,
+context, search, list and get, paging to the end and `status=all` for a provider that
+keeps retired items; with `write`, put, idempotent put, the verbatim round-trip, kept
+timestamps and kept origin (each when the provider claims it) and delete (a read-only
+provider must refuse `put`). Write checks run only on a provider that can `delete`, use
+a kind it advertises (`Capabilities.kind_for`), and remove every probe they inserted
+whichever check fails. `python -m kiro_crew.memory_provider.conformance --app
+<app>[/<provider>]` runs the read-only checks through the gateway. The route refuses
+Crew's own memory (400 `not_an_app_provider`): the kit's fixed `conformance` store is
+not one Crew declares. With `write` and a
+`bench` section it also checks that `reset` refuses a live scope, empties a bench store,
+that two bench stores do not see each other, that `as_of` hides a later item when
+claimed, and that `settle` answers.
+
+**Provider benchmarks (`eval/bench/`).** The contract carries a benchmark through
+five additions: a `bench` section in `connect` (`BenchCapabilities`: `scratch`,
+`reset`, `settle`, `as_of`, `usage`, `deterministic`, `max_scratch_stores`,
+`max_concurrency`; absent means every flag false), `ProviderScope.purpose`
+(`bench` only through `bench_scope(run, unit)`, store id `bench/<run>/<unit>`;
+`is_bench` needs both), the `reset` and `settle` ops, `as_of` on `search` and `context`
+(`search_as_of`, `context_as_of`), `at` and `session_at` on `TranscriptSpan`, and an
+optional top-level `usage` block on any answer (`Usage`; absent is unknown, values
+capped). `reset` is refused client side for any scope that is not a bench scope, before
+a byte is sent. A bench scope never reaches `resolver.route_for`: the runner calls the
+provider object directly through `ProviderTarget`, on a client of the run's own
+(`AppMemoryProvider.run_copy`), so live chats' `usage` never counts toward a run. A remote
+provider is benchmarked without the live-memory egress grant: a public suite sends no Crew
+memory, and a copy of own memory needs the run's own acknowledgement at plan and at resume. Crew's own memory is never
+benchmarked through `BuiltinMemoryProvider` (it maps a store id to the person's store);
+`ScratchBuiltinTarget` opens one temporary `VectorMemoryStore` per unit and reuses the
+retrieval ruler's `ingest_instance` and `retrieve_for_query`. Baselines `none` and
+`recency` give the floor and the long-context reference.
+
+Suites (`eval/bench/suites/`): LoCoMo and LongMemEval through the existing adapters,
+BEAM (100K and 500K), MemoryAgentBench FactConsolidation and EventQA (Parquet, read
+only when `pyarrow` is installed; otherwise a refusal naming it), PersonaMem v2 (32K,
+multiple choice), PrecisionMemBench (must-include and must-exclude assertions, no LLM),
+Crew's forget suite (built at run time; removed, leaked and collateral rates) and
+isolation probe (two stores held at once; a hit with the other store's origin or its
+marker text is a leak, and the count must be 0), and HaluMem (off by
+default; CC BY-NC-ND, converted in memory only). Data is fetched on demand from pinned
+revisions (`datasets.SUITE_SPECS`, `beam_spec`, `personamem_history_spec`); nothing is
+vendored, and suites whose license is not stated upstream are left out. Each unit is
+one store: prepare (reset), write in time order or replay sessions, settle (polled up
+to 600 s), query at the largest `k` with `as_of`, optionally read and judge, optionally
+forget and probe again, read back for extraction, reset. The ledger records each
+scratch store and whether its reset read back empty; `stores_to_reset` ignores any line
+outside the run's own `bench/<run>/` prefix. Results (`<run>.results.jsonl`) hold ids
+and scores only, and are read once per provider, unit and query, so a unit a restart
+ran again is counted once. A unit still indexing when the 600 s settle wait ends is
+not scored and the run says so in its warnings. A cleanup reads a store as empty only at the end of its listing (an empty page with a cursor is not empty). A resume refuses (409 `provider_changed`) when a provider's version, app version or capability fingerprint differs from the run's plan, so a report never pools two configurations. One runner per run and per move job: a second resume or rollback of the same id while one runs or is being prepared is refused with 409 (`run_busy`, `job_busy`). A restart resumes at the next unit; `max_llm_calls` stops a run, for good (it does not resume),
+`budget_exhausted`. The report (`kirocrew-bench-report/1`) gives each provider M1 to
+M12 with a bootstrap 95% interval, `n/a` with a reason where a dimension cannot be
+measured (never zero), a text-overlap proxy labelled `proxy` for a provider that keeps
+no origin, and paired sign tests on the same per-dimension metric as the provider's own section.
+Every hit keeps its rank: an unattributed or repeated hit is a non-gold place, never
+dropped. Answer mode renders hits through the provider render
+path's own framing and neutralizer and runs a reader and judge on the `background` role
+model (`agent.resolve_model("background")`, `"auto"` by default); prompt hashes and the
+resolved models go into the report, and `compare` refuses runs that differ in suite,
+variant (for own memory, the eval set), seed, instance limit, cut-offs, budget, models or prompts. The newest 20 runs are kept.
+
+The own-memory builder (`own_memory.py`) copies each chosen store through a read-only
+SQLite connection into `evalsets/<id>/source/` (a private V2 store through its member
+admission), reads it with Crew's own item converters and then deletes the copy (a
+build that fails deletes the whole `evalsets/<id>/`), drops (never masks) every item
+either redactor would change, and builds
+probes: P1 rare key terms, P3 knowledge update from `memory_revisions` (the old value timed by its own snapshot, the current one by its last update), P4 date windows
+with `as_of`, P5 lesson triggers from the lesson's session, P6 abstention, P7 forget,
+P8 precision, and P2 paraphrases only with `llm_probes`. The set is
+`kirocrew-evalset/1`, owner-only. Runs and eval sets live in
+`memory_provider_bench/` (READONLY crew-home leaf); routes are in
+`dashboard/handlers/memory_provider_bench.py` (see `security.md`).
+
 ## Skills (`skills.py`)
 
 Markdown files at `~/.kiro/crew/skills/{name}/SKILL.md` with optional YAML frontmatter (`name`, `description`, `always`).
@@ -7402,7 +7664,12 @@ project, daily-history, settings, lessons, semantic and episodic browsers remain
 visible in the page flow; the bulk editor does not replace or collapse them.
 Their paged list
 uses `GET /api/memory/records` with `store`, `q`, `kind`, `offset` and
-`limit` (1–100). Filtering precedes pagination. The authentication middleware's
+`limit` (1–100), plus optional `applies` (comma list of `always`, `on_topic`,
+`unstated`: a lesson's tier, `unstated` for a lesson written before tiers),
+`source` (exact), `status` (`active` by default; `forgotten` for rows the owner
+or a bulk edit dropped, `superseded` and `expired` for rows whose metadata names
+why they left, `any` for all) and `never_recalled=1` (an experience no episodic
+search has stamped; only experiences record a recall). Filtering precedes pagination. The authentication middleware's
 `token` query parameter is permitted but never used as a filter or returned in
 records. Unknown query fields are refused instead of silently broadening the
 selection. Record addresses are readable
@@ -7416,7 +7683,9 @@ outside the page has no fingerprint computed and its metadata row is not read,
 and with no search term its value is not decoded either. A search reads the
 three metadata fields it matches on (category, subject, predicate) through one
 join in the listing query, not one query per record. `POST /api/memory/records/refresh` resolves up to 500 exact
-identities after a concurrent change without discarding the user's draft. Its
+identities after a concurrent change without discarding the user's draft. An
+optional `status` widens that explicit refresh past live rows, so an undo of a
+forget can name the forgotten rows it brings back. Its
 alternative `selection: {query, exclude}` body returns an exact `matched_count`
 under the same normalized selector and selection caps as preview; deleted or
 nonmatching exclusions do not subtract from the count. The editor refreshes
@@ -7475,7 +7744,10 @@ value server side and only the matched span changes.
 Owner-only `POST /api/memory/bulk/preview` accepts one store and either explicit
 record identities with revisions (up to 500), or an all-matching filter with
 exclusions. Operations are literal text replacement, single-record correction,
-restoring one record to a kept version, and forgetting. Replacement walks JSON string values; it never rewrites object
+restoring one record to a kept version, forgetting, `unforget` (clears the
+tombstone of a forgotten row in place, keeping its id, content and vector; a live
+row is unchanged) and `set_tier` (`applies: always | on_topic` on each selected
+lesson; other kinds and lessons already on that tier count as unchanged). Replacement walks JSON string values; it never rewrites object
 keys, repository scope, provenance or classification. Preview validates the
 entire selection, returns counts and the first 25 changed before/after pairs,
 and signs the selector, operation, store and full selection digest. A selection

@@ -2188,6 +2188,133 @@ Apps declare their agents, skills and `mcpServers` in `app.json`, and
 |--------|---------|-------------|
 | `memorySearch(query, topK?)` | `MemoryResult[]` | Semantic memory search |
 
+### Memory provider routes
+
+These are owner routes: the owner's own dashboard session reaches them, and every app
+token and agent secret is refused (403 `owner_only`). They answer for whichever
+provider is active (Crew's own memory included). `?store=<name>` names a configured
+store; `?provider=builtin` reads Crew's own memory while another provider replaces it.
+A provider app is reached only by the gateway, through the contract below.
+
+| Route | What it does |
+|---|---|
+| `GET /api/memory/provider` | mode, active id, every installed provider with its `connect` answer, `mode_gaps`, consent, latency (`?probe=1` runs `connect` again and adds health) |
+| `PUT /api/memory/provider` | switch: `{"mode", "id"?}` |
+| `GET /api/memory/provider/items` | list (`?cursor=`, `?kinds=`, `?status=active\|draft\|retired\|all`, `?updated_after=`) or search (`?q=`) |
+| `GET/PATCH/DELETE /api/memory/provider/items/{id}` | read, replace (`{"item": {...}, "expected_revision"?}`), delete one item |
+| `GET /api/memory/provider/items/{id}/revisions` | one item's history; 404 `not_supported` without `history.revisions` |
+| `POST /api/memory/provider/items` | add one item |
+| `POST /api/memory/provider/migrations` | plan (`"dry_run": true`) or run a move: `{"from", "to", "store"?, "kinds"?, "include_retired"?, "preserve_timestamps"?}` |
+| `GET /api/memory/provider/migrations`, `GET/DELETE /api/memory/provider/migrations/{id}` | list, follow, cancel |
+| `POST /api/memory/provider/migrations/{id}/resume`, `.../rollback` | continue from the checkpoint; delete exactly what the move inserted |
+| `GET /api/memory/provider/export` | JSONL `kirocrew-memory/1` with a header and a trailer (`?include=retired,revisions`) |
+| `POST /api/memory/provider/import` | import a `kirocrew-memory/1` file (`?dry_run=1` plans it) |
+
+### Memory provider benchmarks
+
+Under `/api/memory/provider/bench`, the owner compares providers on public suites
+(LoCoMo, LongMemEval, BEAM, MemoryAgentBench, PersonaMem v2, PrecisionMemBench) and on
+Crew's own forget and isolation probes, or on an eval set drawn from a read-only copy
+of their own memory. Every route is the owner's; no MCP tool and no CLI verb starts a
+run.
+
+| Route | What it does |
+|---|---|
+| `GET /api/memory/provider/bench/suites` | each suite's license, dimensions, ingest modes and whether its data is fetched |
+| `POST /api/memory/provider/bench/suites/{id}/fetch` | download and pin a suite's data |
+| `POST /api/memory/provider/bench/runs` | plan or start: `{"suite", "variant"?, "providers", "mode"?, "k"?, "budget_chars"?, "limit_instances"?, "max_llm_calls"?, "egress_ack"?, "dry_run"}` |
+| `GET /api/memory/provider/bench/runs`, `GET/DELETE /api/memory/provider/bench/runs/{id}` | list, follow, cancel (a cancel resets every scratch store the run created) |
+| `POST /api/memory/provider/bench/runs/{id}/resume` | continue at the next unit |
+| `GET /api/memory/provider/bench/runs/{id}/report` | `kirocrew-bench-report/1` (`?format=md` for Markdown) |
+| `GET /api/memory/provider/bench/compare?runs=a,b` | providers across runs; refuses runs with different suites, cut-offs or models |
+| `POST/GET /api/memory/provider/bench/evalsets`, `GET/DELETE /api/memory/provider/bench/evalsets/{id}` | build (or plan) an own-memory eval set, list, read, delete |
+
+A run writes only to stores named `bench/<run>/<unit>` with `scope.purpose: "bench"`.
+To be measured fairly, a provider answers a `bench` section in `connect` and serves two
+more ops:
+
+| Op | Body | Result |
+|---|---|---|
+| `reset` | `{"scope"}` (a bench scope; refuse any other with `refused`) | `{"deleted", "derived_deleted", "empty"}` |
+| `settle` | `{"scope"}` | `{"pending", "retry_after_secs"}`; Crew polls until `pending` is 0 |
+
+```jsonc
+"bench": {"scratch": true, "reset": true, "settle": true, "as_of": true, "usage": true,
+          "deterministic": false, "max_scratch_stores": 50, "max_concurrency": 2}
+```
+
+`search` and `context` may carry `"as_of"` (epoch seconds): answer as of that moment.
+`ingest` messages may carry `"at"` and the span `"session_at"`. Any answer may carry a
+top-level `"usage": {"server_ms", "llm_calls", "llm_input_tokens", "llm_output_tokens",
+"embed_tokens", "cost_usd"}`; an absent value is unknown, never zero. A provider without
+a `bench` section is still run, with cleanup by one `delete` per item. A copy of the
+owner's own memory goes only to a provider that says `egress: "local"` and `reset: true`,
+unless the owner acknowledges that provider for that run alone.
+
+### Memory provider contract
+
+The gateway posts JSON to `POST /api/<route>/v1/<op>` on loopback, signed exactly like a
+proxied request (verify `X-KiroCrew-Proxy-V2` with its nonce, as for any proxied
+call). It answers `{"ok": true, "result": ...}` or
+`{"ok": false, "error": {"code", "message", "retry_after_secs"}}` with a code of
+`unavailable`, `refused`, `read_only`, `not_supported`, `conflict` or `invalid`.
+The `/apps/<name>/api/...` proxy refuses every path under a declared provider route
+with 403 `memory_provider_route`, so a signed call there always comes from the
+gateway and its `scope` is the store Crew resolved for the caller.
+
+| Op | Body | Result |
+|---|---|---|
+| `connect` (required) | `{"crew": {"api_versions": [1], "want_mode", "kinds"}, "scope"}` | the capabilities below |
+| `health` (required) | `{}` | `{"ok", "detail"}` |
+| `context` (required) | `{"scope", "query", "budget_chars"}` | `{"items": [...]}` |
+| `search` | `{"scope", "query", "limit", "kinds"?}` | `{"items": [...]}` |
+| `get` | `{"scope", "id"}` | `{"item": {...} or null}` |
+| `list` | `{"scope", "cursor", "kinds"?, "status"?, "updated_after"?}` | `{"items": [...], "cursor"}` |
+| `put` | `{"scope", "item", "idempotency_key", "id"?, "expected_revision"?, "dry_run"?}` | `{"outcome": "inserted"\|"enriched"\|"unchanged"\|"deduped"\|"refused", "id", "reason", "superseded", "winner", "replayed"?}`. A key you already applied answers that first outcome and id again with `"replayed": true` |
+| `delete` | `{"scope", "id"}` | `{"outcome": "deleted"\|"unchanged", "id"}` |
+| `put_batch` | `{"scope", "entries": [{"item", "idempotency_key"}]}` (at most `max_batch`) | `{"results": [<one put result per entry, in order>]}` |
+| `changes` | `{"scope", "cursor"}` | `{"upserts": [...], "deletes": [ids], "cursor"}` |
+| `revisions` | `{"scope", "id"}` | `{"revisions": [{"revision", "at", "op", "source"}]}` |
+| `ingest` | `{"scope", "receipt_id", "messages", "span", "session_at"?}` | `{"accepted", "items"}` |
+| `reset` | `{"scope"}` (bench scopes only) | `{"deleted", "derived_deleted", "empty"}` |
+| `settle` | `{"scope"}` | `{"pending", "retry_after_secs"}` |
+
+The `connect` answer:
+
+```jsonc
+{"api_version": 1, "provider": {"name", "version"}, "egress": "local" | "remote",
+ "read_only": false, "ops": ["context", "search", "get", "list", "put", "delete", ...],
+ "kinds": ["rule", "finding", "preference", "fact", ...],
+ "search": {"lexical", "semantic", "filters": ["kind", "scope", "status", "updated_after"]},
+ "writes": {"verbatim", "preserves_timestamps", "keeps_origin", "idempotent",
+            "dry_run_put", "max_batch", "max_text"},
+ "history": {"revisions", "retired", "changes"},
+ "ingest": "none" | "raw" | "items",
+ "isolation": {"multi_store", "principal_auth"},
+ "documents": "none" | "read" | "readwrite", "steering": "none", "max_page": 50}
+```
+
+`verbatim` means `put` stores the text exactly as sent; replacing Crew's memory needs
+it, `idempotent`, the ops `get`, `list`, `put`, `delete`, `search`, and the kinds
+`rule`, `finding`, `preference`, `fact`. A Bot store needs `isolation.multi_store`; a
+Shared Crew needs `isolation.principal_auth`. Global V1's `preferences.md` and
+`projects.md` move only to `documents: "readwrite"`.
+
+`scope` is `{"store_id", "member_id", "memory_mode", "session_id", "project",
+"principal"}`, built by Crew: keep items per `store_id` (or state `multi_store: false`,
+which limits the provider to the global store). An item is `{"id", "kind", "text",
+"title", "scopes", "source", "created_at", "updated_at", "status", "score", "meta",
+"origin", "revision"}` with `kind` one of `preference`, `fact`, `episode`, `summary`,
+`rule`, `finding`, `index`, `note`, `document` (one whole Markdown document,
+`meta["crew.doc"]` `preferences` or `projects`). A write carries `created_at`,
+`updated_at` and `origin` (`{"provider", "store", "id"}`) too: keep them when you say
+`preserves_timestamps` and `keeps_origin`. Return every `meta` key as written; the
+`crew.*` keys and `negative` are Crew's (at most 50 pairs). An answer is capped at 200
+items and 512 KB; text over 8,000 characters (64,000 for a `document`) is cut. A provider that keeps memory off the machine states
+`egress: "remote"`, and the owner is asked once per app version. Check yours with
+`python -m kiro_crew.memory_provider.conformance --app <app id>`; a complete stdlib
+example is `test/fixtures/memory_provider_app/backend/server.py`.
+
 ### Context Injection
 
 Silent background context for LLM — content appears in the next user-initiated turn without triggering a response or showing a visible message.

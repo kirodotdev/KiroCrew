@@ -271,7 +271,13 @@ class TestStripImageRefs:
         def left_alone(text: str) -> None:
             assert strip_image_refs(text) == text
 
-        assert_rejected_without_backtracking(left_alone, lambda n: (" /a" * n) + ".png~")
+        # The long pumps carry a quarter of the fragments (the one-unit ramp keeps
+        # every unit): a linear scan of 20 000 fragments costs about a third of the
+        # budget on an idle host, too close to it on a slow one, and the 10x step
+        # between long pumps that the growth check reads is unchanged.
+        assert_rejected_without_backtracking(
+            left_alone, lambda n: (" /a" * (n if n < 200 else n // 4)) + ".png~"
+        )
 
     def test_a_path_component_after_an_image_suffix_is_stripped_whole(self, tmp_path):
         p = _dest(_png(tmp_path))

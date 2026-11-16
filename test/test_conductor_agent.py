@@ -457,8 +457,15 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
         assert "Call the `accept_eval` tool with NO arguments" in body
         assert "It evaluates `done` items only" in body
-        assert "keep only the entries whose item is currently `status: done`" in body
-        assert "Never pipe the unfiltered document" in body
+        assert "Never hand the evaluator an unfiltered `accept_batch`" in body
+        assert "references/accept-eval-fallback.md` first" in body
+        ref = " ".join(
+            (SKILL_DIR / "references" / "accept-eval-fallback.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        assert "keep only the entries whose item is currently `status: done`" in ref
+        assert "Never pipe the unfiltered document" in ref
 
     def test_prompt_and_skill_settle_a_pass_with_one_write(self, tmp_path, monkeypatch):
         """A pass is recorded and closed by one ``close`` that carries the verdict,
@@ -644,10 +651,13 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         the shell, which ``execute_bash`` then runs after one approval. A quoted
         heredoc is the one form the shell copies to stdin without interpreting.
         """
-        body = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        skill = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        assert "a quoted heredoc only, never `printf` or `echo`" in skill
+        body = (SKILL_DIR / "references" / "accept-eval-fallback.md").read_text(encoding="utf-8")
         assert "<<'ACCEPT_BATCH'" in body
-        assert "printf '%s' '<" not in body
-        assert "printf '%s' '{" not in body
+        for text in (skill, body):
+            assert "printf '%s' '<" not in text
+            assert "printf '%s' '{" not in text
 
     def test_dashboard_entry_omits_managed_metadata_on_a_default_install(
         self, tmp_path, monkeypatch
@@ -977,14 +987,18 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         the loop for up to 30 minutes; an unassertable item gets a report to check
         instead of an invented ask.
         """
-        text = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        skill = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        assert "references/rare-cases.md` before you act on it" in skill
+        text = " ".join(
+            (SKILL_DIR / "references" / "rare-cases.md").read_text(encoding="utf-8").split()
+        )
         assert (
             "In a turn nobody typed (it opens with `[auto-nudge cycle`, `[work-ledger wake]`"
             " or `[sent by session`, or a cron fired it), never call `ask_question`"
         ) in text
         assert "In a turn the user typed, ask with `ask_question`." in text
-        assert "make it a `file` item (a report the worker writes)" in text
-        assert "treat it as a needs-human item" not in text
+        assert "make it a `file` item (a report the worker writes)" in skill
+        assert "treat it as a needs-human item" not in skill
 
     def test_skill_keeps_item_state_in_the_store_and_not_in_artifacts(self):
         """One record per item, in the one place the evaluator batch reads.
@@ -1033,7 +1047,8 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
         assert "chat_folder_" not in text
         assert "<goal folder>" not in text and "<goal>/<agent>" not in text
-        dispatch = text.split("### Dispatch a round")[1].split("### Patrol")[0]
+        dispatch = (SKILL_DIR / "references" / "manual-dispatch.md").read_text(encoding="utf-8")
+        assert "manual-dispatch.md" in text.split("### Dispatch a round")[1].split("### Patrol")[0]
         assert "2. `session_create`" in dispatch, "dispatch must reach the create"
         assert "and no `folder`" in dispatch, "dispatch must say it passes no folder"
         opening = text.split("### Round 0")[1].split("### Dispatch a round")[0]
@@ -1452,11 +1467,13 @@ class TestDraftPullRequest:
         verdict, _ = mod._evaluate({"accept": {"kind": "pr_checks", "pr": 9}})
         assert verdict == "refused", "the ratchet below pins the doc to THIS word"
 
-        body = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        body = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8") + (
+            SKILL_DIR / "references" / "acceptance-kinds.md"
+        ).read_text(encoding="utf-8")
         draft_sentences = [
             " ".join(s.split()) for s in re.split(r"(?<=[.!?])\s+", body) if "draft" in s.lower()
         ]
-        assert draft_sentences, "SKILL.md says nothing about a draft PR"
+        assert draft_sentences, "the skill says nothing about a draft PR"
         assert any(
             f"`{verdict}`" in s for s in draft_sentences
         ), f"no draft sentence in SKILL.md names the `{verdict}` verdict the script returns"

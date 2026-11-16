@@ -432,10 +432,15 @@ class HeartbeatService:
         if self._tick % _PRUNE_TICKS == 0:
             max_days = KiroCrewConfig.load().memory.history_max_days
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                maintenance_executor(),
-                functools.partial(self._memory.prune_history, keep_days=max_days),
-            )
+            from kiro_crew.memory_provider import resolver as _memory_provider
+
+            # Paused while a provider replaces Crew's memory, so switching back
+            # finds every day that was there when it was switched away.
+            if _memory_provider.builtin_background_allowed():
+                await loop.run_in_executor(
+                    maintenance_executor(),
+                    functools.partial(self._memory.prune_history, keep_days=max_days),
+                )
 
             # Prune security event log per retention policy.
             #

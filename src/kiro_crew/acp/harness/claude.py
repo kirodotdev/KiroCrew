@@ -688,7 +688,8 @@ class ClaudeHarness(MembershipHarness):
         """Write THIS session's settings seed in its own folder, before its request.
 
         *options* carry the chat's own ``permission_mode``, ``side_read_only`` and
-        ``include_memory``, the three a per-chat client takes at construction.
+        ``include_memory``, the three a per-chat client takes at construction, and
+        its ``model``, which wins over the runtime's *model*.
 
         On a process-per-session client the seed is written at spawn, which on a
         shared process would seed only the first session: a later one, in another
@@ -698,7 +699,19 @@ class ClaudeHarness(MembershipHarness):
         is sent.
         """
         from kiro_crew.acp.claude_shared_session import ClaudeSharedSession
+        from kiro_crew.acp.session_handle import AcpRuntimeError
+        from kiro_crew.agent import DerivedSpecStale, require_fresh_derived_spec
 
+        chosen = dict(options or {})
+        # The chat's own model, over the runtime's, which on a process shared by a
+        # session tree is the founder's (``ChatRuntimeKey`` leaves it unkeyed).
+        model = str(chosen.pop("model", "") or "") or model
+        # The spec freshness gate the spawn runs for the founder's agent, run for
+        # THIS session's agent too: its spec is read per session, not per process.
+        try:
+            await asyncio.to_thread(require_fresh_derived_spec, agent, work_dir)
+        except DerivedSpecStale as exc:
+            raise AcpRuntimeError(str(exc)) from exc
         state = ClaudeSharedSession(
             work_dir=work_dir,
             model=model_registry.resolve_wire_model_id(
@@ -707,7 +720,7 @@ class ClaudeHarness(MembershipHarness):
             agent=agent,
             session_key=session_key,
             channel_id=channel_id,
-            **dict(options or {}),
+            **chosen,
         )
         state.memory_mode = memory_mode
         argv = await _resolve_claude_argv()

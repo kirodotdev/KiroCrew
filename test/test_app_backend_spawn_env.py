@@ -821,10 +821,15 @@ class TestTheMdNotebookBackendCanSeeItsOwnStateFiles:
         self, app_env, monkeypatch
     ):
         import kiro_crew.apps.backend as bmod
+        from kiro_crew import md_notebook_state as mns
+        from kiro_crew import older_sandboxes
         from kiro_crew.apps.manager import register_builtin_apps
         from kiro_crew.sandbox import MD_NOTEBOOK_APP_NAME, app_declared_mask_targets
 
         register_builtin_apps()
+        # As in the provenance test below: the host scan fails, the gate's probe answers.
+        monkeypatch.setattr(older_sandboxes, "sandboxes_masking_only", lambda *a, **k: None)
+        monkeypatch.setattr(mns, "older_sandboxes_masking_only_the_old_dir", lambda: [])
         seen = self._spy(bmod, monkeypatch)
 
         bmod.start_app_backend("md-notebook")
@@ -1127,9 +1132,17 @@ class TestTheBackendSpawnLiftsTheAppsDeclaredMasks:
         import kiro_crew.apps.backend as bmod
 
         if builtin:
+            from kiro_crew import md_notebook_state as mns
+            from kiro_crew import older_sandboxes
             from kiro_crew.apps.manager import register_builtin_apps
 
             register_builtin_apps()
+            # Notes' start gate scans the host process table for older sandboxes and
+            # refuses when it cannot be read. Make that read fail here, as it can on a
+            # CI runner, and answer the gate's own probe, so this pins the mask lift and
+            # not whether the host lets the scan through.
+            monkeypatch.setattr(older_sandboxes, "sandboxes_masking_only", lambda *a, **k: None)
+            monkeypatch.setattr(mns, "older_sandboxes_masking_only_the_old_dir", lambda: [])
         else:
             self._install(tmp_path, name, ["secrets.json"])
         asked: list[tuple[str, bool]] = []

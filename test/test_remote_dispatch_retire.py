@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
+import test_remote_dispatch_hub_ingest as hub
 import work_ledger_projection_helpers as helpers
 from test_remote_dispatch_hub_ingest import (
     CREW,
@@ -40,7 +41,7 @@ from kiro_crew.dashboard.handlers import work_ledger as routes
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 _isolated = helpers._isolated
-recorded = helpers.recorded
+recorded = hub.recorded
 
 
 class _Clock:
@@ -155,6 +156,22 @@ def test_a_crew_down_past_the_timeout_is_retired_and_the_row_says_redispatch_due
         # The compact row carries the same answer.
         compact = _row(await _read(peer, "compact=true"), item_id)
         assert compact["redispatch_due"] is True
+
+    asyncio.run(go())
+
+
+def test_a_retired_workers_tail_is_never_filed(recorded, peer):
+    async def go() -> None:
+        item_id = await _remote_item(peer)
+        await _down_for(peer, item_id, 31)
+        peer.state = "connected"
+        peer.report("question", "late question", "2026-10-29T12:00:00+00:00")
+        peer.report("progress", "late progress", "2026-10-29T12:01:00+00:00")
+        await _read(peer)
+        await _read(peer)
+        item = work_ledger.read_work_item(CONDUCTOR, item_id)
+        assert item.status is None and item.worker_session_key is None
+        assert not [d for _u, d in recorded if d.get("actor") == "worker"]
 
     asyncio.run(go())
 

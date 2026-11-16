@@ -166,6 +166,18 @@ ARTIFACT_BASE="${ARTIFACT_BASE%/}"
 
 err() { echo "kirocrew-install: $*" >&2; exit 1; }
 
+# Git Bash, MSYS2 and Cygwin are where a Windows user pastes this one-liner,
+# and none of them can run what it installs: there is no managed Python for
+# them and the gateway is not supported there. Say so before any network I/O,
+# instead of failing later with advice to install Python and re-run.
+case "$(uname -s 2>/dev/null || true)" in
+  MINGW*|MSYS*|CYGWIN*)
+    err "this installer does not support Git Bash, MSYS2 or Cygwin ($(uname -s)).
+On Windows, install the desktop app: https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-Setup.exe
+Windows guide: https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/windows-install.md
+Or run this command inside WSL." ;;
+esac
+
 # ── Progress output ──────────────────────────────────────────────────────────
 # The slow steps (the wheel download, pip resolving and fetching every
 # dependency, `python -m venv` running ensurepip) take a minute or more; a
@@ -221,6 +233,25 @@ _rs_interrupt() {
   # `kill -s SIG -- -PGID`: the one spelling both bash and dash accept for a
   # process group. Fall back to the pid alone if the group is refused.
   kill -s TERM -- "-$_rs_pid" 2>/dev/null || kill -s TERM "$_rs_pid" 2>/dev/null || true
+}
+
+# Runs an external command for _run_step's loop while the step owns INT:
+# started in the background and collected with the `wait` builtin, never in
+# the foreground. bash 3.2 (macOS /bin/sh) decides whether a SIGINT owes the
+# trap a run at the moment it reaps a foreground child; one that lands after
+# that, before the shell's own handler is back, is recorded and then cleared
+# by the next foreground wait, so the trap never runs. `wait` hands a trapped
+# SIGINT to the trap at any point. An interrupted wait is waited again, so
+# the command's output and status are those of a finished command.
+_rs_bg() {
+  "$@" &
+  wait "$!" || wait "$!"
+}
+
+# The last line the step's command wrote, cut to $1 columns; a function so
+# the pipeline runs through _rs_bg as one background job.
+_rs_last_line() {
+  tail -n 1 "$_rs_log" 2>/dev/null | tr -d '\r' | sed 's/^[[:space:]]*//' | cut -c1-"$1"
 }
 
 # The venv rebuild's rollback, run from the EXIT trap it arms for its whole
@@ -294,6 +325,14 @@ _run_step() {
     # bash outside POSIX mode prints SIGINT, every other shell INT.
     grep -Eq " (SIG)?$_rs_s\$" "$_rs_traps" 2>/dev/null || echo "trap - $_rs_s" >> "$_rs_traps"
   done
+  # Start time and terminal width are read before the takeover, while a
+  # foreground command still cannot swallow the step's interrupt.
+  _rs_out="$TMP/.rs_out.$$"
+  date +%s > "$_rs_out" 2>/dev/null || :
+  IFS= read -r _rs_start < "$_rs_out" || :
+  { tput cols 2>/dev/null || echo "${COLUMNS:-80}"; } > "$_rs_out"
+  IFS= read -r _rs_cols < "$_rs_out" || :
+  case $_rs_cols in ''|*[!0-9]*) _rs_cols=80 ;; esac
   trap '_rs_interrupt INT' INT
   trap '_rs_interrupt TERM' TERM
   trap '_rs_interrupt HUP' HUP
@@ -310,17 +349,12 @@ _run_step() {
   if [ -n "$_rs_sig" ]; then _rs_interrupt "$_rs_sig"; fi
   # No command substitution while the step owns INT: bash drops a trapped
   # SIGINT that lands while it waits on a `$(...)`, so a Ctrl-C there would
-  # stop nothing. Each value goes through a scratch file and `read` instead.
-  _rs_out="$TMP/.rs_out.$$"
-  date +%s > "$_rs_out" 2>/dev/null || :
-  IFS= read -r _rs_start < "$_rs_out" || :
-  { tput cols 2>/dev/null || echo "${COLUMNS:-80}"; } > "$_rs_out"
-  IFS= read -r _rs_cols < "$_rs_out" || :
-  case $_rs_cols in ''|*[!0-9]*) _rs_cols=80 ;; esac
+  # stop nothing. Each value goes through a scratch file and `read` instead,
+  # and every external command goes through _rs_bg.
   _rs_i=0
   _rs_beat=0
   while kill -0 "$_rs_pid" 2>/dev/null; do
-    date +%s > "$_rs_out" 2>/dev/null || :
+    _rs_bg date +%s > "$_rs_out" 2>/dev/null || :
     IFS= read -r _rs_now < "$_rs_out" || :
     _rs_el=$(( _rs_now - _rs_start ))
     if [ "$_tty" = 1 ]; then
@@ -337,20 +371,19 @@ _run_step() {
       _rs_room=$(( _rs_cols - 1 - ${#_rs_head} - 2 ))
       _rs_last=""
       if [ "$_rs_room" -ge 8 ]; then
-        tail -n 1 "$_rs_log" 2>/dev/null | tr -d '\r' \
-          | sed 's/^[[:space:]]*//' | cut -c1-"$_rs_room" > "$_rs_out"
+        _rs_bg _rs_last_line "$_rs_room" > "$_rs_out" || :
         IFS= read -r _rs_last < "$_rs_out" || :
       fi
       printf '\r\033[K%s%s' "$_rs_head" "${_rs_last:+  $_rs_last}"
       _rs_i=$((_rs_i + 1))
       # Fractional sleep is not POSIX; sleep 1 when this sleep lacks it.
-      sleep 0.25 2>/dev/null || sleep 1
+      _rs_bg sleep 0.25 2>/dev/null || _rs_bg sleep 1
     else
       if [ $((_rs_el - _rs_beat)) -ge 30 ]; then
         _rs_beat=$_rs_el
         echo "$_rs_msg ... still running (${_rs_el}s)"
       fi
-      sleep 1
+      _rs_bg sleep 1
     fi
   done
   _rs_rc=0

@@ -65,6 +65,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.cron_jobs import (  # noqa: F401
         _APP_AUTO_RESETTING_FIELDS,
         _COERCED_BOOL_FLAGS,
+        _ENABLED_IGNORED_WARNING,
         _MAX_BATCH_DELETE,
         _MAX_CRON_BODY_BYTES,
         _T,

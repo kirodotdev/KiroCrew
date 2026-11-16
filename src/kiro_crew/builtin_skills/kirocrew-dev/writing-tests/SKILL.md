@@ -373,8 +373,9 @@ must never appear in real output, pick one no OS can allocate (`99999999999`).
 Host files and installs are inputs the same way. A whole-report doctor test pins the
 `tz data` probe (`cli_helpers._doctor_reads_current_tz_data`); a test that reaches the
 spec-permissions gate pins `installed_kiro_cli_version`, because `pin_kiro_cli` finds a
-real kiro-cli in `~/.local/bin` without `PATH`; a test that asserts on the stores under
-`HOME` gives itself a fresh `HOME`, because a real store can be a symlink out of it; and a
+real kiro-cli in `~/.local/bin` without `PATH` (the floor hides the operator's own copy
+there, `_hide_the_operators_kiro_cli`; plant one through `KIROCREW_KIRO_BIN`); a test
+that asserts on the stores under `HOME` gives itself a fresh `HOME`, because a real store can be a symlink out of it; and a
 tool a child will run is probed on the child's `PATH`, not pytest's.
 
 The host's free MEMORY is an input too, and the most-used probe of it is
@@ -524,10 +525,20 @@ Both halves of that model doubled between audits (from ~57k items / ~750 MiB), s
 **re-measure rather than trusting the numbers above** once the suite grows by half
 again: `--collect-only -n0` reproduces a worker's collection peak. The reservation in
 `xdist_budget.py` is sized on them, and an under-sized reservation is how a laptop
-starts swapping.
+starts swapping. At 283,605 items the collection peak was 5,295 MiB, and 2,971 MiB of
+that was pytest's per-item fixture bookkeeping; the rootdir conftest's
+`compact_collected_item` shares it, for a 2,957 MiB peak
+(`testing-conventions.md` § Running on a machine with little RAM).
 
 The consequence for how you write a test:
 
+- **A new autouse fixture is paid by every item.** Each one adds a slot to every test
+  function's fixture closure and a setup and teardown to every test, ~280k times. Add
+  the guard to an existing autouse fixture of the same scope instead of a new name.
+- **A module-level memo of a whole-tree read lives for the worker.** An
+  `lru_cache`d `(path, text)` corpus in a test module is never released: pytest keeps
+  the module object for the session. Stream the read, or clear the memo from a
+  module-scoped fixture once the module's tests are done.
 - **An allocation at module scope is multiplied by every worker, and outlives the
   test.** A big literal inside `@pytest.mark.parametrize` is the worst shape: it is
   built while the module is IMPORTED and the mark keeps it alive on the function

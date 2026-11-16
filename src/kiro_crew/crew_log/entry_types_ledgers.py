@@ -756,6 +756,36 @@ TYPES: tuple[EntryType, ...] = (
                 ),
             ),
             Field(
+                "peer_event_id",
+                JSON_STRING,
+                note=(
+                    "On a report the hub ingested from a remote peer: the peer's own id "
+                    "for that report event, verbatim (also the entry's event_id). The work "
+                    "fold files each peer event id once per binding and derives where "
+                    "ingest stands from the ids it holds."
+                ),
+            ),
+            Field(
+                "peer_seen",
+                JSON_ARRAY,
+                item_type=JSON_STRING,
+                note=(
+                    "On an ingested peer report: peer ids before it the hub passes "
+                    "over for good (reports that can never file, or, on a binding "
+                    "filed before peer ids were kept, the reports filed then). The "
+                    "work fold holds them as filed."
+                ),
+            ),
+            Field(
+                "peer_skipped",
+                JSON_INT,
+                note=(
+                    "On an ingested peer report: places before it in the peer's reports "
+                    "the hub could not file. A peer log that rolled past where ingest "
+                    "stood counts one; a report that can never file counts one."
+                ),
+            ),
+            Field(
                 "relay",
                 JSON_STRING,
                 note=(

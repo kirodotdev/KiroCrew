@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         render_nudge_message,
         sel,
         spawn_guarded_turn,
+        terminal_wake_line,
     )
 
 
@@ -244,6 +245,7 @@ async def _fire_dashboard_nudge(
         if self._work_ledger_wake_loop(loop, wake_message)
         else ""
     )
+    _terminal_line = ""
     if wake_message is None:
         # Snapshot message, sentinel AND config generation TOGETHER, before
         # the compose_nudge_body() await: a concurrent PATCH during that
@@ -264,6 +266,11 @@ async def _fire_dashboard_nudge(
             # read, so the conductor was not told which item had moved and spent
             # a ``work_ledger_read`` finding out.
             tagged = f"{_wake_text}\n\n{tagged}"
+        # The watched pull request ended: this is the owed final turn, and its
+        # result goes first so the agent reports rather than waits.
+        _terminal_line = terminal_wake_line(loop)
+        if _terminal_line:
+            tagged = f"{_terminal_line}\n\n{tagged}"
         # Skill triggers read the loop's own message: the cycle header and the
         # ledger news are Kiro Crew's words, so "patrol budget" in the header
         # must not load a skill the loop never asked for.
@@ -312,6 +319,8 @@ async def _fire_dashboard_nudge(
         # per-field scrub at this sink.
         shown = render_nudge_message(banner, loop.stop_sentinel_path)
         visible = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{shown}"
+        if _terminal_line:
+            visible = f"{_terminal_line}\n\n{visible}"
     else:
         visible = tagged
     # Deferred import for the cycle the steer path documents.
@@ -435,16 +444,27 @@ async def _start_dashboard_wake_turn(
     def _append_nudge() -> None:
         session_deliver.write_origin_row(turn_slot, visible, wake_origin, extra_meta=monitor_meta)
 
-    if completion_hook is None:
-        _append_nudge()
     # An unattended app-owned nudge turn runs under the background
     # concurrency cap. This is the fleet's hot path — N armed loops fire
     # independently and would otherwise put N turns on the runtime at once.
     # An attended slot (any user session with a monitor loop) is passed
     # straight through, so babysit loops on human sessions are unaffected.
     admission: asyncio.Future[MonitorDispatchResult] | None = None
-    if completion_hook is not None:
+    # An owed final turn settles the watch once delivered, so "delivered" must
+    # mean the turn STARTED: a queued unattended turn that times out behind the
+    # cap never runs, and reporting it dispatched would stop the watch with the
+    # news unsent. It waits for the start the way a structured wake does.
+    owed_terminal = (
+        wake_message is None
+        and completion_hook is None
+        and bool(getattr(getattr(loop, "monitor", None), "terminal_pending", ""))
+    )
+    if completion_hook is not None or owed_terminal:
         admission = asyncio.get_running_loop().create_future()
+    # A row names a turn that ran, so a wake that waits for its start writes the
+    # row only once the runner accepts it.
+    if completion_hook is None and not owed_terminal:
+        _append_nudge()
 
     def _settle_admission(result: MonitorDispatchResult) -> None:
         if admission is not None and not admission.done():
@@ -547,6 +567,25 @@ async def _start_dashboard_wake_turn(
     # every self-wake fire passes its true generation here.
     run_kwargs["_directive_loop_gen"] = fired_generation
     run_kwargs["_skill_trigger_text"] = trigger_text
+    if owed_terminal:
+        # The runner marks this accepted only past its last refusing gate, right
+        # before provider entry, so a turn refused while it is being prepared (a
+        # closing session, a restart) reads as not delivered and keeps the debt.
+        # No controller owns this turn, so its completion record goes nowhere.
+        async def _no_completion_record(_completion: Any) -> None:
+            return None
+
+        def _accept_final_wake() -> None:
+            _append_nudge()
+            dashboard_state.push_slots_update()
+            _settle_admission(MonitorDispatchResult.DISPATCHED)
+
+        run_kwargs["monitor_completion"] = MonitorCompletionHook(
+            loop.id,
+            "terminal-final-wake",
+            _no_completion_record,
+            acceptance_callback=_accept_final_wake,
+        )
     if completion_hook is not None:
         run_kwargs["monitor_completion"] = completion_hook
         # Structured monitor turns own a single durable budgeted turn.

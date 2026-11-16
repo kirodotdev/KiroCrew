@@ -529,3 +529,56 @@ def aggregate(scores: Sequence[AnswerScore], queries: Sequence[BenchQuery]) -> d
         "by_raw_category": _buckets(raw_scored, raw_unscored),
         "by_metric": dict(sorted(by_metric.items())),
     }
+
+
+# ── Provider benchmark scorers (retrieval side; no LLM) ───────────────────────
+
+
+def retrieval_scores(ranked: Sequence[str], gold: Sequence[str], k: int) -> dict[str, float]:
+    """recall@k (any, all) and nDCG@k of *ranked* item ids against *gold* ids."""
+    from .retrieval import ndcg_at_k, recall_all_at_k, recall_any_at_k
+
+    return {
+        "recall_any": recall_any_at_k(ranked, gold, k),
+        "recall_all": recall_all_at_k(ranked, gold, k),
+        "ndcg": ndcg_at_k(ranked, gold, k),
+    }
+
+
+def stale_hit(ranked: Sequence[str], forbid: Sequence[str], k: int) -> bool:
+    """Whether a superseded or forgotten id came back in the top *k*."""
+    top = set(ranked[:k])
+    return any(f in top for f in forbid)
+
+
+def noise_share(ranked: Sequence[str], gold: Sequence[str], k: int) -> float | None:
+    top = list(ranked[:k])
+    if not top:
+        return None
+    wanted = set(gold)
+    return sum(1 for i in top if i not in wanted) / len(top)
+
+
+def assertions_pass(ranked: Sequence[str], rules: dict[str, Any], k: int) -> bool:
+    """PrecisionMemBench: every must-include in the top *k*, no must-exclude, nothing outside the allowed set."""
+    top = set(ranked[:k])
+    include = set(rules.get("include") or [])
+    exclude = set(rules.get("exclude") or [])
+    only = rules.get("only")
+    if not include <= top or top & exclude:
+        return False
+    if isinstance(only, list):
+        return top <= set(only) | include
+    return True
+
+
+def extraction_scores(stored: Sequence[str], points: Sequence[str]) -> dict[str, float | None]:
+    """HaluMem: share of gold memory points found among stored texts, and the reverse."""
+    from .item_corpus import PROXY_F1, token_f1
+
+    def found(text: str, pool: Sequence[str]) -> bool:
+        return any(token_f1(text, other) >= PROXY_F1 for other in pool)
+
+    recall = sum(found(p, stored) for p in points) / len(points) if points else None
+    precision = sum(found(s, points) for s in stored) / len(stored) if stored else None
+    return {"recall": recall, "precision": precision}

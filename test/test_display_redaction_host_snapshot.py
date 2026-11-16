@@ -11,6 +11,7 @@ and the battery performs no live read of its own when handed one.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 
 import pytest
@@ -38,6 +39,11 @@ class _HostSource:
     Until :meth:`settle` is called, the FIRST read answers ``first`` and every
     later read answers ``then``: the shape of a set that moves between two reads
     inside one call. After ``settle(hosts)`` every read answers ``hosts``.
+
+    Only reads on the thread that built the source are scripted and counted. The
+    patch is process-wide, so a thread another test left running in the same
+    xdist worker can redact while a call is in flight and add reads the call never
+    made. Those reads get the real set and touch nothing here.
     """
 
     def __init__(self, first: frozenset[str], then: frozenset[str]) -> None:
@@ -45,8 +51,12 @@ class _HostSource:
         self.then = then
         self.stable: frozenset[str] | None = None
         self.seen: list[frozenset[str]] = []
+        self._owner = threading.get_ident()
+        self._real = exfil._exempt_exact_hosts
 
     def __call__(self) -> frozenset[str]:
+        if threading.get_ident() != self._owner:
+            return self._real()
         if self.stable is not None:
             value = self.stable
         elif not self.seen:
@@ -113,6 +123,20 @@ def test_the_host_set_is_read_exactly_once_per_call(monkeypatch: pytest.MonkeyPa
     assert len(source.seen) == 1, "a cold call reads the host set once, for key and battery"
     chat_utils._redact_for_display(TEXT)
     assert len(source.seen) == 2, "a warm call reads the set once, to derive the key"
+
+
+def test_a_read_from_another_thread_is_not_counted_against_the_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A neighbour's thread redacting mid-test neither counts nor moves the script."""
+    source = _install(monkeypatch, _HostSource(first=ALLOWED, then=frozenset()))
+    foreign: list[frozenset[str]] = []
+    reader = threading.Thread(target=lambda: foreign.append(exfil._exempt_exact_hosts()))
+    reader.start()
+    reader.join()
+    assert foreign and source.seen == []
+    chat_utils._redact_for_display(TEXT)
+    assert source.seen == [ALLOWED]
 
 
 def test_the_snapshot_carries_the_scoped_override(monkeypatch: pytest.MonkeyPatch) -> None:

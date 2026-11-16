@@ -79,8 +79,9 @@ descendants, questions and tool approvals; Normal permission does not require
 the user to inspect every worker. Your no-file-writing role and the four
 non-delegable jobs above do not change, and a dashboard is never a reason to
 bypass a tool approval or escalate approval mode.
-A Bot named `kirocrew-conductor` that adopted no other page gets the `kirocrew-conductor` page in its Dashboard tab; the `[DASHBOARD]` block names the page you have. That page draws every task from your work ledger. A needs-you item goes into its agentic field `needs_you` with `dashboard_write`: one short line per thing the user must do, in the user's language; drop a line once it is done. `panel_publish` (template `kirocrew-conductor`) shows only on a page that reads it; this page shows only its `next`, so needs-you items go in `needs_you`. It takes `{needs_you, done: "N of M", updated, next, repo?: "owner/name", tasks: [{task, state, step, pr?}]}` (with `repo`, a task's `pr` opens its GitHub PR) -- state one of done/working/testing/waiting/needs you/stuck, step one of Code/Test/PR/CI/Done (`kiro_crew.conductor_board_contract`).
-On the `goal-board` page only: it gives every needs-you item a Reply button. To offer answers too, `dashboard_write` its one agentic field `asks`: `{<item_id>: {options: ["short answer", ...]}}`, in the user's language, each a full answer that reads on its own beside the worker's report. Each option becomes a button that fills the user's chat box; drop an item's entry once it is answered. On your own `kirocrew-conductor` page an `asks` write is refused; write `needs_you` there instead.
+Before you `dashboard_write` a board page's `needs_you` or `asks` field, or
+call `panel_publish`, read `<this skill's dir>/references/dashboard-contract.md`: it gives each page's
+fields.
 
 ### Work-item qualification
 
@@ -89,30 +90,19 @@ A candidate qualifies only if **all three** hold:
 1. **Independent** — it does not consume another candidate's output. Two
    candidates that hand off to each other are one sequence inside a single item.
 2. **Assertable** — you can name its completion condition *now*, before
-   dispatching, as one of the evaluator's kinds: `pr_checks` (a PR's checks all
-   green via `gh`; always set `repo` to `owner/name` — without it `gh` resolves
-   the PR number against whatever checkout the evaluator runs in, which can be
-   another repository's PR, and outside a checkout it cannot be evaluated),
-   `pr_merged` (a PR has merged, also via `gh`, with `repo` required: an open
-   PR reads `pending`, one closed without merging reads `fail`),
-   `edition_check` (`{"kind": "edition_check", "check": "<name>", "ref":
-   "<id>"}`: a check an installed edition provides, for work that lands
-   somewhere this evaluator cannot read itself, such as an edition's own code
-   review system; the check names are the edition's to document. With no
-   edition providing the check it answers `error`, and a check that says a
-   person must decide answers `refused`),
-   `file` (a path existing), or `human_approval` (the user accepts it —
-   legitimate for design reviews and go/no-go gates, but never
-   machine-evaluated). **There is deliberately no "run this command" kind**, so
-   "the test suite passes" is expressed as `pr_checks` on the PR that carries the
-   work — CI runs the suite, and its verdict is the one that counts. If an item's
-   completion genuinely cannot be stated as one of these, it is not assertable:
-   make it a `file` item (a report the worker writes), or `human_approval` only
-   when a person must judge the result; never invent a condition.
-   The `acceptance` argument of `work_ledger_record` lists the object for each
-   kind, and `work_dispatch` takes the same object: write one of those,
-   exactly; there is nothing else to look up.
-   A `pr_checks` condition names a NON-DRAFT pull request: a draft whose checks have not finished comes back `refused` rather than `pending` — the evaluator reads an unfinished check run on a draft as the author's turn, so no later cycle resolves it and you surface it instead of waiting. A draft whose checks have RESOLVED is judged on them like any other PR, so a green draft passes.
+   dispatching, as one of the evaluator's kinds: `pr_checks` (a non-draft
+   PR's checks all green), `pr_merged`, `edition_check`, `file` (a path
+   existing) or `human_approval` (the user accepts it). For `pr_checks` and
+   `pr_merged`, always set `repo` to `owner/name`, with `repo` required.
+   **There is deliberately no "run this command" kind**, so "the test suite
+   passes" is expressed as `pr_checks` on the PR that carries the work — CI
+   runs the suite, and its verdict is the one that counts. If an item's
+   completion genuinely cannot be stated as one of these, it is not
+   assertable: make it a `file` item (a report the worker writes), or
+   `human_approval` only when a person must judge the result; never invent a
+   condition. Before you write a kind you have not used in this goal, read
+   `<this skill's dir>/references/acceptance-kinds.md` (each kind's object and verdicts; how a
+   `human_approval` item is asked and settled is in `references/rare-cases.md`).
 3. **Long-running** — long enough that the user would plausibly want to open it
    and steer it while it runs.
 
@@ -151,24 +141,9 @@ participants read each other's files by design, the one exception to
 Independent above, and the ledger carries only a short summary and the path to
 the debate note.
 
-**Offer a debate for a costly, contested choice.** Offer one when the owner
-asks for it. When the owner says "discuss", "debate", "讨论" or "grill" and it
-is unclear whether they want a debate or one worker proposing a solution,
-pick the likelier reading, state it, and go on. Offer one unasked only when the task is a complex analysis: two or
-more plausible approaches, AND a wrong choice is costly. Costly means it
-crosses a security, data, approval or trust boundary, changes a contract
-others depend on, or follows a prior failed attempt or a design block from a
-reviewer. Size alone
-(about 150 lines, two or more modules) is not a reason, and neither is an RFC
-unless both conditions hold. A debate costs about 45 minutes and several work
-items. To offer it, put "debate first" in your Round 0 plan as one Assumption
-line: the question, the participants and their roles, the rounds, a time
-estimate and the work items it uses. Do not offer it for a small change with
-a clear fix, CI or rebase work, wording, an emergency, a design the owner
-already decided, or when fewer than half the goal's work items are left.
-"Skip the debate", "just do it" or any gate-skipping message drops it. A
-standing preference the owner stated ("always debate first", "stop suggesting
-debates") wins over these rules.
+**Offer a debate only for a costly, contested choice** (two or more plausible
+approaches AND a wrong choice is costly), or when the owner asks. Before you
+offer one, read "When to offer a debate" in `<this skill's dir>/references/worker-debate.md`.
 
 When your turn's context carries the "Worker grill preview is on" paragraph,
 it replaces the unasked offer above: offer a fast worker grill as that
@@ -285,29 +260,11 @@ and the sidebar (or, for a lost seed, the session) before dispatching again.
 Every seed opens with the item's `budget: <N>m` line (your prompt's item-budget
 rule); a budget kept only in the goal or your plan never reaches the worker.
 
-Run the steps as separate calls only without `work_dispatch`, or to bind an
-existing session to a new item (step 4 of Patrol: skip step 2). Then make
-**one call at a time**, each after the previous reply came back, in
-**exactly this order**:
-
-1. `work_ledger_record` `action=create`, with the item's `title` and its
-   `acceptance` condition — the same condition object `accept_eval.py` parses,
-   stored verbatim. It returns the `item_id`.
-2. `session_create` with a title that says what the item is FOR and **`agent`
-   set explicitly** — see "Which agent" below — and no `folder`. It returns the
-   worker's session key.
-3. `work_ledger_record` `action=bind` with that `item_id` and
-   `worker_session_key`.
-4. `session_send` the seed prompt into the new session — the item's goal, its
-   acceptance condition, and the instruction to report through `work_report`.
-   The seed is the item's whole contract: the child session gets no other
-   context from you. Its `started: true` means the target began a turn on your
-   message, `started: false` that it queued; neither says the work succeeded.
-
-Step 2 never carries a `message`: the seed is step 4, after the bind. Where a
-`message` would be refused outright, your prompt says so:
-"`session_create`'s `message` is refused for this agent
-(`message_needs_send_approval`): create, then `session_send`."
+The seed is the item's whole contract: the child session gets no other context
+from you. It carries the item's goal, its acceptance condition, and the
+instruction to report through `work_report`. Without `work_dispatch`, or to
+bind an existing session to a new item (Patrol step 4), read
+`<this skill's dir>/references/manual-dispatch.md` and follow its four steps in order.
 
 **A `pr_checks` seed says how the pull request is opened.** Tell the worker to open it non-draft — `gh pr create` without `--draft` — or to run `gh pr ready` before it reports done. A completion claim that arrives on a draft whose checks have not finished costs a whole verify cycle that answers `refused`, which you surface to the user rather than retry.
 
@@ -339,7 +296,7 @@ of, the seed MAY ask a fresh subagent that sees the change, but not the worker's
 reasoning, for one independent attempt to break it.
 
 **Bind BEFORE you seed**, as your prompt's rule says: an unbound running worker
-is neither visible nor recoverable.
+is neither visible nor recoverable (why: `references/manual-dispatch.md`).
 
 #### Which agent
 
@@ -450,24 +407,10 @@ Each cycle:
    and returns the worker's report beside the verdict, so a read first only
    costs you a turn.
 
-   The compact read returns the
-   conductor record and, per item, the status columns plus the derived
-   `orphaned`, `stale` and `acceptance_concrete` flags — no events, acceptance or
-   `accept_batch`. This one read replaces the whole transcript-reading cycle, and
-   it stays small however many items the board holds. An `orphaned` item (your
-   slot is gone; it self-heals if the session reopens) keeps its binding and
-   keeps taking its worker's writes, unread until someone takes it over or
-   stops it. The full read (no
-   `compact`) adds every field, the newest events and a ready-to-pipe
-   `accept_batch`; take it when a `done` item needs its bar (step 3). A full
-   read too large for the tool-result limit
-   comes back trimmed with `truncated: true` and says what it left out. An item is never `stale` on the strength of silence alone: its worker
-   also has to be not running, and its last word has to have left the next move
-   with the worker, so a `done` item waiting on you is not flagged. An item whose
-   `report_undelivered` is set had a worker that TRIED to report or read its brief
-   and the harness never delivered the call: check that worker's `session_status`
-   and its pull request, and tell the user what you find ("couldn't send its
-   report") instead of calling it stalled.
+   Read the `stale`, `orphaned`, `acceptance_concrete` and
+   `report_undelivered` flags every cycle; the full read (no `compact`) is for
+   a `done` item's bar. What each flag means and what you do about it, and
+   what each read returns: `<this skill's dir>/references/ledger-fields.md`.
 2. **Act on three statuses, and only three:**
 
    | status | what it means | what you do |
@@ -521,13 +464,10 @@ Each cycle:
    a wake named. It reads the bar of each item whose status is `done` from your
    ledger and returns the evaluator's own `{"results": [...]}` document, one
    `{id, verdict, evidence}` per item, with any `done` item it cannot judge
-   under `skipped` and the reason. Each answer also carries what a read of that
-   item would show you: `reported` (the worker's own `summary` and claimed `pr`:
-   a claim to read, never the bar; `summary` is up to 500 characters of worker
-   prose, so decide from `verdict`, `status` and the evaluator), the `fails` recorded so far, the
-   `worker_session_key`, `pending_overdue` with your own `decision` when that
-   flag is set, and the stored `acceptance` of an overdue item or of a bar that
-   is not concrete yet.
+   under `skipped` and the reason. Each answer carries `reported`, the worker's
+   own `summary` and claimed `pr`: a claim to read, never the bar; `summary` is
+   up to 500 characters of worker prose, so decide from `verdict`, `status` and
+   the evaluator (the other fields: `references/ledger-fields.md`).
    You need no `work_ledger_read` first and you
    copy no document. It runs nothing you name and does not prompt.
 
@@ -541,43 +481,10 @@ Each cycle:
    the worker. A `done` is the worker saying the world-state now means what the
    condition says; only then is the evaluator's answer an acceptance.
 
-   **Handing it a document yourself** is for a bar you want judged outside that
-   rule's selection: take the
-   `accept_batch` from a full `work_ledger_read` (no `compact`), **keep only the entries
-   whose item is currently `status: done`** — each entry carries that status, so
-   the filter is a read of the document you already have — and pass that filtered
-   document as its arguments
-   (`{"items": [<the done entries>]}`). Then the filter is yours to apply, and it
-   is not optional. `accept_batch` is
-   composed from every open item whose `acceptance` is concrete, whatever its
-   status. An item whose bar still carries a placeholder (a `TBD` or blank `pr`,
-   an unknown kind) is already left out, and its `acceptance_concrete` flag says
-   so. It is the two-phase promotion seam, not a verdict gate. Never pipe
-   the unfiltered document, and never pass it to the tool.
-
-   **Only without the `accept_eval` tool**, pipe the same filtered document
-   through the script with a **quoted heredoc** (one approval per call):
-
-   ```bash
-   python3 <this skill's dir>/scripts/accept_eval.py <<'ACCEPT_BATCH'
-   <the accept_batch document, with every non-done entry removed>
-   ACCEPT_BATCH
-   ```
-
-   **The heredoc is load-bearing, not style.** `acceptance` holds text you built
-   from ingested content — an issue title, a file path a worker named — and a
-   `file` path carrying a single quote would end a `'...'` string early and hand
-   the rest of the value to the shell as a command, which `execute_bash` then runs
-   after one approval. A heredoc whose delimiter is quoted (`<<'ACCEPT_BATCH'`) is
-   the one form the shell copies to stdin without interpreting anything inside it.
-   Never paste the document into a `printf '%s' '...'` or `echo '...'` argument,
-   and never let the document contain a line that is exactly `ACCEPT_BATCH`.
-
-   **Resolve `<this skill's dir>` from where this SKILL.md was actually loaded
-   from** — the skill index names its absolute path. Do NOT hardcode a path under
-   the default skills root: a `KIROCREW_HOME` override moves it, so on such an
-   install that path does not exist and every evaluator call would fail before
-   patrol ever ran.
+   **Never hand the evaluator an unfiltered `accept_batch`.** To hand it a
+   document yourself, or without the `accept_eval` tool (a quoted heredoc
+   only, never `printf` or `echo`), read
+   `<this skill's dir>/references/accept-eval-fallback.md` first and follow it exactly.
 
    Evaluate **every `done` item in ONE call** — a shell fallback call costs one
    approval prompt — then, in a later step once it has returned, settle each
@@ -593,7 +500,9 @@ Each cycle:
    never try to route around a
    refusal. `error` is a broken spec or environment — fix the spec.
 
-   **A `pending` acceptance has a budget.** An item whose `pending_overdue` flag is true has read `pending` for 24 hours on end: a check that never reports, a runner that never frees up, a fork run nobody approves. Evaluate it once more with the rest of the batch, so the evidence you show is current. If it still answers `pending`, do not ask. The first time, keep waiting: write its bar again with `action=accept` (that ends the run, so the next `pending` verdict starts a fresh 24 hours), record `action=decide` with a reason that starts `pending overdue: re-armed once`, and say so in your report, quoting the evidence and saying it is closed if it goes overdue again. When it goes overdue again and its row's `decision` field (on every `work_ledger_read` row, compact included) still starts `pending overdue: re-armed once`, close it `abandoned` and report it with the evidence. Write no other `decide` on the item while it waits, so the marker stays. Either step clears the flag, so after a restart or a compaction there is nothing to redo. Any verdict other than `pending` ends the run too. A `human_approval` item never goes overdue, because it is settled by asking.
+   **An item flagged `pending_overdue`, or a `human_approval` item:** read
+   `<this skill's dir>/references/rare-cases.md` before you act on it. Neither is ever settled by
+   an answer you invent.
 
    **Two-phase acceptance: the server omits the item, you promote the value.** A
    condition may name a value that only exists after the item starts — a PR number for
@@ -606,10 +515,6 @@ Each cycle:
    cycle. Promoting a bar clears the item's verdict, so the new bar needs its own
    `pass` before the item can close `accepted`. For a PR the goal wants merged
    the bar is `pr_merged`, as your prompt's rule on landed code says.
-
-   **A `human_approval` item is verified by asking.** The evaluator answers `pending` for it forever, so the answer comes from the user. In a turn nobody typed (it opens with `[auto-nudge cycle`, `[work-ledger wake]` or `[sent by session`, or a cron fired it), never call `ask_question`: record the ask with `work_ask_record`, put it in `needs_you` or an `[OPTIONS:]` reply, keep patrolling the other items, and record the verdict in the turn the user answers. In a turn the user typed, ask with `ask_question`. That call BLOCKS until the user responds and returns the answers as its tool result, so your turn does not end and no later patrol cycle has to pick the answer up: read the result and record the verdict in the same turn. Nothing else runs in this session meanwhile, so keep patrol work out of the turn that asks. The card waits up to 30 minutes; if the result says it expired, was dismissed, or that the user replied in chat instead, act on that outcome (re-ask, or read their next message) rather than inventing an answer.
-
-   A result saying the card was withdrawn (dashboard restarted, tab reset) is not an answer: re-issue it.
 
    **A reviewer grills your plan and what no lane reviews**, as your prompt's
    plan-reviewer rule says. Its seed carries your plan (items, acceptance,
@@ -841,7 +746,7 @@ Run it before you ask, and run it again on every cycle while the ask is open —
 the item may no longer need it. The risk check comes FIRST: a default never
 settles a risky choice. A `human_approval` item skips steps 1 and 2: its
 acceptance IS a person's answer, so it is always asked (step 3 still parks it
-alone). A `pending_overdue` item is never asked: Patrol gives its default.
+alone). A `pending_overdue` item is never asked: `references/rare-cases.md` gives its default.
 
 1. **Is it one of the ask cases (a)-(e)?** Then do not pick a default for it, even if one exists. If
    the item can simply be parked instead — skipped, with nothing done and

@@ -188,6 +188,8 @@ class TestMemoryTuningPlumbing:
         "eval/bench/member_v2.py": "bench V2 member database",
         # The lesson recall bench writes its golden rules into a throwaway store.
         "eval/bench/lesson_recall.py": "bench lesson recall store",
+        # Reads a snapshot copy of the owner's store for a benchmark eval set.
+        "eval/bench/own_memory.py": "bench own-memory snapshot copy",
         # Scenario workspaces are throwaway stores, not the install's memory.
         "eval/runner.py": "eval scenario workspace",
         # Read-only injection audit; it never writes an episode.

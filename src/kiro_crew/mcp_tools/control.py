@@ -697,6 +697,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_tools.control_parts.monitor import (  # noqa: F401
         _arming_preflight_refusal,
         _compact_monitor_inspection,
+        _finished_watch,
         _monitor_context_refusal,
         _parsed_pull_request_target,
     )
