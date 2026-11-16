@@ -510,6 +510,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
     except (OSError, ValueError):
         logger.warning("could not remove an uninstalled app's ticked Bots", exc_info=True)
     refresh_app_config_keys()
+    # Deferred: frame_sources stays off an MCP server's pre-list import budget.
+    from kiro_crew.apps.frame_sources import refresh_frame_sources  # noqa: PLC0415
+
+    refresh_frame_sources()
     logger.info("Uninstalled app %s (keep_data=%s)", name, keep_data)
 
     # Withdraw the grant a SECOND time, now that the files are actually gone.

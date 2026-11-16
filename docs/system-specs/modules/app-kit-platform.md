@@ -5020,6 +5020,46 @@ returns from one of the page's own app iframes is skipped, and one return reads
 once. The shared `['apps']` query keeps `staleTime: Infinity`; this re-read is
 what keeps the rail and the link-preview layer current without a reload.
 
+Because the page module runs in the dashboard document, an iframe it draws is
+allowed or refused by the dashboard's own `frame-src`. An app names the sites it
+frames in `ui.frameSources`: at most 8 exact `https://<hostname>` origins, refused at
+install otherwise (`UIConfig.frame_source_errors`, host rules from
+`apps/app_hosts.py`). Each origin is an entry of the `frameSources` family in the
+app's approved-grants set, staged like a link-preview host (`point_grants`,
+`staged_app_grants`): an install approves what it declares, and an origin that an
+update or a later edit of the app's own `app.json` adds is held back, listed on the
+app's page, until the owner approves it. Nothing is listed while the declaration
+fails the scan's validation (a bad entry, a repeat, more than 8), since the scan then
+publishes none of the app's origins. The family is explicit-only, so a set stored
+before this host knew the key approves no origin. The gateway appends the union of the
+declared and approved origins of every app that is installed, enabled and trusted to
+execute (`third_party_ceiling_closed`) to `frame-src`. CSP is per document, so an
+origin is admitted for the whole dashboard while its app qualifies, not only on that
+app's page: any dashboard page, another app's page module, or a `srcdoc` frame that
+inherits the policy may frame it. `apps/frame_sources.py` scans on enable, disable, update and
+uninstall, and on every hook-reconciler tick, whose first scan runs as soon as the
+reconciler task starts, after boot (a CLI change or a trust edit in `config.json`
+lands there), and re-validates each manifest as it scans. Until that first scan the
+CSP admits no app origin. The CSP middleware reads
+only the published string, never a manifest. A disabled, untrusted or uninstalled app
+adds nothing, and an origin two apps declare stays while either one qualifies.
+Revoking trust in `config.json` drops the origin on the next reconciler tick (up to
+15 s), and an already open dashboard keeps admitting it until it reloads. A
+document keeps the policy it was served with, so `AppHost` listens for a
+`securitypolicyviolation` that refuses one of the mounted app's declared origins
+under a document policy that lacks it (a refusal by a policy that lists the origin is
+of an undeclared redirect target, and is ignored) and shows a dismissable notice
+naming the origin. For an origin in the app's approved set it offers a "Reload page"
+button; for one still waiting for approval it offers "Open app details" instead,
+since a reload would be refused again
+(`website/src/components/appFrameSources.ts`). Nothing reloads by itself: the
+reload is of the whole dashboard document, not only the app's frame, so it waits
+for the owner, who may have unsaved input on the page. The notice cannot tell
+whether a reload will help an approved origin (an untrusted app's origin stays
+refused), so its text says to reload if the app was just enabled or approved. This
+grants a trusted page nothing new: it already runs with the dashboard's authority,
+and `img-src` already admits every https host.
+
 This is a different mechanism from the MCP App (SEP-1865) `srcdoc` iframes, which
 load their own ESM runtime from a CDN through an import map and are confined by
 the response CSP. §13 covers their token scoping;
@@ -5033,7 +5073,8 @@ with its callers `website/src/pages/AppPage.tsx` and
 field), `apps/routes_static.py` (static UI serving),
 `apps/routes_lifecycle.py::_announce_app_ui_changed` with its callers in
 `apps/routes_install.py` and `apps/routes_registry.py` (the `app_reload`
-announcement), `dashboard/server.py` (the CSP allowances the CDN import map needs).
+announcement), `dashboard/server.py` (the CSP allowances the CDN import map needs),
+`apps/frame_sources.py` (the `ui.frameSources` origins in `frame-src`).
 
 ## 18a. A link-preview card runs in an opaque-origin frame, never in the dashboard
 

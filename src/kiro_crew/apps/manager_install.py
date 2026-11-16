@@ -923,6 +923,12 @@ def update_app(
     # publishes every record's config keys before the dashboard serves.
     if _adoption is None:
         refresh_app_config_keys()
+        # Before the route announces app_reload, so the reloaded dashboard is
+        # served the updated manifest's frame origins.
+        # Deferred: frame_sources stays off an MCP server's pre-list import budget.
+        from kiro_crew.apps.frame_sources import refresh_frame_sources  # noqa: PLC0415
+
+        refresh_frame_sources()
 
     logger.info(
         "Updated app %s: v%s -> v%s from %s",

@@ -66,6 +66,7 @@ from kiro_crew.apps.bridges import (
     deregister_app_crons_reporting_failures,
     pending_reload_cron_rollback,
 )
+from kiro_crew.apps.frame_sources import refresh_frame_sources
 from kiro_crew.apps.hooks_integration import (
     clear_loaded_hook_signature,
     compute_hook_signature,
@@ -559,6 +560,11 @@ async def _reconcile_loop() -> None:
     global _active_pass
     while True:
         try:
+            # Publish the apps' frame origins for the dashboard CSP: first at once,
+            # off the boot path (this loop is a task started after the boot pass,
+            # and the CSP admits no app origin until then), then every tick, so a
+            # CLI enable/disable or a trust grant edited in config.json lands too.
+            await asyncio.to_thread(refresh_frame_sources)
             await asyncio.sleep(POLL_INTERVAL_SECS)
             # list_apps walks the apps dir + reads two files per app — off loop.
             installed = await asyncio.to_thread(list_apps)

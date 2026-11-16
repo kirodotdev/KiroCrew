@@ -1996,7 +1996,10 @@
       "your_selected_setup_is_ready_in_kiro_crew": "Your selected setup is ready in {{productName}}."
     },
     "appHost": {
-      "not_installed": "{{name}} isn't installed"
+      "frame_blocked_refresh": "{{origin}} couldn't be shown because this page loaded before it was allowed. If you just enabled or approved this app, refresh the page.",
+      "frame_needs_approval": "{{origin}} is waiting for your approval. Approve it on the app's details page to show it here.",
+      "not_installed": "{{name}} isn't installed",
+      "open_app_details": "Open app details"
     },
     "approvalCard": {
       "approval_no_longer_pending": "This approval expired, was already decided, or was replaced by a newer request — the agent is no longer waiting on it.",
@@ -5403,6 +5406,7 @@
       "grants_reconsent_link_full_url": "Whole link addresses: the app's hover cards also see the part of a link after ? or #, which can hold a sign-in code.",
       "grants_reconsent_message_actions": "Message actions: what the app's menu items on chat messages can read.",
       "grants_approved": "Approved: {{entries}}. The app can use them now.",
+      "grants_reconsent_frame_sources": "Framed sites: lets the app's pages show these sites inside the dashboard.",
       "grants_reconsent_link_open_hosts": "Opened links: lets the app open links to these sites when you click one in a chat message.",
       "grants_reconsent_link_open_full_url": "Whole addresses of opened links: the app also sees the part of a link after ? or #, which can hold a sign-in code.",
       "grants_reconsent_worker_auto_approve": "Approving tool calls in its own background sessions, so they keep working while nobody watches.",
