@@ -67,6 +67,14 @@ _MEMBER_OWNERS = frozenset(
 )
 
 
+def _host_announces_mcp_starts(acp_backend: str) -> bool:
+    """Whether this host sends MCP-init frames that end the session drain early."""
+    try:
+        return bool(harness_for(acp_backend).notification_aliases.mcp_init)
+    except ValueError:
+        return True
+
+
 class AcpRuntime:
     """Owns one kiro-cli acp subprocess with single-reader demux.
 
@@ -457,6 +465,13 @@ class AcpRuntime:
         # opts out so hot one-liner paths (chat titles, suggestions, STT
         # endpointing) don't pay a full ceiling wait that can never be armed.
         self._expect_mcp_reports = expect_mcp_reports
+        # A host that names no MCP-init method (goose, claude-agent-acp, codex-acp
+        # send plain ``session/update`` only) can never arm the ceiling either, so
+        # its sessions skip that wait: the drain reads both fields. Only the drain:
+        # the spec's switched-off servers are still recorded off
+        # ``_expect_mcp_reports`` alone. An unknown backend keeps the wait: the
+        # spawn refuses it later, with the harness's own error.
+        self._host_sends_mcp_init = _host_announces_mcp_starts(acp_backend)
         # Set at each spawn: True once this process switched MCP off for a
         # tool-less agent, so no server of any session on it can report.
         self._mcp_switched_off = False
