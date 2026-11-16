@@ -459,6 +459,7 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
     # list: a ``@server`` selector the merge derives from a stored ``*`` has no
     # stored row, so it carries no Remove (it goes with its server).
     stored: dict[str, dict] = {}
+    reachers: dict[str, Any] = {}
     listed_skills: set[str] = set()
     file_spec: dict[str, Any] = {}
     _path: Any = None
@@ -466,7 +467,7 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
         from kiro_crew.agent_capabilities import _materialize, _rows
         from kiro_crew.agent_discovery import expand_skill_uri
         from kiro_crew.agent_sdk import agent_specs
-        from kiro_crew.agent_sdk.mcp_refs import ReachIndex
+        from kiro_crew.agent_sdk.mcp_refs import OtherReach, ReachIndex, glob_free
         from kiro_crew.config.loader import default_project_dir
         from kiro_crew.mate_worker import MATE_WORKER_AGENT, worker_additions
         from kiro_crew.skill_runtime.catalog import (
@@ -559,6 +560,7 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
         stored = _rows(file_spec, catalog)
         listed_skills = set(_listed_skills(file_spec))
         local = _effective(file_spec)
+        reachers = {section: OtherReach(local[section]) for section in ("tools", "allowedTools")}
     except Exception:  # noqa: BLE001 - a summary is display only; default to inherited
         logger.debug("worker base/file unreadable; all rows read inherited", exc_info=True)
 
@@ -570,6 +572,11 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
             listed = where == "skills" and key in listed_skills
             if key not in stored.get(where, {}) and not listed:
                 continue
+            if where in reachers and glob_free(key) and not reachers[where].reached_by_another(key):
+                # Removing an entry only shrinks the effective set (its reach pass
+                # is monotone), so with nothing else reaching *key* it surely goes.
+                # Rebuilding the file per row made a read quadratic in approvals.
+                return {"section": where, "id": key}
             ops = [{"section": where, "id": key, "action": "remove"}]
             candidate = copy.deepcopy(file_spec)
             candidate_rows = _rows(candidate, catalog)
