@@ -368,11 +368,11 @@ from conftest_floor_restores import (  # noqa: E402,F401 -- bound for pytest and
     _live_telemetry_consent_workers,
     _no_leaked_embed_evictor,
     _no_leaked_telemetry_exporter,
+    _restore_boot_wired_globals,
     _restore_hooks_integration_globals,
     _restore_log_queue_listener,
     _restore_log_record_factory,
     _restore_logger_levels,
-    _restore_relay_gateway_ingress,
     _resume_crew_log_eager_fold,
     _retire_crew_log_eager_fold,
 )

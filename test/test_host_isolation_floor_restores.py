@@ -4,7 +4,8 @@ Production sets some process-global state once and never resets it, so a test th
 changes it would hand the change to the next test; the rootdir conftest puts it back.
 Covers the dynamic ``JIRA_TOKEN_<HEX>`` credential keys, the inherited shell preloads
 ``name_grant`` refuses, the logging record factory, logger levels, the CLI log queue
-listener, the environment CLI startup mutates and the hooks dispatcher globals. The
+listener, the environment CLI startup mutates, the hooks dispatcher globals and the
+globals a gateway wires once at boot (relay ingress, the dashboard state's hooks). The
 other floor guards are in ``test_host_isolation_floor.py`` and the worker budget in
 ``test_host_isolation_floor_worker_budget.py``; the conftest loader comes from
 ``host_isolation_floor_helpers.py``.
@@ -577,3 +578,90 @@ class TestTheHooksDispatcherIsRestored:
             "the floor restored past the dispatcher this cycle inherited, so a "
             "higher-scoped installer would be torn out after its first test"
         )
+
+
+class TestBootWiredGlobalsGoBack:
+    """``DashboardState.__init__`` wires three module globals that pin the state.
+
+    The share-tree reader, the parent-project resolver and the decisions runner factory
+    each close over the state or its ``sessions``. A gateway sets them once; in a worker
+    the last test's state, with every ``MagicMock`` call it recorded, lived until the next
+    test built one (~300 MiB after the 2,000-slot scale tests).
+    ``conftest._restore_boot_wired_globals`` puts them back; driven directly here.
+    """
+
+    @staticmethod
+    def _values() -> list[object]:
+        from kiro_crew import subagent
+        from kiro_crew.acp import chat_runtime_sharing
+        from kiro_crew.decisions import impl_llm
+
+        return [
+            chat_runtime_sharing._tree_root_reader,
+            subagent._parent_project_resolver,
+            impl_llm._runner_factory,
+        ]
+
+    def test_a_state_built_in_the_cycle_leaves_the_inherited_values(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        from chat_runner_coverage_helpers import _state
+
+        from kiro_crew import subagent
+        from kiro_crew.acp import chat_runtime_sharing
+        from kiro_crew.decisions import impl_llm
+
+        inherited = object()
+        monkeypatch.setattr(chat_runtime_sharing, "_tree_root_reader", inherited)
+        monkeypatch.setattr(subagent, "_parent_project_resolver", inherited)
+        monkeypatch.setattr(impl_llm, "_runner_factory", inherited)
+
+        cycle = _autouse_floor_generator("_restore_boot_wired_globals")()
+        next(cycle)  # snapshot, taken while the sentinel holds every slot
+
+        # A sub-agent manager is what makes the state wire the parent-project resolver.
+        _state(tmp_path, subagents=MagicMock())
+        assert all(value is not inherited for value in self._values()), (
+            "DashboardState no longer wires one of these seams; drop it from " "_BOOT_WIRED_GLOBALS"
+        )
+
+        with pytest.raises(StopIteration):
+            next(cycle)  # the restore under test
+        assert self._values() == [inherited] * 3
+
+    def test_the_resolver_lives_on_the_facade_not_on_its_part(self, tmp_path) -> None:
+        """Pins WHICH module the floor must restore for the parent-project resolver.
+
+        ``_facade_compose`` rebinds the composed functions onto ``kiro_crew.subagent``, so
+        the setter's ``global`` statement writes the facade's dict, and the part module's
+        own copy is never assigned. Restoring the part would restore nothing.
+        """
+        from unittest.mock import MagicMock
+
+        from chat_runner_coverage_helpers import _state
+
+        from kiro_crew import subagent
+        from kiro_crew.subagent_parts import agent_policy
+
+        assert subagent.set_parent_project_resolver.__globals__ is vars(subagent)
+        assert subagent.parent_project_dirs.__globals__ is vars(subagent)
+
+        part_before = agent_policy._parent_project_resolver
+        _state(tmp_path, subagents=MagicMock())
+
+        assert subagent._parent_project_resolver is not None
+        assert agent_policy._parent_project_resolver is part_before
+
+    def test_the_relay_ingress_still_goes_back(self, monkeypatch) -> None:
+        from kiro_crew.relay_client import provider
+
+        monkeypatch.setattr(provider, "_gateway_ingress", None)
+        cycle = _autouse_floor_generator("_restore_boot_wired_globals")()
+        next(cycle)
+        provider._gateway_ingress = object()
+
+        with pytest.raises(StopIteration):
+            next(cycle)
+        assert provider._gateway_ingress is None
