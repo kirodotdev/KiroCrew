@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_scope, turn_timing
+from kiro_crew.acp import kiro_signin_hold
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpAuthRequired,
@@ -285,6 +286,10 @@ async def _start_kiro_runtime(self: AcpProvider) -> None:
     try:
         await self._start_kiro_runtime_impl(phases, meta)
         outcome = "ready"
+        # A session was created, so this backend is signed in: its warm pool may fill.
+        backend = meta.get("backend")
+        if isinstance(backend, str):
+            kiro_signin_hold.note_signed_in(backend)
     except AcpAuthRequired:
         outcome = "auth_required"
         raise
