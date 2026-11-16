@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import os
 import shlex
@@ -59,6 +60,8 @@ from kiro_crew.security.paths import is_unverifiable_path_refusal, sensitive_pat
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+
+logger = logging.getLogger(__name__)
 
 #: The commands this module answers (see :func:`answers_locally` for their arguments).
 KAS_LOCAL_INSPECT_COMMANDS = frozenset(
@@ -568,8 +571,10 @@ async def _kas_call(provider: Any, command: str, params: dict[str, Any]) -> dict
         return None
     try:
         answer = await call(command, params)
-    except Exception as exc:  # noqa: BLE001 - a dead or refusing engine is shown, not raised
-        return {"success": False, "message": str(exc)}
+    except Exception:  # noqa: BLE001 - a dead or refusing engine is shown, not raised
+        # The exception text can carry local detail; log it, show a fixed line.
+        logger.warning("KAS %s command failed", command, exc_info=True)
+        return {"success": False, "message": "The engine could not run the command."}
     return answer if isinstance(answer, dict) else None
 
 

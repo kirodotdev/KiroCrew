@@ -508,7 +508,14 @@ def delete_meeting(meeting_id: str, root: Path | None = None) -> bool:
                     remove_with_retry(child, retry_hint=hint)
             remove_with_retry(resolved, retry_hint=hint)
         except PermissionError as exc:
-            raise MeetingsPathError(str(exc), status=500, code="meeting_delete_failed") from exc
+            # The OS error names local paths; keep it in the server log, not the reply.
+            logger.warning("meetings: could not delete %s", safe_id, exc_info=True)
+            raise MeetingsPathError(
+                "The meeting could not be deleted. A program may have one of its files"
+                " open: close it, then delete the meeting again.",
+                status=500,
+                code="meeting_delete_failed",
+            ) from exc
     return True
 
 
