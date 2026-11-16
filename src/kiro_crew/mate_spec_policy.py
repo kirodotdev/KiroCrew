@@ -307,6 +307,43 @@ def _carry_mcp_allow(rule: dict[str, Any], target: dict[str, Any]) -> bool:
     return True
 
 
+#: The one spelling a Bot's old shell ``toolsSettings`` entries are carried under.
+_SHELL_KEY = "execute_bash"
+
+
+def fold_shell_settings(settings: Any) -> Any:
+    """*settings* with two or more shell-family entries (``shell``, ``execute_bash``) as one ``execute_bash``.
+
+    kiro-cli files the spellings under one tool and reads only the first one in
+    its alias group (``canonical_tools_settings``): that entry is what its
+    worker ran under, so the fold keeps every key of it and no key of the
+    others, whose grants never applied. Only ``deniedCommands`` is the union of
+    all of them, so no deny is dropped. A fold that cannot be exact is not made:
+    an entry that is not an object, or a ``deniedCommands`` that is not a list.
+    """
+    if not isinstance(settings, dict):
+        return settings
+    keys = [k for k in settings if tools_settings_family(k) == "shell"]
+    if len(keys) < 2 or not all(isinstance(settings[k], dict) for k in keys):
+        return settings
+    _, dropped = canonical_tools_settings({k: settings[k] for k in keys})
+    winner = next(k for k in keys if k not in dropped)
+    merged = copy_json_document(settings[winner])
+    denies: list[Any] = []
+    for key in [winner, *dropped]:
+        value = settings[key].get("deniedCommands", [])
+        if not isinstance(value, list):
+            return settings
+        denies.extend(v for v in value if v not in denies)
+    if denies:
+        merged["deniedCommands"] = denies
+    return {
+        (_SHELL_KEY if k == keys[0] else k): (merged if k == keys[0] else v)
+        for k, v in settings.items()
+        if k not in keys or k == keys[0]
+    }
+
+
 def _layer_tools_settings(target: dict[str, Any], settings: Any, lost: list[str]) -> None:
     if not isinstance(settings, dict):
         lost.append("toolsSettings")
