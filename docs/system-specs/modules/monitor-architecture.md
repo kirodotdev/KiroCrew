@@ -471,8 +471,11 @@ neither holds nor releases it. A loop that names one pull request is not blind
 while it waits: its held tick reads that pull request (`subject_reads.hold_tick`)
 and settles the loop when it merges or closes, exactly as an approval hold's does
 below, and the reconciler rescues that read at the same cadence. A loop that
-names none arms one tick at the hold's expiry and the reconciler rescues that
-timer if it is lost, so the wait performs no subject read. When the hold expires,
+names none ticks one read interval (`SUBJECT_READ_SECS`) out, or at the hold's
+expiry when that comes sooner, and reads nothing; each tick re-reads the expiry on
+the wall clock, because asyncio timers run on the monotonic clock, which stops
+while a host is suspended. The reconciler rescues that timer if it is lost. When
+the hold expires,
 its elapsed span is charged to the runtime budget: the loop fires one cycle if
 budget remains, or stops without a cycle if the budget is spent. While the
 declaring process runs, the budget-limited expiry is the remaining
@@ -509,7 +512,8 @@ stays active, fires nothing and spends neither bound, and it resumes on its own
 once a person answers an approval, types into the dashboard session or presses
 fire, or a new dashboard turn starts in the session, whoever sent it
 (`_turn_open`, unarmed: that turn's end re-arms the loop)
-(`release_approval_hold`, which also ends a declared person-wait). A Slack or Discord message on a channel-bound
+(`release_approval_hold`; the person's own signs also end a declared
+person-wait, which a turn opening for another sender leaves held, `person=False`). A Slack or Discord message on a channel-bound
 slot does not release it; one sent into a dashboard slot linked to that
 channel runs through `_run_chat`, so its turn does. `monitor_inspect` reports the hold as
 `paused_for_approval` on the loop reading, and a declared person-wait as
