@@ -266,6 +266,8 @@ class DashboardState:
     # own copy unset drops the work silently. Bound at app startup; the property
     # latches lazily so a ``__new__``-built state still resolves one.
     _serving_loop: "asyncio.AbstractEventLoop | None" = None
+    # Hidden-chat refreshes still running off the serving loop (``bind_serving_loop``).
+    _hiding_refreshes: "frozenset[asyncio.Future[None]] | set[asyncio.Future[None]]" = frozenset()
 
     # Keys the last open-tab restore could not read (not keys it proved absent).
     # _persist_open_slots folds these back into the snapshot so a transient read

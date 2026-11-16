@@ -133,6 +133,11 @@ cross-home flake three tests later.
      shutdown, which would keep the next boot's writer from starting.
    * ``sandbox._SHIM_ARGV_CACHE`` -- the spawn shim's resolved argv, derived
      from the boot's config and home.
+   * ``apps.hidden_sessions._app_ids`` and ``_hiding_apps`` -- every app id
+     the process has seen installed under the home's apps directory, and the
+     apps that may hide their chats. ``_app_ids`` only grows (it is kept after
+     an uninstall), so the next home would inherit the last home's app ids; a
+     fresh process starts with none and with no published set.
    * ``apps.credential_masks._cache`` -- the parsed ``credentialMasks`` of
      every app manifest the boot's spawns read, keyed on the home's paths.
    * ``config.loader`` materialized-agent snapshot (``_MATERIALIZED_AGENTS``,
@@ -219,6 +224,9 @@ cross-home flake three tests later.
    home as its ``KIROCREW_HOME`` and creates the directory as it starts, so
    one still starting would put ``<tmp_path>/home`` back after the test
    removed it; after the reap, teardown shuts that pool down and joins it.
+   The hidden-chat refresh (``apps.hidden_sessions``) runs on the default
+   executor and publishes the home's app ids when it ends, so teardown unbinds
+   the listing and awaits the refreshes still in flight before the reset.
 
 4. **Reaped** by ``_teardown_boot``: every asyncio task the boot created that
    ``_shutdown()`` did not end. Production never needs to -- ``os._exit``
@@ -302,7 +310,7 @@ from kiro_crew import (
 )
 from kiro_crew.acp import client as acp_client
 from kiro_crew.agent_sdk import host_auth
-from kiro_crew.apps import credential_masks
+from kiro_crew.apps import credential_masks, hidden_sessions
 from kiro_crew.apps.builtin_adoption_pins import HARNESS_PINS_ENV, load_adoption_pins
 from kiro_crew.config import live as config_live
 from kiro_crew.config import loader as config_loader
@@ -822,6 +830,9 @@ def _reset_home_bound_globals() -> None:
     sandbox._SLICE_OOM_SEEN = None
     sandbox._SHIM_ARGV_CACHE.clear()
     credential_masks.clear_cache()
+    with hidden_sessions._refresh_lock:
+        hidden_sessions._app_ids = frozenset()
+        hidden_sessions._hiding_apps = None
     config_loader._MATERIALIZED_AGENTS = frozenset()
     config_loader._MATERIALIZED_STEMS.clear()
     config_loader._MATERIALIZED_SEEN.clear()
@@ -1060,9 +1071,37 @@ async def _teardown_boot(
         await _drain_mcp_probes()
     except BaseException as exc:  # noqa: BLE001 -- re-raised below, after the reset
         failure = failure or exc
+    try:
+        await _drain_hiding_refreshes(orchestrator)
+    except BaseException as exc:  # noqa: BLE001 -- re-raised below, after the reset
+        failure = failure or exc
     _reset_home_bound_globals()
     if failure is not None:
         raise failure
+
+
+async def _drain_hiding_refreshes(orchestrator: Any) -> None:
+    """Wait for the hidden-chat refreshes the boot queued on the default executor.
+
+    Each one publishes ``hidden_sessions`` sets when it ends, so one still running
+    after the reset would put this home's app ids back. New ones are refused first
+    (the listing is unbound), one already handed to the loop is let through, then the
+    ones in flight are awaited; one that does
+    not end within ``TASK_REAP_SECS`` fails the teardown by name.
+    """
+    hidden_sessions.bind_listing(None, None)
+    # A refresh already handed to the loop (``call_soon_threadsafe``) submits on the
+    # next iteration: let it, so it is in the set read below.
+    await asyncio.sleep(0)
+    state = getattr(orchestrator, "dashboard_state", None)
+    pending = list(getattr(state, "_hiding_refreshes", ()))
+    if not pending:
+        return
+    _done, still = await asyncio.wait(pending, timeout=TASK_REAP_SECS)
+    if still:
+        raise RuntimeError(
+            f"{len(still)} hidden-chat refresh(es) still running {TASK_REAP_SECS}s after shutdown"
+        )
 
 
 async def _boot(home: Path, *, boot_secs: float) -> IntegrationGateway:

@@ -26,7 +26,7 @@ from kiro_crew.agent_sdk import host_auth
 from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.platform import governance
 from kiro_crew.slack.gateway import GatewayOrchestrator
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, wait_until
 
 try:
     import resource as _resource
@@ -645,12 +645,14 @@ async def test_a_second_boot_touches_only_known_module_globals(gateway_boot, mon
 @pytest.mark.asyncio
 async def test_a_boot_inherits_no_cooldown_or_cached_count(gateway_boot) -> None:
     """A path-resolver stall cooldown, a load-probe count, a thread's wait
-    allowance, the cached status counts and the recall pool's settings memo are
-    what a fresh process starts without, so a boot here must start without them too. The witness above
+    allowance, the cached status counts, the recall pool's settings memo and the app
+    ids the hidden-chat listing has seen are what a fresh process starts without,
+    so a boot here must start without them too. The witness above
     cannot see most of that: an inherited dict entry changes no identity and,
     once the boot adds its own, no size. So one of each is seeded under a key
     no boot uses, and both reset points must drop it."""
     from kiro_crew import recall_pool
+    from kiro_crew.apps import hidden_sessions
     from kiro_crew.dashboard import status_counts
     from kiro_crew.security import paths
 
@@ -658,6 +660,7 @@ async def test_a_boot_inherits_no_cooldown_or_cached_count(gateway_boot) -> None
     synthetic_tid = -1  # thread idents are positive, so no real caller collides
     seeded_counts = (987_654, 876_543)
     seeded_settings = (0, 987_654)  # pool off, with a cap no real read returns
+    seeded_app = "kc-integration-seeded-app"  # no boot installs an app by this name
 
     def _seed() -> None:
         until = paths._path_resolve_clock() + 1_000.0
@@ -668,6 +671,8 @@ async def test_a_boot_inherits_no_cooldown_or_cached_count(gateway_boot) -> None
         status_counts._counts_cache = seeded_counts
         status_counts._counts_cache_ts = time.monotonic()
         recall_pool._settings_cache = (recall_pool._now() + 1_000.0, seeded_settings)
+        with hidden_sessions._refresh_lock:
+            hidden_sessions._app_ids |= {seeded_app}
 
     def _recall_settings_seeded() -> bool:
         cached = recall_pool._settings_cache
@@ -680,6 +685,7 @@ async def test_a_boot_inherits_no_cooldown_or_cached_count(gateway_boot) -> None
             "_path_resolve_thread_waits": synthetic_tid in paths._path_resolve_thread_waits,
             "_counts_cache": status_counts._counts_cache == seeded_counts,
             "_settings_cache": _recall_settings_seeded(),
+            "_app_ids": seeded_app in hidden_sessions._app_ids,
         }
         return [name for name, present in held.items() if present]
 
@@ -694,6 +700,8 @@ async def test_a_boot_inherits_no_cooldown_or_cached_count(gateway_boot) -> None
             status_counts._counts_cache_ts = float("-inf")
         if _recall_settings_seeded():
             recall_pool._settings_cache = None
+        with hidden_sessions._refresh_lock:
+            hidden_sessions._app_ids -= {seeded_app}
 
     try:
         async with gateway_boot():
@@ -706,6 +714,41 @@ async def test_a_boot_inherits_no_cooldown_or_cached_count(gateway_boot) -> None
             assert not inherited, f"the boot started with the previous boot's state: {inherited}"
     finally:
         _unseed()
+
+
+@pytest.mark.asyncio
+async def test_teardown_waits_for_a_late_hidden_chat_refresh(gateway_boot, monkeypatch) -> None:
+    """A hidden-chat refresh runs on the default executor and publishes the home's
+    app ids when it ends. Teardown must wait for one still running, or its publish
+    lands after the reset and the next boot inherits this home's ids."""
+    from kiro_crew.apps import hidden_sessions
+
+    seeded_app = "kc-integration-late-refresh-app"
+    started = threading.Event()
+    ended = threading.Event()
+
+    def _slow_refresh() -> None:
+        started.set()
+        # Still running well after shutdown starts, and well inside the drain's wait.
+        wait_until(harness.shutdown_event.is_set, describe=lambda: "shutdown never started")
+        time.sleep(harness.TASK_REAP_SECS / 2)
+        with hidden_sessions._refresh_lock:
+            hidden_sessions._app_ids |= {seeded_app}
+        ended.set()
+
+    try:
+        async with gateway_boot():
+            monkeypatch.setattr(hidden_sessions, "refresh_hiding_apps", _slow_refresh)
+            with hidden_sessions._queued_lock:
+                hidden_sessions._refresh_queued = False
+            hidden_sessions.request_hiding_refresh()
+            await async_wait_until(started.is_set, describe=lambda: "the refresh never started")
+        assert ended.is_set(), "teardown ended before the refresh it queued"
+        assert seeded_app not in hidden_sessions._app_ids, "the late publish survived the reset"
+    finally:
+        await async_wait_until(ended.is_set)
+        with hidden_sessions._refresh_lock:
+            hidden_sessions._app_ids -= {seeded_app}
 
 
 @pytest.mark.asyncio

@@ -6,8 +6,8 @@ websocket fan-out delegations.
 
 Instance fields of ``DashboardState`` this module reads and writes:
 
-Writes: ``_lineage_sent``, ``_listing_refresh_owed``, ``_serving_loop``, ``_slot_diff_bases``,
-``_slots_broadcast_interval``, ``_slots_broadcast_last``, ``_slots_broadcast_timer``,
+Writes: ``_hiding_refreshes``, ``_lineage_sent``, ``_listing_refresh_owed``, ``_serving_loop``,
+``_slot_diff_bases``, ``_slots_broadcast_interval``, ``_slots_broadcast_last``, ``_slots_broadcast_timer``,
 ``_slots_push_all_owed``,
 ``_slots_push_legacy_owed``, ``_slots_push_overlapped``, ``_slots_push_pending``,
 ``_slots_push_suspend``, ``_update_progress``.
@@ -370,10 +370,16 @@ def bind_serving_loop(self: DashboardState, loop: asyncio.AbstractEventLoop) -> 
     # set of apps that hide them is computed off this loop and the slots frame resent.
     from kiro_crew.apps import hidden_sessions
 
+    # Refreshes still running, kept until done so a shutdown can wait for a late publish.
+    pending: set[asyncio.Future[None]] = set()
+    self._hiding_refreshes = pending
+
     # Both run from other threads and may outlive the loop: a closed loop takes nothing.
     def _refresh_off_loop() -> None:
         if not loop.is_closed():
-            loop.run_in_executor(None, refresh_app_state)
+            future = loop.run_in_executor(None, refresh_app_state)
+            pending.add(future)
+            future.add_done_callback(pending.discard)
 
     def _schedule_refresh() -> None:
         if not loop.is_closed():
