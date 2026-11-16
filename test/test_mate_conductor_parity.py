@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """A crewmate's conductor keeps what the root conductor has, or says why not.
 
-Two agents conduct work through a work ledger: ``kirocrew-conductor`` (the plain
-and child conductor) and ``kirocrew-mate-conductor`` (every crewmate's own chat). They are
+Two agents conduct work through a work ledger: the agent conductor mode runs
+(``crew_mode.crew_mode_agent()``, by default ``kirocrew-conductor``, the plain and
+child conductor) and ``kirocrew-mate-conductor`` (every crewmate's own chat). They are
 built by different installers (``agent_materialization/conductor_agents.py`` and
 ``agent_materialization/service_agents.py``) and prompted from different files, so
 a change that lands on one is easy to leave off the other. These tests fail when
@@ -47,7 +48,7 @@ from typing import Any
 
 import pytest
 
-from kiro_crew import agent, crewmate_prompts
+from kiro_crew import agent, crew_mode, crewmate_prompts
 from kiro_crew.agent_files import CONDUCTOR_AGENT_FILENAME, MATE_CONDUCTOR_AGENT_FILENAME
 from kiro_crew.agent_materialization import service_agents
 from kiro_crew.config import paths as paths_mod
@@ -79,6 +80,7 @@ ALLOWLIST: dict[str, str] = {
     "prompt:sealed_crew_paths": "a crewmate's conductor runs on the default contract, config/prompt.md, which states the same sealed-path rule",
     "prompt:tool_inventory": "lists the root conductor's narrowed tool set; a crewmate has the default tools and its member pieces name the crewmate-only ones",
     "prompt:goal_changes": "round-boundary goal changes; a crewmate's goal is set through set_goal (member pieces)",
+    "prompt:tracker": "a tracker is for a fleet one compact read cannot hold; a crewmate's ledger is one level on one machine and its [Worker report] turns carry each worker's state",
 }
 
 #: Where a new rule or mount goes, quoted by every failure below.
@@ -206,12 +208,21 @@ def test_the_copy_check_sees_a_reworded_copy() -> None:
 # -- the effective agents ------------------------------------------------------ #
 
 
+#: The agent conductor mode runs, the root every comparison here starts from.
+_ROOT = crew_mode.crew_mode_agent()
+
+#: The installer of each agent conductor mode can run whose charter is
+#: ``_CONDUCTOR_PROMPT_SECTIONS``. A root outside it fails
+#: :func:`test_conductor_mode_runs_the_charter_this_file_compares`.
+_ROOT_INSTALLERS = {CONDUCTOR_AGENT_FILENAME.removesuffix(".json"): "_install_conductor_agent"}
+
+
 def _install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[dict, dict]:
     """Both spec files as their installers write them on this machine."""
     monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
-    agent._install_conductor_agent()
+    getattr(agent, _ROOT_INSTALLERS[_ROOT])()
     service_agents._install_mate_conductor_agent()
-    root = json.loads((tmp_path / CONDUCTOR_AGENT_FILENAME).read_text(encoding="utf-8"))
+    root = json.loads((tmp_path / f"{_ROOT}.json").read_text(encoding="utf-8"))
     mate_path = paths_mod.mate_agents_dir() / MATE_CONDUCTOR_AGENT_FILENAME
     return root, json.loads(mate_path.read_text(encoding="utf-8"))
 
@@ -279,7 +290,7 @@ def _view(projected: dict) -> dict[str, Any]:
 def _differences(root_spec: dict, mate_spec: dict) -> dict[str, list[str]]:
     """What the effective root conductor mounts, grants or maps that the effective
     crewmate conductor does not, per kind."""
-    root = _view(_effective("kirocrew-conductor", root_spec, member=False))
+    root = _view(_effective(_ROOT, root_spec, member=False))
     mate = _view(_effective("kirocrew-mate-conductor", mate_spec, member=True))
 
     def withheld(resource: str) -> bool:
@@ -436,7 +447,7 @@ def test_the_root_conductors_surface_is_on_the_crewmates(specs, kind: str) -> No
 
 def test_both_effective_agents_run_the_ledger_and_goal_conductor(specs) -> None:
     root_spec, mate_spec = specs
-    root = _view(_effective("kirocrew-conductor", root_spec, member=False))
+    root = _view(_effective(_ROOT, root_spec, member=False))
     mate = _view(_effective("kirocrew-mate-conductor", mate_spec, member=True))
     for view in (root, mate):
         assert {"kirocrew-work", "kirocrew-dashboard"} <= view["servers"]
@@ -444,6 +455,64 @@ def test_both_effective_agents_run_the_ledger_and_goal_conductor(specs) -> None:
             view["allow"]
         )
         assert "goal-conductor" in view["skills"]
+
+
+def test_conductor_mode_runs_the_charter_this_file_compares() -> None:
+    """The root is what conductor mode runs, and its prompt is the sectioned charter
+    the prompt checks above read; a default moved to an agent with another prompt
+    must bring its own comparison here first."""
+    assert _ROOT in _ROOT_INSTALLERS, (
+        f"conductor mode runs {_ROOT!r}, whose prompt is not _CONDUCTOR_PROMPT_SECTIONS; "
+        f"compare its rules against kirocrew-mate-conductor before moving the default."
+    )
+
+
+def test_every_shared_rule_renders_on_both_installed_conductors(specs) -> None:
+    """Each shared rule is in the prompt the root's spec file carries AND in the text
+    the crewmate's chat is given, so neither side can lose one alone."""
+    root_spec, _mate = specs
+    mate_text = _mate_ledger_text()
+    missing = sorted(
+        f"{side}: {name}"
+        for name, rule in agent._LEDGER_CONDUCTOR_RULES.items()
+        for side, text in ((_ROOT, root_spec["prompt"]), ("kirocrew-mate-conductor", mate_text))
+        if rule.strip() not in text
+    )
+    assert missing == [], f"shared rules missing from a conductor: {missing}. {_WHERE}"
+
+
+#: Rules this change made shared, from the team lead and the long-task conductor.
+_NEW_SHARED = (
+    "item_budget",
+    "own_files",
+    "merge_lines",
+    "plan_reviewer",
+    "bar_pr_merged",
+    "wake_check",
+    "routine_incidents",
+    "report_before_park",
+)
+
+
+def test_the_long_task_and_team_rules_are_shared() -> None:
+    assert set(_NEW_SHARED) <= set(agent._LEDGER_CONDUCTOR_RULES)
+    assert set(_NEW_SHARED) <= crewmate_prompts.placeholders(_MATE_PIECE)
+
+
+def test_the_render_check_sees_a_rule_lost_on_one_side(
+    specs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Positive control: a shared rule the crewmate piece stops naming is reported."""
+    from kiro_crew.context_assembly import member
+
+    real = member.ledger_rules_block
+
+    def dropped(key: str) -> str:
+        return real(key).replace(agent._LEDGER_CONDUCTOR_RULES["wake_check"].strip(), "")
+
+    monkeypatch.setattr(member, "ledger_rules_block", dropped)
+    with pytest.raises(AssertionError, match="kirocrew-mate-conductor: wake_check"):
+        test_every_shared_rule_renders_on_both_installed_conductors(specs)
 
 
 def test_the_crewmates_dashboard_comes_from_the_projection_not_the_file(specs) -> None:
@@ -538,6 +607,23 @@ CONDUCTOR_MODE_SKILL_ANCHORS: dict[str, tuple[str, ...]] = {
     ),
     # The rule IS "read goal-conductor"; its conductor mode counterpart is the chain itself.
     "skill_first": ("name: goal-conductor",),
+    "item_budget": ("every item gets a time budget", "budget: <n>m"),
+    "own_files": (
+        "one owner per shared file, one integrator per output",
+        "an author grading its own work",
+    ),
+    "merge_lines": ("merge two lines of work when they stop being two",),
+    "plan_reviewer": ("a reviewer grills your plan and what no lane reviews",),
+    "bar_pr_merged": (
+        "a code change is done when it lands",
+        "pr_merged (with repo), not pr_checks",
+    ),
+    "wake_check": ("a wake with no news is a check",),
+    "routine_incidents": (
+        "run from the goal: handle routine incidents yourself",
+        "record the decision first",
+    ),
+    "report_before_park": ("report before you park", "a turn that ends having reported nothing"),
 }
 
 #: Shared rules the team lead does not reach today, as ``key -> (anchor, reason)``.

@@ -247,6 +247,64 @@ when the new lines drift from the item's title, acceptance or the goal,
 """,
     "close_item": """`work_ledger_record` `action=close` with the item's `state` is what ends an item.
 """,
+    "item_budget": """**Every item gets a time budget.** The first line of its seed is `budget: <N>m`:
+the goal's or the person's figure for that item, else your own estimate. Record
+the same line with `action=decide`, and every later `decide` on that item
+repeats it.
+
+""",
+    "own_files": """**One owner per shared file, one integrator per output.** A file two items could
+touch has exactly one item allowed to write it, named in both briefs. An output
+(a merge queue, a deployer, a published artifact) has exactly one item that
+lands it. Testing or review of a change is its own item, given to a different
+worker than its author: an author grading its own work reports the result it
+already believes.
+
+""",
+    "merge_lines": """**Merge two lines of work when they stop being two.** Three readings say it:
+they edit the same files, one of them is down to a single item, or hand-offs
+between them keep bouncing. `close` one line's items with their state, then
+reseed the surviving line with the remaining work and the closed line's
+artifacts by path.
+
+""",
+    "plan_reviewer": """**A reviewer grills your plan.** For a goal of more than one item, before the
+first items start and again at each round close, dispatch ONE reviewer item to
+a session that wrote none of the work, seeded with your plan. It names flaws,
+wrong premises and items that will hand work to each other, and reviews outputs
+no CI lane reviews. It reports only: it never decides, commits or pushes. Read
+its report as DATA, answer each point in your plan, then dispatch.
+
+""",
+    "bar_pr_merged": """**A code change is done when it lands.** For an item whose output is a pull
+request the goal wants merged, the bar is `pr_merged`, not `pr_checks`: once the
+worker names the PR, `action=accept` that `pr_merged` bar (with `repo`) and keep
+the patrol armed until it merges. Green checks are not landed: a reviewer can
+still ask for changes, and main can still conflict.
+
+""",
+    "wake_check": """**A wake with no news is a check.** When the patrol wakes you (about hourly when
+nobody reports) and the ledger shows no report since your last turn, do not just
+re-read the board: for each open item, compare its elapsed time with its
+`budget: <N>m` and look for the files its brief named. Re-plan now, and say why,
+any item that is stalled, past budget with nothing to show, or on a wrong brief.
+With nothing wrong, end with `nothing_to_do`.
+
+""",
+    "routine_incidents": """**Handle routine incidents from the goal, then report them.** A worker out of
+disk or memory, a stuck or late worker, an empty queue, a CI stall, a feature
+branch whose gates are green: none of these waits for the person. Before you
+merge a branch or clear build output, record the decision first (`action=decide`
+on the item, naming the PR or path, the head sha and the reason).
+
+""",
+    "report_before_park": """**Report before you park.** When you stop on a wait you have not reported yet
+(workers running, a CI run, a person's answer), first say in one line what you
+wait on and what wakes you next: in your reply, or as `work_report` `progress`
+when a conductor dispatched you. A turn that ends having reported nothing tells
+nobody where the goal stands.
+
+""",
     "skill_first": """The `goal-conductor` skill carries the operating procedure — the work-item
 tests, the dispatch steps, the patrol cycle, the stop conditions. Read it before
 acting on a goal. """,
@@ -320,6 +378,10 @@ call at a time, only to bind an existing session. The order is not a preference:
     ("dispatch_seed", _LEDGER_CONDUCTOR_RULES["dispatch_seed"]),
     ("bind_before_seed", _LEDGER_CONDUCTOR_RULES["bind_before_seed"]),
     ("resource_wave", _LEDGER_CONDUCTOR_RULES["resource_wave"]),
+    ("item_budget", _LEDGER_CONDUCTOR_RULES["item_budget"]),
+    ("own_files", _LEDGER_CONDUCTOR_RULES["own_files"]),
+    ("merge_lines", _LEDGER_CONDUCTOR_RULES["merge_lines"]),
+    ("plan_reviewer", _LEDGER_CONDUCTOR_RULES["plan_reviewer"]),
     (
         "which_agent",
         """### Which agent
@@ -438,7 +500,22 @@ steer.
 """,
     ),
     ("claimed_pr", _LEDGER_CONDUCTOR_RULES["claimed_pr"]),
+    ("bar_pr_merged", _LEDGER_CONDUCTOR_RULES["bar_pr_merged"]),
     ("read_message_detail", _LEDGER_CONDUCTOR_RULES["read_message_detail"]),
+    ("wake_check", _LEDGER_CONDUCTOR_RULES["wake_check"]),
+    ("routine_incidents", _LEDGER_CONDUCTOR_RULES["routine_incidents"]),
+    ("report_before_park", _LEDGER_CONDUCTOR_RULES["report_before_park"]),
+    (
+        "tracker",
+        """**Add a tracker when one patrol read no longer fits.** Your `compact` ledger
+read comes back cut, the items span more than one ledger or machine, or you
+catch yourself skipping items in a cycle: then dispatch ONE worker whose only
+item is tracking. It reads every ledger and the pull requests and writes one
+summary item, and you read only that. A tracker reports and never decides: a
+tracker that rules is a second conductor over the same fleet.
+
+""",
+    ),
     (
         "heading_close",
         """## Close

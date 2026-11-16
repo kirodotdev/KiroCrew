@@ -4615,11 +4615,16 @@ different installers and different prompt files. A conductor change lands on
 both, or it lands on the parity allowlist with a reason. The rules both need
 (dispatch and bind before the seed, the `watch="work-ledger"` patrol, the
 interval band, the final report before the stop, acceptance by `accept_eval.py`, close,
-and reading the `goal-conductor` skill before acting on a goal) are written once,
+reading the `goal-conductor` skill before acting on a goal, and the long-task and
+team rules every turn needs: the item budget, one owner per file and one
+integrator per output, merging two lines, the plan reviewer, the `pr_merged` bar,
+the hourly check on a quiet wake, routine incidents, and reporting before a park) are written once,
 in `agent_parts/spec_prompts.py` `_LEDGER_CONDUCTOR_RULES`: the root charter is
 assembled from them (`_CONDUCTOR_PROMPT_SECTIONS`) and `conductor.patrol` names
 each as a placeholder (`context_assembly.member.ledger_rules_block`).
-`test/test_mate_conductor_parity.py` compares the effective agents, not the spec
+`test/test_mate_conductor_parity.py` roots at `crew_mode.crew_mode_agent()`, the
+agent conductor mode runs, checks that every shared rule is in both installed
+prompts, and compares the effective agents, not the spec
 files alone: both installed specs put through the per-session projection
 (`acp.kas_agents.to_client_custom_agent`), which for a Bot's thread adds the
 session-level `kirocrew-dashboard` and `kirocrew-panel` with their grants. It fails on any root charter section,
