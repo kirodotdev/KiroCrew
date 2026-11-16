@@ -17,6 +17,7 @@ import pytest
 
 from kiro_crew import guide_catalog, mcp_guide, ui_index
 from kiro_crew.dashboard.guide_runs import REASON_NOT_FOUND, GuideError, GuideStore
+from kiro_crew.security.redaction_structured import compat as redaction_compat
 
 
 @pytest.fixture(autouse=True)
@@ -1156,6 +1157,11 @@ def test_a_warm_catalog_validates_ui_find_without_reading_the_index(
     """The routes warm the catalog in a worker thread; ui.find must then be a cache hit."""
     guide_catalog._location_ids_cache.clear()
     guide_catalog.warm_catalogs()
+    # ui.find redacts its label, and the first redaction in a process reads the owner's
+    # engine selector (credential_redaction.json) once, then answers from memory. Pay that
+    # one-time read here so the test holds when it is the first redaction in its process
+    # (run alone, or first in a shard) and not only after a neighbour warmed it.
+    redaction_compat.use_rule_table()
     reads: list[str] = []
     real = Path.read_text
 
