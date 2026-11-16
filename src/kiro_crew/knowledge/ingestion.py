@@ -1554,7 +1554,10 @@ class IngestionPipeline:
             aliases_complete = len(probed_aliases) <= MAX_ENTITY_ALIASES
             aliases = probed_aliases[:MAX_ENTITY_ALIASES]
             if not aliases_complete:
-                logger.warning('alias identity reuse skipped for %r: alias evidence exceeds limit', name)
+                logger.warning(
+                    'alias identity reuse skipped for an entity of %r: alias evidence exceeds limit',
+                    item_id,
+                )
             existing, resolution_tier = resolve_entity(
                 self.store, name, ent.get('type') or 'concept', aliases,
                 aliases_complete=aliases_complete,
@@ -1596,11 +1599,12 @@ class IngestionPipeline:
                     try:
                         self.store.add_entity_aliases(eid, enrich_aliases)
                     except Exception as exc:  # noqa: BLE001
+                        # The id and the type only: the name and the message
+                        # carry document text (the message can echo aliases).
                         logger.warning(
-                            'add_entity_aliases skipped for entity %r (%s): %s',
-                            name,
+                            'add_entity_aliases skipped for entity %r: %s',
                             eid,
-                            exc,
+                            type(exc).__name__,
                         )
             else:
                 eid = created
