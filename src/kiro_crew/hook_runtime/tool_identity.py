@@ -1,7 +1,7 @@
 """What a tool call IS: the gate's typed input (:class:`ToolCall`), the
-non-model-authored identity tests, the first-party app and builtin-agent
-registries' readers and writers, the canonical MCP reference, the title
-normalization and the pattern matchers.
+non-model-authored identity tests (the computer-use observation test among them),
+the first-party app and builtin-agent registries' readers and writers, the canonical
+MCP reference, the title normalization and the pattern matchers.
 
 Composed onto ``kiro_crew.hooks``; see :mod:`kiro_crew.hook_runtime`.
 """
@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         _TITLE_TRUNCATION_MARKER,
         _TOOL_TITLE_PREFIXES,
         CORE_MCP_SERVER,
+        CU_CLASS_OBSERVE,
         DEEPSEEK_READ_ONLY_TOOLS,
         KIRO_TOOL_ALIASES,
         TOOL_AUTO_APPROVE,
@@ -38,6 +39,8 @@ if TYPE_CHECKING:
         _bounded_pattern_search,
         _every_operation_names_a_path,
         as_spec_denied_grant,
+        computer_use_action_classes,
+        computer_use_action_from_title,
         logger,
         policy_aliases,
         security,
@@ -701,6 +704,39 @@ def _is_deepseek_read_only_builtin(
     if not isinstance(target, str) or not os.path.isabs(os.path.expanduser(target)):
         return False
     return policy_name in _HOST_READ_ONLY_BUILTIN_TOOLS
+
+
+def _cu_read_only_auto_approve(tool_name: str) -> bool:
+    """True when *tool_name* is a computer-use OBSERVATION tool and the feature is on.
+
+    Two independent conditions, both required:
+
+    * the action is classified ``observe`` by the code-owned table in
+      ``platform/governance.py`` (never by a title heuristic, and never by a
+      private copy of the table — the class table is the single source of truth);
+    * the keystone primary enable says the feature is on, so a disabled feature's
+      tools are not silently pre-approved.
+
+    Fail-CLOSED (False on any error): failing to auto-approve merely falls through
+    to interactive approval, which is the safe direction.
+    """
+    action = computer_use_action_from_title(tool_name)
+    if not action:
+        return False
+    if CU_CLASS_OBSERVE not in computer_use_action_classes(action):
+        return False
+    try:
+        # Deferred deliberately: ``enable_state`` imports ``config.loader``, which
+        # hooks.py keeps OFF its module import path (the loader fires the data-home
+        # migration and pulls the whole config stack). Reached only after the
+        # cheap prefix + class tests above, so an ungoverned host with no
+        # computer-use traffic never pays for it.
+        from kiro_crew.computer_use import enable_state
+
+        return enable_state.is_enabled()
+    except Exception:
+        logger.debug("computer-use enable-state probe failed", exc_info=True)
+        return False
 
 
 def _app_owns_mcp_server(mcp_server_name: str, app: str) -> bool:

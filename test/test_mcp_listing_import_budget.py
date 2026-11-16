@@ -63,8 +63,12 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 again for ``mcp-core``, ``mcp-cron``, ``mcp-guide`` and ``mcp-mate``: the app
 #: manifest parser loads ``kiro_crew.apps.manifest_memory_providers``, the
 #: ``memoryProviders`` section's own small module, which the manifest dataclass needs at import.
+#: Raised by 1 for ``mcp-core`` (486 to 487): the line-cap split of ``kiro_crew.hooks``
+#: moved ``HookManager`` into the owner ``kiro_crew.hook_runtime.hook_manager``, which the
+#: facade imports with the rest of its owners; the module count rose by that one file and
+#: nothing new loads.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 486,
+    "mcp-core": 487,
     "mcp-cron": 357,
     "mcp-guide": 351,
     "mcp-mate": 352,

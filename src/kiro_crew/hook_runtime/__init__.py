@@ -4,8 +4,8 @@ The hook subsystem's rules are split by responsibility across the modules of thi
 package, and ``kiro_crew.hooks`` stays their only import path and their only patch
 surface: nothing but the facade imports an owner.
 
-Each owner holds functions moved verbatim from the one-module file (``hook_types`` and
-``script_hooks`` hold moved classes too), plus the definitions added since (the gate's tiers and ``GateFacts`` in ``gate_tiers``,
+Each owner holds functions moved verbatim from the one-module file (``hook_types``,
+``script_hooks`` and ``hook_manager`` hold moved classes too), plus the definitions added since (the gate's tiers and ``GateFacts`` in ``gate_tiers``,
 ``ToolCall`` in ``tool_identity``). :func:`kiro_crew._facade_compose.compose`
 makes every function an owner defines run on the facade module's globals rather than
 its own. Over a hundred production modules import ``kiro_crew.hooks``, and the tests patch its
@@ -21,7 +21,9 @@ consequences follow:
   the linter. A ``@contextmanager``'s generator is not a function ``compose``
   rebinds, so ``hooks.py`` rebinds the one an owner holds
   (``ScriptHookStore._atomic_mutation``) with the shared helper's ``rebind`` right
-  after ``compose``. Every name a function reads must exist in ``kiro_crew.hooks``, and
+  after ``compose``. Nor is a body a decorator's wrapper holds in its closure, so
+  ``hooks.py`` wraps ``HookManager.judge`` and ``.on_tool_call`` again there, each
+  around its body rebound the same way. Every name a function reads must exist in ``kiro_crew.hooks``, and
   ``test/test_hooks_composition_contract.py`` sweeps each function's bytecode to
   prove it does.
 * A function's ``__module__`` reads ``kiro_crew.hooks`` as it did before the split,
