@@ -54,7 +54,7 @@ export default function RelayCrewPaneHost() {
     if (main) ro.observe(main)
     window.addEventListener('resize', report)
     const mo = new MutationObserver(check)
-    mo.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['role', 'data-native-overlay'] })
+    mo.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['role', 'data-native-overlay', 'data-relay-pane-overlay'] })
     return () => {
       ro.disconnect()
       window.removeEventListener('resize', report)

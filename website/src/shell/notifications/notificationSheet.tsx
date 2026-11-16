@@ -407,6 +407,8 @@ export function NotificationSheet({ sheet }: { sheet: ReturnType<typeof useNotif
     {(open || closing) && <OverlayPortal>
       <div
         ref={popoverRef}
+        // A relay Crew pane hides under it (lib/relayCrewPanes.ts).
+        data-relay-pane-overlay=""
         // Anchored 48px below the viewport top, which the shell has pushed
         // down by the top inset — top-safe-offset-[48px] adds both.
         //

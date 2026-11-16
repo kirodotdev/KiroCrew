@@ -466,6 +466,8 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
                 // took its close click (the click expanded the deck instead).
                 style={{ zIndex: 10 - idx, ...(deck ? { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 } : { position: 'relative' }) }}
                 data-testid="notification-banner-card"
+                // A relay Crew pane hides under a showing card (lib/relayCrewPanes.ts).
+                data-relay-pane-overlay=""
                 data-priority={prio}
                 data-deck={deck ? 'true' : undefined}
                 className="rounded-2xl"

@@ -254,7 +254,8 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
   }, [dispatch, onCancel])
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise p-safe">
+    // A relay Crew pane hides under it (lib/relayCrewPanes.ts).
+    <div data-relay-pane-overlay="" className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise p-safe">
       <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
         {/* A terminal step is not in progress, so it does not pulse. */}
         <div className={`text-4xl mb-4 ${isFailed ? 'text-danger' : 'animate-pulse'}`} data-testid="update-overlay-step-icon">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
@@ -949,7 +950,7 @@ export default function App() {
         <main id="main-content" tabIndex={-1} {...hiddenChromeProps(contentCovered || relayActive !== null)} style={relayActive !== null ? { visibility: 'hidden' } : undefined} className={`outline-hidden ${mainStackingClass({ isTerminalFullscreen: terminalFullscreen, terminalEnabled, terminalPoppedOut, relayRetrying: contentCovered })} flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
           {/* Inert does not reach what main portals out (the guide pill, a
               link preview, a page's Modal): take those off screen with it. */}
-          <OffScreenOverlayScope offScreen={contentCovered}>
+          <OffScreenOverlayScope offScreen={contentCovered || relayActive !== null}>
           <MigrationCheck />
           {/* Route-independent, unlike MigrationCheck: "you crashed" is true of
               the app, not of the page, and the launch after a crash rarely lands

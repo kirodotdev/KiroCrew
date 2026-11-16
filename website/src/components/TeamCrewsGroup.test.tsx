@@ -291,6 +291,46 @@ describe('TeamCrewsGroup', () => {
     await waitFor(() => expect(screen.queryByTestId('team-crews-group')).toBeNull())
   })
 
+  it('with the hidden pane key on, Open puts the Crew in a tab over <main>; a refusal still stays in the menu', async () => {
+    localStorage.setItem('mc-relay-crew-pane', '1')
+    const open = vi.fn(async () => ({ ok: true }))
+    const openPane = vi.fn(async () => ({ ok: true }))
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open, openPane, onPaneEvent: () => () => {} }
+    const main = document.createElement('main')
+    main.id = 'main-content'
+    main.getBoundingClientRect = () => ({ x: 236, y: 42, width: 700, height: 500 }) as DOMRect
+    document.body.appendChild(main)
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({ endpointId: 'ep-9', name: 'Lab' }), crew({})] })
+    vi.spyOn(api, 'listInstances').mockResolvedValue(listResp([]))
+    const store = createTestStore({ instances: { warm: {}, activeId: null, mru: [], unread: {} } })
+    renderWithProviders(<TeamCrewsSwitcher variant="inline" />, { store })
+    const u = userEvent.setup()
+    await openGroup(u)
+    await u.click(row('Lab'))
+    await waitFor(() => expect(openPane).toHaveBeenCalledWith('ep-9', { x: 236, y: 42, width: 700, height: 500 }, { width: window.innerWidth, height: window.innerHeight }))
+    expect(open).not.toHaveBeenCalled()
+    await waitFor(() => expect(store.getState().instances.relayActive).toBe('ep-9'))
+    expect(store.getState().instances.relayTabs).toEqual([{ id: 'ep-9', name: 'Lab' }])
+    openPane.mockResolvedValueOnce({ ok: false, error: 'CREW_OFFLINE' })
+    await openGroup(u)
+    await u.click(row('Build box'))
+    expect((await screen.findByTestId('relay-crew-refusal')).textContent).toContain('This Crew is offline.')
+    main.remove()
+  })
+
+  it('with the key absent, Open still opens a window even when the shell has the pane calls', async () => {
+    const open = vi.fn(async () => ({ ok: true }))
+    const openPane = vi.fn(async () => ({ ok: true }))
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open, openPane, onPaneEvent: () => () => {} }
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({ endpointId: 'ep-9', name: 'Lab' })] })
+    mount()
+    const u = userEvent.setup()
+    await openGroup(u)
+    await u.click(row('Lab'))
+    await waitFor(() => expect(open).toHaveBeenCalledWith('ep-9'))
+    expect(openPane).not.toHaveBeenCalled()
+  })
+
   it.each([
     ['CREW_ACCESS_NOT_GRANTED', 'You no longer have access to this Crew.'],
     ['ACCESS_DENIED', "Couldn't open this Crew."],

@@ -108,6 +108,27 @@ describe('relay Crew panes behind the hidden key', () => {
     await waitFor(() => expect(api.setPaneOverlay).toHaveBeenLastCalledWith('r2', false))
   })
 
+  it('a relay-only overlay outside <main> (the open notification sheet) hides the pane; an empty banner region does not', async () => {
+    mountMain()
+    const { api } = installBridge()
+    renderWithProviders(<RelayCrewPaneHost />, { store: storeWith(['r1'], 'r1') })
+    await waitFor(() => expect(api.setPaneOverlay).toHaveBeenLastCalledWith('r1', false))
+    const region = document.createElement('div')
+    region.setAttribute('data-test-overlay', '')
+    region.setAttribute('role', 'status')
+    region.setAttribute('data-testid', 'notification-banner-region')
+    document.body.appendChild(region)
+    await new Promise(r => setTimeout(r, 0))
+    expect(api.setPaneOverlay).toHaveBeenCalledTimes(1)
+    const sheet = document.createElement('div')
+    sheet.setAttribute('data-test-overlay', '')
+    document.body.appendChild(sheet)
+    sheet.setAttribute('data-relay-pane-overlay', '')
+    await waitFor(() => expect(api.setPaneOverlay).toHaveBeenLastCalledWith('r1', true))
+    sheet.remove()
+    await waitFor(() => expect(api.setPaneOverlay).toHaveBeenLastCalledWith('r1', false))
+  })
+
   it('past the warm cap the least recent hidden pane closes and its tab goes with it, so no tab lacks a pane', async () => {
     mountMain()
     const { api, emit } = installBridge()

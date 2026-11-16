@@ -16,8 +16,8 @@ import { OVERLAY_SELECTOR } from '../hooks/useNativeBrowser'
 export const RELAY_CREW_PANE_KEY = 'mc-relay-crew-pane'
 /** shortcut: a placeholder for how many relay panes stay loaded; the least recent hidden one closes past it. */
 export const RELAY_PANE_WARM_CAP = 3
-/** The Preview panel's overlays, plus menus and lists: the switcher's own menu drops over the pane. */
-export const RELAY_PANE_OVERLAY_SELECTOR = [OVERLAY_SELECTOR, '[role="menu"],[role="listbox"]'].join(',')
+/** The Preview panel's overlays, plus menus and lists (the switcher's own menu drops over the pane) and the relay-only marker on the notification sheet, banner cards and update overlay. */
+export const RELAY_PANE_OVERLAY_SELECTOR = [OVERLAY_SELECTOR, '[role="menu"],[role="listbox"],[data-relay-pane-overlay]'].join(',')
 
 type Rect = { x: number; y: number; width: number; height: number }
 type Viewport = { width: number; height: number }
