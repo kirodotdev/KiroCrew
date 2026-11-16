@@ -22,7 +22,10 @@ Responses (always HTTP 200 once authorised, so the shim reads one shape):
   browser failed), ``timeout`` (the op ran past its budget), ``browser_busy``
   (another chat held the lock too long), ``user_in_control`` (the person held
   the browser for the whole ``HOLD_TIMEOUT_S``), ``interrupted`` (the person
-  took over mid-op and has handed back; the op may not have finished).
+  took over mid-op and has handed back; the op may not have finished),
+  ``isolation_unknown`` (``browser.isolation`` was ``per_session`` and cannot be
+  read now), ``browser_restarted`` (the browser restarted during an isolated op;
+  the chat's context is gone, the next op makes a new one).
 
 While the person is in control an op is not lost: the route answers at once with
 ``user_in_control`` and ``"hold": true``, and the ``browser`` tool in the shim
@@ -58,6 +61,10 @@ session's own tab (adopting the daemon's tab the first time, opening a new one
 when another chat owns it). So chat B's ``click`` never lands on chat A's page,
 ``tabs`` sees only the caller's tabs, and a takeover in chat A fences A's tab
 while B keeps browsing its own.
+
+Under ``browser.isolation: per_session`` the bind goes one step further: each
+session's tabs open in its own browser context (``browser_harness.session_contexts``),
+so chats do not share cookies either, and the daemon's current tab is never adopted.
 """
 
 from __future__ import annotations
@@ -73,7 +80,7 @@ from aiohttp import web
 from kiro_crew.apps import browser_sites
 from kiro_crew.apps.browser_sites import app_browser_sites, browser_call_url, url_matches
 from kiro_crew.browser_harness import ops as harness_ops
-from kiro_crew.browser_harness import url_gate
+from kiro_crew.browser_harness import session_contexts, url_gate
 from kiro_crew.browser_harness.budgets import (
     CHANGE_REPORT_S,
     DECISION_HEADROOM_S,
@@ -101,7 +108,7 @@ from kiro_crew.browser_harness.live_hub import (
     LiveHub,
     get_live_hub,
 )
-from kiro_crew.browser_harness.supervisor import IPC_LEAF, HelperError
+from kiro_crew.browser_harness.supervisor import IPC_LEAF, BrowserRestarted, HelperError
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.handlers.browser_policy import browse_refusal
 from kiro_crew.dashboard.state import _normalize_slot_key
@@ -164,6 +171,18 @@ def _ledgered_targets(supervisor: Any) -> list[str]:
     return list(relay.agent_targets()) if relay is not None else []
 
 
+def _own_targets(hub: LiveHub, supervisor: Any, key: str, targets: list[str]) -> list[str]:
+    """Those of *targets* in the browser context the op's bind put *key* in.
+
+    The setting was read once, at the bind; the op reads the bind's answer, so a
+    flip mid-op cannot show ``tabs list`` a different mode than the bind used.
+    """
+    relay = getattr(supervisor, "relay", None)
+    if relay is None:
+        return targets
+    return session_contexts.in_context(relay, targets, hub.context_of(key))
+
+
 def close_chat_tabs(state: Any, session_key: str) -> None:
     """Close, in the background, the agent tabs an ended chat session owned.
 
@@ -191,7 +210,10 @@ async def _close_tabs_of(state: Any, key: str) -> None:
             await hub.stop_stream(key)
             relay = _live_handlers()._current_relay()
             if relay is not None:
-                await relay.close_agent_targets(hub.targets_of(key))
+                try:
+                    await relay.close_agent_targets(hub.targets_of(key))
+                finally:
+                    await relay.dispose_session_context(key)
             if key not in state._slots:
                 # Not reopened during the awaits above: a resumed chat's turn opens
                 # its session before it waits for the lock, so keep that one.
@@ -200,13 +222,20 @@ async def _close_tabs_of(state: Any, key: str) -> None:
         logger.debug("browser: closing the tabs of %s failed", key, exc_info=True)
 
 
-def caller_checked_call(supervisor: Any, caller_key: str) -> Any:
+def caller_checked_call(
+    supervisor: Any, caller_key: str, hub: LiveHub | None = None, session_key: str = ""
+) -> Any:
     """``supervisor.call`` that first asks the ceiling for *caller_key*.
 
     ``HarnessSupervisor.call`` asks it with the engine's own empty key, so a profile
     bound to the caller's surface is not consulted there. This asks it before every
     helper the op runs, so a deny in that profile stops the op at its next step even
     when it landed while the op waited for :data:`_OP_LOCK`.
+
+    With *hub* and *session_key*, every helper is also pinned to the relay the
+    session's bind recorded (``LiveHub.bound_relay``, set under ``per_session``), so
+    a daemon restart between the bind and a later step refuses the op
+    (``BrowserRestarted``) instead of driving the new browser's default context.
     """
 
     async def _call(helper: str, **kwargs: Any) -> Any:
@@ -214,6 +243,9 @@ def caller_checked_call(supervisor: Any, caller_key: str) -> Any:
             # The same stop every other refusal of this deny schedules.
             stop_running_harness()
             raise BrowsingDenied()
+        relay = hub.bound_relay(session_key) if hub is not None else None
+        if relay is not None:
+            kwargs["relay"] = relay
         return await supervisor.call(helper, **kwargs)
 
     return _call
@@ -258,7 +290,11 @@ def build_context(
     off the list is refused and blanked like any other refused landing.
     """
     hub = hub if hub is not None else get_live_hub()
-    helper = supervisor.call if caller_key is None else caller_checked_call(supervisor, caller_key)
+    helper = (
+        supervisor.call
+        if caller_key is None
+        else caller_checked_call(supervisor, caller_key, hub, session_key)
+    )
 
     def _step(label: str) -> Any:
         return hub.step(session_key, label)
@@ -267,10 +303,13 @@ def build_context(
         return hub.in_control(session_key)
 
     def _agent_targets() -> list[str]:
-        # The tabs THIS session owns and the browser still has: ``tabs list`` shows
-        # them and ``tabs switch`` moves only among them, never onto another chat's.
+        # The tabs THIS session owns, the browser still has, and that sit in the
+        # context it browses in now: ``tabs list`` shows them and ``tabs switch``
+        # moves only among them, never onto another chat's, and never onto a tab
+        # from the other side of a flip of ``browser.isolation``.
         mine = hub.targets_of(session_key)
-        return [t for t in _ledgered_targets(supervisor) if t in mine]
+        held = [t for t in _ledgered_targets(supervisor) if t in mine]
+        return _own_targets(hub, supervisor, session_key, held)
 
     def _loop(info: Any) -> Any:
         return hub.loop(session_key, info)
@@ -501,9 +540,55 @@ async def _bind_target(hub: LiveHub, key: str, supervisor: Any, call: Any = None
     while the browser still has it; a session with no live tab adopts the daemon's
     current tab if no other session owns it, else opens a tab of its own. Called
     under :data:`_OP_LOCK`, so the switch and the op that follows are one step.
+
+    Under ``browser.isolation: per_session`` a session binds only a tab of its own
+    browser context, created on its first isolated op and seeded with the edition's
+    credentials; every tab the daemon opens during the op, ``tabs new`` included,
+    lands in it through the relay (``CdpRelay.create_context``). It never adopts
+    the daemon's tab. A session keeps a tab only in the context it browses in now,
+    so after a flip of the setting either way the first op opens a new tab rather
+    than keep one from the other side. An unreadable setting refuses the op
+    (:class:`session_contexts.IsolationUnknown`).
+
+    The context, its seed and ``create_context`` all live on one relay, and a
+    helper call restarts a dead daemon onto a fresh relay (``supervisor.call`` goes
+    through ``ensure()``), on which none of them exist: the tab would then open in
+    the shared default context with isolation still on. So the browser is brought
+    up BEFORE the relay is read, and that relay is recorded on the session
+    (``LiveHub.bind_context``) as the pin every helper of the op, the bind's own
+    included, is checked against (``caller_checked_call``): a restart in between
+    refuses the op (``BrowserRestarted``).
     """
     call = supervisor.call if call is None else call
+    if not session_contexts.per_session():
+        hub.bind_context(key, "")
+        return await _bind(hub, key, supervisor, call, context="")
+    relay = (await supervisor.ensure()).relay
+    context, fresh_context = await relay.ensure_session_context(key)
+    hub.bind_context(key, context, relay)
+    relay.create_context = context
+    try:
+        if fresh_context:
+            await supervisor.seed_context(relay, context)
+        return await _bind(hub, key, supervisor, call, context=context)
+    except BaseException:
+        if fresh_context:
+            # A context that never got its seed and its first tab is not kept, so
+            # the next op starts it over rather than read it as settled.
+            relay.create_context = ""
+            await relay.dispose_session_context(key)
+        raise
+
+
+async def _bind(hub: LiveHub, key: str, supervisor: Any, call: Any, *, context: str) -> str:
+    """Bind *key* to a tab in *context*: ``""`` is the shared default context.
+
+    Only in the default context may a session adopt the daemon's current tab.
+    """
+    relay = getattr(supervisor, "relay", None)
     ledgered = set(_ledgered_targets(supervisor))
+    if relay is not None:
+        ledgered = set(session_contexts.in_context(relay, ledgered, context))
     try:
         tab = await call("current_tab")
     except HelperError:
@@ -519,7 +604,7 @@ async def _bind_target(hub: LiveHub, key: str, supervisor: Any, call: Any = None
             await call("switch_tab", target=mine, activate=False)
         return mine
     owner = hub.owner_of_target(current) if current else None
-    if current and current in ledgered and owner in (None, key):
+    if not context and current and current in ledgered and owner in (None, key):
         hub.bind_target(key, current)
         return current
     created = await call("new_tab", url="about:blank")
@@ -528,6 +613,12 @@ async def _bind_target(hub: LiveHub, key: str, supervisor: Any, call: Any = None
         raise RuntimeError("the browser opened no tab for this session")
     hub.bind_target(key, target)
     return target
+
+
+def _restarted() -> dict[str, Any]:
+    return harness_ops.refusal(
+        "browser_restarted", "the browser restarted during the op; its context is gone"
+    )
 
 
 async def follow_current_tab(
@@ -543,14 +634,28 @@ async def follow_current_tab(
     One cheap IPC call (``current_tab``) per op. A new target (first op, ``tabs
     new``/``switch``) starts or restarts the screencast on it; the same target only
     refreshes url and title. Failures are logged, never surfaced: the op itself
-    already answered.
+    already answered. The one exception is a browser restarted since the session's
+    bind pinned a relay (``LiveHub.bound_relay``): the follow refuses with
+    ``browser_restarted`` instead of streaming the new browser's default context.
     """
     relay = getattr(supervisor, "relay", None)
     if relay is None:
         return None
-    call = supervisor.call if caller_key is None else caller_checked_call(supervisor, caller_key)
+    bound = hub.bound_relay(key)
+    if bound is not None and bound is not relay:
+        # The browser restarted after the bind: the tab on the new relay is the
+        # default context's, not this chat's to stream, and the op's own answer
+        # may have read the restart as a failed step rather than named it.
+        return _restarted()
+    call = (
+        supervisor.call
+        if caller_key is None
+        else caller_checked_call(supervisor, caller_key, hub, key)
+    )
     try:
         tab = await call("current_tab")
+    except BrowserRestarted:
+        return _restarted()
     except Exception:  # noqa: BLE001 - the card is best-effort beside the op
         logger.debug("browser live: current_tab failed", exc_info=True)
         return None
@@ -890,6 +995,29 @@ async def _fenced_op(
             "ask_pending", "a quick ask is waiting for the user; wait for its outcome"
         )
     try:
+        return await _bound_op(
+            request, hub, key, supervisor, ctx, op, args, budget, caller_key, sites
+        )
+    finally:
+        relay = getattr(supervisor, "relay", None)
+        if relay is not None:
+            # A tab opened outside an op (the daemon's own) belongs to no chat.
+            relay.create_context = ""
+
+
+async def _bound_op(
+    request: web.Request,
+    hub: LiveHub,
+    key: str,
+    supervisor: Any,
+    ctx: harness_ops.OpContext,
+    op: str,
+    args: dict[str, Any],
+    budget: float,
+    caller_key: str,
+    sites: tuple[str, ...],
+) -> dict[str, Any] | object:
+    try:
         await asyncio.wait_for(_bind_target(hub, key, supervisor, ctx.helper), timeout=OP_TIMEOUT_S)
         if hub.in_control(key):
             # A claim landed during the bind; the op has not touched the page yet.
@@ -926,6 +1054,13 @@ async def _fenced_op(
     except asyncio.TimeoutError:
         _audit(request, "error", "timeout")
         return {"ok": False, "code": "timeout", "error": f"{op} ran past {budget:g}s"}
+    except session_contexts.IsolationUnknown as exc:
+        _audit(request, "error", "isolation_unknown")
+        return harness_ops.refusal("isolation_unknown", _safe(exc))
+    except BrowserRestarted as exc:
+        # The chat's context went down with the old browser; its next op makes a new one.
+        _audit(request, "error", "browser_restarted")
+        return harness_ops.refusal("browser_restarted", _safe(exc))
     except BrowsingDenied:
         # A deny landed mid-op: the check that raised it has scheduled the stop
         # (``HarnessSupervisor.call``, ``caller_checked_call``, ``_GatedRelay``).

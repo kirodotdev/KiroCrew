@@ -362,6 +362,18 @@ waits at most 5 s (`CREDENTIAL_LOCK_WAIT_SECS`) and then lets the page load; the
 next navigation tries again. **The person's own Chrome or Edge is never filled**: a
 start on either records `skipped` / `user_browser` and the provider is not called.
 
+**Per-chat contexts.** Under `browser.isolation: per_session` (The relay, below)
+the default context's cookies do not reach a chat's context, so each new context is
+filled on its own: `seed_context` applies the same provider and settings with
+`Storage.setCookies` carrying the context's `browserContextId` (target reason
+`context`, one SEL row as for any apply). Every re-apply above pulls from the
+provider ONCE and writes the same cookies into the default context and each open
+context (`credentials.apply(contexts=...)`), so the whole refresh stays inside
+the one navigation budget however many chats are open; the status's
+`applied_per_context` and the SEL row's `contexts=` carry each context's landed
+count, so a context the cookies missed stays visible. On the person's own
+Chrome or Edge nothing is filled: the chat signs in through a takeover.
+
 **Session cookies.** Every cookie is set WITHOUT `expires`, so nothing the provider
 supplies is written into Kiro's profile on disk and all of it is gone when the
 browser closes (verified: CDP reports the cookie `session: true`). Expiry still
@@ -456,6 +468,54 @@ undo a page already read.
   while it runs keeps its new session. Closing the
   tab of a chat linked to a channel session (`slack:<ts>`) closes none: that
   session keeps running and shares the tab's hub key.
+- **Per-chat browser contexts** (`browser.isolation: per_session`, default
+  `shared`; `browser_harness/session_contexts.py`). A chat's first op creates a
+  browser context for its hub key with `Target.createBrowserContext` on the
+  relay's own connection, seeds it (`HarnessSupervisor.seed_context`, Credentials
+  above; bounded by `NAV_REFRESH_BUDGET_SECS` like a re-pull, past which the
+  context is kept unseeded rather than fail every first op on a hung provider) and
+  sets `CdpRelay.create_context`; the bind calls `ensure()` BEFORE reading the
+  relay, since a helper call restarts a dead daemon onto a fresh relay that has no
+  context and no `create_context` (the tab would open in the default context with
+  isolation on), and records that relay on the session (`LiveHub.bind_context`,
+  `bound_relay`) as the PIN every helper of the op passes to
+  `HarnessSupervisor.call(relay=)` (`caller_checked_call`): a restart between any
+  two steps, the bind's own included, refuses the op (`BrowserRestarted`, route
+  code `browser_restarted`) rather than drive the new browser's default context.
+  The post-op follow (`follow_current_tab`) is pinned too and checks the pin
+  before its `current_tab`, so an op whose own steps read the restart as a failed
+  step still answers `browser_restarted` instead of streaming the new browser's
+  default-context tab on the chat's card; the chat's next op makes a new context;
+  the relay adds that `browserContextId` to every
+  daemon `Target.createTarget` naming none, so the chat's first tab and each
+  `tabs new` open in its context, and the ledger records each tab with the context
+  it opened in (`CdpRelay.context_of`). The op route clears `create_context` when
+  the op ends, so a tab the daemon opens on its own lands in the default context.
+  A chat's tabs are the ledgered ones it owns IN THE CONTEXT ITS BIND PUT IT IN
+  (`LiveHub.context_of`, recorded by `_bind_target`: its own under `per_session`,
+  the default under `shared`; the setting is read once per op, at the bind, so a
+  flip mid-op cannot show `tabs list` another mode): `tabs list` shows only those, `tabs switch` accepts only those, and
+  `_bind_target` keeps only such a tab, so a flip of the setting either way opens
+  a new tab rather than carry one over, and a chat that chose isolation never
+  slides back into the shared cookie jar through a tab it held before (the other
+  side's tabs stay owned and are closed at session end). Under isolation
+  `_bind_target` never adopts the daemon's current tab. `KiroCrewConfig.load`
+  answers a present but unparseable file with defaults (a missing file is a
+  clean default, `shared`), so `per_session()` reads the load's
+  `_base_unreadable` / `_overlay_unreadable` marks and answers such a read with
+  the LAST VALUE READ CLEANLY (`session_contexts._last_clean`): `shared`, or
+  nothing ever read, keeps browsing in the shared browser as before (the default
+  path is not changed by a broken file); `per_session` refuses the op
+  (`IsolationUnknown`, one warning, route code `isolation_unknown`) rather than
+  slide the chat into the shared jar. The map lives on the relay (`ensure_session_context`,
+  `dispose_session_context`, created with `disposeOnDetach`): Chrome disposes a
+  context when the connection that made it closes, so a reconnected relay starts
+  with none and each chat gets a fresh one. Session end closes the chat's
+  ledgered tabs, then `Target.disposeBrowserContext`. A context is in memory
+  only: its sign-ins end with the chat. Headful Chrome shows a context's tabs in
+  a window of their own.
+  The setting is read at each op; turning it off moves a chat to a tab in the
+  default context on its next op, and its context tabs close when the chat ends.
 - Late `screencastFrameAck` errors after a stop are swallowed; close is clean.
 
 ### The stream
@@ -1373,7 +1433,7 @@ link planted at that name resolves the file elsewhere and fails the pin.
 
 ### Settings → Browser
 
-One card and two controls; everything else is under a collapsed More group.
+One card and three controls; everything else is under a collapsed More group.
 
 - **Main card** (`BrowserStatusCard.tsx`): the browser, a status dot and line, and
   ONE button that follows `primaryState` (`browserStatus.ts`): `installing`
@@ -1392,7 +1452,13 @@ One card and two controls; everything else is under a collapsed More group.
   install is needed (a Redownload) is an `ErrorNotice` on the Engine row, not
   the card. A button whose request is in flight is disabled and `aria-busy`.
 - **Which browser** (`browser.choice`) offers `auto`, `user_chrome`,
-  `kiro_chromium`. **Show the live view in chat** (`browser.live.enabled`).
+  `kiro_chromium`. **Browser isolation** (`browser.isolation`) offers Shared
+  browser and Isolated browser per chat, the gateway's `shared` and `per_session`; the
+  picker's value list is `ISOLATIONS` in `browserStatus.ts`, in the gateway's
+  order, and a stored value outside it reads as `shared`, the gateway's own
+  resolution. A new mode is one entry there plus its label key; the `Record` of
+  labels refuses to compile without it. **Show the live view in chat**
+  (`browser.live.enabled`).
 - **Use \<provider\> sign-in** (`browser.credentials.enabled`), under Show the
   live view in chat and shown only when `status.credentials.provider` is non-null
   (an edition supplies a sign-in provider; the public build never renders it). It
@@ -1460,8 +1526,8 @@ all owner-only and refusing the internal secret; writes go through
 anchors by label, so a `key:browser.choice` link lands on the Which browser
 picker only. Every string is in the i18n catalog (`pages.settings.browserPanel.*`).
 
-The config section is `browser`: `choice`, `live.enabled`, `live.quality`,
-`live.max_fps`, `live.mask_passwords`.
+The config section is `browser`: `choice`, `isolation`, `live.enabled`,
+`live.quality`, `live.max_fps`, `live.mask_passwords`.
 `dashboard.browser_local_origins` stays where it is.
 
 #### Retired keys

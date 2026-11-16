@@ -45,6 +45,14 @@
       "configKey": "agent.orchestrator_memory"
     },
     {
+      "id": "browser.browser-isolation",
+      "label": "Browser isolation",
+      "tab": "browser",
+      "route": "/settings/browser?highlight=key%3Abrowser.isolation",
+      "hint": "Isolated gives each chat its own browser container: separate cookies, site storage and cache, that no other chat can see, discarded when the chat ends. On a desktop its tabs open in their own window. Shared lets every chat use the one browser as it is.",
+      "configKey": "browser.isolation"
+    },
+    {
       "id": "browser.max-frame-rate",
       "label": "Max frame rate",
       "tab": "browser",

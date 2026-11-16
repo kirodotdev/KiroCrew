@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 import aiohttp
@@ -34,6 +34,8 @@ class FakeBrowser:
         self.seen: list[dict[str, Any]] = []
         self.focus_calls: list[str] = []
         self.sessions = 0
+        self.created = 0
+        self.context_ids: Iterator[str] = iter(())
         self.ws: web.WebSocketResponse | None = None
         self.connected = asyncio.Event()
         self.focus_seen = asyncio.Event()
@@ -81,10 +83,13 @@ class FakeBrowser:
             self.sessions += 1
             result["sessionId"] = f"S{self.sessions}"
         elif method == "Target.createTarget":
-            result["targetId"] = "T-agent"
+            self.created += 1
+            result["targetId"] = "T-agent" if self.created == 1 else f"T-agent{self.created}"
         elif method == "Emulation.setFocusEmulationEnabled":
             self.focus_calls.append(str(msg.get("sessionId")))
             self.focus_seen.set()
+        elif method == "Target.createBrowserContext":
+            result["browserContextId"] = next(self.context_ids)
         elif method == "Fail.me":
             return {"id": msg["id"], "error": {"code": -32000, "message": "nope"}}
         reply: dict[str, Any] = {"id": msg["id"], "result": result}
@@ -336,6 +341,64 @@ async def test_the_tab_ledger_records_at_the_create_reply_and_turns_focus_emulat
         await browser.emit({"method": "Target.targetDestroyed", "params": {"targetId": "T-agent"}})
         await client.recv()
     assert relay.agent_targets() == []
+
+
+@pytest.mark.asyncio
+async def test_a_create_context_opens_the_daemon_s_tab_in_that_context_only(
+    relay: CdpRelay, browser: FakeBrowser
+) -> None:
+    # browser.isolation: per_session -- the tab a chat's op opens lands in its context;
+    # one the daemon names a context for keeps it; with none set nothing is added.
+    async with Client(relay) as client:
+        relay.create_context = "CTX-a"
+        await client.send({"id": 1, "method": "Target.createTarget", "params": {"url": "x"}})
+        await client.recv()
+        await client.send({"id": 2, "method": "Target.createTarget"})
+        await client.recv()
+        await client.send(
+            {"id": 3, "method": "Target.createTarget", "params": {"browserContextId": "CTX-x"}}
+        )
+        await client.recv()
+        await client.send({"id": 4, "method": "Page.navigate", "params": {"url": "x"}})
+        await client.recv()
+        relay.create_context = ""
+        await client.send({"id": 5, "method": "Target.createTarget", "params": {"url": "x"}})
+        await client.recv()
+    adoption = ("Target.attachToTarget", "Emulation.setFocusEmulationEnabled")
+    sent = [m.get("params") for m in browser.seen if m["method"] not in adoption]
+    assert sent == [
+        {"url": "x", "browserContextId": "CTX-a"},
+        {"browserContextId": "CTX-a"},
+        {"browserContextId": "CTX-x"},
+        {"url": "x"},
+        {"url": "x"},
+    ]
+    # The ledger remembers each tab's context, so a chat is shown only the tabs of
+    # the context it browses in; a destroyed tab is forgotten with it.
+    assert [relay.context_of(t) for t in relay.agent_targets()] == ["CTX-a", "CTX-a", "CTX-x", ""]
+    relay.forget_target("T-agent")
+    assert relay.context_of("T-agent") == "" and relay._target_contexts.get("T-agent") is None
+
+
+@pytest.mark.asyncio
+async def test_a_session_context_is_made_once_disposed_on_detach_and_disposed_on_end(
+    relay: CdpRelay, browser: FakeBrowser
+) -> None:
+    browser.context_ids = iter(["CTX-1", "CTX-2"])
+    assert await relay.ensure_session_context("chat-a") == ("CTX-1", True)
+    assert await relay.ensure_session_context("chat-a") == ("CTX-1", False)
+    assert await relay.ensure_session_context("chat-b") == ("CTX-2", True)
+    assert relay.session_context("chat-a") == "CTX-1" and relay.session_context("x") == ""
+    assert relay.session_context_ids() == ["CTX-1", "CTX-2"]
+    await relay.dispose_session_context("chat-a")
+    await relay.dispose_session_context("chat-a")  # already gone: no second CDP call
+    assert relay.session_context_ids() == ["CTX-2"]
+    calls = [(m["method"], m["params"]) for m in browser.seen if m["method"].startswith("Target.")]
+    assert calls == [
+        ("Target.createBrowserContext", {"disposeOnDetach": True}),
+        ("Target.createBrowserContext", {"disposeOnDetach": True}),
+        ("Target.disposeBrowserContext", {"browserContextId": "CTX-1"}),
+    ]
 
 
 @pytest.mark.asyncio

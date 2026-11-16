@@ -29,6 +29,14 @@ logger = logging.getLogger("kiro_crew.config.loader")
 BROWSER_CHOICE_AUTO = "auto"
 BROWSER_CHOICES = (BROWSER_CHOICE_AUTO, "user_chrome", "kiro_chromium", "headless")
 
+#: How chats share the browser's sign-ins. ``shared``: every chat's tabs live in the
+#: browser's default context, with the person's own cookies. ``per_session``: each
+#: chat gets its own in-memory browser context (``browser_harness.session_contexts``),
+#: so two chats can be signed in to two accounts of one site at once.
+BROWSER_ISOLATION_SHARED = "shared"
+BROWSER_ISOLATION_PER_SESSION = "per_session"
+BROWSER_ISOLATIONS = (BROWSER_ISOLATION_SHARED, BROWSER_ISOLATION_PER_SESSION)
+
 #: Stream quality of the live view. ``auto`` lets the adaptive ladder in
 #: ``browser_harness/screencast.py`` pick a rung from the measured link; a fixed
 #: value pins the JPEG quality and scale and leaves only the frame rate adaptive.
@@ -79,6 +87,17 @@ def browser_choice_resolution(value: object) -> str:
     return BROWSER_CHOICE_AUTO
 
 
+def browser_isolation_resolution(value: object) -> str:
+    """The isolation ``browser.isolation`` of *value* selects. Pure; never logs.
+
+    Anything outside :data:`BROWSER_ISOLATIONS` is ``shared``: the behaviour a
+    browser had before the key existed.
+    """
+    if value in BROWSER_ISOLATIONS:
+        return str(value)
+    return BROWSER_ISOLATION_SHARED
+
+
 def live_quality_resolution(value: object) -> str:
     """The quality ``browser.live.quality`` of *value* selects. Pure; never logs."""
     if value in LIVE_QUALITIES:
@@ -107,6 +126,13 @@ def _validated_choice(value: object) -> str:
     resolved = browser_choice_resolution(value)
     if value is not None and value not in BROWSER_CHOICES:
         _warn_once("browser.choice", value, resolved, BROWSER_CHOICES)
+    return resolved
+
+
+def _validated_isolation(value: object) -> str:
+    resolved = browser_isolation_resolution(value)
+    if value is not None and value not in BROWSER_ISOLATIONS:
+        _warn_once("browser.isolation", value, resolved, BROWSER_ISOLATIONS)
     return resolved
 
 
@@ -328,6 +354,17 @@ class BrowserConfig:
             enum=list(BROWSER_CHOICES),
         ),
     )
+    isolation: str = field(
+        default=BROWSER_ISOLATION_SHARED,
+        metadata=_meta(
+            "Browser isolation",
+            "`per_session` gives each chat its own browser container: separate "
+            "cookies, site storage and cache that no other chat can see, discarded "
+            "when the chat ends; on a desktop its tabs open in their own window. "
+            "`shared` lets every chat use the one browser as it is.",
+            enum=list(BROWSER_ISOLATIONS),
+        ),
+    )
     report_changes: bool = field(
         default=False,
         metadata=_meta(
@@ -377,6 +414,7 @@ class BrowserConfig:
         reader = SectionReader(cls, section)
         return cls(
             choice=_validated_choice(reader.get("choice")),
+            isolation=_validated_isolation(reader.get("isolation")),
             report_changes=reader.read("report_changes", _safe_bool),
             live=BrowserLiveConfig.from_raw(section.get("live")),
             credentials=BrowserCredentialsConfig.from_raw(section.get("credentials")),

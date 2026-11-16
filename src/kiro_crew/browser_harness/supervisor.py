@@ -247,6 +247,10 @@ class HelperError(RuntimeError):
     """The helper raised in the worker; the message is Harness's own."""
 
 
+class BrowserRestarted(RuntimeError):
+    """The browser was restarted since the op bound: its context is gone with it."""
+
+
 @dataclass
 class HarnessHandle:
     """What ``ensure()`` hands back: the live pieces, for the stream and tool lanes."""
@@ -550,13 +554,19 @@ class HarnessSupervisor:
 
     # ── helpers ──
 
-    async def call(self, helper: str, **kwargs: Any) -> Any:
+    async def call(self, helper: str, *, relay: CdpRelay | None = None, **kwargs: Any) -> Any:
         """Run ONE allowlisted Harness helper through the worker; return its result.
 
         Every request carries its own id and the reply is matched to it; a reply the
         worker writes after its request was cancelled or timed out is never read as
         the answer to a later call, because the worker is stopped on either and the
         next call starts a fresh one.
+
+        *relay* pins the call to the browser an isolated op bound on: ``ensure()``
+        restarts a dead daemon onto a fresh relay that has none of the chat's
+        contexts, and a helper run there would open or drive a tab in the shared
+        default context with isolation on, so the call raises
+        :class:`BrowserRestarted` instead.
         """
         accepted = HELPERS.get(helper)
         if accepted is None:
@@ -570,6 +580,8 @@ class HarnessSupervisor:
             await asyncio.shield(self.stop_soon())
             raise browse_governance.BrowsingDenied()
         handle = await self.ensure()
+        if relay is not None and handle.relay is not relay:
+            raise BrowserRestarted("the browser restarted during the op; its context is gone")
         async with self._call_lock:
             if not _alive(handle.worker):
                 handle.worker = await self._start_worker(handle)
@@ -701,12 +713,62 @@ class HarnessSupervisor:
         # Read BEFORE the cookies, so a source that changes during the pull is seen
         # as changed at the next navigation rather than missed.
         key = await self._credential_key(provider)
+        # One pull for the default context and every open per-chat context: the
+        # whole apply runs under one navigation budget (``NAV_REFRESH_BUDGET_SECS``).
         self._credentials = await credentials.apply(
-            relay, provider=provider, target=target, settings=key[1]
+            relay,
+            provider=provider,
+            target=target,
+            settings=key[1],
+            contexts=("", *relay.session_context_ids()),
         )
         self._applied_key = key
         self._credentials_relay = relay
         _audit_injection(self._credentials, reason)
+
+    async def seed_context(self, relay: CdpRelay, browser_context_id: str) -> None:
+        """Fill one chat's new browser context from the edition provider.
+
+        The same cookies and settings the default context got, so a chat isolated by
+        ``browser.isolation`` still starts signed in where the edition signs it in.
+        Bounded by :data:`NAV_REFRESH_BUDGET_SECS`, as a re-pull before a navigation
+        is: past it the context is kept unseeded (it browses, signed out) rather than
+        let a hung provider eat the op's whole budget on every first op of the chat.
+        Never raises for a provider failure.
+        """
+        handle = self._handle
+        if handle is None or handle.relay is not relay:
+            logger.debug(
+                "browser: context %s is not on the connected browser; not seeded",
+                browser_context_id,
+            )
+            return
+        choice = handle.choice
+        target = credentials.Target(kind=choice.kind, headless=choice.headless, reason="context")
+        provider = self._provider()
+        try:
+            status = await asyncio.wait_for(
+                self._seed(relay, provider, target, browser_context_id), NAV_REFRESH_BUDGET_SECS
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "browser: seeding context %s timed out; it starts signed out",
+                browser_context_id,
+            )
+            return
+        _audit_injection(status, "context")
+
+    async def _seed(
+        self, relay: CdpRelay, provider: Any, target: credentials.Target, browser_context_id: str
+    ) -> credentials.CredentialStatus:
+        settings = await asyncio.to_thread(self._credential_settings, provider)
+        return await credentials.apply(
+            relay,
+            provider=provider,
+            target=target,
+            settings=settings,
+            contexts=(browser_context_id,),
+        )
 
     async def refresh_credentials_if_source_changed(self) -> bool:
         """Before an agent navigation: re-pull when the source or the settings moved.
@@ -1107,9 +1169,16 @@ _AUDIT_DOMAINS = 20
 
 
 def _audit_injection(status: credentials.CredentialStatus, reason: str) -> None:
-    """One SEL row per apply that set a cookie: provider, count, domains. Never a value."""
-    if not status.applied:
+    """One SEL row per apply that set a cookie: provider, count, domains. Never a value.
+
+    With per-chat contexts the row also carries each context's landed count, so a
+    chat's context the cookies missed is visible in the audit.
+    """
+    if not status.applied and not any(status.applied_per_context):
         return
+    contexts = ""
+    if len(status.applied_per_context) > 1:
+        contexts = " contexts=" + ",".join(str(n) for n in status.applied_per_context)
     domains = status.applied_domains
     shown = ",".join("".join(ch for ch in d if ch.isprintable()) for d in domains[:_AUDIT_DOMAINS])
     if len(domains) > _AUDIT_DOMAINS:
@@ -1124,7 +1193,7 @@ def _audit_injection(status: credentials.CredentialStatus, reason: str) -> None:
             source="browser_api",
             resources=(
                 f"provider={status.provider or '-'} reason={reason} cookies={status.applied} "
-                f"domains={shown}"
+                f"domains={shown}{contexts}"
             ),
         )
     except Exception:  # noqa: BLE001 - an audit failure never stops the browser

@@ -154,6 +154,13 @@ class LiveSession:
     #: drive one daemon tab and a takeover in one chat fences exactly that chat's tab.
     target_id: str = ""
     targets: set[str] = field(default_factory=set)
+    #: The browser context the last bind put this session in ("" is the default):
+    #: the op that follows reads the setting's answer from here, not again.
+    context: str = ""
+    #: The relay an isolated op is bound to (``None`` under ``shared``): every helper
+    #: the op runs is checked against it, so a daemon restart mid-op cannot carry the
+    #: op onto a browser that has no such context.
+    bound_relay: Any = None
     #: The relay the last stream ran on, kept after the stream stops so the finished
     #: card's "Open in Chrome" can still activate the retained tab.
     last_relay: Relay | None = None
@@ -878,6 +885,23 @@ class LiveHub:
         sess = self._session(session_key)
         sess.target_id = str(target_id)
         sess.targets.add(sess.target_id)
+
+    def context_of(self, session_key: str) -> str:
+        """The browser context the last bind put this session in; ``""`` is the default."""
+        sess = self._sessions.get(session_key)
+        return sess.context if sess is not None else ""
+
+    def bind_context(self, session_key: str, context: str, relay: Any = None) -> None:
+        """Record the browser context this session's ops run in from now on, and the
+        relay it lives on when the context is not the default."""
+        sess = self._session(session_key)
+        sess.context = context
+        sess.bound_relay = relay
+
+    def bound_relay(self, session_key: str) -> Any:
+        """The relay the session's isolated op is pinned to, or ``None``."""
+        sess = self._sessions.get(session_key)
+        return sess.bound_relay if sess is not None else None
 
     def owner_of_target(self, target_id: str) -> str | None:
         """The session key that owns *target_id*, if any session does."""

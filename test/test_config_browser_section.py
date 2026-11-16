@@ -33,6 +33,7 @@ from kiro_crew.config.resolution import _KNOWN_CONFIG_SECTIONS
 from kiro_crew.config.schema import SCHEMA_REGISTRY
 from kiro_crew.config.sections import (
     BROWSER_CHOICES,
+    BROWSER_ISOLATIONS,
     LIVE_MAX_FPS_CHOICES,
     LIVE_QUALITIES,
     BrowserConfig,
@@ -43,6 +44,7 @@ from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
 
 SETTINGS_CONTRACT_KEYS = (
     "browser.choice",
+    "browser.isolation",
     "browser.live.enabled",
     "browser.live.quality",
     "browser.live.max_fps",
@@ -81,6 +83,13 @@ class TestDefaults:
         assert KiroCrewConfig().browser.report_changes is False
         assert BrowserConfig.from_raw({"report_changes": True}).report_changes is True
         assert BrowserConfig.from_raw({"report_changes": "yes please"}).report_changes is False
+
+    def test_chats_share_the_browser_unless_isolation_is_per_session(self, caplog):
+        caplog.set_level(logging.WARNING, logger="kiro_crew.config.loader")
+        assert KiroCrewConfig().browser.isolation == "shared"
+        assert BrowserConfig.from_raw({"isolation": "per_session"}).isolation == "per_session"
+        assert BrowserConfig.from_raw({"isolation": "private"}).isolation == "shared"
+        assert sum("browser.isolation" in r.getMessage() for r in caplog.records) == 1
 
     def test_the_enums_are_the_contract_values(self):
         assert BROWSER_CHOICES == ("auto", "user_chrome", "kiro_chromium", "headless")
@@ -186,6 +195,7 @@ class TestRoundTrip:
         after = json.loads(cfg_home.read_text(encoding="utf-8"))
         assert after["browser"] == {
             "choice": "kiro_chromium",
+            "isolation": "shared",
             "report_changes": False,
             "live": {"enabled": True, "quality": "medium", "max_fps": 30, "mask_passwords": True},
             # Unset: ``None`` and ``[]`` both mean "follow the edition's default".
@@ -255,6 +265,7 @@ class TestPatchRoute:
         for key in SETTINGS_CONTRACT_KEYS:
             assert key in _EDITABLE_CONFIG, key
         assert _EDITABLE_CONFIG["browser.choice"]["values"] == list(BROWSER_CHOICES)
+        assert _EDITABLE_CONFIG["browser.isolation"]["values"] == list(BROWSER_ISOLATIONS)
         assert _EDITABLE_CONFIG["browser.live.quality"]["values"] == list(LIVE_QUALITIES)
         assert _EDITABLE_CONFIG["browser.live.max_fps"]["values"] == list(LIVE_MAX_FPS_CHOICES)
 
@@ -263,6 +274,7 @@ class TestPatchRoute:
         ("path", "value"),
         [
             ("browser.choice", "user_chrome"),
+            ("browser.isolation", "per_session"),
             ("browser.live.enabled", False),
             ("browser.live.quality", "low"),
             ("browser.live.max_fps", 30),

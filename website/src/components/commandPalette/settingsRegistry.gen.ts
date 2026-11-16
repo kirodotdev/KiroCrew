@@ -64,6 +64,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "agent.orchestrator_memory"
   },
   {
+    "id": "browser.browser-isolation",
+    "label": "Browser isolation",
+    "labelKey": "pages.settings.browserPanel.isolation_label",
+    "hint": "Isolated gives each chat its own browser container: separate cookies, site storage and cache, that no other chat can see, discarded when the chat ends. On a desktop its tabs open in their own window. Shared lets every chat use the one browser as it is.",
+    "tab": "browser",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "browser.isolation"
+  },
+  {
     "id": "browser.max-frame-rate",
     "label": "Max frame rate",
     "labelKey": "pages.settings.browserPanel.max_fps_label",

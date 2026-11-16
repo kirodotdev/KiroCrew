@@ -22,6 +22,19 @@ can close exactly the tabs the agent opened and never the person's. Each such ta
 also gets a relay-owned session with focus emulation on: without it a tab behind
 another tab paints no frames and Harness's input calls on it hang.
 
+Why a create context: under ``browser.isolation: per_session`` each chat browses in
+its own browser context (``browser_harness.session_contexts``), and the relay puts
+:attr:`CdpRelay.create_context` on every ``Target.createTarget`` the daemon sends
+that names none, so a tab the daemon opens for that chat (its first tab, a
+``tabs new``) lands in that chat's context, and the ledger remembers which context
+each tab opened in (:meth:`CdpRelay.context_of`) so a chat whose isolation setting
+flipped is never shown, or kept on, a tab from the other side. ``create_context`` is
+one field for the whole relay: it is right only because browser ops run one at a
+time (``browser_ops._OP_LOCK``), each setting it at its bind and clearing it when
+it ends, so a tab the daemon opens while an op runs is that op's chat's. The
+contexts live on the connection: Chrome disposes them when it closes (``disposeOnDetach``), and a
+new relay starts with none.
+
 Loopback only, and a secret on every path: the listener binds ``127.0.0.1:0`` and
 every route it serves carries a per-start capability (:attr:`CdpRelay.url` is
 ``http://127.0.0.1:<port>/<secret>``). The sandbox does not fence loopback, so a
@@ -233,7 +246,9 @@ class CdpRelay:
         self._clients: set[web.WebSocketResponse] = set()
         self._down_ids = itertools.count(1)
         self._routes: dict[int, tuple[web.WebSocketResponse, Any]] = {}
-        self._create_calls: set[int] = set()
+        #: Daemon ``Target.createTarget`` calls in flight, by relay id -> the browser
+        #: context the tab was asked to open in ("" is the default context).
+        self._create_calls: dict[int, str] = {}
         self._ids = itertools.count(RELAY_ID_BASE)
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._own_sessions: dict[str, EventCallback] = {}
@@ -244,6 +259,13 @@ class CdpRelay:
         self._closing: set[str] = set()
         self._adopted: dict[str, str] = {}
         self._agent_targets: list[str] = []
+        #: Ledgered target -> the browser context it opened in ("" is the default).
+        self._target_contexts: dict[str, str] = {}
+        #: Session key -> the browser context its tabs open in (per-chat isolation).
+        self._session_contexts: dict[str, str] = {}
+        #: The browser context a daemon ``Target.createTarget`` opens its tab in;
+        #: empty is the default context.
+        self.create_context = ""
         self._closed = False
         self._torn_down = False
         self.forwarded_up = 0
@@ -413,11 +435,52 @@ class CdpRelay:
         """Targets the daemon created, in creation order, still believed open."""
         return list(self._agent_targets)
 
+    def context_of(self, target_id: str) -> str:
+        """The browser context a ledgered tab opened in; ``""`` for the default context."""
+        return self._target_contexts.get(target_id, "")
+
     def forget_target(self, target_id: str) -> None:
         """Drop *target_id* from the ledger (the stream lane saw it destroyed)."""
         if target_id in self._agent_targets:
             self._agent_targets.remove(target_id)
         self._adopted.pop(target_id, None)
+        self._target_contexts.pop(target_id, None)
+
+    # ── per-chat browser contexts ──
+
+    def session_context(self, key: str) -> str:
+        """The browser context session *key*'s tabs open in, or ``""`` before it has one."""
+        return self._session_contexts.get(key, "")
+
+    def session_context_ids(self) -> list[str]:
+        """Every open per-chat context on this connection."""
+        return list(self._session_contexts.values())
+
+    async def ensure_session_context(self, key: str) -> tuple[str, bool]:
+        """The browser context *key*'s tabs open in; and whether it was created just now.
+
+        ``disposeOnDetach`` asks Chrome to drop the context when this connection
+        closes, so a chat's cookies never outlive the relay that made them.
+        """
+        existing = self._session_contexts.get(key)
+        if existing:
+            return existing, False
+        created = await self.send("Target.createBrowserContext", {"disposeOnDetach": True})
+        context = str(created.get("browserContextId") or "")
+        if not context:
+            raise RuntimeError("the browser created no context for this session")
+        self._session_contexts[key] = context
+        return context, True
+
+    async def dispose_session_context(self, key: str) -> None:
+        """Dispose *key*'s context, closing every tab still in it. No context is a no-op."""
+        context = self._session_contexts.pop(key, None)
+        if not context:
+            return
+        try:
+            await self.send("Target.disposeBrowserContext", {"browserContextId": context})
+        except Exception:  # noqa: BLE001 - a context already gone with its connection
+            logger.debug("relay: disposing the context of %s failed", key, exc_info=True)
 
     async def close_agent_targets(self, targets: Collection[str] | None = None) -> None:
         """Close every ledgered tab, or only the ledgered ones in *targets* (one chat's).
@@ -489,7 +552,14 @@ class CdpRelay:
             gid = next(self._down_ids)
             self._routes[gid] = (ws, msg["id"])
             if msg.get("method") == "Target.createTarget":
-                self._create_calls.add(gid)
+                params = msg.setdefault("params", {})
+                if isinstance(params, dict):
+                    if self.create_context:
+                        params.setdefault("browserContextId", self.create_context)
+                    context = params.get("browserContextId")
+                    self._create_calls[gid] = context if isinstance(context, str) else ""
+                else:
+                    self._create_calls[gid] = ""
             msg["id"] = gid
             raw = json.dumps(msg)
         if self._up is None or self._closed:
@@ -566,10 +636,10 @@ class CdpRelay:
     async def _route_reply(self, gid: int, msg: dict[str, Any]) -> None:
         route = self._routes.pop(gid, None)
         if gid in self._create_calls:
-            self._create_calls.discard(gid)
+            context = self._create_calls.pop(gid)
             tid = (msg.get("result") or {}).get("targetId")
             if isinstance(tid, str) and tid:
-                await self._record_agent_target(tid)
+                await self._record_agent_target(tid, context)
         if route is None:
             return
         ws, original = route
@@ -580,9 +650,11 @@ class CdpRelay:
             return
         self.forwarded_down += 1
 
-    async def _record_agent_target(self, target_id: str) -> None:
+    async def _record_agent_target(self, target_id: str, context: str = "") -> None:
         if target_id not in self._agent_targets:
             self._agent_targets.append(target_id)
+        if context:
+            self._target_contexts[target_id] = context
         asyncio.create_task(self._adopt(target_id))
         if self.on_target_created is not None:
             try:

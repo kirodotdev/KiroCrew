@@ -13,6 +13,7 @@ import sys
 import tempfile
 import types
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -536,6 +537,36 @@ async def test_a_timed_out_helper_never_answers_the_next_call(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_a_call_pinned_to_a_replaced_relay_is_refused_before_the_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An isolated op pins its helpers to the relay it bound on: a restart that gave
+    # ``ensure()`` a new relay refuses the call without reaching the worker. The
+    # worker is a stub: the check under test sits before any child is started.
+    sup = _WorkerOnlySupervisor(tmp_path)
+    requests: list[str] = []
+
+    async def start_worker(handle: supervisor.HarnessHandle) -> Any:
+        sup.workers_started += 1
+        return SimpleNamespace(returncode=None)
+
+    async def worker_request(worker: Any, request: dict[str, Any], timeout: float) -> Any:
+        requests.append(request["helper"])
+        return {"ok": True, "result": request["helper"]}
+
+    monkeypatch.setattr(sup, "_start_worker", start_worker)
+    monkeypatch.setattr(supervisor, "_worker_request", worker_request)
+    bound = sup.handle.relay
+    assert await sup.call("page_info", relay=bound) == "page_info"
+    sup.handle.relay = supervisor.CdpRelay()
+    with pytest.raises(supervisor.BrowserRestarted):
+        await sup.call("page_info", relay=bound)
+    assert requests == ["page_info"] and sup.workers_started == 1
+    assert await sup.call("page_info") == "page_info"  # unpinned (shared) still runs
+    assert requests == ["page_info", "page_info"]
+
+
+@pytest.mark.asyncio
 async def test_a_cancelled_helper_discards_the_worker(tmp_path: Path) -> None:
     sup = _WorkerOnlySupervisor(tmp_path)
     try:
@@ -781,6 +812,9 @@ async def test_a_daemon_started_before_the_worker_failed_is_stopped(
         on_upstream_closed: Any = None
         closed = False
 
+        def session_context_ids(self) -> list[str]:
+            return []
+
         async def start(self, upstream: Any) -> str:
             return "http://127.0.0.1:1/s"
 
@@ -855,6 +889,9 @@ async def test_a_chromium_missing_a_library_fails_the_start_naming_it(
     class FakeRelay:
         on_upstream_closed: Any = None
         closed = False
+
+        def session_context_ids(self) -> list[str]:
+            return []
 
         async def start(self, upstream: Any) -> str:
             self.upstream = upstream
