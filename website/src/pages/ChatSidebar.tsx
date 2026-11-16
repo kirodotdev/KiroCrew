@@ -4,7 +4,7 @@ import { X, Tag as TagIcon } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { useCrewMode, usePreviewFlag } from '../hooks/usePreviewFlag'
-import { selectMateThreadsHidingSessions } from '../store/dashboardSlice'
+import { selectFoldersHoldingSessions, selectMateThreadsHidingSessions } from '../store/dashboardSlice'
 import { selectCloseNotice } from '../store/dashboard/closeWatch'
 import { PREVIEW_FOLDER_CONDUCTOR } from '../utils/previewFlags'
 import { useStore } from 'react-redux'
@@ -155,6 +155,8 @@ function ChatSidebar({
   // A live mate thread's sessions leave it too, unless its Bot shows them in this
   // list; the mate threads are read off the full store, which this prop no longer holds.
   const mateThreads = useAppSelector(selectMateThreadsHidingSessions)
+  // Whether a folder is empty counts those sessions too, as the server does.
+  const foldersHoldingSessions = useAppSelector(selectFoldersHoldingSessions)
   // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the read crewModeView makes
   const localSlots = useMemo(() => crewModeView(slotsProp, false, mateThreads, activeSlot), [slotsProp, crewMode, mateThreads, activeSlot])
   const dispatch = useAppDispatch()
@@ -1021,7 +1023,7 @@ function ChatSidebar({
     folderCompare, folderConductorPin, countSubfolderContents, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef,
     folderFilterRows, folderModeCompare, folderNameMatchIds, folderReorderable, folderReorderHint, folderReorderHintRef,
     folderRowsDrawn, folders, foldersError, foldersFailed, folderSortMode, folderSortMut, folderSortRead,
-    foldersShelved, foldersUnreadFirst, groupByKind, kindSections, toggleGroupByKind, folderSubtrees, foldersWithActiveSubtree, pinnedFolderSubtree, pinnedFolderAncestors, handleSidebarDragCancel, handleSidebarDragEnd,
+    foldersShelved, foldersUnreadFirst, groupByKind, kindSections, toggleGroupByKind, folderSubtrees, foldersHoldingSessions, foldersWithActiveSubtree, pinnedFolderSubtree, pinnedFolderAncestors, handleSidebarDragCancel, handleSidebarDragEnd,
     handleSidebarDragOver, handleSidebarDragStart, hasRemoteExecutedRow, heldDisplacedRef, heldLane,
     hiddenByContainer, hiddenFilters, hiddenFolderCount, hideEmptyFolderBody, hideEmptyFolders, history, historyDragging,
     historyFilter, historyHasMore, historyHeight, historyOpen, historyResize, historySearchFailed, historySearchResults,

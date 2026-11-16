@@ -585,3 +585,106 @@ class TestDefaultSessionFolderIds:
         )
         monkeypatch.setattr(mod.KiroCrewConfig, "load", staticmethod(lambda: cfg))
         assert mod.default_session_folder_ids() == expected
+
+
+def _bot_state(**kw: Any) -> DashboardState:
+    state = _state(**kw)
+    state._folders = [
+        {
+            "id": "radar",
+            "name": "Radar",
+            "parent_id": "",
+            "owner_app": "member:m-radar",
+            "mate_home": True,
+        },
+        {"id": "sub", "name": "PR review", "parent_id": "radar", "owner_app": "member:m-radar"},
+    ]
+    return state
+
+
+class TestCleanupOfBotSubfolders:
+    @pytest.mark.asyncio
+    async def test_the_person_is_offered_an_empty_one_and_never_the_home(self) -> None:
+        state = _bot_state()
+        async with TestClient(TestServer(_app(state))) as client:
+            dry = await (
+                await client.post(
+                    "/api/chat/folders/cleanup", json={"dry_run": True, "include_top_level": True}
+                )
+            ).json()
+        assert dry["ids"] == ["sub"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("setting", [{"icon": "rocket"}, {"color": "#ff0000"}])
+    async def test_a_setting_the_bot_chose_does_not_keep_one(self, setting: dict[str, str]) -> None:
+        state = _bot_state()
+        state._folders[1].update(setting)
+        async with TestClient(TestServer(_app(state))) as client:
+            dry = await (
+                await client.post("/api/chat/folders/cleanup", json={"dry_run": True})
+            ).json()
+        assert dry["ids"] == ["sub"]
+
+    @pytest.mark.asyncio
+    async def test_a_project_dir_keeps_one(self) -> None:
+        state = _bot_state()
+        state._folders[1]["project_dir"] = "/work/x"
+        async with TestClient(TestServer(_app(state))) as client:
+            dry = await (
+                await client.post("/api/chat/folders/cleanup", json={"dry_run": True})
+            ).json()
+            real = await (
+                await client.post("/api/chat/folders/cleanup", json={"ids": ["sub"]})
+            ).json()
+        assert dry["ids"] == []
+        assert real["deleted"] == []
+        assert "sub" in _ids(state)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("root", ["sub", "radar"])
+    async def test_a_root_scope_inside_a_bot_home_removes_nothing(self, root: str) -> None:
+        state = _bot_state()
+        async with TestClient(TestServer(_app(state))) as client:
+            dry = await (
+                await client.post("/api/chat/folders/cleanup", json={"dry_run": True, "root": root})
+            ).json()
+            real = await (
+                await client.post("/api/chat/folders/cleanup", json={"ids": ["sub"], "root": root})
+            ).json()
+        assert dry["ids"] == []
+        assert real["deleted"] == []
+        assert {"radar", "sub"} <= set(_ids(state))
+
+    @pytest.mark.asyncio
+    async def test_confirm_keeps_one_that_gained_an_archived_session(self) -> None:
+        state = _bot_state()
+        async with TestClient(TestServer(_app(state))) as client:
+            dry = await (
+                await client.post("/api/chat/folders/cleanup", json={"dry_run": True})
+            ).json()
+            assert dry["ids"] == ["sub"]
+            state.conversation_log.list_sessions_indexed.return_value = [{"folder_id": "sub"}]
+            real = await (
+                await client.post("/api/chat/folders/cleanup", json={"ids": ["sub"]})
+            ).json()
+        assert real["deleted"] == []
+        assert "sub" in _ids(state)
+
+    @pytest.mark.asyncio
+    async def test_an_internal_caller_is_offered_none(self) -> None:
+        state = _bot_state()
+        internal = {"X-Internal-Secret": "s", "X-Internal-Caller": "kirocrew-dashboard"}
+        async with TestClient(TestServer(_app(state))) as client:
+            dry = await (
+                await client.post(
+                    "/api/chat/folders/cleanup", json={"dry_run": True}, headers=internal
+                )
+            ).json()
+            real = await (
+                await client.post(
+                    "/api/chat/folders/cleanup", json={"ids": ["sub"]}, headers=internal
+                )
+            ).json()
+        assert dry["ids"] == []
+        assert real["deleted"] == []
+        assert "sub" in _ids(state)

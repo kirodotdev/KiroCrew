@@ -1,12 +1,12 @@
 ---
 title: The person may delete an empty folder inside a Bot's home folder, and the empty-folder cleanup offers it
-status: draft
+status: accepted
 author: buluoray (drafted with an agent session)
 created: 2026-11-16
-last-audited: 2026-11-16
-audited-at: 574320d20fc
-doc-pr: null
-implementation-prs: []
+last-audited: 2026-11-17
+audited-at: 0ce99889fc5
+doc-pr: 38152
+implementation-prs: [38808]
 tracking-issues: [37434]
 supersedes: []
 superseded-by: []
@@ -14,12 +14,13 @@ superseded-by: []
 
 # RFC: The person may delete an empty folder inside a Bot's home folder
 
-Status: draft. Nothing is built and this document changes no code. It answers
-[#37434](https://github.com/kirodotdev/KiroCrew/issues/37434), which a
+Status: accepted. A maintainer (bolichen97) approved and merged this RFC in
+[#38152](https://github.com/kirodotdev/KiroCrew/pull/38152), and
+[#38808](https://github.com/kirodotdev/KiroCrew/pull/38808) builds it. It
+answers [#37434](https://github.com/kirodotdev/KiroCrew/issues/37434), which a
 maintainer triaged as a design-level change to the rule that a Bot's home
-folder belongs to the Bot, and pointed at this process. Acceptance is
-requested from a maintainer, who records it on this Status line. Every code
-reference below was read at `574320d20fc`.
+folder belongs to the Bot. Every code reference below was read at
+`574320d20fc`.
 
 ## Summary
 
@@ -190,11 +191,13 @@ One phase, one code PR.
 - Exit criteria:
   - a person's `DELETE /api/chat/folders/{id}` on an empty Bot sub-folder
     answers 200 and removes it;
-  - the same call on a Bot's home, or on a sub-folder holding a live,
-    archived or cron-filed session or a child folder, is refused and removes
-    nothing;
-  - an app or member caller is refused on a Bot sub-folder as today, and an
-    internal (MCP) caller in the person's own session is refused too;
+  - the same call on a sub-folder holding a live, archived or cron-filed
+    session or a child folder answers 409 `folder_not_empty`, and on a Bot's
+    home answers 403 `mate_home_locked`; neither removes anything;
+  - an app caller on a Bot sub-folder answers 403 `mate_home_locked` as
+    today, a member caller is refused by the member route gate as today, and
+    an internal (MCP) caller in the person's own session answers 403
+    `mate_home_locked` too;
   - the folder menu offers Delete on an empty Bot sub-folder only, never on
     the home;
   - the cleanup dry run lists an empty Bot sub-folder and never the home, and

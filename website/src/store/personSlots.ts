@@ -38,6 +38,21 @@ export function selectPersonSlots(state: Parameters<typeof selectSlotsWithLiveLa
   return personSlots
 }
 
+/** The folders that any live session of the full slot store is filed in. It
+ *  counts the sessions the person's list leaves out (a live mate thread's, a
+ *  crew worker's), because the server counts them when it refuses to delete a
+ *  folder that is not empty. Memoized on the raw rows. */
+let holdingOf: unknown = null
+let holding: ReadonlySet<string> = new Set()
+export function selectFoldersHoldingSessions(state: { dashboard: { slots: ChatSlot[] } }): ReadonlySet<string> {
+  const slots = state.dashboard.slots
+  if (slots !== holdingOf) {
+    holdingOf = slots
+    holding = new Set(slots.flatMap(s => (s.folder_id ? [s.folder_id] : [])))
+  }
+  return holding
+}
+
 /** The live mate threads of the full slot store, whose sessions leave the
  *  person's lists (`liveMateThreads`), for a list
  *  that `crewModeView` filters after the chat page left the mate threads out.
