@@ -337,7 +337,10 @@ export class AcpAdapter implements ProviderAdapter {
         limit: b.credits_plan,
         unit: 'credits',
         resets: b.resets,
-        percentUsed: b.credits_plan ? Math.round((b.credits_used ?? 0) / b.credits_plan * 100) : undefined,
+        // The exact share: the badge colours compare it against their 70% and
+        // 90% lines, and each display rounds it for itself. Rounding here would
+        // show a plan at 99.6% as "100%" in the danger colour with credits left.
+        percentUsed: b.credits_plan ? (b.credits_used ?? 0) / b.credits_plan * 100 : undefined,
       } : null,
       ...tokenUsage(data.tokens),
       localDay: typeof data.local_day === 'string' ? data.local_day : undefined,
