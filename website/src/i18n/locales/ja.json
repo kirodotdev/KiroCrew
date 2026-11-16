@@ -22179,6 +22179,8 @@
       "restart": "ゲートウェイの再起動後に反映",
       "default_label": "既定値: {{value}}",
       "current_label": "現在の値: {{value}}",
+      "show_all_values": "すべてを表示（{{count}}）",
+      "show_fewer_values": "表示を減らす",
       "status_idle_draft": "入力欄から離れると保存されます",
       "status_idle_instant": "変更するとすぐに保存されます",
       "status_saving": "保存中…",

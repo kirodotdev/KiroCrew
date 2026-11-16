@@ -23297,6 +23297,8 @@
       "restart": "Aplica após reiniciar o gateway",
       "default_label": "Padrão: {{value}}",
       "current_label": "Atual: {{value}}",
+      "show_all_values": "Mostrar tudo ({{count}})",
+      "show_fewer_values": "Mostrar menos",
       "status_idle_draft": "Salva quando você sai do campo",
       "status_idle_instant": "Salva assim que você muda",
       "status_saving": "Salvando…",

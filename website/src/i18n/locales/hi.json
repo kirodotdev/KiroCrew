@@ -22738,6 +22738,8 @@
       "restart": "गेटवे रीस्टार्ट के बाद लागू",
       "default_label": "डिफ़ॉल्ट: {{value}}",
       "current_label": "अभी: {{value}}",
+      "show_all_values": "सब दिखाएँ ({{count}})",
+      "show_fewer_values": "कम दिखाएँ",
       "status_idle_draft": "फ़ील्ड से बाहर जाते ही सहेजा जाता है",
       "status_idle_instant": "बदलते ही सहेजा जाता है",
       "status_saving": "सहेजा जा रहा है…",

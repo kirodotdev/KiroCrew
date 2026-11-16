@@ -23297,6 +23297,8 @@
       "restart": "S'applique après redémarrage de la passerelle",
       "default_label": "Par défaut : {{value}}",
       "current_label": "Actuel : {{value}}",
+      "show_all_values": "Tout afficher ({{count}})",
+      "show_fewer_values": "Afficher moins",
       "status_idle_draft": "S’enregistre quand tu quittes le champ",
       "status_idle_instant": "S’enregistre dès que tu le modifies",
       "status_saving": "Enregistrement…",

@@ -22179,6 +22179,8 @@
       "restart": "게이트웨이 다시 시작 후 적용",
       "default_label": "기본값: {{value}}",
       "current_label": "현재 값: {{value}}",
+      "show_all_values": "모두 보기({{count}})",
+      "show_fewer_values": "간단히 보기",
       "status_idle_draft": "입력란에서 벗어나면 저장됩니다",
       "status_idle_instant": "바꾸면 바로 저장됩니다",
       "status_saving": "저장 중…",

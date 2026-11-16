@@ -22179,6 +22179,8 @@
       "restart": "网关重启后生效",
       "default_label": "默认值：{{value}}",
       "current_label": "当前值：{{value}}",
+      "show_all_values": "显示全部（{{count}}）",
+      "show_fewer_values": "收起",
       "status_idle_draft": "离开输入框时保存",
       "status_idle_instant": "改动后立即保存",
       "status_saving": "正在保存…",
