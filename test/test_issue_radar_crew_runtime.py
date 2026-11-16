@@ -273,14 +273,24 @@ class TestBriefInjection(unittest.TestCase):
                 self.assertEqual(prompt, cr.brief_text() + "\n\n---\n\n" + nudge)
 
 
+class _TmpPathCase:
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
+
+        Background writers (the crew-log fold, the store's ``mkdir`` on read) can
+        re-create a self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
+
 # ── nudge composition ───────────────────────────────────────────────────────
 
 
-class TestNudge(unittest.TestCase):
+class TestNudge(_TmpPathCase, unittest.TestCase):
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
+        self.root = self._tmp_path / "radar-root"
+        self.root.mkdir()
 
     def test_nudge_carries_the_volatile_fields(self):
         crew = _crew(self.root, labels=["bug", "area:cli"], max_open=3)
@@ -408,7 +418,7 @@ class TestNudge(unittest.TestCase):
 # ── provider vocabulary in the prompt ───────────────────────────────────────
 
 
-class TestProviderVocabulary(unittest.TestCase):
+class TestProviderVocabulary(_TmpPathCase, unittest.TestCase):
     """The nudge and the Never block must speak the repo's forge, not GitHub's.
 
     ``#12`` and ``!12`` are DIFFERENT items on GitLab and Azure DevOps, and "Never merge
@@ -416,9 +426,8 @@ class TestProviderVocabulary(unittest.TestCase):
     """
 
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
+        self.root = self._tmp_path / "radar-root"
+        self.root.mkdir()
 
     def _nudge(self, provider_name: str) -> str:
         key = provider.key_from_parts(OWNER, REPO, provider_name, "gitlab.example")
@@ -603,11 +612,10 @@ class TestCrewStoreScoping(unittest.TestCase):
 # ── session launch / trust ──────────────────────────────────────────────────
 
 
-class TestSession(unittest.IsolatedAsyncioTestCase):
+class TestSession(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
+        self.root = self._tmp_path / "radar-root"
+        self.root.mkdir()
         # Scoped grants live in the process-wide singleton, so one test's grant
         # would otherwise still be active in the next one.
         reset_singleton()
@@ -926,7 +934,7 @@ class TestSession(unittest.IsolatedAsyncioTestCase):
 # ── a pause that lands while a crew is being woken ──────────────────────────
 
 
-class TestPauseRacesTheWake(unittest.IsolatedAsyncioTestCase):
+class TestPauseRacesTheWake(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
     """The operator pauses a crew DURING the wake that is about to run it.
 
     A pause writes only the store, so a check against the caller's snapshot reads live.
@@ -935,9 +943,8 @@ class TestPauseRacesTheWake(unittest.IsolatedAsyncioTestCase):
     """
 
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
+        self.root = self._tmp_path / "radar-root"
+        self.root.mkdir()
         reset_singleton()
         self.addCleanup(reset_singleton)
 
@@ -1478,7 +1485,7 @@ class TestPauseRacesTheWake(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(svc.get_by_slot(slot.key).active)
 
 
-class TestAStoodDownLoopStaysDown(unittest.IsolatedAsyncioTestCase):
+class TestAStoodDownLoopStaysDown(_TmpPathCase, unittest.IsolatedAsyncioTestCase):
     """A crew loop that stood down on its own failures is not revived by the watchdog.
 
     Driven against the REAL ``AutoNudgeService``: the defect is the interaction
@@ -1489,9 +1496,8 @@ class TestAStoodDownLoopStaysDown(unittest.IsolatedAsyncioTestCase):
     """
 
     async def asyncSetUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
+        self.root = self._tmp_path / "radar-root"
+        self.root.mkdir()
         reset_singleton()
         self.addCleanup(reset_singleton)
         from kiro_crew.autonudge import AutoNudgeService
