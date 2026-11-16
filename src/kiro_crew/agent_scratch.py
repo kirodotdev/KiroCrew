@@ -98,6 +98,7 @@ from pathlib import Path
 from typing import Literal
 
 from kiro_crew import agent_scratch_users, platform_compat
+from kiro_crew.agent_scratch_build_output import native_build_output
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     config_dir,
@@ -1165,10 +1166,13 @@ def holds_git_repository(tree: Path) -> bool:
     such as the read-only object files a partial delete strands on Windows.
     A regenerable subtree (:func:`_regenerable`) is not searched: the
     repositories test suites create in a pytest basetemp, or a package manager
-    leaves in ``node_modules``, are not work, and a tree whose only
+    leaves in ``node_modules`` or a native build in its output (the dependency
+    clones of SwiftPM and Xcode), are not work, and a tree whose only
     repositories sit in such subtrees is deleted at once.
-    Entries are read with ``lstat``; no link is followed or descended into, no
-    file is opened and no git runs. A tree that cannot be listed answers True.
+    Entries are read with ``lstat``; no link is followed or descended into and
+    no git runs. No file under the tree is ever opened: native build output is
+    judged by name and kind alone (:mod:`agent_scratch_build_output`). A tree
+    that cannot be listed answers True.
     """
     return _search(tree, basetemp_at_top=True)
 
@@ -1208,7 +1212,7 @@ def _searched_venv(path: Path, *, top_level: bool) -> bool:
     A regenerable name wins over the venv marker, and a venv that is itself a
     repository is never regenerable, so neither is searched as a venv.
     """
-    if _regenerable_name(path.name, top_level=top_level):
+    if _regenerable_name(path.name, top_level=top_level) or native_build_output(path):
         return False
     if not _is_regular_file(path / _VENV_MARKER):
         return False
@@ -1223,8 +1227,9 @@ def _is_git_directory(path: Path) -> bool:
 def _regenerable(path: Path, *, top_level: bool) -> bool:
     """Whether the plain directory *path* holds only what a tool rebuilds.
 
-    That is a directory named in :data:`_REGENERABLE_DIRNAMES`, a Python
-    virtual environment (a directory holding a REGULAR file named
+    That is a directory named in :data:`_REGENERABLE_DIRNAMES`, native
+    build output (:mod:`agent_scratch_build_output`), a Python virtual
+    environment (a directory holding a REGULAR file named
     :data:`_VENV_MARKER`), or -- when *top_level*, a direct child of a scratch
     tree -- a pytest basetemp named ``pytest-of-*``. A directory named
     ``.venv`` that holds no such file is somebody's work, not a venv.
@@ -1237,7 +1242,7 @@ def _regenerable(path: Path, *, top_level: bool) -> bool:
     project folder, or the clones ``pip install -e git+...`` puts in its
     ``src``, keep it whole.
     """
-    named = _regenerable_name(path.name, top_level=top_level)
+    named = _regenerable_name(path.name, top_level=top_level) or native_build_output(path)
     if not (named or _is_regular_file(path / _VENV_MARKER)):
         return False
     if os.path.lexists(path / ".git") or _is_git_directory(path):
@@ -1262,7 +1267,8 @@ def _strip_regenerable(tree: Path) -> None:
     """Delete the regenerable subtrees of the quarantined *tree*, in place.
 
     The quarantine keeps a tree for the repositories in it; package installs,
-    virtual environments, caches and pytest basetemps beside them are rebuilt
+    virtual environments, caches, pytest basetemps and native build output
+    beside them are rebuilt
     from the work and can be most of its size. Only a tree the sweep moved
     into the quarantine reaches here, so nothing else is using it. Running it
     again on a stripped tree changes nothing.
