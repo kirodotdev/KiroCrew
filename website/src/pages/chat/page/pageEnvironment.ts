@@ -38,9 +38,10 @@ export function chatPageSlots<T extends ChatSlot>(slots: T[], bound?: string | n
  *  sessions its Bot does not show in this list, left out (`crewModeView`; the
  *  server keeps them in the slot frame under `?crew=all`, and their root's Crew
  *  panel shows them). What the collapsed-sidebar flyout lists and the unread count
- *  counts; the sidebar applies the same function at its own door. */
-export function personChatPageSlots<T extends ChatSlot>(slots: T[], mateThreads?: ReadonlySet<string>): T[] {
-  return crewModeView(slots, false, mateThreads)
+ *  counts; the sidebar applies the same function at its own door. *activeKey*
+ *  is the open session, which keeps its row (`slackRowHidden`). */
+export function personChatPageSlots<T extends ChatSlot>(slots: T[], mateThreads?: ReadonlySet<string>, activeKey?: string | null): T[] {
+  return crewModeView(slots, false, mateThreads, activeKey)
 }
 
 /** The unread keys among *visible* rows: a crew member's unread never counts on
@@ -159,8 +160,10 @@ export function useChatPageEnvironment({
   // `chatPageSlots` leaves them out.
   const crewMode = useCrewMode()
   const mateThreads = useAppSelector(selectMateThreadsHidingSessions)
+  // The open session keeps its row even when the Slack list setting leaves its
+  // conversation out (`crewModeView`), so the flyout always lists what is open.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the read crewModeView makes
-  const personSlots = useMemo(() => personChatPageSlots(filteredSlots, mateThreads), [filteredSlots, crewMode, mateThreads])
+  const personSlots = useMemo(() => personChatPageSlots(filteredSlots, mateThreads, activeSlot), [filteredSlots, crewMode, mateThreads, activeSlot])
   const filteredSlotsRef = useRef(filteredSlots)
   filteredSlotsRef.current = filteredSlots
   // Live guide predicates the sessions sidebar toggle needs to be drawn (see

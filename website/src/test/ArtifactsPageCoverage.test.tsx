@@ -19,6 +19,11 @@ import { svgShadow } from './svgShadow'
 import { namedCeiling } from './namedCeiling'
 
 vi.mock('../api/client')
+// The folder-card browse layout these suites pin ships on a phone; a desktop
+// draws the side list and Home instead (ArtifactsPage.home.test.tsx).
+// A describe that exercises a desktop-only control flips this off.
+let mobile = true
+vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => mobile }))
 
 // VirtuosoMasonry virtualizes against real layout, which the test DOM lacks, so
 // it renders zero items — same shim ArtifactsPage.test.tsx installs.
@@ -551,6 +556,8 @@ describe('ArtifactsPage — folder cards in the gallery', () => {
 
 // ── Folder creation ───────────────────────────────────────────────────────
 describe('ArtifactsPage — creating a folder', () => {
+  beforeEach(() => { mobile = false })
+  afterEach(() => { mobile = true })
   it('creates the folder inside the folder being browsed', async () => {
     const user = userEvent.setup()
     const m = seed({ artifacts: [], folders: [mkFolder('ops', 'Ops')] })
@@ -573,7 +580,7 @@ describe('ArtifactsPage — creating a folder', () => {
 
     await user.click(screen.getByRole('button', { name: /New folder/i }))
     await user.type(screen.getByLabelText('New folder name'), '  Runbooks  ')
-    await user.click(screen.getByText('Your Artifacts'))
+    await user.click(screen.getByRole('heading', { name: 'Home' }))
 
     // Whitespace is trimmed, and no parent is sent at the library root.
     await waitFor(() => expect(m.createArtifactFolder).toHaveBeenCalledWith({ name: 'Runbooks' }))
@@ -599,7 +606,7 @@ describe('ArtifactsPage — creating a folder', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /New folder/i })).toBeInTheDocument())
 
     await user.click(screen.getByRole('button', { name: /New folder/i }))
-    await user.click(screen.getByText('Your Artifacts'))
+    await user.click(screen.getByRole('heading', { name: 'Home' }))
 
     await waitFor(() => expect(screen.queryByLabelText('New folder name')).not.toBeInTheDocument())
     expect(m.createArtifactFolder).not.toHaveBeenCalled()
@@ -635,7 +642,7 @@ describe('ArtifactsPage — creating a folder', () => {
 
     await user.click(screen.getByRole('button', { name: /New folder/i }))
     await user.type(screen.getByLabelText('New folder name'), 'Runbooks')
-    await user.click(screen.getByText('Your Artifacts'))
+    await user.click(screen.getByRole('heading', { name: 'Home' }))
 
     expect(m.createArtifactFolder).not.toHaveBeenCalled()
     const held = screen.getByLabelText('New folder name') as HTMLInputElement
@@ -1016,7 +1023,9 @@ describe('ArtifactsPage — folder tree table', () => {
     expect(screen.getByText('text')).toBeInTheDocument()
   })
 
-  it('creates a folder at the root from the table view', async () => {
+  it('creates a folder inside the side-list selection from the table view', async () => {
+    mobile = false
+    onTestFinished(() => { mobile = true })
     const user = userEvent.setup()
     const m = seed({ artifacts: [], folders: [mkFolder('ops', 'Ops')] })
     renderWithProviders(<ArtifactsPage />, { route: '/artifacts?folder=ops', store: connectedStore() })
@@ -1025,8 +1034,9 @@ describe('ArtifactsPage — folder tree table', () => {
     await user.click(screen.getByRole('button', { name: /New folder/i }))
     await user.type(screen.getByLabelText('New folder name'), 'Runbooks{Enter}')
 
-    // The tree view always creates at root — nesting happens afterwards.
-    await waitFor(() => expect(m.createArtifactFolder).toHaveBeenCalledWith({ name: 'Runbooks' }))
+    // With the side list a new folder goes inside the selected folder, in
+    // either view.
+    await waitFor(() => expect(m.createArtifactFolder).toHaveBeenCalledWith({ name: 'Runbooks', parent_id: 'ops' }))
   })
 })
 
@@ -1282,6 +1292,8 @@ describe('ArtifactsPage — dragging a card', () => {
 
 // ── Add Artifact (file import) ────────────────────────────────────────────
 describe('ArtifactsPage — importing a file', () => {
+  beforeEach(() => { mobile = false })
+  afterEach(() => { mobile = true })
   const fileInput = () => screen.getByLabelText('Add a file from your computer to the library')
 
   const pick = (file: File) => {
@@ -1412,7 +1424,7 @@ describe('ArtifactsPage — importing a file', () => {
     await waitFor(() => expect(m.createArtifact).not.toHaveBeenCalled())
   })
 
-  it('opens the picker from the caret menu entry', async () => {
+  it('opens the picker from the more-ways-to-add menu', async () => {
     const user = userEvent.setup()
     seed({ artifacts: [], folders: [] })
     renderWithProviders(<ArtifactsPage />)

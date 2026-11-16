@@ -298,6 +298,28 @@ describe('ChatSidebar – remote crew sessions in the live list', () => {
     expect(screen.getByText('LIVE newer slot')).toBeInTheDocument()
   })
 
+  it("leaves out a peer's Slack conversation its own Slack list setting hides, unless it waits on you", async () => {
+    localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
+    instanceChatSlotsMock.mockResolvedValue([
+      { ...DEFAULT_REMOTE_SLOT },
+      { ...DEFAULT_REMOTE_SLOT, key: 'slack_1.1', row_identity: 'inst-a:slack_1.1', title: 'Peer Slack thread', slack_list_hidden: true },
+      {
+        ...DEFAULT_REMOTE_SLOT,
+        key: 'slack_2.2',
+        row_identity: 'inst-a:slack_2.2',
+        title: 'Peer Slack approval',
+        slack_list_hidden: true,
+        pending_approval: true,
+      },
+    ])
+    renderSidebar()
+    await waitFor(() => {
+      expect(screen.getByTestId('crew-group-inst-a')).toHaveTextContent('REMOTE middle row')
+    })
+    expect(screen.getByTestId('crew-group-inst-a')).toHaveTextContent('Peer Slack approval')
+    expect(screen.getByTestId('crew-group-inst-a')).not.toHaveTextContent('Peer Slack thread')
+  })
+
   it('prints each date-segment header once, even when a remote row was created in another bucket', async () => {
     localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
     const { container } = renderSidebar()

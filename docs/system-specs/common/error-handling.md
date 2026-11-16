@@ -410,6 +410,10 @@ per model, so `USER_RATE_LIMIT_TEXT` says a model switch will not help and to wa
 instead of the throttle row's switch-model advice. Only the wording is its own; the
 retry verdict and the throttle tag still come from the frame's throttle tokens, and
 the text keeps "throttling" for the same `_TRANSIENT_MARKERS` reason.
+`_raise_acp_error` also stamps `AcpError.user_rate_limit` on such a throttle, and
+`AcpError.server_error` on a transient provider 5xx (`acp_error_is_server_error` reads
+it, with the same text fallback as `acp_error_is_throttle`); the dashboard model
+fallback reads both (`modules/model-fallback.md`).
 
 A **network-path drop** is the one transient class that waits by time rather
 than by count. `AcpError.connection_failure` is set from the raw frame when the

@@ -13,7 +13,12 @@ handler sees ``(None, None)``: no gate, no new reply field.
 
 The snapshot carries numbers and status words only. Every field is rebuilt from
 a typed reading here, never copied from a probe's text, so no path, user name or
-credential can reach it.
+credential can reach it. ``tags`` are the operator's own
+``work_ledger.remote_dispatch_tags`` words, and ``logins`` (on the GET route
+only) maps a tool to one word from the git proxy's readiness probe:
+``valid``, ``expired`` (which also covers a ``gh`` that is not installed or
+timed out, as ``login_status`` reports it), or ``unknown`` while a first check
+runs; anything else is absent (RFC §4).
 """
 
 from __future__ import annotations
@@ -29,6 +34,9 @@ from pathlib import Path
 from typing import Any
 
 from aiohttp import web
+
+from kiro_crew.remote_dispatch import LOGIN_EXPIRED, LOGIN_UNKNOWN, LOGIN_VALID
+from kiro_crew.work_vocab import coerce_dispatch_tags
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +61,8 @@ class RemoteDispatchSettings:
     disk_gb: float
     #: Minutes a bound crew may stay unreachable before the hub retires its binding.
     retire_minutes: float = 30.0
+    #: ``work_ledger.remote_dispatch_tags``, already held to the tag shape.
+    tags: tuple[str, ...] = ()
 
 
 _DISABLED = RemoteDispatchSettings(enabled=False, memory_gb=0.0, disk_gb=0.0)
@@ -78,7 +88,23 @@ def remote_dispatch_settings() -> RemoteDispatchSettings:
         memory_gb=float(section.remote_dispatch_memory_gb),
         disk_gb=float(section.remote_dispatch_disk_gb),
         retire_minutes=float(section.remote_dispatch_retire_minutes),
+        tags=_shareable_tags(section.remote_dispatch_tags),
     )
+
+
+def _shareable_tags(raw: object) -> tuple[str, ...]:
+    """The configured tags that may leave this machine.
+
+    Held to the tag shape first, then a tag the exfiltration-URL and credential
+    redactors would change (a lower-case secret such as a GitLab PAT) is
+    dropped, so a secret pasted into the list never reaches another crew. Words
+    the redactors cannot know (a user name, a short host name) stay the
+    operator's choice, as the setting's help says.
+    """
+    from kiro_crew.security import redact
+
+    tags = coerce_dispatch_tags(list(raw) if isinstance(raw, (list, tuple)) else raw)
+    return tuple(t for t in tags if redact(t) == t)
 
 
 def _reading(value: object) -> float | None:
@@ -219,6 +245,7 @@ def measure(settings: RemoteDispatchSettings) -> tuple[dict[str, Any], str]:
         "posture": posture,
         "disk_free_gb": _shown(disk_free),
         "open_workers": open_workers,
+        "tags": list(settings.tags),
         "measured_at": round(time.time(), 3),
     }
     return headroom, _short_resource(settings, posture, load_per_cpu, disk_free, open_workers or 0)
@@ -265,6 +292,94 @@ def _short_resource(
     return ""
 
 
+#: Seconds one host's login reading stays fresh. ``gh auth status`` asks GitHub,
+#: so it is not run on every headroom read. A sign-in or sign-out can therefore
+#: show up to this late.
+LOGINS_TTL_S = 120.0
+
+#: Most seconds a headroom read waits on stale readings; past it each check still
+#: running is shown as ``unknown``, so a slow status command never stalls the
+#: hub's 5 s placement probe or hides another tool's finished reading.
+LOGINS_WAIT_S = 3.0
+
+#: ``git_gateway.login_status`` word -> the headroom word; anything else is absent.
+_LOGIN_WORDS = {"signed_in": LOGIN_VALID, "not_signed_in": LOGIN_EXPIRED}
+
+#: Per host: (monotonic stamp, ``login_status`` word), and the check in flight.
+_login_cache: dict[str, tuple[float, str]] = {}
+_login_tasks: "dict[str, asyncio.Task[None]]" = {}
+
+
+async def _refresh_login(host: str) -> None:
+    """Run ``login_status`` for *host* and store its word. Never raises."""
+    from kiro_crew.remote_session import git_gateway
+
+    try:
+        state = await git_gateway.login_status(host)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("remote dispatch: %s login check failed", host, exc_info=True)
+        state = "unchecked"
+    _login_cache[host] = (time.monotonic(), state)
+
+
+async def peer_logins() -> dict[str, str]:
+    """This crew's login words, one per tool ``git_gateway`` checks. Never raises.
+
+    The words come from ``git_gateway.login_status``, the same probe the git
+    proxy's readiness runs, keyed by its tool (``readiness_tool``): ``valid``,
+    ``expired``, or ``unknown`` while a first check is still running; a tool
+    whose check cannot tell is absent. The lending gate
+    (``git_gateway.lending_refusal``) is read on every call and never cached,
+    so a switch to the strict sandbox reports no login at once. Each host's
+    reading is reused for :data:`LOGINS_TTL_S`; stale ones are refreshed, each
+    on its own, and waited on for at most :data:`LOGINS_WAIT_S`.
+    """
+    from kiro_crew.remote_session import git_gateway
+
+    try:
+        if await git_gateway.lending_refusal():
+            return {}
+        tools = {h: t for h in git_gateway.HOSTS if (t := git_gateway.readiness_tool(h))}
+        loop = asyncio.get_running_loop()
+        now = time.monotonic()
+        pending = []
+        for host in tools:
+            cached = _login_cache.get(host)
+            if cached is not None and now - cached[0] < LOGINS_TTL_S:
+                continue
+            task = _login_tasks.get(host)
+            if task is None or task.done() or task.get_loop() is not loop:
+                task = _login_tasks[host] = asyncio.ensure_future(_refresh_login(host))
+            pending.append(task)
+        if pending:
+            # ``wait`` never cancels: a check past the deadline finishes for the next read.
+            await asyncio.wait(pending, timeout=LOGINS_WAIT_S)
+    except Exception:  # noqa: BLE001 - a login reading must not fail the headroom read
+        logger.debug("remote dispatch: login readings unavailable", exc_info=True)
+        return {}
+    out: dict[str, str] = {}
+    for host, tool in tools.items():
+        cached = _login_cache.get(host)
+        word = LOGIN_UNKNOWN if cached is None else _LOGIN_WORDS.get(cached[1])
+        if word:
+            out[tool] = word
+    return out
+
+
+async def snapshot(settings: RemoteDispatchSettings) -> tuple[dict[str, Any], str]:
+    """:func:`measure` off the loop, with ``logins`` added. Never raises.
+
+    For ``GET api/chat/headroom`` only, the read placement ranks from: a create
+    reply carries :func:`measure`'s snapshot alone, so no create waits on a
+    login check.
+    """
+    headroom, short = await asyncio.to_thread(measure, settings)
+    headroom["logins"] = await peer_logins()
+    return headroom, short
+
+
 async def create_admission(
     request: web.Request, body: dict[str, Any]
 ) -> tuple[web.Response | None, dict[str, Any] | None]:
@@ -302,5 +417,5 @@ async def api_chat_headroom(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, "chat.headroom.read")
     if denied is not None:
         return denied
-    headroom, _ = await asyncio.to_thread(measure, settings)
+    headroom, _ = await snapshot(settings)
     return web.json_response(headroom)
