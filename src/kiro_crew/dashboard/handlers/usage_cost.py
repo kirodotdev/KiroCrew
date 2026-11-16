@@ -13,6 +13,7 @@ import math
 import time
 from typing import Any, Iterator
 
+from kiro_crew import model_registry
 from kiro_crew.dashboard.handlers.usage_spend import _finite_number
 from kiro_crew.dashboard.handlers.usage_store import (
     NAVIGABLE_CATEGORY,
@@ -214,7 +215,14 @@ def cost_breakdown(
         credits = 0.0 if not raw_credits else _finite_number(raw_credits)
         if credits is None:
             continue
-        model = str(obj.get("model") or "unknown")
+        # Same canonicalisation the daily chart and the series apply, so a model
+        # that crossed a provider id migration never splits into two rows.
+        model = (
+            model_registry.canonicalize_for_provider(
+                str(obj.get("model") or ""), str(obj.get("provider") or "")
+            )
+            or "unknown"
+        )
         slot = str(obj.get("slot") or "")
 
         # Dropped here, before ANY accumulator sees it, so every
