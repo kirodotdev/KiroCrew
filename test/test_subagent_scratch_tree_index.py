@@ -43,6 +43,21 @@ class TestAResumedKeyRejoinsItsTree:
     tree as ``shared_scratch`` when the conversation's process starts.
     """
 
+    @pytest.fixture(autouse=True)
+    def settled_lineage(self, _floor_monkeypatch) -> None:
+        """The persisted session-tree lineage reads as loaded unless a test says not."""
+        import importlib.util
+
+        self.real_lineage_reason = None
+        if importlib.util.find_spec("kiro_crew.session_allocation_parts.scratch_ownership") is None:
+            return  # a tree without the check: nothing to stub
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        self.real_lineage_reason = getattr(scratch_ownership, "_lineage_unavailable_reason", None)
+        _floor_monkeypatch.setattr(
+            scratch_ownership, "_lineage_unavailable_reason", lambda: "", raising=False
+        )
+
     def test_the_index_round_trips_and_prunes_reclaimed_trees(self, scratch_root: Path) -> None:
         scratch_root.mkdir(parents=True)
         old = scratch_root / "dashboard-chat-1-abcdef01"
@@ -515,7 +530,9 @@ class TestAResumedKeyRejoinsItsTree:
             record = MagicMock(return_value=False)
             monkeypatch.setattr(trees, "record_tree", record)
             await mgr.get_or_create(key, agent="kirocrew")
-            record.assert_called_once_with(key, successor, ticket=record.call_args.kwargs["ticket"])
+            record.assert_called_once_with(
+                key, successor, ticket=record.call_args.kwargs["ticket"], parent=""
+            )
             assert "shared_scratch" not in factory.call_args.kwargs
         finally:
             await mgr.close_all()
@@ -943,6 +960,41 @@ class TestAResumedKeyRejoinsItsTree:
             # The row stays on disk, but this process never hands the tree back.
             assert trees._read_tree_index(scratch_root) == {key: tree.name}
             assert trees.recorded_tree(key) is None
+        finally:
+            await mgr.close_all()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", ["shared_unrecorded", "sole_owner", "shared_marker"])
+    async def test_an_allocation_into_a_shared_directory_it_cannot_record_fails_closed(
+        self, scratch_root: Path, monkeypatch, case: str
+    ) -> None:
+        """The index takes no write. A shared directory with no owner record either
+        fails the allocation; a sole owner, or a shared one whose owner record
+        landed, allocates as before."""
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-12345678"
+        tree.mkdir()
+        if case != "sole_owner":
+            assert trees.record_tree("dashboard:chat-other", tree)
+        monkeypatch.setattr(trees, "atomic_write", MagicMock(side_effect=OSError("full disk")))
+        if case == "shared_marker":
+            monkeypatch.setattr(trees, "record_owner_marker", lambda key, path: True)
+        key = "dashboard:chat-1"
+        mgr, factory = self._manager("", tree)
+        killed = MagicMock()
+        monkeypatch.setattr(mgr, "_dispatch_hard_kill", killed)
+        try:
+            if case == "shared_unrecorded":
+                with pytest.raises(RuntimeError, match="could not record session"):
+                    await mgr.get_or_create(key, agent="kirocrew")
+                assert mgr.get_provider(key) is None
+                killed.assert_called_once()  # the started provider is torn down
+                assert trees.recorded_tree(key) is None
+                assert key not in trees.keys_on_tree(tree)
+            else:
+                await mgr.get_or_create(key, agent="kirocrew")
+                assert mgr.get_provider(key) is not None
+                assert trees.recorded_tree(key) == tree
         finally:
             await mgr.close_all()
 

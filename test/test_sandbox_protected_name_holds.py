@@ -83,7 +83,7 @@ def _plain_gateway_checkout(_floor_monkeypatch):
 #: A fix that gives a name a durable hold adds it here, and the equality
 #: assertion below then locks it: the name can never fall back to leaf-name
 #: holding without this constant being edited in the same diff.
-HELD_BY_ENCLOSING_MASK: frozenset[str] = frozenset({"scratch/.trees.json"})
+HELD_BY_ENCLOSING_MASK: frozenset[str] = frozenset({"scratch/.trees.json", "scratch/.owners.json"})
 
 
 def _launcher_sets(tier: str) -> tuple[list[str], list[str]]:

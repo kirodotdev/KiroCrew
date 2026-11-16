@@ -34,6 +34,7 @@ adapter module under :mod:`kiro_crew.acp.harness`; nothing here names one host.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import json
 import logging
@@ -46,7 +47,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Awaitable, Callable, Iterator, Mapping, Protocol, Sequence
 
-from kiro_crew import acp_tool_gate, platform_compat
+from kiro_crew import acp_tool_gate, agent_scratch_trees, platform_compat
 from kiro_crew.acp.spawn_blocked import SPAWN_BLOCKED_BINARY_ATTR, is_windows_spawn_blocked
 from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
 from kiro_crew.acp.transport_framing import _STDOUT_BUFFER_LIMIT
@@ -1076,6 +1077,154 @@ def _launcher_enters_exec_cwd(host: LaunchHost) -> bool:
     )
 
 
+async def _leave_a_refused_scratch_cwd(
+    host: LaunchHost, request: LaunchRequest, refused: Path, scratch_hop: Any, log: Any
+) -> None:
+    """Move a work directory inside *refused* out of it before a respawn.
+
+    Only a respawn calls this, whether *refused* was its own directory or one it
+    inherited. The process this one replaces ran with *refused* mounted, so a cwd inside it was readable; refusing the directory across session
+    trees takes the mount away, and the child could not read its own cwd. It starts in the default directory, the one
+    a fresh start uses. A first start that inherited *refused* keeps its explicit cwd
+    and fails loudly, as ``fallback_hidden_cwd`` in ``get_or_create`` requires.
+    The sandbox-off and Windows cases keep the cwd by the rule the resume path
+    applies (``_stored_cwd_is_hidden_scratch``), judged for the backend this spawn
+    runs (``request.backend``), so an ``agent.harness_sandbox`` floor on it moves the cwd.
+    """
+    from kiro_crew.config.paths import KEYLESS_WORK_DIR_NAME, data_home
+    from kiro_crew.session_allocation_parts.resume_cwd import _stored_cwd_is_hidden_scratch
+
+    cwd = str(host._work_dir)
+
+    def hidden_inside_refused() -> bool:
+        inside = Path(os.path.realpath(cwd)).is_relative_to(os.path.realpath(refused))
+        return inside and _stored_cwd_is_hidden_scratch(
+            cwd, None, request.scratch_label, request.backend
+        )
+
+    if not await scratch_hop(hidden_inside_refused):
+        return
+    default = data_home() / KEYLESS_WORK_DIR_NAME
+    await scratch_hop(functools.partial(default.mkdir, parents=True, exist_ok=True))
+    log.warning(
+        "agent-scratch: work directory %s is inside refused %r; spawning in %s",
+        cwd,
+        refused.name,
+        default,
+    )
+    host._work_dir = default
+    host._spawn_work_dir = str(default)
+
+
+async def _stop_child(process: asyncio.subprocess.Process, log: Any) -> None:
+    """Kill *process*'s tree and wait a bounded time for it to exit.
+
+    On Windows the child holds a cleanup admission from its spawn, which only the
+    owned-tree drain releases; a kill by pid would pin it until a restart.
+    """
+    if platform_compat.IS_WINDOWS:
+        try:
+            await platform_compat.terminate_windows_asyncio_tree(process)
+        except platform_compat.WindowsTreeDrainPending as exc:
+            log.warning(
+                "agent-scratch: the stopped child %d's tree is still draining "
+                "(%d member(s) pending cleanup); the cleanup sweep keeps reaping it",
+                process.pid,
+                exc.pending,
+            )
+        except (OSError, asyncio.TimeoutError):
+            log.warning(
+                "agent-scratch: Windows tree cleanup incomplete for the stopped child %d",
+                process.pid,
+                exc_info=True,
+            )
+        return
+    # The spawn called setsid, so the child's pid is its group id. Signal the group
+    # by that id first: a root that already exited (and was reaped by the child
+    # watcher) cannot resolve its group by pid, and a helper it left would keep the
+    # refused directory mounted. ``kill_process_group`` refuses a non-int id, an id
+    # <= 1 and our own group; an emptied group, a refusal or a test's fake pid is
+    # nothing to stop here.
+    with contextlib.suppress(OSError, ValueError, OverflowError):
+        platform_compat.kill_process_group(process.pid, platform_compat.SIGKILL)
+    if process.returncode is not None:
+        # A reaped pid is the one number the kernel may already have handed on, so
+        # the tree is not walked from it; the group signal above ended what it left.
+        return
+    try:
+        await platform_compat.kill_process_tree_async(process.pid, platform_compat.SIGKILL)
+    except (OSError, ProcessLookupError):
+        # As the client's own kill does: a child already gone cannot be killed
+        # twice, and the caller's cleanup must still run.
+        with contextlib.suppress(OSError, ProcessLookupError):
+            process.kill()
+    try:
+        await asyncio.wait_for(process.wait(), platform_compat.REAP_TIMEOUT_SECS)
+    except asyncio.TimeoutError:
+        log.warning("agent-scratch: the stopped child %d did not exit in time", process.pid)
+
+
+async def _stop_a_child_that_mounted_a_refused_tree(
+    host: LaunchHost,
+    request: LaunchRequest,
+    process: asyncio.subprocess.Process,
+    respawn: bool,
+    scratch_hop: Any,
+    log: Any,
+) -> None:
+    """Stop a child whose shared directory was refused while it was being spawned.
+
+    The refusal is checked before the window is built, and a co-owner's resume can
+    mark the directory between that check and the process existing. A child started
+    in that gap holds a window into a refused directory, so it is stopped before
+    the session uses it and the spawn fails; the next spawn mounts a fresh directory.
+    Only a *respawn* moves its cwd out of the refused directory, as before the
+    spawn: a first start keeps its explicit cwd, so its retry fails loudly instead
+    of running elsewhere. A mark that lands after this check finds a running
+    process, which no refusal stops.
+    """
+    from kiro_crew.dashboard.chat_utils_awaits import run_to_completion
+
+    shared = host._shared_scratch
+    if shared is None:
+        return
+
+    async def teardown(leave: bool) -> None:
+        # Nothing has recorded the child yet, so this is the only place that can
+        # stop it and release what the spawn bound: one unit a cancellation
+        # cannot cut short (``run_to_completion`` re-raises it once done).
+        await _stop_child(process, log)
+        if leave:
+            await _leave_a_refused_scratch_cwd(host, request, shared, scratch_hop, log)
+        await host._discard_bound_workspace()
+        host._discard_sandbox_cleanup()
+
+    try:
+        refused = await scratch_hop(agent_scratch_trees.refused_across_trees, shared)
+        if not refused:
+            # Ownership evidence written while the child spawned (a co-owner that
+            # moved to another tree) is weighed again, as the check before the spawn did.
+            try:
+                refused = not await agent_scratch_trees.resolve_open_ownership(shared)
+            except OSError:
+                refused = True
+    except BaseException:
+        # Cancelled or failed mid-check: the child is running, so it is stopped
+        # here rather than leaked.
+        await run_to_completion(teardown(False))
+        raise
+    if not refused:
+        return
+    log.warning("agent-scratch: %r was refused during the spawn; stopping the child", shared.name)
+    host._shared_scratch = None
+    await run_to_completion(teardown(respawn))
+    raise AcpError(
+        f"the scratch directory {shared.name!r} was refused during the spawn; "
+        "the next spawn starts in a fresh directory",
+        transient=True,
+    )
+
+
 async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -> LaunchedProcess:
     """Start *request*'s host process for *host*, suspended, through the shared tail.
 
@@ -1117,6 +1266,10 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     scratch_hop = (
         host._to_thread_guarding_sandbox if request.guard_scratch_hops else asyncio.to_thread
     )
+    # A respawn: a process of this host already ran, with its windows mounted. Read
+    # off its own record, not ``_scratch_dir``: a start whose allocation failed ran
+    # with no directory of its own and is still the process this one replaces.
+    respawn = bool(getattr(host, "_launched_before", False))
     if host._shared_scratch is None and host._scratch_dir is not None:
         # A respawn: the directory the previous process exposed IS this
         # session's tree -- the children it spawned mounted it, and the work it
@@ -1147,6 +1300,24 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         host._shared_scratch = await scratch_hop(
             tools.agent_scratch.shared_scratch_window, host._shared_scratch
         )
+    settled = True
+    if host._shared_scratch is not None:
+        settled = await agent_scratch_trees.resolve_open_ownership(host._shared_scratch)
+    if host._shared_scratch is not None and (
+        not settled
+        or await scratch_hop(agent_scratch_trees.refused_across_trees, host._shared_scratch)
+    ):
+        # A directory refused across session trees is never remounted, a respawn
+        # of a process that already ran in it included: this one starts in the
+        # fresh directory allocated above.
+        tools.logger.warning(
+            "agent-scratch: %r is quarantined; spawning in a fresh directory",
+            host._shared_scratch.name,
+        )
+        refused = host._shared_scratch
+        host._shared_scratch = None
+        if respawn:
+            await _leave_a_refused_scratch_cwd(host, request, refused, scratch_hop, tools.logger)
     if host._shared_scratch is not None:
         scratch_window = (*scratch_window, str(host._shared_scratch))
     scratch_window = (*scratch_window, *request.extra_private_dirs)
@@ -1364,9 +1535,13 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         await host._discard_bound_workspace()
         host._discard_sandbox_cleanup()
         raise
+    await _stop_a_child_that_mounted_a_refused_tree(
+        host, request, process, respawn, scratch_hop, tools.logger
+    )
     # The live-agent confinement check trusts a namespace launcher only from this
     # record: the launcher stays in the host namespaces by design, so its command
     # line cannot be what proves Crew started it. The recorder checks the wrap's
     # own argv against the launcher script the wrap generated.
     tools.remember_namespace_launcher(process.pid, sandbox_wrapped_argv, host._sandbox_cleanup)
+    host._launched_before = True  # type: ignore[attr-defined]
     return LaunchedProcess(process=process, scope_unit=scope_unit)

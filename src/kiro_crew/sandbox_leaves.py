@@ -231,6 +231,7 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # whole tree. Siblings from other trees stay hidden either way.
     "scratch",
     "scratch/.trees.json",
+    "scratch/.owners.json",
     # The cross-process work root (``work_root``): ``<home>/work/<key>``, for
     # state that must OUTLIVE the process that created it. Masked as a whole and
     # given NO window, which is the difference from ``scratch`` above: the only

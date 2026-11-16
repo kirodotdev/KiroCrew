@@ -127,3 +127,41 @@ async def test_a_turn_cancelled_while_reading_its_folder_releases_the_session(tm
     assert reached, "precondition: the turn reached the folder read"
     key = state.sessions.get_or_create.await_args.args[0]
     state.sessions.release.assert_any_call(key)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend,moved", [("opencode", True), ("", False)])
+async def test_a_respawn_leaves_a_refused_cwd_by_the_floor_of_the_backend_it_spawns(
+    monkeypatch, tmp_path, backend: str, moved: bool
+) -> None:
+    """With ``agent.sandbox`` off, a floored spawn masks the refused tree, so its cwd moves."""
+    from typing import Any, cast
+
+    from kiro_crew import platform_compat
+    from kiro_crew.acp import launch as launch_mod
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfg = KiroCrewConfig()
+    cfg.agent.sandbox = "off"
+    cfg.agent.harness_sandbox = {"opencode": "auto"}
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+    root = tmp_path / "scratch"
+    refused = root / "parent-abcdef01"
+    inside = refused / "x"
+    inside.mkdir(parents=True)
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr("kiro_crew.config.paths.data_home", lambda: tmp_path / "home")
+    host = SimpleNamespace(_work_dir=inside, _spawn_work_dir=str(inside))
+    request = SimpleNamespace(scratch_label=_KEY, backend=backend)
+
+    async def hop(fn, *args):
+        return fn(*args)
+
+    with (
+        patch("kiro_crew.agent_scratch.scratch_root", return_value=root),
+        patch("kiro_crew.sandbox_tiers._clamp_sandbox_mode", side_effect=lambda mode: mode),
+    ):
+        await launch_mod._leave_a_refused_scratch_cwd(
+            cast(Any, host), cast(Any, request), refused, hop, MagicMock()
+        )
+    assert (not host._work_dir.is_relative_to(refused)) is moved
