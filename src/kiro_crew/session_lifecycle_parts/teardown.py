@@ -199,6 +199,9 @@ async def reset(
     owner = self._owner
     logger = self._deps.logger
     key = owner._fold_key(key)
+    # Set when a cancel reached the end record's hop and was absorbed there so
+    # the cleanup below still runs; re-raised once it has.
+    end_cancelled = False
     async with owner._lock:
         current = owner._sessions.get(key)
         if expect_session is not None and current is not expect_session:
@@ -327,7 +330,7 @@ async def reset(
                 crew_log_emit.session_id_of(session.provider),
                 END_REASON_RESET,
             )
-            await record_session_ended(key, end_reason=END_REASON_RESET)
+            end_cancelled = await record_session_ended(key, end_reason=END_REASON_RESET)
     if drop_sid:
         # The registry lock, not an absence of suspension points, is what makes
         # this safe: the end record above awaits, but it awaits while this
@@ -475,6 +478,11 @@ async def reset(
         # The caller still sees what went wrong; it just sees it after this parent's
         # children have been dealt with rather than instead of that.
         raise shutdown_error
+    if end_cancelled:
+        # The cleanup the end record absorbed the cancel for has run. Raising it
+        # now lets a timeout around this reset end its caller, which otherwise
+        # runs on unbounded after the timeout already fired.
+        raise asyncio.CancelledError
     return session is not None
 
 
