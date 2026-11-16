@@ -582,5 +582,6 @@
   "components.promptStash.cleared_others",
   "components.promptStash.discarded",
   "pages.settings.slackSharedAccess.confirm_title",
-  "pages.settings.slackSharedAccess.confirm_label"
+  "pages.settings.slackSharedAccess.confirm_label",
+  "components.globalChatSearch.more_matches"
 ]

@@ -6701,6 +6701,33 @@
       "shortcut_hint_mac": "⌃⇧M mutes or unmutes",
       "mute_short": "Mute",
       "unmute_short": "Unmute"
+    },
+    "globalChatSearch": {
+      "title": "Search all chats",
+      "placeholder": "Search messages in every chat…",
+      "filter_bot": "Bot",
+      "any_bot": "All bots",
+      "filter_who": "Written by",
+      "who_any": "Anyone",
+      "who_me": "Me",
+      "who_bot": "The bot",
+      "filter_when": "When",
+      "when_any": "Any time",
+      "when_today": "Today",
+      "when_week": "Last 7 days",
+      "when_month": "Last 30 days",
+      "hint_min": "Type at least {{min}} characters to search",
+      "searching": "Searching…",
+      "no_results": "No messages match",
+      "error": "Search failed. Try again.",
+      "open_failed": "Could not open that chat",
+      "results_label": "Search results",
+      "role_you": "You",
+      "role_bot": "Bot",
+      "keyboard_hint": "↑ ↓ to move · Enter to open · Esc to close",
+      "scan_note": "Searched the newest {{searched}} of {{total}} chats",
+      "more_matches_one": "{{count}} more match in this chat",
+      "more_matches_other": "{{count}} more matches in this chat"
     }
   },
   "connectedComputers": {

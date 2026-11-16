@@ -160,7 +160,7 @@ describe('row callbacks keep their identity across streamed frames', () => {
       slotRunning: false, splitMode: false, crewWindow: null, slotHasMore: false, slotOldestIndex: 0,
       cursorIsForActiveSlot: true, loadingOlder: false, activeViewIsBoundedPage: false, isWelcomeState: false, activeSlotRemoteBound: false,
       scrollerRef: { current: null }, search: { isOpen: false } as never, navToDisplayIndex, pinnedJumpChrome: () => 0,
-      scrollToPinnedPrompt: vi.fn(), setHighlightTs: vi.fn(), splitFeatureEnabled: false, regenerating: false, setEditLast: vi.fn(),
+      scrollToPinnedPrompt: vi.fn(), markStep: vi.fn(), markJump: vi.fn(), splitFeatureEnabled: false, regenerating: false, setEditLast: vi.fn(),
       editSeqRef: { current: 0 },
     }
     const build = (messages: ChatMessage[]) => ({

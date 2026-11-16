@@ -198,7 +198,7 @@ export type {
 } from './client/cloud'
 export type { MemoryCarveQuery, MemoryCarveResult, RecurringFailure } from './client/memory'
 export { SEARCH_MIN_CHARS } from './client/sessions'
-export type { ArchiveEntry } from './client/sessions'
+export type { ArchiveEntry, MessageSearchHit, MessageSearchParams, MessageSearchResponse, MessageSearchResult } from './client/sessions'
 export type {
   McpShareReason,
   McpShareRecommendation,

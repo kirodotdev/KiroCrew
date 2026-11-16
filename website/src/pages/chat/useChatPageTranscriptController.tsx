@@ -227,6 +227,13 @@ export function useChatPageTranscriptEarlyController({
       onEnd: () => { detachUserScroll(); navPollCancelRef.current = null },
     })
   }, [scrollToDisplayIndex, scrollerRef, mountIndexRef])
+  // Ends the in-flight navigation's settle poll, for a scroll that takes over
+  // from it: a fold that opened under a jump target scrolls to the row itself,
+  // and the poll re-centering the whole turn would undo that.
+  const cancelNavScroll = useCallback(() => {
+    cancelAnimationFrame(navScrollRafRef.current)
+    navPollCancelRef.current?.()
+  }, [])
 
   // Stop any in-flight settle poll on unmount. Without this the loop keeps
   // ticking rAFs against a null scroller until the ~2s backstop (harmless but
@@ -364,6 +371,7 @@ export function useChatPageTranscriptEarlyController({
     handleSurveyLayoutChange,
     composerBandRef,
     navToDisplayIndex,
+    cancelNavScroll,
     displayItemsRef,
     pinFoldRef,
     pinCardRef,

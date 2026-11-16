@@ -61,7 +61,7 @@ const NO_SESSION_KEY = [
   'monitorContract',
   'chatSlotSourceLinks', 'chatSlotDetail', 'channelTargets', 'slackChannels',
   'sessionsHealth', 'tasksSummary', 'spawnAdaptive', 'tasksList', 'taskDetail',
-  'notifications', 'notificationChannels', 'sessions', 'sessionsSearch', 'sessionsNamed',
+  'notifications', 'notificationChannels', 'sessions', 'sessionsSearch', 'sessionsSearchMessages', 'sessionsNamed',
   'sessionArchiveList', 'sessionArchiveRead',
   'instancesSearchSessions', 'instancesCapabilities', 'instanceChatSlots', 'sessionDetail', 'sessionMeta',
   'autocomplete', 'spawnList', 'spawnStatus', 'approvals',

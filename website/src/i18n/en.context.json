@@ -1467,6 +1467,16 @@
     "components.sharedCrews.section_title": "Section heading on Settings > Remote Crew over the Shared Crews the person can open.",
     "components.sharedCrews.open": "Visible label of a Shared Crew row's open action. A verb.",
     "components.appstore.marketStore.add": "Button on a Kiro Space store row in the App Store's Sources popover: adds that store as a source of apps. A verb, the imperative.",
-    "components.appstore.marketStore.err_account_changed": "Error in the Install from Kiro Space dialog: the account signed in to Kiro Space is not the one the page loaded under, so the install was refused. Tells the reader to reload the page and try again."
+    "components.appstore.marketStore.err_account_changed": "Error in the Install from Kiro Space dialog: the account signed in to Kiro Space is not the one the page loaded under, so the install was refused. Tells the reader to reload the page and try again.",
+    "components.globalChatSearch.filter_bot": "Label before a dropdown in the Search all chats dialog that narrows results to chats run by one bot (an AI agent). Short: one word.",
+    "components.globalChatSearch.filter_who": "Label before a dropdown in the Search all chats dialog that narrows results by who wrote the message: the person, or the Bot. Short, like 'Written by'.",
+    "components.globalChatSearch.filter_when": "Label before a dropdown in the Search all chats dialog that narrows results by how recently the chat was active. Short.",
+    "components.globalChatSearch.who_me": "Option in the 'Written by' dropdown: only messages the person using the app wrote. First person, like 'Me'.",
+    "components.globalChatSearch.who_bot": "Option in the 'Written by' dropdown: only messages the bot (AI agent) wrote.",
+    "components.globalChatSearch.role_you": "Screen-reader label on the icon beside a search result the person wrote.",
+    "components.globalChatSearch.role_bot": "Screen-reader label on the icon beside a search result the bot (AI agent) wrote.",
+    "components.globalChatSearch.keyboard_hint": "Footer hint in the Search all chats dialog. Arrow keys move between results, Enter opens one, Esc closes the dialog. Keep the key names as the keyboard shows them.",
+    "components.globalChatSearch.more_matches_one": "Under a chat's results in Search all chats: how many more messages in that same chat match but are not listed. Singular form.",
+    "components.globalChatSearch.more_matches_other": "Under a chat's results in Search all chats: how many more messages in that same chat match but are not listed. Plural form."
   }
 }

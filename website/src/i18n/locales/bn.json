@@ -11595,6 +11595,33 @@
       "undo_failed": "খসড়াটি আবার সরিয়ে রাখা গেল না: জায়গা নেই বা ব্রাউজারের স্টোরেজ পাওয়া যাচ্ছে না।",
       "discarded_one": "সরিয়ে রাখা খসড়াটি বাতিল করা হয়েছে। এখনও {{count}}টি সরিয়ে রাখা আছে।",
       "discarded_other": "সরিয়ে রাখা খসড়াটি বাতিল করা হয়েছে। এখনও {{count}}টি সরিয়ে রাখা আছে।"
+    },
+    "globalChatSearch": {
+      "title": "সব চ্যাট খোঁজো",
+      "placeholder": "সব চ্যাটে বার্তা খোঁজো…",
+      "filter_bot": "Bot",
+      "any_bot": "সব Bot",
+      "filter_who": "কে",
+      "who_any": "যে কেউ",
+      "who_me": "আমি",
+      "who_bot": "Bot",
+      "filter_when": "কখন",
+      "when_any": "যেকোনো সময়",
+      "when_today": "আজ",
+      "when_week": "গত 7 দিন",
+      "when_month": "গত 30 দিন",
+      "hint_min": "খুঁজতে অন্তত {{min}}টি অক্ষর লেখো",
+      "searching": "খোঁজা হচ্ছে…",
+      "no_results": "কোনো বার্তা মেলেনি",
+      "error": "খোঁজা ব্যর্থ হয়েছে। আবার চেষ্টা করো।",
+      "open_failed": "ওই চ্যাটটি খোলা যায়নি",
+      "results_label": "খোঁজার ফলাফল",
+      "role_you": "তুমি",
+      "role_bot": "Bot",
+      "keyboard_hint": "↑ ↓ দিয়ে সরাও · Enter দিয়ে খোলো · Esc দিয়ে বন্ধ করো",
+      "scan_note": "{{total}}টির মধ্যে সাম্প্রতিক {{searched}}টি চ্যাট খোঁজা হয়েছে",
+      "more_matches_one": "এই চ্যাটে আরও {{count}}টি মিল",
+      "more_matches_other": "এই চ্যাটে আরও {{count}}টি মিল"
     }
   },
   "hooks": {

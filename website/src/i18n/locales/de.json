@@ -11595,6 +11595,33 @@
       "undo_failed": "Der Entwurf konnte nicht zurückgelegt werden: Es ist kein Platz mehr oder der Browser-Speicher ist nicht verfügbar.",
       "discarded_one": "Zurückgelegter Entwurf verworfen. {{count}} Entwurf ist noch zurückgelegt.",
       "discarded_other": "Zurückgelegter Entwurf verworfen. {{count}} Entwürfe sind noch zurückgelegt."
+    },
+    "globalChatSearch": {
+      "title": "Alle Chats durchsuchen",
+      "placeholder": "Nachrichten in allen Chats suchen…",
+      "filter_bot": "Bot",
+      "any_bot": "Alle Bots",
+      "filter_who": "Geschrieben von",
+      "who_any": "Alle",
+      "who_me": "Ich",
+      "who_bot": "Der Bot",
+      "filter_when": "Wann",
+      "when_any": "Beliebig",
+      "when_today": "Heute",
+      "when_week": "Letzte 7 Tage",
+      "when_month": "Letzte 30 Tage",
+      "hint_min": "Mindestens {{min}} Zeichen eingeben, um zu suchen",
+      "searching": "Suche läuft…",
+      "no_results": "Keine passenden Nachrichten",
+      "error": "Suche fehlgeschlagen. Bitte erneut versuchen.",
+      "open_failed": "Dieser Chat konnte nicht geöffnet werden",
+      "results_label": "Suchergebnisse",
+      "role_you": "Du",
+      "role_bot": "Bot",
+      "keyboard_hint": "↑ ↓ zum Wechseln · Enter zum Öffnen · Esc zum Schließen",
+      "scan_note": "Die neuesten {{searched}} von {{total}} Chats durchsucht",
+      "more_matches_one": "{{count}} weiterer Treffer in diesem Chat",
+      "more_matches_other": "{{count}} weitere Treffer in diesem Chat"
     }
   },
   "hooks": {

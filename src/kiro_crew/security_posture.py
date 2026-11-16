@@ -917,6 +917,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/server_runtime/workflow_startup.py",
         "dashboard/handlers/sessions.py",
         "dashboard/handlers/sessions_parts/history_reads.py",
+        # Search all chats: the same redacted titles and excerpts on the same
+        # dashboard history surface as history_reads.py.
+        "dashboard/handlers/sessions_parts/message_search.py",
         "dashboard/handlers/sessions_parts/summaries.py",
         "dashboard/handlers/sessions_parts/tool_policy.py",
         "dashboard/handlers/sessions_parts/usage_scrape.py",

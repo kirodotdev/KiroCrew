@@ -151,6 +151,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/sessions/restart", handlers.api_sessions_restart)
     # NOTE: /search must be registered before /{key} to avoid the path param catching "search"
     app.router.add_get("/api/sessions/search", handlers.api_sessions_search)
+    app.router.add_get("/api/sessions/search/messages", handlers.api_sessions_search_messages)
     app.router.add_post("/api/sessions/summarize", handlers.api_sessions_summarize)
     # Two segments, so /{key} (a single segment) cannot catch it — but registered
     # ahead of /{key} anyway, matching the ordering discipline the note above sets.

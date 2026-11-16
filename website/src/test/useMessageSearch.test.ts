@@ -179,6 +179,16 @@ describe('useMessageSearch', () => {
     expect(result.current.focusNonce).toBe(before + 2)
   })
 
+  it('Ctrl/Cmd+Shift+F is left to Search all chats, even with a lower-case key', () => {
+    const { result } = renderHook(() => useMessageSearch(messages, 'slot-1'))
+    const shifted = (init: KeyboardEventInit) => new KeyboardEvent('keydown', { key: 'f', shiftKey: true, cancelable: true, ...init })
+    const ctrl = shifted({ ctrlKey: true })
+    const meta = shifted({ metaKey: true })
+    act(() => { document.dispatchEvent(ctrl); document.dispatchEvent(meta) })
+    expect(result.current.isOpen).toBe(false)
+    expect(ctrl.defaultPrevented || meta.defaultPrevented).toBe(false)
+  })
+
   it('currentIdx clamped when matches shrink', () => {
     const { result } = renderHook(() => useMessageSearch(messages, 'slot-1'))
     act(() => result.current.setTerm('world'))

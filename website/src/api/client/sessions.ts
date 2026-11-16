@@ -19,6 +19,42 @@ export interface ArchiveEntry {
   mtime: number
 }
 
+/** The filters `GET /api/sessions/search/messages` reads. */
+export interface MessageSearchParams {
+  q: string
+  agent?: string
+  role?: '' | 'user' | 'assistant'
+  /** Epoch seconds: keep chats last modified at or after this. */
+  since?: number
+}
+
+/** One matching message; `ts` and `mid` are what the chat's deep-link jump resolves. */
+export interface MessageSearchHit {
+  index: number
+  role: 'user' | 'assistant'
+  ts?: string
+  mid?: string
+  snippet: string
+}
+
+export interface MessageSearchResult {
+  key: string
+  title?: string
+  agent?: string
+  modified?: number
+  open?: boolean
+  hits: MessageSearchHit[]
+  hit_count: number
+}
+
+export interface MessageSearchResponse {
+  results: MessageSearchResult[]
+  /** Bots of every chat the ranking matched, before the filters cut the list. */
+  agents?: string[]
+  /** Present when the scan window left older chats out. */
+  scan?: { searched: number; total: number }
+}
+
 export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, sendResponseAuthRecovery, jCrewBoard }: ClientTransport) {
   const runtimes = {
     restartSessions: () =>
@@ -116,6 +152,16 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, send
     // Both off by default: every other caller wants the full inventory.
     sessions: (limit = 30, offset = 0, preview = false, excludeOpen = false, userOnly = false) => fetch('/api/sessions?limit=' + limit + '&offset=' + offset + (preview ? '&preview=1' : '') + (excludeOpen ? '&exclude_open=1' : '') + (userOnly ? '&user_only=1' : '')).then(j),
     sessionsSearch: (q: string, limit = 50) => fetch('/api/sessions/search?q=' + encodeURIComponent(q) + '&limit=' + limit).then(j),
+    // Search all chats: every matching message, grouped by chat, with optional
+    // bot, speaker and date filters (`GET /api/sessions/search/messages`).
+    sessionsSearchMessages: (params: MessageSearchParams, signal?: AbortSignal) => {
+      const qs = new URLSearchParams({ q: params.q })
+      if (params.agent) qs.set('agent', params.agent)
+      if (params.role) qs.set('role', params.role)
+      if (params.since !== undefined) qs.set('since', String(params.since))
+      return fetch('/api/sessions/search/messages?' + qs, signal ? { signal } : undefined)
+        .then(j) as Promise<MessageSearchResponse>
+    },
     // Every transcript, open or closed, minted under one short name (`chat-7`),
     // oldest first. A slot number is reused across gateway generations, so one
     // name can match several.

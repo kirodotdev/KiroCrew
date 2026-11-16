@@ -126,8 +126,10 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
       // one character right. On Mac the pane is ⌘F only and bare Ctrl+F falls
       // through unhandled; Windows/Linux keep Ctrl+F, where no such binding
       // exists. (Ctrl+⌘F stays with macOS either way — hasCommandModifier
-      // rejects both-modifiers so Toggle Full Screen survives.)
-      if (hasCommandModifier(e) && (!isMac || e.metaKey) && e.key === 'f') {
+      // rejects both-modifiers so Toggle Full Screen survives.) Shift is ⌘⇧F /
+      // Ctrl+Shift+F, Search all chats; macOS still reports `e.key` as 'f' then,
+      // so the Shift state, not the key's case, keeps the two chords apart.
+      if (hasCommandModifier(e) && (!isMac || e.metaKey) && !e.shiftKey && e.key === 'f') {
         // Yield to a surface that already answered the chord. In an edit
         // session Pierre binds cmdOrCtrl+f on its own content element and calls
         // preventDefault() without stopPropagation(), so this document-level

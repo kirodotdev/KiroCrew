@@ -122,6 +122,12 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         # list_sessions(summarize=true) leg goes through the seam (derive_recent).
         ("kiro_crew/dashboard/handlers/sessions_parts/app_scope.py", "read_messages"),
         ("kiro_crew/dashboard/handlers/sessions_parts/history_reads.py", "read_messages"),
+        # Search all chats: excerpts of the owner's own transcripts on the same
+        # dashboard history surface, read in the paging corpus the jump addresses.
+        (
+            "kiro_crew/dashboard/handlers/sessions_parts/message_search.py",
+            "read_messages_chained_full",
+        ),
         ("kiro_crew/decisions/points/compaction_keep.py", "read_messages"),
         # Thread diagnostics probe `recent`, not a transcript.
         ("kiro_crew/diag/threads.py", "recent"),
