@@ -359,6 +359,13 @@ stopped pruning an entry whose owner "must be dead", and one accused a planted `
 of executing when it had not. If the code *probes* the PID, pin the probe; if the number
 must never appear in real output, pick one no OS can allocate (`99999999999`).
 
+Host files and installs are inputs the same way. A whole-report doctor test pins the
+`tz data` probe (`cli_helpers._doctor_reads_current_tz_data`); a test that reaches the
+spec-permissions gate pins `installed_kiro_cli_version`, because `pin_kiro_cli` finds a
+real kiro-cli in `~/.local/bin` without `PATH`; a test that asserts on the stores under
+`HOME` gives itself a fresh `HOME`, because a real store can be a symlink out of it; and a
+tool a child will run is probed on the child's `PATH`, not pytest's.
+
 The host's free MEMORY is an input too, and the most-used probe of it is
 `SubagentManager.spawn`, which queues — registering nothing in `_tasks` — on a
 pressured machine. A queued spawn is still a `SubagentInfo`, so the test dies a line

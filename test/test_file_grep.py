@@ -68,6 +68,14 @@ def _require_rg_engine() -> None:
         pytest.skip("no ripgrep this endpoint may run (refused for its provenance)")
 
 
+def _pin_rg_on_path(monkeypatch) -> None:
+    """Run the ripgrep on ``PATH`` whoever owns it: the subject is the rg ENGINE's answer,
+    and who owns the binary is the host's (provenance has tests of its own)."""
+    found = shutil.which("rg")
+    assert found is not None, "requires_rg guards this test"
+    monkeypatch.setattr(f, "_grep_rg_executable", lambda: found)
+
+
 def _make_app() -> web.Application:
     app = web.Application()
     app.router.add_post("/api/file-grep", api_file_grep)
@@ -297,7 +305,8 @@ class TestEngines:
 
     @pytest.mark.asyncio
     @requires_rg
-    async def test_ripgrep_reports_the_same_shape(self, tree):
+    async def test_ripgrep_reports_the_same_shape(self, tree, monkeypatch):
+        _pin_rg_on_path(monkeypatch)
         payload = await _grep(tree, "needle")
         assert payload["engine"] == "rg"
         hit = next(r for r in payload["results"] if r["file"].endswith("alpha.py"))
@@ -312,6 +321,7 @@ class TestEngines:
         ripgrep must not get a different search, so the two engines are compared
         against EACH OTHER on one tree rather than each against its own
         expectations."""
+        _pin_rg_on_path(monkeypatch)
         with_rg = await _grep(tree, "needle")
         monkeypatch.setattr(f, "_grep_rg_executable", lambda: None)
         without_rg = await _grep(tree, "needle")
@@ -1592,15 +1602,21 @@ class TestWorkbookExpansion:
 
 
 class TestHelpers:
-    def test_the_sensitive_globs_are_derived_from_the_shared_fence(self):
+    def test_the_sensitive_globs_are_derived_from_the_shared_fence(self, tmp_path, monkeypatch):
         """Derived, never a second hand-kept list: a copy here would be the thing
         that silently stops matching what ``is_sensitive_path`` blocks.
 
         Asserted with HOME as the root, because that is the only root the stores
-        are actually under -- which is the whole point of the anchoring below."""
+        are actually under -- which is the whole point of the anchoring below. A fresh
+        HOME: a real store can be a symlink out of it, and then is rightly not emitted."""
         from kiro_crew.security import sensitive_home_dirs
 
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
         home = os.path.expanduser("~")
+        assert home == str(fake_home)
         args = f._grep_sensitive_globs(home)
         assert args[0::2] == ["--iglob"] * (len(args) // 2)
         patterns = {p.casefold() for p in args[1::2]}

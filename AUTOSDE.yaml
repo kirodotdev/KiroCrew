@@ -493,6 +493,17 @@ custom-rules:
           (testing-conventions § A host probe that asks a different program
           than the one under test).
 
+      14. A test that lets the HOST answer what the code reads: a real tool
+          found on the inherited `PATH` or in a fixed install directory (the
+          operator's kiro-cli, a version-manager shim, a launcher), a system
+          tool's own shape (`sleep` can be a shebang script), an inherited
+          signal disposition (`nohup` ignores SIGHUP), host data files
+          (tzdata), or the layout and ownership of the real home. CI's runner
+          has none of these, so the test is green there and red on a
+          developer host. Pin the probe, give the test its own `HOME`, or spawn
+          through the helper that fixes the trait (testing-conventions § What
+          the host lends the suite, and must not).
+
       Allowed (do NOT flag):
       - a sleep inside a stub that simulates slow work while the test waits
         on a signal;

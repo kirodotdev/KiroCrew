@@ -2669,6 +2669,30 @@ about the code. Each is a hermeticity gap, and each has one fix:
   `ENV_FILE_PATH` at an absent `tmp_path` directory for every test; pin every module-level
   `/etc` (or other absolute) path the code under test reads, not just the one the test is
   about.
+- **Host data a check reads is the host's, not the test's.** The doctor's `tz data` row
+  reads the zone files in use, and on a host whose data predates IANA tzdb 2026b it adds
+  "timezone data out of date" to the issues, so 13 whole-report doctor tests exited 1
+  there. A test about another row pins `_tz_probe_offset` and `_tz_data_from_system`
+  (`cli_helpers._doctor_reads_current_tz_data`); the row's own tests are in
+  `test_doctor_tz_data.py`.
+- **A real kiro-cli in a known install directory is found without `PATH`.**
+  `pin_kiro_cli` looks in the fixed install directories (`~/.local/bin` among them), so
+  an unpinned writer gate spawned the host's `kiro-cli --version` inside the sandbox,
+  whose ceiling seal created `<data home>/profiles` between a preview and its save, and
+  the save failed `stale_revision`. A test that reaches the spec-permissions gate pins
+  `installed_kiro_cli_version` (`agent_capabilities_helpers._accepting_kiro_cli`).
+- **Who owns a binary, and where a home's stores point, are the host's.** The grep
+  endpoint refuses a ripgrep owned by another user (a dev image's `/usr/local/bin/rg`
+  owned by uid 1001). A test whose subject is the rg ENGINE's answer pins
+  `_grep_rg_executable` to the ripgrep on `PATH` (`_pin_rg_on_path`); the provenance
+  check keeps its own tests. A store under
+  the operator's home can be a symlink out of it (`~/.claude` on a dev box mounting a
+  shared one), and a target that resolves outside the root is correctly not emitted, so
+  a test that asserts every store under `HOME` gives the test a fresh `HOME`.
+- **Probe a tool on the `PATH` the child gets.** The LFS test checked
+  `shutil.which("git-lfs")` on pytest's own `PATH` and then ran git with `CLIENT_PATH`,
+  where a git-lfs found only through a launcher directory does not exist; look it up with
+  `shutil.which(name, path=<the child's PATH>)`.
 - **"A port nothing listens on" is a property of the host.** Endpoint agents on managed
   machines intercept loopback connects and answer every port with HTTP 200 (a SOAP envelope
   from `127.0.0.1:1`), so a test that provoked `transfer_unreachable` by POSTing to port 1
