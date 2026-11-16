@@ -118,6 +118,7 @@ and tolerate an ImportError so a partial checkout cannot break collection.
 
 from __future__ import annotations
 
+import array
 import asyncio
 import contextlib
 import gc
@@ -695,7 +696,7 @@ def pytest_collection_finish(session: pytest.Session) -> None:
 #: Keys hold ``id()`` of FixtureDefs the fixture manager keeps alive for the session.
 _SHARED_FIXTUREDEF_TUPLES: dict[tuple, tuple] = {}
 _SHARED_INITIALNAMES: dict[tuple, tuple] = {}
-_SHARED_NAME2FIXTUREDEFS: dict[tuple, dict] = {}
+_SHARED_NAME2FIXTUREDEFS: dict[bytes, dict] = {}
 _SHARED_NAMES_CLOSURES: dict[tuple, list] = {}
 _COMPACTED_FIXTUREINFO: set[int] = set()
 
@@ -752,7 +753,13 @@ def compact_collected_item(item: pytest.Item) -> None:
     object.__setattr__(
         info, "initialnames", _SHARED_INITIALNAMES.setdefault(info.initialnames, info.initialnames)
     )
-    key = tuple((name, id(defs)) for name, defs in lookup.items())
+    # Key: the ids of the interned values, packed 8 bytes each. They stay unique because
+    # the interning table keeps every value alive, and every FixtureDef in
+    # ``lookup[name]`` has ``argname == name``, so the ids fix the names and their order.
+    # A ``(name, id)`` tuple per name kept a tuple and an int per fixture alive for
+    # every distinct dict: 347 MiB of a full collection. (A value may be a list, so the
+    # values themselves cannot be the key.)
+    key = array.array("Q", map(id, lookup.values())).tobytes()
     object.__setattr__(info, "name2fixturedefs", _SHARED_NAME2FIXTUREDEFS.setdefault(key, lookup))
     closure = info.names_closure
     if (
