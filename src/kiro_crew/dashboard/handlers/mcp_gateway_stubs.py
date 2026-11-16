@@ -354,7 +354,11 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    name = str(body.get("name", "")).strip()
+    raw_name = body.get("name", "")
+    name = str(raw_name).strip()
+    # Saved as before (back-compat), but a non-string name is logged: ``null`` or
+    # ``123`` becomes the server name ``"None"`` / ``"123"`` with no other trace.
+    name_not_string = body.get("names") is None and not isinstance(raw_name, str)
     raw_names = body.get("names")
     stub = body.get("stub")
     batch = raw_names is not None
@@ -870,4 +874,10 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             "skipped": resolved.get("skipped") or [],
             "sharing_on": resolved.get("sharing_on"),
         }
+    if name_not_string:
+        logger.warning(
+            "mcp gateway set-stub: name is a %s, not a string; saved as %r",
+            type(raw_name).__name__,
+            name,
+        )
     return web.json_response({"ok": True, **subject, "stub": stub, **outcome, **applied})
