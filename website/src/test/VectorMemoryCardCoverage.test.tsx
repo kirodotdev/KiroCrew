@@ -1227,7 +1227,8 @@ describe('EmbeddingModelCard path state gates Apply', () => {
     const error = await screen.findByTestId('embed-model-path-status-error')
     expect(error).toHaveTextContent('No file at that path.')
     expect(error).toHaveAttribute('role', 'alert')
-    const input = screen.getByDisplayValue('/models/missing.gguf')
+    // The card fills the field one render after the status error appears.
+    const input = await screen.findByDisplayValue('/models/missing.gguf')
     expect(input).toHaveAttribute('aria-describedby', error.id)
     expect(input).toHaveAttribute('aria-invalid', 'true')
     expect(within(error).queryByRole('button')).not.toBeInTheDocument()
@@ -1243,7 +1244,7 @@ describe('EmbeddingModelCard path state gates Apply', () => {
     Object.assign(api, { vectorValidateEmbedModel: validate, vectorApplyEmbedModel: vi.fn() })
     renderWithProviders(<EmbeddingModelCard />)
     await screen.findByTestId('embed-model-path-status-error')
-    const input = screen.getByDisplayValue('/models/missing.gguf')
+    const input = await screen.findByDisplayValue('/models/missing.gguf')
     // The file was restored in place: one blur re-checks the SAME path and re-enables Apply.
     fireEvent.blur(input)
     await waitFor(() => expect(validate).toHaveBeenCalledWith('/models/missing.gguf'))
@@ -1257,7 +1258,7 @@ describe('EmbeddingModelCard path state gates Apply', () => {
     Object.assign(api, { vectorValidateEmbedModel: vi.fn(), vectorApplyEmbedModel: vi.fn() })
     renderWithProviders(<EmbeddingModelCard />)
     await screen.findByTestId('embed-model-path-status-error')
-    const input = screen.getByDisplayValue('/models/missing.gguf')
+    const input = await screen.findByDisplayValue('/models/missing.gguf')
     fireEvent.change(input, { target: { value: '' } })
     // Clearing the field is an edit like any other: the last verdict and the
     // gate stay until the check on blur replaces them.
@@ -1446,6 +1447,7 @@ describe('embedding model apply shares status with vector memory', () => {
     await screen.findByTestId('embedding-setup-warning')
     const card = screen.getByTestId('embed-model-card')
     // The field holds the configured path, so this is a reapply of that path.
+    await screen.findByDisplayValue('/models/model.gguf')
     fireEvent.click(within(card).getByRole('button', { name: 'Rebuild memory vectors' }))
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Rebuild memory vectors' }))
