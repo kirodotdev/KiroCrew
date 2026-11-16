@@ -361,6 +361,20 @@ jobs:
               *) return 1 ;;
             esac
           }
+          # The pending that pr-readiness.yml writes when a monitored lane is
+          # (or has just gone back to) running: its hold step and every
+          # publish re-check lead with this prefix and then name the lane.
+          # Matched at the FRONT for the 140-character cap, like the tokens
+          # above; test_pr_readiness_sweep_recheck_hold.py pins it against
+          # every site in pr-readiness.yml that writes one. Fails CLOSED on an
+          # empty description, like the two tests above.
+          RECHECK_HOLD_PREFIX="readiness check(s) changed since evaluation;"
+          readiness_is_recheck_hold() {
+            case "$1" in
+              "$RECHECK_HOLD_PREFIX"*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
 
           # Every open PR with its head SHA, last-activity time, readiness
           # status and check-run evidence -- one JSON line each, read over
@@ -465,7 +479,8 @@ jobs:
             # Evaluate anyway: missing evidence can only fail to prove a verdict
             # stale, never invent staleness, so the worst case is a rescue delayed
             # to the next sweep -- the same degradation as a skipped PR page.
-            if [ "$(jq -r '.checks_complete' <<<"$row")" != "true" ]; then
+            checks_complete="$(jq -r '.checks_complete' <<<"$row")"
+            if [ "$checks_complete" != "true" ]; then
               echo "PR #$number: check-run evidence is partial (a rollup page" \
                 "failed); evaluating on what was read."
             fi
@@ -634,16 +649,34 @@ jobs:
                       --repo "$REPO" --pr "$number" --head "$sha" || true
                     continue
                   fi
-                  # The one PENDING that still deserves an aggregator nudge here
-                  # is the read-failure class, and it is aged against
+                  # A re-check hold with every check-run on the head completed.
+                  # The hold step writes this pending because a lane's run is
+                  # still in progress, and counts on that lane's completion
+                  # arriving as check evidence above. It does not always
+                  # arrive: the hold can run minutes after its `in_progress`
+                  # event, when the lane's check-runs have already finished but
+                  # its workflow run has not, so every completion on the head
+                  # predates the hold's floor and nothing later ever lands. The
+                  # pending then stays until a push. With no check-run left
+                  # running, a recompute reads a settled head. A partial rollup
+                  # read cannot prove that, so it does not qualify. Self-terminating
+                  # like the read-failure retry below: the recompute replaces
+                  # the hold's description, and one that writes a hold again is
+                  # retried at most once per STALE_MINUTES.
+                  if [ "$running" -eq 0 ] && [ "$checks_complete" = "true" ] \
+                    && readiness_is_recheck_hold "$rs_desc"; then
+                    reason="pending for ${age}s (> ${stale_seconds}s) re-checking a lane, with every check-run on the head completed"
+                  # The other PENDING that still deserves an aggregator nudge
+                  # here is the read-failure class, and it is aged against
                   # STALE_MINUTES, not the lag -- see the note above.
-                  if ! readiness_is_read_failure "$rs_desc"; then
+                  elif readiness_is_read_failure "$rs_desc"; then
+                    reason="pending for ${age}s (> ${stale_seconds}s) after a read failure, which a recompute resolves"
+                  else
                     echo "PR #$number: PR Readiness pending for ${age}s at $sha but no" \
                       "check completed within ${publish_lag_seconds}s of it being published;" \
                       "a recompute would re-derive the same verdict, so not re-firing."
                     continue
                   fi
-                  reason="pending for ${age}s (> ${stale_seconds}s) after a read failure, which a recompute resolves"
                 else
                   if lanes_still_running "$newest_epoch"; then
                     echo "PR #$number: PR Readiness pending at $sha has later check evidence," \
