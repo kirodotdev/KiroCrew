@@ -167,9 +167,9 @@ async def _settle_terminal(
     ``_lock``, and applied to the live loop only once the awaited write returns, so
     no reader sees a settlement the store has not accepted, and a refused write
     leaves the loop held exactly as the store says. A cancellation while waiting
-    for either lock has staged nothing. A CHANNEL loop settles here too, unlike on
-    the gate, which defers it to a delivered turn: a held loop delivers no turn, so
-    that debt could never be paid.
+    for either lock has staged nothing. A held loop settles here on any surface,
+    unlike on the gate, which defers it to a delivered turn: a held loop delivers
+    no turn, so that debt could never be paid.
     """
     settle_lock = await svc._acquire_mutation_lock(loop.id)
     if settle_lock is None:

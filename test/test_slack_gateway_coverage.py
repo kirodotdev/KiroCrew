@@ -313,6 +313,29 @@ class TestFireDiscordNudge:
         assert await orch._fire_discord_nudge(_loop(_DKEY)) is True
 
     @pytest.mark.asyncio
+    async def test_an_owed_final_turn_opens_with_the_result(self):
+        """A Bot DM watching a pull request reads the merge before its instruction."""
+        transport = _discord_transport()
+        orch = _discord_orchestrator(transport)
+        loop = _loop(_DKEY, gate=True)
+        loop.monitor = MonitorState(
+            kind="gh-pr",
+            target="acme/widgets#7",
+            objective="review_ready",
+            created_ts=1.0,
+            terminal_pending="success",
+            terminal_note="PR acme/widgets#7 merged at 2026-11-15T14:37:24Z, head e0a19a0a2e69.",
+        )
+
+        assert await orch._fire_discord_nudge(loop) is True
+
+        args, _kwargs = _awaited(transport.dispatcher.handle_message)
+        assert args[0].text.startswith(
+            "[monitor finished] PR acme/widgets#7 merged at 2026-11-15T14:37:24Z, head e0a19a0a2e69."
+        )
+        assert "[auto-nudge cycle 1]" in args[0].text
+
+    @pytest.mark.asyncio
     async def test_happy_path_injects_tagged_message_as_non_command(self):
         transport = _discord_transport()
         orch = _discord_orchestrator(transport)

@@ -106,7 +106,7 @@ the gate's judge-less path and fires, and an unchanged one is a quiet tick.
 | CI result | check buckets | one turn |
 | Conflict | mergeability, merge state | one turn |
 | New head | head revision | one turn |
-| Merge or close | state | loop ends with a notice |
+| Merge or close | state | one final turn, then the loop ends with a notice |
 | Nothing | -- | no turn |
 
 The reading keeps the newest 6 comments and reviews from the last 5 hours
@@ -140,10 +140,16 @@ Each of these was a 5-minute duty before.
 
 ### 3.4 The Report moves to the converged turn
 
-On a dashboard loop, a merge or close settles the loop with the bell notice and
-no turn (`gate.py`, the terminal branch). A Slack or Discord loop still gets one
-final turn. So prepare-pr gives its Phase 4 Report on the converged turn
-(`pr_status.py` exit 0), not after the merge.
+A merge or close owes the session one final turn on every surface, dashboard
+included, and the loop settles (bell notice, stop) once that turn lands
+(`gate.py`, the terminal branch). The turn opens with the result, e.g. "PR
+owner/repo#N merged at <ts>, head <sha>". prepare-pr still gives its Phase 4 Report
+on the converged turn (`pr_status.py` exit 0); the final turn reports the merge.
+
+Amended: the first version gave a dashboard loop the bell notice and no turn. A
+dashboard worker or conductor waiting on the merge then had nothing to wake it,
+because the bell reaches the user, not the agent, so the merge went unreported
+until someone looked.
 
 ### 3.5 Babysit
 
@@ -209,7 +215,7 @@ It is a separate change.
 - The duties in § 3.3 slow from 5 minutes to about 50.
 - A person editing an OLD comment (not a lane's) wakes the loop only at the
   floor. A new comment wakes it at once.
-- No turn after a merge on the dashboard (§ 3.4). The notice says it merged.
+- One extra turn per watch, at its merge or close (§ 3.4).
 - A person who comments from the loop's own account does not wake it.
 
 ## 8. Alternatives considered

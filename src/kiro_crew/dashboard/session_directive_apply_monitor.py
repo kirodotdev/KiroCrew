@@ -603,7 +603,7 @@ async def _monitor_update(
         # as one -- the same precedence the expiry notice states, read from the same
         # two fields, so the agent-facing and user-facing endings cannot disagree.
         #
-        # A channel-bound loop does not settle on observation: the probe records the
+        # A gated pull-request loop does not settle on observation: the probe records the
         # owed final turn in ``monitor.terminal_pending`` and leaves the loop active
         # with no ``outcome``. If that turn is refused (a busy thread, the ordinary
         # case) and the retry finds a bound spent, the loop deactivates tagged with

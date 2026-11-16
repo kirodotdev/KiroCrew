@@ -101,6 +101,7 @@ from kiro_crew.autonudge import (
     reason_in,
     runtime_budget_exceeded,
     terminal_notification_delivery_matches,
+    terminal_wake_line,
 )
 from kiro_crew.beacon import distribution
 from kiro_crew.channel_history import ChannelHistory

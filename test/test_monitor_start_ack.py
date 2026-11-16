@@ -172,7 +172,9 @@ def test_the_tool_description_states_the_wake_set_and_the_hold():
     ), "the description names the SCREEN, not the default brief's own sentence"
     assert "wake criteria" in description, "it must say what decides a wake"
     assert "shipped default" in description, "and name the brief used when none is given"
-    assert "A merge or a close ends the watch" in description, "not a wake"
+    assert (
+        "A merge or a close wakes you ONE last time" in description
+    ), "one final wake carrying the result, then the watch ends"
     assert "one lane of many finishing" in description, "name the progress that is quiet"
     assert "one interval after the tick that observed it" in description
 

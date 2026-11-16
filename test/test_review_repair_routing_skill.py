@@ -194,7 +194,7 @@ def test_babysit_separates_provider_facts_from_comment_and_reporting_work():
         "terminal success uses zero model turns",
         "final report or notification",
         "use the finite legacy path with `gate=false`",
-        "A merge or close ends a gated loop with a notice",
+        "A merge or close ends a gated loop after one final turn that names the result",
     ):
         assert contract in text
     assert "token cap applies only when usage is reported" in text

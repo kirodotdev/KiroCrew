@@ -59,6 +59,7 @@ if TYPE_CHECKING:
         save_conversation_turn_off_loop,
         session_store_for_turn,
         stream_and_collect,
+        terminal_wake_line,
         turn_ceiling,
     )
 
@@ -194,6 +195,10 @@ async def _fire_slack_inner_nudge(
         _fired_generation = loop.config_generation
         msg_body = await compose_nudge_body(_fired_message, _fired_sentinel, loop.slot_key)
         tagged = f"{nudge_cycle_header(loop)}\n{msg_body}"
+        # The watched pull request ended: this is the owed final turn, and its
+        # result goes first so the agent reports rather than waits.
+        if _terminal_line := terminal_wake_line(loop):
+            tagged = f"{_terminal_line}\n\n{tagged}"
         # Skill triggers read the loop's own message, not the cycle header or
         # the ledger snapshot Kiro Crew puts before it.
         trigger_text: str | None = _fired_message
@@ -616,6 +621,10 @@ async def _fire_dm_nudge(
         fired_message = loop.message
         msg_body = await compose_nudge_body(fired_message, loop.stop_sentinel_path, loop.slot_key)
         tagged = f"{nudge_cycle_header(loop)}\n{msg_body}"
+        # The watched pull request ended: this is the owed final turn, and its
+        # result goes first so the agent reports rather than waits.
+        if _terminal_line := terminal_wake_line(loop):
+            tagged = f"{_terminal_line}\n\n{tagged}"
         # Skill triggers read the loop's own message, not the cycle header or the
         # ledger snapshot Kiro Crew put before it, as on the Slack thread path.
         trigger_text: str | None = fired_message
