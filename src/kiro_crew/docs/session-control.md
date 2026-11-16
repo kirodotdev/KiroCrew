@@ -944,6 +944,12 @@ tabs are refused to them (`not_creator`). Archived, scheduled-run, incognito,
 app-scoped, channel-linked and mirrored sessions are refused with the same codes
 the other session tools use. The scheduled-run refusal (`unattended_target`)
 covers the caller too: a cron run's own session is not renamable, even by itself.
+An agent without this server renames its own session with the core `chat_rename`
+tool instead. It follows the same title rules, works in incognito and temporary
+sessions too, renames only on a turn you sent yourself, is not available in a
+conductor mode chat or a Bot's own chat, and never replaces a title someone set
+by hand. It runs inside the chat turn, so its credential redaction follows the
+Settings → Security → Redaction switch, as the rest of the turn does.
 
 A title over 200 characters, an empty title, one made only of invisible
 characters, or one containing control characters, text-direction controls or
