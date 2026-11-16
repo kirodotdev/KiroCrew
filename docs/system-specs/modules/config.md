@@ -4026,7 +4026,7 @@ pass `--profile`.
   else, a repository cloned inside the worktree included, matches as itself. A
   path with no `worktrees` folder in it runs no git, and a git failure leaves the
   path as it is.
-- **Injection.** `SessionAllocation._get_or_create_impl` resolves the binding
+- **Injection.** `SessionAllocationService._get_or_create_impl` resolves the binding
   against the final `effective_cwd`. This happens after capability preparation and
   before the warm-pool decision. `bound_profile_env` sets both `AWS_PROFILE` and
   `AWS_DEFAULT_PROFILE` in `extra_env` to the bound name, unless the caller's

@@ -7664,12 +7664,7 @@ project, daily-history, settings, lessons, semantic and episodic browsers remain
 visible in the page flow; the bulk editor does not replace or collapse them.
 Their paged list
 uses `GET /api/memory/records` with `store`, `q`, `kind`, `offset` and
-`limit` (1–100), plus optional `applies` (comma list of `always`, `on_topic`,
-`unstated`: a lesson's tier, `unstated` for a lesson written before tiers),
-`source` (exact), `status` (`active` by default; `forgotten` for rows the owner
-or a bulk edit dropped, `superseded` and `expired` for rows whose metadata names
-why they left, `any` for all) and `never_recalled=1` (an experience no episodic
-search has stamped; only experiences record a recall). Filtering precedes pagination. The authentication middleware's
+`limit` (1–100). Filtering precedes pagination. The authentication middleware's
 `token` query parameter is permitted but never used as a filter or returned in
 records. Unknown query fields are refused instead of silently broadening the
 selection. Record addresses are readable
@@ -7683,9 +7678,7 @@ outside the page has no fingerprint computed and its metadata row is not read,
 and with no search term its value is not decoded either. A search reads the
 three metadata fields it matches on (category, subject, predicate) through one
 join in the listing query, not one query per record. `POST /api/memory/records/refresh` resolves up to 500 exact
-identities after a concurrent change without discarding the user's draft. An
-optional `status` widens that explicit refresh past live rows, so an undo of a
-forget can name the forgotten rows it brings back. Its
+identities after a concurrent change without discarding the user's draft. Its
 alternative `selection: {query, exclude}` body returns an exact `matched_count`
 under the same normalized selector and selection caps as preview; deleted or
 nonmatching exclusions do not subtract from the count. The editor refreshes
@@ -7744,10 +7737,7 @@ value server side and only the matched span changes.
 Owner-only `POST /api/memory/bulk/preview` accepts one store and either explicit
 record identities with revisions (up to 500), or an all-matching filter with
 exclusions. Operations are literal text replacement, single-record correction,
-restoring one record to a kept version, forgetting, `unforget` (clears the
-tombstone of a forgotten row in place, keeping its id, content and vector; a live
-row is unchanged) and `set_tier` (`applies: always | on_topic` on each selected
-lesson; other kinds and lessons already on that tier count as unchanged). Replacement walks JSON string values; it never rewrites object
+restoring one record to a kept version, and forgetting. Replacement walks JSON string values; it never rewrites object
 keys, repository scope, provenance or classification. Preview validates the
 entire selection, returns counts and the first 25 changed before/after pairs,
 and signs the selector, operation, store and full selection digest. A selection
