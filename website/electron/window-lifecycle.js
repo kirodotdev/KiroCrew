@@ -95,6 +95,33 @@ const WINDOWS_TITLEBAR_MENU_IDS = new Set([
 ]);
 
 /**
+ * The dashboard session's request headers with the Referer cut down.
+ *
+ * The dashboard URL can carry its sign-in token, so no request sends it. A frame
+ * the page embeds keeps the referring page's origin, never its path or query:
+ * an embed host such as YouTube refuses to play without one (its Error 153), and
+ * the dashboard CSP `frame-src` already limits frames to the origins it admits
+ * (an app's are the `ui.frameSources` the owner approved). Every other request
+ * sends no Referer. Chromium never sends one a page's policy withholds, so this
+ * only ever narrows.
+ */
+function dashboardRequestHeaders(details) {
+  const headers = { ...details.requestHeaders };
+  const referer = headers.Referer;
+  delete headers.Referer;
+  if (referer && details.resourceType === "subFrame") {
+    let origin = "null";
+    try {
+      origin = new URL(referer).origin;
+    } catch {
+      /* no usable referrer: send none */
+    }
+    if (origin !== "null") headers.Referer = `${origin}/`;
+  }
+  return headers;
+}
+
+/**
  * Own every dashboard window and the security policy of the sessions they use.
  *
  * Electron is injected so node:test can load this module without a live
@@ -627,12 +654,11 @@ function createWindowLifecycle(options) {
     };
     armWindowOpen(view.webContents);
 
-    // Do not leak the dashboard URL/token as a Referer to resources it embeds.
+    // Do not leak the dashboard URL/token as a Referer (dashboardRequestHeaders).
     // This listener remains attached at the same per-window setup point; moving
     // it to a one-time global policy would be a behavior change.
     view.webContents.session.webRequest.onBeforeSendHeaders((details, callback) => {
-      delete details.requestHeaders.Referer;
-      callback({ requestHeaders: details.requestHeaders });
+      callback({ requestHeaders: dashboardRequestHeaders(details) });
     });
 
     // Give renderer-triggered downloads (e.g. the Portability "Download Export
@@ -1856,4 +1882,5 @@ module.exports = {
   HEADER_CSS_PX,
   WINDOWS_TITLEBAR_MENU_IDS,
   createWindowLifecycle,
+  dashboardRequestHeaders,
 };
