@@ -41,7 +41,6 @@ import asyncio
 import json
 import os
 import threading
-import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -422,31 +421,85 @@ async def test_provider_survives_a_full_queue_by_bytes(monkeypatch, tmp_path, ba
     await _read_one(backend)
 
 
+class _WedgedWriterGuard:
+    """A wedged file write and a per-thread view of the budget lock.
+
+    Every other thread gets the real lock, and the write parks until *unwedge*.
+    On the thread that built the guard (the event loop's), entering the write or
+    asking the lock to wait is recorded in ``waits`` instead and returns at once,
+    so a reader that waits on the writer fails on what it asked for, whatever
+    the host's speed.
+    """
+
+    def __init__(self, unwedge: threading.Event) -> None:
+        self.loop_thread = threading.get_ident()
+        self.unwedge = unwedge
+        self.waits: list[str] = []
+        self.real_lock: threading.Lock | None = None
+
+    def write_frame(self, *_a, **_k) -> None:
+        if threading.get_ident() == self.loop_thread:
+            self.waits.append("write_frame ran on the reader loop")
+            return
+        self.unwedge.wait(30)
+
+    def guard_lock(self, monkeypatch, writer) -> None:
+        self.real_lock = writer.lock
+        monkeypatch.setattr(writer, "lock", self)
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        assert self.real_lock is not None
+        if threading.get_ident() != self.loop_thread:
+            return self.real_lock.acquire(blocking, timeout)
+        if blocking:
+            self.waits.append(f"lock.acquire(blocking=True, timeout={timeout})")
+        return self.real_lock.acquire(False)
+
+    def release(self) -> None:
+        assert self.real_lock is not None
+        self.real_lock.release()
+
+    def locked(self) -> bool:
+        assert self.real_lock is not None
+        return self.real_lock.locked()
+
+    def __enter__(self) -> bool:
+        # ``with lock:`` on the loop thread asked to wait; ``waits`` says so, and the
+        # lock was not taken, so the block must not run (or release it).
+        if not self.acquire():
+            raise AssertionError(f"the reader loop waited on the budget lock: {self.waits}")
+        return True
+
+    def __exit__(self, *_exc: object) -> None:
+        self.release()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", PROVIDERS, ids=lambda b: b or "kiro-cli")
 async def test_provider_never_waits_on_a_wedged_writer_thread(monkeypatch, tmp_path, backend):
     """PROVIDER SAFETY: the writer thread is stuck inside the filesystem call.
     The provider's read must return immediately -- a reader that waited here
-    would stall every multiplexed session on that provider."""
+    would stall every multiplexed session on that provider.
+
+    "Immediately" is asserted as what the reads ask of the writer: none enters
+    the write, none asks the budget lock to wait, and all 50 frames are still
+    queued behind the wedged write when the last read returns."""
     release = threading.Event()
-
-    def wedged_write(*_a, **_k):
-        release.wait(30)
-
-    monkeypatch.setattr(_frame_record, "write_frame", wedged_write)
+    guard = _WedgedWriterGuard(release)
+    monkeypatch.setattr(_frame_record, "write_frame", guard.write_frame)
     monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
     assert _frame_record.start_recorder() is True
     try:
-        # Wedge the writer with a first frame, then time the next reads.
+        # Wedge the writer with a first frame, then push the next reads.
         await _read_one(backend)
         await async_wait_until(lambda: _frame_record._writer.in_flight)
-        started = time.monotonic()
+        guard.guard_lock(monkeypatch, _frame_record._writer)
         for _ in range(50):
             await _read_one(backend)
-        elapsed = time.monotonic() - started
-        assert (
-            elapsed < 2.0
-        ), f"{backend or 'kiro-cli'}: reader waited on the writer ({elapsed:.2f}s)"
+        name = backend or "kiro-cli"
+        assert guard.waits == [], f"{name}: reader waited on the writer: {guard.waits}"
+        assert len(_frame_record._writer.items) == 50, f"{name}: reads waited for the drain"
+        assert _frame_record._writer.in_flight == 1, f"{name}: the wedged write finished early"
         assert not _frame_record._stood_down
     finally:
         release.set()
@@ -563,27 +616,29 @@ async def test_runtime_survives_a_full_queue(monkeypatch, tmp_path, backend):
 @pytest.mark.parametrize("backend", PROVIDERS, ids=lambda b: b or "kiro-cli")
 async def test_runtime_never_waits_on_a_wedged_writer_thread(monkeypatch, tmp_path, backend):
     """PROVIDER SAFETY (runtime): writer stuck in the filesystem call; the
-    shared loop must keep routing frames for every session without waiting."""
+    shared loop must keep routing frames for every session without waiting.
+
+    Asserted as what the reader loop asks of the writer: it never enters the
+    write, never asks the budget lock to wait, and all 50 frames are still
+    queued behind the wedged write once they have been routed."""
     release = threading.Event()
-
-    def wedged_write(*_a, **_k):
-        release.wait(30)
-
-    monkeypatch.setattr(_frame_record, "write_frame", wedged_write)
+    guard = _WedgedWriterGuard(release)
+    monkeypatch.setattr(_frame_record, "write_frame", guard.write_frame)
     monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
     assert _frame_record.start_recorder() is True
     try:
         async with _LiveRuntime(backend) as live:
             live.feed()
             await live.expect()
-            started = time.monotonic()
+            await async_wait_until(lambda: _frame_record._writer.in_flight)
+            guard.guard_lock(monkeypatch, _frame_record._writer)
             for _ in range(50):
                 live.feed()
                 await live.expect()
-            elapsed = time.monotonic() - started
-            assert (
-                elapsed < 2.0
-            ), f"{backend or 'kiro-cli'}: runtime waited on the writer ({elapsed:.2f}s)"
+            name = backend or "kiro-cli"
+            assert guard.waits == [], f"{name}: runtime waited on the writer: {guard.waits}"
+            assert len(_frame_record._writer.items) == 50, f"{name}: routing waited for the drain"
+            assert _frame_record._writer.in_flight == 1, f"{name}: the wedged write finished early"
         assert not _frame_record._stood_down
     finally:
         release.set()

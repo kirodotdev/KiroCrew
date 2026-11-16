@@ -1512,26 +1512,51 @@ class TestQueueOffLoop:
         assert cli_mod._LOG_QUEUE_LISTENER is None
 
     def test_bounded_stop_gives_up_on_wedged_handler(self):
-        """A wedged disk must not hang the force exit: the bounded stop
-        returns within the deadline and skips flush/close."""
-        import time
-
+        """A wedged disk must not hang the force exit: the bounded stop joins
+        the listener thread for the caller's timeout only, returns while the
+        handler is still wedged, and skips flush/close."""
         _setup_cli_logging("gateway", 1)
-        (fh,) = cli_mod._LOG_QUEUE_LISTENER.handlers
+        listener = cli_mod._LOG_QUEUE_LISTENER
+        (fh,) = listener.handlers
+        thread = listener._thread
         release = threading.Event()
+        entered = threading.Event()
         orig_emit = fh.emit
 
         def wedged_emit(record):
-            release.wait(5.0)  # simulate blocking handler I/O
+            entered.set()
+            release.wait(30.0)  # simulate blocking handler I/O
             orig_emit(record)
 
+        join_timeouts: list[float | None] = []
+        real_join = thread.join
+
+        def recording_join(timeout=None):
+            join_timeouts.append(timeout)
+            real_join(timeout)
+
+        closed_while_wedged: list[bool] = []
+        real_close = fh.close
+
+        def recording_close():
+            closed_while_wedged.append(not release.is_set())
+            real_close()
+
         fh.emit = wedged_emit  # type: ignore[method-assign]
+        fh.close = recording_close  # type: ignore[method-assign]
+        thread.join = recording_join  # type: ignore[method-assign]
         logging.getLogger("kiro_crew.wedged").warning("wedged-record")
-        t0 = time.monotonic()
-        _stop_log_queue_listener(timeout=0.2)
-        elapsed = time.monotonic() - t0
-        release.set()  # unblock the daemon thread so teardown closes cleanly
-        assert elapsed < 2.0
+        assert entered.wait(5.0), "listener never reached the wedged handler"
+        try:
+            _stop_log_queue_listener(timeout=0.2)
+            # Still inside the wedged emit: the stop did not wait for it.
+            assert thread.is_alive()
+        finally:
+            release.set()  # unblock the daemon thread so teardown closes cleanly
+            real_join(5.0)
+        assert not thread.is_alive()
+        assert join_timeouts == [0.2]
+        assert not any(closed_while_wedged), "flush/close ran on the wedged handler"
         assert cli_mod._LOG_QUEUE_LISTENER is None
 
 
@@ -1579,25 +1604,43 @@ class TestDrainBeforeHardExit:
     @pytest.mark.asyncio
     async def test_wedged_handler_does_not_delay_the_exit(self):
         """A wedged disk must not hold the loop past the deadline: the drain
-        returns bounded, and the exit proceeds without it."""
-        import time
+        hands its timeout to the listener join and returns while the handler
+        is still wedged, so the exit proceeds without it."""
+        import asyncio
 
         _setup_cli_logging("gateway", 1)
-        (fh,) = cli_mod._LOG_QUEUE_LISTENER.handlers
+        listener = cli_mod._LOG_QUEUE_LISTENER
+        (fh,) = listener.handlers
+        thread = listener._thread
         release = threading.Event()
+        entered = threading.Event()
         orig_emit = fh.emit
 
         def wedged_emit(record):
-            release.wait(10.0)  # simulate blocking handler I/O
+            entered.set()
+            release.wait(30.0)  # simulate blocking handler I/O
             orig_emit(record)
 
+        join_timeouts: list[float | None] = []
+        real_join = thread.join
+
+        def recording_join(timeout=None):
+            join_timeouts.append(timeout)
+            real_join(timeout)
+
         fh.emit = wedged_emit  # type: ignore[method-assign]
+        thread.join = recording_join  # type: ignore[method-assign]
         logging.getLogger("kiro_crew.wedged").warning("wedged-shutdown-record")
-        t0 = time.monotonic()
-        await drain_log_queue_before_hard_exit(timeout=0.2)
-        elapsed = time.monotonic() - t0
-        release.set()  # unblock the daemon thread so teardown closes cleanly
-        assert elapsed < 3.0
+        assert entered.wait(5.0), "listener never reached the wedged handler"
+        try:
+            await asyncio.wait_for(drain_log_queue_before_hard_exit(timeout=0.2), 30.0)
+            # Still inside the wedged emit: the drain did not wait for it.
+            assert thread.is_alive()
+        finally:
+            release.set()  # unblock the daemon thread so teardown closes cleanly
+            real_join(5.0)
+        assert not thread.is_alive()
+        assert join_timeouts == [0.2]
 
     @pytest.mark.asyncio
     async def test_no_listener_is_a_silent_no_op(self):

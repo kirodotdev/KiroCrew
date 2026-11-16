@@ -69,10 +69,15 @@ class TestCrossProcessLock:
         rewrite in the holder could clobber it → silent transcript loss).
         Instead it polls up to a bounded deadline, then raises
         ``HistoryLockTimeout`` and leaves the file untouched.
+
+        The deadline is asserted on an injected clock that only the poll's own
+        sleeps advance: the append gives up on the first poll at or past
+        ``_FLOCK_ACQUIRE_TIMEOUT_S``, whatever the host's speed.
         """
         if not platform_compat.IS_POSIX:
             pytest.skip("advisory flock semantics are POSIX-specific")
         import kiro_crew.history as history_mod
+        import kiro_crew.history_locks as locks_mod
 
         monkeypatch.setattr(history_mod, "_FLOCK_ACQUIRE_TIMEOUT_S", 0.2)
         monkeypatch.setattr(history_mod, "_FLOCK_POLL_INTERVAL_S", 0.02)
@@ -80,16 +85,47 @@ class TestCrossProcessLock:
         log.append("k", "user", "seed")
         lock_path = log._lock_path("k")
 
+        real_time = locks_mod._time
+        this_thread = threading.get_ident()
+
+        class _PollClock:
+            """This thread's clock for the poll: only its sleeps move it."""
+
+            def __init__(self) -> None:
+                self.now = 0.0
+                self.sleeps: list[float] = []
+
+            def monotonic(self) -> float:
+                if threading.get_ident() != this_thread:
+                    return real_time.monotonic()
+                return self.now
+
+            def sleep(self, secs: float) -> None:
+                if threading.get_ident() != this_thread:
+                    real_time.sleep(secs)
+                    return
+                self.sleeps.append(secs)
+                # Lost-run guard: an acquire that ignores its deadline fails here
+                # by name instead of polling forever.
+                assert len(self.sleeps) <= 1000, "the acquire polled past any deadline"
+                self.now += secs
+
+        clock = _PollClock()
+
         # Simulate another process holding the exclusive advisory lock.
         holder = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
         try:
             assert platform_compat.try_acquire_lock(holder, exclusive=True)
-            start = time.monotonic()
-            with pytest.raises(history_mod.HistoryLockTimeout):
-                log.append("k", "user", "under-contention")
-            elapsed = time.monotonic() - start
-            # Bounded (not unbounded), and it did fail rather than spin forever.
-            assert elapsed < 2.0, f"append blocked {elapsed:.2f}s despite bounded acquire"
+            with monkeypatch.context() as mp:
+                mp.setattr(history_mod, "_time", clock)
+                with pytest.raises(history_mod.HistoryLockTimeout):
+                    log.append("k", "user", "under-contention")
+            # It polled at the configured interval and gave up on the first poll
+            # at or past the deadline: bounded, and it failed rather than spun.
+            assert clock.sleeps and set(clock.sleeps) == {0.02}, clock.sleeps
+            assert (
+                0.2 - 1e-9 <= clock.now <= 0.2 + 0.02 + 1e-9
+            ), f"append gave up at {clock.now:.3f}s on its clock; the deadline is 0.2s"
         finally:
             platform_compat.release_lock(holder)
             os.close(holder)
@@ -422,7 +458,10 @@ class TestMessageCacheRewriteSerialization:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A wedged holder must not hang the reader: the off-loop acquire is
-        capped at the writer's own ceiling and then fills unlocked."""
+        capped at the writer's own ceiling and then fills unlocked.
+
+        The cap is asserted as the timeout the fill passes to the writer lock;
+        an acquire without one is refused on the spot instead of waiting."""
         import kiro_crew.history as history_mod
 
         monkeypatch.setattr(history_mod, "_FLOCK_ACQUIRE_TIMEOUT_S", 0.1)
@@ -431,13 +470,27 @@ class TestMessageCacheRewriteSerialization:
         log._invalidate_cache("k")
 
         acquired, release = threading.Event(), threading.Event()
-        t = self._hold(log._file_lock("k"), acquired, release)
+        real_lock = log._file_lock("k")
+        t = self._hold(real_lock, acquired, release)
+        asks: list[tuple[bool, float]] = []
+
+        class _RecordedLock:
+            """The real writer lock, with each acquire's arguments recorded."""
+
+            def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+                asks.append((blocking, timeout))
+                assert not (blocking and timeout < 0), "the fill waited on the writer unbounded"
+                return real_lock.acquire(blocking, timeout)
+
+            def release(self) -> None:
+                real_lock.release()
+
         try:
-            started = time.monotonic()
-            with log._cache_fill_lock("k") as held:
-                assert held is False, "reader claimed a lock the holder still owns"
-            elapsed = time.monotonic() - started
-            assert elapsed < 3.0, f"off-loop acquire was not bounded (waited {elapsed:.1f}s)"
+            with monkeypatch.context() as mp:
+                mp.setattr(log, "_file_lock", lambda key: _RecordedLock())
+                with log._cache_fill_lock("k") as held:
+                    assert held is False, "reader claimed a lock the holder still owns"
+            assert asks == [(True, 0.1)], f"off-loop acquire was not capped at the ceiling: {asks}"
             assert len(log._read_messages("k")) == 1
         finally:
             release.set()

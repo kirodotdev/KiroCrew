@@ -71,18 +71,42 @@ def test_symlink_alias_is_still_resolved_on_a_healthy_filesystem(tmp_path) -> No
 
 
 def test_a_stalled_resolution_is_refused_within_the_budget(monkeypatch) -> None:
+    from kiro_crew.security import paths_resolver
+
     stalled = _StalledResolver()
-    monkeypatch.setattr(security, "_resolved_spellings", stalled)
+    granted: list[float] = []
+    armed: list[bool] = []
+    real_resolve_here = paths_resolver._resolve_on_calling_thread
+
+    def _recording_resolve_here(worker, expanded: str, timeout: float):
+        # The allowance the call hands the deadline it arms: the whole of the
+        # caller's wait, read as a value rather than off a clock.
+        granted.append(timeout)
+        return real_resolve_here(worker, expanded, timeout)
+
+    def _recording_stall(expanded: str) -> set[str]:
+        armed.append(getattr(security.paths._child_budget, "deadline", None) is not None)
+        return stalled(expanded)
+
+    monkeypatch.setattr(paths_resolver, "_resolve_on_calling_thread", _recording_resolve_here)
+    monkeypatch.setattr(security, "_resolved_spellings", _recording_stall)
     try:
-        started = time.monotonic()
         with pytest.raises(security.PathResolutionStalled) as info:
             security._candidate_forms("/home/someone/ws/../ws/file")
-        elapsed = time.monotonic() - started
     finally:
         stalled.release.set()
-    # Bounded: well under a second against a 0.2s budget, where the unbounded
-    # call would have sat for as long as the mount did.
-    assert elapsed < 1.5, f"caller blocked {elapsed:.2f}s on a stalled resolver"
+    # Bounded: the one stalled resolution ran under a deadline no later than the
+    # (scaled-down) budget plus its grace, where an unbounded call would sit for as
+    # long as the mount did.
+    budget = security.paths._PATH_RESOLVE_TIMEOUT_SECS
+    entitled = budget + min(
+        budget * security.paths._PATH_RESOLVE_GRACE_FACTOR,
+        security.paths._PATH_RESOLVE_GRACE_MAX_SECS,
+    )
+    assert armed == [True], f"the stalled resolution ran without a deadline: {armed!r}"
+    assert len(granted) == 1, f"expected one bounded resolution: {granted!r}"
+    assert 0.0 < granted[0] <= entitled, f"granted {granted[0]:.3f}s past budget+grace {entitled}"
+    assert entitled < 1.0, "the autouse fixture's scaled-down budget is in force"
     assert info.value.prefix == os.path.normpath("/home/someone")
     assert len(stalled.calls) == 1
 

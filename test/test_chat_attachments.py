@@ -714,21 +714,29 @@ def test_an_escaped_bracket_in_the_alt_text_does_not_end_it(sessions, tmp_path):
     assert _stored_files(sessions)
 
 
-def test_a_long_run_of_image_openers_is_left_alone_quickly(sessions, tmp_path):
+def test_a_long_run_of_image_openers_is_left_alone_unscanned(sessions, tmp_path, monkeypatch):
     """Bounded on hostile markup: the scanner is quadratic in the number of ``![``
     openers, and this runs under the session lock, so a row past the opener bound
-    is left as written -- in milliseconds, not the tens of seconds the scan costs.
+    is left as written without the reference scan ever running.
     """
-    import time
+    import kiro_crew.chat_attachments as chat_attachments
 
+    scanned: list[int] = []
+    real_scan = chat_attachments.iter_local_refs
+
+    def recording_scan(text):
+        scanned.append(len(text))
+        return real_scan(text)
+
+    monkeypatch.setattr(chat_attachments, "iter_local_refs", recording_scan)
     png = _write_png(tmp_path / "scratch" / "shot.png")
     text = "![" * 20000 + f"![shot]({png})"
-    started = time.monotonic()
     assert persist_inline_images(text, sessions_dir=sessions, stem=STEM) == text
-    assert time.monotonic() - started < 2.0
+    assert scanned == []
     assert not _stored_files(sessions)
     # And the corroboration helper takes the same exit.
     assert not same_text_modulo_images(text, text + " ", sessions_dir=sessions, stem=STEM)
+    assert scanned == []
 
 
 # A destination has to survive the parser that reads it back.

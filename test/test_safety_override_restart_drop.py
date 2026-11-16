@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -139,16 +138,41 @@ class TestNoNoticeIsOwed:
         assert not _isolated_breadcrumb.exists()
 
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are a POSIX shape")
-    def test_a_fifo_is_refused_without_hanging(self, _isolated_breadcrumb: Path) -> None:
+    def test_a_fifo_is_refused_without_hanging(
+        self, _isolated_breadcrumb: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # The size bound alone does not cover this: a FIFO reports st_size 0, so
         # it passes a size check and then blocks forever on read, hanging gateway
         # initialization before readiness (found in review). O_NONBLOCK plus an
-        # fstat shape check is what refuses it.
+        # fstat shape check is what refuses it. Asserted as the calls this thread
+        # makes on the FIFO: its open asks for O_NONBLOCK (one without it is
+        # refused on the spot instead of hanging) and nothing reads from it.
         os.mkfifo(_isolated_breadcrumb)
-        started = time.monotonic()
-        assert so.take_dropped_grant() is None
-        elapsed = time.monotonic() - started
-        assert elapsed < 2.0, f"read waited {elapsed:.2f}s on a FIFO"
+        real_open, real_read = os.open, os.read
+        this_thread = threading.get_ident()
+        nonblock = os.O_NONBLOCK
+        fifo_fds: list[int] = []
+        fifo_reads: list[int] = []
+
+        def recorded_open(path, flags, *args, **kwargs):
+            if threading.get_ident() == this_thread and Path(path) == _isolated_breadcrumb:
+                assert flags & nonblock, "the FIFO was opened without O_NONBLOCK"
+                fd = real_open(path, flags, *args, **kwargs)
+                fifo_fds.append(fd)
+                return fd
+            return real_open(path, flags, *args, **kwargs)
+
+        def recorded_read(fd, n):
+            if threading.get_ident() == this_thread and fd in fifo_fds:
+                fifo_reads.append(n)
+            return real_read(fd, n)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "open", recorded_open)
+            mp.setattr(os, "read", recorded_read)
+            assert so.take_dropped_grant() is None
+        assert fifo_fds, "the record was never opened"
+        assert fifo_reads == [], "the FIFO was read instead of refused by its shape"
 
     @requires_symlinks
     def test_a_symlink_is_refused(self, _isolated_breadcrumb: Path, tmp_path: Path) -> None:

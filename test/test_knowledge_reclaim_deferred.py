@@ -777,7 +777,11 @@ class TestHandoffJoinsTheHoldersAdmission:
         waiting in between. Without the hand-off admission the three wait on
         each other until the window's timeout. With it the task's first hold
         joins the holder's admission at once, the handler releases, and the
-        window then gets its turn."""
+        window then gets its turn.
+
+        "At once" is asserted as the window's state when the task's hold is
+        taken: the window is still waiting, not finished. A task held behind
+        the window would get its hold only after the window gave up."""
         store = KnowledgeStore(str(tmp_path / "k.db"))
         pipeline = IngestionPipeline.__new__(IngestionPipeline)
         pipeline.store = store
@@ -789,15 +793,17 @@ class TestHandoffJoinsTheHoldersAdmission:
             with store.maintenance_window(timeout=5.0) as quiescent:
                 window_result.append(quiescent)
 
-        async def scenario() -> float:
+        window_when_taken: list[tuple[list[bool], bool]] = []
+
+        async def scenario() -> None:
             taken = asyncio.Event()
 
             async def child() -> None:
                 async with pipeline.ingestion_in_flight():
+                    window_when_taken.append((list(window_result), th.is_alive()))
                     taken.set()
                     await asyncio.sleep(0.05)
 
-            started = time.monotonic()
             async with pipeline.ingestion_in_flight():
                 th = threading.Thread(target=open_window)
                 th.start()
@@ -807,11 +813,13 @@ class TestHandoffJoinsTheHoldersAdmission:
                 await await_until(taken, what="taken event")
             await task
             th.join(timeout=10)
-            return time.monotonic() - started
 
         try:
-            elapsed = asyncio.run(scenario())
-            assert elapsed < 2.0, f"hand-off waited {elapsed:.2f}s behind the window"
+            asyncio.run(scenario())
+            assert window_when_taken == [([], True)], (
+                f"hand-off waited behind the window: {window_when_taken} "
+                "(window result, window still waiting) when the task took its hold"
+            )
             assert window_result == [True], "the window did not get its turn after the holds"
         finally:
             store._close_all_for_tests()
