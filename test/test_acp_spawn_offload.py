@@ -73,6 +73,19 @@ def _native_projection_for_fake_processes(monkeypatch):
     monkeypatch.setattr(skill_projection, "prepare_native_skill_projection", prepare)
 
 
+@pytest.fixture(autouse=True)
+def _no_managed_agent_shadow_scan(_floor_monkeypatch):
+    # The shadow gate resolves the work dir through the bounded sensitive-path
+    # resolver, which fails closed when a loaded runner misses its budget. These
+    # tests own spawn lifecycle, not that gate, whose contract
+    # test_managed_agent_shadow covers; stub it as test_kiro_acp_engine_pin does.
+    from kiro_crew.acp import managed_agent_shadow
+
+    _floor_monkeypatch.setattr(
+        managed_agent_shadow, "managed_agent_shadow_refusal", lambda agent, work_dir: None
+    )
+
+
 async def _stop_stderr_drain(client: AcpClient) -> None:
     """Cancel and await the stderr-drain task a mocked _spawn started.
 
@@ -562,9 +575,22 @@ class TestSpawnFailureCannotLeaveAnUntrackedProcess:
         assert client._child_pids == {}
 
     @pytest.mark.asyncio
-    async def test_client_spawn_reports_the_failure_at_error(self, tmp_path, caplog) -> None:
+    @pytest.mark.parametrize("resolver", ["live", "over_budget"])
+    async def test_client_spawn_reports_the_failure_at_error(
+        self, tmp_path, caplog, monkeypatch, resolver
+    ) -> None:
         """The kill is silent to the user otherwise: nothing downstream sees a
-        spawn that died after the process existed."""
+        spawn that died after the process existed.
+
+        ``over_budget`` is a loaded CI runner whose sensitive-path resolver misses
+        its budget: the spawn must still reach the tracking failure."""
+        if resolver == "over_budget":
+            from kiro_crew import security
+
+            def _saturated(*_args, **_kwargs):
+                raise TimeoutError("no resolver child took the request")
+
+            monkeypatch.setattr(security.paths, "_resolve_on_calling_thread", _saturated)
         client = AcpClient(work_dir=tmp_path / "workspace", session_key="k")
 
         mock_proc = MagicMock()
