@@ -245,6 +245,46 @@ def post_compaction_parts(
     return parts
 
 
+def conductor_reread_part(
+    *, agent: str | None, mode: str, session_key: str | None, dispatch_mounted: bool | None
+) -> str:
+    """The goal-conductor re-read pointer for a conductor's post-compaction turn, or ``""``.
+
+    A conductor runs on the ``goal-conductor`` skill, and the compaction dropped the
+    body it read; the skills index re-injected above names the skill but not that it
+    was read and lost. Two kinds get the line: a chat on the conductor whose charter
+    names that skill (``kirocrew-conductor`` and its deprecated aliases; the pipeline,
+    security and team-lead conductors run their own skills) and a crewmate's chat
+    that runs the ledger patrol, under the same gate session start appends
+    ``conductor.patrol`` with (``session_start``: a member DM slot that holds the
+    dispatch tools, on a binding with the ledger tools). Workers and plain chats get
+    nothing.
+    """
+    from kiro_crew import crew_mode
+
+    root = crew_mode.DEFAULT_CREW_MODE_AGENT
+    if agent != root and crew_mode.CONDUCTOR_ALIASES.get(agent or "") != root:
+        from kiro_crew import context as ctx  # circular import: the facade imports this owner
+        from kiro_crew.crewmate_harness import crewmate_for_session
+        from kiro_crew.member_mate_tools import binding_has_ledger_tools
+        from kiro_crew.members import DM_SLOT_MODE
+
+        if mode != DM_SLOT_MODE:
+            return ""
+        cfg = ctx.KiroCrewConfig.load()
+        crewmate = crewmate_for_session(cfg, session_key)
+        if not (
+            ctx._member_dispatch_held(dispatch_mounted, cfg, crewmate)
+            and binding_has_ledger_tools(cfg.agents.get(crewmate))
+        ):
+            return ""
+    return (
+        "[REINJECTED AFTER COMPACTION — goal-conductor]\n"
+        "You were compacted: re-read the goal-conductor skill before your next action.\n"
+        "[END REINJECTED]\n\n"
+    )
+
+
 def ledger_reinjection_part(session_key: str | None, turn_text: str) -> str:
     """The session's ``[work ledger]`` snapshot for a post-compaction turn, or ``""``.
 

@@ -4603,7 +4603,8 @@ different installers and different prompt files. A conductor change lands on
 both, or it lands on the parity allowlist with a reason. The rules both need
 (dispatch and bind before the seed, the `watch="work-ledger"` patrol, the
 interval band, the final report before the stop, acceptance by `accept_eval.py`, close,
-reading the `goal-conductor` skill before acting on a goal, and the long-task and
+reading the `goal-conductor` skill before acting on a goal and again after a
+compaction, and the long-task and
 team rules every turn needs: the item budget, one owner per file and one
 integrator per output, merging two lines, the plan reviewer, the `pr_merged` bar,
 the hourly check on a quiet wake, routine incidents, and reporting before a park) are written once,
