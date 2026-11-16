@@ -5218,18 +5218,49 @@ which the browser spec keeps on with no control): `_blocked` is checked before t
 curated branch. A key
 is also read-only when it carries a non-channel tag. A tag alone does not mean
 that the key sends activity: WakaTime's API address uses `share`, its OAuth client
-ID uses the explicit `sign_in` reason, and the publish destination list and artifact
-relocation roots fall back to `text`. Other tagged types fall back to `compound`.
+ID uses the explicit `sign_in` reason, the publish destination list uses `share`
+and the artifact relocation roots use `safety`. Other tagged types fall back to
+`compound`.
 A key is also read-only when
 `_MOVED_CONFIG_FIELDS` names it, when `edition_locks.config_path_locked` holds it
 (`locked`), when it is free text or a list not in `TEXT_EDIT_PATHS` (`text`), or when
 its curated rule has no drawable control (`normalized`, `dict`, a `values_fn` enum:
-`compound`).
+`compound`). Free text that decides what the agent may run, read or write (the
+sandbox's read-only paths and their exceptions, subagent roots, MCP program
+directories, the Strands project and its fingerprint) is `safety`; text that decides
+who or what can be reached (the logo file, the git host and fetch allowlists, the
+tailnet logins, the broker socket, the relay addresses) is `reach`; the relay's
+token type and scope prefix and the pooled-server identity names are `sign_in`; the
+heartbeat address is `share`. `agent.apps_default_installs_applied` is a `marker` (removing a name would install
+that app again on the next start). `default_agent` and `mcp_gateway.stub_servers` are
+`owned`: `PUT /api/config/default-agent` and `POST /api/mcp-gateway/servers/stub`
+write them with rules a plain write would skip. A test fails when any free-text key is left with the
+`text` fallback.
 
 Every other key with a curated rule is edited with that rule. A key with none gets a
 schema-derived rule from `generic_spec`: booleans, integers, numbers and enums by
-type; free text and string lists only when `TEXT_EDIT_PATHS` names them, since a
-path, URL, host or command line is where a careless value does the most harm.
+type; free text and string lists only when `TEXT_EDIT_PATHS` names them, each with
+a check that fits its type in `config_all_settings_checks.TEXT_CHECKS`: a path must
+be absolute once `~` is expanded, and a folder key (`_dir`) must not name an
+existing file, a URL must use its reader's scheme (`https://` for
+the KAS and embedding-model downloads, the Ollama reader's own `_url_error` for
+`memory.ollama_url`), name a host and carry no user name or password, a name is one
+line (and never empty where its reader looks it up), `agent.member_branch_prefix`
+holds only parts `crewmate_worktree._name` keeps, and `agent.member_acp_backend` is
+empty or a harness `selectable_stored_backend_values` offers, and
+`work_ledger.remote_dispatch_tags` holds at most `MAX_DISPATCH_TAGS` words that
+`work_vocab.DISPATCH_TAG_RE` accepts.
+`decisions.provider.model` links to Feature Previews instead: `PUT
+/api/decisions/provider` writes it with the endpoint, and a model saved alone would
+split that pair. A command
+(`taskrunner.test_command`) stays free text, one argument per item.
+`memory.extraction_instructions` takes its reader's 2000 characters
+(`text_max_len`), and the page draws a `str` row longer than 256 as a multi-line
+box that keeps its line breaks and saves when it loses focus; every other text key
+takes 256. A path is saved with its `~` expanded (`generic_stored_value`), because
+not every reader expands it: a terminal's start folder reaches the process as
+written. Every item of a string list must be text, or the route refuses it before
+any check reads it.
 Integer and number bounds only keep an absurd value out of the file (`0` or a
 negative default up to `10**12`); the loader still clamps each field at read. An
 integer listed in `loader_builders._SECURITY_BOUNDED_FIELDS` takes that table's own
@@ -5254,7 +5285,8 @@ cannot offer a generic key to a change card.
 `PATCH /api/config/kirocrew` treats a generic rule (`"generic": True`) in two extra
 ways. `generic_value_error` checks the value with `kiro_crew config set`'s own
 `cli_config._declared_type_error` (no `"3"` or `true` for an integer), plus the
-reader's own validator for a free-text key in `_TEXT_CHECKS` (`timezone` must pass
+reader's own validator for a free-text or string-list key in `_TEXT_CHECKS`
+(`timezone` must pass
 `cron_service.schedule.is_valid_timezone`, or be `""`).
 `{"path", "unset": true}` removes the stored leaf, so the field reads its default
 again, including a later release's default (the agent's memory line for it says

@@ -151,8 +151,8 @@ def test_a_key_with_no_control_says_why_it_is_read_only() -> None:
 @pytest.mark.parametrize(
     "path,tag,reason",
     [
-        ("publish.allowed_destinations", "publish", all_settings.WHY_TEXT),
-        ("publish.relocate_roots", "artifacts", all_settings.WHY_TEXT),
+        ("publish.allowed_destinations", "publish", all_settings.WHY_SHARE),
+        ("publish.relocate_roots", "artifacts", all_settings.WHY_SAFETY),
         ("wakatime.api_base_url", "wakatime", all_settings.WHY_SHARE),
         ("wakatime.oauth_client_id", "wakatime", all_settings.WHY_SIGN_IN),
     ],
@@ -189,12 +189,31 @@ def test_a_registry_configkey_is_a_link_row_never_read_only() -> None:
         assert record is None or record["mode"] == "control", path
 
 
-def test_free_text_stays_read_only_unless_named() -> None:
-    assert all_settings.descriptor(_BY_PATH["agent.kas_bundle_url"]) == {
+def test_free_text_stays_read_only_unless_named(monkeypatch) -> None:
+    monkeypatch.setattr(all_settings, "TEXT_EDIT_PATHS", frozenset())
+    assert all_settings.descriptor(_BY_PATH["dashboard.url"]) == {
         "mode": "readonly",
         "reason": all_settings.WHY_TEXT,
     }
-    assert _editable_config_spec("agent.kas_bundle_url") is None
+    assert _editable_config_spec("dashboard.url") is None
+
+
+def test_every_text_check_names_an_editable_text_key() -> None:
+    """A check for a key the page cannot change, or for a non-text key, is a stale row."""
+    for path in all_settings._TEXT_CHECKS:
+        assert path in all_settings.TEXT_EDIT_PATHS, path
+        assert _BY_PATH[path].type in ("string", "array"), path
+        assert all_settings.descriptor(_BY_PATH[path])["mode"] == "edit", path
+
+
+def test_no_text_key_is_left_read_only_without_a_reason() -> None:
+    """Each free-text key is either editable with a check or read-only for a named reason."""
+    left = [
+        e.path
+        for e in SCHEMA_REGISTRY
+        if (all_settings.descriptor(e) or {}).get("reason") == all_settings.WHY_TEXT
+    ]
+    assert left == []
 
 
 def test_every_readonly_and_text_path_names_a_real_key() -> None:
@@ -269,6 +288,14 @@ _REVIEWED_EDITABLE = frozenset(
         # Whether an authenticated caller's traceparent header parents the turn it
         # starts. It adds no listener, route or credential and needs Traces Enabled.
         "telemetry.accept_traceparent",
+        # Where local metric shards are written: an absolute path on this machine.
+        # It sends nothing.
+        "telemetry.local_dir",
+        # The argument list the task runner runs after each step, with no shell.
+        # The person types the whole command; it is the runner's own check.
+        "taskrunner.test_command",
+        # The tunnel's name only. Whether a tunnel runs is tunnel.enabled (read only).
+        "tunnel.name_override",
     }
 )
 

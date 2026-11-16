@@ -43,6 +43,8 @@ export interface AllSettingsRecord {
   values?: unknown[]
   min?: number
   max?: number
+  /** Longest text a `str` row takes; above 256 the row is a multi-line box. */
+  max_len?: number
   /** `PATCH ... { unset: true }` may remove the stored value. */
   resettable?: boolean
   /** Registry id of the owning Settings control, for `mode: 'control'`. */

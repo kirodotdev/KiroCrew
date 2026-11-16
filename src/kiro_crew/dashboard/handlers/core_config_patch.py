@@ -29,7 +29,10 @@ from kiro_crew.config.sections_tailnet import TAILNET_OPENING_PATHS
 from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-from kiro_crew.dashboard.handlers.config_all_settings import generic_value_error
+from kiro_crew.dashboard.handlers.config_all_settings import (
+    generic_stored_value,
+    generic_value_error,
+)
 from kiro_crew.dashboard.handlers.core_config_models import (
     _active_provider_and_pin_backend,
     _active_provider_name,
@@ -358,6 +361,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         reason = await asyncio.to_thread(generic_value_error, path_key, value)
         if reason:
             return _deny(reason, f"{path_key}={value}")
+        value = generic_stored_value(path_key, value)
 
     # Validate value
     if unset:
