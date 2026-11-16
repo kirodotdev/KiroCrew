@@ -394,6 +394,11 @@ export interface ChatSlot extends TurnIdentityFields {
    *  (`crew_mode.MATE_LISTED_FIELD`). Off, the sessions it dispatched leave the
    *  person's lists for the Bot's Sessions tab; on, they stay listed. */
   show_sessions_in_list?: boolean
+  /** True on a conversation that started in Slack while
+   *  `slack.show_in_session_list` is off (`dashboard/slack_session_list.py`).
+   *  The person's session lists leave it out unless it is the open session
+   *  (`crewModeView`), and its unread entry adds to no count. Absent otherwise. */
+  slack_list_hidden?: boolean
   /** The conductor the chat runs in Crew Mode (`crew_mode_agent` on the slot), "" when
    *  it never turned on: it marks the chat as Crew Mode until the gateway moves it onto
    *  the configured `agent.crew_mode_agent`. */

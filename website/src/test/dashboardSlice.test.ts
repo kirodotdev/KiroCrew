@@ -306,6 +306,34 @@ describe('dashboardSlice', () => {
       }
     })
 
+    it('an embedded instance recounts when the Slack list setting stamps or unstamps a row', () => {
+      const posted: Array<{ type?: string; count?: number }> = []
+      const realParent = Object.getOwnPropertyDescriptor(window, 'parent')
+      Object.defineProperty(window, 'parent', {
+        value: { postMessage: (m: { type?: string; count?: number }) => { posted.push(m) } },
+        configurable: true,
+      })
+      try {
+        const channel = { ...slot1, key: 'slack_1.1', title: 'Slack thread' }
+        const lastCount = () => posted.filter(m => m.type === 'mc-unread-slots').at(-1)?.count
+        let state = reducer(initial, sseSlotsPartial(false))
+        state = reducer(state, sseSlots([slot1, channel]))
+        state = reducer(state, markSlotUnread('slack_1.1'))
+        expect(lastCount()).toBe(1)
+
+        // Turned off: no unread entry moves and no hold exists, yet the count drops.
+        state = reducer(state, sseSlots([slot1, { ...channel, slack_list_hidden: true }]))
+        expect(state.unreadSlots).toEqual(['slack_1.1'])
+        expect(lastCount()).toBe(0)
+
+        // Turned back on: the kept entry counts again.
+        state = reducer(state, sseSlots([slot1, channel]))
+        expect(lastCount()).toBe(1)
+      } finally {
+        if (realParent) Object.defineProperty(window, 'parent', realParent)
+      }
+    })
+
     it('an embedded instance recounts held unread sessions when reconnect clears the holds', () => {
       const posted: Array<{ type?: string; count?: number }> = []
       const realParent = Object.getOwnPropertyDescriptor(window, 'parent')

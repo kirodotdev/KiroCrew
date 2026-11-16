@@ -1419,8 +1419,11 @@ export function useChatPageSessionController({
       const saved = hadActiveSlotRef.current ? null : localStorage.getItem(slotStorageKey)
       const hint = slotHintRef.current
       slotHintRef.current = null
+      // The hub's hint is the page's own pick too, so it never lands on a
+      // conversation the Slack list setting leaves out (`autoOpenRows`).
+      const hintable = !!hint && listed.has(hint) && !filteredSlots.some(s => s.key === hint && s.slack_list_hidden)
       const target = bound ? bound
-        : hint && listed.has(hint) ? hint
+        : hintable ? hint
         : recent ?? (saved && eligibleKeys.has(saved) ? saved : eligible[0].key)
       dispatch(switchSlot({ key: target, automatic: true }))
     } else if (connected && slotsLoaded && !autoCreatedRef.current) {

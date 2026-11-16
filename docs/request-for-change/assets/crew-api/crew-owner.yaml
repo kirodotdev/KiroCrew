@@ -95,7 +95,7 @@ paths:
       description: 'The full roster as the owner sees it: one row per global Bot, with its private chat with the
         owner (slot_key, last_message), its configuration (model, workspace, memory store) and its live state. It
         returns the same data as GET /api/members, from the same handler. The Public GET /v1/crew/bots is the cut-down
-        view apps get: only id, name, description, avatar and status, only the grant''s Bot range, and never private
+        view apps get: only id, name, description, avatar, status and has_goal, only the grant''s Bot range, and never private
         chat, briefing or rules. While the gateway is still tidying the Bot roster it answers 503 prune_in_progress.
         The response keeps the members field because it wraps the body of the existing GET /api/members unchanged.'
   /v1/crew/owner/grants:

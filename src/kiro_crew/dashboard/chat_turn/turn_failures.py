@@ -530,6 +530,7 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         slot._fallback_candidate_idx = 0
         slot._fallback_walked = []
         slot._fallback_walk_refused = False
+        slot._fallback_walk_server_error = False
 
 
 async def _on_session_closing(turn: _ChatTurn) -> None:

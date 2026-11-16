@@ -469,10 +469,18 @@ def test_a_hold_flip_sends_a_full_frame_counted_as_envelope_keys(
     assert slots_diff.FULL_FRAME_REASONS["envelope_keys"] == before + 1
 
 
-def test_overlapping_passes_mint_distinct_seqs(state: DashboardState) -> None:
+def test_overlapping_passes_mint_distinct_seqs(
+    state: DashboardState, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import asyncio
     import threading
 
+    from kiro_crew.apps import hidden_sessions
+
+    # Binding the loop asks for a hidden-chat refresh, whose resend is a fifth pass
+    # whenever the coalescing window has passed by the time it lands (a slow runner).
+    # This test counts only the four passes it starts.
+    monkeypatch.setattr(hidden_sessions, "request_hiding_refresh", lambda: None)
     _seed(state)
     _connect(state, _WS(diff=True), owner=True)
     loop = asyncio.new_event_loop()

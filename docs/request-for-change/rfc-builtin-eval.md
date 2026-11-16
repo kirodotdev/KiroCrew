@@ -1,10 +1,10 @@
 ---
 title: A built-in eval tool -- tiered tasks across harnesses, a Crew headless CLI, a weekly run, and harvesting merged PRs into standing cases
-status: draft
+status: accepted
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-15
-last-audited: 2026-11-15
-audited-at: 4bc26f6ecb
+last-audited: 2026-11-16
+audited-at: cb2f78b946
 doc-pr: 37669
 implementation-prs: []
 tracking-issues: []
@@ -14,12 +14,12 @@ superseded-by: []
 
 # RFC: A built-in eval tool for Kiro Crew
 
-Status: draft. Nothing is built and this document changes no code. The
-repository owner asked for the direction on 2026-11-15 and widened it the same
-day from long tasks only to a weekly eval tool with three tiers, a Crew
-headless CLI and a case-harvest step; acceptance is requested from a
-maintainer, who records it on this Status line. Every code reference was read
-at `4bc26f6ecb`.
+Status: accepted. The repository owner, a maintainer, asked for the
+direction on 2026-11-15, widened it the same day from long tasks only to a
+weekly eval tool with three tiers, a Crew headless CLI and a case-harvest
+step, and accepted it on 2026-11-16 with the PR that ships §12's first part
+(`kirocrew chat --headless`). The rest is not built. Every code reference was
+read at `4bc26f6ecb`, and §12's at `cb2f78b946`.
 
 It lands on its own because it adds new first-class surfaces (`kirocrew eval
 run | report | harvest | admit`, headless flags on `kirocrew chat`, an eval
@@ -102,7 +102,7 @@ hand back a transcript the ask detector (§5) and the cost reader can parse.
 | arm | start, headless | done signal | cost unit |
 |---|---|---|---|
 | Crew chat | `kirocrew chat --headless` (§12) with the default agent | the CLI's own done rule (§12.3) | Kiro credits from `meteringUsage` frames (`_track_metadata` in `acp/client_usage.py`) |
-| Crew conductor | `kirocrew chat --headless --mode conductor --until-done`; the agent is whatever `crew_mode.crew_mode_agent()` resolves (§12.2), never a hard-coded name | every work-ledger item terminal, slot idle | credits summed over every chat the run created |
+| Crew conductor | `kirocrew chat --headless --mode conductor --approval-mode trust --until-done`; the agent is whatever `crew_mode.crew_mode_agent()` resolves (§12.2), never a hard-coded name | every work-ledger item terminal, slot idle | credits summed over every chat the run created |
 | kiro-cli V3 | `kiro-cli chat --no-interactive --agent-engine v3 --trust-workspace --trust-tools=<list> --output-format stream-json "<seed>"` | process exit | credits from the same metadata frames |
 | Claude Code | `claude -p "<seed>" --output-format stream-json --verbose --permission-mode dontAsk --allowedTools <list> --permission-prompts none --strict-mcp-config` | last line `{"type":"result"}` | `total_cost_usd` and `usage` on that line |
 | Codex | `codex exec --json -C <repo> -s workspace-write -c approval_policy="never" "<seed>"` | `turn.completed` or `turn.failed`, then exit | `turn.completed.usage` tokens |
@@ -275,10 +275,10 @@ For both Crew arms the CLI's `--json` already carries the count and the events
 
 **The conductor's plan gate is an ask.** The repository owner ruled on
 2026-11-15 that a conductor waiting for "go" on its plan fails the run. The
-seed is therefore sent as a turn nobody typed, opening with `[sent by session`,
-which after #37609 skips the gate ("Do the same when nobody typed this turn: it
-opens with `[sent by session`..."). Until #37609 merges, the conductor arm is
-expected to fail on the gate; that is a real finding, not a harness bug.
+seed is therefore sent as a turn nobody typed: the gateway opens it with its own
+`[headless run cli:<run_id>]` marker (§12.3), which the goal-conductor skill
+lists with the other nobody-typed openers, so the conductor dispatches round 1
+without waiting for a go-ahead.
 
 ## 6. Before and after
 
@@ -492,7 +492,7 @@ single run.
 | cron route to Trust | read in code (§4.2), never exercised by a bench; creating a script cron in the eval home is itself a guarded step |
 | kiro-cli and Codex stream frames | event names for asks and denials are from `--help` and vendor docs, not from a captured run |
 | #37609 | open; until it merges the conductor arm still gates its plan |
-| Crew headless CLI | nothing built; whether the gateway admits the CLI's own `--approval-mode auto` under the existing cron mode rule, or the rule needs a CLI caller kind, is open (§12.3) |
+| Crew headless CLI | `kirocrew chat --headless` is built; sign-in and sandbox failures are read from the reply text, not a typed code; starting a gateway, `--on-ask`, `--effort` and `--resume` are later |
 | harvested cases on this repository | building this repository at an old base offline, and running only the PRs' own tests there, is not yet tried; nor is the seed-blindness probe (§13.3) |
 
 ## 12. Crew headless CLI
@@ -516,63 +516,72 @@ without it, `kirocrew chat` is unchanged.
 
 | flag | meaning |
 |---|---|
-| `-m TEXT` / `--message-file PATH` | the seed (existing `-m`; a file for long seeds) |
-| `--headless` | never read the terminal. A tool prompt is answered `deny` and counted as an ask; an `ask_question` card is counted as an ask |
-| `--on-ask stop\|continue` | default `stop`: the first ask ends the run (exit 3). `continue` denies or dismisses and runs on, for diagnosis; the run is still FAILED |
+| `-m TEXT` / `--message-file PATH` | the seed (existing `-m`; a file for long seeds, read through the sensitive-path gate). A seed that opens with `/` or `@` is refused (exit 2; the gateway answers 400 `unattended_command_seed`): the marker opens the turn, so a command or saved prompt would not run |
+| `--headless` | never read the terminal. A pending tool approval, an `ask_question` card or a turn ending in `[OPTIONS:` is an ask: the run stops (exit 3) |
+| `--on-ask stop\|continue` | later; today every ask stops the run |
 | `--mode chat\|conductor` | default `chat`. `conductor` turns conductor mode on for the session the way the dashboard does: the agent is `crew_mode.crew_mode_agent(cfg)` (from `agent.crew_mode_agent`, `config/sections_agent.py`; unset means `DEFAULT_CREW_MODE_AGENT` in `crew_mode.py`, today `kirocrew-team-lead`; a configured name the migration found unusable reads as the conductor last applied, `set_unusable`), and the session is stamped with `stamp_for_switch` so `runs_crew_mode` holds. No agent name is hard-coded anywhere; `--agent` is refused with `--mode conductor` so a conductor template cannot be passed off as one |
 | `--agent NAME` | chat mode only (existing) |
-| `--model ID`, `--effort LEVEL` | as a dashboard chat |
-| `--approval-mode auto` | same values as `kirocrew cron add --approval-mode` (`choices=["auto"]`): auto-approve tools on THIS session only (Trust on its slot; workers it creates inherit it at `session_create`). Unset: every prompt is denied and counted |
+| `--model ID` | as a dashboard chat (`--effort`: later) |
+| `--approval-mode trust` | the one choice: Trust on the chat this run opens, audited as a mode change; workers it creates inherit it at `session_create`. Unset: an approval prompt is an ask |
 | `--until-done` | keep the session through ledger patrol, autonudge and monitor wakes until done (§12.3) or a cap |
-| `--idle-grace SECS` | chat mode's quiet window before "done" (default 900) |
-| `--cwd DIR` | the session's project directory (existing absolute-path rule of `cron add --cwd`) |
-| `--timeout SECS` | wall cap; the session is cancelled and closed |
-| `--budget CREDITS` | spend cap from `meteringUsage` credits; the session is cancelled and closed at the cap |
-| `--resume SESSION` | send one more message to a session this CLI started (the continue budget of §3.2) |
+| `--idle-grace SECS` | with `--until-done`, the quiet window that counts as done (default 900) |
+| `--cwd DIR` | the session's project directory: set on the run's chat (`POST /api/chat/slots/{slot}/project`; absolute, existing), so no folder is left behind |
+| `--timeout SECS` | wall cap; the run's chats are stopped (exit 4) |
+| `--budget CREDITS` | spend cap over settled usage: the run's chats' `turn_stats.credits` plus the credits of finished background agents they started (`GET /api/spawn`); a turn or agent counts when it ends, so a run can pass the cap by what is still running; the run's chats are stopped (exit 5) |
+| `--resume SESSION` | later |
 | `--json` | one JSON object on stdout at exit (§12.4); human text goes to stderr |
 
 ### 12.3 How it runs
 
-- **Plain chat without `--until-done`** may stay in-process, as today.
-- **`--until-done`, and `--mode conductor` always,** need what only a gateway
-  runs: the ledger patrol, autonudge, monitors, worker sessions. The CLI
-  attaches to the gateway of the current `KIROCREW_HOME`, or starts one on a
-  free loopback port for that data home, owns it, and stops it at exit. It
-  opens the slot through the session-control API, applies `--approval-mode`
-  to that one slot, and seeds through the session-control send path, so the
-  turn opens with `[sent by session` and reads as a turn nobody typed (§5).
-- `--approval-mode auto` in gateway mode asks for `trust` on the slot the CLI
-  itself opened. It must pass the same checks the cron route passes today
-  (`cron_mode_refusal` and `cron_creator_admission` in
-  `dashboard/handlers/_shared_route_guards.py`: only `trust` / `trust_reads`,
-  only the caller's own slot, audited); whether that
-  reuses the cron rule or needs a CLI caller kind is open (§11).
-- **Done**: chat mode ends when the turn has ended, the slot has no armed
-  monitor, autonudge or cron, and nothing ran for `--idle-grace`. Conductor
-  mode ends when every work-ledger item of the slot is terminal and the slot
-  is idle. A wake that arrives keeps the run alive.
-- **In the eval home**: the eval runner runs the CLI as the eval OS user with
-  `HOME`, `KIROCREW_HOME`, `KIRO_HOME` set to the run's directories and
-  `KIRO_API_KEY` in its env (§4.1, §4.3); the eval home config pins
-  `agent.crew_mode_agent` to a named conductor, and the CLI records what it
-  resolved, so a before/after pair is reproducible and a pair whose resolved
-  agents differ is refused.
+- The CLI drives the running gateway of the current data home as its owner,
+  in both modes, with requests the dashboard owner already makes: a one-minute
+  owner sign-in over the peer-verified local transport, one new chat slot (in
+  conductor mode on the agent `crew_mode_agent` resolves, which slot create
+  stamps as a Crew Mode chat), `--approval-mode trust` on that slot only
+  (`POST /api/chat/mode`, audited as a mode change), the seed, then polling.
+  Gateway change: only the headless marker below. No reachable gateway is exit
+  8; starting one is later.
+- **The headless marker.** The seed is sent with `"unattended": true` and a
+  `run_id`. Only for that, and only from the dashboard owner, the gateway opens
+  the turn with its own marker `[headless run cli:<run_id>]`
+  (`dashboard/headless_marker.py`) and writes a `chat_headless_run`
+  audit row with the run id and slot. The goal-conductor skill lists
+  `[headless run` with the other nobody-typed openers (`[cron notification`,
+  `[work-ledger wake]`), so a conductor dispatches round 1 instead of waiting
+  at its plan gate (§5). Boundaries: an app, an internal caller or a non-owner
+  asking for it gets 403 `unattended_not_owner`; a malformed `run_id` gets 400;
+  and every caller's own text, the owner's included, has a marker-shaped
+  opener defanged to `[quoted: headless run` (the rule a forged
+  `[sent by session` already gets), so typing the prefix skips nothing. A
+  person's ordinary turn is unchanged and still waits at the gate.
+- **Done**: without `--until-done`, when the first turn ends. With it,
+  conductor mode ends when every work-ledger item of the slot is terminal and
+  the run is idle; otherwise after `--idle-grace` quiet seconds. A wake that
+  makes the root or a worker busy again resets the quiet window.
+- **In the eval home**: the runner starts the gateway and the CLI with `HOME`,
+  `KIROCREW_HOME` and `KIRO_HOME` set to the run's directories (§4.1, §4.3);
+  the eval home config pins `agent.crew_mode_agent`, and the CLI records what
+  it resolved, so a before/after pair whose resolved agents differ is refused.
 
 ### 12.4 `--json`
 
 ```json
 {
-  "status": "done | asked | timeout | budget | not_signed_in | sandbox_refused | error",
+  "status": "done | asked | timeout | budget | not_signed_in | sandbox_refused | no_gateway | incomplete | interrupted | error",
   "exit_code": 0, "completed": true,
-  "asks": 0, "ask_events": [{"t": "...", "kind": "approval | question | options | notify | needs_human", "text": "..."}],
-  "wall_s": 0, "credits": 0.0, "turns": 0, "harness_messages": 0,
+  "asks": 0, "ask_events": [{"kind": "approval | question | options", "slot": "...", "text": "...", "t_s": "..."}],
+  "wall_s": 0, "credits": 0.0,
   "mode": "chat | conductor",
-  "agent": {"name": "...", "source": "default | config | fallback", "configured": "..."},
-  "model": "...", "effort": "...", "approval_mode": "auto | none",
-  "session_key": "...", "transcript": "<path to the session jsonl>", "ledger": "<path or null>",
-  "cwd": "...", "crew_version": "...", "crew_sha": "...", "started_at": "...", "ended_at": "..."
+  "agent": {"name": "...", "source": "default | config | fallback | flag", "configured": "..."},
+  "approval_mode": "trust | none", "slot": "...", "transcript": "<path to the session jsonl>",
+  "items": {"total": 0, "terminal": 0, "open": 0}, "cwd": "...", "error": "",
+  "unclosed": []
 }
 ```
+
+`unclosed` names any run chat the gateway refused to close at exit (for example a
+history write still pending); its automation, turn and background agents
+(`POST /api/spawn/stop-all`) were stopped first.
 
 `agent.source` is `default` when `agent.crew_mode_agent` is unset, `config`
 when the configured name was used, `fallback` when `set_unusable` replaced it
@@ -585,14 +594,18 @@ when the configured name was used, `fallback` when `set_unusable` replaced it
 | 0 | done: completed, no ask |
 | 1 | other error (gateway or runtime failure, unreadable result) |
 | 2 | usage error |
-| 3 | asked a person (with `--on-ask stop`, the run ended at the first ask; with `continue`, it finished but asked) |
+| 3 | asked a person; the run stopped at the first ask |
 | 4 | `--timeout` reached |
 | 5 | `--budget` reached |
 | 6 | not signed in |
 | 7 | sandbox unavailable or refused (no backend and unsandboxed exec not allowed) |
+| 8 | no reachable gateway for this data home |
+| 9 | incomplete: a conductor went quiet for `--idle-grace` with ledger items still open |
 | 130 | interrupted |
 
-The eval runner maps 0 to "check next", 3/4/5 to FAILED, 6/7 to VOID.
+A run refuses to start (exit 1, no chat opened) while `work_ledger.remote_dispatch` is on: a worker placed on a remote crew can only be reached through the conductor's own session tools, so the CLI could not stop it on a timeout or budget exit.
+
+The eval runner maps 0 to "check next", 3/4/5/9 to FAILED, 6/7/8 to VOID.
 
 ## 13. Case collection: merged PRs become standing cases
 

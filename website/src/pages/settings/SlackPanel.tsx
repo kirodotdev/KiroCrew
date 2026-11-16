@@ -34,6 +34,8 @@ type Draft = {
   session_folder: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions: boolean
+  /** List conversations that start in Slack in the session list (on by default). */
+  show_in_session_list: boolean
   /** Slack Code: the registered switches and the code-channel defaults. */
   code: SlackCodeDraft
 }
@@ -50,6 +52,8 @@ function draftFrom(c: SlackConfigData): Draft {
     session_folder_on: !!c.session_folder,
     session_folder: c.session_folder ?? '',
     auto_link_sessions: !!c.auto_link_sessions,
+    // Absent (an older gateway) reads as on, the gateway's own default.
+    show_in_session_list: c.show_in_session_list !== false,
     code: slackCodeDraftFrom(c),
   }
 }
@@ -394,6 +398,7 @@ export function SlackPanel() {
       // to "Slack", which is what the toggle's description promises.
       session_folder: draft.session_folder_on ? (draft.session_folder.trim() || CHANNEL_NAME) : '',
       auto_link_sessions: draft.auto_link_sessions,
+      show_in_session_list: draft.show_in_session_list,
       ...(codeBaseline.current ? slackCodePayload(draft.code, codeBaseline.current) : {}),
     }
     if (botClear) payload.bot_token_clear = true
@@ -618,6 +623,19 @@ export function SlackPanel() {
               onChange={v => upd({ auto_link_sessions: v })}
               disabled={ro}
               configKey="slack.auto_link_sessions"
+            />
+          </div>
+          {/* Whether conversations that start in Slack are listed in the session
+              list. On by default; off leaves them out of the list only. */}
+          <div className="border-t border-border mt-4 pt-4">
+            <SettingsToggle
+              label={i18nT('pages.settings.slackPanel.show_in_session_list')}
+              description={i18nT('pages.settings.slackPanel.show_in_session_list_desc_summary')}
+              hint={i18nT('pages.settings.slackPanel.show_in_session_list_desc')}
+              checked={draft.show_in_session_list}
+              onChange={v => upd({ show_in_session_list: v })}
+              disabled={ro}
+              configKey="slack.show_in_session_list"
             />
           </div>
           {/* Optional per-channel session filing. Off by default: Slack

@@ -12,6 +12,7 @@ import { markChallengeAutoSend } from '../utils/channelChallengeSend'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
 import { errMessage } from '../utils/thunkError'
 import { showTranscriptForkFailure } from '../utils/forkFailure'
+import { withReason } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import type { FollowupStartMode } from '../components/FollowUpCard'
 import { fetchDashboardConfig } from '../api/dashboardConfigQuery'
@@ -252,10 +253,6 @@ export function useSignedLinkAnchor({
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 }
 
-/** Characters that already close a sentence, Latin and CJK full-width. A
- *  refusal reason ending in one gets no extra full stop before the card's text. */
-const SENTENCE_ENDINGS = ['.', '!', '?', '\u3002', '\uff01', '\uff1f'] as const
-
 interface OpenFollowupSessionOptions {
   mode?: string
   dispatch: AppDispatch
@@ -381,14 +378,8 @@ export function useOpenFollowupSession({
     const delivered = await send(item.prompt, slotKey, undefined, true, false, (kind, reason) => { undelivered = kind; refusalReason = reason })
     // The server's own reason (a Shared Crew limit, a policy refusal) goes
     // before the card's recovery text, so the person learns why it was refused
-    // and not only that it was.
-    // `send_failed_with_error` has no closing stop, so one is added to keep the
-    // reason and the recovery text as two sentences.
-    const withReason = (text: string) => {
-      if (!refusalReason) return text
-      const stop = SENTENCE_ENDINGS.some(c => refusalReason!.endsWith(c)) ? '' : '.'
-      return `${refusalReason}${stop} ${text}`
-    }
+    // and not only that it was (`withReason`, shared with the discussion card).
+    const withRefusal = (text: string) => withReason(refusalReason, text)
     // A lost answer is not a refusal: the turn may already be running, so the
     // start goes on as delivered (no retry that could run the prompt twice) and
     // says to check the session instead.
@@ -420,14 +411,14 @@ export function useOpenFollowupSession({
         const discard = await dispatch(deleteSlot({ key: slotKey, discard: true }))
         closed = deleteSlot.fulfilled.match(discard) && !discard.meta.alreadyGone
       }
-      if (closed) throw new Error(withReason(fail.notSent))
+      if (closed) throw new Error(withRefusal(fail.notSent))
       // The session is still there: someone else is using it, or it would not
       // close. On the worktree route it holds the worktree, so a retry would be
       // refused as in use. The item leaves the card (no retry to offer) and a
       // page notice points at the session in the sidebar instead
       // (rfc-followup-start-sends.md, failure table rows 2 and 3).
       if (originSlot) dispatch(dismissFollowupItem({ slot: originSlot, index: originIndex, ts: originTs, item }))
-      reportNotice({ message: withReason(fail.notSentKept), preserveOnSwitch: true })
+      reportNotice({ message: withRefusal(fail.notSentKept), preserveOnSwitch: true })
       return
     }
     // The prompt is running from here on, so this item leaves the card now: left

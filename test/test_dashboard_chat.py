@@ -605,7 +605,8 @@ class TestRunChatModelFallback:
         # The swap is announced — a persisted notice card, never silent.
         notices = self._notice_texts(slot)
         assert any(
-            "claude-test-model" in t and "fallback-model" in t and "throttled" in t for t in notices
+            "claude-test-model" in t and "fallback-model" in t and "server errors" in t
+            for t in notices
         ), f"expected a fallback notice card, got {notices!r}"
         # Recovered on the candidate; no terminal ❌.
         assert any("fb-result" in t for t in self._assistant_texts(slot))
