@@ -177,9 +177,9 @@ export function useChatEventBridges({
     window.addEventListener('mc:prefill-composer', handler)
     return () => window.removeEventListener('mc:prefill-composer', handler)
   }, [dispatch, inputRef])
-  // A reply card's Start / No thanks (GrillCard): sent the way a follow-up chip
-  // is, so Quick Send decides between sending and staging. `result` tells the
-  // card this page took it for the card's own chat; otherwise the card stays open.
+  // A reply card's Start / No thanks (GrillCard): sent whatever Quick Send says
+  // (see the page's `composeSend`). `result` tells the card what the page did
+  // for the card's own chat; with none, the card stays open.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as { text?: unknown; slot?: unknown; result?: unknown } | undefined

@@ -3,14 +3,16 @@
  * conductor proposes that workers grill a question among themselves, and the
  * user edits its direction (question, must, not discussing) before starting it.
  *
- * It never holds the turn: the card only composes the next message. Start and
- * No thanks hand their text, with the reply's chat, to the chat page
- * (`mc:compose-send`), which sends it when Quick Send is on and otherwise puts
- * it in the chat box, the same rule as a follow-up chip. Once used, the card
- * locks for as long as this page shows it, and says what happened: sent, or put
- * in the chat box. A send that then fails shows in the chat's own error row,
- * as a chip's does. A reload opens the card again; the conductor ignores a
- * repeated start.
+ * It never holds the turn. Start and No thanks are deliberate presses: they
+ * hand their text, with the reply's chat, to the page serving that chat
+ * (`mc:compose-send`), which sends it whatever the Quick Send setting says.
+ * While a turn runs the page takes its composer's busy decision (steer, or
+ * queue behind the turn); where nothing can go out (offline, a force stop) it
+ * puts the text in the chat box. Once used, the card locks for as long as this
+ * page shows it, and says what happened: sent, or put in the chat box. Sent
+ * means handed to the gateway, which steers it in or queues it behind the turn.
+ * A send that then fails shows in the chat's own error row, as a chip's does.
+ * A reload opens the card again; the conductor ignores a repeated start.
  */
 import { useEffect, useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -19,7 +21,7 @@ import { btnCls, btnPrimaryCls } from '../redactionPrimitives'
 import ErrorNotice from '../ErrorNotice'
 
 /** The event the card dispatches. The host serving `slot` sets `result`: `sent`
- *  when the text went out, `staged` when it only reached the chat box. */
+ *  when the text went to the gateway, `staged` when it only reached the chat box. */
 export const COMPOSE_SEND_EVENT = 'mc:compose-send'
 export type ComposeSendResult = 'sent' | 'staged'
 export interface ComposeSendDetail { text: string; slot: string; result: ComposeSendResult | null }

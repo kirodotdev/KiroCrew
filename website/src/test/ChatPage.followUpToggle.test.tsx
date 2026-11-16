@@ -22,8 +22,9 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { appendMessage } from '../store/chatSlice'
-import dashboardReducer, { sseDisconnected } from '../store/dashboardSlice'
+import chatReducer, { appendMessage, setSlotRunning } from '../store/chatSlice'
+import dashboardReducer, { sseDisconnected, updateSlot } from '../store/dashboardSlice'
+import { BUSY_SEND_MODE_LS_KEY } from '../components/BusySendButton'
 import notificationsReducer from '../store/notificationsSlice'
 
 /** The per-chip single-click debounce in FollowUpBar; one click = one onSelect. */
@@ -397,37 +398,58 @@ function cardSend(text: string, slot: string) {
   return detail.result
 }
 
-describe('ChatPage discussion-card sends (the follow-up chips\' Quick Send gate)', () => {
-  it('puts the text in the chat box when Quick Send is off', async () => {
+describe('ChatPage discussion-card sends (a deliberate press: sent whatever Quick Send says)', () => {
+  const sentTexts = () => (api.sendChat as ReturnType<typeof vi.fn>).mock.calls.map(c => [c[0], c[1]])
+
+  it('sends to the card\'s chat with Quick Send off', async () => {
     await renderPage()
-    expect(cardSend('不用讨论了', 'chat-1')).toBe('staged')
-    await waitFor(() => expect(composer().value).toBe('不用讨论了'))
-    expect(api.sendChat).not.toHaveBeenCalled()
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('sent')
+    await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'chat-1']]))
+    expect(composer().value).toBe('')
   })
 
-  it('sends it to the card\'s chat when Quick Send is on', async () => {
+  it('sends with Quick Send on, too', async () => {
     ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: true })
     await renderPage()
     expect(cardSend('不用讨论了', 'chat-1')).toBe('sent')
-    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
-    const [wireText, slot] = (api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(wireText).toBe('不用讨论了')
-    expect(slot).toBe('chat-1')
+    await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'chat-1']]))
   })
 
-  it('stages instead of sending while a chip selection is open, as a chip click would', async () => {
-    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: true })
+  it('sends while a chip selection is open, leaving the picked chip in the box', async () => {
     await renderPage()
     vi.useFakeTimers()
     await act(async () => { clickOption('Deploy', { shiftKey: true }) })
     vi.useRealTimers()
-    expect(cardSend('不用讨论了', 'chat-1')).toBe('staged')
-    await waitFor(() => expect(composer().value).toBe('Deploy\n\n不用讨论了'))
-    expect(api.sendChat).not.toHaveBeenCalled()
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('sent')
+    await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'chat-1']]))
+    expect(composer().value).toBe('Deploy')
   })
 
-  it('stages instead of sending while the gateway is offline', async () => {
-    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: true })
+  it('queues behind a running turn (Queue mode)', async () => {
+    const store = await renderPage()
+    act(() => { store.dispatch(setSlotRunning(true)) })
+    // Queue, not steer: the card takes the composer's busy decision for this chat.
+    localStorage.setItem(`${BUSY_SEND_MODE_LS_KEY}:chat-1`, 'queue')
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('sent')
+    await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'chat-1']]))
+  })
+
+  it('steers into a running turn by default (the composer\'s busy decision)', async () => {
+    const store = await renderPage()
+    act(() => { store.dispatch(setSlotRunning(true)) })
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('sent')
+    await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'chat-1']]))
+  })
+
+  it('reads busy as the composer does: sub-agents still running count', async () => {
+    const store = await renderPage()
+    act(() => { store.dispatch(updateSlot({ key: 'chat-1', subagents_running: true })) })
+    localStorage.setItem(`${BUSY_SEND_MODE_LS_KEY}:chat-1`, 'queue')
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('sent')
+    await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'chat-1']]))
+  })
+
+  it('stages while the gateway is offline', async () => {
     const store = await renderPage()
     act(() => { store.dispatch(sseDisconnected(null)) })
     expect(cardSend('不用讨论了', 'chat-1')).toBe('staged')
@@ -435,8 +457,15 @@ describe('ChatPage discussion-card sends (the follow-up chips\' Quick Send gate)
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
+  it('stages during a force stop, which clears the queue', async () => {
+    const store = await renderPage()
+    act(() => { store.dispatch(updateSlot({ key: 'chat-1', stop_state: 'killing' })) })
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('staged')
+    await waitFor(() => expect(composer().value).toBe('不用讨论了'))
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
   it('leaves a card from another chat alone', async () => {
-    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: true })
     await renderPage()
     expect(cardSend('不用讨论了', 'chat-2')).toBeNull()
     expect(api.sendChat).not.toHaveBeenCalled()
