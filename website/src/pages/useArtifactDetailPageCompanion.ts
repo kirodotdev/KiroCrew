@@ -15,14 +15,15 @@ import {
 } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { useAppSelector, useAppStore } from '../store'
-import { deleteSlot, switchSlot } from '../store/chatSlice'
+import { deleteSlot, switchSlot, selectSlotRunEpoch } from '../store/chatSlice'
+import { errMessage } from '../utils/thunkError'
 import { fetchSlots, addSlotOptimistic, removeSlotOptimistic, armConfirmedCloseHold } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import { isUntouchedSession } from '../lib/untouchedSession'
 import { appPathname } from '../lib/basePath'
 import { isChatPath } from '../hooks/notificationBanner'
 import { sendTurn } from '../chat-core/transport/sendTurn'
-import { slotBusySteer } from '../components/chat-input/busySend'
+import { slotBusy, slotBusySteer } from '../components/chat-input/busySend'
 import { useJevAutoSend } from './chat/useJevAutoSend'
 import { useSentCommentIds } from '../hooks/useSentCommentIds'
 import { formatArtifactCommentsMessage } from '../components/CommentOverlay'
@@ -78,6 +79,7 @@ export function useArtifactDetailPageCompanion({
 }) {
   const {
     slug, navigate, dispatch, setSaveError, setContextError, setContextErrorIsRefresh, contextFailureMessage,
+    setSendToSessionError,
   } = stateRead
   const { artifact } = documentRead
   /**
@@ -400,6 +402,70 @@ export function useArtifactDetailPageCompanion({
     }
   }, [connected, artifact, pendingComments, boundSlot, slug, markSent, appStore, jevAutoConsented, setPanel, sidebarUserToggledRef])
 
+  /** The session bound to this artifact, by the one cold-load rule both entry points
+   *  share: a slots snapshot still `[]` because the first fetch has not landed does not
+   *  mean nothing is bound, so ask the server. `error` is set when that ask failed;
+   *  nothing may be created on it, because the session it could not see would then
+   *  get a second one. */
+  const resolveBoundSlot = useCallback(async (): Promise<{ slot: ChatSlot | null; error: string | null }> => {
+    if (boundSlot || slotsLoaded) return { slot: boundSlot, error: null }
+    try {
+      return { slot: pickBoundSlot(await dispatch(fetchSlots()).unwrap(), slug), error: null }
+    } catch (err) {
+      // `unwrap()` throws the thunk's serialized error, a plain object rather than an Error.
+      const reason = (err as { message?: unknown } | null)?.message
+      return { slot: null, error: typeof reason === 'string' && reason ? reason : i18nT('components.errorBoundary.something_went_wrong') }
+    }
+  }, [boundSlot, slotsLoaded, slug, dispatch])
+
+  /** One edit shortcut: `instruction` goes to the bound companion session (created
+   *  when there is none) as background context, then `visibleLine` is sent as an
+   *  ordinary turn, the pattern of the top bar's Request a Feature, so the chat shows
+   *  the reader's words and the agent changes the artifact through its own
+   *  `artifact_update`. A busy session is refused before anything is written: the
+   *  context drain hands the instruction to the NEXT turn that starts, so a send
+   *  queued or steered behind a running turn could pair it with another message. A
+   *  refused context write sends nothing, because the short line means nothing on its
+   *  own. Refusals land on the page's notice stack; nothing is sent when the gateway
+   *  is down. `leaveSidebar` is asked once more after the lookup, right before the
+   *  panel switches, because a comment typed during that wait is not covered by the
+   *  caller's earlier check; it answers false when the person keeps the draft, and
+   *  then nothing is sent. Resolves to the session and its turn count at the send
+   *  when the server took it, `'busy'` when refused for that, else null. */
+  const sendEditShortcut = useCallback(async (
+    instruction: string, visibleLine: string, leaveSidebar?: () => Promise<boolean>,
+  ): Promise<{ slot: string; epoch: number } | 'busy' | null> => {
+    if (!connected || !artifact || sessionOpBusyRef.current) return null
+    sessionOpBusyRef.current = true
+    try {
+      sidebarUserToggledRef.current = true
+      setSendToSessionError(null)
+      const { slot, error } = await resolveBoundSlot()
+      if (error !== null) { setSendToSessionError(error); return null }
+      if (leaveSidebar && !(await leaveSidebar())) return null
+      setPanel('chat')
+      const key = slot?.key ?? await createBoundSession()
+      if (!key) return null
+      if (slotBusy(appStore.getState(), key)) return 'busy'
+      try {
+        await api.chatSlotContext(key, instruction, { source: 'artifact-quick-edit', maxAge: 60 })
+      } catch (err) {
+        setSendToSessionError(errMessage(err) || i18nT('components.errorBoundary.something_went_wrong'))
+        return null
+      }
+      const epoch = selectSlotRunEpoch(appStore.getState(), key)
+      const receipt = await sendTurn({ message: visibleLine, slot: key })
+      if (receipt.status !== 'dispatched' && receipt.status !== 'queued' && receipt.status !== 'unknown') {
+        setSendToSessionError(receipt.reason || i18nT('components.errorBoundary.something_went_wrong'))
+        return null
+      }
+      return { slot: key, epoch }
+    } finally {
+      sessionOpBusyRef.current = false
+    }
+  }, [connected, artifact, resolveBoundSlot, createBoundSession, appStore,
+    setPanel, setSendToSessionError, sidebarUserToggledRef])
+
   /** Full-page escape hatch — routes through sendNav so a popout forwards the
    *  intent to a main window instead of remounting the dashboard in-frame. */
   const openChatFull = useCallback(() => {
@@ -411,7 +477,7 @@ export function useArtifactDetailPageCompanion({
   return {
     sendNav, slotsLoaded, boundSlot, chatCreating, connected, sessionOpBusyRef, injectedVersionRef,
     injectContextMut, createBoundSession, newCompanionChat, pendingComments, pendingCommentIds,
-    submittingComments, submitCommentsToChat, openChatFull,
+    submittingComments, submitCommentsToChat, openChatFull, sendEditShortcut, resolveBoundSlot,
   }
 }
 

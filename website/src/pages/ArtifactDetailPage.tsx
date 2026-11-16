@@ -19,7 +19,6 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowUp, Camera, GitFork, Globe, RefreshCw } from 'lucide-react'
-import { fetchSlots } from '../store/dashboardSlice'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { api } from '../api/client'
 import { PageHeader, Card, Btn } from '../components/ui'
@@ -38,7 +37,7 @@ import {
   type PendingAnchor, useArtifactDetailPageComments, useArtifactDetailPageComposer,
   useArtifactDetailPageThreads,
 } from './useArtifactDetailPageComments'
-import { pickBoundSlot, useArtifactDetailPageCompanion } from './useArtifactDetailPageCompanion'
+import { useArtifactDetailPageCompanion } from './useArtifactDetailPageCompanion'
 import { useArtifactDetailPageMenu, ArtifactDetailPageHeader } from './ArtifactDetailPageHeader'
 import { ArtifactDetailPageBody } from './ArtifactDetailPageBody'
 
@@ -47,7 +46,7 @@ export { isEditableKind }
 export default function ArtifactDetailPage({ popout = false }: { popout?: boolean } = {}) {
   const stateRead = useArtifactDetailPageState()
   const {
-    slug, navigate, confirmDialog, queryClient, dispatch, selectedVersion, setSelectedVersion, editing,
+    slug, navigate, confirmDialog, queryClient, selectedVersion, setSelectedVersion, editing,
     setSaving, setSaveError,
   } = stateRead
   // ── Inline-comment state (durable via /api/artifacts/:slug/comments) ──
@@ -227,7 +226,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   })
   const {
     sendNav, slotsLoaded, boundSlot, sessionOpBusyRef, injectedVersionRef, injectContextMut,
-    createBoundSession,
+    createBoundSession, resolveBoundSlot,
   } = companionRead
   /** Sparkle flow: resume the active bound session if one exists, else create a
    *  new one. With `address`, stage (never auto-send) the address-comments
@@ -246,16 +245,12 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       : ''
     let bound = boundSlot
     if (!bound && !slotsLoaded) {
-      // Cold load: the slots snapshot is still `[]` because the first fetch has
-      // not landed, NOT because this artifact has no session. Creating here would
-      // add a second active bound session for the slug the moment the real one
-      // arrives. Resolve authoritatively first, applying the same tie-break rule.
+      // Cold load: resolve authoritatively first (see `resolveBoundSlot`); a failed
+      // fetch falls through and creates, as it always has here.
       setPanel('chat')
       sessionOpBusyRef.current = true
       try {
-        bound = pickBoundSlot(await dispatch(fetchSlots()).unwrap(), slug)
-      } catch {
-        bound = null   // fetch failed — fall through and create
+        bound = (await resolveBoundSlot()).slot
       } finally {
         sessionOpBusyRef.current = false
       }
@@ -294,8 +289,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       injectedVersionRef.current.set(boundSlotResolved.key, nudgeVersion)
       injectContextMut.mutate({ slotKey: boundSlotResolved.key, version: nudgeVersion, slug, refresh: true })
     }
-  }, [artifact, panel, commentCount, boundSlot, slotsLoaded, slug, dispatch,
-      createBoundSession, injectContextMut, injectedVersionRef, sessionOpBusyRef])
+  }, [artifact, panel, commentCount, boundSlot, slotsLoaded, slug,
+      resolveBoundSlot, createBoundSession, injectContextMut, injectedVersionRef, sessionOpBusyRef])
   // Deleted-artifact handling (consumes the `artifact_update {deleted}` WS event
   // relayed by useWebSocket as a window event): leave the page in the main
   // dashboard; a popout has no router so it surfaces an error instead.

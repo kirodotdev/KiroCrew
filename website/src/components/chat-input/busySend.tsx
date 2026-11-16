@@ -79,6 +79,13 @@ export function busySteerFlag({ slotKey, busy, turnRunning, stopState, jevAutoCo
   return steerActive ? (steerAuto ? 'auto' : true) : undefined
 }
 
+/** Whether `slot` is busy by the reads `slotBusySteer` takes: what its composer
+ *  reads, and for a slot that is not on screen its slots-stream row as well. */
+export function slotBusy(state: RootState, slot: string): boolean {
+  const rowRunning = slot !== state.chat.activeSlot && !!slotRowByKey(state.dashboard.slots, slot)?.running
+  return selectComposerBusy(state, slot) || rowRunning
+}
+
 /** `busySteerFlag` for a slot read from the store. The caller passes the
  *  composer's busy mode when it has one. The active slot reads what its
  *  composer reads; any other slot may have no live run state yet after a
@@ -89,7 +96,7 @@ export function slotBusySteer(state: RootState, slot: string, jevAutoConsented: 
   const rowRunning = !active && !!row?.running
   return busySteerFlag({
     slotKey: slot,
-    busy: selectComposerBusy(state, slot) || rowRunning,
+    busy: slotBusy(state, slot),
     turnRunning: (active ? !!state.chat.slotRunning : selectSlotStreamState(state, slot) !== 'idle') || rowRunning,
     stopState: row?.stop_state,
     jevAutoConsented,

@@ -26,6 +26,7 @@ import { i18nT } from '../i18n/t'
 import { errMessage } from '../utils/thunkError'
 import { fmtDateFields, fmtDateTime, fmtNumber } from '../i18n/format'
 import ErrorNotice from '../components/ErrorNotice'
+import { QuickEditStatusLine } from './ArtifactQuickEditStatus'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import type { UseQueryResult } from '@tanstack/react-query'
 import type {
@@ -327,7 +328,7 @@ export function ArtifactDetailPageBody({
   const {
     activeCommentId, bodyScrollNonce, unreadRootIds, openThreadHandler, activateFromSidebar,
   } = threadsRead
-  const { copyError, setCopyError } = menuRead
+  const { copyError, setCopyError, quickEditStatus } = menuRead
   /** ONE definition, ONE mount point at the top of the chat column: the copy names the composer
    *  beneath it, so a page-top placement would put the instruction a column from what it means. */
   const contextNotice = (
@@ -409,6 +410,7 @@ export function ArtifactDetailPageBody({
         onDismiss={() => setSendToSessionError(null)}
         className="mb-3"
       />
+      <QuickEditStatusLine status={quickEditStatus} />
 
       {/* A failed Copy. */}
       {/* No hand-off: comment draft (sidebar / selection composer text) */}
