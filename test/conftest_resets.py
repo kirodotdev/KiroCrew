@@ -174,6 +174,28 @@ def _drop_live_config_snapshot():
 
 
 @pytest.fixture(autouse=True)
+def _forget_tracing_switch():
+    """Give every test an unread tracing switch.
+
+    ``kiro_crew.tracing.provider`` resolves the switch once and serves the cached
+    answer until ``reset_for_testing()``. A test that boots the gateway services
+    (``service_boot`` calls ``watch_config``, which resolves it) leaves "off" cached,
+    so a later test on the same worker that writes its own config is told tracing
+    is off and exports nothing, with no log line. Measured: ``test_slack_gateway.py``'s
+    ``test_init_services_creates_all`` followed by ``test_tracing_otlp.py``'s
+    ``test_a_traced_turn_reaches_a_loopback_receiver_with_its_vault_header``.
+
+    Reset at setup, not teardown, so ``_no_leaked_telemetry_exporter`` still sees
+    (and reports) an exporter thread a test left running. A test that never
+    imported the module pays one dict lookup.
+    """
+    provider = sys.modules.get("kiro_crew.tracing.provider")
+    if provider is not None:
+        provider.reset_for_testing()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_env_boot_record_and_ownership():
     """Give every test an empty boot ``.env`` record and ``.env`` ownership set.
 
