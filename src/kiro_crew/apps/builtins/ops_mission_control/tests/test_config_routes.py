@@ -8,13 +8,12 @@ this pins that refusal.
 """
 
 import json
-import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
 from aiohttp import web
 
 from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store, routes
@@ -59,14 +58,18 @@ def _payload(response):
 
 
 class _HomeIsolationMixin:
-    """Redirects the data home so config writes land in a temp dir."""
+    """Redirects the data home so config writes land in pytest's per-test dir."""
+
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path):
+        self._tmp_path = tmp_path
 
     def _enter_isolation(self) -> None:
         import os
 
         from kiro_crew.apps.builtins.ops_mission_control.backend import registry
 
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self.tmp)
         self._clear_caches()
@@ -83,7 +86,6 @@ class _HomeIsolationMixin:
         else:
             os.environ["KIROCREW_HOME"] = self._prev
         self._clear_caches()
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     @staticmethod
     def _clear_caches():

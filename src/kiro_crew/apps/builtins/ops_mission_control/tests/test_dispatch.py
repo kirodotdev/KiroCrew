@@ -7,11 +7,11 @@ memory mechanism decorative. Both fail quietly in production, so both are pinned
 """
 
 import json
-import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from kiro_crew.testing.synthetic_credentials import synth
 
@@ -23,12 +23,17 @@ _PAT2 = "glpat-" + synth(20, seed=14)
 class _HomeIsolated(unittest.IsolatedAsyncioTestCase):
     """Redirects the data home and resets the provider registry per test."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory as the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
         from kiro_crew.apps.builtins.ops_mission_control.backend import registry
 
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         self._prev_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self.tmp)
         self._clear_caches()
@@ -49,7 +54,6 @@ class _HomeIsolated(unittest.IsolatedAsyncioTestCase):
         else:
             os.environ["KIROCREW_HOME"] = self._prev_home
         self._clear_caches()
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     @staticmethod
     def _clear_caches():
