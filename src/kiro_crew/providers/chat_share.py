@@ -384,6 +384,21 @@ async def _kill_stranded(runtime: AcpRuntime | None, reason: str) -> None:
         logger.debug("chat runtime sharing: stranded-runtime kill failed", exc_info=True)
 
 
+def _names_owner(tree: Path, pid: int) -> bool:
+    """Does *tree*'s owner marker, read back the way the sweep reads it, name *pid*?
+
+    ``adopt_owner`` answers ``"recorded"`` without writing when the tree has no
+    marker, so its answer alone does not show the sweep will see *pid*.
+    """
+    from kiro_crew import agent_scratch
+
+    try:
+        pids = agent_scratch._read_owner_pids(tree / agent_scratch.OWNER_FILENAME)
+    except (OSError, ValueError, agent_scratch.ScratchBoundaryError):
+        return False
+    return pid in pids
+
+
 class ChatSharePlacement:
     """One eligible chat start's placement: its key, its lease, and whether it joined."""
 
@@ -474,7 +489,7 @@ class ChatSharePlacement:
         self.key = self._build_key()
 
     def _build_key(self) -> ChatRuntimeKey:
-        """This session's key from the state as it stands NOW (the scratch tree can move)."""
+        """This session's key from the state as it stands NOW."""
         p = self._provider
         return ChatRuntimeKey.build(
             work_dir=self._work_dir,
@@ -484,7 +499,6 @@ class ChatSharePlacement:
             acp_backend=p._client.backend,
             tool_search=p._tool_search_settings(),
             memory_mode=p.memory_mode,
-            shared_scratch=p._shared_scratch,
             mcp_gateway_overlay=self._overlay,
             mcp_gateway_socket=self._socket,
             model=self._model,
@@ -551,44 +565,6 @@ class ChatSharePlacement:
         )
         return generation, era, tier, forward, telemetry
 
-    def _join_own_tree(self) -> Acquisition | None:
-        """A restarted chat's lease on the live process that still exposes its tree.
-
-        A restart carries the tree its session was recorded in (the resume path's
-        ``recorded_tree``, or the process it last ran on), so its key names that
-        path. The process that founded the group allocated the same tree for
-        itself and keyed none, so a plain key match never finds it and the
-        restart would found a second process on one tree. This joins only a
-        process that exposes the tree AND matches every other field of the key
-        (``shared_scratch`` read as the founder's empty value); anything else
-        leaves the tree in the key, and :meth:`place` founds one that mounts it.
-        """
-        tree = self._provider._shared_scratch
-        if tree is None:
-            return None
-        return RUNTIME_OWNERSHIP.join_on_tree(
-            dataclasses.replace(self.key, shared_scratch=""),
-            Path(tree),
-            self.session_key,
-            cap=self.cap,
-        )
-
-    def _published_key_for(self, runtime: object) -> ChatRuntimeKey:
-        """The key a runtime this start FOUNDED is published under.
-
-        A restarted chat keys the tree it was recorded in, and the process it founds
-        mounts that tree and exposes it as its own (``work_scratch_dir``). That
-        process is then the same as one a fresh chat founds and allocates a tree
-        for, so it is published with the founder's empty ``shared_scratch``: a fresh
-        chat of the same tree joins it, and a later restart on that tree finds it
-        through :meth:`_join_own_tree`. A runtime that does not expose the tree
-        keeps the full key, so nothing lands on it without the tree.
-        """
-        tree = self._provider._shared_scratch
-        if tree is not None and getattr(runtime, "work_scratch_dir", None) == Path(tree):
-            return dataclasses.replace(self.key, shared_scratch="")
-        return self.key
-
     async def _admit_joiner(self, placed: Acquisition) -> None:
         """Run the fork-governance admission a founder ran inside ``spawn()``.
 
@@ -612,15 +588,44 @@ class ChatSharePlacement:
             )
             raise
 
-    async def place(self, spawn: Callable[[], Awaitable[AcpRuntime]]) -> AcpRuntime:
+    async def place(
+        self,
+        spawn: Callable[[], Awaitable[AcpRuntime]],
+        recorded_scratch: Path | None = None,
+    ) -> AcpRuntime:
+        """Take a lease on a compatible runtime (or found one), then confirm the placement.
+
+        *recorded_scratch* is the directory a resumed chat was recorded in. It is
+        held for the sweep's grace window before the acquisition
+        (:func:`~kiro_crew.agent_scratch.shared_scratch_window`, as a spawn holds
+        a tree it mounts), and a join that does not mount it adopts it at once
+        (:meth:`_keep_unmounted_scratch`).
+        """
+        if recorded_scratch is not None:
+            from kiro_crew import agent_scratch
+
+            await asyncio.to_thread(agent_scratch.shared_scratch_window, recorded_scratch)
+        runtime = await self._place(spawn)
+        try:
+            return await self._keep_unmounted_scratch(recorded_scratch, runtime, spawn)
+        except BaseException:
+            # The lease is already held (``_accept``) and the caller's release
+            # path is not reached from here, so a failure or cancellation in the
+            # owner update releases it, through any cancellation, before it
+            # propagates -- as ``_admit_joiner`` does.
+            lease, self.lease = self.lease, None
+            if lease is not None:
+                await _kill_stranded(
+                    await _settle_release(lease),
+                    "chat runtime sharing: scratch retention cancelled",
+                )
+            raise
+
+    async def _place(self, spawn: Callable[[], Awaitable[AcpRuntime]]) -> AcpRuntime:
         """Take a lease on a compatible runtime (or found one), then confirm the placement."""
         for _ in range(_PLACEMENT_ATTEMPTS):
-            placed = self._join_own_tree() or await RUNTIME_OWNERSHIP.acquire(
-                self.key,
-                self.session_key,
-                spawn,
-                cap=self.cap,
-                published_key=self._published_key_for,
+            placed = await RUNTIME_OWNERSHIP.acquire(
+                self.key, self.session_key, spawn, cap=self.cap
             )
             try:
                 generation, era, tier, forward, telemetry = await self._read_confirmation()
@@ -753,18 +758,78 @@ class ChatSharePlacement:
             _log_why_not_joined(self.key, self.session_key, runtime)
         return runtime
 
-    async def replace_dead(self, spawn: Callable[[], Awaitable[AcpRuntime]]) -> AcpRuntime:
+    async def _keep_unmounted_scratch(
+        self,
+        recorded: Path | None,
+        runtime: AcpRuntime,
+        spawn: Callable[[], Awaitable[AcpRuntime]],
+    ) -> AcpRuntime:
+        """Keep a joiner's recorded scratch directory alive as long as the tree's process.
+
+        A JOINER runs in the process's own directory, so the one it recorded
+        before (a resumed chat's old tree) is not mounted and its record
+        moves to the process's directory. Left alone, that old directory's
+        owner is a process that has exited, and the sweep reclaims it an hour
+        later. The shared process is added as its owner instead
+        (:func:`~kiro_crew.agent_scratch.adopt_owner`), so it lives exactly as
+        long as the tree's process and is then swept by the ordinary rules.
+
+        Runs right after the placement, before any session setup, so the hold
+        :meth:`place` took on the directory covers the gap. The join stands only
+        once the marker is read back naming the shared process. Any other answer
+        -- no marker to join (``"recorded"`` on an unowned tree), a write that
+        failed (``"unwritable"``, ``"stale"``), a planted link (``"refused"``) or
+        a marker this module did not write (``"garbled"``) -- gives up the join,
+        and this session founds its own process, which mounts its directory.
+        """
+        live = getattr(runtime, "work_scratch_dir", None)
+        pid = runtime.pid
+        if not self.joined or not isinstance(recorded, Path) or not isinstance(live, Path):
+            return runtime
+        if pid is None or recorded == live or not await asyncio.to_thread(recorded.is_dir):
+            return runtime
+        from kiro_crew import agent_scratch
+
+        outcome = await asyncio.to_thread(agent_scratch.adopt_owner, recorded, pid)
+        if outcome != "recorded" or not await asyncio.to_thread(_names_owner, recorded, pid):
+            lease, self.lease = self.lease, None
+            if lease is not None:
+                await _kill_stranded(
+                    await _settle_release(lease),
+                    "chat runtime sharing: recorded scratch could not be kept",
+                )
+            return await self._place_alone(
+                spawn,
+                f"session {self.session_key} could not keep its scratch directory "
+                f"{recorded.name!r} on a shared runtime (owner update: {outcome})",
+            )
+        logger.warning(
+            "chat runtime sharing: session %s joined runtime=%s; its earlier scratch "
+            "directory %r is not mounted and stays on disk while that runtime runs "
+            "(owner update: %s)",
+            self.session_key,
+            runtime.pid,
+            recorded.name,
+            outcome,
+        )
+        return runtime
+
+    async def replace_dead(
+        self,
+        spawn: Callable[[], Awaitable[AcpRuntime]],
+        recorded_scratch: Path | None = None,
+    ) -> AcpRuntime:
         """Place again after the runtime died during a resume.
 
         The lease on the corpse is released first, so the table forgets the dead
-        entry, and the key is rebuilt: the provider's scratch tree just moved onto
-        the dead process's. Through the same confirmed placement as the cold start.
+        entry, and the key is rebuilt. Through the same confirmed placement as the
+        cold start.
         """
         if self.lease is not None:
             lease, self.lease = self.lease, None
             await _settle_release(lease)
         self.key = self._build_key()
-        return await self.place(spawn)
+        return await self.place(spawn, recorded_scratch)
 
     async def abandon(self, runtime: AcpRuntime, session_id: str | None) -> None:
         """Undo a start that failed after placement, without ending co-tenants.

@@ -76,7 +76,6 @@ def a_key(**overrides) -> ChatRuntimeKey:
         acp_backend="kiro",
         tool_search=None,
         memory_mode="persistent",
-        shared_scratch=None,
         mcp_gateway_overlay=None,
         mcp_gateway_socket=None,
     )
@@ -662,7 +661,6 @@ class TestChatRuntimeKey:
             ("extra_env", {"A": "9"}),
             ("acp_backend", "kas"),
             ("memory_mode", "incognito"),
-            ("shared_scratch", Path("/scratch/tree-a")),
             ("mcp_gateway_overlay", "/overlay/a.json"),
             ("mcp_gateway_socket", "/run/gw.sock"),
             ("model", "some-model-id"),
@@ -1234,13 +1232,15 @@ class TestThePlacementIsConfirmedAgainstTheSpecAfterwards:
         start_src = Path(start_mod.__file__).read_text(encoding="utf-8")
         # BOTH placements go through the one confirming body: the cold start and
         # the rebuild after the runtime died during resume.
-        assert "await share.place(_found_shared_runtime)" in start_src
-        assert "await share.replace_dead(_found_shared_runtime)" in start_src
+        assert "await share.place(_found_shared_runtime, self._shared_scratch)" in start_src
+        assert "await share.replace_dead(_found_shared_runtime, self._shared_scratch)" in start_src
         source = Path(share_mod.__file__).read_text(encoding="utf-8")
         replace = source[
             source.index("async def replace_dead(") : source.index("async def abandon(")
         ]
-        assert "await self.place(spawn)" in replace, "the rebuild skips the confirmation"
+        assert (
+            "await self.place(spawn, recorded_scratch)" in replace
+        ), "the rebuild skips the confirmation"
         read = source[
             source.index("async def _read_confirmation(") : source.index("async def _admit_joiner(")
         ]
@@ -1265,8 +1265,9 @@ class TestThePlacementIsConfirmedAgainstTheSpecAfterwards:
         import ast
 
         tree = ast.parse(source)
+        # The confirming loop is ``_place``, which ``place`` wraps.
         placement = next(
-            n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "place"
+            n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_place"
         )
         for node in ast.walk(placement):
             if not isinstance(node, ast.If):

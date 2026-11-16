@@ -938,7 +938,9 @@ async def _start_kiro_runtime_impl(
     _t_spawn = time.monotonic()
     try:
         if share is not None:
-            runtime = await share.place(_found_shared_runtime)
+            # A resumed chat's recorded tree is held before the placement and
+            # kept on disk when the process it joins does not mount it.
+            runtime = await share.place(_found_shared_runtime, self._shared_scratch)
             meta["chat_runtime_shared"] = True
             meta["chat_runtime_joined"] = share.joined
             meta["chat_runtime_leases"] = share.leases_on_runtime
@@ -1068,7 +1070,7 @@ async def _start_kiro_runtime_impl(
                 # replacement joins, and the replacement is placed (and
                 # confirmed) through the same registry as the cold start.
                 self._shared_scratch = self._shared_scratch or runtime.work_scratch_dir
-                runtime = await share.replace_dead(_found_shared_runtime)
+                runtime = await share.replace_dead(_found_shared_runtime, self._shared_scratch)
                 meta["chat_runtime_recovered"] = True
                 meta["chat_runtime_joined"] = share.joined
             elif not runtime.is_alive():

@@ -511,8 +511,6 @@ class ChatRuntimeKey:
         The same mirror: ``_SHAREABLE_MEMORY_MODES`` admits one mode, so this
         field also carries a single value on every shared key, and for the same
         reason it stays.
-    ``shared_scratch``
-        The session tree's work directory, mounted into the process.
     ``mcp_gateway_overlay`` / ``mcp_gateway_socket``
         Held on the runtime and read when composing each session's MCP array.
         Scope is ambiguous, so both are in the key.
@@ -620,7 +618,6 @@ class ChatRuntimeKey:
     acp_backend: str
     tool_search: tuple[object, ...]
     memory_mode: str
-    shared_scratch: str
     mcp_gateway_overlay: str
     mcp_gateway_socket: str
     reasoning_effort: str
@@ -647,7 +644,6 @@ class ChatRuntimeKey:
         acp_backend: str,
         tool_search: "ToolSearchSettings | None",
         memory_mode: str,
-        shared_scratch: Path | None,
         mcp_gateway_overlay: str | Path | None,
         mcp_gateway_socket: str | Path | None,
         model: str | None = None,
@@ -691,7 +687,6 @@ class ChatRuntimeKey:
             acp_backend=acp_backend or "",
             tool_search=_freeze_tool_search(tool_search),
             memory_mode=memory_mode or "",
-            shared_scratch=_freeze_path(shared_scratch),
             mcp_gateway_overlay=_freeze_path(mcp_gateway_overlay),
             mcp_gateway_socket=_freeze_path(mcp_gateway_socket),
             reasoning_effort="" if "reasoning_effort" in per_session else reasoning_effort or "",
