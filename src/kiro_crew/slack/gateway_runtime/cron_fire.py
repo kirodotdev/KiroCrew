@@ -317,6 +317,27 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
     # A run the service's stop cuts short is filed cancelled and not retried,
     # so the owner is told here rather than left with only the history row.
     self.cron_svc.set_interrupt_alert(self._alert_cron_interrupted)
+    # A persisted auto-pause never runs again until resumed; the save that
+    # detects its rising edge runs on a worker thread, so the callback only
+    # hands the async notice to this loop. The futures are tracked so the
+    # exit path can drain a notice still in flight, bounded, before the loop
+    # ends. Per-service, like the two alerts above: it dies with the service.
+    # Read into a local while the create above still narrows the Optional:
+    # the nested def below would widen the attribute for the checker.
+    _cron_svc = self.cron_svc
+    _loop = asyncio.get_running_loop()
+
+    def _notify_auto_pause(job: CronJob, streak: int, reason: str) -> None:
+        fut = asyncio.run_coroutine_threadsafe(
+            self._alert_cron_auto_paused(job, streak, reason), _loop
+        )
+        # add() runs on whatever thread the save fired on while the done
+        # callback discards on the loop thread; each set operation is atomic
+        # under the GIL, so no lock is needed around the pair.
+        self._auto_pause_alerts.add(fut)
+        fut.add_done_callback(self._auto_pause_alerts.discard)
+
+    _cron_svc.set_auto_pause_alert(_notify_auto_pause)
     if self._no_crons:
         logger.info("Cron scheduler disabled (--no-crons)")
     else:

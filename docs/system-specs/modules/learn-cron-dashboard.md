@@ -905,6 +905,52 @@ state the alert exists to prevent.
 - **`job.silent` gates every surface identically.** `_alert_cron_failure` returns
   before any of them; the `message` arm gates the channel leg on `not job.silent`
   exactly as it gates the Slack DM. A silent job still counts toward auto-pause.
+  The one notice `silent` does not gate is the auto-pause notice below: `silent`
+  suppresses a run's noise, and a job whose schedule just ended for every future
+  run is not run noise.
+- **A recurring job that pauses itself is announced on every surface, silent
+  included.** The notice has ONE owner: the store save's rising-edge detector
+  (`store_sync._save`), which announces when a save writes `auto_paused` True
+  for a job whose disk state was unpaused, against the service's
+  `_announced_pauses` snapshot. Every pause writer — `record_failure` on the
+  claim, the stored-limit land (`pause_at_current_limit`), the settlement, the
+  terminal reap/cancel merge, the loop-stall breaker — persists through that
+  save under the store lock, so whichever save lands the pause first
+  announces it, the next save sees no edge (the flush/merge race cannot
+  double it), and the notice never outruns the disk: a pause a failed save
+  refused, or a mid-run limit raise cleared at the merge, was never announced
+  and owes no correction. `_load` rebuilds the snapshot silently from the
+  DISK's states, read before held records re-apply in memory — so a boot or a
+  reload of another process's write never re-announces a pause that save
+  already announced, while a held pause re-applied over a fresh copy still
+  presents an edge to the save that persists it. The callback is per-service
+  (`CronService.set_auto_pause_alert`, registered by `_init_cron` beside the
+  timeout and interrupt alerts, with the gateway loop captured — saves run on
+  worker threads, so it only hands the notice to that loop); it receives `(job, streak, reason)` with the streak and reason read
+  from the SERIALIZED DOCUMENT the save wrote — never from the live job,
+  which a concurrent `record_failure` can mutate between the serialization
+  and the edge loop (persist-before-you-publish) — so a resume-plus-success
+  in the hand-off window cannot turn the notice into "0 consecutive
+  failures", and the notice never claims more than the disk holds. The streak is passed
+  only when the written count reached the stored limit — a pause landed
+  another way (the loop-stall breaker's, even over incidental failures below
+  the limit) says "Paused itself" without a count, its cause (the written
+  `last_error`) in the reason block, so the notice never blames failures that
+  did not pause the job. The gateway's
+  `_alert_cron_auto_paused` rings the bell and runs the one-surface ladder
+  (`_deliver_failure_alert`, deliberately without `silent`), naming the
+  streak, the resume affordances (Schedule page, `cron resume <id>`,
+  `kirocrew cron resume <id>`) and the fenced last error; label and reason
+  take the shared `_scrubbed` passes. No dedup anchor moves — once per
+  transition has nothing to dedup. A failed one-shot's pause is retention
+  bookkeeping with its own unconditional failure alert and is not announced.
+  Gateway exit drains in-flight notices bounded
+  (`_INTERRUPT_ALERT_WAIT_SECS`), then clears only its OWN registration, in a
+  finally, so a raising stop cannot leave a closed loop registered and a
+  newer in-process orchestrator keeps its notifier. SEL row:
+  `cron_auto_pause_alert`. Without this, a job that auto-paused read as idle
+  from the moment it stopped — on a silent job, with no earlier failure alert
+  either, a schedule could end with no word at all.
 - **The channel gets an unescaped twin, not the Slack string.** mrkdwn escaping and
   fence-neutralization are Slack-sink concerns; a ``` fence or a `&lt;` would reach
   another channel's reader literally. Both legs compose from the same

@@ -128,6 +128,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_run_job_isolated": ("function", True, "3e2c7932e9d5", "run_execution"),
     "_run_session_keys": ("function", False, "abecf674945c", "run_registry"),
     "_save": ("function", False, "ce13e6013574", "store_sync"),
+    # The save's rising-edge auto-pause announcer, split out so the seam
+    # import opens its reader.
+    "_announce_saved_pause_edges": ("function", False, "a45ea0daa81c", "store_sync"),
     "_save_held_run_records_locked": ("function", False, "b60c5fea256e", "run_merge"),
     "_saved_job_state": ("function", False, "7d3f7de35812", "run_merge"),
     "_session_process_handles": ("function", False, "21bf19694843", "run_kill"),
@@ -193,6 +196,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "set_interrupt_alert": ("function", False, "7a2c52d9ea93", "run_registry"),
     "set_refresh_callback": ("function", False, "7a2c52d9ea93", "run_registry"),
     "set_timeout_alert": ("function", False, "7a2c52d9ea93", "run_registry"),
+    # The save's rising-edge auto-pause notice callback, per-service like the
+    # timeout and interrupt alerts.
+    "set_auto_pause_alert": ("function", False, "7a2c52d9ea93", "store_sync"),
     "start": ("function", True, "b60c5fea256e", "service_lifecycle"),
     "start_reaper": ("function", False, "bbb4b664cf76", "run_teardown"),
     "status": ("function", False, "16d9fe32838b", "store_sync"),

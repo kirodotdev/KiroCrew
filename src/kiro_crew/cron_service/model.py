@@ -450,7 +450,12 @@ class CronJob:
         auditable per the security-controls guideline. Best-effort — an audit
         write failure must never mask the failure/success bookkeeping that drives
         the pause itself; the tool-invocation error paths already log the run
-        outcome separately."""
+        outcome separately.
+
+        The user-facing auto-pause notice does NOT ride this audit: it fires
+        on the stored pause's rising edge, at the save (``store_sync._save``),
+        so every writer shares one owner and the notice never outruns the
+        disk."""
         from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
         try:
@@ -588,6 +593,10 @@ class CronJob:
         default threshold, the backoff in :meth:`failure_backoff_until`, so a job
         that stays signed out keeps a bounded retry rate. A later failure of
         another kind pauses the job as usual once the streak is at its limit.
+
+        The notice for the pause this lands fires at the SAVE that persists
+        it (``store_sync._save``'s rising edge), never here: this runs on the
+        claim's copy, and the stored limit decides the pause at the merge.
         """
         counted = self.count_failure()
         self.failure_auth_expiry = auth_expiry
