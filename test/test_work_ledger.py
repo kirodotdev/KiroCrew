@@ -1656,6 +1656,10 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # change: it reads the bound item and writes it only through
         # ``apply_remote_report``, exactly as ``remote_ingest.py`` did before the split.
         "dashboard/handlers/remote_ingest_report.py",
+        # Its peer-report selection: which peer reports a pull files, from the peer
+        # event ids the crew log holds. It reads the conductor's board's work fold
+        # and the store's caps and id shape, takes no identity and writes nothing.
+        "dashboard/handlers/remote_ingest_peer.py",
         # Its background puller (rfc-conductor-remote-dispatch open question 1). It
         # takes no identity and writes nothing itself: it lists the boards holding an
         # open crew-bound item (``boards_with_open_remote``) and hands each to
