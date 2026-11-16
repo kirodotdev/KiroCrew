@@ -18,8 +18,11 @@ in ``argv_floor_self`` and the host verdicts in ``argv_floor_hosts``, both below
 
 from __future__ import annotations
 
+import contextvars
 import fnmatch
+import functools
 import re
+from typing import Callable
 
 # The reader names a test instruments on the facade are reached as attributes of
 # the reader module rather than bound here at import: the facade mirrors a patch
@@ -1016,6 +1019,33 @@ def _reaches_self_over_ssh(text_lower: str) -> bool:
     return _is_ssh_to_self(text_lower, own_line=True) or any(map(_is_ssh_to_self, scripts))
 
 
+# How many :func:`_is_ssh_to_self` readings may be open at once. Each nested
+# double-quoted ``$( )``, bound function body or carried value opens one more, so
+# a crafted command could otherwise nest past Python's recursion limit.
+# Only text that names an ssh-family verb ever recurses, and a reading past the
+# bound is refused, never allowed.
+_MAX_SSH_READING_DEPTH = 32
+_ssh_reading_depth = contextvars.ContextVar("_ssh_reading_depth", default=0)
+
+
+def _bounded_ssh_reading(read: "Callable[..., bool]") -> "Callable[..., bool]":
+    """*read*, refused (True) once ``_MAX_SSH_READING_DEPTH`` readings are open."""
+
+    @functools.wraps(read)
+    def bounded(text_lower: str, *, own_line: bool = False) -> bool:
+        depth = _ssh_reading_depth.get()
+        if depth >= _MAX_SSH_READING_DEPTH:
+            return True
+        token = _ssh_reading_depth.set(depth + 1)
+        try:
+            return read(text_lower, own_line=own_line)
+        finally:
+            _ssh_reading_depth.reset(token)
+
+    return bounded
+
+
+@_bounded_ssh_reading
 def _is_ssh_to_self(text_lower: str, *, own_line: bool = False) -> bool:
     """True if *text_lower* opens an ssh/scp/sftp/rsync channel to THIS host.
 
