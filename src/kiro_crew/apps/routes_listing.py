@@ -108,11 +108,14 @@ def _listed_apps_with_trust() -> list[dict[str, Any]]:
 async def handle_list_apps(request: web.Request) -> web.Response:
     """GET /api/apps — list all installed apps."""
     from kiro_crew.dashboard.origin import is_ssm_request
+    from kiro_crew.shared_crew.ssm_guest_access import is_ssm_guest_request
 
-    # Apps stay owner-only for an SSM guest: the invite cookie is the guest's only
-    # credential and an app frame loads without cookies, so no contribution of an
-    # app can run for them. An empty list is what hides every app action.
-    if is_ssm_request(request):
+    # An app frame loads without cookies and its web origin is served only to a
+    # direct local request, so no app's own pages run over the Session Manager
+    # listener. An SSM invite guest still manages apps as the owner does
+    # (create, install, update, enable), so they get the list; any other SSM
+    # request gets the empty list that hides every app action.
+    if is_ssm_request(request) and not is_ssm_guest_request(request):
         return web.json_response([])
     # list_apps() walks the apps dir and reads two files per installed app, and
     # this endpoint re-runs it on every dashboard refresh — so the walk goes off

@@ -956,15 +956,23 @@ def owner_view_for_request(request: web.Request) -> bool:
 
 
 def is_owner_dashboard_request(request: web.Request) -> bool:
-    """Return whether request has a configured or implicit local owner identity."""
+    """Return whether request has a configured or implicit local owner identity.
+
+    An SSM invite guest passes too, on every route but the Terminal
+    (:mod:`kiro_crew.shared_crew.ssm_guest_access`).
+    """
     state = request.app["state"]
     owner_id = str(getattr(state, "owner_id", "") or "")
     caller = str(request.get("user") or "")
     if "app" not in request or request["app"] != "" or not caller:
         return False
-    if owner_id:
-        return caller == owner_id
-    return caller in _LOCAL_DASHBOARD_OWNER_SUBJECTS
+    if owner_id and caller == owner_id:
+        return True
+    if not owner_id and caller in _LOCAL_DASHBOARD_OWNER_SUBJECTS:
+        return True
+    from kiro_crew.shared_crew.ssm_guest_access import ssm_guest_passes_owner_gate
+
+    return ssm_guest_passes_owner_gate(request)
 
 
 def _audit_source_api(
@@ -1025,7 +1033,7 @@ def _authorize_owner_request(request: web.Request, operation: str) -> web.Respon
     if not caller:
         _audit_source_api(request, operation, "denied", "non_owner")
         return web.json_response({"error": "forbidden"}, status=403)
-    if caller != owner_id:
+    if caller != owner_id and not is_owner_dashboard_request(request):
         _audit_source_api(request, operation, "denied", "non_owner")
         # Deny decision made above; the helper only relabels the response for a
         # signed pre-owner bootstrap subject. Every other caller stays generic.

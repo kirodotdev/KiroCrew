@@ -683,8 +683,22 @@ request is the dashboard user `ssm:<invite id>` (never the owner subject), carri
 reads the marker, `origin.is_direct_local_request` answers False for it, the bearer-link
 mints (`_caller_bounds`) lend it no lifetime, so it cannot mint a token that outlives a
 revoke or works on the dashboard port, and `test_ssm_loopback_trust_sites.py` lists every place that trusts a loopback peer
-address and fails when a new one is not classified. The owner gates
-(`is_owner_dashboard_request`, `routes_invites._owner_refusal`) refuse it by subject.
+address and fails when a new one is not classified.
+
+**What a guest may do** (`shared_crew.ssm_guest_access`). An admitted guest passes
+the dashboard owner gate (`is_owner_dashboard_request`) on every route except the
+Terminal's (`/api/terminal…` and `/api/ws/terminal…`, `TERMINAL_PATH_PREFIXES`): the
+Bots and their Dashboards, approval modes including Trust and YOLO, apps, updates
+and settings. `GET /api/terminal/sessions` answers the guest `{"enabled": false}`,
+so their tab hides the Terminal, and every other Terminal route refuses them with
+`owner_only`. The guest keeps the `ssm:<invite id>` subject and the `ssm_invite`
+actor throughout, so every record names them, not the owner. Sharing stays the
+machine owner's: `routes_invites._owner_refusal` admits only the local operator
+or the tailnet's own user, so a guest cannot list, create or revoke invites. An
+app's own pages still do not run over this listener (an app web origin serves
+only a direct local request), so a guest manages apps but does not open their
+pages. The managed-venv update's host-approval step (`/api/update/approve`) stays
+host-local.
 
 **Invites** (`shared_crew.ssm_invites`). The credential is `<invite id>.<secret>`. The
 store (`<data home>/.vault/shared-crew-ssm/invites.json`, owner-only, masked from every
