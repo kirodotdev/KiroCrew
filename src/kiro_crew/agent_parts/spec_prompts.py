@@ -671,6 +671,21 @@ Overview shows that goal; the re-plan itself still waits for the round boundary.
 _CONDUCTOR_SYSTEM_PROMPT = "".join(text for _name, text in _CONDUCTOR_PROMPT_SECTIONS)
 
 
+#: Every ``_LEDGER_CONDUCTOR_RULES`` rule, for an agent that conducts from the
+#: goal-conductor skill without the root charter: the team lead
+#: (``service_agents._install_team_lead_agent``). The skill points at "your
+#: prompt's" rules instead of restating them, so this block is what makes that
+#: pointer true for it. The same text the root charter and a Bot's
+#: ``conductor.patrol`` render; ``test_mate_conductor_parity.py`` holds all three.
+_SHARED_CONDUCTOR_RULES_BLOCK = (
+    "## The rules every conductor shares\n\n"
+    "The dispatch steps are 1. `work_ledger_record` `action=create`, 2. "
+    "`session_create` with `agent` set explicitly, 3. `bind`, 4. the seed.\n\n"
+    + "\n\n".join(rule.strip() for rule in _LEDGER_CONDUCTOR_RULES.values())
+    + "\n"
+)
+
+
 _DASHBOARD_MANAGER_SYSTEM_PROMPT = """# Kiro Crew Dashboard Manager
 
 You change ONE Bot's Dashboard page, and you change nothing else.
