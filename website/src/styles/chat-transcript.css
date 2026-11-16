@@ -193,6 +193,8 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
 
 /* ── Code in messages ── */
 .msg-content code{font-family:var(--mono);font-size:.9em}
+/* Code reads left to right inside right-to-left prose: a block keeps its own direction, and an inline run is isolated so it cannot reorder with the Arabic or Hebrew around it. */
+.msg-content code,.msg-content .code-block,.msg-content .diff-block{direction:ltr;unicode-bidi:isolate}
 .msg-content :not(pre)>code{background:rgba(0,0,0,.15);padding:.15em .4em;border-radius:4px;overflow-wrap:break-word;word-break:break-all}
 [data-mode="light"] .msg-content :not(pre)>code{background:rgba(0,0,0,.06)}
 /* Kiro theme: inline code = neutral elevated surface (Prey/750) + light-purple text (Figma 3906:185658) */

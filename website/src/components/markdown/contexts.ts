@@ -16,6 +16,10 @@ import { createContext } from 'react'
  */
 
 /** Context providing the viewed file's directory path for resolving bare relative image paths. */
+/** True under a blockquote. A quote picks its own direction (`dir="auto"`) from
+ *  its first strong letter, but a child carrying its own `dir` is skipped by that
+ *  search, so a quote's paragraphs leave `dir` off and inherit the quote's. */
+export const InQuoteCtx = createContext(false)
 export const BasePathCtx = createContext<string | null>(null)
 
 /**

@@ -117,16 +117,16 @@ function slugify(children: React.ReactNode): string | undefined {
 
 export const ELEMENT_OVERRIDES = {
   // Headers carry the column's meaning, so never break them mid-label.
-  th({ node, children }) { return <th {...spa('th', node)} className={`${MD_TABLE_HEAD_CELL_CLS} whitespace-nowrap`}>{children}</th> },
-  td({ node, children }) { return <td {...spa('td', node)} className={MD_TABLE_CELL_CLS}>{children}</td> },
+  th({ node, children }) { return <th dir="auto" {...spa('th', node)} className={`${MD_TABLE_HEAD_CELL_CLS} whitespace-nowrap`}>{children}</th> },
+  td({ node, children }) { return <td dir="auto" {...spa('td', node)} className={MD_TABLE_CELL_CLS}>{children}</td> },
   blockquote({ node, children }) { return <CopyableBlockquote node={node}>{children}</CopyableBlockquote> },
   hr({ node }) { return <hr {...sp(node)} className="border-border my-4" /> },
-  h1({ node, children }) { const id = slugify(children); return <h1 {...sp(node)} id={id} className={MD_HEADING_CLS[0]}>{children}</h1> },
-  h2({ node, children }) { const id = slugify(children); return <h2 {...sp(node)} id={id} className={MD_HEADING_CLS[1]}>{children}</h2> },
-  h3({ node, children }) { const id = slugify(children); return <h3 {...sp(node)} id={id} className={MD_HEADING_CLS[2]}>{children}</h3> },
-  h4({ node, children }) { const id = slugify(children); return <h4 {...sp(node)} id={id} className={MD_HEADING_CLS[3]}>{children}</h4> },
-  h5({ node, children }) { const id = slugify(children); return <h5 {...sp(node)} id={id} className={MD_HEADING_CLS[4]}>{children}</h5> },
-  h6({ node, children }) { const id = slugify(children); return <h6 {...sp(node)} id={id} className={MD_HEADING_CLS[5]}>{children}</h6> },
+  h1({ node, children }) { const id = slugify(children); return <h1 {...sp(node)} dir="auto" id={id} className={MD_HEADING_CLS[0]}>{children}</h1> },
+  h2({ node, children }) { const id = slugify(children); return <h2 {...sp(node)} dir="auto" id={id} className={MD_HEADING_CLS[1]}>{children}</h2> },
+  h3({ node, children }) { const id = slugify(children); return <h3 {...sp(node)} dir="auto" id={id} className={MD_HEADING_CLS[2]}>{children}</h3> },
+  h4({ node, children }) { const id = slugify(children); return <h4 {...sp(node)} dir="auto" id={id} className={MD_HEADING_CLS[3]}>{children}</h4> },
+  h5({ node, children }) { const id = slugify(children); return <h5 {...sp(node)} dir="auto" id={id} className={MD_HEADING_CLS[4]}>{children}</h5> },
+  h6({ node, children }) { const id = slugify(children); return <h6 {...sp(node)} dir="auto" id={id} className={MD_HEADING_CLS[5]}>{children}</h6> },
   ul({ node, children, className }) { const isTasks = className?.includes('contains-task-list'); return <ul {...sp(node)} className={isTasks ? MD_TASK_LIST_CLS : MD_UL_CLS}>{children}</ul> },
   // `start` must reach the DOM, not be dropped while attaching a className: a
   // fenced block SPLITS the message into independent markdown documents
@@ -159,7 +159,7 @@ export const ELEMENT_OVERRIDES = {
   },
   li({ node, children, className }) {
     const isTask = className?.includes('task-list-item')
-    if (!isTask) return <li {...spa('li', node)} className={MD_LIST_ITEM_CLS}>{children}</li>
+    if (!isTask) return <li dir="auto" {...spa('li', node)} className={MD_LIST_ITEM_CLS}>{children}</li>
     // Task items use block flow, NOT flex. The previous `flex items-start` row
     // broke two ways: (1) an item containing a NESTED list (tasks.md shape)
     // laid the child <ul> out BESIDE the text; (2) any item long enough to
@@ -180,8 +180,9 @@ export const ELEMENT_OVERRIDES = {
     // it also lands on the loose-mode checkbox nested inside that first <p>.
     return (
       <li
+        dir="auto"
         {...spa('li', node)}
-        className="text-sm leading-normal break-words pl-5 -indent-5 [&_input[type=checkbox]]:mr-1.5 [&_input[type=checkbox]]:align-middle [&>ul]:indent-0 [&>ol]:indent-0 [&>p:not(:first-child)]:indent-0"
+        className="text-sm leading-normal break-words ps-5 -indent-5 [&_input[type=checkbox]]:mr-1.5 [&_input[type=checkbox]]:align-middle [&>ul]:indent-0 [&>ol]:indent-0 [&>p:not(:first-child)]:indent-0"
       >
         {children}
       </li>

@@ -60,7 +60,7 @@ describe('MarkdownRenderer GFM task lists', () => {
   it('keeps the hanging indent pair so the checkbox aligns with the first line', () => {
     const { container } = render(<MarkdownRenderer content={FLAT} />)
     for (const li of taskItems(container)) {
-      expect(li.className).toContain('pl-5')
+      expect(li.className).toContain('ps-5')
       expect(li.className).toContain('-indent-5')
     }
   })
