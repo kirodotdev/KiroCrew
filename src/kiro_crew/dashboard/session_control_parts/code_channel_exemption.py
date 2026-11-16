@@ -256,6 +256,13 @@ def _torn_config_file() -> str:
 #: outbound binding; nothing is wrong, so the conductor may simply try again.
 SESSION_MAP_BUSY_REFUSAL = "the session store is busy saving; try again in a moment"
 
+#: Whether the channel is shared is not freshly on record (no reading, or one older
+#: than ``audience.READING_TTL_SECS``); a read was just started, so it passes.
+AUDIENCE_UNREAD_REFUSAL = (
+    "whether the code channel is shared outside this workspace is not "
+    "freshly on record -- it is being checked now, so retry in a moment"
+)
+
 #: The refusal while the owner has not turned helper agents on. It names the control
 #: a person uses -- the Settings path and the toggle's own label -- and the config key
 #: only in parentheses, because an agent relays this text to the person as is.
@@ -364,10 +371,7 @@ def _channel_state_refusal(binding: Any) -> str:
     archived = audience.channel_archived(binding.channel_id)
     if shared is None or archived is None:
         audience.refresh_soon(binding.channel_id)
-        return (
-            "whether the code channel is shared outside this workspace is not "
-            "freshly on record -- it is being checked now, so retry in a moment"
-        )
+        return AUDIENCE_UNREAD_REFUSAL
     if archived:
         # The same fresh reading: Slack archived it, possibly while the gateway
         # was offline, when no event reached this process to stamp it.
