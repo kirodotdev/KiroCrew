@@ -16,6 +16,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -1123,7 +1124,7 @@ def test_redact_history_rows_only_touches_the_window_not_the_frozen_prefix():
     """
     from kiro_crew.dashboard.chat_handlers import _redact_history_rows
 
-    secret = "ghp_" + "a" * 36  # a token-shaped string the credential scanner redacts
+    secret = github_classic(seed=81)  # a valid-checksum token the credential scanner redacts
     rows = [{"role": "assistant", "content": f"p{i} {secret}", "ts": ""} for i in range(5)]
 
     out = _redact_history_rows(rows, window_limit=2)
@@ -1148,8 +1149,8 @@ def test_redact_history_rows_normalises_structured_content_to_a_redacted_string(
     from kiro_crew.dashboard.chat_handlers import _redact_history_rows
     from kiro_crew.dashboard.chat_persistence import _build_message_entry_uncached
 
-    secret = "ghp_" + "b" * 36  # token-shaped; the credential scanner redacts it
-    key_secret = "ghp_" + "d" * 36  # a credential sitting in a dict KEY
+    secret = github_classic(seed=82)  # a valid-checksum token; the scanner redacts it
+    key_secret = github_classic(seed=83)  # a credential sitting in a dict KEY
     nested = [
         {"type": "text", "text": f"leading {secret} trailing"},
         {"type": "text", "text": [f"deeper {secret}"]},  # list leaf, one level down
@@ -1186,7 +1187,7 @@ def test_normalise_structured_content_is_bounded_and_never_raises():
         _normalise_structured_content,
     )
 
-    secret = "ghp_" + "c" * 36
+    secret = github_classic(seed=84)
     # A normal nested structure: serialised and redacted, token gone, is a string.
     out = _normalise_structured_content([{"text": f"x {secret} y"}])
     assert isinstance(out, str) and secret not in out

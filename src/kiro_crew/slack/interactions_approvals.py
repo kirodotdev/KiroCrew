@@ -225,14 +225,12 @@ async def _handle_review_approve(payload: dict, action: dict) -> None:
         raise
     # Approving a draft posts it publicly to the channel, so this egress carries
     # the same silent-corruption hazard as the streaming reply path: the two lines
-    # above replaced a credential or a suspicious URL in the draft with a
-    # placeholder, and a channel member who copies the command hits an opaque
-    # downstream failure with no hint the text was rewritten. Count the tags in
-    # the redacted draft that actually shipped -- credential tags exactly, the URL
-    # tag by `EXFILTRATION_REDACTION_TAG_PREFIX` prefix since it interpolates the
-    # domain -- and post one best-effort follow-up notice worded by kind (the
-    # remedies differ). The notice carries only counts, never secret bytes or the
-    # redacted domain, and its failure must not undo the posted draft -- the draft
+    # above replaced a credential in the draft with a placeholder, and a channel
+    # member who copies the command hits an opaque downstream failure with no hint
+    # the text was rewritten. Count the tags in the redacted draft that actually
+    # shipped (`count_redaction_tags`) and post one best-effort follow-up notice.
+    # The notice carries only counts, never secret bytes, and its failure must not
+    # undo the posted draft -- the draft
     # is already public, so raising here would lose the warning and the approve's
     # remaining teardown too.
     _cred_redactions, _url_redactions = count_redaction_tags(draft)

@@ -27,15 +27,16 @@ from kiro_crew.acp.runtime import AcpRequestTimeout
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.session import SessionManager
 from kiro_crew.taskrunner_switch import TASK_RUNNER_OFF_MESSAGE
-from kiro_crew.testing.synthetic_credentials import B64, synth
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until, await_until, finished
 from kiro_crew.workflows.library import WorkflowDefinitionLibrary
 from kiro_crew.workflows.service import WorkflowService
 from kiro_crew.workflows.store import WorkflowRunStore
 
-# A synthetic 40-character value in an AWS secret key's shape, which the source
-# gate must refuse. Built at run time; not a real credential.
-_PLANTED = synth(40, B64, seed=3)
+# A synthetic GitHub token with a valid checksum, which the source gate must
+# refuse. Built at run time; not a real credential. A bare 40-character run in an
+# AWS secret's shape is no credential by itself and would prove nothing here.
+_PLANTED = github_classic(seed=56)
 
 pytestmark = pytest.mark.asyncio
 

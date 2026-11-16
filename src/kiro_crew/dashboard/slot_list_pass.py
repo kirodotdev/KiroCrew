@@ -37,9 +37,13 @@ every session those rows omit.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import weakref
 from typing import TYPE_CHECKING, NamedTuple
+
+from kiro_crew import redaction_seams
+from kiro_crew.security.redaction_switch import always_scan, bypassed_in
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
@@ -67,8 +71,9 @@ class SlotPass(NamedTuple):
     hold_channels: bool
 
 
-#: The loop a pass runs on, ``include_check_status`` and ``dashboard_user``.
-_Audience = tuple[asyncio.AbstractEventLoop, bool, bool]
+#: The loop a pass runs on, ``include_check_status``, ``dashboard_user`` and whether
+#: its redaction stands down (``redaction_switch.bypassed_in``).
+_Audience = tuple[asyncio.AbstractEventLoop, bool, bool, bool]
 
 
 def window_after(duration: float) -> float:
@@ -137,7 +142,11 @@ async def shared_slot_pass(
     state built without its lock.
     """
     loop = asyncio.get_running_loop()
-    audience: _Audience = (loop, bool(include_check_status), bool(dashboard_user))
+    # Whether the pass's redaction stands down for this caller is part of who it is
+    # for: an owner's pass with redaction off is never handed to another reader. As
+    # the display battery's own CHAT seam answers it, since the pass opens that seam.
+    bypassed = bypassed_in(redaction_seams.CHAT)
+    audience: _Audience = (loop, bool(include_check_status), bool(dashboard_user), bypassed)
     try:
         by_audience = _PASSES.setdefault(state, {})
     except TypeError:
@@ -163,11 +172,17 @@ def _serialize(state: DashboardState, audience: _Audience) -> SlotPass:
     Only a dashboard audience reads the held keys and the channel hold: they name
     sessions an app token's filtered rows may not hold, so no other audience is
     sent them, and none reads them.
+
+    A pass for an audience whose redaction does not stand down runs every credential
+    pass in full: a trailing pass runs in its first caller's context, and the owner
+    may have turned redaction off after that caller joined, while a teammate who
+    joined since waits for the same rows.
     """
-    _loop, include_check_status, dashboard_user = audience
-    rows = state.serialize_slots(
-        include_check_status=include_check_status, dashboard_user=dashboard_user
-    )
+    _loop, include_check_status, dashboard_user, bypassed = audience
+    with contextlib.nullcontext() if bypassed else always_scan():
+        rows = state.serialize_slots(
+            include_check_status=include_check_status, dashboard_user=dashboard_user
+        )
     partial = getattr(state, "slot_list_rebuilding", False) is True
     if not dashboard_user:
         return SlotPass(rows=rows, partial=partial, held_keys=(), hold_channels=False)

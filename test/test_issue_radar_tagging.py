@@ -22,6 +22,7 @@ from dashboard_owner_helpers import NoConfiguredOwner
 
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
 from kiro_crew.apps.builtins.issue_radar.backend import provider, routes, store
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # The route helpers are provider-dispatched now, so they take a repo key
 # rather than a loose owner/repo pair. GitHub is used throughout here, so
@@ -38,13 +39,15 @@ class TestSuggestionRedaction(unittest.IsolatedAsyncioTestCase):
 
     LABELS = [{"name": "bug", "color": "ee0000", "description": ""}]
     BATCH = [{"number": 7, "title": "t", "body": "b"}]
-    # Assembled at runtime so the fixture is not itself a greppable secret.
-    FAKE_TOKEN = "ghp" + "_" + ("z4Kq" * 9)
+    # Built at runtime so the fixture is not itself a greppable secret.
+    FAKE_TOKEN = github_classic(seed=118)
     # A credential-BEARING URL. A plain link is deliberately not redacted — that
     # would flag every legitimate URL — so the exfil pass is asserted against the
-    # case it actually exists for: a secret smuggled out in the query string.
+    # case it actually exists for: a secret smuggled out in the query string. The
+    # value goes and the link stays.
+    EXFIL_SECRET = "A1b2C3d4" * 5
     EXFIL_URL = (
-        "https://attacker.example.com/collect?aws_secret_access_key=" + ("A1b2C3d4" * 5)
+        "https://attacker.example.com/collect?aws_secret_access_key=" + EXFIL_SECRET
     )
 
     async def test_reason_is_redacted_before_it_reaches_the_dashboard(self):
@@ -61,7 +64,7 @@ class TestSuggestionRedaction(unittest.IsolatedAsyncioTestCase):
             )
         reason = got["7"][0]["reason"]
         self.assertNotIn(self.FAKE_TOKEN, reason)
-        self.assertNotIn("aws_secret_access_key", reason)
+        self.assertNotIn(self.EXFIL_SECRET, reason)
         # The label itself still survives — redaction must not eat the signal.
         self.assertEqual(got["7"][0]["name"], "bug")
 

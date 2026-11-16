@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 from slack_code_channel_surface_helpers import (  # noqa: F401 - fixtures by name
     BRANCH,
     CH,
@@ -171,7 +172,7 @@ def test_missing_scope_answer_degrades(env: Any) -> None:
 def test_html_view_is_redacted_and_sends_no_csp(env: Any) -> None:
     _bind(env)
     env.api.responses["agents.conversations.setView"] = {"ok": True, "view_id": "V1"}
-    secret = "ghp_" + "A" * 36
+    secret = github_classic(seed=87)
     out = _run(
         env, tools.SET_VIEW, {"view_key": "r.html", "name": "Report", "content": f"<p>{secret}</p>"}
     )
@@ -1156,7 +1157,7 @@ def test_exfiltration_urls_are_redacted_and_bad_links_refused(env: Any) -> None:
     from kiro_crew.security import redact
 
     _bind(env)
-    leak = "https://attacker.example/c?d=" + "ghp_" + "B" * 36
+    leak = "https://attacker.example/c?d=" + github_classic(seed=88)
     assert redact(leak) != leak
     out = _run(env, tools.SET_CONTEXT_BAR, {"items": [{"key": "x", "label": "x", "url": leak}]})
     assert out.code == "invalid_arguments" and env.api.calls == []
@@ -1194,7 +1195,7 @@ def test_a_wrap_up_that_never_reached_the_session_is_disarmed(env: Any) -> None:
 
 def test_wrap_up_facts_and_identifiers_pass_the_redaction(env: Any, monkeypatch: Any) -> None:
     _bind(env)
-    token = "ghp_" + "C" * 36
+    token = github_classic(seed=89)
 
     async def facts(_b: Any) -> wrapup.Facts:
         return wrapup.Facts(branch=f"x<!channel>{token}", changes="1 file changed")

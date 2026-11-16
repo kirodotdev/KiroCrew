@@ -28,6 +28,7 @@ from dashboard_approval_helpers import (
     _set_stream,
 )
 from real_session_manager import open_session, real_sessions
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat import _run_chat
@@ -106,7 +107,8 @@ class TestApprovalModes:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "purpose", ["Inspect the isolated workspace", "", "Inspect token ghp_" + "a" * 36]
+        "purpose",
+        ["Inspect the isolated workspace", "", "Inspect token " + github_classic(seed=67)],
     )
     async def test_pending_permission_persists_its_own_redacted_purpose(self, tmp_path, purpose):
         state, client = _make_state(tmp_path, context_builder=_context_builder())

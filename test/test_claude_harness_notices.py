@@ -63,6 +63,7 @@ from kiro_crew.dashboard.chat_turn import session_events
 from kiro_crew.dashboard.harness_notice_rows import notice_row
 from kiro_crew.dashboard.state_parts.transcript_rows import is_turn_interrupted
 from kiro_crew.dashboard.system_notices import HARNESS_ADVISORY_KIND
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 FIXTURE = CORPUS / "claude" / "harness-notices.jsonl"
@@ -252,7 +253,7 @@ def test_the_transcript_quotes_every_line_like_the_adapter() -> None:
 
 
 def test_notice_text_is_redacted_and_bounded() -> None:
-    secret = "ghp_" + "a" * 36
+    secret = github_classic(seed=352)
     notice = parse_notice(_notice(f"token {secret}", "x" * 5000, "warning"))
     assert notice is not None
     assert secret not in notice.title

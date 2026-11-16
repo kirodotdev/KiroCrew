@@ -32,6 +32,7 @@ from kiro_crew.discord.commands import parse_command, parse_command_argument
 from kiro_crew.history import transcript_stem
 from kiro_crew.messaging import session_resume as resume_core
 from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # The shared autouse fixture, bound here by name so pytest registers it for this module.
 _isolated_home = discord_sessions_helpers._isolated_home
@@ -277,7 +278,7 @@ async def test_sessions_requires_exactly_one_allowed_user() -> None:
 
 @pytest.mark.asyncio
 async def test_sessions_lists_dashboard_and_same_dm_generations_only_and_redacts() -> None:
-    secret = "ghp_" + "a" * 36
+    secret = github_classic(seed=307)
     prior_key = "discord:kirocrew:direct:u1:gen4"
     other_user_key = "discord:kirocrew:direct:u2:gen4"
     log = _ConversationLog(
@@ -764,7 +765,7 @@ async def test_stacked_dashboard_prefix_binds_canonical_session() -> None:
 
 @pytest.mark.asyncio
 async def test_choice_binds_replays_and_routes_followup() -> None:
-    secret = "ghp_" + "b" * 36
+    secret = github_classic(seed=308)
     messages = [
         {"role": "user", "content": "omitted oldest"},
         {"role": "assistant", "content": "context one"},

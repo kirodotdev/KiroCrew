@@ -339,8 +339,10 @@ class TestBackfillFormatting:
         # snap to, cuts exactly there.
         boundary = SLACK_MAX_TEXT // 2
         cut = boundary - len(CONTINUATION)
-        filler = "q" * (cut - 12)
-        content = filler + split_secret + ("z" * 200)
+        filler = (
+            "q" * (cut - 13) + " "
+        )  # a blank: a token glued to a letter is no token by its format
+        content = filler + split_secret + " " + ("z" * 199)
 
         assert len(content) > boundary, "no split would happen at all"
         assert len(filler) < cut < len(filler) + len(split_secret), (
@@ -385,7 +387,9 @@ class TestBackfillFormatting:
         state = _state(tmp_path)
         slot = state.get_or_create_slot("s1")
         secret = _SECRET
-        filler = "x" * (SLACK_MAX_TEXT - 10)
+        filler = (
+            "x" * (SLACK_MAX_TEXT - 11) + " "
+        )  # a blank: a token glued to a letter is no token by its format
         content = filler + secret
         assert len(content) > SLACK_MAX_TEXT
         assert "\n" not in filler

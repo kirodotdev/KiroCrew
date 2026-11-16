@@ -216,7 +216,7 @@ families — a different model routinely accepts what another's filter declined
   would run its side effects twice. Because a verbatim replay is the
   user's own words, it cannot be
   recognized by the fixed synthetic-recovery texts — and not by text at
-  all: the drain redacts credentials and exfiltration URLs after the swap
+  all: the drain redacts credentials, inside URLs too, after the swap
   records the raw message, so string equality breaks for exactly the
   content most likely to draw a refusal. Recognition is the drained
   entry's queue id, matched by the drain (the entry must drain alone; a

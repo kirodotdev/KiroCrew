@@ -35,7 +35,7 @@ from kiro_crew.knowledge.ingestion import (
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.retrieval import HybridRetriever
 from kiro_crew.knowledge.store import KnowledgeStore
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic, synth
 
 
 def _one_chunk(text, **kw):
@@ -295,14 +295,17 @@ class TestAddDocument:
     @pytest.mark.asyncio
     async def test_a_surrogate_inside_a_redacted_credential_is_still_added(self, pipeline):
         # Redaction replaces the whole credential span before the content is
-        # first encoded, so main stored this document.
-        content = "notes\naws_secret_access_key=" + "a" * 20 + "\ud800" + "b" * 19 + "\nend"
-        res = await add_agent_document(pipeline, title="T", content=content, source_uri="test://r")
+        # first encoded, so main stored this document. A labelled value: an AWS
+        # secret is read only as 40 characters of its own alphabet.
+        content = "notes\npassword=" + "a" * 10 + "\ud800" + "b" * 5 + "\nend"
+        res = await add_agent_document(
+            pipeline, title="T", content=content, source_uri="test://r"
+        )
         assert res.get("status") == "added"
 
     @pytest.mark.asyncio
     async def test_credentials_are_redacted_before_storage(self, pipeline, kstore):
-        secret = SAMPLE_AWS_SECRET
+        secret = github_classic(seed=55)
         res = await add_agent_document(
             pipeline, title="Runbook", content=f"use key {secret} to deploy", source_uri="test://Runbook")
         stored = " ".join(_items(kstore, res["source_id"]))
@@ -323,7 +326,7 @@ class TestAddDocument:
         # SEL is a persisted, readable surface, so a credential in an
         # agent-authored title or reason must not reach it. `reason` never passes
         # through the content redaction at all.
-        secret = SAMPLE_AWS_SECRET
+        secret = github_classic(seed=55)
         spy = MagicMock()
         monkeypatch.setattr(agent_source_mod, "sel", lambda: spy)
         res = await add_agent_document(
@@ -708,16 +711,19 @@ async def test_folder_scan_lands_when_only_a_transient_source_holds_the_content(
 async def test_redaction_cannot_collapse_two_uris_into_one_document(pipeline, kstore):
     """Two URIs differing only in a credential-shaped segment stay separate.
 
-    Redaction is lossy: both of these become "...?key=[REDACTED: credential]".
+    Redaction is lossy: both of these become "...?access_token=[REDACTED: credential]".
     Hashing the redacted form gave them one slug, so the second add deleted the
     first document's items. The identity is hashed from the raw URI instead.
     """
-    u1 = "https://wiki.example.com/doc?key=AKIAIOSFODNN7EXAMPLE"
-    u2 = "https://wiki.example.com/doc?key=AKIAJKLMNOPQR2SAMPLE"
-    first = await add_agent_document(pipeline, title="Runbook",
-                                     content="Alpha runbook. " * 40, source_uri=u1)
-    second = await add_agent_document(pipeline, title="Runbook",
-                                      content="Beta runbook. " * 40, source_uri=u2)
+    v1, v2 = synth(32, seed=56), synth(32, seed=57)
+    u1 = f"https://wiki.example.com/doc?access_token={v1}"
+    u2 = f"https://wiki.example.com/doc?access_token={v2}"
+    first = await add_agent_document(
+        pipeline, title="Runbook", content="Alpha runbook. " * 40, source_uri=u1
+    )
+    second = await add_agent_document(
+        pipeline, title="Runbook", content="Beta runbook. " * 40, source_uri=u2
+    )
     assert first["status"] == "added" and second["status"] == "added"
     assert first["slug"] != second["slug"]
 
@@ -727,7 +733,7 @@ async def test_redaction_cannot_collapse_two_uris_into_one_document(pipeline, ks
     assert ids1 and set(ids1) <= live
 
     # The stored/returned URI is redacted even though the identity is not.
-    assert "AKIA" not in second["source_uri"]
+    assert v2 not in second["source_uri"]
     assert "REDACTED" in second["source_uri"]
 
 
@@ -932,12 +938,16 @@ class TestCitationSourceUri:
     async def test_cited_uri_is_the_redacted_form(self, pipeline, kstore):
         # The raw uri may carry a credential the agent never inspected; only the
         # redacted form may be stored, so only the redacted form can be cited.
+        value = synth(32, seed=58)
         res = await add_agent_document(
-            pipeline, title="Runbook", content="the deploy runbook body",
-            source_uri="https://wiki.example.com/doc?key=AKIAIOSFODNN7EXAMPLE")
+            pipeline,
+            title="Runbook",
+            content="the deploy runbook body",
+            source_uri=f"https://wiki.example.com/doc?access_token={value}",
+        )
         assert res["status"] == "added"
         hit = self._hit(kstore, res["source_id"], "deploy runbook")
-        assert "AKIA" not in hit["source_uri"]
+        assert value not in hit["source_uri"]
         assert "REDACTED" in hit["source_uri"]
 
     @pytest.mark.asyncio

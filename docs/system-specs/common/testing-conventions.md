@@ -1714,11 +1714,9 @@ measures, never above.
   On **macOS** `<platform temp>` is forced to `/tmp` (`_SHORT_TMP_BASE`), which is what
   Linux and CI already resolve to. launchd's per-user temp dir is
   `/var/folders/<2>/<30 random>/T`: long enough that an AF_UNIX socket under a pytest temp
-  dir exceeds Darwin's 104-byte `sun_path` and cannot bind at all, and random enough that
-  the path clears the credential redactor's entropy floor — `/` is inside its
-  `[A-Za-z0-9+/]{40,}` run, so a temp path is one contiguous match and comes back
-  `[REDACTED: credential]`. Both are properties of the host prefix rather than of the code
-  under test, and both used to fail ~13 tests locally while CI stayed green.
+  dir exceeds Darwin's 104-byte `sun_path` and cannot bind at all. That is a property of the
+  host prefix rather than of the code under test, so such a test fails locally while CI
+  stays green.
 
   A run only ever deletes the root it created itself — there is deliberately no sweep of
   other runs' roots, because every signal for "that directory is abandoned" is unsound from

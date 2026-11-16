@@ -288,7 +288,8 @@ class TestMetadataRedaction:
 
         # Key starts 10 chars before the clip point, so a clip-first order would
         # keep its first 10 characters and drop the rest.
-        prefix = "q=" + ("x" * (_MAX_ARG_LEN - 12))
+        # A blank before it: a token glued to a letter is no token.
+        prefix = "q=" + ("x" * (_MAX_ARG_LEN - 13)) + " "
         resources = prefix + self.CLIP_TOKEN + " kinds=all"
         assert len(prefix) < _MAX_ARG_LEN < len(prefix) + len(self.CLIP_TOKEN)
         log.log_tool_invocation(
@@ -316,7 +317,7 @@ class TestMetadataRedaction:
     def test_api_access_helper_also_redacts_before_clipping(self, log, sel_dir):
         from kiro_crew.sel import _MAX_ARG_LEN
 
-        prefix = "path=" + ("y" * (_MAX_ARG_LEN - 15))
+        prefix = "path=" + ("y" * (_MAX_ARG_LEN - 16)) + " "
         log.log_api_access(
             caller="token:abc",
             operation="GET /api/file-search",

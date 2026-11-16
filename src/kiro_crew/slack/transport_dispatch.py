@@ -23,7 +23,7 @@ import re
 import time
 from typing import TYPE_CHECKING, Any, cast
 
-from kiro_crew import runtime_death
+from kiro_crew import redaction_seams, runtime_death
 from kiro_crew.agent_sdk.drivers.acp_vocab import STOP_REASON_CANCELLED, is_user_worded_failure
 from kiro_crew.context import session_store_for_turn
 from kiro_crew.dashboard.chat_utils import (
@@ -287,6 +287,7 @@ def flat_dm_session_key(channel: str, thread_ts: str | None, *, enabled: bool) -
     return f"{SLACK_NAMESPACE}:{channel}"
 
 
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
 @fenced_turn
 async def handle_message_transport(
     slack: SlackClientOps,

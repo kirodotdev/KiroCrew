@@ -32,8 +32,6 @@ from aiohttp import web
 from chat_test_helpers import _make_state
 from discord_resumed_busy_helpers import (
     _REFUSAL,
-    _SECRET,
-    _TYPED,
     _bound_to_busy_dashboard,
     _busy,
     _sent_texts,
@@ -49,6 +47,7 @@ from kiro_crew.discord import client_rest
 from kiro_crew.discord.client import DiscordClient
 from kiro_crew.discord.transport import DiscordTransport
 from kiro_crew.history import HUMAN_TURN_META_KEY
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # The shared autouse fixture, bound here by name so pytest registers it for this module.
 _isolated_home = discord_resumed_busy_helpers._isolated_home
@@ -58,6 +57,11 @@ _isolated_home = discord_resumed_busy_helpers._isolated_home
 _REAL_CLIENT_SESSION = aiohttp.ClientSession
 _PROXY_VARS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
 _WAIT_CEILING_S = 30
+
+#: A GitHub token with a valid checksum, in a link the user typed. The shared helper's
+#: value is an AWS key ID, an identifier the redactor keeps visible.
+_SECRET = github_classic(seed=165)
+_TYPED = f"use https://docs.example.com/page?key={_SECRET} for this"
 
 
 @contextlib.asynccontextmanager

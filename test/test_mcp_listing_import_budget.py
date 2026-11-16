@@ -67,11 +67,14 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: moved ``HookManager`` into the owner ``kiro_crew.hook_runtime.hook_manager``, which the
 #: facade imports with the rest of its owners; the module count rose by that one file and
 #: nothing new loads.
+#: Raised by 1 for each server: the rule table reads headers and encoded credentials in
+#: two modules of its own (``redaction_structured.headers`` and ``.encoded``) where
+#: ``.protection`` was one.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 487,
-    "mcp-cron": 357,
-    "mcp-guide": 351,
-    "mcp-mate": 352,
+    "mcp-core": 488,
+    "mcp-cron": 358,
+    "mcp-guide": 352,
+    "mcp-mate": 353,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

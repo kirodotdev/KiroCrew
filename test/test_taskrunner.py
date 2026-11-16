@@ -31,6 +31,7 @@ from taskrunner_helpers import (
 import kiro_crew.taskrunner as taskrunner_module
 from kiro_crew.task_models import PROGRESS_FILE
 from kiro_crew.taskrunner import Step, StepStatus, TaskRun, TaskRunner
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until
 from kiro_crew.workflows.service import WorkflowService
 from kiro_crew.workflows.store import WorkflowRunStore
@@ -990,7 +991,7 @@ class TestParseSteps:
 
         sessions = _make_mock_sessions()
         runner = TaskRunner(sessions=sessions, auto_test=False)
-        secret = "ghp_" + "a" * 36
+        secret = github_classic(seed=109)
         text = "totally not json " + secret + " " + "x" * 5000
         with caplog.at_level(logging.ERROR, logger="kiro_crew.task_planner"):
             assert runner._parse_tasks(text) == []

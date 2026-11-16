@@ -1326,6 +1326,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SCOPE_ALIASES,
         CAPABILITY,
         COMMANDS_SCOPE,
+        RETIRED_SCOPES,
         RULESET,
         SCOPEDMAP,
         ScopeSpec,

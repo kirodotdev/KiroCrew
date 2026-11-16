@@ -1313,8 +1313,8 @@ the property also holds letters and marks — the variation selectors, the
 combining grapheme joiner, the Hangul fillers — that the category test would
 admit although a reader cannot see them. Admitting one would give `ops` an
 invisible twin `ops<VS16>` that `list(tag="ops")` misses, and would let a
-credential planted in a tag (`AKIA<VS16>IOSFODNN7EXAMPLE`) pass the dashboard's
-redactor while reading as the bare key; the MCP gate's sanitizer keeps these
+credential planted in a tag (`ghp_<VS16>1a2b3c...`) pass the dashboard's
+redactor while reading as the bare token; the MCP gate's sanitizer keeps these
 marks (they are `Mn`, and emoji text needs them), so the tag rule is the check
 that stops them. The table is hand-derived from Unicode 15.0, the version Python
 3.12 ships; a test pins `unicodedata.unidata_version` to it, and on a runtime

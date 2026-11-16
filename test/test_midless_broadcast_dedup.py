@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from redaction_structured_cases import github_classic
+
 from kiro_crew.dashboard.state import _ChatSlot, append_and_surface, row_mid
 
 
@@ -124,7 +126,7 @@ class TestAppendAndSurface:
         the same pass, so the row reads the same whether or not a stream reader
         is attached.
         """
-        content = "token ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+        content = "token " + github_classic(seed=19)
         state = _StateStub()
         slot, _ = _slot_with_callback()
         slot._has_reader_flag = True
@@ -134,9 +136,7 @@ class TestAppendAndSurface:
 
         from kiro_crew.dashboard.state import chat_message_frame, chat_message_note
 
-        expected = chat_message_frame(
-            chat_message_note(slot.key, msg, workspace=None), include_metadata=True
-        )
+        expected = chat_message_frame(chat_message_note(slot.key, msg), include_metadata=True)
         assert frame == expected
 
     def test_reader_frame_keeps_user_content_as_typed(self) -> None:

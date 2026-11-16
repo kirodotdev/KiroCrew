@@ -82,14 +82,15 @@ describe('blockquote copy button', () => {
     expect(plain).toBe('Continue in `chat-1380-1789049480`.')
   })
 
-  it('keeps a redaction placeholder and the query tail glued to it', async () => {
-    const host = 'my-bucket.s3.us-east-1.amazonaws.com'
-    const ph = `[REDACTED: suspicious URL to ${host}]`
-    const record = { domain: host, rule: 'exfil_hard_credential', path: '/a', query_chars: 9, url: null, url_withheld: 'credential' }
-    const { view, html, plain } = await copyOf(`> See ${ph}?token=abc now`, { blockedLinks: [record], slotKey: 's1' })
+  it('copies a blocked link as the address the reply holds, while the view shows its chip', async () => {
+    const url = 'https://my-bucket.s3.us-east-1.amazonaws.com/a?token=abc'
+    const record = { url, domain: 'my-bucket.s3.us-east-1.amazonaws.com', rule: 'exfil_hard_credential', query_chars: 9, withheld: 'credential' }
+    const { view, html, plain } = await copyOf(`> See ${url} now`, { blockedLinks: [record], slotKey: 's1' })
     expect(view.getByTestId('blocked-link-chip')).toBeTruthy()
-    expect(html).toContain(`${ph}?token=abc now`)
-    expect(plain).toBe(`See ${ph}?token=abc now`)
+    expect(html).toContain(url)
+    // The address as written, in the autolink form the copy writes for a bare URL.
+    expect(plain).toBe(`See <${url}> now`)
+    expect(plain).not.toContain('[REDACTED')
   })
 
   it('adds no backslash escapes to the plain text', async () => {

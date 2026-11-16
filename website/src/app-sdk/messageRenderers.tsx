@@ -551,9 +551,9 @@ export interface AssistantBubbleOptions {
   onRegenerate?: () => void
   /** The LOCAL slot these rows belong to. Set, the reply draws its lock tags
    *  from `meta.redactions` and their card offers the owner's reveal of the
-   *  removed value, and its Blocked link chips from `meta.blocked_links`, whose
-   *  card can allow the host for this slot. A host drawing another gateway's
-   *  rows leaves it unset. */
+   *  removed value, and its Blocked link card can allow the host for this
+   *  slot. A host drawing another gateway's rows leaves it unset; its links
+   *  still draw as Blocked link chips from `meta.link_blocks`, with no Allow. */
   redactionSlot?: string
   /** The reply menu's Read aloud, for a host that can read this reply aloud
    *  (a crewmate's chat). Absent: no Read aloud item. */
@@ -635,9 +635,10 @@ export function renderAssistantBubble(
       onSpeak={opts.onSpeak}
       revealActions={opts.revealActions}
       redactions={opts.redactionSlot ? (m.meta as Record<string, unknown> | undefined)?.redactions : undefined}
-      // The Blocked link chip and its card (Allow for this host saves for this
-      // slot), on the same local-slot rule as the lock tags (#36862).
-      blockedLinks={opts.redactionSlot ? (m.meta as Record<string, unknown> | undefined)?.blocked_links : undefined}
+      // The Blocked link chip and its card on every host: whether a link
+      // renders live is the server's decision about the text, whoever draws
+      // it. Only the card's Allow needs a local slot (`redactionSlot`).
+      blockedLinks={(m.meta as Record<string, unknown> | undefined)?.link_blocks}
       redactionSlot={opts.redactionSlot}
       suppressSteerAck={opts.suppressSteerAck || turnHadPolicyBlock(ctx.messages, ctx.index)}
       bubbleClassName={bubbleClassName}

@@ -873,8 +873,11 @@ def _defang_markers(text: str) -> str:
 
 
 def _holds_a_secret(text: str) -> bool:
-    """Whether the redactor finds anything in any of *text*'s scan views."""
-    return any(_redact(view) != view for view in _scan_views(text))
+    """Whether the redactor finds anything in any of *text*'s scan views, or the
+    exfiltration scan flags a URL in one: the refusal every gate reads."""
+    from kiro_crew.security.exfil import refuses
+
+    return any(refuses(view, _redact) for view in _scan_views(text))
 
 
 # Every span the chat's GFM autolinker would turn into a link: a web address

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.workflows.registry import (
     STATUS_CANCELLED,
     STATUS_FAILED,
@@ -84,7 +85,7 @@ def test_describe_agent_error_scrubs_recognized_credentials() -> None:
     shapes, cloud keys) — this is defense in depth on top of the egress-side
     redaction, not a guarantee about arbitrary secret-looking text.
     """
-    token = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+    token = github_classic(seed=53)
     described = describe_agent_error(RuntimeError(f"push rejected using {token}"))
     assert described.startswith("RuntimeError: ")
     assert token not in described
@@ -96,11 +97,12 @@ def test_describe_agent_error_redacts_before_truncating() -> None:
     Truncating first slices the token in half, which destroys the pattern the
     redactors match on — and the surviving prefix is still real key material.
     """
-    token = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+    token = github_classic(seed=53)
     # Push the token so it STRADDLES the cut: 20 chars of it land inside the
     # first MAX_AGENT_ERROR_CHARS, the rest past it.
+    # A blank before it: a token glued to a letter is no token.
     prefix_len = MAX_AGENT_ERROR_CHARS - len("RuntimeError: ") - 20
-    described = describe_agent_error(RuntimeError("z" * prefix_len + token))
+    described = describe_agent_error(RuntimeError("z" * (prefix_len - 1) + " " + token))
     assert token not in described
     assert token[:20] not in described
 
@@ -112,7 +114,7 @@ def test_describe_agent_error_never_includes_a_traceback() -> None:
     except RuntimeError as exc:
         described = describe_agent_error(exc)
     assert "\n" not in described
-    assert "File \"" not in described
+    assert 'File "' not in described
 
 
 # --------------------------------------------------------------------------- #
@@ -155,8 +157,8 @@ def test_ceiling_error_text_whole_string_is_bounded() -> None:
 def test_ceiling_error_text_redacts_a_secret_straddling_the_label_cut() -> None:
     """A token starting before the label cut must be redacted whole, not left as
     a fragment too short for later redaction to match."""
-    token = "ghp_" + "A1b2C3d4E5" * 3 + "F6g7H8"
-    label = "x" * 50 + token
+    token = github_classic(seed=54)
+    label = "x" * 49 + " " + token
     text = _ceiling_error_text("run exceeded 60s", [{"agent_id": "a0", "label": label}], 1.0)
     assert "ghp_" not in text
 
@@ -164,8 +166,8 @@ def test_ceiling_error_text_redacts_a_secret_straddling_the_label_cut() -> None:
 def test_fallback_label_redacts_a_secret_straddling_the_40_char_cut() -> None:
     """An unlabeled call's display label is the first 40 chars of the prompt; a
     token starting before that cut must not leave a fragment in the label."""
-    token = "ghp_" + "A1b2C3d4E5" * 3 + "F6g7H8"
-    label = _fallback_label("x" * 17 + token)
+    token = github_classic(seed=54)
+    label = _fallback_label("x" * 16 + " " + token)
     assert "ghp_" not in label
     assert len(label) <= 40
     assert _fallback_label("summarize the report") == "summarize the report"
@@ -276,7 +278,7 @@ def test_redaction_covers_dict_keys_not_just_values() -> None:
     """
     from kiro_crew.dashboard.handlers.workflows import _redact_obj
 
-    token = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+    token = github_classic(seed=53)
     payload = {
         "partial_results": {"0": {token: "value-side-ok"}},
         "events": [{"data": {token: token}}],

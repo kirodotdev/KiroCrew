@@ -412,6 +412,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.chat": "_run_chat",
     "kiro_crew.dashboard.chat_utils_injected_rows": "WORKFLOW_FOLLOWUP_KIND",
     "kiro_crew.dashboard.kiro_relay.ingress": "RELAY_INGRESS_APP_KEY",
+    "kiro_crew.dashboard.redaction_audience": "redaction_audience_middleware",
     "kiro_crew.relay_client.provider": "publish_gateway_ingress",
     "kiro_crew.remote_control.guard": "_uninstall_guard install_for_relay",
     "kiro_crew.dashboard.lts_gate_middleware": (

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import html
 import re
-from collections.abc import Iterator
 
 import pytest
 from markdown_link_parentheses_helpers import (
@@ -21,7 +20,6 @@ from markdown_link_parentheses_helpers import (
     _slack,
     _slack_reader_sees,
 )
-from redaction_structured_cases import aws_key_id, structured_engine
 
 from kiro_crew.discord.renderer import _redact_transformed as discord_redact_transformed
 from kiro_crew.imessage.plaintext import to_plaintext
@@ -32,22 +30,14 @@ from kiro_crew.messaging.display_safety import (
     canonicalize_display,
     redact_for_display,
 )
-from kiro_crew.messaging.renderer import _default_redactor, count_redaction_tags
-from kiro_crew.messaging.split import _flattened_for_any_cut
-from kiro_crew.security import CREDENTIAL_REDACTION_TAGS, EXFILTRATION_REDACTION_TAG_PREFIX
+from kiro_crew.messaging.renderer import _default_redactor
+from kiro_crew.security import CREDENTIAL_REDACTION_TAGS
 from kiro_crew.telegram.renderer import (
     _display_safe,
     _md_to_telegram_html,
     _strip_md,
 )
 from kiro_crew.whatsapp.renderer import to_whatsapp_text
-
-
-@pytest.fixture(autouse=True)
-def _structured_engine() -> Iterator[None]:
-    """These cases assert the structured engine's output: keep it selected under a legacy run."""
-    with structured_engine():
-        yield
 
 
 class TestAnOuterLinkCannotSwallowAnInnerOne:
@@ -369,46 +359,16 @@ def _imessage_reader_sees(text: str) -> str:
 
 class TestOnlyRedactorTagsStayWhole:
     LOOKALIKE = "[REDACTED: SecretAccessKey #   : " "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY]"
-    #: An AWS key ID in the path makes the exfiltration screen flag the url.
-    IPV6_URLS = [
-        f"https://[fd00::1]/{aws_key_id()}",
-        f"https://[::ffff:1.2.3.4]/{aws_key_id()}",
-    ]
 
-    @pytest.mark.parametrize(
-        "tag",
-        [
-            *CREDENTIAL_REDACTION_TAGS,
-            f"{EXFILTRATION_REDACTION_TAG_PREFIX}api.example.com]",
-            *[_default_redactor(url) for url in IPV6_URLS],
-        ],
-    )
+    @pytest.mark.parametrize("tag", CREDENTIAL_REDACTION_TAGS)
     def test_every_real_redactor_tag_matches(self, tag):
         assert _REDACTION_TAG.fullmatch(tag) is not None
 
-    @pytest.mark.parametrize("url", IPV6_URLS)
-    def test_an_ipv6_redactor_tag_survives_last_resort_paths(self, url):
-        tag = _default_redactor(url)
+    def test_a_url_tag_is_not_a_redactor_tag(self):
+        """No redactor replaces a URL whole, so the old URL placeholder is author text."""
+        old = "[REDACTED: suspicious URL to api.example.com]"
 
-        assert _REDACTION_TAG.fullmatch(tag) is not None
-        for safe in [
-            display_safety.redacted_without_markup(tag, _default_redactor),
-            _flattened_for_any_cut(tag, _default_redactor),
-        ]:
-            assert safe == tag
-            assert count_redaction_tags(safe) == (0, 1)
-
-    @pytest.mark.parametrize("unsafe", ["#", " ", "*", "_", "`", "|", "<", ">", "~"])
-    def test_a_suspicious_url_lookalike_with_markup_does_not_match(self, unsafe):
-        lookalike = f"{EXFILTRATION_REDACTION_TAG_PREFIX}example{unsafe}com]"
-
-        assert _REDACTION_TAG.fullmatch(lookalike) is None
-
-    @pytest.mark.parametrize("unsafe", ["#", "*"])
-    def test_a_bracketed_url_lookalike_with_markup_does_not_match(self, unsafe):
-        lookalike = f"{EXFILTRATION_REDACTION_TAG_PREFIX}[fd00::{unsafe}1]]"
-
-        assert _REDACTION_TAG.fullmatch(lookalike) is None
+        assert _REDACTION_TAG.fullmatch(old) is None
 
     def test_an_author_lookalike_loses_its_display_markup(self):
         safe = display_safety.redacted_without_markup(self.LOOKALIKE, _default_redactor)

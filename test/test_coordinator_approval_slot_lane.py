@@ -20,6 +20,7 @@ from kiro_crew.dashboard.chat_utils import _MAX_TOOL_PURPOSE, _redact_tool_field
 from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, row_mid
 from kiro_crew.history import ConversationLog
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until
 
 _WAIT_SECS = 30.0
@@ -151,8 +152,8 @@ def test_projection_bounds_coordinator_purpose_without_splitting_text(character,
 def test_projection_redacts_full_coordinator_purpose_before_the_display_cut(monkeypatch):
     from kiro_crew.dashboard import state as state_module
 
-    secret = "ghp_" + "A" * 36
-    purpose = "x" * (_MAX_TOOL_PURPOSE - 12) + secret + " tail" * 10
+    secret = github_classic(seed=128)  # a ghp_ without a valid checksum is no token
+    purpose = "x" * (_MAX_TOOL_PURPOSE - 13) + " " + secret + " tail" * 10
     original_redact = state_module._redact
     seen = []
 
@@ -171,7 +172,7 @@ def test_projection_redacts_full_coordinator_purpose_before_the_display_cut(monk
 
 
 def test_projection_preserves_native_upstream_cap_and_one_intact_notice():
-    raw = "x" * (_MAX_TOOL_PURPOSE - 50) + "ghp_" + "A" * 36 + " tail" * 100
+    raw = "x" * (_MAX_TOOL_PURPOSE - 51) + " " + github_classic(seed=129) + " tail" * 100
     purpose = _redact_tool_field(raw, limit=_MAX_TOOL_PURPOSE)
     slot = _ChatSlot("parent")
     loop = asyncio.new_event_loop()

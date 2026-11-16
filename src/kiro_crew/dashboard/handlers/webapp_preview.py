@@ -60,7 +60,7 @@ from kiro_crew.artifacts import ArtifactNotFoundError, ArtifactValidationError, 
 from kiro_crew.dashboard.origin import frame_ancestors_value, is_direct_local_request
 from kiro_crew.deploy.handlers import WebAppRootError, resolve_webapp_public_dir
 from kiro_crew.hooks import safe_read_file_bytes_nolink
-from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import is_sensitive_path, redact, refuses
 from kiro_crew.sel import sel
 
 from .path_token import PathTokenSigner
@@ -363,11 +363,11 @@ def _resolve_and_read(
     # (binary content decodes lossily but any embedded ASCII credential
     # still surfaces). Redacting in place would silently corrupt source
     # assets, so a file that trips either scanner is REJECTED (fail
-    # closed) instead of served mangled.
+    # closed) instead of served mangled. The refusal every gate reads: a
+    # credential read in full whatever the redaction setting, or a URL the
+    # exfiltration scan flags.
     text = body.decode("utf-8", errors="replace")
-    _, cred_hits = redact_credentials(text)
-    _, url_hits = redact_exfiltration_urls(text)
-    if cred_hits or url_hits:
+    if refuses(text, redact):
         return None, None
     return body, ctype
 

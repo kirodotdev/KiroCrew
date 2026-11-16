@@ -1865,7 +1865,8 @@ class TestRedactionHappensBeforeTruncation:
     async def test_a_credential_straddling_the_cap_is_not_leaked(self, caplog) -> None:
         # A credential positioned so the 500-char cap would bisect it.
         secret = _KEY
-        padding = "x" * (500 - len(secret) // 2)
+        # A blank before it: a token glued to a letter is no token.
+        padding = "x" * (500 - len(secret) // 2 - 1) + " "
         stderr = (padding + secret + " trailing").encode()
 
         provider = CommandProvider(check_command="c", apply_command="a")

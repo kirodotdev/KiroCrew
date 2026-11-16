@@ -24,6 +24,9 @@ export interface ThreadReply {
   role: 'user' | 'assistant'
   content: string
   ts: string
+  /** A crewmate reply's blocked-link records (`link_blocks`): the links its
+   *  bubble draws as a Blocked link card. Validated where they are drawn. */
+  link_blocks?: unknown
 }
 
 export interface ThreadParent {
@@ -31,6 +34,8 @@ export interface ThreadParent {
   role: 'user' | 'assistant' | string
   content: string
   ts: string
+  /** The parent's blocked-link records when the crewmate wrote it. */
+  link_blocks?: unknown
 }
 
 export interface ThreadDetail {

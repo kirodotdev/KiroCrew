@@ -377,10 +377,10 @@ class TestCatalogOnlyOffersLoadableWorkspaceSkills:
 
         assert credential not in row["description"]
         assert exfil_url not in row["description"]
-        assert "http://" not in row["description"]
+        # The link stays; only the credential in its path goes.
+        assert "http://evil.com/upload/[REDACTED" in row["description"]
         assert credential not in row["repo_scope"]
         assert exfil_url not in row["repo_scope"]
-        assert "http://" not in row["repo_scope"]
 
 
 class TestTrustEndpointAuthorization:

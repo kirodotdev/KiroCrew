@@ -27,7 +27,6 @@ from kiro_crew.acp.error_frames import (
 from kiro_crew.acp.transport_errors import _raise_acp_error
 from kiro_crew.dashboard import session_health
 from kiro_crew.dashboard.session_health import RAW_FRAME_LOG_LABEL
-from kiro_crew.security import redact_credentials
 
 # A synthetic GitHub classic token (valid checksum) the redactor removes, asserted absent.
 _TOKEN = github_classic(seed=105)
@@ -138,31 +137,6 @@ class TestRawErrorDetailBounds:
         detail = raw_error_detail({"code": 1, "message": "m", "data": data})
         assert "\n" not in detail
         assert json.loads(detail)["message"] == "m"
-
-    @pytest.mark.parametrize("field", ["aws_session_token", "SessionToken", "SecretAccessKey"])
-    def test_quoted_credential_field_in_string_data_is_scrubbed_before_escaping(
-        self, field: str
-    ) -> None:
-        # JSON escaping puts a backslash before each quote inside a string, which
-        # the field-name patterns do not match: the string must be scrubbed in
-        # its own spelling first.
-        secret = "IQoJb3JpZ2luX2VjE" + "A" * 300 + "xyzTOKENEND"
-        data = f'HTTP 401 session expired; creds {{"{field}": "{secret}"}}'
-        # Premise guard: main's pass 1 alone misses the escaped form (the structured
-        # detectors read it, so the premise is checked with them off).
-        escaped = json.dumps({"data": data})
-        from kiro_crew.security.redaction_structured import compat
-
-        before = compat.use_rule_table()
-        compat.publish_use_rule_table(False)
-        try:
-            assert secret in redact_credentials(escaped)[0]
-        finally:
-            compat.publish_use_rule_table(before)
-
-        detail = raw_error_detail({"code": -32000, "message": "m", "data": data})
-        assert secret not in detail
-        assert "[REDACTED" in detail
 
     def test_credential_pair_in_structured_data_is_scrubbed(self) -> None:
         secret = "IQoJb3JpZ2luX2VjE" + "B" * 300

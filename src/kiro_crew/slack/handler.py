@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any, cast
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
 
-from kiro_crew import name_grant, runtime_death
+from kiro_crew import name_grant, redaction_seams, runtime_death
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpPromptBusy, AcpTimeoutError
 from kiro_crew.acp.types import (
@@ -1104,9 +1104,11 @@ async def handle_message(
         session_key=session_key,
     )
     try:
-        if await _dispatch_before_turn(turn) and await _run_turn(turn):
-            await _deliver_answer(turn)
-            await turn.fire_stop_hooks()
+        # Everything the turn posts is channel egress, which the owner switch governs.
+        with redaction_seams.output_seam(redaction_seams.CHANNELS):
+            if await _dispatch_before_turn(turn) and await _run_turn(turn):
+                await _deliver_answer(turn)
+                await turn.fire_stop_hooks()
     except asyncio.CancelledError:
         # A cancel (``!stop``, warm-pool reclaim, shutdown) can land at any await
         # in any phase, and ``CancelledError`` passes every ``except Exception``

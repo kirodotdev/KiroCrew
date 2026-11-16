@@ -379,10 +379,11 @@ class TestTheRepairStaysOnTheTableAwarePath:
         assert KEY not in _on_screen(chunks)
         table_chunks = [c for c in chunks if "|" in c]
         assert table_chunks, "the table run must survive as table text"
-        for chunk in table_chunks:
-            for line in chunk.splitlines():
-                if line.strip():
-                    assert "|" in line, "a row was cut mid-body and reads as prose"
+        # The repair may deliver the table and the prose after it as one message;
+        # what must hold is that no row is cut mid-body.
+        lines = [line for chunk in chunks for line in chunk.splitlines()]
+        for i in range(12):
+            assert f"r{i} | value number {i}" in lines, "a row was cut mid-body"
 
     def test_the_repaired_body_still_honours_the_source_budget(self) -> None:
         """The repaired sequence stays under the source cap it was graded against."""

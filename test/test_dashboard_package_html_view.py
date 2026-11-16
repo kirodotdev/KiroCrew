@@ -19,6 +19,7 @@ import json
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.artifact_store import dashboard_package as dp
 from kiro_crew.artifacts import ArtifactValidationError
@@ -567,7 +568,7 @@ class TestThePageWearsItsTheme:
         )
 
     def test_a_credential_in_the_theme_is_redacted_on_the_page(self) -> None:
-        token = "ghp_" + "a" * 36
+        token = github_classic(seed=70)
         body = self._body({"tokens": {}, "css": f".board{{content:'{token}'}}"})
         assert token not in body
         assert ".board{" in body

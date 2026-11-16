@@ -18,7 +18,6 @@ import pytest
 from kiro_crew.doctor_checks import mcp
 from kiro_crew.mcp_gateway import launch_approval
 from kiro_crew.security import CREDENTIAL_REDACTION_TAGS
-from kiro_crew.security.exfil import EXFILTRATION_REDACTION_TAG_PREFIX
 
 
 def _cfg(*, enabled: bool = True, stub: tuple[str, ...] = ("alpha-mcp", "beta-mcp")):
@@ -95,11 +94,11 @@ def test_a_launch_added_beside_the_approved_one_is_named_as_new(refused, capsys)
 
 #: Display tags that read the same for two different values.
 _TAG = "--token=[REDACTED: credential]"
-_URL_TAG = "API_URL=[REDACTED: suspicious URL to example.invalid]"
+_URL_TAG = "API_URL=https://example.invalid/x?token=[REDACTED: credential]"
 
 
 def test_every_display_redaction_tag_starts_with_the_head_the_rule_reads():
-    tags = (*CREDENTIAL_REDACTION_TAGS, EXFILTRATION_REDACTION_TAG_PREFIX)
+    tags = tuple(CREDENTIAL_REDACTION_TAGS)
     assert tags and all(tag.startswith(mcp._REDACTION_TAG_HEAD) for tag in tags)
 
 
@@ -160,7 +159,7 @@ def test_a_launch_added_beside_two_approved_ones_is_named_as_new(refused, capsys
         ),
         pytest.param(
             {**_ADDED, "envs": [[_URL_TAG], []], "approved_envs": [[_URL_TAG]]},
-            id="approved-env-shows-a-redacted-url",
+            id="approved-env-shows-a-url-with-a-redacted-credential",
         ),
     ],
 )

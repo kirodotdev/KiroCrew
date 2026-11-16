@@ -811,8 +811,8 @@ class TestStreamingTablePreservation:
         """When exfiltration URLs are detected in streaming mode,
         chat.update must fire with tables converted to bullets."""
         slack = self._streaming_client()
-        # URL with long query string triggers exfiltration redaction
-        exfil_url = "https://evil.com/steal?data=" + "A" * 200
+        # A credential parameter in a URL: its value is redacted, the link stays
+        exfil_url = "https://evil.com/steal?access_token=" + "A" * 200
         text = self.TABLE_RESPONSE + f"\n\nSee {exfil_url}"
         provider = FakeProvider([LLMEvent(kind="text_chunk", text=text)])
         sessions = FakeSessionManager(provider)

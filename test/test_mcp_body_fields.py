@@ -28,7 +28,7 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
 from kiro_crew.security import mcp_body_fields as mbf
-from kiro_crew.security.redaction_entropy import _contains_fixed_credential
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 _SERVER = "gmail"
 _TOOL = "send_email"
@@ -140,7 +140,7 @@ class TestABodyFieldIsADocument:
     @pytest.mark.asyncio
     async def test_a_credential_in_the_body_passes_and_is_logged(self, warnings) -> None:
         # Main refuses a document body for size and path only, so a token passes.
-        secret = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        secret = github_classic(seed=332)
         await _passes_with_warning(f"<p>token: {secret}</p>", warnings, "credential")
 
     @pytest.mark.asyncio
@@ -466,10 +466,8 @@ class TestAnHtmlMailIsNotACredential:
         assert warnings() == []
 
     @pytest.mark.asyncio
-    async def test_a_bare_key_in_an_html_body_passes_and_is_logged(self, warnings) -> None:
-        # Only the entropy guess finds this one: no fixed-format prefix.
-        assert not _contains_fixed_credential(_BARE_KEY)
-        body = f"<p>Use this key: {_BARE_KEY}</p>" + _html(30 * 1024)
+    async def test_a_key_in_an_html_body_passes_and_is_logged(self, warnings) -> None:
+        body = f"<p>Use this key: {_KEY}</p>" + _html(30 * 1024)
         await _passes_with_warning(body, warnings, "credential")
 
     @pytest.mark.asyncio
@@ -482,7 +480,7 @@ class TestAnHtmlMailIsNotACredential:
         ],
     )
     async def test_a_key_next_to_an_inline_image_is_still_logged(self, template, warnings) -> None:
-        body = template.format(image=_image(), key=_BARE_KEY) + _html(30 * 1024)
+        body = template.format(image=_image(), key=_KEY) + _html(30 * 1024)
         await _passes_with_warning(body, warnings, "credential")
 
     @pytest.mark.asyncio
@@ -511,7 +509,6 @@ class TestAnHtmlMailIsNotACredential:
 
         digest = base64.b64encode(hashlib.new(algo, b"public-example-0").digest()).decode()
         body = f'<script src="https://cdn.example.com/a.js" integrity="{algo}-{digest}"></script>'
-        assert mbf.redact_credentials(digest)[0] != digest, "the bare digest must fire the guess"
         approved, error = await _resolve(_event(_mail(body)))
         assert approved is True, error
         assert warnings() == []
@@ -532,7 +529,7 @@ class TestAnHtmlMailIsNotACredential:
         import hashlib
 
         digest = base64.b64encode(hashlib.sha256(b"public-example-0").digest()).decode()
-        body = f'<script integrity="sha256-{digest}"></script> key: {_BARE_KEY}'
+        body = f'<script integrity="sha256-{digest}"></script> key: {_KEY}'
         await _passes_with_warning(body, warnings, "credential")
 
     @pytest.mark.asyncio
@@ -546,18 +543,19 @@ class TestAnHtmlMailIsNotACredential:
     @pytest.mark.asyncio
     async def test_a_key_next_to_a_document_link_is_still_logged(self, warnings) -> None:
         link = "https://docs.google.com/document/d/" + _DOC_ID + "/edit"
-        body = f'<a href="{link}">doc</a> key: {_BARE_KEY}' + _html(30 * 1024)
+        body = f'<a href="{link}">doc</a> key: {_KEY}' + _html(30 * 1024)
         await _passes_with_warning(body, warnings, "credential")
 
     @pytest.mark.asyncio
-    async def test_a_bare_key_written_as_a_short_data_payload_is_logged(self, warnings) -> None:
-        # A payload under the 64-character data URI minimum is judged as text.
-        body = f'<img src="data:image/png;base64,{_BARE_KEY}">' + _html(28 * 1024)
+    async def test_a_key_written_as_a_data_payload_is_logged(self, warnings) -> None:
+        # A data URI payload is judged as text.
+        body = f'<img src="data:image/png;base64,{_KEY}">' + _html(28 * 1024)
         await _passes_with_warning(body, warnings, "credential")
 
 
-_BARE_KEY = "Kx3Q51tPusV/D0URlGfM" "mNbVc7Z8yJhLpQrStUwZ"
-#: A Google Docs document id: 44 random-looking characters the entropy guess fires on.
+#: A GitHub token with a valid checksum: the rule table reads it by its format.
+_KEY = github_classic(seed=331)
+#: A Google Docs document id: 44 random-looking characters, which grant nothing.
 _DOC_ID = "1IMcAxYmfsB4HbQLXjjlAFbVV6q9rXxtNDFyuzX9k1gn"
 
 

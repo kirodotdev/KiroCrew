@@ -338,7 +338,7 @@ async def test_a_refused_record_costs_a_quota_slot_too(bound_cron, monkeypatch):
 async def test_a_type_that_looks_like_a_credential_is_refused_not_stored(bound_cron):
     """The grammar admits a token-shaped name; a type is a key the door cannot scrub, so
     one the scrubber would change is refused rather than persisted or echoed."""
-    pat = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    pat = github_classic(seed=103)
     assert agent_panel_record.custom_type_name_ok(pat)
     async with _client() as c:
         resp = await _post(c, {"type": pat, "data": {"price": 1}})

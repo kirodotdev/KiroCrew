@@ -74,10 +74,9 @@ describe('feature-request label selection', () => {
   })
 
   // The pre-filled URL (Option 2) is offered only when its query string is
-  // under 200 characters; above that Crew redacts it in chat, so the agent —
-  // which knows the length because it builds the URL — leaves it out rather
-  // than handing the user a placeholder (the dead-end #12847 reports). Both
-  // copies must carry this gate so they agree.
+  // under 200 characters: a longer prefilled link is hard to check before the
+  // user submits it, and the agent knows the length because it builds the URL.
+  // Both copies must carry this gate so they agree.
   it('gates the pre-filled URL on an under-200-character query string', () => {
     expect(FEATURE_REQUEST_PROMPT_FALLBACK).toMatch(/under 200 characters/)
     expect(skill).toMatch(/under 200 characters/)

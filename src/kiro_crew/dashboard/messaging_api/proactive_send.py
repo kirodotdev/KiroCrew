@@ -377,8 +377,12 @@ async def api_delete_message(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
-async def api_update_message(request: web.Request) -> web.Response:
+async def _update_message(request: web.Request) -> web.Response:
     """POST /api/update-message — edit a bot-authored Slack message in place.
+
+    The route is ``handlers.messaging.api_update_message``, which runs this inside the
+    channel egress seam: the seam opens on the facade, whose namespace this composed
+    owner's functions run on.
 
     The egress twin of ``api_delete_message``: same "the bot's own message"
     addressing, but it PUBLISHES replacement content, so the outbound floor is

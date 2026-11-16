@@ -4,8 +4,8 @@ import { refreshSlot, warmSlotCache } from '../../store/chatSlice'
 
 /**
  * Reload a pane's slot after a Blocked link card's "Allow for this host" (or
- * its Undo) on that slot. The reply was saved with the link removed, and the
- * server shows allowed hosts' links again when it serves the slot, so the pane
+ * its Undo) on that slot. The server decides which links render live when it
+ * serves the slot, under the hosts allowed in its workspace, so the pane
  * re-reads its rows to show the link in place of the chip.
  *
  * The same pair every other re-read uses: the active slot's transcript through

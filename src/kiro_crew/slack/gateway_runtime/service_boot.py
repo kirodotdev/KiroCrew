@@ -708,6 +708,12 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
     assert self.sessions is not None
     assert self.cron_svc is not None
 
+    # Publish the owner's redaction setting to this process before the server takes a
+    # request, in every mode (the offline test mode included): the output seams read the
+    # process value, never the file.
+    from kiro_crew.dashboard.handlers import credential_redaction as _redaction
+
+    await asyncio.to_thread(_redaction.seed_pushed_switch)
     configured_host, dashboard_port = parse_dashboard_url(self._cfg.dashboard.url)
     # --port override (literal int or "auto" for ephemeral)
     if self._port_override == "auto":
@@ -793,6 +799,12 @@ async def _init_api_server(self: GatewayOrchestrator) -> None:
 
     assert self.sessions is not None
     assert self.cron_svc is not None
+    # Publish the owner's redaction setting to this process before the server takes a
+    # request, in every mode (the offline test mode included): the output seams read the
+    # process value, never the file.
+    from kiro_crew.dashboard.handlers import credential_redaction as _redaction
+
+    await asyncio.to_thread(_redaction.seed_pushed_switch)
     configured_host, dashboard_port = parse_dashboard_url(self._cfg.dashboard.url)
     # --port override (literal int or "auto" for ephemeral)
     if self._port_override == "auto":
@@ -1395,7 +1407,6 @@ async def run(self: GatewayOrchestrator) -> None:
                 # A policy that withdraws the redaction opt-in must purge open dashboards.
                 from kiro_crew.dashboard.handlers import credential_redaction as _redaction
 
-                await asyncio.to_thread(_redaction.seed_pushed_switch)
                 register_post_install_hook(
                     lambda: _redaction.push_switch_moved_by_policy(_app, _loop)
                 )

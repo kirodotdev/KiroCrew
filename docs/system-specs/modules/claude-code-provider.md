@@ -1273,7 +1273,7 @@ live claude session advertised: the transport keeps the session's last
 `ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS` only), so the project and user
 `.claude/commands` files and skills appear with the adapter's own description, both
 strings scrubbed like every other one the harness reports back (`_scrub_observed`:
-credentials and exfiltration URLs). Each update replaces the list, and it is tied to
+credentials, inside URLs too). Each update replaces the list, and it is tied to
 its session id, so a `new_conversation` on the same process starts empty. A name the list above already carries keeps the
 dashboard's row; one the dashboard answers first (`_DASHBOARD_SERVED_SLASH_COMMANDS`),
 blocks, or expands as a quick or saved prompt is left out. No slot, a slot an app

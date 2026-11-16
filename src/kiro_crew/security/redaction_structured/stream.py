@@ -12,16 +12,18 @@ is committed up to the commit point, the earliest of:
 
 Every hold is bounded by its unit's maximum length, so pending text is bounded. A
 unit that is decided while still running (an unterminated private-key block past
-``max_block``; a session-token run past 4 KiB) is replaced and the stream discards
-input to that unit's own end: the end of the text, or the end of the base64 run.
+``max_block``; a session-token run, or an encoded run with a text head, past 4 KiB) is
+replaced and the stream discards input to that unit's own end: the end of the text, or
+the end of the run.
 Chunked output and spans therefore equal the whole-text result at every split.
 """
 
 from __future__ import annotations
 
 from .charsets import B64STD
+from .encoded import RUN_CHARS
 from .engine import render, resolve, scan
-from .model import SECRET, TAG, TAIL_ALL, TAIL_B64RUN, Hit, Span
+from .model import SECRET, TAG, TAIL_ALL, TAIL_B64RUN, TAIL_ENCRUN, Hit, Span
 
 # Look-behind kept from committed text: covers the pairing window (300 + 40 + 21),
 # line leads (64), key-token expansion (64) and URL schemes (32) with margin.
@@ -29,6 +31,26 @@ CONTEXT = 1024
 # Longer than every anchor literal (``github_pat_``, key spellings, ``-----BEGIN ``,
 # URL scheme plus ``://``), so a partial anchor is always held.
 TAIL = 47
+#: The characters each run tail drops.
+_RUN_TAILS = {TAIL_B64RUN: B64STD, TAIL_ENCRUN: RUN_CHARS}
+
+
+def discard(tail: str, pad: int, chunk: str) -> tuple[int, int, bool]:
+    """``(dropped, pad, done)`` for a replaced unit's continuation in ``chunk``.
+
+    ``tail`` is :data:`~.model.TAIL_ALL` (the unit runs to the end of the text: drop
+    everything) or a run tail (drop the rest of the run and at most two ``=`` after it).
+    ``pad`` counts the ``=`` already dropped.
+    """
+    if tail == TAIL_ALL:
+        return len(chunk), pad, False
+    i = 0
+    if pad == 0:
+        i = len(chunk) - len(chunk.lstrip(_RUN_TAILS[tail]))
+    while i < len(chunk) and chunk[i] == "=" and pad < 2:
+        pad += 1
+        i += 1
+    return i, pad, not (i == len(chunk) and pad < 2)
 
 
 class StreamRedactor:
@@ -73,20 +95,11 @@ class StreamRedactor:
 
     def _discard(self, chunk: str) -> str:
         """Drop input belonging to a unit already replaced; return what follows it."""
-        if self._mode == TAIL_ALL:
-            self._pos += len(chunk)
-            return ""
-        i = 0
-        if self._pad == 0:
-            rest = chunk.lstrip(B64STD)
-            i = len(chunk) - len(rest)
-        while i < len(chunk) and chunk[i] == "=" and self._pad < 2:
-            self._pad += 1
-            i += 1
-        dropped = chunk[:i]
+        i, self._pad, done = discard(self._mode, self._pad, chunk)
         self._pos += i
-        self._ctx = (self._ctx + dropped)[-CONTEXT:]
-        if i == len(chunk) and self._pad < 2:
+        if self._mode != TAIL_ALL:
+            self._ctx = (self._ctx + chunk[:i])[-CONTEXT:]
+        if not done:
             return ""
         self._close_open_span(self._pos)
         self._mode = ""
@@ -150,8 +163,8 @@ class StreamRedactor:
         self._open_span = (tail_hit.start + offset, tail_hit.rule_id, tail_hit.tier)
         self._mode = tail_hit.tail
         self._pad = 0
-        if self._mode == TAIL_B64RUN:
-            # The window ends inside the base64 run: no padding has been read yet.
+        if self._mode != TAIL_ALL:
+            # The window ends inside the run: no padding has been read yet.
             self._ctx = window[-CONTEXT:]
         self._pos += len(window) - base
         self._pending = ""

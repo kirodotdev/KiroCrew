@@ -485,7 +485,7 @@ def test_path_collapses_counted_apart_from_secrets(tmp_path, monkeypatch):
     # One real secret + a couple of home-path frames (no secret in them).
     secret = SAMPLE_AWS_SECRET
     (home / "gateway.log").write_text(
-        f"AWS key {secret}\n"
+        f"AWS key aws_secret_access_key={secret}\n"
         f'  File "{home}{os.sep}gateway.log", line 1, in a\n'
         f'  File "{home}{os.sep}app{os.sep}x.py", line 2, in b\n'
     )

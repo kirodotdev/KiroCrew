@@ -1544,17 +1544,14 @@ def test_endpoint_decodes_html_entities_once(monkeypatch, title_source):
     assert transport.fetch_count == 2
 
 
-def test_a_url_the_redactors_would_change_is_never_previewed(monkeypatch) -> None:
-    """A preview is a fetch nobody clicked, so a link whose query the exfil check
-    blocks is refused even when a reader allowed its host for opening: it is
-    neither fetched nor cached."""
-    from kiro_crew.security.exfil import scoped_exempt_hosts
-
+def test_a_url_the_exfil_scan_flags_is_never_previewed(monkeypatch) -> None:
+    """A preview is a fetch nobody clicked, so a link whose query the exfil scan
+    flags is refused, though no redactor replaces it on display: it is neither
+    fetched nor cached."""
     _set_enabled(monkeypatch, True)
     transport = _install(monkeypatch, {})
     long_query = "https://reviews.corp.example/r?filter=" + "a" * 260
-    with scoped_exempt_hosts(frozenset({"reviews.corp.example"})):
-        status, body = _run(_call(long_query))
+    status, body = _run(_call(long_query))
     assert status == 400
     assert body == {"code": "blocked_url"}
     assert transport.fetch_count == 0

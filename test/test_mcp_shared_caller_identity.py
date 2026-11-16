@@ -27,6 +27,7 @@ from mcp_shared_helpers import (  # noqa: F401 -- the autouse fixture registers 
 )
 
 import kiro_crew.mcp_shared as mcp_shared
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # --- Caller-identity extension through the stdio loop -----------------------
 
@@ -316,7 +317,7 @@ class TestStdioLoopCallerIdentity:
             "_resolve_tool_policy",
             lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), "identity_unattested"),
         )
-        token = "ghp_1234567890abcdefghijklmnopqrstuvwxyzAB"
+        token = github_classic(seed=62)
         reason = f"args ['mcp-core', '--token', '{token}'] differ from spec ['mcp-core']"
         try:
             msg = _tools_call(54, "echo")
@@ -599,7 +600,7 @@ class TestStdioLoopCallerIdentity:
 
         harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
         sentinel = session_directive.SENTINEL
-        secret = "ghp_" + "A" * 36
+        secret = github_classic(seed=63)
         reason = f"agent spec {sentinel + 'x.json'!r} could not be read {secret} " + "y" * 5000
         monkeypatch.setattr(
             mcp_shared,
@@ -624,10 +625,11 @@ class TestStdioLoopCallerIdentity:
         """
         harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
         cap = mcp_shared._POLICY_DETAIL_MAX_CHARS
-        secret = "ghp_" + "B" * 36
+        secret = github_classic(seed=64)
         # The token begins 10 characters before the cap, so a cut-first
-        # implementation keeps ``ghp_BBBBBB`` and drops the rest.
-        reason = "x" * (cap - 10) + secret + " tail"
+        # implementation keeps its first 10 characters and drops the rest. A blank
+        # before it: a token glued to a letter is no token.
+        reason = "x" * (cap - 11) + " " + secret + " tail"
         monkeypatch.setattr(
             mcp_shared,
             "_resolve_tool_policy",
@@ -637,7 +639,7 @@ class TestStdioLoopCallerIdentity:
             harness.send(_tools_call_with_caller(44, "echo", "dashboard:chat-7"))
             assert harness.wait_for(lambda: len(harness.responses) >= 1)
             body = json.dumps(harness.responses[0][1])
-            assert "ghp_B" not in body, "a fragment of the secret survived the cut"
+            assert secret[:10] not in body, "a fragment of the secret survived the cut"
         finally:
             harness.close()
 

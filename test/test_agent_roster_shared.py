@@ -23,11 +23,12 @@ import pytest
 
 from kiro_crew import subagent as sa
 from kiro_crew.mcp_tools import spawn as spawn_tools
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 #: Grammar-valid (pure alphanumerics and dashes) yet credential-shaped, so
 #: redaction rewrites it. The roster's grammar filter cannot catch this class --
 #: that is exactly why the redaction pass is part of the shared pipeline.
-CREDENTIAL_SHAPED = "ghp_1234567890abcdefghijklmnopqrstuvwx"
+CREDENTIAL_SHAPED = github_classic(seed=159)
 REDACTED = "[REDACTED: credential]"
 
 

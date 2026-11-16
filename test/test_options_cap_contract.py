@@ -41,7 +41,6 @@ import time
 from typing import Any, Callable
 
 import pytest
-from redaction_structured_cases import aws_secret
 
 from kiro_crew.messaging.renderer import (
     apply_options_cap,
@@ -50,10 +49,12 @@ from kiro_crew.messaging.renderer import (
     split_options_trailer,
 )
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
-# A 40-character AWS secret the credential plan redacts, and its two halves for the
-# split-on-screen cases.
-_KEY = aws_secret(seed=35)
+# A Slack bot token the credential plan redacts, and its two halves for the
+# split-on-screen cases. Not a bare 40-character run (visible by design), and no
+# ``_`` in it, which the display form drops as markup.
+_KEY = SAMPLE_SLACK_BOT_TOKEN
 _HEAD, _TAIL = _KEY[:12], _KEY[12:]
 
 #: channel_type -> the test class below that pins its enforcement.

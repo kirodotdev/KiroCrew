@@ -22,8 +22,6 @@ import pytest
 from chat_test_helpers import _make_state
 from discord_resumed_busy_helpers import (
     _REFUSAL,
-    _SECRET,
-    _TYPED,
     _bound_to_busy_dashboard,
     _busy,
     _sent_texts,
@@ -37,6 +35,12 @@ from kiro_crew.dashboard import chat_runner as cr
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.testing.synthetic_credentials import synth
+
+#: A URL credential the display redaction masks; the shared helper's AWS key ID is an
+#: identifier and stays visible.
+_SECRET = synth(32, seed=87)
+_TYPED = f"use https://docs.example.com/page?access_token={_SECRET} for this"
 
 # The shared autouse fixture, bound here by name so pytest registers it for this module.
 _isolated_home = discord_resumed_busy_helpers._isolated_home

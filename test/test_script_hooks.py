@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from redaction_structured_cases import github_classic, synth
+from redaction_structured_cases import github_classic
 
 from kiro_crew import platform_compat
 from kiro_crew.hooks import (
@@ -33,8 +33,9 @@ _IS_WINDOWS = platform.system() == "Windows"
 _ECHO_HOOK_EVENT = "echo %KIROCREW_HOOK_EVENT%" if _IS_WINDOWS else "echo $KIROCREW_HOOK_EVENT"
 
 
-# A synthetic 40-character secret the redactor removes; an AWS key ID stays visible.
-_SECRET = synth(40, seed=204)
+# A synthetic GitHub token the redactor removes; an AWS key ID and a bare 40-character
+# run stay visible.
+_SECRET = github_classic(seed=204)
 
 
 def _script_command(script: Path, body: str) -> str:

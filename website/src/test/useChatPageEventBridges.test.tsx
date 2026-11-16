@@ -239,7 +239,7 @@ describe('redaction-card bridges', () => {
     expect(opts.dispatch).toHaveBeenCalledWith(expect.any(Function))
   })
 
-  it('asks the reload to re-serve the card\'s own reply when the event names it (#17023)', () => {
+  it('asks the reload to re-serve the card\'s own reply when the event names it', () => {
     const { opts } = harness()
     act(() => { window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: 'slot-b', messageTs: '2026-01-01T00:00:00Z' } })) })
     act(() => { window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: 'slot-b', messageTs: 7 } })) })

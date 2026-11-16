@@ -22,6 +22,8 @@ import textwrap
 
 import pytest
 
+from kiro_crew.testing.synthetic_credentials import github_classic
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "scripts" / "capture_acp_compaction.py"
 
@@ -432,7 +434,7 @@ def test_a_credential_in_a_frame_is_scrubbed_before_it_is_written(cap, tmp_path)
     model echoed into its own reply is none of those. The scrub is the recorder's, so a
     script-driven capture is held to the same floor as one taken through the gateway.
     """
-    leaked = "ghp_" + "a" * 36
+    leaked = github_classic(seed=27)
     frames = [
         {
             "params": {

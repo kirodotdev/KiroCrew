@@ -442,7 +442,7 @@ same account and region even when a config PUT lands mid-request.
 
 ## Provider safety
 
-`voice_reply.synthesize_speech()` redacts credentials and suspicious URLs before
+`voice_reply.synthesize_speech()` redacts credentials, inside URLs too, before
 provider selection. `text_to_ssml()` and `strip_markdown()` then produce
 speakable text. `strip_markdown()` replaces fenced code, diff blocks, widgets,
 tables, path-like inline code, and links with spoken placeholders or labels and

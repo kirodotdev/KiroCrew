@@ -11,9 +11,10 @@ import pytest
 from kiro_crew import autonudge as _an
 from kiro_crew import autonudge_stop_log as stoplog
 from kiro_crew.autonudge import AutoNudgeService
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # Obviously fake GitHub classic PAT shape, split so no scanner sees a literal.
-_FAKE_PAT = "ghp_" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
+_FAKE_PAT = github_classic(seed=410)
 
 
 @pytest.fixture(autouse=True)

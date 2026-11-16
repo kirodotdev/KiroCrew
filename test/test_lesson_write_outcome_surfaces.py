@@ -20,7 +20,7 @@ from lesson_write_outcome_helpers import (
 )
 
 from kiro_crew.history import ConversationLog
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until
 from kiro_crew.vector_memory import LessonWriteOutcome, LessonWriteResult
 
@@ -655,7 +655,7 @@ class TestLessonsRouteReportsTheOutcome:
 
     async def test_a_credential_shaped_winner_scope_is_withheld(self):
         """A stored scope the redaction chain would alter never leaves the route."""
-        token = "ghp_" + "C" * 36
+        token = github_classic(seed=310)
         resp, _state = await self._post(
             LessonWriteResult(
                 LessonWriteOutcome.DEDUPED,
@@ -1089,7 +1089,7 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
 
         from kiro_crew import cli_commands
 
-        secret = SAMPLE_AWS_SECRET
+        secret = github_classic(seed=318)
         store = _store(tmp_path)
         store.write_lesson(f"never commit {secret} to the repository", "tool")
         args = argparse.Namespace(
@@ -1125,7 +1125,7 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
 
         from kiro_crew import cli_commands
 
-        secret = SAMPLE_AWS_SECRET
+        secret = github_classic(seed=318)
         split = secret[:4] + "\x1b[0m" + secret[4:]
         store = _store(tmp_path)
         store.write_lesson(f"never commit {split} to the repository", "tool")
@@ -1156,7 +1156,7 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
 
         The response reaches both the dashboard and the ``learn_add`` tool.
         """
-        secret = SAMPLE_AWS_SECRET
+        secret = github_classic(seed=318)
         resp, _state = await TestLessonsRouteReportsTheOutcome()._post(
             LessonWriteResult(
                 LessonWriteOutcome.INSERTED, None, (f"never commit the key {secret}",)
@@ -1180,7 +1180,7 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
         """
         import logging
 
-        secret = SAMPLE_AWS_SECRET
+        secret = github_classic(seed=318)
         cases = {
             # label -> (stored rule, submitted rule) selecting one branch each
             "substring-delete": (

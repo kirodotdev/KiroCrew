@@ -678,7 +678,7 @@ class TestRunHelper:
         "secret",
         [
             github_classic(seed=61),
-            "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8",
+            github_classic(seed=98),
         ],
     )
     def test_a_credential_straddling_the_cut_is_redacted_whole(
@@ -692,7 +692,8 @@ class TestRunHelper:
         limit = wheel_engine._ERROR_DETAIL_CHARS
         for keep in range(1, len(secret)):
             # `keep` characters of the token fall inside the kept tail.
-            stderr = ("x" * (limit + 50) + secret + "y" * (limit - keep)).encode()
+            # Blanks around it: a token glued to a letter is no token.
+            stderr = ("x" * (limit + 50) + " " + secret + " " + "y" * (limit - keep - 1)).encode()
             _stub_children(monkeypatch, lambda _argv, err=stderr: (1, b"", err))
             with pytest.raises(WheelUpdateError) as info:
                 wheel_engine._run(["x"], 5, "step-x")

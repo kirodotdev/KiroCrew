@@ -37,6 +37,7 @@ from kiro_crew.dashboard.handlers import remote_dispatch_routes as crew_routes
 from kiro_crew.dashboard.handlers import remote_ingest, remote_ingest_peer
 from kiro_crew.dashboard.handlers import work_ledger as routes
 from kiro_crew.probes.work_ledger import WorkLedgerProbe
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 _isolated = helpers._isolated
 
@@ -73,7 +74,7 @@ def recorded(monkeypatch) -> list[tuple[str, dict[str, Any]]]:
 
 CREW = "inst-lab"
 PEER_SLOT = "chat-77-1793000000"
-PLANTED = "ghp_" + "Ab3x9" * 7 + "Z"
+PLANTED = github_classic(seed=139)  # a ghp_ without a valid checksum is no token
 
 
 class _Content:

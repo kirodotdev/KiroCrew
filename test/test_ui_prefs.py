@@ -7,7 +7,7 @@ import json
 import pytest
 
 from kiro_crew import ui_prefs
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.ui_prefs import (
     MAX_KEYS,
     MAX_TOTAL_BYTES,
@@ -17,6 +17,9 @@ from kiro_crew.ui_prefs import (
     merge_ui_prefs,
     ui_prefs_path,
 )
+
+#: A GitHub token with a valid checksum; a bare 40-character run stays visible.
+_TOKEN = github_classic(seed=176)
 
 
 @pytest.fixture(autouse=True)
@@ -193,7 +196,7 @@ def test_a_value_carrying_a_credential_is_not_served(_isolated_home):
             {
                 "prefs": {
                     "mc-crews-view": "grid",
-                    "kc:file-explorer:state:v2": json.dumps({"note": SAMPLE_AWS_SECRET}),
+                    "kc:file-explorer:state:v2": json.dumps({"note": _TOKEN}),
                 }
             }
         ),
@@ -201,7 +204,7 @@ def test_a_value_carrying_a_credential_is_not_served(_isolated_home):
     )
     served = load_ui_prefs()
     assert served == {"mc-crews-view": "grid"}
-    assert "Qh4Tm2Vx9KpRc" not in json.dumps(served)
+    assert _TOKEN not in json.dumps(served)
 
 
 def test_a_put_of_a_secret_shaped_value_does_not_claim_it_was_kept(_isolated_home, caplog):
@@ -213,12 +216,12 @@ def test_a_put_of_a_secret_shaped_value_does_not_claim_it_was_kept(_isolated_hom
         merged = merge_ui_prefs(
             {
                 "mc-crews-view": "grid",
-                "kc:file-explorer:state:v2": json.dumps({"note": SAMPLE_AWS_SECRET}),
+                "kc:file-explorer:state:v2": json.dumps({"note": _TOKEN}),
             }
         )
     assert merged == {"mc-crews-view": "grid"}
     assert load_ui_prefs() == merged
-    assert "Qh4Tm2Vx9KpRc" not in ui_prefs_path().read_text(encoding="utf-8")
+    assert _TOKEN not in ui_prefs_path().read_text(encoding="utf-8")
     assert any("kc:file-explorer:state:v2" in r.getMessage() for r in caplog.records)
 
 

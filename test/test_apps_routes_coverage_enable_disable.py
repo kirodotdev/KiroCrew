@@ -24,7 +24,11 @@ from apps_routes_coverage_helpers import (
 
 import kiro_crew.apps.routes as routes_mod
 from kiro_crew.apps.manager import AppResult, disable_app, enable_app, register_external_app
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until
+
+#: A GitHub token with a valid checksum; a ghp_ without one is no token.
+_GH = github_classic(seed=143)
 
 # Enable / disable warning + rollback branches
 
@@ -326,11 +330,7 @@ class TestEnableBranches:
         _install(tmp_path)
 
         async def _hooks(*args: Any, **kwargs: Any) -> dict[str, Any]:
-            return {
-                "health_status": {
-                    "issues": ["cannot reach token=ghp_0123456789abcdefghijABCDEFGHIJ0123456789"]
-                }
-            }
+            return {"health_status": {"issues": [f"cannot reach token={_GH}"]}}
 
         monkeypatch.setattr(routes_mod, "on_app_enable", _hooks)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
@@ -338,7 +338,7 @@ class TestEnableBranches:
             resp = await client.post(f"/api/apps/{APP}/enable")
             assert resp.status == 200
             issues = (await resp.json())["hooks"]["health_status"]["issues"]
-        assert "ghp_0123456789abcdefghijABCDEFGHIJ0123456789" not in issues[0]
+        assert _GH not in issues[0]
 
     @pytest.mark.asyncio
     async def test_enable_of_unknown_app_is_404(
@@ -404,7 +404,7 @@ class TestDisableBranches:
 
         async def _failed(*args: Any, **kwargs: Any) -> dict[str, Any]:
             return {
-                "output": "failed with token=ghp_0123456789abcdefghijABCDEFGHIJ0123456789",
+                "output": f"failed with token={_GH}",
                 "failed": True,
             }
 
@@ -430,7 +430,7 @@ class TestDisableBranches:
             body = await resp.json()
             warnings = body["warnings"]
             assert any("onDisable script failed" in w for w in warnings)
-            assert not any("ghp_0123456789abcdefghijABCDEFGHIJ0123456789" in w for w in warnings)
+            assert not any(_GH in w for w in warnings)
             resp = await client.get(f"/api/apps/{APP}")
             assert (await resp.json())["enabled"] is False
 

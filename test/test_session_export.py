@@ -36,6 +36,7 @@ from kiro_crew.history import (
     TranscriptWithheld,
     is_incognito_transcript,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 def _export_bytes(resp) -> bytes:
@@ -335,13 +336,14 @@ def test_the_slug_comes_from_the_redacted_title():
     that the slug is built from that copy and not from a raw one."""
     from kiro_crew.security import redact_credentials
 
-    raw = "debug ghp_0123456789abcdefghijklmnopqrstuvwxyz now"
+    token = github_classic(seed=149)
+    raw = f"debug {token} now"
     redacted, _ = redact_credentials(raw)
     assert redacted != raw, "the fixture must actually be redactable"
 
     name = se.export_filename(redacted)
-    assert "ghp-0123456789abcdefghijklmnopqrstuvwxyz" not in name
-    assert "0123456789abcdefghijklmnopqrstuvwxyz" not in name
+    assert token.replace("_", "-") not in name
+    assert token[4:] not in name
 
 
 def test_the_filename_carries_the_slug_stamp_and_suffix():
@@ -976,7 +978,7 @@ def test_the_free_text_provenance_fields_are_redacted():
     title."""
     from kiro_crew.security import redact_credentials
 
-    raw = "/home/me/ghp_0123456789abcdefghijklmnopqrstuvwxyz/checkout"
+    raw = f"/home/me/{github_classic(seed=150)}/checkout"
     assert redact_credentials(raw)[0] != raw, "the fixture must actually be redactable"
 
     source = build_source_record(project=raw, workspace=raw)

@@ -13,7 +13,6 @@ import re
 from typing import Any
 
 import pytest
-from redaction_structured_cases import ALNUM, synth
 from telegram_helpers import _drop_live_config_snapshot  # noqa: F401
 from telegram_helpers import FakeClient
 
@@ -37,6 +36,7 @@ from kiro_crew.telegram.renderer import (
     safe_split_offset,
 )
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 class TestTableAwareSplitting:
@@ -369,8 +369,9 @@ class TestRotationSeamCredentialSafety:
     """
 
     _CAP = 400
-    # A synthetic 40-char AWS secret: the plan redacts it, and it has no `/` or `+`.
-    _KEY = synth(40, ALNUM, seed=11)
+    # A GitHub token the plan redacts (a bare 40-character run is no credential by
+    # itself), with no `/` or `+`.
+    _KEY = github_classic(seed=11)
 
     def _renderer(self, monkeypatch: pytest.MonkeyPatch) -> tuple[TelegramRenderer, FakeClient]:
         cli = FakeClient()

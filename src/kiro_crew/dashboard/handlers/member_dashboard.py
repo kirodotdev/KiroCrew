@@ -31,7 +31,7 @@ from typing import Any, Callable, Final, Mapping
 
 from aiohttp import web
 
-from kiro_crew import dashboard_agentic, dashboard_frame
+from kiro_crew import dashboard_agentic
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import conditional_get
@@ -46,7 +46,8 @@ from kiro_crew.dashboard.handlers.members import (
 )
 from kiro_crew.dashboard_templates import catalog, instance
 from kiro_crew.members import MemberSlugError
-from kiro_crew.platform.context import redact_code_via_context, redact_via_context
+from kiro_crew.platform.context import redact_via_context
+from kiro_crew.security import refuses
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ def _name_unsafe(name: str) -> bool:
     egress shim, so a host with a loaded companion applies that companion's patterns
     too, and the question here is exactly "would this leave the machine rewritten".
     """
-    return bool(name) and redact_via_context(name) != name
+    return bool(name) and refuses(name, redact_via_context)
 
 
 async def _resolve(request: web.Request) -> tuple[str, str] | web.Response:
@@ -835,10 +836,10 @@ def package_declared_name_spots(package: Mapping[str, Any]) -> list[str]:
     tokens: Mapping[str, Any] = raw_tokens if isinstance(raw_tokens, Mapping) else {}
     spots: list[str] = []
     for index, name in enumerate(sorted(types), start=1):
-        if isinstance(name, str) and redact_via_context(name) != name:
+        if isinstance(name, str) and refuses(name, redact_via_context):
             spots.append(f"declared field #{index} of {len(types)}")
     for index, token in enumerate(sorted(tokens), start=1):
-        if isinstance(token, str) and redact_via_context(token) != token:
+        if isinstance(token, str) and refuses(token, redact_via_context):
             spots.append(f"theme token #{index} of {len(tokens)}")
     return spots
 
@@ -873,15 +874,10 @@ def _template_text_safe(text: str) -> str:
     This is the one step that produces both the raw body and the composed document,
     so it is the only place the page and the values in it can be covered by one pass.
     ``_page_safe`` covers the resolved values and never the page around them.
-
-    The text of a ``<script>`` or ``<style>`` element is the exception, by one pass: it
-    is code the page runs, and the bare-secret guess rewrites an alphabet or a data URI
-    in it without any error. Its tags, the attributes and the prose get every pass, and
-    a page whose script text the rules would leave as prose gets every pass whole.
     """
     if not text:
         return text
-    return dashboard_frame.map_page_text(text, redact_via_context, redact_code_via_context)
+    return redact_via_context(text)
 
 
 def _manifest_text_safe(manifest: Any) -> Any:

@@ -11108,7 +11108,6 @@
         "your_custom_denies": "Your custom denies",
         "redaction_section": "Redaction",
         "redaction_allowed_hosts_section": "Allowed link hosts",
-        "redaction_always_on": "Redaction in chat and messaging channels is always on; the switch above applies only to files the dashboard opens for you. A host listed here skips only the long-query and encoded-data (base64) checks for links in its workspace; every credential check still runs. Only this dashboard can add a host, from a blocked link's Allow for this host.",
         "redaction_load_failed": "Couldn't load the allowed hosts.",
         "redaction_revoke_failed": "Couldn't revoke that host. It is still allowed.",
         "redaction_no_allowed_hosts": "No hosts are allowed. Every link goes through every check.",

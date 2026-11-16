@@ -763,10 +763,10 @@ class TestBuildSessionsBlocks:
         Redaction runs through ``session_task_card()`` → ``blocks._msg_elements()`` →
         ``security.redact_and_truncate()``; this pins the exfiltration-URL half.
         """
-        # Long-query-string URL with a base64-like blob is the canonical
-        # exfiltration pattern detected by redact_exfiltration_urls.
+        # A long-query-string URL whose credential parameter carries a blob:
+        # redact_exfiltration_urls masks the value and keeps the link.
         blob = "A" * 50
-        url = f"https://evil.example.com/x?data={blob}&{'x' * 200}"
+        url = f"https://evil.example.com/x?access_token={blob}&{'x' * 200}"
         rows = [
             {
                 "key": "dashboard:k",
@@ -783,8 +783,9 @@ class TestBuildSessionsBlocks:
         card = _build_sessions_blocks(rows)[0]
         rendered = json.dumps(card)
         # The full URL must not appear verbatim — redact_exfiltration_urls
-        # will have replaced it with a sanitized form.
+        # will have masked the credential value inside it.
         assert url not in rendered
+        assert blob not in rendered
 
     def test_dual_redaction_in_home_tab_message_path(self):
         """Same dual-redaction guarantee for the Home Tab path (for_home_tab=True).
@@ -792,7 +793,7 @@ class TestBuildSessionsBlocks:
         The Home Tab row renders only title + agent, so this exercises the title path.
         """
         blob = "A" * 50
-        url = f"https://evil.example.com/x?data={blob}&{'x' * 200}"
+        url = f"https://evil.example.com/x?access_token={blob}&{'x' * 200}"
         rows = [
             {
                 "key": "dashboard:k",
@@ -808,6 +809,7 @@ class TestBuildSessionsBlocks:
         rendered = json.dumps(blocks)
         assert _KEY not in rendered
         assert url not in rendered
+        assert blob not in rendered
 
 
 # handler._handle_sessions_command — delegates to events.py helpers

@@ -498,3 +498,41 @@ async def test_the_sse_stream_withholds_app_pushes_from_a_teammate(tmp_path, mon
         stopped.set()
     assert not [block for block in blocks if b"private" in block]
     assert withheld == ["notification"]
+
+
+@pytest.mark.asyncio
+async def test_the_sse_stream_redacts_what_a_teammate_reads_with_redaction_off(
+    tmp_path, monkeypatch, withheld
+):
+    """A note built inside the owner's seam reaches a teammate redacted in full."""
+    from kiro_crew import redaction_seams
+    from kiro_crew.dashboard.handlers import updates
+    from kiro_crew.testing.synthetic_credentials import github_classic
+
+    monkeypatch.setattr(redaction_seams, "_redaction_off", True)
+    stopped = asyncio.Event()
+    monkeypatch.setattr(updates, "shutdown_event", stopped)
+    state = _make_state(tmp_path)
+    monkeypatch.setattr(state, "status_snapshot", lambda **_kwargs: {})
+    ingress = _team()
+    app = _relay_app(state, ingress)
+    app.router.add_get("/api/stream", updates.api_stream)
+    token = github_classic(seed=171)
+    try:
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/api/stream", headers=ingress.stamp_headers([], relay_user=TEAMMATE)
+            )
+            assert resp.status == 200
+            first = await finished(resp.content.readuntil(b"\n\n"), "the first SSE frame")
+            assert first.startswith(b"event: dashboard")
+            state._broadcast({"source": "system", "body": f"key {token} end"})
+            state._broadcast({"source": "system", "body": "fence"})
+            blocks: list[bytes] = []
+            while b"fence" not in (blocks[-1] if blocks else b""):
+                blocks.append(await finished(resp.content.readuntil(b"\n\n"), "an SSE frame"))
+            resp.close()
+    finally:
+        stopped.set()
+    assert any(b"key " in block for block in blocks)
+    assert not [block for block in blocks if token.encode() in block]

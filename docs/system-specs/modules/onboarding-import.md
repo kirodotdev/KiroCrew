@@ -755,7 +755,7 @@ These are load-bearing. Changing any of them requires a security review.
 3a. **Content screens run on the value that will actually be written**, after any
    decoding step. Screening a JSON/encoded form and then writing the decoded one
    is not screening: a newline is stored as backslash-n so no injection pattern
-   matches, and `AKIA` hides a credential outright. Enforced in
+   matches, and a `\u`-escaped token prefix (`\u0067hp_`) hides a credential outright. Enforced in
    two layers for DB-sourced values: `_decoded_value_is_unsafe()` screens every
    string leaf (and dict key) of the `json.loads` result at the row level, and
    `_add_db_directive` re-screens its own input as defence in depth — it is the

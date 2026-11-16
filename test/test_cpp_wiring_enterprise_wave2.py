@@ -315,8 +315,9 @@ def test_context_redact_runs_enterprise_policy(enterprise_ctx) -> None:
     from kiro_crew import agent, mcp_core
 
     # Internal token redaction (enterprise overlay) applies through both callers.
-    assert "[REDACTED-SSO]" in mcp_core.redact("token=SSO-COOKIE")
-    assert "[REDACTED-SSO]" in agent.redact("token=SSO-COOKIE")
+    # Not under a label the core reads (``token=`` is one), so the overlay sees it.
+    assert "[REDACTED-SSO]" in mcp_core.redact("cookie SSO-COOKIE")
+    assert "[REDACTED-SSO]" in agent.redact("cookie SSO-COOKIE")
     # Baseline credential redaction is preserved (delegated to security.redact).
     secret = github_classic(seed=93)
     out = mcp_core.redact(secret)

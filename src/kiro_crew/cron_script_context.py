@@ -26,7 +26,7 @@ from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.sandbox import refuse_unaudited_on_dead_fs
-from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact, redact_exfiltration_urls
+from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact, refuses, scan_exfiltration_urls
 from kiro_crew.security.redaction import (
     _ARN_ACCOUNT_ID_12_DIGITS_RE,
     _BOT_ID_LENGTHS,
@@ -536,7 +536,7 @@ def _changed_path(value: Any, key: str, path: str) -> str:
         for raw_key, inner in value.items():
             name = redact(raw_key) if isinstance(raw_key, str) else raw_key
             inner_path = f"{path}.{name}"
-            if name != raw_key:
+            if isinstance(raw_key, str) and refuses(raw_key, redact):
                 return inner_path
             found = _changed_path(inner, raw_key if isinstance(raw_key, str) else "", inner_path)
             if found:
@@ -549,15 +549,6 @@ def _changed_path(value: Any, key: str, path: str) -> str:
     return ""
 
 
-#: A key that names an identifier: ``id`` or ``ids`` alone or after ``_`` or ``-``, in
-#: any case, or ``Id`` / ``ID`` ending a camelCase name (``driveId``, ``messageIds``).
-_ID_KEY_RE = re.compile(r"(?:\A|[_-])(?i:ids?)\Z|[a-z0-9](?:Id|ID)s?\Z")
-#: The whole of an opaque id the bare-secret pass reads a key in: a Microsoft Graph item
-#: id (base64 of an Exchange id, ``AAMk...``) or a drive id (``b!`` then base64url). Both
-#: are longer than a 40-character key, so a key alone under an id key is still judged; a
-#: key behind an id's opening (``AAMk`` and 40 characters) is not, the residual the
-#: learn-cron-dashboard spec states.
-_OPAQUE_ID_RE = re.compile(r"A[A-Za-z0-9]{3}[A-Za-z0-9+/_-]{40,}={0,2}|b![A-Za-z0-9_-]{40,}")
 #: The resource name after an account id, ``MyServiceLambda``: PascalCase words, each a
 #: capital and then lowercase letters, the word shape of the ARN rule's CDK names. A bot
 #: token's secret, which Telegram starts with ``AA``, is never that shape.
@@ -581,30 +572,26 @@ def _reads_as_credential(key: str, value: str) -> bool:
     """Whether the scan would change *value*, sent under *key*.
 
     Judged alone, then spelled beside its key as :func:`_redact_pair` spells it, so a
-    token only its key reveals (``authorization: Bearer ...``) is found too. Two rules
-    read an identifier as a secret, and here neither counts where it does:
-
-    * The bare-secret pass guesses a key from a run's entropy, which a random opaque id
-      has too, and the redaction tiers decision never redacts a resource id. Its spans
-      do not count in a value :data:`_OPAQUE_ID_RE` matches whole under a key
-      :data:`_ID_KEY_RE` names; every other rule still judges that value.
-    * The Telegram rule reads ``<digits>:<30 or more characters>`` as a bot token, so a
-      name that leads with an account id is one to it. Its hit does not count only where
-      it positively reads as an account id and a resource name
-      (:func:`_account_resource_apart`): the text is judged again with that ``:`` read
-      as a space, so a credential inside the name is still found.
+    token only its key reveals (``authorization: Bearer ...``) is found too. The
+    Telegram rule reads ``<digits>:<30 or more characters>`` as a bot token, so a name
+    that leads with an account id is one to it. Its hit does not count only where it
+    positively reads as an account id and a resource name
+    (:func:`_account_resource_apart`): the text is judged again with that ``:`` read as
+    a space, so a credential inside the name is still found.
     """
-    opaque_id = bool(key and _ID_KEY_RE.search(key) and _OPAQUE_ID_RE.fullmatch(value))
     texts = (value, f"{key}: {value}") if key else (value,)
-    return any(_changed_by_scan(text, opaque_id) for text in texts)
+    return any(_changed_by_scan(text) for text in texts)
 
 
-def _changed_by_scan(text: str, opaque_id: bool) -> bool:
-    """Whether the scan changes *text* by a span that counts (:func:`_reads_as_credential`)."""
+def _changed_by_scan(text: str) -> bool:
+    """Whether the scan changes *text* by a span that counts (:func:`_reads_as_credential`).
+
+    A URL the exfiltration scan flags always counts: it is refused, never rewritten.
+    """
+    if scan_exfiltration_urls(text):
+        return True
     if redact(text) == text:
         return False
-    if redact_exfiltration_urls(text)[0] != text:
-        return True
     found = redact_credentials_with_records(text)[2]
     if not found:
         return True
@@ -615,7 +602,7 @@ def _changed_by_scan(text: str, opaque_id: bool) -> bool:
         # as a space could hide one that spans it.
         found = [match for match in found if match.rule != "telegram_bot_token"]
         found += redact_credentials_with_records(apart)[2]
-    return not all(match.rule == "bare_aws_secret" and opaque_id for match in found)
+    return bool(found)
 
 
 def _account_resource_apart(match: re.Match[str]) -> str:

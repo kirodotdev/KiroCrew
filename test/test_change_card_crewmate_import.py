@@ -31,6 +31,7 @@ from kiro_crew.dashboard import change_cards as cards
 from kiro_crew.dashboard.change_cards import CardStore
 from kiro_crew.dashboard.handlers import change_cards as routes
 from kiro_crew.dashboard.handlers.undo_identity_guard import REQ_CARD_UNDO_CREWMATE_EXPECT
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 world = change_cards_helpers.world
 
@@ -48,7 +49,7 @@ BUNDLE = {
     "goals": {"longTerm": "Ship clean releases", "keyResults": [{"text": "zero rollbacks"}]},
     "crons": [{"name": "weekly", "message": "Check in", "cron_expr": "0 9 * * 1"}],
 }
-_FAKE_TOKEN = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+_FAKE_TOKEN = github_classic(seed=402)
 _SCRIPT_CRON = {"name": "s", "cron_expr": "0 9 * * 1", "script": "a.py:run"}
 
 

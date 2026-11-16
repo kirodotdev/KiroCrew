@@ -202,7 +202,7 @@ export function refusalOnlyAddsLaunches(refusal?: LaunchRefusal): boolean {
   const live = pairs(refusal.commands, refusal.envs)
   const approved = pairs(refusal.approved_commands, refusal.approved_envs)
   // `[REDACTED` heads every tag the gateway's display redaction writes in place of
-  // a value (a credential, an encoded credential, a suspicious URL). It is matched
+  // a value (a credential or an encoded credential). It is matched
   // inside a pair's JSON, where the tag text needs no escaping.
   if (!live || !approved || approved.some(pair => pair.includes('[REDACTED'))) return false
   const liveSet = new Set(live)

@@ -19,6 +19,7 @@ from memory_provider_helpers import FIXTURE_ID, READONLY_ID, fixture_provider, s
 from kiro_crew.config import loader
 from kiro_crew.dashboard.handlers import memory_provider as handlers
 from kiro_crew.dashboard.handlers import memory_provider_migrations as migrations
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 pytestmark = pytest.mark.xdist_group("memory_provider")
 
@@ -240,7 +241,7 @@ def test_the_app_proxy_refuses_a_declared_provider_route(monkeypatch) -> None:
 async def test_every_provider_string_in_a_response_is_redacted(served) -> None:
     from kiro_crew.memory_provider.contract import NewItem, ProviderScope
 
-    token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    token = github_classic(seed=13)
     set_provider("replace", FIXTURE_ID)
     scope = ProviderScope("default", None, "persistent", "dashboard")
     served.fixture.blocking_put(
@@ -302,7 +303,7 @@ async def test_meta_keys_are_redacted_and_the_export_stays_valid_jsonl(served) -
     from kiro_crew.memory_provider import migration
     from kiro_crew.memory_provider.contract import NewItem, ProviderScope
 
-    token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    token = github_classic(seed=13)
     set_provider("replace", FIXTURE_ID)
     scope = ProviderScope("default", None, "persistent", "dashboard")
     for n, meta in enumerate(({token: "x"}, {"note": f"password={token}"})):

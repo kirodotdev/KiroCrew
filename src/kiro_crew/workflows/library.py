@@ -15,7 +15,7 @@ from typing import Any, Iterable, Iterator, List, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import replace_with_retry
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls, refuses
 from kiro_crew.slugs import slug_hash_fallback
 from kiro_crew.workflows.store import default_workflow_library_dir
 
@@ -372,7 +372,7 @@ class WorkflowDefinitionLibrary:
             for revision in definition.get("revisions", [])
             if isinstance(revision, dict)
         )
-        if any(isinstance(source, str) and _redact(source) != source for source in sources):
+        if any(isinstance(source, str) and refuses(source, _redact) for source in sources):
             raise SensitiveWorkflowSourceError(
                 "workflow source contains sensitive data or an exfiltration URL"
             )

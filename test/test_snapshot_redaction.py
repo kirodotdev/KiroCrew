@@ -19,6 +19,8 @@ from kiro_crew import snapshot_redact
 
 # A checksummed GitHub token: an AWS key ID is an Identifier and stays visible.
 _TOKEN = github_classic(seed=11)
+#: A token pasted into memory, a second value the redaction must reach.
+_MEMORY_KEY = github_classic(seed=12)
 
 
 def _real_db(path: Path, secret: str | None = None) -> bytes:
@@ -53,7 +55,7 @@ def bundle(tmp_path):
         json.dumps({"telegram": {"bot_token": TOKEN}}), encoding="utf-8"
     )
     (payload / "memory.db").write_bytes(
-        _real_db(tmp_path / "src.db", f"my key is ghp_{'A' * 36} ok")
+        _real_db(tmp_path / "src.db", f"my key is {_MEMORY_KEY} ok")
     )
     (payload / "memory_index.db").write_bytes(_real_db(tmp_path / "idx.db"))
     (payload / "MANIFEST.json").write_text(
@@ -122,7 +124,7 @@ class TestTheOutboundCopyIsRedacted:
     def test_a_key_pasted_into_memory_does_not_leave_either(self, bundle, workdir, capsys):
         redacted = _prepare(bundle, workdir)
         assert redacted is not None, capsys.readouterr().out
-        assert b"ghp_" + b"A" * 36 not in _read_member(redacted, "memory.db")
+        assert _MEMORY_KEY.encode() not in _read_member(redacted, "memory.db")
 
     def test_the_redacted_database_is_still_a_database(self, bundle, workdir, tmp_path, capsys):
         """The whole reason redaction goes through SQL instead of over the bytes."""

@@ -1115,8 +1115,6 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew.cron_script_context import (  # noqa: F401
         _ACCOUNT_RESOURCE_RE,
         _CFN_PHYSICAL_NAME_RE,
-        _ID_KEY_RE,
-        _OPAQUE_ID_RE,
         _REFUSAL_CODE,
         _RESOURCE_NAME_RE,
         Done,
@@ -1221,7 +1219,8 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         REDACTED_CREDENTIAL_TAG,
         canonical_path_refusal,
         is_unverifiable_path_refusal,
-        redact_exfiltration_urls,
+        refuses,
+        scan_exfiltration_urls,
     )
     from kiro_crew.security.redaction import (  # noqa: F401
         _ARN_ACCOUNT_ID_12_DIGITS_RE,

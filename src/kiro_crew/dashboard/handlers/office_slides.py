@@ -126,7 +126,7 @@ from kiro_crew.sandbox import (
     sandboxed_spawn_argv,
     shielded_prepare_off_loop,
 )
-from kiro_crew.security.exfil import redact_exfiltration_urls
+from kiro_crew.security.exfil import redact_exfiltration_urls, scan_exfiltration_urls
 from kiro_crew.validation import FILE_READ_SCHEMA, ValidationError, validate_tool_args
 
 logger = logging.getLogger(__name__)
@@ -1116,8 +1116,7 @@ def _screen_rendered_text(text: str) -> None:
     for candidate in (text, "".join(text.split())):
         if redact(candidate) != candidate:
             raise _ContentRedacted("credential-like text on a slide")
-    cleaned, _warnings = redact_exfiltration_urls(text)
-    if cleaned != text:
+    if scan_exfiltration_urls(text):
         raise _ContentRedacted("exfiltration-shaped URL on a slide")
 
 

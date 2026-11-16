@@ -18,6 +18,7 @@ import pytest
 from crew_log_drain import assert_drained
 
 from kiro_crew.crew_log import crew_log_path, emit, resolve
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 SESSION = "acp-sid-1"
 
@@ -960,7 +961,7 @@ def test_a_plan_id_is_redacted_like_every_other_field_the_agent_authored(monkeyp
         SESSION,
         2,
         items=[
-            {"id": "ghp_" + "a" * 36, "text": "read the token", "completed": False},
+            {"id": github_classic(seed=162), "text": "read the token", "completed": False},
             {"id": "task-7", "text": "keep going", "completed": True},
         ],
     )

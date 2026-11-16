@@ -34,6 +34,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 from steer_requeue_helpers import _running_slot
 
+from kiro_crew.testing.synthetic_credentials import github_classic
+
 # The shared fixture, bound here by name so pytest registers it for this module.
 _patch_sel = steer_requeue_helpers._patch_sel
 
@@ -1012,8 +1014,8 @@ class TestSteerLifecycleState:
         from kiro_crew.dashboard.chat_delivery import sanitize_outbound, steer_into_running_turn
         from kiro_crew.dashboard.chat_runner import _mark_steer_row_state
 
-        first = "deploy with Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
-        second = "deploy with je7MtGbClwBF" + "/2Zp9Utk/h3yCo8nvbEXRhTqLz8m"
+        first = f"deploy with {github_classic(seed=35)}"
+        second = f"deploy with {github_classic(seed=36)}"
         # precondition: different raw texts, identical persisted content
         assert first != second
         assert sanitize_outbound(first) == sanitize_outbound(second)
@@ -1071,8 +1073,8 @@ class TestSteerLifecycleState:
         )
         from kiro_crew.dashboard.chat_runner import _settle_consumed_steers
 
-        first = "deploy with Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
-        second = "deploy with je7MtGbClwBF" + "/2Zp9Utk/h3yCo8nvbEXRhTqLz8m"
+        first = f"deploy with {github_classic(seed=35)}"
+        second = f"deploy with {github_classic(seed=36)}"
         # precondition: distinct raw texts, one persisted content -- the collision
         assert first != second
         target = sanitize_outbound(first)
