@@ -574,6 +574,12 @@ _APP_AUTO_RESETTING_FIELDS = frozenset(
     {"message", "agent_id", "model", "cron_expr", "every_secs", "channel", "thread_ts"}
 )
 
+#: What ``PATCH /api/crons/{id}`` says when a body names ``enabled``, which it ignores.
+_ENABLED_IGNORED_WARNING = (
+    "'enabled' is not changed by this route; pause or resume the job with "
+    "POST /api/crons/{id}/enable"
+)
+
 
 def _refuse_app_auto_approval(
     request: web.Request, approval_mode: object, operation: str
@@ -1303,8 +1309,15 @@ async def api_cron_update(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": str(exc), "code": "invalid_alert_after_failures"}, status=400
             )
+    # Pausing is POST /api/crons/{id}/enable; this route never reads the flag, so a
+    # body naming it is told so rather than answered as if the job was paused.
+    if "enabled" in body:
+        update_flag_warnings.append(_ENABLED_IGNORED_WARNING)
     if not kwargs:
-        return web.json_response({"error": "no fields to update"}, status=400)
+        error = "no fields to update"
+        if "enabled" in body:
+            error = f"{error}; {_ENABLED_IGNORED_WARNING}"
+        return web.json_response({"error": error}, status=400)
     # The owner's ``auto`` covered the job as it was. An app that changes what the
     # job does turns it off in the same write, as the MCP ``cron_update`` tool does.
     if request.get("app") and _APP_AUTO_RESETTING_FIELDS.intersection(kwargs):
