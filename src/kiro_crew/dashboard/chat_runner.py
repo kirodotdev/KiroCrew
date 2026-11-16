@@ -1413,6 +1413,9 @@ async def _run_chat(
             and acp_error_is_transient(exc)
             and slot._transient_5xx_retries >= TRANSIENT_RETRIES
             and _prompt_depth == 0
+            # Kiro's per-user rate limit is shared by every model: a swap cannot
+            # clear it, so the turn ends on its own error row instead.
+            and getattr(exc, "user_rate_limit", False) is not True
             and not _should_suppress_requeue(slot)
             and (_fb_candidate := await _fallback_swap_for_turn(slot, turn.client)) is not None
         ):

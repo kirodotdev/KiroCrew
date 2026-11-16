@@ -62,6 +62,24 @@ _WORK_ITEM_PROPERTY: dict[str, Any] = {
 }
 
 
+_REQUIRES_PROPERTY: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "Preview, with work_item. What the crew must have: tags (words the crew's "
+        "operator set in work_ledger.remote_dispatch_tags) and logins (gh, glab or "
+        'az, each reported "valid" by that crew), e.g. {"logins": ["gh"]}. Placement '
+        "skips a crew that lacks any of them; with crew, that crew is checked. When "
+        "none qualifies the call is refused crew_requirements_unmet naming what each "
+        "crew lacked."
+    ),
+    "properties": {
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "logins": {"type": "array", "items": {"type": "string"}},
+    },
+    "additionalProperties": False,
+}
+
+
 def with_crew_schema(tools: list[dict[str, Any]], enabled: bool) -> list[dict[str, Any]]:
     """*tools* with ``crew`` added to the five schemas when *enabled*, else unchanged."""
     if not enabled:
@@ -74,6 +92,7 @@ def with_crew_schema(tools: list[dict[str, Any]], enabled: bool) -> list[dict[st
             props["crew"] = dict(_CREW_PROPERTY)
             if tool.get("name") == "session_create":
                 props["work_item"] = dict(_WORK_ITEM_PROPERTY)
+                props["requires"] = copy.deepcopy(_REQUIRES_PROPERTY)
         out.append(tool)
     return out
 
@@ -86,7 +105,7 @@ def _on(resp: dict[str, Any]) -> str:
 def run_crew_create(args: dict[str, Any], ctx: ToolContext) -> str:
     payload = {
         k: args[k]
-        for k in ("crew", "title", "agent", "agent_kind", "model", "work_item")
+        for k in ("crew", "title", "agent", "agent_kind", "model", "work_item", "requires")
         if k in args
     }
     extra = sorted(k for k in args if k not in payload and args.get(k) not in (None, ""))

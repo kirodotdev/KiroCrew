@@ -4,9 +4,10 @@ import { selectSlotsWithLiveLastTs } from './slotLastTs'
 
 /**
  * The person's own session list: every live slot except a Crew Mode root's
- * workers, which their root lists in its side panel, and a live mate thread's
- * sessions its Bot does not show here, which its Sessions tab lists
- * (`crewModeView`). The one
+ * workers, which their root lists in its side panel, a live mate thread's
+ * sessions its Bot does not show here, which its Sessions tab lists, and, with
+ * `slack.show_in_session_list` off, conversations that started in Slack other
+ * than the open one (`crewModeView`, `slackRowHidden`). The one
  * rule every place that lists sessions for the person reads: the chat sidebar
  * (through its `slots` prop, filtered by the same function), the Sessions page,
  * the command palette's Recents and an artifact's Send to session. The tab strip
@@ -17,6 +18,7 @@ import { selectSlotsWithLiveLastTs } from './slotLastTs'
  */
 let personSlotsOf: ChatSlot[] | null = null
 let personSlotsCrewMode = false
+let personSlotsActive: string | null = null
 let personSlots: ChatSlot[] = []
 export function selectPersonSlots(state: Parameters<typeof selectSlotsWithLiveLastTs>[0]): ChatSlot[] {
   // Memoized on the live-row array itself, not on the state object, so a reader
@@ -24,10 +26,14 @@ export function selectPersonSlots(state: Parameters<typeof selectSlotsWithLiveLa
   const slots = selectSlotsWithLiveLastTs(state)
   // And on whether this build offers conductor mode, which decides whether crew members are left out.
   const crewMode = crewModeEnabled()
-  if (slots !== personSlotsOf || crewMode !== personSlotsCrewMode) {
+  // And on the open session, which keeps its row when the Slack list setting
+  // leaves its conversation out (`slackRowHidden`).
+  const active = state.chat?.activeSlot ?? null
+  if (slots !== personSlotsOf || crewMode !== personSlotsCrewMode || active !== personSlotsActive) {
     personSlotsOf = slots
     personSlotsCrewMode = crewMode
-    personSlots = crewModeView(slots)
+    personSlotsActive = active
+    personSlots = crewModeView(slots, false, undefined, active)
   }
   return personSlots
 }

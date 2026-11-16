@@ -161,6 +161,9 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # go back to (the restore probe re-selects the primary), not by whichever
     # candidate failed last.
     self._fallback_walk_refused = False
+    # Same first-swap snapshot: whether that ladder ended on a provider 5xx. The swap
+    # notice names the selected model, so it describes that model's failure.
+    self._fallback_walk_server_error = False
     self._active_fallback_model = ""
     self._fallback_primary_model = ""
     # Snapshot of slot.model taken when the fallback activated; it heals
