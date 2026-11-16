@@ -959,17 +959,21 @@ class MonitorState:
     #: Found still set on the next tick, it means a poll was interrupted, so that
     #: tick fires instead of trusting a quiet verdict: one extra turn at worst.
     poll_in_flight: bool = False
-    #: Non-empty when the subject is terminal but the final turn owed to a CHANNEL
-    #: loop has not been delivered yet. The VALUE is the outcome to record once it
+    #: Non-empty when the subject is terminal but the final turn owed to the
+    #: watching session has not been delivered yet. The VALUE is the outcome to record once it
     #: has (``"success"`` for a merge, ``"blocked"`` for a close without merging),
     #: so the classification survives the wait without a second field and without
     #: writing ``outcome`` early.
     #:
-    #: A channel-bound loop learns its watch finished from a delivered turn, so
-    #: settlement waits for it even when the channel is busy. This marker stops
+    #: The watching session learns its watch finished from a delivered turn, so
+    #: settlement waits for it even when the session is busy. This marker stops
     #: retries from re-announcing, and since no outcome is recorded yet, a restart
     #: in the window finds a live loop rather than a finished one.
     terminal_pending: str = ""
+    #: The one-line result that owed turn opens with ("PR owner/repo#N merged at
+    #: <ts>, head <sha>."), written with ``terminal_pending`` and read only while
+    #: that is set.
+    terminal_note: str = ""
     #: Non-empty once that owed turn LANDED but its settlement has not: the delivery
     #: moves the outcome out of ``terminal_pending`` into this field, so a restart
     #: in the window settles without repeating the channel turn. A separate field,

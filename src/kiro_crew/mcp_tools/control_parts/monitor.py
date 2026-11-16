@@ -366,6 +366,15 @@ def _arming_preflight_refusal(tool_name: str, session_key: str) -> str:
         )
     if reading.get("active"):
         return ""
+    if tool_name == "monitor_update":
+        finished = _finished_watch(reading)
+        if finished:
+            return (
+                f"monitor_update: NOT applied — this session's loop already ended: "
+                f"{finished}. An ended loop cannot be updated or retargeted, so no "
+                "loop is watching anything now. To watch a new subject, call "
+                "monitor_start in this turn; do NOT report monitoring as changed."
+            )
     monitor = reading.get("monitor")
     if not isinstance(monitor, dict):
         return ""
@@ -384,6 +393,32 @@ def _arming_preflight_refusal(tool_name: str, session_key: str) -> str:
         "succeed. Tell the user that is the one step needed, and do NOT report "
         "monitoring as started. Use monitor_inspect to read the retained record."
     )
+
+
+def _finished_watch(reading: dict[str, Any]) -> str:
+    """Why the loop in a session-monitor *reading* ended on its subject, or ``""``.
+
+    The turn boundary refuses ``monitor_update`` on such a loop whatever the patch
+    (a finished subject is not a bound to raise), so the refusal is certain here.
+    """
+    loop = reading.get("autonudge_loop")
+    if isinstance(loop, dict):
+        if (
+            not loop.get("active")
+            and loop.get("stopped_reason") == autonudge.MONITOR_TERMINAL_REASON
+        ):
+            return "its pull request merged or closed"
+        return ""
+    monitor = reading.get("monitor")
+    if not isinstance(monitor, dict):
+        return ""
+    outcome = monitor.get("outcome")
+    # A retained stop (a user's, say) is not "ended on its subject": its remedy is the
+    # owner's Clear, which the retained-stop refusal below names.
+    if outcome and not retained_outcome_blocks_rearm(outcome, monitor.get("stopped_reason")):
+        target = str(monitor.get("target") or "").strip()
+        return f"its watch{f' on {target}' if target else ''} finished ({monitor.get('outcome')})"
+    return ""
 
 
 def _parsed_pull_request_target(kind: Any, raw: Any) -> tuple[str, str]:

@@ -132,6 +132,7 @@ from kiro_crew.autonudge_service.model import (  # noqa: F401 -- re-exported
     runtime_budget_exceeded,
     stored_bound,
     terminal_notification_delivery_matches,
+    terminal_wake_line,
 )
 from kiro_crew.autonudge_service.store import (  # noqa: F401 -- re-exported
     _NUDGES_FILE,

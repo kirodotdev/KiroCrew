@@ -314,15 +314,15 @@ async def test_each_change_starts_exactly_one_turn(tmp_path, monkeypatch, recipe
     ],
     ids=["merged", "closed"],
 )
-async def test_a_merge_or_close_ends_the_loop_without_a_turn(
+async def test_a_merge_or_close_ends_the_loop_after_one_turn(
     tmp_path, monkeypatch, recipe, ending, outcome
 ):
     harness = _Harness(tmp_path, monkeypatch, [_reading(), _reading(**ending)])
     try:
         loop = await harness.arm(_RECIPES[recipe]())
         await harness.tick(loop)
-        assert await harness.tick(loop) is True, "the ending is settled, not delivered"
-        assert harness.delivered == [loop.id]
+        assert await harness.tick(loop) is False, "the ending is delivered once, then settled"
+        assert harness.delivered == [loop.id, loop.id]
         assert loop.active is False
         assert loop.monitor is not None and loop.monitor.outcome is outcome
         assert harness.expired == [loop.id], "the dashboard notice still goes out"
