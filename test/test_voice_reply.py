@@ -203,21 +203,20 @@ class TestStripMarkdown:
         # repeated prefix "<!--deliver:" * n, where an UNBOUNDED body lets
         # each of n start positions rescan an O(n) tail = quadratic.
         # Bounding every quantifier keeps a failed attempt constant work.
-        # This times the shared helper; strip_markdown's other passes are
-        # not under test.
-        # Polynomial time at this size hangs for minutes; linear completes
-        # in milliseconds. Generous bound for slow CI.
-        import time
-
+        # This guards the shared helper; strip_markdown's other passes are
+        # not under test. The cost is inside the regex engine, which no work
+        # counter can see, so the shared ramp holds this thread's CPU to its
+        # default budget for each vector, one unit at a time and then at growing
+        # pumps, each costing at most a linear multiple of the one before.
+        from conftest import assert_rejected_without_backtracking
         from kiro_crew.constants import strip_control_comments
 
-        start = time.monotonic()
-        out_tabs = strip_control_comments("<!--deliver:" + "\t" * 50_000)
-        out_reps = strip_control_comments("<!--deliver:" * 20_000)
-        assert time.monotonic() - start < 5.0
-        # Unterminated tags are preserved (no swallow), not stripped.
-        assert out_tabs.startswith("<!--deliver:")
-        assert out_reps.startswith("<!--deliver:")
+        def preserved(text: str) -> None:
+            # Unterminated tags are preserved (no swallow), not stripped.
+            assert strip_control_comments(text) == text
+
+        assert_rejected_without_backtracking(preserved, lambda n: "<!--deliver:" + "\t" * n)
+        assert_rejected_without_backtracking(preserved, lambda n: "<!--deliver:" * n)
 
     def test_unterminated_tag_preserved_through_full_strip(self) -> None:
         # Same no-swallow contract through the full TTS pipeline.

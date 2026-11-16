@@ -17,7 +17,6 @@ import asyncio
 import contextlib
 import inspect
 import threading
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +26,7 @@ from kiro_crew.knowledge import ingestion as ingestion_mod
 from kiro_crew.knowledge import store as store_mod
 from kiro_crew.knowledge.ingestion import IngestionPipeline
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
 
 # The store binds ``pysqlite3`` when it is installed, so both the raw reads and
@@ -526,11 +526,37 @@ class TestSweepWaitsForIngestion:
         try:
             _insert_orphan_source(store, "orphan")
             worker = _kick_worker(store, timeout=0.2)
+            waits: list[float | None] = []
+            this_thread = threading.get_ident()
+
+            class _RecordedCondition(threading.Condition):
+                """Records the timeout each gate wait on this thread is handed and
+                reports it timed out without sleeping; other threads wait for real.
+                A loop that keeps waiting past its deadline fails here by name
+                instead of spinning until the run's timeout."""
+
+                def wait(self, timeout: float | None = None) -> bool:
+                    if threading.get_ident() != this_thread:
+                        return super().wait(timeout)
+                    waits.append(timeout)
+                    assert len(waits) <= 50, f"the maintenance window kept waiting: {waits[:5]}..."
+                    return False
+
             with store.ingestion_in_flight():
                 with caplog.at_level("WARNING", logger="kiro_crew.knowledge.store"):
-                    started = time.monotonic()
-                    worker()
-                assert time.monotonic() - started < 5
+                    with pytest.MonkeyPatch.context() as mp:
+                        # A frozen clock on the store facade: the deadline is 0.2 s away
+                        # on every read, so the window always reaches its wait however
+                        # long this host takes to get there.
+                        ManualClock().install(mp, store_mod)
+                        mp.setattr(store._ingestion_gate, "_cond", _RecordedCondition())
+                        worker()
+            # The sweep waited exactly its 0.2 s budget, never unbounded.
+            assert waits, "the maintenance window never waited for the in-flight ingest"
+            assert len(waits) <= 50, f"the maintenance window kept waiting: {waits[:5]}..."
+            assert waits == [pytest.approx(0.2)] * len(
+                waits
+            ), f"the maintenance window waited {waits}, not its 0.2 s budget"
             assert _source_exists(path, "orphan"), "a skipped sweep still deleted rows"
             assert any("maintenance skipped" in r.message for r in caplog.records)
         finally:

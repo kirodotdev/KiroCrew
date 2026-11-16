@@ -25,7 +25,6 @@ Covered:
 from __future__ import annotations
 
 import re
-import time
 
 import pytest
 
@@ -189,18 +188,20 @@ def test_pass1_is_linear_on_credential_dense_text() -> None:
     Covers the plan with the structured detectors off, where pass 1 reads the
     AWS key ID branch.
 
-    The old shape rebuilt the whole string per match, so redacting N credentials
-    in an N-credential string was O(N^2). 4000 credentials (~84 KB) is
-    sub-second as one ``sub()`` pass; the generous ceiling keeps this off slow
-    CI's flake list while still failing hard if the per-match rebuild returns.
+    A per-match rebuild of the whole string makes redacting N credentials in an
+    N-credential string O(N^2). The rebuild is a C-level copy, which no work
+    counter can see, so the shared ramp holds this thread's CPU to its default
+    budget at growing credential counts, each costing at most a linear multiple
+    of the one before.
     """
-    dense = f"{_AKIA} " * 4000
-    started = time.perf_counter()
-    result, warnings = redact_credentials(dense)
-    elapsed = time.perf_counter() - started
-    assert len(warnings) == 4000
-    assert _AKIA not in result
-    assert elapsed < 5.0, f"pass 1 took {elapsed:.2f}s -- per-match string rebuild is back"
+    from conftest import assert_rejected_without_backtracking
+
+    def redact_all(dense: str) -> None:
+        result, warnings = redact_credentials(dense)
+        assert len(warnings) == dense.count(_AKIA)
+        assert _AKIA not in result
+
+    assert_rejected_without_backtracking(redact_all, lambda n: f"{_AKIA} " * n)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

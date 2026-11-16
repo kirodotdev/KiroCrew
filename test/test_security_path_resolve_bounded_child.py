@@ -33,6 +33,7 @@ import kiro_crew.executors as ex
 from kiro_crew import security
 from kiro_crew.subprocess_pool import SubprocessPoolUnavailable
 from kiro_crew.subprocess_pool.executor import proc_syscall
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 
 @contextlib.contextmanager
@@ -732,21 +733,39 @@ def test_outside_a_bounded_call_the_resolver_never_asks_the_pool(monkeypatch, tm
 def test_the_in_process_fallback_is_still_bounded(monkeypatch) -> None:
     """A host where the child cannot start does not get the original stall back: the
     in-process ``realpath`` runs on the pool's thread and the caller waits on it
-    with the shared deadline, refusing fail-closed (and uncharged) when it misses."""
+    with the shared deadline, refusing fail-closed (and uncharged) when it misses.
+
+    The bound is asserted as the wait itself: the caller waits on the pool's future
+    once, for at most the 0.2 s budget plus its grace, and refuses while the
+    wedged resolution is still running."""
     from concurrent.futures import ThreadPoolExecutor
 
     release = threading.Event()
     threads = ThreadPoolExecutor(max_workers=2)
+    waits: list[float | None] = []
+    futures: list[object] = []
+
+    class _RecordedFuture:
+        # The caller's only handle on the fallback: every wait on it is recorded.
+        def __init__(self, future) -> None:
+            self._future = future
+
+        def result(self, timeout: float | None = None):
+            waits.append(timeout)
+            assert timeout is not None, "the caller waited on the fallback unbounded"
+            return self._future.result(timeout=timeout)
 
     class _Unspawnable:
         def call_op(self, op: int, payload: bytes, timeout: float | None = None) -> bytes:
             raise FileNotFoundError("python")
 
         def submit(self, fn, /, *args, **kwargs):
-            return threads.submit(fn, *args, **kwargs)
+            future = threads.submit(fn, *args, **kwargs)
+            futures.append(future)
+            return _RecordedFuture(future)
 
     def _wedged(expanded: str) -> set[str]:
-        release.wait(30.0)
+        release.wait(FALLBACK_TIMEOUT_SECS)
         return {expanded}
 
     monkeypatch.setattr(security.paths, "path_resolve_executor", lambda: _Unspawnable())
@@ -754,11 +773,21 @@ def test_the_in_process_fallback_is_still_bounded(monkeypatch) -> None:
     monkeypatch.setattr(security.paths, "_resolved_spellings_inline", _wedged)
     monkeypatch.setattr(security.paths, "_PATH_RESOLVE_TIMEOUT_SECS", 0.2)
     try:
-        started = time.monotonic()
-        with pytest.raises(security.PathResolutionStalled):
+        try:
             security.paths._resolved_forms_bounded("/home/someone/ws/file")
-        # flake-ok: a 5 s ceiling over a 0.2 s budget, checked after the refusal itself; pre-existing, moved verbatim
-        assert time.monotonic() - started < 5.0
+            refused = False
+        except security.PathResolutionStalled:
+            refused = True
+        # One wait, inside the budget plus its grace (one deadline). The wait is that
+        # deadline minus a clock read, so allow float error against the entitlement.
+        entitled = 0.2 + min(
+            0.2 * security.paths._PATH_RESOLVE_GRACE_FACTOR,
+            security.paths._PATH_RESOLVE_GRACE_MAX_SECS,
+        )
+        assert len(waits) == 1, f"waited on the fallback {waits!r}"
+        assert waits[0] is not None and 0.0 <= waits[0] <= entitled + 1e-6, (waits, entitled)
+        assert refused, "a missed fallback must refuse with PathResolutionStalled"
+        assert len(futures) == 1 and not futures[0].done(), "the fallback is still wedged"
         assert security._path_resolve_degraded == {}, "a wedged fallback thread is not classified"
     finally:
         release.set()

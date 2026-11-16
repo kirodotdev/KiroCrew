@@ -1071,18 +1071,46 @@ class TestValidateMcpToolArguments:
         self._raises({"mode": "other"}, schema, "does not equal const")
         self._raises({"path": "/etc/passwd"}, schema, "does not match pattern")
 
-    def test_pattern_redos_is_bounded_fail_closed(self):
+    def test_pattern_redos_is_bounded_fail_closed(self, monkeypatch):
         """A pathological server-controlled pattern + app-controlled
         near-match must not spin the validator: the bounded matcher times
-        out (or size-caps) and the call fails closed."""
-        import time as _time
+        out (or size-caps) and the call fails closed.
+
+        Bounded is asserted as the wait the validator hands the match child: its
+        own timeout, and the child's timeout is what failed the call closed."""
+        import subprocess
+        import threading
+
+        from kiro_crew.validation import _PATTERN_TIMEOUT_SECS
+
+        caller = threading.get_ident()
+        runs: list[tuple[float | None, str]] = []
+        real_run = subprocess.run
+
+        def recording_run(*args, **kwargs):
+            if threading.get_ident() != caller:
+                return real_run(*args, **kwargs)
+            timeout = kwargs.get("timeout")
+            assert timeout == _PATTERN_TIMEOUT_SECS, (
+                f"the match child was given {timeout!r}s, not the validator's "
+                f"{_PATTERN_TIMEOUT_SECS}s bound"
+            )
+            try:
+                done = real_run(*args, **kwargs)
+            except subprocess.TimeoutExpired:
+                runs.append((timeout, "killed on timeout"))
+                raise
+            runs.append((timeout, f"exited {done.returncode}"))
+            return done
 
         evil = {"type": "object",
                 "properties": {"s": {"type": "string", "pattern": r"(a+)+$"}}}
-        start = _time.monotonic()
-        self._raises({"s": "a" * 3000 + "b"}, evil,
-                     "could not be safely evaluated")
-        assert _time.monotonic() - start < 5.0  # bounded, not exponential
+        with monkeypatch.context() as m:
+            m.setattr(subprocess, "run", recording_run)
+            self._raises({"s": "a" * 3000 + "b"}, evil,
+                         "could not be safely evaluated")
+        # bounded, not exponential: the child ran under the bound and was killed by it
+        assert runs == [(_PATTERN_TIMEOUT_SECS, "killed on timeout")], runs
         # Oversized inputs are also refused without running the regex.
         self._raises({"s": "x" * 5000},
                      {"type": "object",

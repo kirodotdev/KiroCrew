@@ -300,12 +300,20 @@ def test_the_wait_returns_false_when_the_parent_has_gone(monkeypatch):
     """
     monkeypatch.setattr(history_index_worker, "_PARENT_CHECK_SECS", 0.01)
     monkeypatch.setattr(history_index_worker, "_parent_is_gone", lambda: True)
-    stopping = threading.Event()
+    waits: list[float | None] = []
 
-    started = time.monotonic()
+    class _RecordedStopping:
+        """Never set; records each slice the pause asks it to wait, and returns at once."""
+
+        def wait(self, timeout: float | None = None) -> bool:
+            waits.append(timeout)
+            return False
+
+    stopping = cast(threading.Event, _RecordedStopping())
     assert history_index_worker._wait_or_retire(stopping, 30.0) is False
-    # Returned on the first slice, not after the 30-second pause.
-    assert time.monotonic() - started < 5.0
+    # One slice of _PARENT_CHECK_SECS, then the parent check ends it: the pause is
+    # never asked to wait out its 30 seconds.
+    assert waits == [0.01], f"the pause waited {waits}, not one parent-check slice"
 
 
 def test_the_parent_check_says_present_when_asked_from_the_parent():

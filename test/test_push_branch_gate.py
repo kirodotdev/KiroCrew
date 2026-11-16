@@ -21,11 +21,11 @@ between the layers, the process-substitution boundary, the one quote model and t
 nested-payload extraction -- is pinned in ``test_push_branch_gate_parser.py``.
 """
 
-import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from denied_commands_security_helpers import _assert_scan_is_linear
 from redaction_structured_cases import structured_engine
 
 from kiro_crew import platform_compat, security
@@ -425,26 +425,32 @@ class TestGitPushEnforcement:
     def test_redos_safe_on_pathological_input(self) -> None:
         """is_denied must not backtrack exponentially on whitespace-laden flags.
 
-        The 10s ceiling is the real guarantee: a catastrophic pattern would run
-        for seconds-to-minutes and trip it. The elapsed bound is deliberately
-        wide (load-tolerant) — a shared, parallel CI runner can inflate the
-        sub-ms linear scan to a few hundred ms without that being a regression.
+        Asserted on counts, never a clock, by the shared ReDoS check in
+        ``denied_commands_security_helpers``: every pattern a matcher hands the regex
+        engine over the full command is free of the exponential aws flag run and
+        of a top-level ``.*`` gap, and the interpreter instructions the call
+        executes grow linearly over three pump sizes, with the verdict "allowed"
+        at each size.
 
-        The ceiling belongs to pytest-timeout, NOT to a hand-installed SIGALRM
-        here. Arming the itimer in the test body meant disarming it again in a
-        ``finally``, which cancelled the run-wide 120s watchdog the plugin had
-        armed for this whole item: the trailing assert and the entire teardown
-        phase then ran with no hang guard at all, so a wedge there was a lost
-        run with no stack dump rather than a named failure. Deferring to the
-        mark keeps arm/cancel inside ``pytest_timeout_set_timer`` /
-        ``pytest_timeout_cancel_timer``, and a backtracking regression now
-        fails as ``Timeout >10.0s`` attributed to this test — with stacks —
-        instead of a bare TimeoutError.
+        The 10s ceiling is a lost-run bound owned by pytest-timeout's mark, not
+        a SIGALRM armed in the body: the mark keeps the run-wide watchdog armed
+        through the assert and teardown, so a hang fails as ``Timeout >10.0s``
+        attributed to this test, with stacks.
         """
-        t = time.perf_counter()
-        is_denied("git " + ("\t-! " * 5000) + "x")
-        elapsed = time.perf_counter() - t
-        assert elapsed < 5.0
+        _assert_scan_is_linear(
+            lambda n: "git " + ("\t-! " * n) + "x", (100, 200, 300), denied=False
+        )
+        # Instructions cannot see a regex the engine runs in C, so the same pump also
+        # goes through the shared ramped thread-CPU check (one pump unit per four
+        # characters keeps the 20 000 pump at the 5 000 flags this test always used).
+        from conftest import assert_rejected_without_backtracking
+
+        def _allowed(command: str) -> None:
+            assert not is_denied(command)
+
+        assert_rejected_without_backtracking(
+            _allowed, lambda n: "git " + ("\t-! " * max(1, n // 4)) + "x"
+        )
 
 
 class TestDefaultsJsonPushRegexes:

@@ -1013,18 +1013,21 @@ class TestImdsMixedBaseEncodings:
             assert is_sensitive_bash_command(cmd) is not None, host
 
     def test_unbounded_extraction_stays_linear(self) -> None:
-        import time
-
+        from conftest import assert_rejected_without_backtracking
         from kiro_crew.security import _check_imds_access
 
         # Guards the reason the caps are gone: unbounded runs over plain
-        # character classes must not backtrack. Generous bound -- the observed
-        # cost is single-digit milliseconds.
-        for payload in ("9" * 40000, "0" * 40000, "0x" + "a" * 40000):
-            start = time.monotonic()
-            _check_imds_access(f"curl http://{payload}/x")
-            # flake-ok: pre-existing 5 s ceiling over single-digit-millisecond extraction work; moved verbatim and tracked for a de-flake pass
-            assert time.monotonic() - start < 5.0, payload
+        # character classes must not backtrack. The cost is inside the regex
+        # engine, which no work counter can see, so the shared ramp holds this
+        # thread's CPU to its default budget, one character at a time and then at
+        # growing runs, each costing at most a linear multiple of the one before.
+        def reject(command: str) -> None:
+            assert _check_imds_access(command) is None, command
+
+        for head, unit in (("", "9"), ("", "0"), ("0x", "a")):
+            assert_rejected_without_backtracking(
+                reject, lambda n, head=head, unit=unit: f"curl http://{head}{unit * n}/x"
+            )
 
     def test_mixed_base_non_imds_not_overblocked(self) -> None:
         from kiro_crew.security import _check_imds_access, canonicalize_ip

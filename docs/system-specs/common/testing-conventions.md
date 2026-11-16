@@ -5530,7 +5530,7 @@ parse of the pattern, as `test_the_quoting_regex_is_not_redos_prone` does). A
 regression then fails at that assertion instead of never returning (class 6). A
 complexity guard that runs both a Python walk and a regex search asserts the two
 apart: what the engine is handed, then `_linear_work` on the call's instructions
-(`TestIsDeniedReDoSResistance._assert_scan_is_linear`).
+(`test/denied_commands_security_helpers.py::_assert_scan_is_linear`).
 
 **"Returns at once" is a claim about waits, so assert the wait.** Most short bounds
 (`elapsed < 0.5`) guard no complexity at all: they say a call never blocks, polls or
@@ -5574,6 +5574,16 @@ A spy that refuses or replaces a blocking primitive is installed for the thread 
 test only (the test's thread or the event loop's), so a pool thread the product starts
 still gets the real primitive. A spy that only records arguments and passes the call
 through may see every thread.
+
+Two traps in building those spies. A sleep is refused with a `sys.setprofile` hook
+on the thread (or task) under test, never by patching `time.sleep` or
+`asyncio.sleep`: the semgrep rule `kirocrew.test-stdlib-clock-rebound` refuses
+rebinding `time.sleep`, the K3 ratchet refuses `asyncio.sleep`, and either patch
+would reach every thread
+(`test_timeout_reaps_the_scrape_before_the_adjacent_whoami`). A spy on `os.open`
+must also be added to `os.supports_dir_fd`, or the pinned walk refuses the
+`dir_fd` call before any file is opened and the test passes for the wrong reason
+(`test_fifo_briefing_is_refused_without_blocking`).
 
 For a regex — no instrumentation surface at all — use `test/conftest.py`'s
 `assert_rejected_without_backtracking(reject, build_pump)`, and note what the mutation

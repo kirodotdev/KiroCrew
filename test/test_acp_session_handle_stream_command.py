@@ -354,12 +354,20 @@ async def test_no_response_terminates_at_timeout():
     command timeout with a terminal event — not drain for the chat-turn
     ceiling — and leave the handle reusable."""
     handle, _ = _make(respond=False)
-    start = time.monotonic()
+    # The dispatch loop runs to the deadline it is handed; record that budget.
+    budgets: list[float] = []
+    dispatch = handle._dispatch_events
+
+    def _recording_dispatch(req_id, timeout, **kwargs):
+        budgets.append(timeout)
+        assert timeout == 0.5, f"the command turn waits {timeout}s, not its 0.5s timeout"
+        return dispatch(req_id, timeout, **kwargs)
+
+    handle._dispatch_events = _recording_dispatch
     events = await _collect_with_timeout(handle, "/tools", timeout=0.5)
-    elapsed = time.monotonic() - start
     assert events[-1].kind == EVENT_COMPLETE
     assert events[-1].stop_reason == "timeout"
-    assert elapsed < 5.0
+    assert budgets == [0.5]
     assert handle._turn_done.is_set()
     assert handle.is_turn_active is False
 
