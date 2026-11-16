@@ -30,7 +30,7 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.platform import context as ctx_mod
 from kiro_crew.platform import governance_profiles as gp
-from kiro_crew.platform.spec_denied_gate import url_literal
+from kiro_crew.platform.spec_denied_gate import canonical_url, url_literal
 
 
 @pytest.fixture(autouse=True)
@@ -110,6 +110,93 @@ def test_trusted_runs_unprompted_unless_blocked() -> None:
     # A blocked match withholds the grant: main's prompt, not a refusal.
     assert _judge("https://docs.example.com/private/x", grant) == TOOL_ALLOW
     assert _judge("https://docs.example.com/\n", grant) == TOOL_ALLOW
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Spellings a fetch resolves under the blocked prefix.
+        "https://docs.example.com/%70rivate/x",
+        "https://docs.example.com/%2e/private/x",
+        "https://docs.example.com/guide/../private/x",
+        "https://docs.example.com//private/x",
+        "https://docs.example.com:443/private/x",
+        # A blocked entry is read in its canonical form too.
+        "https://docs.example.com/public/x",
+        "https://docs.example.com/public/x#a",
+        # Spellings that leave the trusted host, or that no fetch reads one way.
+        "https://docs.example.com@evil.com/",
+        "https://docs.example.com\\@evil.com/",
+        "https://docs.example.com:99999/",
+        "https://docs.example.com/%zz",
+        "https://docs.example.com/a%20b",
+    ],
+)
+def test_a_spelling_with_another_canonical_form_is_not_granted(url: str) -> None:
+    _out, grant = _project(
+        toolsSettings={
+            "web_fetch": {
+                "blocked": [
+                    "https://docs\\.example\\.com/private/.*",
+                    "https://DOCS\\.example\\.com/public/x",
+                ],
+                "trusted": _TRUSTED,
+            }
+        }
+    )
+    assert _judge("https://docs.example.com/guide", grant) == TOOL_AUTO_APPROVE
+    assert _judge(url, grant) == TOOL_ALLOW
+
+
+@pytest.mark.parametrize(
+    ("text", "prefix", "expected"),
+    [
+        (
+            "HTTPS://Docs.Example.COM.:443/%7euser/./a/../b",
+            False,
+            "https://docs.example.com/~user/b",
+        ),
+        ("https://x.com", False, "https://x.com/"),
+        ("https://x.com?q", False, "https://x.com/?q"),
+        ("https://x.com/%2f", False, "https://x.com/%2F"),
+        ("https://x.com", True, "https://x.com"),
+        ("https://x.com:8443/a/", True, "https://x.com:8443/a/"),
+        ("https://x.com/a/..", True, None),
+        ("https://x.com/%7", True, None),
+        ("https://u@x.com/", False, None),
+        ("http://2130706433/", False, None),
+        ("http://0x7f.0.0.1/", False, None),
+        ("http://127.0.0.1/", False, "http://127.0.0.1/"),
+        ("http://127.1", True, None),
+        ("http://0x7f.0.0.1", True, None),
+        ("http://10.0.0.1", True, "http://10.0.0.1"),
+        ("http://[::1]/", False, None),
+        ("http://[::1]/", True, "http://[::1]/"),
+        ("https://exa\u0301mple.com/", False, None),
+        ("ftp://x.com/", False, None),
+    ],
+)
+def test_canonical_url(text: str, prefix: bool, expected: str | None) -> None:
+    assert canonical_url(text, prefix=prefix) == expected
+
+
+def test_entries_are_read_in_canonical_form_too() -> None:
+    # Another scheme's blocked entry withholds nothing; a trusted prefix with an
+    # upper-case host or default port still grants its own URLs.
+    _out, grant = _project(
+        toolsSettings={
+            "web_fetch": {
+                "blocked": ["ftp://.*"],
+                "trusted": ["https://Docs\\.Example\\.com:443/.*"],
+            }
+        }
+    )
+    assert _judge("https://Docs.Example.com:443/x", grant) == TOOL_AUTO_APPROVE
+    # A blocked numeric host in another spelling withholds the grant.
+    _out, grant = _project(
+        toolsSettings={"web_fetch": {"blocked": ["http://0x7f\\.0\\.0\\.1/.*"], "trusted": [".*"]}}
+    )
+    assert _judge("http://127.0.0.1/x", grant) == TOOL_ALLOW
 
 
 def test_gate_adds_no_refusal() -> None:

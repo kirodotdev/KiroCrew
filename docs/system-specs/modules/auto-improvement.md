@@ -318,7 +318,11 @@ build, test and lint commands, find the root cause, and fix it". So the shell st
 and `_FORBIDDEN_BINARIES`; they cover, among others, `git push` and `git remote set-url`,
 `gh pr merge`/`ready`/`close`/`comment`/`review`/`edit`/`create`, every `gh issue` and
 `gh release` verb, `gh api`, `gh auth`, `gh secret`, `gh workflow run`, and the
-`curl`/`wget`/`nc`/`ncat`/`netcat`/`ssh`/`scp`/`sftp`/`telnet` binaries. The repo's own
+`curl`/`wget`/`nc`/`ncat`/`netcat`/`ssh`/`scp`/`sftp`/`telnet` binaries. `gh alias` is denied,
+and each `gh` verb has its `glab` twin. glab's own top-level aliases (`pipe`/`pipeline` for
+`ci`, `var` for `variable`, `sched`/`skd` for `schedule`) are read as the command they name,
+and a `glab` verb outside glab's command list (`_GLAB_COMMANDS`) is refused, because glab runs
+it as a user alias. A `gh` verb outside gh's list is not refused yet. The repo's own
 `is_sensitive_bash_command` does not cover this — it allows `gh pr merge`.
 
 **What that leaves un-confined, stated plainly.** The denylist gates the command a request
