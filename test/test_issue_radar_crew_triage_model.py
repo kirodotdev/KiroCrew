@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
+
+import pytest
 
 import kiro_crew
 from kiro_crew.apps.builtins.issue_radar.backend import crew_model as cm
@@ -687,10 +688,18 @@ class TestStoreField(unittest.TestCase):
 class TestStoredHold(unittest.TestCase):
     """The hold on the crew record: set compare-and-set, released by a model edit."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
+
+        Background writers (the crew-log fold, the store's ``mkdir`` on read) can
+        re-create a self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
+        self.root = self._tmp_path / "radar-root"
+        self.root.mkdir()
         self.crew = cs.create_crew(
             "o", "r", {"name": "Leo", "model": WORK, "triage_model": TRIAGE}, self.root
         )
