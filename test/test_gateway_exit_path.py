@@ -15,6 +15,7 @@ so the test process never exits.
 from __future__ import annotations
 
 import asyncio
+import functools
 import signal
 import sys
 import threading
@@ -85,7 +86,11 @@ def _install(monkeypatch: pytest.MonkeyPatch, orch: Any = None) -> dict[Any, Any
     """Install the handlers on the running loop and return them by signal."""
     handlers: dict[Any, Any] = {}
     loop = asyncio.get_running_loop()
-    monkeypatch.setattr(loop, "add_signal_handler", lambda sig, cb: handlers.__setitem__(sig, cb))
+    monkeypatch.setattr(
+        loop,
+        "add_signal_handler",
+        lambda sig, cb, *args: handlers.__setitem__(sig, functools.partial(cb, *args)),
+    )
     if orch is None:
         orch = gw.GatewayOrchestrator.__new__(gw.GatewayOrchestrator)
     orch._install_shutdown_signal_handlers()
@@ -106,7 +111,53 @@ def _join_force_exit(seams: SimpleNamespace) -> threading.Thread:
 async def test_both_signals_share_one_handler(monkeypatch, seams) -> None:
     handlers = _install(monkeypatch)
     assert set(handlers) == {signal.SIGINT, signal.SIGTERM}
-    assert handlers[signal.SIGINT] is handlers[signal.SIGTERM]
+    assert handlers[signal.SIGINT].func is handlers[signal.SIGTERM].func
+    assert handlers[signal.SIGINT].args == (signal.SIGINT,)
+    assert handlers[signal.SIGTERM].args == (signal.SIGTERM,)
+
+
+@pytest.mark.asyncio
+async def test_a_repeat_sigterm_while_stopping_is_ignored_and_logged_once(
+    monkeypatch, seams
+) -> None:
+    """A service manager can deliver SIGTERM twice during one stop (systemd's
+    control-group kill plus a forwarded one). The repeat must not cut the
+    graceful shutdown short: no force exit, no drain thread, one log line."""
+    event = threading.Event()
+    monkeypatch.setattr(gw, "shutdown_event", event)
+    log = MagicMock(name="logger")
+    monkeypatch.setattr(gw, "logger", log)
+    orch = gw.GatewayOrchestrator.__new__(gw.GatewayOrchestrator)
+    handlers = _install(monkeypatch, orch)
+
+    handlers[signal.SIGTERM]()
+    handlers[signal.SIGTERM]()
+    handlers[signal.SIGTERM]()
+
+    assert event.is_set()
+    assert not orch._force_exit_claimed.is_set()
+    assert seams.threads == [] and seams.timers == []
+    seams.compat.hard_exit.assert_not_called()
+    seams.flush.assert_not_called()
+    assert log.warning.call_count == 1
+    # A stop still owns any apply, on every signal.
+    assert seams.compat.cancel_wheel_applies_in_flight.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_still_force_exits_a_sigterm_shutdown(monkeypatch, seams) -> None:
+    """Only a repeat SIGTERM is ignored: Ctrl-C stays the escape from a stuck stop."""
+    monkeypatch.setattr(gw, "logger", MagicMock(name="logger"))
+    orch = gw.GatewayOrchestrator.__new__(gw.GatewayOrchestrator)
+    handlers = _install(monkeypatch, orch)
+
+    handlers[signal.SIGTERM]()
+    handlers[signal.SIGTERM]()
+    handlers[signal.SIGINT]()
+
+    assert orch._force_exit_claimed.is_set()
+    _join_force_exit(seams)
+    seams.compat.hard_exit.assert_called_once_with(0)
 
 
 @pytest.mark.asyncio
@@ -347,7 +398,7 @@ async def test_the_park_never_returns_once_a_force_exit_is_claimed() -> None:
 
 @pytest.mark.asyncio
 async def test_off_the_main_thread_no_handler_is_installed(monkeypatch, seams) -> None:
-    def _not_main_thread(_sig: Any, _cb: Any) -> None:
+    def _not_main_thread(_sig: Any, _cb: Any, *_args: Any) -> None:
         raise RuntimeError("set_wakeup_fd only works in main thread")
 
     loop = asyncio.get_running_loop()
