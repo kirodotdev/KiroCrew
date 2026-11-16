@@ -435,8 +435,8 @@ path, so the crash needs the full shard. The surface is every kill helper on
 `platform_compat`, not only the tree kill: `kill_pid`, `kill_pid_pinned`,
 `kill_pid_async`, `kill_process_group`, `kill_process_tree`,
 `kill_process_tree_pinned`, `kill_process_tree_async`, `kill_popen_tree`,
-`kill_and_reap`, `terminate_and_reap`, `terminate_and_reap_sync` and
-`run_killing_tree_on_timeout`. Pick
+`kill_and_reap`, `terminate_and_reap`, `terminate_and_reap_sync`,
+`run_killing_tree_on_timeout` and `stdlib_run_killing_tree_on_timeout`. Pick
 one of the two spellings
 already in the tree rather than inventing a third: give the mock a pid above
 every supported platform's `pid_max`
@@ -5643,6 +5643,18 @@ The same applies to `Event.wait()`, `Queue.get()`, `Condition.wait()`, and a
 `subprocess.communicate()` with no timeout. The ceiling is not a race to tune (it only
 matters when the property is broken); make it generous and keep it well under
 `--timeout`, so the failure is a named assertion and not a dead worker.
+
+**On Windows, `subprocess.run(..., capture_output=True, timeout=N)` is not a bound
+either.** The stdlib kills only the child it started, then drains the pipes with no
+timeout; when that child is a launcher (Git for Windows' `cmd\git.exe`, a `.cmd` or exe
+shim), the real process still holds the pipes and the call blocks until it exits.
+MEASURED (#37448): `git_config_hooks`' hook-name scan bound `subprocess.run` once at
+import, so it never reached the tree kill, and an md_notebook sync in
+`test_md_notebook_git_trust.py` hung past `--timeout` and took its xdist worker down.
+Production code spawns a timed, piped child through `run_killing_tree_on_timeout`
+(`stdlib_run_killing_tree_on_timeout` when it binds the stdlib's run on purpose), never
+through a module-level alias of `subprocess.run`
+([platform-compat](platform-compat.md)).
 
 **A production budget a test passes only to bound a broken run is one of these
 ceilings, and is sized like one.** `test_auto_improvement_members.py` handed each member

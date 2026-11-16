@@ -560,14 +560,32 @@ def run_killing_tree_on_timeout(args: Any, **kwargs: Any) -> subprocess.Complete
     already exited) is not reached; the drain bound still returns the call, and
     on Windows the reader threads close the pipes when their reads end.
     """
+    if subprocess.run is not _STDLIB_RUN:
+        # Forwarded exactly as given, so a stand-in keeps answering the spawn.
+        return subprocess.run(args, **kwargs)
+    return stdlib_run_killing_tree_on_timeout(args, **kwargs)
+
+
+def stdlib_run_killing_tree_on_timeout(
+    args: Any, **kwargs: Any
+) -> subprocess.CompletedProcess[Any]:
+    """:func:`run_killing_tree_on_timeout` for a caller that binds the stdlib's own run.
+
+    The same arms, except that a stand-in someone installed for ``subprocess.run``
+    is never called: outside the tree arm this is the stdlib's function read at
+    import (:data:`_STDLIB_RUN`). It is for a module that binds ``subprocess.run``
+    once so another caller's test stub cannot answer its spawn
+    (``git_config_hooks``' scan), and that still needs its timeout to bound the
+    call on Windows.
+    """
     timeout = kwargs.get("timeout")
     capture_output = kwargs.get("capture_output", False)
     piped = capture_output or subprocess.PIPE in (kwargs.get("stdout"), kwargs.get("stderr"))
     own_group = IS_POSIX and bool(kwargs.get("start_new_session"))
     tree_arm = (IS_WINDOWS and piped) or own_group
-    if not tree_arm or timeout is None or subprocess.run is not _STDLIB_RUN:
+    if not tree_arm or timeout is None:
         # Forwarded exactly as given, so this arm is the caller's own call.
-        return subprocess.run(args, **kwargs)
+        return _STDLIB_RUN(args, **kwargs)
     del kwargs["timeout"]
     stdin_input = kwargs.pop("input", None)
     check = kwargs.pop("check", False)
