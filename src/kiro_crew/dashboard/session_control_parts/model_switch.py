@@ -36,7 +36,7 @@ from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.llm_helpers import slot_switch_session_lock
 from kiro_crew.members import select_provider_backend
 from kiro_crew.messaging.link import is_channel_session_key
-from kiro_crew.security import redact
+from kiro_crew.security import redact, refuses
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -146,7 +146,7 @@ async def set_model_target(
             )
         if not model:
             raise SessionControlError("model is required", code="model_rejected", status=400)
-        if redact(model) != model:
+        if refuses(model, redact):
             # The pick is stored on the slot and broadcast to every dashboard, so a
             # credential-shaped argument is refused rather than persisted.
             raise SessionControlError(

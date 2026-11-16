@@ -111,7 +111,9 @@ def _refuse_redactable_key(key: object) -> web.Response | None:
     into one and replace each other's notes, and the original could never be
     dismissed. Refusing it keeps a key's identity exactly what the caller sent.
     """
-    if isinstance(key, str) and key and _redact_note_value(key) != key:
+    from kiro_crew.security.exfil import refuses
+
+    if isinstance(key, str) and key and refuses(key, _redact_note_value):
         return web.json_response(
             {
                 "error": "key must not contain a credential or a URL",

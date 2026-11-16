@@ -370,6 +370,9 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
             activeSession={activeSession}
             messageTs={messageTs}
             softBreaks
+            // The row's blocked-link records: a link the server blocked is its chip
+            // here too, never a live anchor.
+            blockedLinks={message.meta?.link_blocks}
           />
         </div>
       )}

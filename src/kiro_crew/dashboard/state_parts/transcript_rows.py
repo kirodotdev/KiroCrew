@@ -150,13 +150,14 @@ def is_quiet_end_row(m: dict) -> bool:
     return tool in (None, "", QUIET_END_TOOL) and server in (None, "", QUIET_END_SERVER)
 
 
-def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None) -> dict[str, Any]:
+def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None = None) -> dict[str, Any]:
     """Build the ``chat_message`` broadcast note for an appended row.
 
     The ONE builder shared by the append door (``_broadcast_chat_message``) and
     the reader-suppressed frame in ``append_and_surface``, so a row leaves the
     backend in one form whichever door delivers it. *workspace* scopes the
-    allowed-link hosts, as in ``_prepare_messages``.
+    allowed link hosts of the row's blocked-link records, as in
+    ``_prepare_messages``.
     """
     role = msg.get("role", "")
     content = msg.get("content", "")
@@ -175,25 +176,10 @@ def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None) -> dic
     from kiro_crew.dashboard.chat_utils import (
         redact_display_content,
         serialize_wire_content,
-        with_allowed_links_restored,
     )
 
-    restored_meta: dict | None = None
     if role != "user" and content:
-        # The same allowed-host scope as _prepare_messages, so the live
-        # frame and the history agree on an allowed link: its placeholder
-        # becomes the address again, then the display pass runs.
-        from kiro_crew.security.exfil import allowed_host_audit_epoch, scoped_exempt_hosts
-        from kiro_crew.security.redaction_allow import allowed_hosts_for, normalize_workspace
-
-        epoch = allowed_host_audit_epoch()
-        hosts = allowed_hosts_for(workspace)
-        with scoped_exempt_hosts(hosts, normalize_workspace(workspace), epoch):
-            if isinstance(content, str) and isinstance(msg.get("meta"), dict):
-                shown = with_allowed_links_restored({"content": content, "meta": msg["meta"]})
-                content = shown["content"]
-                restored_meta = shown["meta"]
-            content = redact_display_content(content)
+        content = redact_display_content(content)
     else:
         # The wire-string invariant covers EVERY row: a structured user
         # row or a falsy container serializes to text without redaction.
@@ -239,9 +225,31 @@ def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None) -> dic
     # test_rehydrate_does_not_broadcast_replayed_messages and
     # test_restore_recent_sessions_does_not_broadcast_either. Do not relax
     # it further without re-checking that meta is still absent.
-    direct_meta = restored_meta if restored_meta is not None else msg.get("meta")
+    direct_meta = msg.get("meta")
     if direct_meta and isinstance(direct_meta, dict):
         payload["meta"] = {**(payload.get("meta") or {}), **direct_meta}
+    # The blocked-link records of the text this frame sends, under the same
+    # allowed-host scope as _prepare_messages, so the live frame and the history
+    # agree on which links render as a Blocked link card. A value the row's meta
+    # carries under the key is dropped either way (with_blocked_links).
+    from kiro_crew.dashboard.chat_utils import allowed_hosts_for, with_blocked_links
+    from kiro_crew.security.blocked_links import allowed_host_audit_epoch, allowed_link_hosts
+    from kiro_crew.security.redaction_allow import normalize_workspace
+
+    held = payload.get("meta")
+    base = held if isinstance(held, dict) else {}
+    from kiro_crew.dashboard.chat_utils_display import _renders_links
+
+    if _renders_links(role, content):
+        epoch = allowed_host_audit_epoch()
+        with allowed_link_hosts(
+            allowed_hosts_for(workspace), normalize_workspace(workspace), epoch
+        ):
+            shown = with_blocked_links(base, content)
+    else:
+        shown = with_blocked_links(base, None)
+    if shown is not base:
+        payload["meta"] = shown
     if role == "mcp_oauth" and isinstance(payload.get("meta"), dict):
         # An `mcp_oauth` row's meta carries the Authorize link the client draws.
         # A replayed transcript line (refresh_channel_window broadcasts the

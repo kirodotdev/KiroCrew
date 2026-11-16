@@ -5,12 +5,11 @@
  * security endpoints supplied here because the default table has no security
  * routes.
  *
- * The states worth a frame are the ones a reviewer cannot infer from the diff:
- * the default (ON, no notice), the switch OFF (the loud notice with the time it
- * was switched off), and the READ FAILED state -- an unreadable switch must
- * render as unknown rather than as the reassuring default. The two last frames
- * show the prompt-and-logs card below it: an old file-view OFF with that switch
- * still on, and that switch off.
+ * The section is one toggle, so the frames that matter are its three states: ON, OFF (the
+ * default of a fresh install) and LOCKED (a governance policy keeps redaction on, so the
+ * toggle is disabled with one line saying an administrator controls it). Each is shot in
+ * the light theme at the full width and at the breakpoint below which the rail stacks
+ * above the pane.
  *
  * Usage: node scripts/capture-credential-redaction.mjs [outDir] [prefix]
  */
@@ -27,6 +26,19 @@ const PREFIX = process.argv[3] || 'after'
 mkdirSync(OUT, { recursive: true })
 
 const SWITCH_PATH = '/api/security/credential-redaction'
+const LABEL = 'Redact credentials'
+
+const STATES = {
+  off: { enabled: false, changed_at: '', locked_by_policy: false },
+  on: { enabled: true, changed_at: '2026-11-14T22:00:00+00:00', locked_by_policy: false },
+  locked: { enabled: true, changed_at: '', locked_by_policy: true },
+}
+
+const WIDTHS = [
+  { tag: 'wide', width: 1500, height: 980 },
+  // The breakpoint below which the rail stacks above the pane.
+  { tag: 'narrow', width: 900, height: 1000 },
+]
 
 async function main() {
   // serve-dist serves whatever is on disk, so a UI-only change shot against a
@@ -35,40 +47,20 @@ async function main() {
   const { srv, base } = await serveDist()
   const browser = await chromium.launch()
 
-  async function shoot(name, { width = 1500, height = 980, theme = 'dark', state, failRead = false, nonOwner = false, failWrite = false, fullPage = false }) {
+  async function shoot(name, { width, height, state }) {
     const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 2 })
     const page = await context.newPage()
     await installApiFixtures(page, {
       ...SECURITY_RAIL_FIXTURES,
-      '/api/theme/boot': { mode: theme, theme: '' },
-      ...(failRead ? {} : { [SWITCH_PATH]: state }),
+      '/api/theme/boot': { mode: 'light', theme: '' },
+      // The nav dock's starred bots: without it the frame carries a load-failed toast.
+      '/api/members': { members: [] },
+      [SWITCH_PATH]: STATES[state],
     })
-    // Registered AFTER the fixture router so it wins. The only way to render the
-    // failed-read branch, which the always-200 fixture table cannot express.
-    if (failRead) {
-      await page.route(/\/api\/security\/credential-redaction(\?|$)/, route =>
-        route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"unreachable"}' }))
-    }
-    // A non-owner: the owner-gated GET refuses with 403 and the card must say so
-    // rather than offer a Retry that can never succeed.
-    if (nonOwner) {
-      await page.route(/\/api\/security\/credential-redaction(\?|$)/, route =>
-        route.fulfill({ status: 403, contentType: 'application/json', body: '{"error":"dashboard owner required","code":"dashboard_owner_required"}' }))
-    }
-    // A write that fails: the GET keeps answering, the PUT refuses, and the card
-    // must show the position still in force with the save-failed notice.
-    if (failWrite) {
-      await page.route(/\/api\/security\/credential-redaction(\?|$)/, route => {
-        if (route.request().method() === 'PUT') {
-          return route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"could not record the switch","code":"credential_redaction_write_failed"}' })
-        }
-        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(state) })
-      })
-    }
     logPageFailures(page)
-    await page.addInitScript(t => {
+    await page.addInitScript(() => {
       localStorage.clear()
-      localStorage.setItem('mc-theme', t)
+      localStorage.setItem('mc-theme', 'light')
       localStorage.setItem('mc-onboarded', '1')
       window.updateAPI = {
         onState: () => () => {},
@@ -82,54 +74,29 @@ async function main() {
         }),
         setChannel: async () => ({ ok: true }),
       }
-    }, theme)
+    })
     await page.goto(`${base}/settings?tab=security&section=redaction`, { waitUntil: 'domcontentloaded' })
     // Assert the state actually rendered before the shot: a plausible frame of the
     // wrong state satisfies the gate and misleads the reviewer.
-    if (failRead) {
-      await page.getByTestId('credential-redaction-read-failed').waitFor({ timeout: 8000 })
-    } else if (nonOwner) {
-      await page.getByTestId('credential-redaction-owner-only').waitFor({ timeout: 8000 })
-    } else if (failWrite) {
-      // `failWrite` is true for the file-view switch, or 'engine' / 'seams' for the others.
-      const rowId = failWrite === 'engine' ? 'credential-redaction-engine-row' : failWrite === 'seams' ? 'credential-redaction-seams-row' : 'credential-redaction-row'
-      const failId = failWrite === 'engine' ? 'credential-redaction-engine-write-failed' : failWrite === 'seams' ? 'credential-redaction-seams-write-failed' : 'credential-redaction-write-failed'
-      await page.getByTestId(rowId).waitFor({ timeout: 8000 })
-      await page.getByTestId(rowId).getByRole('switch').click()
-      await page.getByTestId(failId).waitFor({ timeout: 8000 })
-    } else {
-      await page.getByTestId('credential-redaction-row').waitFor({ timeout: 8000 })
-      if (state.enabled === false) {
-        await page.getByTestId('credential-redaction-off-notice').waitFor({ timeout: 5000 })
-      }
-      if (state.seams_enabled === false) {
-        await page.getByTestId('credential-redaction-seams-off-notice').waitFor({ timeout: 5000 })
-      }
-    }
-    // The prompt-and-logs card sits below the file-view card; bring it into frame.
-    if (fullPage) await page.getByTestId('credential-redaction-seams-row').scrollIntoViewIfNeeded()
+    const toggle = page.getByRole('switch', { name: LABEL })
+    await toggle.waitFor({ timeout: 8000 })
+    const checked = await toggle.getAttribute('aria-checked')
+    if (checked !== String(STATES[state].enabled)) throw new Error(`${name}: aria-checked ${checked}`)
+    const disabled = (await toggle.getAttribute('aria-disabled')) === 'true'
+    if (disabled !== STATES[state].locked_by_policy) throw new Error(`${name}: aria-disabled ${disabled}`)
+    const lockedLines = await page.getByTestId('credential-redaction-locked').count()
+    if (lockedLines !== (STATES[state].locked_by_policy ? 1 : 0)) throw new Error(`${name}: ${lockedLines} locked lines`)
     await page.waitForTimeout(400)
-    await page.screenshot({ path: `${OUT}/${PREFIX}-${name}.png`, fullPage })
+    await page.screenshot({ path: `${OUT}/${PREFIX}-${name}.png` })
     console.log(`${PREFIX}-${name}.png`)
     await context.close()
   }
 
-  await shoot('on', { state: { enabled: true, changed_at: '' } })
-  await shoot('off', { state: { enabled: false, changed_at: '2026-09-24T23:00:00+00:00' } })
-  await shoot('read-failed', { failRead: true })
-  await shoot('non-owner', { nonOwner: true })
-  await shoot('save-failed', { state: { enabled: true, changed_at: '' }, failWrite: true })
-  await shoot('on-light', { state: { enabled: true, changed_at: '' }, theme: 'light' })
-  // The breakpoint below which the rail stacks above the pane.
-  await shoot('narrow', { width: 900, height: 1000, state: { enabled: false, changed_at: '2026-09-24T23:00:00+00:00' } })
-  // The prompt-and-logs switch: an old file-view OFF (its own switch still on),
-  // and the prompt-and-logs switch off with its notice. Full page, so both
-  // cards are in one frame.
-  await shoot('files-off-seams-on', { state: { enabled: false, changed_at: '2026-09-24T23:00:00+00:00' }, fullPage: true })
-  await shoot('engine-legacy-all-off', { state: { enabled: false, changed_at: '2026-09-24T23:00:00+00:00', seams_enabled: false, seams_changed_at: '2026-11-11T19:00:00+00:00', engine: 'legacy' }, fullPage: true })
-  await shoot('engine-save-failed', { state: { enabled: true, changed_at: '' }, failWrite: 'engine', fullPage: true })
-  await shoot('seams-save-failed', { state: { enabled: true, changed_at: '' }, failWrite: 'seams', fullPage: true })
-  await shoot('seams-off', { state: { enabled: true, changed_at: '', seams_enabled: false, seams_changed_at: '2026-11-11T19:00:00+00:00' }, fullPage: true })
+  for (const { tag, width, height } of WIDTHS) {
+    for (const state of Object.keys(STATES)) {
+      await shoot(`${state}-${tag}`, { width, height, state })
+    }
+  }
 
   await browser.close()
   srv.close()

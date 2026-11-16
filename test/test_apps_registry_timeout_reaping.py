@@ -22,6 +22,7 @@ from apps_registry_helpers import unsandboxed_spawn  # noqa: F401 - fixture
 
 from kiro_crew import platform_compat
 from kiro_crew.apps import registry
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until
 
 # A portable long-lived child: sleeps well past any test timeout without
@@ -501,7 +502,7 @@ async def test_a_failed_install_script_leaves_its_redacted_output_tail_in_the_ga
 ):
     """The reason an onInstall failed outlives the install response: its output
     tail reaches the gateway log on one line, with a credential in it redacted."""
-    token = "ghp_" + "a" * 36
+    token = github_classic(seed=302)
     output = f"step one\nnpm ERR! token {token}\n".encode()
     caplog.set_level(logging.WARNING, logger=registry.__name__)
 
@@ -522,7 +523,7 @@ async def test_the_gateway_log_tail_is_capped_and_cut_after_redaction(
     """One huge output line is cut to the cap, and only after redaction: a credential
     the cut lands inside leaves no fragment of itself in the log."""
     cap = registry._SCRIPT_LOG_TAIL_CHARS
-    token = "ghp_" + "a" * 36
+    token = github_classic(seed=303)
     # The raw output's last `cap` characters begin 19 characters into the token.
     output = ("x" * cap + " " + token + " " + "y" * (cap - 20)).encode()
     caplog.set_level(logging.WARNING, logger=registry.__name__)

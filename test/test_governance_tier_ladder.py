@@ -523,7 +523,7 @@ class TestEveryCeilingFieldHasAComposeClass:
     #: Folded field-by-field by ``_intersect_ceilings`` (tighten-only). ``updates``
     #: folds its two restriction pins and keeps the commands the authority's; see
     #: ``TestUpdatePinsFoldAsRestrictions``. ``yolo_max_seconds`` folds to the lower cap.
-    COMPOSED = frozenset({"boot", "controls", "updates", "yolo_max_seconds"})
+    COMPOSED = frozenset({"boot", "controls", "updates", "yolo_max_seconds", "retired_rows"})
     #: "Absence means no choice expressed": the highest tier that declared one wins,
     #: re-applied by ``compose_tier_ladder``.
     LOWER_MAY_SUPPLY = frozenset({"distribution"})

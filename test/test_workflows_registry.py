@@ -18,6 +18,7 @@ import asyncio
 
 import pytest
 
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until, await_until
 from kiro_crew.workflows import WorkflowEvent
 from kiro_crew.workflows.registry import (
@@ -376,11 +377,11 @@ def test_runhandle_redacts_title_credential_before_the_cap() -> None:
     # cutting first would leave a partial token below the redactor's threshold,
     # and that partial would then survive checkpoint/snapshot redaction and
     # reach disk/the dashboard. Redaction runs on the full title before the cap.
-    token = "ghp_" + "A" * 36  # a full 40-char credential the redactor catches
+    token = github_classic(seed=110)  # a full 40-char credential the redactor catches
     handle = RunHandle(run_id="wf_sec", name="n", fallback_title="x" * 175 + token)
     assert "ghp_" not in handle.fallback_title
     assert token not in handle.fallback_title
-    assert "A" * 36 not in handle.fallback_title
+    assert token[4:] not in handle.fallback_title
     assert len(handle.fallback_title) <= 200
 
 

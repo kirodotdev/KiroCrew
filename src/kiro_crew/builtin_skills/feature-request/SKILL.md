@@ -223,14 +223,9 @@ all three options below may apply. If it did not, Option 3 is unavailable on thi
 host; offer Option 1, and Option 2 only when its query string is short (see
 below).
 
-Lead with the routes that reliably reach the user. Crew's chat redacts any
-model-written URL whose query string is 200 characters or longer, with no
-exception for issue links (this is intentional — injected content could hide
-private context in a prefilled `body=`, and the issue it creates is public). A
-prefilled link carrying a drafted title and body almost always crosses that
-length and would render as `[REDACTED: suspicious URL]` rather than a clickable
-link, so Option 1 is the primary route and Option 2 is offered only in the rare
-short-query case where it survives redaction.
+Lead with the routes that reliably reach the user. A prefilled issue link carries
+the drafted title and body in its query string, and GitHub truncates a long URL, so
+Option 1 is the primary route and Option 2 is offered only in the short-query case.
 
 **Option 1: Copy/paste** (always works, nothing to install)
 
@@ -271,13 +266,10 @@ into the URL fragment, either of which silently drops the drafted body from the
 pre-filled issue.
 
 You build this URL, so you know its length: offer it **only when its query
-string is under 200 characters** (a short title and little or no body). At or
-above 200, Crew redacts it in chat as a suspicious URL (intentional, no
-exception for issue links), so do not offer it — leave it out silently and use
-Option 1 rather than handing the user a link that renders as a
-`[REDACTED: suspicious URL]` placeholder. (A URL over ~4000 chars may also be
-truncated by GitHub, another reason the short-query case is the only one worth
-offering here.)
+string is under 200 characters** (a short title and little or no body). Above
+that, leave it out silently and use Option 1: a long prefilled link is hard to
+check before the user submits it, and GitHub may truncate one over about 4000
+characters.
 
 **Option 3: Direct creation via `gh` CLI** (only if the step 3 check succeeded)
 

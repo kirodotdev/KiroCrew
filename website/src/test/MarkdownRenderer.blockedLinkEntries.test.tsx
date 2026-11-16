@@ -3,16 +3,15 @@ import { render, fireEvent, within, cleanup } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { expectCardListsHostRecords } from './blockedLinkCardAsserts'
 
-// Seeded random interleavings of blocked links from two hosts across blocks,
-// with records that may not match the placeholders one to one (a repeated
-// address, a placeholder no record describes, a record whose placeholder the
-// text lost). Whichever chip is clicked, exactly one card opens, under the
-// clicked chip's block, and its entries are exactly the host's records in
-// record order, whichever chip was clicked. No entry is presented as the
-// clicked link, at any count.
+// Seeded random interleavings of links to two hosts across blocks, some of
+// them recorded as blocked (a link may repeat a recorded address) and some
+// not, which render live. Whichever chip is clicked, exactly one card opens,
+// under the clicked chip's block, and its entries are exactly the host's
+// records in record order. No entry is presented as the clicked link, at any
+// count.
 
 const HOSTS = ['a.example-sink.net', 'b.example-sink.net']
-const PH = (h: string) => `[REDACTED: suspicious URL to ${h}]`
+const recordUrl = (h: string, i: number) => `https://${h}/p${i}?q=x`
 
 function rng(seed: number): () => number {
   let s = seed >>> 0
@@ -28,22 +27,29 @@ function rng(seed: number): () => number {
 function check(seed: number): void {
   const r = rng(seed)
   const pick = (n: number) => Math.floor(r() * n)
+  const counts = HOSTS.map(() => pick(4))
+  const records = HOSTS.flatMap((h, hi) => Array.from({ length: counts[hi] }, (_, i) => (
+    { url: recordUrl(h, i), domain: h, rule: 'exfil_query_length', query_chars: 290, withheld: null })))
   const blocks: string[] = []
-  const chips = new Map<string, number>()
+  const live: string[] = []
   for (let b = 0, n = 1 + pick(4); b < n; b++) {
     const parts = [`Block ${b}:`]
     for (let k = 0, m = pick(3); k < m; k++) {
-      const h = HOSTS[pick(2)]
-      parts.push(PH(h))
-      chips.set(h, (chips.get(h) ?? 0) + 1)
+      const hi = pick(2)
+      const h = HOSTS[hi]
+      // A recorded address, or one no record names, which renders live.
+      if (counts[hi] > 0 && pick(3) > 0) parts.push(recordUrl(h, pick(counts[hi])))
+      else {
+        const free = `https://${h}/free${b}${k}`
+        live.push(free)
+        parts.push(free)
+      }
     }
     blocks.push(parts.join(' '))
   }
-  const records = HOSTS.flatMap(h => {
-    const n = (chips.get(h) ?? 0) === 0 ? 0 : pick(4)
-    return Array.from({ length: n }, (_, i) => ({ domain: h, rule: 'exfil_query_length', path: `/p${i}`, query_chars: 290, url: `https://${h}/p${i}?q=x`, url_withheld: null }))
-  })
   const { getAllByTestId, queryAllByTestId, container } = render(<MarkdownRenderer content={blocks.join('\n\n')} blockedLinks={records} slotKey="s1" />)
+  for (const free of live) expect(container.querySelector(`a[href="${free}"]`)).toBeTruthy()
+  for (const rec of records) expect(container.querySelector(`a[href="${rec.url}"]`)).toBeNull()
   const inspect = queryAllByTestId('blocked-link-inspect')
   if (inspect.length === 0) { cleanup(); return }
   const clicked = inspect[pick(inspect.length)]

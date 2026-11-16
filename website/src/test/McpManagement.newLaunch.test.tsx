@@ -134,11 +134,11 @@ describe('which refusal reads as a new launch', () => {
       'command_changed_hint_command',
     ],
     [
-      "the approved launch's env shows a redacted URL",
+      "the approved launch's env shows a redacted value",
       {
         ...ADDED,
-        envs: [['API_URL=[REDACTED: suspicious URL to example.invalid]'], []],
-        approved_envs: [['API_URL=[REDACTED: suspicious URL to example.invalid]']],
+        envs: [['API_TOKEN=[REDACTED: credential]'], []],
+        approved_envs: [['API_TOKEN=[REDACTED: credential]']],
       },
       'command_changed_hint_command',
     ],

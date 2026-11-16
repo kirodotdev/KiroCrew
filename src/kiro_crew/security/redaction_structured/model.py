@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 TAG = "[REDACTED: credential]"
+#: The placeholders the credential plan writes (``redaction.CREDENTIAL_REDACTION_TAGS``).
+PLAN_TAGS = (TAG, "[REDACTED: encoded credential]")
 
 SECRET = "secret"
 IDENTIFIER = "identifier"
@@ -31,9 +33,12 @@ CONTAINABLE_DETECTORS = frozenset({"known_key", "key_id_pair"})
 LABEL_BEATS_RULES = frozenset({"git.object_name"})
 
 # A hit whose unit is still running when a stream window ends, decided as a Secret:
-# ``all`` covers everything to the end of the text, ``b64run`` the rest of a base64 run.
+# ``all`` covers everything to the end of the text, ``b64run`` the rest of a base64 run,
+# ``encrun`` the rest of an encoded run (base64 in either alphabet, or percent-encoded).
+# A run's tail also takes at most two ``=`` after it.
 TAIL_ALL = "all"
 TAIL_B64RUN = "b64run"
+TAIL_ENCRUN = "encrun"
 
 
 @dataclass(frozen=True, slots=True)

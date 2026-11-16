@@ -18,7 +18,7 @@ from body_stream_helpers import attach_json_body
 from kiro_crew import artifacts as art_mod
 from kiro_crew.artifacts import ArtifactStore
 from kiro_crew.dashboard.handlers import artifacts as h
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 @pytest.fixture
@@ -830,8 +830,9 @@ class TestFetchOnViewMerge:
     async def test_provider_author_redacted_at_read_boundary(self, store, monkeypatch):
         from kiro_crew.publish_provider import RemoteComment
 
-        # A 40-char AWS secret; an AWS key ID is kept visible, so it cannot stand in.
-        secret = SAMPLE_AWS_SECRET
+        # A GitHub token with a valid checksum; an AWS key ID and a bare 40-character
+        # run are kept visible, so neither can stand in.
+        secret = github_classic(seed=138)
         self._publish(store)
         self._patch_provider(
             monkeypatch,

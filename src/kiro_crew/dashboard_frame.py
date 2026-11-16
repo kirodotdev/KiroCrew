@@ -74,7 +74,7 @@ import json
 import logging
 import math
 import re
-from typing import Any, Callable, Final, Mapping, cast
+from typing import Any, Final, Mapping, cast
 
 logger = logging.getLogger(__name__)
 
@@ -459,60 +459,6 @@ def code_spans(html: str, limit: int | None = None) -> list[tuple[int, int]]:
             if limit is not None and len(spans) >= limit:
                 break
     return spans
-
-
-#: How many script and style texts :func:`map_page_text` leaves out of the markup function.
-#: Each stretch between them is a separate call, so a page of thousands of tiny elements
-#: would cost far more than one call over the whole page. Past this many, the rest of the
-#: page goes to the markup function, which is the stricter of the two.
-MAX_CODE_PIECES: Final[int] = 256
-
-
-def map_page_text(html: str, markup: Callable[[str], str], code: Callable[[str], str]) -> str:
-    """What *markup* makes of *html*, except that the text of its script and style elements is *code*'s.
-
-    *markup* is the baseline: the answer for the whole page is its answer, and the one change
-    allowed is to put *code*'s result for an element's text where *markup*'s was. So the page
-    differs from the baseline only inside script and style text, and only by what *code* leaves
-    out. A page with no such text, and a page *markup* does not change, never reaches *code*.
-
-    The baseline is cut at the script and style text :func:`code_spans` finds in *html*, and
-    the pieces are scrubbed one by one. A rule that reaches across a cut (a PEM block, a
-    labelled value) makes the pieces differ from the baseline, and then the baseline is the
-    answer. The browser reads the page this returns, so the result is scanned again, and unless
-    the kept text is still exactly its script and style text the baseline is the answer as well.
-    """
-    baseline = markup(html)
-    spans = code_spans(html, MAX_CODE_PIECES)
-    if not spans or baseline == html:
-        return baseline
-    pieces: list[str] = []
-    swapped: list[str] = []
-    kept: list[tuple[int, int]] = []  # where each kept text sits in the joined pieces
-    at = served_len = 0
-    for (start, end), is_text in zip(
-        (*spans, (len(html), len(html))), (*([True] * len(spans)), False)
-    ):
-        outside = html[at:start]
-        if outside:
-            scrubbed = markup(outside)
-            pieces.append(scrubbed)
-            swapped.append(scrubbed)
-            served_len += len(scrubbed)
-        if is_text:
-            text = html[start:end]
-            pieces.append(markup(text))
-            kept_text = code(text)
-            swapped.append(kept_text)
-            kept.append((served_len, served_len + len(kept_text)))
-            served_len += len(kept_text)
-        at = end
-    if "".join(pieces) != baseline:
-        return baseline
-    served = "".join(swapped)
-    if code_spans(served, MAX_CODE_PIECES) != kept:
-        return baseline
-    return served
 
 
 #: Escapes applied inside the data island's JSON string literals.

@@ -22,10 +22,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from redaction_structured_cases import synth
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
 from kiro_crew.messaging import auto_title
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import finished
 
 #: These tests start background helper turns, which are skipped while the host's
@@ -36,7 +36,7 @@ _KEY = "telegram:kirocrew:direct:4242"
 
 
 # A synthetic 40-character secret the redactor removes; an AWS key ID stays visible.
-_PLANTED = synth(40, seed=201)
+_PLANTED = github_classic(seed=201)  # a token; a bare 40-character run stays visible
 
 
 def _ev(kind: str, **kw):

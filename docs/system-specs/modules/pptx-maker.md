@@ -538,7 +538,7 @@ sensitive-path check and the governance ceiling — would never be reached.
   files' full contents raw would be an inconsistent hole: a credential the model
   echoed into a brief, an outline or a compose payload would reach the dashboard
   verbatim. `_read_artifact` runs
-  `security.redact` (credentials + exfiltration URLs) over the textual suffixes.
+  `security.redact` (credentials, inside URLs too) over the textual suffixes.
   Three properties make this safe in both directions:
   - **The text/binary split is data, not a code path.** `SERVED_SUFFIXES` maps each
     suffix to a frozen `ServedSuffix(content_type, text=…)`. `text` has no default,
@@ -824,8 +824,8 @@ sensitive-path check and the governance ceiling — would never be reached.
   ordinary style still reads.
 - **SEL audit fields are redacted at the chokepoint.** `_audit` runs `redact` over
   both free-text fields. Every call site interpolates a user- or agent-chosen value —
-  a style/template name, a deck root, a `deckId/subpath`, an exception string — and an
-  `AKIA`-shaped name is legal under `SEGMENT_RE`, so without redaction the credential
+  a style/template name, a deck root, a `deckId/subpath`, an exception string — and a
+  `ghp_`-shaped name is legal under `SEGMENT_RE`, so without redaction the credential
   would be written verbatim into the SEL and served back by `GET /api/sel/events`. An audit log is a
   user-facing surface, and a *durable* one: unlike a response body, a leak there
   persists. Redaction is centralized in `_audit` rather than repeated at each call
@@ -924,7 +924,7 @@ resolution), `..._decks.py` (in-progress decks listed, newest compose epoch wins
 outline-driven slide order, relative URLs only), `..._library.py` (validation
 ladder, collision refusal, pin/metadata bookkeeping across rename and delete),
 `..._routes.py` (deny-by-default on every route, served-extension allow-list,
-CSP header, artifact redaction — an `AKIA`-shaped credential in a served
+CSP header, artifact redaction — a `ghp_`-shaped credential in a served
 `.json`/`.md`/`.svg`/`.html` comes back redacted, a `.pptx`/`.png` comes back
 byte-identical, inline raster art survives, an undecodable byte sequence does not
 raise — `PUT /config` key equality, no `/deps/install`), `..._engine.py`

@@ -11,6 +11,7 @@ import json
 
 import pytest
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 from shared_crew_host_isolation import host_isolation  # noqa: F401
 
 from kiro_crew.dashboard import state as state_module
@@ -186,7 +187,7 @@ async def test_a_resume_replaying_history_adds_no_participant(state):
 
 def test_a_stored_label_is_redacted_on_read_back():
     slot = _PartSlot("parts-redact")
-    secret = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+    secret = github_classic(seed=86)
     display = {"name": f"Bob {secret}", "login": "bob@example.com", "captured_at": None}
     leaky = {**BOB.to_public_dict(), "display": display}
     parts.restore_from_metadata(

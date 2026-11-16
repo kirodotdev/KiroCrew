@@ -123,6 +123,7 @@ from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
+    refuses,
 )
 from kiro_crew.widget_parse import mask_inline_code
 
@@ -1324,9 +1325,10 @@ def upload_filename(file: "OutboundFile", index: int = 0) -> str:
     stem = stem[: -len(Path(stem).suffix)] if Path(stem).suffix else stem
     stem = stem.strip("._")[:64]
     name = f"{stem or f'image_{index}'}.{ext}"
-    redacted, _ = redact_exfiltration_urls(name)
-    redacted, _ = redact_credentials(redacted)
-    return name if redacted == name else f"image_{index}.{ext}"
+    # A safety decision: it judges in full whatever the owner's redaction setting.
+    if refuses(name, lambda text: redact_credentials(redact_exfiltration_urls(text)[0])[0]):
+        return f"image_{index}.{ext}"
+    return name
 
 
 def extract_local_refs(

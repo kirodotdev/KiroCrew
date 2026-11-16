@@ -27,11 +27,11 @@ import io
 import json
 import pathlib
 import re
+import string
 import tokenize
-from collections.abc import Iterator
 
 import pytest
-from redaction_structured_cases import ALNUM, structured_engine, synth
+from redaction_structured_cases import ALNUM, synth
 from source_corpus import parsed_candidates
 
 from kiro_crew.messaging.display_safety import slack_mrkdwn_reading
@@ -49,14 +49,6 @@ from kiro_crew.slack.format import (
 )
 from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-
-@pytest.fixture(autouse=True)
-def _structured_engine() -> Iterator[None]:
-    """These cases assert the structured engine's output: keep it selected under a legacy run."""
-    with structured_engine():
-        yield
-
-
 # The conversion primitive nobody outside format.py may call.
 _BANNED_FUNC = "to_slack_mrkdwn"
 _OWNER_MODULE = "kiro_crew/slack/format.py"
@@ -64,12 +56,20 @@ _OWNER_MODULE = "kiro_crew/slack/format.py"
 # Trailing-comment marker that suppresses a single flagged call.
 _SUPPRESS = "render-ok"
 
-# A synthetic 40-character secret key: matched by the credential redactor, free of
-# markup characters, and long enough that a straddling cut leaves a recognisable
-# prefix behind.
-_SECRET = synth(40, ALNUM, 31)
-# A second secret that shares the first one's tail.
-_SECOND_SECRET = synth(4, ALNUM, 5) + _SECRET[4:]
+# A synthetic 40-character Slack bot token: matched by the credential redactor by its
+# published format, free of markup characters, and long enough that a straddling cut
+# leaves a recognisable prefix behind. (A bare 40-character run stays visible by
+# design, and a GitHub token's ``_`` is markup.)
+_SECRET = (
+    "xoxb-"
+    + synth(10, string.digits, 31)
+    + "-"
+    + synth(10, string.digits, 32)
+    + "-"
+    + synth(13, ALNUM, 33)
+)
+# A second secret that shares the first one's tail: the same token as a user token.
+_SECOND_SECRET = "xoxp" + _SECRET[4:]
 
 
 def _fake_redactor(text: str) -> str:
@@ -361,7 +361,15 @@ class TestRenderForSlackOrdering:
         chunk_limit = SLACK_MSG_LIMIT - len(CONTINUATION)
         native_link_prefix = "<https://x/"
         filler_length = chunk_limit + key_offset - len(native_link_prefix)
-        payload = native_link_prefix + ("q" * filler_length) + marked_key + "|label>" + ("t" * 200)
+        # A ``/`` before the key: glued to a letter it is no token.
+        payload = (
+            native_link_prefix
+            + ("q" * (filler_length - 1))
+            + "/"
+            + marked_key
+            + "|label>"
+            + ("t" * 200)
+        )
 
         parts = render_for_slack(payload, redactor=self._credential_redactor)
 
@@ -383,7 +391,7 @@ class TestRenderForSlackOrdering:
 
     def test_final_native_link_split_fenced_code_cannot_reveal_a_key(self) -> None:
         marked_key = f"{_SECRET[:4]}```{_SECRET[4:]}````"
-        payload = "[doc](https://example.com/" + ("q" * 50) + marked_key + ")"
+        payload = "[doc](https://example.com/" + ("q" * 49) + "/" + marked_key + ")"
         limit = 70
         unsafe_parts = slack_format.split_message(slack_format.to_slack_mrkdwn(payload), limit)
         assert any(_SECRET in part.replace("```", "") for part in unsafe_parts)
@@ -416,7 +424,7 @@ class TestRenderForSlackOrdering:
         """
         limit = 400
         marked_key = f"{_SECRET[:4]}*{_SECRET[4:]}*"
-        payload = "<https://x/" + ("q" * 310) + marked_key + "|label>" + ("t" * 200)
+        payload = "<https://x/" + ("q" * 309) + "/" + marked_key + "|label>" + ("t" * 200)
 
         rendered = render_one_for_slack(payload, limit=limit, redactor=self._credential_redactor)
 
@@ -641,12 +649,12 @@ class TestConvertedSlackDisplayRedaction:
     ) -> None:
         self._narrow_generic_screen(monkeypatch)
         second_secret = _SECOND_SECRET
-        # ``-`` rather than ``/`` between the secrets: ``/`` is in a secret key's
-        # alphabet, so the first redaction would take the second secret's first
-        # character with it and the leak this test reopens would be hidden.
+        # ``.`` between the secrets: ``-`` is in a Slack token's alphabet, so the first
+        # redaction would take the second secret's first character with it and the
+        # leak this test reopens would be hidden.
         payload = (
             f"[l](https://x/{self._HEAD}**{self._TAIL}*"
-            f"-{second_secret[0]}``{second_secret[1:]}``|)"
+            f".{second_secret[0]}``{second_secret[1:]}``|)"
         )
         protected = render_for_slack(payload, redactor=self._credential_redactor)
         assert second_secret not in slack_mrkdwn_reading("".join(protected))
@@ -1114,7 +1122,9 @@ def test_a_link_line_after_a_reopened_block_never_leaves_a_bare_opener_post(
     text = (
         "```\n"
         + "".join(f"short line {i:03d}\n" for i in range(130))
-        + "<https://example.com/" + "a" * (width - 40) + "|label>"
+        + "<https://example.com/"
+        + "a" * (width - 40)
+        + "|label>"
         + "\n```\nafter the block\n"
         + "prose line\n" * 400
     )

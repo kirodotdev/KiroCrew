@@ -17,6 +17,10 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew.mcp_core import WAIT_PING_SECS, _call_tool
+from kiro_crew.testing.synthetic_credentials import github_classic
+
+#: A GitHub token with a valid checksum.
+_TOKEN = github_classic(seed=96)
 
 # Smallest wait the handler allows (seconds = max(60, ...)), so the loop makes
 # 60 / WAIT_PING_SECS = 12 countdown pings before it would elapse naturally.
@@ -427,7 +431,7 @@ class TestWaitPingShape:
     def test_reason_is_redacted_on_the_early_path_too(self):
         """The reason is echoed back into the transcript on BOTH exits, so the
         new early-end string has to carry the same redaction as the old one."""
-        secret = "poll ghp_1234567890abcdefghij1234567890abcdef"
+        secret = f"poll {_TOKEN}"
 
         normal, _, _ = _run_wait(lambda n, body: {"ok": True}, reason=secret)
 
@@ -436,8 +440,8 @@ class TestWaitPingShape:
 
         early, _, _ = _run_wait(replies, reason=secret)
 
-        assert "ghp_1234567890abcdefghij1234567890abcdef" not in normal
-        assert "ghp_1234567890abcdefghij1234567890abcdef" not in early
+        assert _TOKEN not in normal
+        assert _TOKEN not in early
         assert "[REDACTED: credential]" in normal
         assert "[REDACTED: credential]" in early
 

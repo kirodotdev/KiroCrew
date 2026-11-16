@@ -30,6 +30,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_ACP_RUNTIME
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+from kiro_crew.security.redaction_structured.checks import base62_crc32
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 _ARGV = ["/opt/bin/claude-agent-acp"]
@@ -1376,7 +1377,9 @@ def test_a_credential_across_the_description_bound_is_scrubbed_whole(harness, tm
     if registered:
         asyncio.run(rt.create_session(cwd=str(tmp_path), agent="kirocrew"))
     state = rt._session_harness_states.get("s-20") if registered else None
-    credential = "ghp_" + "a" * 36
+    # The rule table reads a GitHub token by its CRC32 suffix, so the fixture carries one.
+    body = "a" * 30
+    credential = "ghp_" + body + base62_crc32(body)
     start = ct.ADVERTISED_COMMAND_DESCRIPTION_MAX_CHARS - 20
     description = "d" * start + credential + " tail"
     msg = _command_list("s-20", [{"name": "review", "description": description}])

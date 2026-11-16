@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from kiro_crew.dashboard.handlers import messaging as mod
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 class _Caps:
@@ -177,9 +177,10 @@ class TestGates:
 
 
 class TestRedaction:
-    # A synthetic 40-char AWS secret; ``SPLIT`` is the same secret with renderer delimiters.
-    SECRET = SAMPLE_AWS_SECRET
-    SPLIT = "Qh4Tm2Vx9K**pRc/Z8Nw**3Hd/Jf1Lb5Gs0Ye9Ua2WkE"
+    # A GitHub token with a valid checksum; ``SPLIT`` is the same token with renderer
+    # delimiters.
+    SECRET = github_classic(seed=64)
+    SPLIT = SECRET[:10] + "**" + SECRET[10:20] + "**" + SECRET[20:]
 
     @pytest.mark.asyncio
     async def test_credentials_are_redacted_before_the_wire(self) -> None:

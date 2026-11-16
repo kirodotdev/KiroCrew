@@ -45,22 +45,12 @@ from kiro_crew.telegram.client import (
     normalize_reaction_emoji,
 )
 from kiro_crew.telegram.renderer import _display_safe, _utf16_chunks, _utf16_cut, _utf16_len
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET, SAMPLE_SLACK_BOT_TOKEN
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 # A Slack bot token: a credential the redactor removes. An AWS key ID would stay
 # visible, since the structured detectors treat it as an identifier, and a GitHub
 # token's underscore is itself markdown, so the render would not rebuild it.
 _TOKEN = SAMPLE_SLACK_BOT_TOKEN
-
-
-@pytest.fixture
-def _structured_detectors_off():
-    from kiro_crew.security.redaction_structured import compat
-
-    before = compat.use_rule_table()
-    compat.publish_use_rule_table(False)
-    yield
-    compat.publish_use_rule_table(before)
 
 
 #: The authorized upload root. ``authorize_upload_root`` keeps only an ABSOLUTE
@@ -140,10 +130,10 @@ class TestDisplayFormRedaction:
     ) -> None:
         from kiro_crew.security import redact_credentials
 
-        payload = "SecretAccessKey\n# : " + SAMPLE_AWS_SECRET
+        payload = "SecretAccessKey\n# : " + _TOKEN
         redacted, warnings = redact_credentials(payload)
-        assert SAMPLE_AWS_SECRET not in redacted
-        assert warnings == ["Redacted bare secret key (40 chars)"]
+        assert _TOKEN not in redacted
+        assert warnings
         renderer, client = _renderer()
         original_send = client.send_message
 
@@ -157,78 +147,7 @@ class TestDisplayFormRedaction:
         await renderer.on_done()
 
         landed = "".join(text for text, _ in client.sent)
-        assert SAMPLE_AWS_SECRET not in landed
-        assert "[REDACTED" in landed
-
-    @pytest.mark.asyncio
-    @pytest.mark.usefixtures("_structured_detectors_off")
-    async def test_a_heading_cannot_reveal_a_named_short_secret_in_the_plaintext_fallback(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Covers the plan with the structured detectors off: with them on, a
-        ``SecretAccessKey`` value must be a 40-character AWS secret to be redacted."""
-        from kiro_crew.security import redact_credentials
-
-        secret = "short-secret-value"
-        payload = f"SecretAccessKey\n# : {secret}"
-        assert redact_credentials(payload)[0] == payload
-        renderer, client = _renderer()
-        original_send = client.send_message
-
-        async def reject_html(chat_id, text, **kwargs):
-            if kwargs.get("parse_mode") == "HTML":
-                return None
-            return await original_send(chat_id, text, **kwargs)
-
-        monkeypatch.setattr(client, "send_message", reject_html)
-        renderer._buf = [payload]
-        await renderer.on_done()
-
-        landed = "".join(text for text, _ in client.sent)
-        assert secret not in landed
-        assert "[REDACTED" in landed
-
-    @pytest.mark.asyncio
-    @pytest.mark.usefixtures("_structured_detectors_off")
-    async def test_the_canonical_scan_screens_the_heading_join_without_the_telegram_pass(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Covers the plan with the structured detectors off: with them on, a
-        ``SecretAccessKey`` value must be a 40-character AWS secret to be redacted."""
-        # With the Telegram-specific heading pass removed, the always-on canonical
-        # display-form scan still screens this join: it collapses a line-leading
-        # ``# `` marker (``_HEADING_MARKER``) too, so ``SecretAccessKey`` above and
-        # ``# : <value>`` below read as one credential on screen and are redacted
-        # before delivery. The screen is defence-in-depth, not the one Telegram
-        # pass alone.
-        from kiro_crew.messaging import display_safety
-
-        heading = display_safety.TELEGRAM_FALLBACK_HEADING
-        monkeypatch.setattr(
-            display_safety,
-            "TELEGRAM_FALLBACK_PASSES",
-            tuple(
-                (pattern, replacement)
-                for pattern, replacement in display_safety.TELEGRAM_FALLBACK_PASSES
-                if pattern is not heading
-            ),
-        )
-        secret = "short-secret-value"
-        payload = f"SecretAccessKey\n# : {secret}"
-        renderer, client = _renderer()
-        original_send = client.send_message
-
-        async def reject_html(chat_id, text, **kwargs):
-            if kwargs.get("parse_mode") == "HTML":
-                return None
-            return await original_send(chat_id, text, **kwargs)
-
-        monkeypatch.setattr(client, "send_message", reject_html)
-        renderer._buf = [payload]
-        await renderer.on_done()
-
-        landed = "".join(text for text, _ in client.sent)
-        assert secret not in landed
+        assert _TOKEN not in landed
         assert "[REDACTED" in landed
 
     @pytest.mark.asyncio

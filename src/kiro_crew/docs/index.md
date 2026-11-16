@@ -145,7 +145,9 @@ gracefully rather than failing the turn.
 ## Security
 
 - OS-level sandbox for the agent process, layered on top of kiro-cli's own
-- Credential redaction across every LLM output path
+- Credential redaction on every LLM output path, one owner toggle in Settings →
+  Security → Redaction (off unless you turn it on or an administrator's policy
+  keeps it on); the request-blocking credential checks run either way
 - HMAC-SHA256 signed, IP-pinned dashboard tokens
 - Denied-command rules enforced at Kiro Crew's own PreToolUse gate, with audit
   logging, and a refusal that names the sanctioned path instead of only the rule

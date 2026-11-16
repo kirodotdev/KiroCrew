@@ -32,7 +32,6 @@ from redaction_structured_cases import github_classic
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
 from kiro_crew.apps.builtins.meetings.backend.routes import _common
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 from kiro_crew.testing.wait import await_until
 
 #: A synthetic GitHub token with a valid checksum, which the credential plan redacts.
@@ -685,7 +684,7 @@ class TestOutputsPollIsRedactedAndOffLoop:
        task on the gateway loop including the liveness heartbeat.
     """
 
-    _FAKE_SECRET = SAMPLE_AWS_SECRET
+    _FAKE_SECRET = github_classic(seed=72)
 
     @pytest.mark.asyncio
     async def test_a_credential_in_the_task_list_is_redacted(self, app, root):

@@ -21,6 +21,10 @@ from kiro_crew.apps.builtins.auto_improvement.backend import clone_setup
 from kiro_crew.apps.builtins.auto_improvement.tests.dogfood_learnings_helpers import (  # noqa: F401
     _cwd_is_the_scratch_dir,
 )
+from kiro_crew.testing.synthetic_credentials import synth
+
+#: A GitLab token in its published format (``glpat-`` and 20 or more characters).
+_PAT = "glpat-" + synth(20, seed=11)
 
 
 class TestProvisionalCommitMessageCarriesNoModelText:
@@ -41,10 +45,10 @@ class TestProvisionalCommitMessageCarriesNoModelText:
         from kiro_crew.apps.builtins.auto_improvement.spine.proposer import _disambig, _short
         from kiro_crew.security import redact
 
-        target = "src/m.py::glpat-IOSFODNN7EXAMPLE"
+        target = f"src/m.py::{_PAT}"
         cand_id = f"c1_wide_{_short(target)}_{_disambig(target)}"
-        assert "glpat-IOSFODNN7EXAMPLE" in cand_id, "sanitisation removed it; premise moot"
-        assert "REDACTED" in redact(cand_id), "the token is not credential-shaped"
+        assert _PAT in cand_id, "sanitisation removed it; premise moot"
+        assert "REDACTED" in redact(_PAT), "the token is not credential-shaped"
 
     def test_both_provisional_commits_use_a_fixed_message(self) -> None:
         import inspect
@@ -181,7 +185,7 @@ class TestTheCredentialScanCannotSelfDiff:
             ["git", "-C", str(clone), "push", "-q", "origin", "work"], cwd=clone, check=True
         )
         # The winner commit carries a credential.
-        (clone / "m.py").write_text("x = 1\nAWS_KEY = 'glpat-IOSFODNN7EXAMPLE'\n", encoding="utf-8")
+        (clone / "m.py").write_text(f"x = 1\nAWS_KEY = '{_PAT}'\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(clone), "commit", "-qam", "fix"], cwd=clone, check=True)
         return remote, clone
 
@@ -205,7 +209,7 @@ class TestTheCredentialScanCannotSelfDiff:
         ok, note = recipe._scan_pushable_content()
         assert ok is False, "the credential was invisible to the scan"
         assert "credential" in note
-        assert "glpat-IOSFODNN7EXAMPLE" not in note, "the note quoted the secret"
+        assert _PAT not in note, "the note quoted the secret"
 
     def test_an_explicit_remote_base_is_unchanged(self, tmp_path) -> None:
         recipe = self._recipe(tmp_path, "origin/work")
@@ -1469,14 +1473,14 @@ class TestOnlyTheCommitThePipelineMadeIsPublished:
         # the key in its content would be caught by the pre-existing content scan and would
         # prove nothing about metadata.
         (clone / "f.py").write_text("def g():\n    return 3\n", encoding="utf-8")
-        monkeypatch.setenv("GIT_COMMITTER_EMAIL", "glpat-IOSFODNN7EXAMPLE@example.invalid")
+        monkeypatch.setenv("GIT_COMMITTER_EMAIL", f"{_PAT}@example.invalid")
         git("add", "f.py")
         git("commit", "-q", "-m", "a clean-looking change")
         poisoned = git("rev-parse", "HEAD")
 
         # Control 1: the identity really did land in the object's committer line.
         raw = git("cat-file", "commit", poisoned)
-        assert "glpat-IOSFODNN7EXAMPLE" in raw, f"the identity did not reach the object: {raw!r}"
+        assert _PAT in raw, f"the identity did not reach the object: {raw!r}"
 
         # Control 2: the TREE DIFF is clean, so a refusal cannot come from the content path.
         # Without this the test would pass even if metadata were still unscanned.
@@ -1488,11 +1492,11 @@ class TestOnlyTheCommitThePipelineMadeIsPublished:
             cwd=clone,
             check=True,
         ).stdout
-        assert "glpat-IOSFODNN7EXAMPLE" not in diff_only, "the content path would catch this"
+        assert _PAT not in diff_only, "the content path would catch this"
 
         d = object.__new__(D.Driver)
         d.clone = clone  # type: ignore[attr-defined]
         clean, note = D.Driver._revision_scans_clean(d, poisoned)
         assert clean is False, "a credential in the committer identity was scanned as clean"
         # The note is a fixed literal from `describe_scan`, so nothing scanned reaches a log.
-        assert "glpat-IOSFODNN7EXAMPLE" not in note, note
+        assert _PAT not in note, note

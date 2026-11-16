@@ -22,6 +22,11 @@ from unittest import mock
 from aiohttp import web
 
 from kiro_crew.apps.builtins.ops_mission_control.backend import models, routes, store
+from kiro_crew.testing.synthetic_credentials import synth
+
+#: GitLab tokens in their published format (``glpat-`` and 20 or more characters).
+_PAT = "glpat-" + synth(20, seed=13)
+_PAT2 = "glpat-" + synth(20, seed=14)
 
 
 class TestRouteRegistration(unittest.IsolatedAsyncioTestCase):
@@ -811,7 +816,7 @@ class TestNeedsHumanNotifiesOnTheEdgeOnly(unittest.IsolatedAsyncioTestCase):
         from kiro_crew.apps.builtins.ops_mission_control.backend import models, store
 
         inc = self._claim()
-        leaked = "glpat-IOSFODNN7EXAMPLE"
+        leaked = _PAT
         status, _payload = await self._transition(
             inc.incident_id,
             models.STATUS_NEEDS_HUMAN,
@@ -918,7 +923,7 @@ class TestLedgerWritesAreRedacted(unittest.IsolatedAsyncioTestCase):
 
         from kiro_crew.apps.builtins.ops_mission_control.backend import ledger
 
-        secret = "glpat-IOSFODNN7EXAMPLE"
+        secret = _PAT
         app = web.Application()
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
@@ -954,7 +959,7 @@ class TestLedgerWritesAreRedacted(unittest.IsolatedAsyncioTestCase):
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
             async with TestClient(TestServer(app)) as client:
-                for secret in ("glpat-IOSFODNN7EXAMPLE", "glpat-I44QH8DHBEXAMPLE"):
+                for secret in (_PAT, _PAT2):
                     resp = await client.post(
                         "/api/apps/ops-mission-control/ledger",
                         json={"pattern": "assume-role denied", "fix": f"key {secret}"},

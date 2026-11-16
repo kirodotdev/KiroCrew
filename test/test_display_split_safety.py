@@ -10,7 +10,7 @@ decides where a cut may fall.
 from __future__ import annotations
 
 import pytest
-from redaction_structured_cases import link_token
+from redaction_structured_cases import ALNUM, link_token, synth
 
 from conftest import CREDENTIAL_STRADDLE_SHAPES
 from kiro_crew.messaging.display_safety import (
@@ -26,11 +26,11 @@ from kiro_crew.messaging.display_safety import (
 )
 from kiro_crew.messaging.renderer import _default_redactor
 from kiro_crew.telegram.renderer import _strip_hr
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-#: A synthetic 40-character AWS secret (not the documentation example): the plan
-#: redacts it whole, and no piece of it shorter than the whole reads as a credential.
-_KEY = SAMPLE_AWS_SECRET
+#: A synthetic Google API key: the plan redacts it whole, and no piece of it shorter
+#: than the whole reads as a credential. It has no ``_``, which the canonical form
+#: drops as markup. (A bare 40-character run stays visible by design.)
+_KEY = "AIza" + synth(35, ALNUM, seed=158)
 #: A bearer value: the plan redacts it only after its ``Authorization: Bearer`` label.
 _BEARER = "Bearer abcdefghijklmnopqrstuvwxyz0123456789"
 #: A synthetic two-segment link token (valid JSON claims, a 43-character signature
@@ -223,7 +223,7 @@ class TestSafeSplitOffset:
 
     def test_the_offset_moves_back_off_a_severed_key(self) -> None:
         head, tail = f"[{_KEY[:4]}](https://ex.test/a,b)", _KEY[4:]
-        pad = "x" * 40
+        pad = "x" * 39 + " "  # glued to a letter a key with no checksum is none
         text = pad + head + tail + " tail prose"
         limit = len(pad) + len(head)
 
@@ -244,7 +244,7 @@ class TestSafeSplitOffset:
             return _default_redactor(text)
 
         key = _KEY
-        text = "x" * 2000 + key[:8] + key[8:] + " tail prose"
+        text = "x" * 1999 + " " + key[:8] + key[8:] + " tail prose"
         limit = 2000 + 8
 
         offset = safe_split_offset(text, limit, counting_redactor)
@@ -380,7 +380,7 @@ class TestSafeSplitOffsetGradesTheDeliveredForm:
     _KEY = _KEY
 
     def _text(self) -> tuple[str, int]:
-        pad = "x" * 40
+        pad = "x" * 39 + " "  # glued to a letter a key with no checksum is none
         text = pad + self._KEY[:8] + " " + self._KEY[8:] + " tail prose"
         return text, len(pad) + 8 + 1
 

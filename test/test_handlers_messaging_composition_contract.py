@@ -184,7 +184,7 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
         """.split()),
     "proactive_send": tuple("""
         _redact_all _resolve_session_link_url _resolve_session_target _sanitize_blocks
-        _session_link_blocks api_delete_message api_update_message
+        _session_link_blocks _update_message api_delete_message
 
         """.split()),
     "channel_delivery": tuple("""
@@ -253,8 +253,11 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
 #: ``(sent, code, detail)``, so a refusal is distinguishable from a delivery fault;
 #: and ``_deliver_channel_dm`` takes an optional ``posted`` list of the delivered
 #: ``(conversation id, message id)`` pairs, so the notification bridge can link a
-#: reply transport's note to the approval a reply answers.
-_BASE_SHAPE_DIGEST = "d6971fb2121ad014702fafcee5a3541e999939c5427f127a37a7c3ca869fd87d"
+#: reply transport's note to the approval a reply answers. And one rename:
+#: ``proactive_send`` owns the update-message body as ``_update_message``, with the
+#: same signature, since the facade's ``api_update_message`` opens the channel egress
+#: seam around it.
+_BASE_SHAPE_DIGEST = "f7406e5ce9a776bd509c08a75234781e7ae4a34c9bc0d6418081976ee965810b"
 
 
 #: Helpers the split of ``api_send_message`` added to the send owner: the body it
@@ -663,14 +666,16 @@ def _facade_module_assignments() -> set[str]:
 #: the redact-then-authorize block of ``api_send_message`` with its origin-session
 #: injection and its two census sites; the Teams activity route and the iMessage save
 #: entry that path-keyed registers name; the two predicates unowned specs cite by this
-#: path; the two finalizer exceptions; the helpers several owners call; and the
+#: path; the two finalizer exceptions; the helpers several owners call; the
 #: ``.env`` write's off-loop drain, whose open code-scanning finding stays at the path
-#: that tracks it. The Slack workspace routes and their ten census sites live in
+#: that tracks it; and the update-message route, which opens the channel egress seam
+#: around its owner's ``_update_message``. The Slack workspace routes and their ten census sites live in
 #: ``slack_workspace``, the rest of the channel-config write path every settings owner
 #: commits through in ``channel_config_writes``, and the backfill and agent-push routes
 #: in owners of their own (``_BASE_OWNERS``).
 _FACADE_DEFS = (
     "api_send_message",
+    "api_update_message",
     "api_teams_activity",
     "api_imessage_config_save",
     "_run_belongs_to_caller",

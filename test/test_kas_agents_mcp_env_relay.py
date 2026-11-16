@@ -20,6 +20,7 @@ import logging
 
 import pytest
 from kas_agents_helpers import _spec
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp._dispatch import build_session_new_params
 from kiro_crew.acp.kas_agents import hoist_servers_for_session, to_client_custom_agent
@@ -160,7 +161,7 @@ class TestABooleanCanStillBeWithheld:
     def test_a_key_paired_credential_is_withheld(self):
         """The redactor sees the key: ``ghp_...=true`` is credential-shaped only as
         a pair, so the value under that key is withheld."""
-        assert _relayed_env({"ghp_" + "b2" * 18: "true"}) == {}
+        assert _relayed_env({github_classic(seed=73): "true"}) == {}
 
 
 class TestTheRuleIsLocalToTheKasProjection:
@@ -188,7 +189,7 @@ class TestTheWithholdIsLogged:
         assert "FEATURE_X_ENABLED" not in caplog.text
 
     def test_a_credential_shaped_key_name_is_counted_not_printed(self, caplog):
-        key = "ghp_" + "b2" * 18
+        key = github_classic(seed=73)
         with caplog.at_level(logging.INFO, logger="kiro_crew.acp.kas_agents"):
             assert _relayed_env({key: "x"}) == {}
         assert "1 unnamed" in caplog.text

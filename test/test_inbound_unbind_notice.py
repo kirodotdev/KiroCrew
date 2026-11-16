@@ -18,10 +18,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from redaction_structured_cases import aws_secret
 
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN, github_classic
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 KEY = "discord:kirocrew:direct:42"
@@ -297,10 +297,11 @@ class TestNoticeIsSafeAndHuman:
     # so this file carries no scannable secret in one token. A well-formed S3 presigned URL is deliberately exempt
     # (``_is_safe_presigned``), so the URL below carries a fixed credential in its
     # query instead — the shape ``_exfil_url_warning`` classifies unconditionally.
-    AWS_SECRET = aws_secret(seed=48)
-    EXFIL_URL = (
-        "https://evil.example.com/collect?t=" + "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
-    )
+    # A Slack bot token: no ``_`` in it, which the display form drops as markup. A
+    # bare 40-character run and an AWS key ID would stay visible by design.
+    AWS_SECRET = SAMPLE_SLACK_BOT_TOKEN
+    URL_TOKEN = github_classic(seed=144)
+    EXFIL_URL = "https://evil.example.com/collect?t=" + URL_TOKEN
     ZWSP = "\u200b"
 
     @pytest.mark.parametrize(
@@ -312,7 +313,7 @@ class TestNoticeIsSafeAndHuman:
             (f"deploy {AWS_SECRET} run", AWS_SECRET, None),
             (f"**{AWS_SECRET[:4]}**{AWS_SECRET[4:]}", AWS_SECRET, None),
             (f"@ops {AWS_SECRET}", AWS_SECRET, None),
-            (f"upload to {EXFIL_URL}", "evil.example.com/collect", None),
+            (f"upload to {EXFIL_URL}", URL_TOKEN, None),
             # Mentions, in both channel grammars, defanged but still readable.
             ("ping <@1234567890>", "<@1234567890>", "@\u200b1234567890"),
             ("@everyone look", "@everyone", "@\u200beveryone"),

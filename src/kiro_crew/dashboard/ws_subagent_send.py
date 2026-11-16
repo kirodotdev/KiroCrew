@@ -7,7 +7,10 @@ and per-slot scope gates, packages them, and sends the end-of-replay marker.
 
 from __future__ import annotations
 
+import json
 from typing import Any
+
+from kiro_crew.dashboard import redaction_audience
 
 # Reconnect replay: more subagent frames than this collapse into ONE
 # subagent_snapshot_batch frame (scale plumbing — a per-agent burst at
@@ -61,13 +64,31 @@ async def _send_subagent_replay(ws: Any, state: Any, frames: list[dict]) -> None
             # broadcast. Routing it through the gate would reject it as an unknown
             # event and cost the app its whole replay, so keep this send and the
             # per-item filter together.
-            await ws.send_json({"type": "subagent_snapshot_batch", "data": {"items": frames}})
+            await _send_frame(
+                ws, state, {"type": "subagent_snapshot_batch", "data": {"items": frames}}
+            )
         else:
             for _frame in frames:
-                await ws.send_json(_frame)
+                await _send_frame(ws, state, _frame)
     except Exception:
         # A failed send ends this replay early; the caller still sends the end marker next.
         pass
+
+
+async def _send_frame(ws: Any, state: Any, frame: dict) -> None:
+    """Send one replay *frame*, through ``redaction_audience.for_socket`` to a socket
+    that is not the owner's.
+
+    A direct send, so not the hub's chokepoint, which sends a live frame the same way
+    whatever the setting reads: with it off such a socket gets the frame redacted in
+    full.
+    """
+    if ws in (getattr(state, "_owner_ws_clients", None) or ()):
+        await ws.send_json(frame)
+        return
+    shown = redaction_audience.for_socket(ws, json.dumps(frame), owner=False)
+    if shown is not None:
+        await ws.send_str(shown)
 
 
 async def send_subagent_replay_done(ws: Any, ws_app: str | None) -> None:

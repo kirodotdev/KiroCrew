@@ -31,7 +31,12 @@ from kiro_crew.mcp_tools.catalog.messaging import (  # noqa: F401
     schemas,
 )
 from kiro_crew.platform import redact_via_context as redact
-from kiro_crew.security import BINARY_MIME_ALLOWLIST, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    BINARY_MIME_ALLOWLIST,
+    redact_credentials,
+    redact_exfiltration_urls,
+    refuses,
+)
 from kiro_crew.validation import _SLACK_TS_RE, CHANNEL_ID_RE, CHANNEL_MAX_LEN
 
 #: Options that exist only in Slack's protocol: a Block Kit layout, a Slack
@@ -652,7 +657,7 @@ def file_send(name: str, args: dict[str, Any]) -> str:
         )
         return f"Error: file not found or access denied: {src}"
     clean_name = src.name
-    if redact(clean_name) != clean_name:
+    if refuses(clean_name, redact):
         mcp_core.sel().log_tool_invocation(
             session_key="mcp_core",
             source="mcp",

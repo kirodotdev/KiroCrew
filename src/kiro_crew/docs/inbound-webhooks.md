@@ -451,7 +451,7 @@ run. A run that still lacks a declared server ends with outcome `degraded`
 instead of `completed`, and its detail names the server. The run list and the
 notification show it, so you can see which run to retry.
 
-When the turn ends, the result is redacted for credentials and exfiltration URLs
+When the turn ends, the result is redacted for credentials, inside URLs too,
 before it leaves the gateway. Delivery, when `deliver` is true, is a dashboard
 notification (first 2,000 characters) plus a Slack DM to the owner (first 3,000
 characters) when Slack is configured. An empty result is not delivered at all.

@@ -94,7 +94,7 @@ from kiro_crew.execution_context import (
 )
 from kiro_crew.history import metadata_now_iso
 from kiro_crew.memory_stores import named_store_or_empty
-from kiro_crew.security import redact
+from kiro_crew.security import redact, refuses
 from kiro_crew.validation import _MODEL_NAME_RE, MAX_ACP_SESSION_ID_LEN, MAX_SHORT_STRING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -1687,7 +1687,7 @@ def _model_pin_refusal(model_name: str, backend: str) -> str | None:
     if len(model_name) > MAX_SHORT_STRING or not _MODEL_NAME_RE.fullmatch(model_name):
         return "model id is too long or contains characters outside the model-id charset"
     # Never persist or broadcast a value the security scrubber classifies.
-    if redact(model_name) != model_name:
+    if refuses(model_name, redact):
         return "model id looks like a credential and was refused"
     # circular import: chat_handlers imports session_control lazily, and this
     # module is imported by the dashboard package before chat_handlers loads.

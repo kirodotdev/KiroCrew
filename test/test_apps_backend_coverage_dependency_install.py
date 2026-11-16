@@ -1616,7 +1616,8 @@ class TestDependencyInstall:
         redactor matches on, letting the secret's tail reach the logs."""
         (spawn_root / "server.py").write_text("x = 1\n")
         (spawn_root / "requirements.txt").write_bytes(b"requests\n")
-        secret = "AKIA" + "X" * 16
+        # An opaque userinfo password: a run of one letter reads as a placeholder.
+        secret = "Q7mVx9pLw2Kd8Rt4Ny6s"
         # Position the credential so a truncate-first implementation would
         # cut through it: padding pushes all but the secret's tail out of the
         # final 400 characters.

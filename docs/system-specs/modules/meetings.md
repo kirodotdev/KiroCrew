@@ -972,7 +972,7 @@ broadcast bar remains available when speech input is unavailable.
   are not treated as authorization.
 * **Redaction.** Transcripts, agent outputs, extracted tasks, and calendar fields
   are LLM/user content on the way to disk, the dashboard, or a task provider, so
-  `security.redact` (exfiltration URLs + credentials) is applied at each
+  `security.redact` (credentials, inside URLs too) is applied at each
   boundary: before the transcript append/fan-out, the outputs response, task
   normalization, `TaskDraft.sanitized`, and `parse_ics`.
   One deliberate asymmetry in `GET …/outputs`: the **generated** half is

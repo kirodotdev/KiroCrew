@@ -117,6 +117,7 @@ if TYPE_CHECKING:
         _turn_full_reply_text,
         _turn_reply_segments,
     )
+    from kiro_crew.security.redaction_switch import always_scan
 
 
 async def _surface_agent_welcome(
@@ -1215,7 +1216,10 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
     # env var (ARG_MAX safety). The full segment is passed (not sliced to
     # [:500]) so the tail — e.g. the harness [OPTIONS:] line — reaches both
     # the matcher and the hook body.
-    _final = redact_credentials(redact_exfiltration_urls(turn.assistant_text)[0])[0]
+    # A hook is a sink no output seam lists: it reads the text redacted in full,
+    # inside the turn's chat seam with the owner's redaction off too.
+    with always_scan():
+        _final = redact_credentials(redact_exfiltration_urls(turn.assistant_text)[0])[0]
     # Report how deep this hook-continuation run is so a gate hook can
     # diagnose or apply a stricter limit than the configurable backstop.
     _stop_hook_out = await _fire(

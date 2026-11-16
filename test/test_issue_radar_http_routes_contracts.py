@@ -34,6 +34,7 @@ from kiro_crew import llm_helpers
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
 from kiro_crew.apps.builtins.issue_radar.backend import provider, routes, store
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until, finished
 
 BASE = "/api/apps/issue-radar"
@@ -853,7 +854,7 @@ class TestModelAdapter(unittest.IsolatedAsyncioTestCase):
             self.assertRegex(key, r"^issue-radar-ai:o/r#7:[0-9a-f]{32}$")
 
     async def test_ai_output_is_redacted_before_it_is_clamped(self):
-        token = "ghp" + "_" + "z4Kq" * 9
+        token = github_classic(seed=331)
         reply = json.dumps(
             {
                 "summary": f"leak {token}",
@@ -968,7 +969,7 @@ class TestModelOutputRedaction(unittest.IsolatedAsyncioTestCase):
     """Model text derived from untrusted issue and PR bodies is redacted before it
     is cached, proposed or returned, and before any length clamp."""
 
-    TOKEN = "ghp" + "_" + "z4Kq" * 9
+    TOKEN = github_classic(seed=332)
 
     async def test_the_pr_summary_is_redacted(self):
         reply = json.dumps({"summary": f"see {self.TOKEN}"})

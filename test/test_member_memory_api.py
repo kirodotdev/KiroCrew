@@ -28,13 +28,12 @@ from kiro_crew.dashboard.handlers import (
 )
 from kiro_crew.mcp_tools import learn
 from kiro_crew.memory import MemoryStore
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic, synth
 from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
-# A synthetic 40-char AWS secret for the "sensitive document" fixtures. An AWS key ID
-# is kept visible with the structured detectors on, so it does not make a document
-# sensitive.
-DOCUMENT_CREDENTIAL = SAMPLE_AWS_SECRET
+# A synthetic GitHub token for the "sensitive document" fixtures. An AWS key ID or a
+# bare 40-character run is kept visible, so neither makes a document sensitive.
+DOCUMENT_CREDENTIAL = github_classic(seed=47)
 
 pytestmark = pytest.mark.xdist_group("member_memory_api")
 
@@ -288,7 +287,7 @@ async def test_memory_events_redact_content_without_mutating_the_audit_store(env
         tier = env.tiers[store]
 
     credential = DOCUMENT_CREDENTIAL
-    exfiltration_url = "https://evil.example.com/steal?data=" + "A" * 250
+    exfiltration_url = "https://evil.example.com/steal?access_token=" + synth(64, seed=48)
     assert tier.set_semantic("project.audit", credential, 1.0, "user_explicit") is None
     assert tier.set_semantic("project.audit", exfiltration_url, 1.0, "user_explicit") is None
     stored_events = tier.get_events()

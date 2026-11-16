@@ -45,6 +45,7 @@ from kiro_crew.dashboard_templates.parity import filled_fields
 from kiro_crew.history import TranscriptBusy, TranscriptWithheld, is_incognito_transcript
 from kiro_crew.llm_helpers import _extract_json_of_type, run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security.exfil import refuses
 from kiro_crew.security.redaction import redact_credentials_with_records
 from kiro_crew.session_summary import _is_injected
 
@@ -334,7 +335,7 @@ def readings_hide_secret(readings: Iterable[tuple[str, str]], redact: Callable[[
     Block Kit elements) screens what is shown the same way, with its own redactor.
     """
     for projected, shown in readings:
-        if redact(shown) != shown:
+        if refuses(shown, redact):
             return True
         _, _, matches = redact_credentials_with_records(projected)
         if any(m.value.strip("\"' ") and m.value.strip("\"' ") in shown for m in matches):
@@ -355,14 +356,14 @@ def _redact_card_output(text: str, previous: dict | None) -> dict | None:
             value = "true" if value else "false"
         elif isinstance(value, (int, float)):
             value = str(value)
-        if not isinstance(key, str) or not isinstance(value, str) or _redact(key) != key:
+        if not isinstance(key, str) or not isinstance(value, str) or refuses(key, _redact):
             # Renaming a sensitive key would corrupt layout bindings or collide.
             return None
         data[key] = _redact(value)
     # Some credentials are identified by a neighbouring label, not their value.
     # Keep that check after decoding without rewriting keys or JSON structure.
     contextual = json.dumps(data, ensure_ascii=False)
-    if _redact(contextual) != contextual:
+    if refuses(contextual, _redact):
         return None
     clean: dict[str, Any] = {"data": data}
     if "html" in raw:
@@ -381,7 +382,7 @@ def _redact_card_output(text: str, previous: dict | None) -> dict | None:
         # The browser interprets character references in HTML, not textContent
         # data. Check that bounded interpretation without rewriting the layout.
         interpreted = unescape(payload["html"])
-        if _redact(interpreted) != interpreted:
+        if refuses(interpreted, _redact):
             return None
     return payload
 

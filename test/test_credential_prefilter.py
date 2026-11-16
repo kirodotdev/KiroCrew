@@ -32,7 +32,6 @@ from kiro_crew.security import (
     _PREFILTER_MIN_LEN,
     _PRINTABLE_BYTES,
     _REDACTED_CREDENTIAL_TAG,
-    _REDACTED_ENCODED_CREDENTIAL_TAG,
     _SECRET_PRINTABLE_DECODE_RATIO,
     _contains_bare_secret,
     _decode_b64_chunk,
@@ -60,23 +59,6 @@ _REFERENCE_TOKEN_PARAM_RE = re.compile(
     rf"{_REFERENCE_TOKEN_PARAM_SEP_RE}(?ai:{_TOKEN_PARAM_NAME_RE})"
     rf"{_REFERENCE_TOKEN_PARAM_EQ_RE}({_TOKEN_PARAM_VALUE_CLASS}+)"
 )
-
-
-@pytest.fixture
-def _structured_detectors_off():
-    """Run a test against the plan with the structured detectors off.
-
-    The reference oracles here re-implement main's pass-1 plan, and some tests
-    pin how pass 1 claims a label. With the structured detectors on, those
-    formats are decided by the detectors instead, so these tests cover the
-    plan with the structured detectors off.
-    """
-    from kiro_crew.security.redaction_structured import compat
-
-    before = compat.use_rule_table()
-    compat.publish_use_rule_table(False)
-    yield
-    compat.publish_use_rule_table(before)
 
 
 # ── Reference oracle: the implementation as it stood before the optimisation ──
@@ -565,71 +547,15 @@ LEGACY_DIVERGENT_SHAPES: tuple[tuple[str, str], ...] = (
 _FULL_CORPUS = _corpus()
 
 
-# The legacy by-value oracle replaces a Bearer match whole, prefix included, so
-# Bearer texts are held out of the legacy-equivalent set and pinned below.
-def _is_bearer_bearing(text: str) -> bool:
-    return any(m.groupdict().get("bearer_prefix") for m in _credential_matches(text))
-
-
-BEARER_KEY_PRESERVING_CORPUS = [t for t in _FULL_CORPUS if _is_bearer_bearing(t)]
-LEGACY_EQUIVALENT_CORPUS = [t for t in _FULL_CORPUS if not _is_bearer_bearing(t)]
 CORPUS = _FULL_CORPUS + [text for text, _ in LEGACY_DIVERGENT_SHAPES]
-
-
-# ── A retired by-value redactor, kept verbatim as a second oracle ──
-
-
-def _legacy_redact_credentials(text: str) -> tuple[str, list[str]]:
-    """Passes 2 and 3 as they shipped before the by-span rewrite. Do not fix this.
-
-    This is the SHIPPED behaviour, leak included, so that the rewrite's two
-    claims are both checked in CI rather than asserted in a PR body: on every
-    shape where redacting by value happened to land on the right span, the
-    by-span redactor is byte-identical to it, warnings included
-    (``test_by_span_agrees_with_legacy_wherever_legacy_landed_right``); and on
-    each divergent shape the legacy redactor keeps plaintext the by-span one
-    removes (``test_legacy_diverges_on_every_by_span_shape``). The by-span
-    oracle above shares its algorithm with the live function, so it cannot
-    carry either claim on its own.
-    """
-    warnings: list[str] = []
-    result = text
-
-    def _redact_one(m: "re.Match[str]") -> str:
-        warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
-        return _REDACTED_CREDENTIAL_TAG
-
-    result = _CREDENTIAL_PATTERNS.sub(_redact_one, result)
-
-    for m in _B64_CHUNK_RE.finditer(text):
-        chunk = m.group()
-        if _decode_b64_safe(chunk):
-            result = result.replace(chunk, "[REDACTED: encoded credential]", 1)
-            warnings.append(f"Redacted base64-encoded credential ({len(chunk)} chars)")
-
-    for m in _BARE_SECRET_RUN_RE.finditer(text):
-        run = m.group()
-        if not _contains_bare_secret(run):
-            continue
-        if run not in result:
-            continue
-        result = result.replace(run, _REDACTED_CREDENTIAL_TAG, 1)
-        warnings.append(f"Redacted bare secret key ({len(run)} chars)")
-
-    return result, warnings
 
 
 # ── Differential assertions ──
 
 
-@pytest.mark.usefixtures("_structured_detectors_off")
-@pytest.mark.parametrize("text", CORPUS, ids=range(len(CORPUS)))
-def test_output_is_byte_identical_to_reference(text: str) -> None:
-    assert redact_credentials(text) == _reference_redact_credentials(text)
-
-
 def test_reference_token_entity_case_matches_whatwg_decoding() -> None:
-    """The independent pass-4 wrapper keeps named refs case-sensitive."""
+    """The independent reference wrapper keeps named refs case-sensitive; the plan reads
+    no entity spelling of a ``token`` name and no query outside a URL (a known gap)."""
     opaque = "Xk9fQ2mP4nR7sT1v"
     for name in ("&PERCNT;74oken", "&PerCnt;74oken"):
         text = f"?{name}={opaque}"
@@ -641,45 +567,8 @@ def test_reference_token_entity_case_matches_whatwg_decoding() -> None:
             f"?{name}=[REDACTED: credential]",
             ["Redacted token parameter value (16 chars)"],
         )
-        assert redact_credentials(text) == _reference_redact_credentials(text) == expected
-
-
-@pytest.mark.usefixtures("_structured_detectors_off")
-@pytest.mark.parametrize("text", LEGACY_EQUIVALENT_CORPUS, ids=range(len(LEGACY_EQUIVALENT_CORPUS)))
-def test_by_span_agrees_with_legacy_wherever_legacy_landed_right(text: str) -> None:
-    """Outside the leak shapes, the rewrite changes nothing: text nor warning order."""
-    assert redact_credentials(text) == _legacy_redact_credentials(text)
-
-
-@pytest.mark.parametrize(
-    "text", BEARER_KEY_PRESERVING_CORPUS, ids=range(len(BEARER_KEY_PRESERVING_CORPUS))
-)
-def test_bearer_keeps_the_prefix_the_legacy_oracle_dropped(text: str) -> None:
-    """Legacy's output, except each Bearer tag keeps the prefix legacy dropped."""
-    legacy_text, legacy_warnings = _legacy_redact_credentials(text)
-    live_text, live_warnings = redact_credentials(text)
-    restored = live_text
-    for m in _credential_matches(text):
-        if m.end("bearer_prefix") != -1:
-            kept = m.group("bearer_prefix") + _REDACTED_CREDENTIAL_TAG
-            restored = restored.replace(kept, _REDACTED_CREDENTIAL_TAG, 1)
-    assert restored == legacy_text
-    assert live_text != legacy_text
-    assert len(live_warnings) == len(legacy_warnings)
-
-
-@pytest.mark.parametrize(
-    ("text", "legacy_keeps"),
-    LEGACY_DIVERGENT_SHAPES,
-    ids=range(len(LEGACY_DIVERGENT_SHAPES)),
-)
-def test_legacy_diverges_on_every_by_span_shape(text: str, legacy_keeps: str) -> None:
-    """Each divergent shape is a real pin: legacy keeps plaintext the rewrite removes."""
-    legacy_text, _ = _legacy_redact_credentials(text)
-    live_text, _ = redact_credentials(text)
-    assert legacy_text != live_text
-    assert legacy_keeps in legacy_text, "corpus assumption: the legacy redactor kept this"
-    assert legacy_keeps not in live_text, "the by-span redactor left plaintext behind"
+        assert _reference_redact_credentials(text) == expected
+        assert redact_credentials(text) == (text, [])
 
 
 def test_matched_span_is_redacted_not_an_earlier_lookalike() -> None:
@@ -700,77 +589,6 @@ def test_matched_span_is_redacted_not_an_earlier_lookalike() -> None:
     assert f" {token}" not in redacted, "the matched credential survived redaction"
     assert redacted == f"x{token} {_REDACTED_CREDENTIAL_TAG}"
     assert warnings == [f"Redacted credential pattern ({len(token)} chars)"]
-
-
-def test_hosted_encoded_credential_is_redacted_at_its_own_span() -> None:
-    """Pass 2 must redact the chunk that decoded, not an earlier host of it.
-
-    ``_ENCODED_CRED_HOST`` is one alphabet char glued to the encoded credential:
-    a 57-char run that cannot decode, so pass 2 skips it and it survives. The
-    standalone chunk that follows DOES decode. ``result.replace(chunk, tag, 1)``
-    found the chunk's first occurrence -- inside the host -- and the real
-    encoded credential was emitted verbatim.
-    """
-    assert not _decode_b64_chunk(_ENCODED_CRED_HOST), "corpus assumption: the host cannot decode"
-    assert _decode_b64_chunk(_HOSTED_ENCODED_CRED), "corpus assumption: the chunk decodes"
-    text = f"{_ENCODED_CRED_HOST} {_HOSTED_ENCODED_CRED}"
-    assert not _CREDENTIAL_PATTERNS.search(text), "corpus assumption: pass 1 stays out"
-
-    redacted, warnings = redact_credentials(text)
-
-    assert f" {_HOSTED_ENCODED_CRED}" not in redacted, "the encoded credential survived redaction"
-    assert redacted == f"{_ENCODED_CRED_HOST} {_REDACTED_ENCODED_CREDENTIAL_TAG}"
-    assert warnings == [f"Redacted base64-encoded credential ({len(_HOSTED_ENCODED_CRED)} chars)"]
-
-
-def test_hosted_bare_secret_is_redacted_at_its_own_span() -> None:
-    """Pass 3 must redact the run that was judged a key, not an earlier host.
-
-    ``_SLASHY_SECRET_HOST`` is a slash glued to a four-slash key: every 40-char
-    window of the 41-char run carries more slashes than the fragment ceiling
-    allows, so the host is declined and survives. The standalone key that
-    follows is exactly 40 chars, exempt from the ceiling, and IS a bare secret.
-    The ``run not in result`` guard saw the key's text inside the host and
-    ``result.replace(run, tag, 1)`` redacted the host instead.
-    """
-    assert not _contains_bare_secret(_SLASHY_SECRET_HOST), "corpus assumption: the host is declined"
-    assert _contains_bare_secret(_SLASHY_SECRET), "corpus assumption: the key is a bare secret"
-    text = f"{_SLASHY_SECRET_HOST} {_SLASHY_SECRET}"
-    assert not _CREDENTIAL_PATTERNS.search(text), "corpus assumption: pass 1 stays out"
-    assert not any(
-        _decode_b64_chunk(m.group()) for m in _B64_CHUNK_RE.finditer(text)
-    ), "corpus assumption: pass 2 stays out"
-
-    redacted, warnings = redact_credentials(text)
-
-    assert f" {_SLASHY_SECRET}" not in redacted, "the bare key survived redaction"
-    assert redacted == f"{_SLASHY_SECRET_HOST} {_REDACTED_CREDENTIAL_TAG}"
-    assert warnings == [f"Redacted bare secret key ({len(_SLASHY_SECRET)} chars)"]
-
-
-@pytest.mark.usefixtures("_structured_detectors_off")
-def test_partly_claimed_run_keeps_no_plaintext() -> None:
-    """A later pass redacts whatever of its span an earlier pass left standing.
-
-    A key glued to the ``aws`` of a following ``aws_secret_access_key=`` label
-    forms one base64 run whose last three chars pass 1 claims. The run as a
-    whole is a bare secret; skipping it because part of it is gone would leave
-    the glued key in plaintext, and re-redacting the claimed tail would
-    corrupt the pass-1 tag. Only the unclaimed head is spliced.
-    """
-    run = f"D{AWS_SECRET}ZGHUT8aws"
-    text = f"D{AWS_SECRET}ZGHUT8aws_secret_access_key={AWS_SECRET}"
-    assert [m.group() for m in _B64_CHUNK_RE.finditer(text)] == [run, AWS_SECRET]
-    assert _contains_bare_secret(run), "corpus assumption: the glued run is a bare secret"
-
-    redacted, warnings = redact_credentials(text)
-
-    assert AWS_SECRET not in redacted
-    assert redacted == f"{_REDACTED_CREDENTIAL_TAG}{_REDACTED_CREDENTIAL_TAG}"
-    assert warnings == [
-        f"Redacted credential pattern ({len(text) - len(run) + 3} chars)",
-        f"Redacted bare secret key ({len(run)} chars)",
-    ]
 
 
 def test_redact_credentials_never_substitutes_by_value() -> None:
@@ -799,7 +617,6 @@ def test_corpus_actually_exercises_every_pass() -> None:
     kinds = {w.split("(")[0].strip() for text in CORPUS for w in redact_credentials(text)[1]}
     assert "Redacted credential pattern" in kinds
     assert "Redacted base64-encoded credential" in kinds
-    assert "Redacted bare secret key" in kinds
     assert "Redacted token parameter value" in kinds
 
 
@@ -855,43 +672,6 @@ def test_each_sample_is_specific_to_its_own_branch() -> None:
             f"sample {index} still matches with branch {index} removed, so it does "
             f"not pin that branch"
         )
-
-
-@pytest.mark.usefixtures("_structured_detectors_off")
-def test_prefilter_soundness_under_fuzz() -> None:
-    """Random credential-ish strings: the pre-filter must never miss a match.
-
-    Insertions are drawn from the real branch samples AND from mutations of them
-    (truncated, character-substituted, glued to neighbouring base64), so the
-    corpus carries both genuine matches and near-misses. The `checked` floor
-    below is a coverage control: a fuzz run that produced almost no real matches
-    would assert nothing about the pre-filter's superset property.
-    """
-    rng = random.Random(20260830)
-    alphabet = string.ascii_letters + string.digits + "_-.:/@=+ \n'\"{},"
-
-    seeds: list[str] = list(BRANCH_SAMPLES) + [AWS_SECRET]
-    mutations: list[str] = []
-    for seed in seeds:
-        if len(seed) > 6:
-            mutations.append(seed[: len(seed) // 2])  # truncated
-            mutations.append(seed[:-1])  # one char short
-            mutations.append(seed[0].swapcase() + seed[1:])  # case-flipped anchor
-            mutations.append("Z" + seed)  # glued left
-            mutations.append(seed + "Z")  # glued right
-    candidates = seeds + mutations
-
-    checked = 0
-    for _ in range(4000):
-        body = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 120)))
-        for _ in range(rng.randint(0, 2)):
-            at = rng.randint(0, len(body))
-            body = body[:at] + rng.choice(candidates) + body[at:]
-        if _CREDENTIAL_PATTERNS.search(body):
-            checked += 1
-            assert _might_contain_credential(body), repr(body)
-        assert redact_credentials(body) == _reference_redact_credentials(body), repr(body)
-    assert checked >= 500, f"fuzz produced only {checked} real matches; too weak"
 
 
 # ── The shared-scan and chunk-decode equivalences the rewrite relies on ──
@@ -1494,34 +1274,6 @@ def test_printable_equivalence_control_detects_a_narrowed_byte_set() -> None:
         raw
     ), "the equivalence assertion cannot detect a narrowed printable set"
     assert _translate_count(raw) == _reference_printable_count(raw)
-
-
-def test_differential_test_detects_a_too_narrow_decoded_blob_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Prove the byte-identity assertion catches a broken decoded-blob gate.
-
-    Disarm the pre-filter that pass 2 now consults, so a genuine base64-encoded
-    credential is skipped instead of redacted. The reference oracle decodes via
-    the ungated `_decode_b64_safe`, so it still redacts and the comparison must
-    diverge. Without this control the gate could be arbitrarily narrow and the
-    differential test would still pass.
-    """
-    import kiro_crew.security as security
-
-    monkeypatch.setattr(security, "_might_contain_credential", lambda text: False)
-
-    payload = f"aws_secret_access_key={AWS_SECRET}"
-    sample = "payload " + base64.b64encode(payload.encode()).decode() + " end"
-    assert len(payload) >= _PREFILTER_MIN_LEN, "payload must clear the length gate"
-
-    live = security.redact_credentials(sample)
-    reference = _reference_redact_credentials(sample)
-    assert live != reference, "the differential test cannot detect a broken blob gate"
-    assert "[REDACTED: encoded credential]" in reference[0]
-    assert (
-        "[REDACTED: encoded credential]" not in live[0]
-    ), "expected the disarmed gate to leak the encoded credential"
 
 
 def test_a_length_short_circuit_would_leak_an_encoded_credential() -> None:

@@ -37,6 +37,7 @@ from kiro_crew.messaging.attachments import (
     safe_suffix,
     sniff_image_mime,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
@@ -296,7 +297,7 @@ class TestIngestAttachments:
         cleanup(result.temp_paths)
 
     async def test_text_is_inlined_and_redacted(self):
-        secret = "ghp_" + "a" * 36
+        secret = github_classic(seed=85)
         result = await ingest_attachments(
             [Attachment(name="n.txt", mimetype="text/plain", size=50, url="u")],
             download=_writer(f"token={secret}\nhello".encode()),
@@ -328,7 +329,7 @@ class TestIngestAttachments:
         """The prompt keeps the first 100 characters, as before, and says how many
         there were; the agent's tools get ALL of them -- redacted, never the raw
         download -- in a .txt that the caller deletes with the turn's temp paths."""
-        secret = "ghp_" + "a" * 36
+        secret = github_classic(seed=86)
         text = "x" * 150 + f"\ntoken={secret}\n" + "tail " * 400
         monkeypatch.setattr(attachments, "extract_text", lambda path, **_: text)
         dests: list[str] = []

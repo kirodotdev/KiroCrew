@@ -661,8 +661,9 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 #: layer reads a client-sent relay header, the
 #: deny-audit boundary is outer to every barrier that can refuse, the app web origin
 #: router is outer to the host canonicalization and the ``Host`` barrier, the SEL request
-#: audit is inner to them, the per-slot ownership checkpoint is inner to token auth
-#: and the audit record, and the workflow and crewmate-prune gates, the Shared Crew
+#: audit is inner to them, the redaction audience sits right after token auth, the
+#: per-slot ownership checkpoint is inner to token auth and the audit record, and the
+#: workflow and crewmate-prune gates, the Shared Crew
 #: team-config gate and the change-card hook (innermost, after auth has classified
 #: the caller) are appended after the explicit list.
 _DASHBOARD_CHAIN = (
@@ -678,6 +679,7 @@ _DASHBOARD_CHAIN = (
     ("no_cache_middleware", "_install_dashboard_middlewares.<locals>."),
     ("csrf_middleware", "_make_csrf_middleware.<locals>."),
     ("middleware", "token_auth_middleware.<locals>."),
+    ("redaction_audience_middleware", "redaction_audience_middleware"),
     ("sel_audit_middleware", "_install_dashboard_middlewares.<locals>."),
     ("card_turn_delegation_middleware", "card_turn_delegation_middleware"),
     ("slot_ownership_middleware", "slot_ownership_middleware"),
@@ -696,6 +698,7 @@ _API_CHAIN = (
     ("reject_compressed_body_middleware", "reject_compressed_body_middleware"),
     ("csrf_middleware", "_make_csrf_middleware.<locals>."),
     ("middleware", "token_auth_middleware.<locals>."),
+    ("redaction_audience_middleware", "redaction_audience_middleware"),
     ("sel_audit_middleware", "_install_api_middlewares.<locals>."),
     ("slot_ownership_middleware", "slot_ownership_middleware"),
     ("team_config_middleware", "team_config_middleware"),

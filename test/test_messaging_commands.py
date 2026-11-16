@@ -51,7 +51,7 @@ from kiro_crew.messaging.commands import (
 )
 from kiro_crew.messaging.queue_drain import owner_token
 from kiro_crew.messaging.queue_receipt import ReceiptQueue, receipt_text
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 class _Surface:
@@ -618,7 +618,8 @@ class TestLayering:
 
 
 # A synthetic 40-char AWS secret the credential plan redacts.
-_AWS_SECRET = SAMPLE_AWS_SECRET
+#: A GitHub token: a bare 40-character run is no credential by itself.
+_TOKEN = github_classic(seed=88)
 
 #: A non-Slack conversation key. Namespaced rather than a bare id because this is
 #: the shape every channel's session key has, and the value is forwarded verbatim.
@@ -753,14 +754,14 @@ class TestSpawn:
         # task is free-form text a user typed or an LLM proposed.
         manager = MagicMock(max_concurrent=2)
         manager.spawn.return_value = SimpleNamespace(id="r1")
-        out = await spawn_task_reply(f"push with {_AWS_SECRET}", manager) or ""
-        assert _AWS_SECRET not in out
+        out = await spawn_task_reply(f"push with {_TOKEN}", manager) or ""
+        assert _TOKEN not in out
 
     @pytest.mark.asyncio
     async def test_a_listed_task_is_redacted(self) -> None:
-        agent = SimpleNamespace(id="a1", started=time.time(), task=f"key {_AWS_SECRET}")
+        agent = SimpleNamespace(id="a1", started=time.time(), task=f"key {_TOKEN}")
         out = await spawn_task_reply("list", MagicMock(running=[agent])) or ""
-        assert _AWS_SECRET not in out
+        assert _TOKEN not in out
 
 
 class TestCron:
@@ -782,8 +783,8 @@ class TestCron:
     @pytest.mark.asyncio
     async def test_a_job_message_is_redacted_in_the_listing(self) -> None:
         svc = MagicMock()
-        svc.list_jobs.return_value = [_job("j1", message=f"post {_AWS_SECRET}")]
-        assert _AWS_SECRET not in (await cron_command_reply("cron list", svc) or "")
+        svc.list_jobs.return_value = [_job("j1", message=f"post {_TOKEN}")]
+        assert _TOKEN not in (await cron_command_reply("cron list", svc) or "")
 
     @pytest.mark.parametrize(
         "verb,enabled,mark",
@@ -828,9 +829,9 @@ class TestCron:
     @pytest.mark.asyncio
     async def test_remove_all_redacts_each_job_name(self) -> None:
         svc = MagicMock()
-        svc.list_jobs.return_value = [_job("j1", name=f"leak {_AWS_SECRET}")]
+        svc.list_jobs.return_value = [_job("j1", name=f"leak {_TOKEN}")]
         svc.remove_jobs = AsyncMock(return_value=(["j1"], []))
-        assert _AWS_SECRET not in (await cron_remove_all_reply(svc) or "")
+        assert _TOKEN not in (await cron_remove_all_reply(svc) or "")
 
     @pytest.mark.asyncio
     async def test_every_channel_forwards_delete_attribution_not_only_slack(self) -> None:
@@ -963,9 +964,9 @@ class TestTaskRunner:
         spec = tmp_path / "plan.yaml"
         spec.write_text("steps: []", encoding="utf-8")
         runner = MagicMock(running=False)
-        runner.start_background = AsyncMock(side_effect=RuntimeError(f"bad {_AWS_SECRET}"))
+        runner.start_background = AsyncMock(side_effect=RuntimeError(f"bad {_TOKEN}"))
         out = await task_command_reply(f"task run {spec}", runner) or ""
-        assert "Failed to start" in out and _AWS_SECRET not in out
+        assert "Failed to start" in out and _TOKEN not in out
 
     @pytest.mark.asyncio
     async def test_the_keyword_grammar_carries_the_session_key(self, tmp_path: Any) -> None:

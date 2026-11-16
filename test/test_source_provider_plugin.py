@@ -18,8 +18,12 @@ import pytest
 from kiro_crew import history, history_search
 from kiro_crew.dashboard.handlers import source_providers as source
 from kiro_crew.dashboard.slot_projection import SlotProjection
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 CR_URL = "https://review.acme.example/cr/123"
+
+#: A GitHub token with a valid checksum, which the redactor masks.
+_TOKEN = github_classic(seed=152)
 
 
 @pytest.fixture(autouse=True)
@@ -64,7 +68,7 @@ class FakeAcmePlugin:
             "number": ref.number,
             "title": "Widen the seam",
             # A credential the shared redaction layer must scrub before caching.
-            "description": "token=ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+            "description": f"token={_TOKEN}",
             "state": "open",
             "checks": [],
             "commits": [],
@@ -302,7 +306,7 @@ async def test_plugin_error_text_is_redacted_before_it_reaches_the_client(plugin
     built-in cannot leak this way because every built-in failure path runs its
     provider's stderr through `_safe_error` first.
     """
-    secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+    secret = _TOKEN
 
     async def fetch_full(ref, *, refresh: bool = False):
         raise source.SourceProviderError(f"acme said: token={secret}")
@@ -328,7 +332,7 @@ async def test_plugin_error_text_is_redacted_before_it_reaches_the_client(plugin
 async def test_plugin_setup_message_is_redacted_too(plugin) -> None:
     # `setup_message()` is edition-authored guidance, but it is still provider
     # text on the same 503 route, so it gets the same treatment.
-    secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+    secret = _TOKEN
     plugin.not_configured = True
     plugin.setup_message = lambda: f"Set ACME_TOKEN (currently token={secret})"
     with pytest.raises(source.SourceProviderError) as exc:
@@ -347,7 +351,7 @@ async def test_not_configured_from_a_mutation_hook_is_redacted(plugin) -> None:
     as every other plugin exception, while keeping its subclass so the caller's
     handling is unchanged.
     """
-    secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+    secret = _TOKEN
 
     async def comment(ref, body: str) -> None:
         raise source.SourceProviderNotConfigured(f"acme not configured: token={secret}")
@@ -380,9 +384,7 @@ async def test_confirmation_required_from_a_plugin_keeps_its_answerable_type(plu
     # it to the plain-`ValueError` arm (which would render a dead-end error),
     # and its message is scrubbed like any other plugin failure text.
     async def enable_auto_merge(ref, *, confirm_immediate_merge: bool = False):
-        raise source.ConfirmationRequired(
-            "would merge now; token=ghp_0123456789abcdefghijklmnopqrstuvwxyz"
-        )
+        raise source.ConfirmationRequired(f"would merge now; token={_TOKEN}")
 
     plugin.enable_auto_merge = enable_auto_merge
     with pytest.raises(source.ConfirmationRequired) as excinfo:

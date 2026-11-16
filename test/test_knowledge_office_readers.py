@@ -601,8 +601,9 @@ def test_a_sheet_title_holding_a_credential_is_redacted_before_file_grep_cuts_it
     from openpyxl import Workbook
 
     from kiro_crew.dashboard.handlers import files
+    from kiro_crew.testing.synthetic_credentials import github_classic
 
-    secret = "ghp_" + "Zq8Lm3Rt7Vw2Xy5Nb4Kc9Jd6Hf1Gs0Pa3QeW"
+    secret = github_classic(seed=333)
     assert len(secret) == 40
     book = Workbook()
     with warnings.catch_warnings():

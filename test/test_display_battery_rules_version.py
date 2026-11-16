@@ -34,17 +34,11 @@ PKG = Path(display_battery.__file__).resolve().parent.parent
 
 #: Package modules a rule source imports that are NOT rules inputs, and why.
 NOT_RULES: dict[str, str] = {
-    "kiro_crew.sel": "SEL audit records; the battery never writes one (trace below)",
-    "kiro_crew.security.denied_rules": "bash-audit symbols exfil re-uses; never called by the battery",
-    "kiro_crew.config": "operator OAuth file, banner-only (test_display_redaction_source_guard)",
-    "kiro_crew.config.loader": "same; plus the owner-view switch path, which turns storage off",
-    "kiro_crew.platform.context": "exempt-host source; its output, the host set, is in every tag",
+    "kiro_crew.config.loader": "the owner switch's reader; the published setting is in every tag",
+    "kiro_crew.platform.context": "prefix source; its output, the prefix set, is in every tag",
     "kiro_crew.platform.governance": "the switch's policy gate; only read_state reaches it, never the battery",
     "kiro_crew.atomic_write": "the owner-view switch writer; never reached from the battery",
     "kiro_crew._facade_mirror": "mirror facade glue: runs at import and on attribute access only",
-    "kiro_crew.security.exfil_bash": "the bash egress gate; the battery never calls it",
-    "kiro_crew.security.shell_commands": "the bash gates' command reader; the battery never calls it",
-    "kiro_crew.security": "the package facade pass_compose reaches its two engines through",
     "kiro_crew.metrics.provider": "the fail-closed counter; it records a count, never a verdict",
 }
 
@@ -53,23 +47,19 @@ PROBE = r"""
 import json, os, sys
 from pathlib import Path
 from kiro_crew.dashboard import display_battery
-from kiro_crew.security import exfil
 from kiro_crew import slack_manifest
-from kiro_crew.security.redaction_structured import compat
 
-# Only the switch read is outside the rule sources: its value is keyed in
-# rules_version. Check its real return below; every other detector call still counts.
-switch_code = compat.use_rule_table.__code__
-
-# The exempt-host source is keyed (its output is in every tag), so it is held
-# fixed here and its own package files do not count as rules inputs.
-exfil._exempt_exact_hosts = lambda: frozenset()
+# Loaded before the trace: the first import of the structured detectors binds the
+# subpackage on the ``kiro_crew.security`` package (its ``__setattr__``), which is
+# import machinery, not a rule. Every detector call still counts.
+import kiro_crew.security.redaction_structured.compat  # noqa: F401
 
 pkg = str(Path(display_battery.__file__).resolve().parent.parent)
 texts = [
     "plain prose, nothing to redact",
     "key AKIAIOSFODNN7EXAMPLE aws_secret_access_key=" "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" "Jf1Lb5Gs0Ye9Ua2WkE",
     "token=__GITHUB_TOKEN__",
+    "https://api.example.com/v1?access_token=__GITHUB_TOKEN__&page=2",
     "Authorization: Bearer " + "x1Y2z3" * 8,
     "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlc2lnbmF0dXJl",
     "-----BEGIN RSA " + "PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA " + "PRIVATE KEY-----",
@@ -85,16 +75,8 @@ texts = [
     slack_manifest.deep_link("alias_1"),
     "中文 текст " + "z" * 300,
 ]
-# The owner's engine selector is read once per process, outside the rule sources:
-# its value is keyed in rules_version. Read it before the trace starts.
-assert compat.use_rule_table() is True, "the structured engine must be the default"
 seen = set()
 def prof(frame, event, arg):
-    if frame.f_code is switch_code:
-        if event == "return":
-            # The structured detectors are on by default.
-            assert arg is True, "the internal rule-table switch must default on"
-        return
     if event == "call":
         fn = frame.f_code.co_filename
         if fn.startswith(pkg):
@@ -157,12 +139,14 @@ def test_the_battery_executes_only_rule_sources(tmp_path: Path) -> None:
     """A fresh interpreter (no warm memo can hide a call) runs nothing outside the list."""
     res = _trace(tmp_path)
     # The presigned URL is left as written: its only credential-shaped part is the
-    # AWS key ID, an Identifier with the structured detectors on.
-    assert res["changed"] >= 7, "the probes must actually make the redactors fire"
+    # AWS key ID, an Identifier with the structured detectors on. A URL with no
+    # credential VALUE in it is left as written too: no URL is replaced whole.
+    assert res["changed"] >= 5, "the probes must actually make the redactors fire"
     listed = {p for p in display_battery.RULE_SOURCES if p.endswith(".py")}
     assert set(res["files"]) <= listed, sorted(set(res["files"]) - listed)
-    # The two engines are actually reached, so the check above is not vacuous.
-    assert {"security/redaction.py", "security/exfil.py"} <= set(res["files"])
+    # The credential pass and its structured detectors are actually reached, so
+    # the check above is not vacuous.
+    assert {"security/redaction.py", "security/redaction_structured/engine.py"} <= set(res["files"])
 
 
 def _module_of(rel: str) -> str:

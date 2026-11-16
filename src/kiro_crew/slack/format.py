@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, Callable, NamedTuple, Sequence
 
+from kiro_crew import redaction_seams
 from kiro_crew.constants import OPTIONS_RE_LINE, relocate_glued_tail_marker
 from kiro_crew.messaging.display_safety import (
     DISPLAY_SETTLING_PASSES,
@@ -456,6 +457,7 @@ def extract_options(text: str) -> tuple[str, list[str]]:
     return cleaned, choices
 
 
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
 def _redact_choices(
     choices: list[str],
     redactor: Callable[[str], str] | None,
@@ -1539,6 +1541,7 @@ def _render_blocks(
     return out, changed
 
 
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
 def render_for_slack(
     text: str,
     *,
@@ -1693,6 +1696,7 @@ class SlackRender(NamedTuple):
     redacted: bool
 
 
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
 def render_one_for_slack(
     text: str,
     *,

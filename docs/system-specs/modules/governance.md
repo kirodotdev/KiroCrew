@@ -3252,22 +3252,29 @@ denial of this capability refuses even on an otherwise ungoverned host, and
 an unreadable ceiling or profile fails closed. Every grant, denial and evaluation
 error is emitted through `sel().log_governance_decision`, including the session,
 agent, capability and reason; audit failures never change the permission result),
-and `capabilities.credential_redaction_off` (opt-in, `capability_default=False`:
-on a host whose policy governs any scope, only a policy that names this row
-`enabled: true` lets the owner turn credential redaction off in the Files view.
+and `capabilities.credential_redaction_off` (opt-in, `capability_default=False`; it is the one
+credential-redaction row, whatever path the setting reaches: on a host whose policy governs any
+scope, credential redaction is ON, whatever the owner stored and whatever the default, unless the
+TOP policy tier names this row `enabled: true`.
 `security.redaction_switch.owner_may_disable` reads it at the policy layer only
-(`policy_level_control`, so an LTS build reads the baseline's off; a
-profile does not take part), and an unreadable ceiling keeps redaction on. A
-folded ceiling (`lower_tier_folded`) also keeps it on, even when the top tier
-named the row itself, because the fold does not say which tier did. What
-the switch then does is in [security](security.md), "Owner's credential-redaction
-switch"), and `capabilities.credential_redaction_seams_off` (the same opt-in rule,
-a row of its own: only a policy that names it `enabled: true` lets the owner turn
-credential redaction off for the conversation replayed into the agent's prompt and
-for server log lines; `owner_may_disable_seams` reads it the same way. The Files-view
-row does not grant it, because those sinks reach the external model provider and the
-logs, which the Files-view opt-in never covered; see [security](security.md),
-"Owner's output-seams switch").
+(`policy_level_control`, so an LTS build reads the baseline's off; a profile does not take
+part), an unreadable ceiling keeps redaction on, and a folded ceiling (`lower_tier_folded`)
+also keeps it on, even when the top tier named the row itself, because the fold does not say
+which tier named it. Every reader and writer returns the state in force under this rule; the
+PUT refuses OFF with 403 `credential_redaction_locked_by_policy` and a `governance_decision`
+row naming the row. What the setting then does is in [security](security.md), "Owner's
+credential-redaction setting"). The row governs the one setting on every path: it once let the
+owner read only the Files view raw, and the maintainer widened it on purpose, so a policy that
+already grants it now lets the owner turn all credential redaction off.
+`capabilities.credential_redaction_seams_off`, the row of the output-seams switch that setting
+absorbed, is retired (`governance_parts.catalog.RETIRED_SCOPES`): a policy or profile that still
+names it, nested under `capabilities` or as one flat dotted key, loads with a warning; a grant of it grants nothing, and any other value of it is read as
+a deny of `capabilities.credential_redaction_off`, so retiring the row never loosens a ceiling.
+An administrator's explicit deny of the retired row is never dropped: it denies the setting even
+beside a grant of `capabilities.credential_redaction_off`, in either order (tightest wins). The
+widening applies to grants only. A policy that names only retired rows still governs the host
+(`GovernanceCeiling.retired_rows`): their grant grants nothing, so the setting reads as ON until
+the policy grants `capabilities.credential_redaction_off`.
 Only the live `approval_mode` clamp remains reserved.
 
 The `commands` scope now **doubles as the enterprise force-pin** for built-in

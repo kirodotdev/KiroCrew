@@ -1,5 +1,5 @@
 /**
- * Settings search lists each Security -> Redaction toggle once. A manual entry in
+ * Settings search lists each Security -> Redaction toggle once (there is one). A manual entry in
  * `settingsManual.ts` replaces the extracted one only when its id matches the id
  * the extractor derives from the label, so a label change must move the id too.
  */
@@ -9,9 +9,9 @@ import { SETTINGS_REGISTRY } from './settingsRegistry.gen'
 describe('Security -> Redaction settings entries', () => {
   const redaction = SETTINGS_REGISTRY.filter(e => (e.labelKey ?? '').includes('.credential_redaction_'))
 
-  it('lists each redaction toggle once', () => {
+  it('lists the redaction toggle once', () => {
     const keys = redaction.map(e => e.labelKey)
-    expect(keys.length).toBeGreaterThanOrEqual(3)
+    expect(keys.length).toBe(1)
     expect(new Set(keys).size).toBe(keys.length)
   })
 

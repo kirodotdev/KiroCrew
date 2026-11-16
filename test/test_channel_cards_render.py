@@ -38,7 +38,9 @@ from kiro_crew.testing import synthetic_credentials
 #: The module, not the ``render`` function the package exports under its name.
 render_mod = importlib.import_module("kiro_crew.messaging.cards.render")
 LIVE_MENTION = re.compile(r"<[!@#][A-Za-z]")
-KEY = synthetic_credentials.synth(40, seed=17)
+#: A Google API key by its published format (``AIza`` and 35 letters and digits),
+#: so no piece of it is markup; a bare 40-character run is no credential by itself.
+KEY = "AIza" + synthetic_credentials.synth(35, seed=17)
 HOSTILE = (
     f"key {KEY} here",
     "<!channel> and <!here> and <@U012ABC>",

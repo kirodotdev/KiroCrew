@@ -112,7 +112,9 @@ def _fixed_prefixes() -> tuple[str, ...]:
     """Every prefix the structured detectors know a secret token by (``AIza``, ``hvs.``).
 
     Read from the detectors' own table, so a format added there counts here too,
-    whatever rule name its redaction record carries.
+    whatever rule name its redaction record carries. A start shorter than
+    :data:`_MIN_FIXED_PREFIX` (a Telegram token's first digit, a Discord token's
+    first letter) is no fixed prefix: run-together prose holds one at every word.
     """
     from kiro_crew.security import redaction_structured as detectors
 
@@ -121,7 +123,12 @@ def _fixed_prefixes() -> tuple[str, ...]:
         for row in detectors.ROWS
         if row["detector"] == "token_format" and row["tier"] == detectors.SECRET
         for prefix in row["prefixes"]
+        if len(prefix) >= _MIN_FIXED_PREFIX
     )
+
+
+#: The shortest token start read as a fixed prefix (``eyJ``, ``hf_``).
+_MIN_FIXED_PREFIX = 3
 
 
 def _holds_split_format(text: str) -> bool:

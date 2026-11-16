@@ -60,11 +60,14 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: (the two servers sat one module under their old ceilings, and ``mcp-core`` and
 #: ``mcp-guide`` had room). The redactor runs on the listing's output, so the import cannot
 #: move behind the list.
+#: Raised by 1 for each server: the rule table reads headers and encoded credentials in
+#: two modules of its own (``redaction_structured.headers`` and ``.encoded``) where
+#: ``.protection`` was one.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 485,
-    "mcp-cron": 356,
-    "mcp-guide": 350,
-    "mcp-mate": 351,
+    "mcp-core": 486,
+    "mcp-cron": 357,
+    "mcp-guide": 351,
+    "mcp-mate": 352,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

@@ -11,8 +11,8 @@ import { OPTION_MARKER_PATTERN_SOURCE } from '../app-sdk/protocol/optionMarker'
 
 // Mock MarkdownRenderer to avoid complex markdown parsing in tests
 vi.mock('../components/MarkdownRenderer', () => ({
-  default: ({ content, blockedLinks }: { content: string; blockedLinks?: unknown }) => (
-    <div data-testid="md" data-blocked-links={JSON.stringify(blockedLinks ?? null)}>{content}</div>
+  default: ({ content, redactions, blockedLinks }: { content: string; redactions?: unknown; blockedLinks?: unknown }) => (
+    <div data-testid="md" data-redactions={JSON.stringify(redactions ?? null)} data-blocked-links={JSON.stringify(blockedLinks ?? null)}>{content}</div>
   ),
 }))
 // Mock useSmoothStream to passthrough — its rAF loop conflicts with vi.useFakeTimers()
@@ -266,13 +266,28 @@ describe('AssistantMessage', () => {
     expect(screen.getByTestId('md')).toHaveTextContent('version one text')
   })
 
+  it('local variant browsing takes each variant\'s credential records with its text', () => {
+    // A record describes one text: showing variant one beside the row's records
+    // would pair a lock tag with a value that text never held.
+    const rowRecords = [{ ordinal: 0, rule: 'jwt' }]
+    const v1Records = [{ ordinal: 0, rule: 'private_key' }]
+    const variants = [
+      { content: 'version one text', redactions: v1Records },
+      { content: 'version two text' },
+    ]
+    render(<AssistantMessage content="version two text" isStreaming={false} variants={variants} variantIdx={1} redactions={rowRecords} />)
+    expect(screen.getByTestId('md').dataset.redactions).toBe(JSON.stringify(rowRecords))
+    fireEvent.click(screen.getByTitle('Previous version'))
+    expect(screen.getByTestId('md').dataset.redactions).toBe(JSON.stringify(v1Records))
+  })
+
   it('local variant browsing takes each variant\'s blocked-link records with its text', () => {
     // A record describes one text: showing variant one beside the row's records
-    // would open a panel naming a link that text never held.
+    // would draw a link that text never held as blocked, and leave its own live.
     const rowRecords = [{ domain: 'row.example.com' }]
     const v1Records = [{ domain: 'one.example.com' }]
     const variants = [
-      { content: 'version one text', blocked_links: v1Records },
+      { content: 'version one text', link_blocks: v1Records },
       { content: 'version two text' },
     ]
     render(<AssistantMessage content="version two text" isStreaming={false} variants={variants} variantIdx={1} blockedLinks={rowRecords} />)

@@ -38,8 +38,12 @@ from kiro_crew.acp.types import (
     UPDATE_TOOL_CALL,
     JsonRpcMessage,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # ── _dispatch_events: mid-session MCP notifications ──
+
+#: A GitHub token with a valid checksum.
+_GH = github_classic(seed=323)
 
 
 def _fake_loop(frames):
@@ -184,13 +188,11 @@ class TestCommandsAndSteer:
         client._session_id = "sid"
         client.ensure_ready = AsyncMock()
         client._send_request = AsyncMock(return_value=11)
-        client._wait_for_response = AsyncMock(
-            return_value={"message": "token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"}
-        )
+        client._wait_for_response = AsyncMock(return_value={"message": f"token: {_GH}"})
 
         out = await client.send_command("/usage")
 
-        assert "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" not in out
+        assert _GH not in out
 
     @pytest.mark.asyncio
     async def test_send_command_timeout_returns_empty(self, tmp_path):
@@ -712,7 +714,7 @@ class TestPermissionEvent:
                 "toolCall": {
                     "title": "curl",
                     "toolCallId": "tc-3",
-                    "input": {"token": "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"},
+                    "input": {"token": _GH},
                 }
             },
         )
@@ -722,8 +724,8 @@ class TestPermissionEvent:
 
         debug = "\n".join(r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG)
         assert "Permission toolCall payload" in debug
-        assert "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" not in debug
-        assert event.raw_tool_params == {"token": "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"}
+        assert _GH not in debug
+        assert event.raw_tool_params == {"token": _GH}
 
 
 # ── Context window backfill ──

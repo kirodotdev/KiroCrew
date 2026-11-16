@@ -163,20 +163,12 @@ DISPLAY_SETTLING_PASSES = 4
 # last-resort reply keeps its words, and stripping them would take them from
 # every word.
 DISPLAY_MARKUP = re.compile(r"[\[\]<>|*_~`]")
-# Tags written by the redactors: two fixed credential tags and the suspicious-URL
-# tag carrying its source domain. The domain admits DNS, IPv4 and unbracketed IPv6
-# characters or an exact bracketed IPv6 literal, but no display markup, heading
-# marker, whitespace or format character. A span of this shape is kept whoever wrote
-# it, so nothing a reading could act on may enter it. An underscore is emphasis
-# markup and stays out even though a DNS name can hold one: such a suspicious-URL
-# tag is not kept whole on the last-resort paths, which costs its brackets and its
-# count in the redaction notice, never the redaction. This shape is local because
-# this leaf cannot import the security package; ``test_markdown_link_parentheses.py``
-# pins it against that package's exported vocabulary.
-_REDACTION_TAG = re.compile(
-    r"\[REDACTED: (?:(?:encoded )?credential|suspicious URL to "
-    r"(?:[-A-Za-z0-9.:]+|\[[0-9A-Fa-f:.]+\]))\]"
-)
+# Tags written by the redactors: the two fixed credential tags. A span of this shape
+# is kept whoever wrote it, so nothing a reading could act on may enter it. This
+# shape is local because this leaf cannot import the security package;
+# ``test_markdown_link_parentheses.py`` pins it against that package's exported
+# vocabulary.
+_REDACTION_TAG = re.compile(r"\[REDACTED: (?:encoded )?credential\]")
 
 
 def strip_ansi(text: str) -> str:
@@ -241,10 +233,68 @@ def _display_form(text: str, collapse: Callable[[str], str]) -> str:
     """Apply *collapse* and the joining passes shared by display readings."""
     out = collapse(text)
     out = _SLACK_LINK.sub(r"\2", out)
-    out = _EMPHASIS_RUN.sub("", out)
+    out = _without_delimiter_runs(out)
     out = _HEADING_MARKER.sub("", out)
     out = _BLOCKQUOTE_MARKER.sub("", out)
     return _strip_format_chars(out)
+
+
+_FENCE = "```"
+
+
+def _code_regions(text: str) -> Iterator[tuple[int, int]]:
+    """The ``(start, end)`` of every fence body and inline-code body in *text*.
+
+    Paired as :func:`slack_mrkdwn_reading` pairs them: each fence opener with the
+    next fence marker, then single-backtick spans in the text between fences.
+    """
+    cursor = 0
+    while True:
+        fence_start = text.find(_FENCE, cursor)
+        fence_end = -1 if fence_start < 0 else text.find(_FENCE, fence_start + 3)
+        stop = len(text) if fence_end < 0 else fence_start
+        for code in TELEGRAM_FALLBACK_INLINE_CODE.finditer(text, cursor, stop):
+            yield code.start(1), code.end(1)
+        if fence_end < 0:
+            return
+        yield fence_start + 3, fence_end
+        cursor = fence_end + 3
+
+
+def _code_word_underscores(text: str) -> list[int]:
+    """Each lone ``_`` between two letters or digits inside code, ascending."""
+    if "`" not in text or "_" not in text:
+        return []
+    kept: list[int] = []
+    for start, end in _code_regions(text):
+        at = text.find("_", start + 1, end - 1)
+        while at != -1:
+            if text[at - 1].isalnum() and text[at + 1].isalnum():
+                kept.append(at)
+            at = text.find("_", at + 1, end - 1)
+    return kept
+
+
+def _without_delimiter_runs(text: str) -> str:
+    """*text* with every emphasis, code and spoiler delimiter run dropped, except a
+    lone ``_`` between two letters or digits inside code.
+
+    Code is shown as written on every channel here, and such an underscore is no
+    emphasis delimiter there, so it stays on screen: ``YOUR_ACCESS_TOKEN`` in
+    backticks reads with its underscores, as the placeholder it is, not as the
+    opaque value ``YOURACCESSTOKEN``. Both its neighbours are letters or digits, so
+    no delimiter run crosses it and the runs either side drop alone.
+    """
+    kept = _code_word_underscores(text)
+    if not kept:
+        return _EMPHASIS_RUN.sub("", text)
+    pieces: list[str] = []
+    cursor = 0
+    for at in kept:
+        pieces.append(_EMPHASIS_RUN.sub("", text[cursor:at]))
+        cursor = at + 1
+    pieces.append(_EMPHASIS_RUN.sub("", text[cursor:]))
+    return "_".join(pieces)
 
 
 # The characters each per-line link walk acts on: an escape pair (the backslash
@@ -668,6 +718,12 @@ LINK_READINGS: tuple[Callable[[str], str], ...] = (
     _link_free_reading,
 )
 
+#: The canonical reading and the link readings: one form on text holding no ``](``.
+_CANONICAL_AND_LINK_READINGS: tuple[Callable[[str], str], ...] = (
+    canonicalize_display,
+    *LINK_READINGS,
+)
+
 
 def holds_a_link_opener(text: str) -> bool:
     """Can a link reading of *text* differ from its canonical form?
@@ -693,21 +749,64 @@ def _a_reading_joining_a_key(
     redactor: Callable[[str], str],
     scanned: str,
     renderings: Sequence[Callable[[str], str]] | None = None,
+    *,
+    clean: Sequence[str] = (),
 ) -> Callable[[str], str] | None:
     """The first of *renderings* whose reading of *text* the redactor changes.
 
     Each reading is scanned whether or not the canonical form differs from *text*:
     the canonical grammar refuses a link the narrower one accepts, so a text can
     canonicalize to itself while a reading still joins a key across the link.
-    *scanned* is a form of *text* the redactor has already left unchanged; a
-    reading equal to it is not scanned again. The further readings are the default
-    set. ``None`` when no reading shows a key.
+    *scanned*, and each form in *clean*, is a form of *text* the redactor has
+    already left unchanged; a reading equal to one of them, or to a reading scanned
+    before it, is not scanned again. On text with no ``](`` every link reading is
+    the canonical form (:func:`holds_a_link_opener`), so that form is rendered once
+    for all of them. The further readings are the default set. ``None`` when no
+    reading shows a key.
     """
+    known = {scanned, *clean}
+    shared = _CANONICAL_AND_LINK_READINGS if not holds_a_link_opener(text) else ()
+    canonical: str | None = None
     for reading in FURTHER_READINGS if renderings is None else renderings:
-        shown = reading(text)
-        if shown != scanned and redactor(shown) != shown:
+        if reading in shared:
+            if canonical is None:
+                canonical = canonicalize_display(text)
+            shown = canonical
+        else:
+            shown = reading(text)
+        if shown in known:
+            continue
+        if redactor(shown) != shown:
             return reading
+        known.add(shown)
     return None
+
+
+def _remembering(redactor: Callable[[str], str], known: dict[str, str]) -> Callable[[str], str]:
+    """*redactor*, run at most once per distinct text; *known* holds results already had.
+
+    One display decision meets the same form many times (a reading equal to another,
+    a settling pass that renders what it emitted as itself), and each scan of a long
+    message is the cost that dominates it."""
+
+    def scan(text: str) -> str:
+        result = known.get(text)
+        if result is None:
+            result = known[text] = redactor(text)
+        return result
+
+    return scan
+
+
+def _holds_display_constructs(text: str) -> bool:
+    """Can any display reading of *text* differ from *text*?
+
+    Every reading acts only on a markup character (:data:`DISPLAY_MARKUP`), a ``#``
+    (a heading or Discord subtext marker) or an invisible format character; text
+    with none of them is its own reading under every one."""
+    return (
+        DISPLAY_MARKUP.search(text) is not None or "#" in text or _strip_format_chars(text) != text
+    )
 
 
 def _settled_under_every_reading(text: str, redactor: Callable[[str], str]) -> str:
@@ -1105,19 +1204,68 @@ def redact_for_display(text: str, redactor: Callable[[str], str]) -> tuple[str, 
     stripped = strip_ansi(text or "")
     safe = redactor(stripped)
     changed = safe != stripped
+    # Each distinct form is scanned once: the readings and the settling passes below
+    # meet the same forms again. The redactor's own output is a form it leaves as
+    # written (redacting masked text is a no-op).
+    redactor = _remembering(redactor, {stripped: safe, safe: safe})
 
     literal = _strip_format_chars(safe)
     if literal != safe:
         literal_safe = redactor(literal)
         if literal_safe != literal:
             safe, changed = literal_safe, True
+    if not _holds_display_constructs(safe):
+        # Nothing a reading acts on: every reading is the text already scanned.
+        return safe, changed
     canonical = canonicalize_display(safe)
     canonical_shows_a_key = canonical != safe and redactor(canonical) != canonical
-    if not canonical_shows_a_key and _a_reading_joining_a_key(safe, redactor, canonical) is None:
+    joining = (
+        None
+        if canonical_shows_a_key
+        else _a_reading_joining_a_key(safe, redactor, canonical, clean=(safe,))
+    )
+    if not canonical_shows_a_key and joining is None:
         return safe, changed
     # The markup was hiding a credential from the scan. Emit the canonical,
     # redacted form: losing formatting beats leaking the key. The literal scan
     # may already have written a tag into ``safe``, so the form emitted is
     # rendered outside every tag; the whole-text form scanned is the reader's.
     emitted = redacted_rendering(safe, canonicalize_display, redactor)
+    if joining is not None and _shows_a_masked_value(emitted, joining(safe), redactor):
+        # The canonical grammar dropped a character the key's format needs (it
+        # reads the ``_`` of ``ghp_**...**`` as emphasis), so the key it emitted
+        # is no key to the redactor. The reading that showed it is redacted first.
+        safe = redacted_rendering(safe, joining, redactor)
+        emitted = redacted_rendering(safe, canonicalize_display, redactor)
     return _settled_under_every_reading(emitted, redactor), True
+
+
+#: The shortest masked value whose markup-free form, found in an emitted text, is
+#: taken as that value shown.
+_SHOWN_VALUE_MIN = 8
+
+
+def _shows_a_masked_value(emitted: str, reading: str, redactor: Callable[[str], str]) -> bool:
+    """Does *emitted* still show, markup aside, a value the redactor masks in *reading*?
+
+    The redacted *reading* keeps the text between its tags verbatim, so each run of
+    *reading* between two of those kept pieces is a masked value. Adjacent tags
+    merge two values into one run, which can only make the answer False. A tag
+    *reading* already held is no value, so tags are dropped from both sides.
+    """
+    kept = _REDACTION_TAG.split(redactor(reading))
+    if len(kept) < 2 or not (reading.startswith(kept[0]) and reading.endswith(kept[-1])):
+        return False
+    shown = DISPLAY_MARKUP.sub("", _REDACTION_TAG.sub(" ", emitted))
+    at, end = len(kept[0]), len(reading) - len(kept[-1])
+    for piece in (*kept[1:-1], None):
+        found = end if piece is None else reading.find(piece, at, end) if piece else -1
+        if found < 0:
+            found = end
+        value = DISPLAY_MARKUP.sub("", _REDACTION_TAG.sub(" ", reading[at:found])).strip()
+        if len(value) >= _SHOWN_VALUE_MIN and value in shown:
+            return True
+        if found == end:
+            return False
+        at = found + len(piece or "")
+    return False

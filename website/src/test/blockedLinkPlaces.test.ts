@@ -4,26 +4,26 @@ import remarkParse from 'remark-parse'
 import remarkGfm from 'remark-gfm'
 import remarkRehype from 'remark-rehype'
 import type { Element as HastElement, Root as HastRoot, RootContent } from 'hast'
-import { rehypeRedactionMarkers } from '../components/RedactionCards'
+import { rehypeRedactionMarkers, type BlockedLink } from '../components/RedactionCards'
 
 // The card of a blocked link is keyed on its top-level block, and a held card
-// reopens under the block that lists its id after Allow. Allow swaps an inline
-// placeholder for an inline link, so a block keeps its place. Each chip also
-// carries a number that tells it apart from the block's other chips.
+// reopens under the block that lists its id after Allow. Allow drops the
+// host's records and leaves the text as it was, so each chip turns back into
+// the inline link it stood for and a block keeps its place.
 
 const HOST = 'reviews.example-sink.net'
 const OTHER = 'other.example-sink.net'
-const PH = (h: string) => `[REDACTED: suspicious URL to ${h}]`
 const url = (h: string, n: number) => `https://${h}/p${n}?q=x`
+const rec = (u: string): BlockedLink => ({ url: u, domain: new URL(u).hostname, rule: 'exfil_query_length', query_chars: 290, withheld: null })
 
 function hast(md: string): HastRoot {
   const p = unified().use(remarkParse).use(remarkGfm).use(remarkRehype)
   return p.runSync(p.parse(md)) as HastRoot
 }
 
-function run(md: string, opts: { domains: string[]; held: string[]; block: number }): HastRoot {
+function run(md: string, opts: { links: BlockedLink[]; held: string[]; block: number }): HastRoot {
   const tree = hast(md)
-  rehypeRedactionMarkers({ ordinals: new Set(), domains: new Set(opts.domains), held: new Set(opts.held), base: 0, block: opts.block })(tree)
+  rehypeRedactionMarkers({ ordinals: new Set(), links: opts.links, held: new Set(opts.held), base: 0, block: opts.block })(tree)
   return tree
 }
 
@@ -54,13 +54,18 @@ function slotIds(tree: HastRoot, host: string): string[][] {
 describe('rehypeRedactionMarkers card keys', () => {
   it('names the block of every chip it makes, wherever the chip sits', () => {
     const md = [
-      `# Head ${PH(HOST)}`,
-      `Para *em ${PH(HOST)}* and ${PH(OTHER)}`,
-      `- item ${PH(HOST)}\n- item ${PH(HOST)}`,
-      `| a | b |\n| - | - |\n| ${PH(HOST)} | x |`,
-      `> quote ${PH(OTHER)}`,
+      `# Head ${url(HOST, 1)}`,
+      `Para *em ${url(HOST, 2)}* and [other](${url(OTHER, 1)})`,
+      `- item ${url(HOST, 3)}\n- item ![img](${url(HOST, 4)})`,
+      `| a | b |\n| - | - |\n| ${url(HOST, 5)} | x |`,
+      `> quote ${url(OTHER, 2)}`,
     ].join('\n\n')
-    const chips = elements(run(md, { domains: [HOST, OTHER], held: [], block: 3 }), 'blocked-link')
+    const links = [1, 2, 3, 4, 5].map(n => rec(url(HOST, n))).concat([1, 2].map(n => rec(url(OTHER, n))))
+    const tree = run(md, { links, held: [], block: 3 })
+    const chips = elements(tree, 'blocked-link')
+    // No anchor or image is left carrying a recorded address.
+    expect(elements(tree, 'a')).toEqual([])
+    expect(elements(tree, 'img')).toEqual([])
     expect(chips).toHaveLength(7)
     for (const c of chips) {
       expect(String(c.properties?.block)).toMatch(/^3\.\d+$/)
@@ -82,32 +87,34 @@ describe('rehypeRedactionMarkers card keys', () => {
     }
   }
 
-  // Seeded paragraphs and list items holding chips of the host, other text,
-  // and a plain link to the host the redactor kept. Allow turns each chip into
-  // a markdown link, a bare URL or an image. Every block lists the same card
-  // ids after the reload as before it, so a held card reopens where it was.
-  it('lists the same card ids per block after Allow turns chips into links (300 seeds)', () => {
+  // Seeded paragraphs and list items holding blocked links of the host (a
+  // markdown link, a bare URL or an image) and other text. Allow drops the
+  // records and leaves the text, so each chip turns back into its link. Every
+  // block lists the same card ids after the reload as before it, so a held card
+  // reopens where it was.
+  it('lists the same card ids per block after Allow turns chips back into links (300 seeds)', () => {
     for (let seed = 1; seed <= 300; seed++) {
       const r = rng(seed)
       const pick = (n: number) => Math.floor(r() * n)
-      const before: string[] = []
-      const after: string[] = []
+      const blocks: string[] = []
+      const links: BlockedLink[] = []
       const count = 2 + pick(5)
       for (let b = 0; b < count; b++) {
-        const pieces: Array<[string, string]> = []
-        const links = pick(3)
-        if (pick(4) === 0) pieces.push(['plain words', 'plain words'])
-        for (let k = 0; k < links; k++) {
+        const pieces: string[] = []
+        const count = pick(3)
+        if (pick(4) === 0) pieces.push('plain words')
+        for (let k = 0; k < count; k++) {
           const u = url(HOST, b * 10 + k)
-          pieces.push([`x ${PH(HOST)}`, `x ${[`[page](${u})`, u, `![img](${u})`][pick(3)]}`])
+          links.push(rec(u))
+          pieces.push(`x ${[`[page](${u})`, u, `![img](${u})`][pick(3)]}`)
         }
         const list = pick(4) === 0
         const join = (xs: string[]) => list ? xs.map(x => `- ${x}`).join('\n') : xs.join(' ')
-        before.push(join(pieces.map(p => p[0])) || `filler ${b}`)
-        after.push(join(pieces.map(p => p[1])) || `filler ${b}`)
+        blocks.push(join(pieces) || `filler ${b}`)
       }
-      const pre = slotIds(run(before.join('\n\n'), { domains: [HOST], held: [], block: 0 }), HOST)
-      const post = slotIds(run(after.join('\n\n'), { domains: [], held: [HOST], block: 0 }), HOST)
+      const md = blocks.join('\n\n')
+      const pre = slotIds(run(md, { links, held: [], block: 0 }), HOST)
+      const post = slotIds(run(md, { links: [], held: [HOST], block: 0 }), HOST)
       expect(post, `seed ${seed}`).toEqual(pre)
       // Every id names its own block: no two blocks share a card.
       const all = pre.flat()

@@ -101,11 +101,13 @@ describe('MarkdownRenderer Jira link card — sole-link paragraphs', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('stays a chip while the block is still streaming, then cards once settled', async () => {
+  it('stays its text while the block is still streaming, then cards once settled', async () => {
     const { container, rerender } = render(
       <MarkdownRenderer content={CLOUD} linkPreviews streaming />
     )
-    await waitFor(() => expect(screen.getByText('PROJ-123')).toBeTruthy())
+    // A streaming reply draws the link as its text until its blocked-link records arrive.
+    await waitFor(() => expect(container.textContent).toContain('PROJ-123'))
+    expect(screen.queryByRole('link')).toBeNull()
     expect(cardShown()).toBe(false)
     expect(container.querySelector('p')).not.toBeNull()
     rerender(<MarkdownRenderer content={CLOUD} linkPreviews streaming={false} />)

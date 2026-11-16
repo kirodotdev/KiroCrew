@@ -1,11 +1,13 @@
 """The exfil base64 heuristic treats ``=`` as trailing padding, not a joiner.
 
 With ``=`` inside the character class, ``name=`` plus a short value fused into
-one 40-char run, so an ordinary ``trainingId=<32-char id>`` link was redacted.
-These tests pin both directions: that link shape now renders, and every payload
-shape the heuristic exists for (padded base64, AWS key ids, heavy percent
-encoding, a payload in the parameter NAME) is still redacted; an exact-length
-hex run is a git object name and is kept (``test_exfil_git_object_name.py``).
+one 40-char run, so an ordinary ``trainingId=<32-char id>`` link was flagged.
+These tests pin both directions: that link shape renders and is not flagged, and
+every payload shape the heuristic exists for (padded base64, AWS key ids, heavy
+percent encoding, a payload in the parameter NAME) is still flagged by the
+blocking scan, ``scan_exfiltration_urls``; an exact-length hex run is a git
+object name and is kept (``test_exfil_git_object_name.py``). Display redaction
+masks only credential values inside a URL, so it does not read these shapes.
 
 Sample URLs are built from parts so no literal long-query URL appears here.
 """
@@ -30,9 +32,9 @@ def _url(query: str) -> str:
     return "https://learn.example.com/t/view?" + query
 
 
-def _redacted(url: str) -> bool:
-    result, warnings = redact_exfiltration_urls(f"see {url} for details")
-    return bool(warnings) and url not in result
+def _flagged(url: str) -> bool:
+    """Whether the blocking scan flags *url*: the decision these shapes feed."""
+    return bool(scan_exfiltration_urls(f"see {url} for details"))
 
 
 def test_name_equals_short_id_link_is_kept() -> None:
@@ -49,19 +51,19 @@ def test_name_equals_short_id_link_is_kept() -> None:
     assert scan_exfiltration_urls(text) == []
 
 
-def test_forty_char_base64_value_is_redacted() -> None:
-    assert _redacted(_url("lms=LEARN&id=" + "Ab3/" * 10))
+def test_forty_char_base64_value_is_flagged() -> None:
+    assert _flagged(_url("lms=LEARN&id=" + "Ab3/" * 10))
 
 
-def test_double_padded_base64_secret_is_redacted() -> None:
+def test_double_padded_base64_secret_is_flagged() -> None:
     blob = base64.b64encode(b"S" * 34).decode()
     assert blob.endswith("==") and len(blob) == 48
     match = _EXFIL_PATTERNS.search("d=" + blob)
     assert match is not None and match.group(0) == blob
-    assert _redacted(_url("d=" + blob + "&lms=LEARN"))
+    assert _flagged(_url("d=" + blob + "&lms=LEARN"))
 
 
-def test_minimum_length_padded_base64_is_redacted() -> None:
+def test_minimum_length_padded_base64_is_flagged() -> None:
     """Padding counts toward the 40 chars, as it did in the old class."""
     for size, pad in ((28, "=="), (29, "=")):
         blob = base64.b64encode(b"S" * size).decode()
@@ -69,25 +71,25 @@ def test_minimum_length_padded_base64_is_redacted() -> None:
         assert _OLD_B64_RE.search(blob)
         match = _EXFIL_PATTERNS.search("d=" + blob)
         assert match is not None and match.group(0) == blob
-        assert _redacted(_url("d=" + blob + "&lms=LEARN"))
+        assert _flagged(_url("d=" + blob + "&lms=LEARN"))
 
 
-def test_aws_key_shaped_value_is_redacted() -> None:
-    assert _redacted(_url("k=" + "AKIA" + "IOSFODNN7EXAMPLE"))
+def test_aws_key_shaped_value_is_flagged() -> None:
+    assert _flagged(_url("k=" + "AKIA" + "IOSFODNN7EXAMPLE"))
 
 
-def test_heavy_percent_encoding_is_redacted() -> None:
-    assert _redacted(_url("q=" + "%41" * 25))
+def test_heavy_percent_encoding_is_flagged() -> None:
+    assert _flagged(_url("q=" + "%41" * 25))
 
 
 def test_forty_hex_value_is_a_git_object_name_and_kept() -> None:
     # Exactly 40 lowercase hex digits is a commit SHA, not a base64 blob
     # (test_exfil_git_object_name.py pins the shape's edges).
-    assert not _redacted(_url("sha=" + "0123456789abcdef" * 2 + "01234567"))
+    assert not _flagged(_url("sha=" + "0123456789abcdef" * 2 + "01234567"))
 
 
-def test_payload_in_parameter_name_is_redacted() -> None:
-    assert _redacted(_url("Ab3x" * 10 + "=1"))
+def test_payload_in_parameter_name_is_flagged() -> None:
+    assert _flagged(_url("Ab3x" * 10 + "=1"))
 
 
 def test_split_payload_behaviour_is_unchanged_by_the_separator() -> None:
@@ -103,9 +105,9 @@ def test_split_payload_behaviour_is_unchanged_by_the_separator() -> None:
     assert not _OLD_B64_RE.search(amp_split)
     assert not _EXFIL_PATTERNS.search(amp_split)
     assert not _EXFIL_PATTERNS.search(eq_split)
-    assert not _redacted(_url(amp_split))
-    assert not _redacted(_url(eq_split))
+    assert not _flagged(_url(amp_split))
+    assert not _flagged(_url(eq_split))
 
     long_split = "=".join(["Ab3x" * 7 + "Ab"] * 7)  # 7 x 30 chars
     assert not _EXFIL_PATTERNS.search(long_split)
-    assert _redacted(_url("a=" + long_split))
+    assert _flagged(_url("a=" + long_split))

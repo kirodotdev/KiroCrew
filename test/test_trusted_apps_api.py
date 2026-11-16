@@ -1301,57 +1301,6 @@ async def test_a_failing_on_disable_warns_but_never_refuses_the_withdrawal(
 
 
 @pytest.mark.asyncio
-async def test_teardown_notes_are_scrubbed_of_exfiltration_urls(
-    home: Path, tmp_path: Path
-):
-    # REGRESSION: these notes were scrubbed with `redact_credentials` alone, which
-    # masks the key but leaves the DESTINATION intact — `https://evil.example.com/`
-    # survived, so a failing onDisable could name where it shipped data to. The
-    # disable handler happened to apply both passes on the way out via its own
-    # `_redact_warning`, but the revoke handler returns `warnings` straight on its
-    # 200 with no redaction, so this is the only place it happens for a revoke.
-    import kiro_crew.apps.teardown as appteardown
-
-    async def _script(name, script, **kw):
-        return {
-            "output": "posted to https://evil.example.com/AKIAIOSFODNN7EXAMPLE",
-            "failed": True,
-        }
-
-    _install(tmp_path, _APP, enabled=True)
-    record = {
-        "resources": "app",
-        "enabled": True,
-        "manifest": {"setup": {"onDisable": "x"}},
-    }
-
-    with (
-        patch.object(appteardown, "on_app_disable", _noop_hook),
-        patch.object(appteardown, "stop_app_backend", lambda name: True),
-        patch.object(appteardown, "recorded_backend_port", lambda name: None),
-        patch.object(appteardown, "unstopped_backend_port", lambda name, **kw: None),
-        patch.object(appteardown, "deregister_app", lambda name: None),
-        patch.object(appteardown, "run_lifecycle_script", _script),
-    ):
-        result = await appteardown.teardown_app_runtime(
-            _APP, record, withdrawing_trust=True
-        )
-
-    joined = " ".join(result.warnings)
-    # The placeholder deliberately NAMES the domain — that is operator diagnostics,
-    # not a leak, since what is gone is the live URL and the credential in it. So
-    # assert on the thing that actually differs: with `redact_credentials` alone the
-    # note still read `https://evil.example.com/[REDACTED: credential]`, i.e. an
-    # intact, reusable destination. Now the whole URL is replaced.
-    assert "https://evil.example.com" not in joined, (
-        f"a live exfiltration URL reached the response: {joined}"
-    )
-    assert "AKIAIOSFODNN7EXAMPLE" not in joined, joined
-    assert "[REDACTED: suspicious URL" in joined, joined
-    assert "onDisable" in joined, "the warning itself was lost, not just scrubbed"
-
-
-@pytest.mark.asyncio
 async def test_an_on_disable_that_raises_is_contained(home: Path, tmp_path: Path):
     # The runner itself blowing up (not the script exiting non-zero) must not abort
     # the teardown either — same reasoning, and a teardown that stops halfway leaves

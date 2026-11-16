@@ -30,6 +30,7 @@ from kiro_crew.dashboard.handlers._shared import (
 )
 from kiro_crew.dashboard.handlers.core_security import _sel
 from kiro_crew.external_text import redact_external_text as _redact_external
+from kiro_crew.security import refuses
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.core")
 
@@ -108,7 +109,7 @@ def _mask_agent_free_text(value: object) -> object:
     # No falsy pre-check on purpose: ``_redact_external`` returns falsy input
     # unchanged, so ``""`` compares equal and passes through — a ``value and``
     # guard here would only look like the fail-open bug class without being it.
-    if _redact_external(value) != value:
+    if refuses(value, _redact_external):
         return _SENSITIVE_MASK
     return value
 

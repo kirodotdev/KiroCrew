@@ -44,6 +44,7 @@ from kiro_crew.platform.governance_parts.catalog import (
     _SCOPE_ALIASES,
     CAPABILITY,
     ORDINAL,
+    RETIRED_SCOPES,
     RULESET,
     SCOPE_CATALOG,
     SCOPEDMAP,
@@ -305,6 +306,7 @@ def _parse_controls(
     is_policy: bool,
     unknown_out: Optional[List[str]] = None,
     profile_name: str = "",
+    retired_out: Optional[List[str]] = None,
 ) -> Dict[str, object]:
     """Flatten a policy/profile JSON body into the catalog's dotted-scope map.
 
@@ -385,6 +387,25 @@ def _parse_controls(
         # the policy's filesystem.* ceiling.
         scope = _SCOPE_ALIASES.get(scope, scope)
         spec = SCOPE_CATALOG.get(scope)
+        if spec is None and scope in RETIRED_SCOPES:
+            successor = RETIRED_SCOPES[scope]
+            if retired_out is not None:
+                retired_out.append(scope)
+            if isinstance(raw, dict) and set(raw) == {"enabled"} and raw["enabled"] is True:
+                # A grant of the retired row grants nothing: only its successor can.
+                logger.warning(
+                    "governance: scope %r is retired; its grant is ignored, %r governs it",
+                    scope,
+                    successor,
+                )
+                return
+            # Anything else (a deny, a malformed row) still denies, now through the
+            # successor, so retiring a row never loosens what an administrator set.
+            logger.warning(
+                "governance: scope %r is retired; read as a deny of %r", scope, successor
+            )
+            take(successor, {"enabled": False}, tolerate_unknown=tolerate_unknown)
+            return
         if spec is None:
             # ASYMMETRIC TOLERANCE (profiles only, key-open families only): an
             # unknown child whose payload is EXACTLY ``{"enabled": true}`` is
@@ -435,8 +456,9 @@ def _parse_controls(
     for key, raw in data.items():
         if key in _STRUCTURAL_KEYS:
             continue
-        if key in SCOPE_CATALOG:
-            # A flat top-level scope (e.g. tools, mcp, commands, channels).
+        if key in SCOPE_CATALOG or key in RETIRED_SCOPES:
+            # A flat top-level scope (e.g. tools, mcp, commands, channels), or
+            # a retired row spelled flat, which take() folds into its successor.
             take(key, raw)
         elif key in _KEY_OPEN_NAMESPACES and isinstance(raw, dict):
             # Every child is a catalog scope; an unknown child fails closed in
@@ -569,7 +591,8 @@ def parse_policy(
         ),
         fail_closed=_coerce_boot_flag(boot_raw, "fail_closed", default=True, closed=True),
     )
-    controls = _parse_controls(data, is_policy=True)
+    retired: List[str] = []
+    controls = _parse_controls(data, is_policy=True, retired_out=retired)
     composed_posture = _apply_agentcore_posture(data, controls, boot)
     composed_gateway_url = _apply_agentcore_gateway_url(data, controls, boot)
     composed_workload_name = _apply_agentcore_workload_name(data, controls, boot)
@@ -631,6 +654,7 @@ def parse_policy(
         telemetry_otlp_endpoint=telemetry_otlp_endpoint,
         yolo_max_seconds=yolo_max_seconds,
         mcp_registry_local_control_plane=registry_local_control_plane,
+        retired_rows=tuple(retired),
     )
 
 

@@ -162,8 +162,10 @@ class TestToolResultPartStraddle:
         event = acp_dispatch._build_tool_result_event(update)
         assert event is not None
         assert key_body not in event.tool_output
-        assert "BEGIN RSA PRIVATE KEY" not in event.tool_output
-        assert "[REDACTED" in event.tool_output
+        assert "MORELINES" not in event.tool_output
+        # Only the body is masked: the BEGIN and END lines stay.
+        assert "-----BEGIN RSA " "PRIVATE KEY-----\n[REDACTED" in event.tool_output
+        assert "-----END RSA " "PRIVATE KEY-----\ntrailing" in event.tool_output
 
 
 def _package_modules(package: str) -> list[str]:

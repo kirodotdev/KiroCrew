@@ -21,6 +21,25 @@ SIDE_QUEUE_EVENT = "chat.side_queue"
 #: The slot's side conversation was closed, so every tab clears it (``api_side_close``).
 SIDE_CLOSED_EVENT = "chat.side_closed"
 SIDE_KIND = "side"
+#: The key a finished reply's blocked-link records ride under, as on a main chat row
+#: (``chat_utils.BLOCKED_LINKS_KEY``): the links the panel draws as a Blocked link card.
+LINK_BLOCKS_KEY = "link_blocks"
+
+
+def shown_link_blocks(state: DashboardState, slot_key: str, text: object) -> list[dict]:
+    """The blocked-link records of the finished *text* a frame sends for *slot_key*.
+
+    Computed from the text being sent, under the hosts allowed in the slot's
+    workspace (``chat_utils.blocked_links_for_workspace``); the text is not changed.
+    A streamed delta carries none: the panel draws a streaming reply's links inert.
+    """
+    # Deferred: chat_utils reaches this module through the dashboard socket facade.
+    from kiro_crew.dashboard.chat_utils import blocked_links_for_workspace
+
+    get_slot = getattr(state, "get_slot", None)
+    slot = get_slot(slot_key) if callable(get_slot) else None
+    workspace = getattr(slot, "workspace", None)
+    return blocked_links_for_workspace(text, workspace if isinstance(workspace, str) else None)
 
 
 def broadcast_side_result(
@@ -50,7 +69,8 @@ def broadcast_side_result(
     ``local_side_run_ids``.
 
     Set final=True on the terminal frame of a side turn so the frontend
-    can flip the streaming flag off cleanly.
+    can flip the streaming flag off cleanly. A final assistant frame carries the
+    blocked-link records of its text under ``link_blocks`` (:func:`shown_link_blocks`).
 
     ``message_id`` names the sidecar row the frame announces (a question, a
     steer, a final answer, a stop row). A panel restored from ``GET .../side``
@@ -71,6 +91,10 @@ def broadcast_side_result(
         payload["is_error"] = True
     if final:
         payload["final"] = True
+        if role == "assistant":
+            records = shown_link_blocks(state, slot_key, payload["content"])
+            if records:
+                payload[LINK_BLOCKS_KEY] = records
     if steer:
         payload["steer"] = True
     if message_id:
@@ -100,8 +124,10 @@ def broadcast_thread_reply(
     message the thread hangs off, ``run_id`` groups the streamed deltas of one
     crewmate reply, and the terminal frame (``final``) carries the stored
     ``reply`` record so the panel can replace its streamed text with the row the
-    store holds. Owner-only, like the side chat: a thread is the owner's own
-    conversation. Same channel discipline as ``chat.side_result`` -- a receiver
+    store holds. A final crewmate frame carries the blocked-link records of its
+    text under ``link_blocks``, and so does that ``reply`` record (a copy: the
+    stored one is not touched). Owner-only, like the side chat: a thread is the
+    owner's own conversation. Same channel discipline as ``chat.side_result`` -- a receiver
     that does not subscribe never sees it, so thread frames stay out of the main
     transcript by construction.
 
@@ -130,7 +156,15 @@ def broadcast_thread_reply(
         payload["is_error"] = True
     if final:
         payload["final"] = True
+        if role == "assistant":
+            records = shown_link_blocks(state, slot_key, payload["content"])
+            if records:
+                payload[LINK_BLOCKS_KEY] = records
     if reply is not None:
+        if reply.get("role") == "assistant":
+            reply_records = shown_link_blocks(state, slot_key, reply.get("content"))
+            if reply_records:
+                reply = {**reply, LINK_BLOCKS_KEY: reply_records}
         payload["reply"] = reply
     state.broadcast_ws_owners(THREAD_REPLY_EVENT, payload)
 

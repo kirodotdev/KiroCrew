@@ -18,10 +18,11 @@ from aws_control_backup_helpers import (
 )
 
 from kiro_crew.apps.builtins.aws_control.backend import backup
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-# A synthetic 40-char AWS secret (not the documentation example key).
-_SECRET = SAMPLE_AWS_SECRET
+# A synthetic GitHub token with a valid checksum. A bare 40-character AWS-shaped run
+# with no label or key ID beside it is no credential by itself.
+_SECRET = github_classic(seed=91)
 
 # due_for_nightly — the malformed-timestamp branch
 
@@ -701,7 +702,9 @@ class TestNightlyRetryBackoff:
         # INSIDE the key, which is the only arrangement that can tell the two orders apart.
         backup.set_nightly(ACCOUNT, True)
         key = _SECRET
-        prefix = "x" * (200 - 10)  # bound lands 10 chars into the key
+        # bound lands 10 chars into the key; a blank before it, since a token glued
+        # to a letter is no token by its format
+        prefix = "x" * (200 - 11) + " "
         record = _fail(ACCOUNT, backup.KIND_SNAPSHOT, prefix + key)
         assert key[:10] not in record["error"], "a truncated credential fragment survived"
         assert len(record["error"]) <= 200, "the length bound must still hold"

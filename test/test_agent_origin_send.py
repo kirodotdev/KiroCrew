@@ -31,7 +31,7 @@ from guide_route_helpers import CREWMATE, FakeState, agent, run_guide_app
 
 from kiro_crew.dashboard import agent_origin
 from kiro_crew.history import HUMAN_TURN_META_KEY
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until
 
 #: Values that must all read as agent-origin: the one
@@ -128,8 +128,9 @@ class TestStartedTurn:
         assert nudge.notify_user_input.call_args.kwargs["human"] is person
 
 
-# A 40-char AWS secret; an AWS key ID is kept visible, so it cannot stand in.
-_SECRET = SAMPLE_AWS_SECRET
+# A GitHub token with a valid checksum; an AWS key ID and a bare 40-character run are
+# kept visible, so neither can stand in.
+_SECRET = github_classic(seed=52)
 
 
 @pytest.mark.asyncio

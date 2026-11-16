@@ -31,6 +31,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from kiro_crew import redaction_seams
 from kiro_crew.notifications.bridge_egress import audit_delivery, redact_note, vet_delivery
 from kiro_crew.notifications.rate_limit import AppRateLimiter
 
@@ -282,6 +283,9 @@ class BridgeDispatcher:
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
 
+    # A delivery is a channel post: its redaction and its sink run in full whatever
+    # seam the note was pushed from (a dashboard chat turn included).
+    @redaction_seams.in_seam(redaction_seams.CHANNELS)
     async def _deliver_one(
         self, sink: BridgeSink, note: dict[str, Any], subjects: tuple[str, ...]
     ) -> None:

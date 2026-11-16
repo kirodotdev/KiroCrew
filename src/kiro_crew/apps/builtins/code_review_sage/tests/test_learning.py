@@ -11,6 +11,7 @@ from sage_lib import learning as L  # noqa: N812
 from sage_lib import store
 
 from kiro_crew.apps.builtins.code_review_sage.tests.fixtures import SYMLINKS_OK
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 def _pattern(title, repo="github.com/o/r", guidance="do the thing carefully", **kw):
@@ -118,7 +119,7 @@ class TestConsolidate(unittest.TestCase):
     def test_secret_in_a_heading_is_redacted_without_refusing_the_merge(self):
         # The shape check reads the worker's text as written, so scrubbing a
         # credential out of a heading cannot turn a valid merge into a refusal.
-        token = "ghp_" + "A" * 40
+        token = github_classic(seed=87)
         merged = L.render_pattern(_pattern("Rotate " + token))
         res = L.consolidate_apply(merged, self.root)
         self.assertTrue(res["ok"])
@@ -130,8 +131,9 @@ class TestConsolidate(unittest.TestCase):
         # Two distinct credentials become the same redaction tag, so the titles are
         # identical only in the text that would be stored. Uniqueness must be judged
         # there, not on the worker's pre-redaction text.
-        merged = (L.render_pattern(_pattern("Rotate ghp_" + "A" * 40))
-                  + L.render_pattern(_pattern("Rotate ghp_" + "B" * 40)))
+        merged = L.render_pattern(
+            _pattern("Rotate " + github_classic(seed=87))
+        ) + L.render_pattern(_pattern("Rotate " + github_classic(seed=88)))
         res = L.consolidate_apply(merged, self.root)
         self.assertFalse(res["ok"])
         redacted = "Rotate [REDACTED: credential]"

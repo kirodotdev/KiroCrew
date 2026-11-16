@@ -27,12 +27,16 @@ Security properties:
   BLAKE2b digest of the source row under a random per-process key, so a
   retained key cannot be checked offline against a guessed plaintext.
 * The key covers the whole source row (any field, nesting or key order) and
-  reuses the per-string display cache's context key. Workspace host permissions
-  are keyed separately because link restoration reads those alone. OAuth rows
-  are never memoized: each read checks live child identity and endpoint approval.
-* Inside an owner-view scope (``credential_pass_bypassed``) the memo is neither
-  read nor written, so an unredacted render can never be served to a later
-  reader, and a redacted one is never served to the owner view.
+  reuses the per-string display cache's context key. The exempt and allowed
+  link hosts are keyed separately because only the blocked-link records read
+  those. OAuth rows are never memoized: each read checks live child identity
+  and endpoint approval.
+* Wherever the rows' own CHAT seam stands its credential pass down
+  (``redaction_switch.bypassed_in``: an owner-view scope, or the owner's read
+  with redaction off) the memo is neither read nor written, so an unredacted
+  render can never be served to a later reader, and a redacted one is never
+  served to the owner. Asked as that seam answers it, not as the caller's own
+  context does: the render opens the seam itself.
 * A row that is not plain JSON (a value ``json.dumps`` refuses, or a dict the
   event loop resizes while it is read) is rendered as before, without the memo.
 * On a miss the row is rendered from the decoded copy of the bytes that were
@@ -51,15 +55,12 @@ from collections import OrderedDict
 from collections.abc import Callable
 from threading import Lock
 
+from kiro_crew import redaction_seams
 from kiro_crew.dashboard import chat_utils as _cu
 from kiro_crew.dashboard import display_verdicts as _display_verdicts
-from kiro_crew.security.exfil import (
-    allowed_host_audit_epoch,
-    current_scoped_audit_epoch,
-    current_scoped_workspace,
-)
+from kiro_crew.security.blocked_links import allowed_host_audit_epoch, blocked_link_context
 from kiro_crew.security.redaction_allow import normalize_workspace
-from kiro_crew.security.redaction_switch import credential_pass_bypassed
+from kiro_crew.security.redaction_switch import bypassed_in
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +210,7 @@ def _evicted_from(owner: tuple[object, ...] | None) -> None:
 
 
 def _context_digest() -> bytes:
-    """Digest of everything outside the row that the display redaction reads.
+    """Digest of everything outside the row that the display pass reads.
 
     Read once per render, inside the workspace's allowed-host scope.
     """
@@ -217,19 +218,12 @@ def _context_digest() -> bytes:
     # a second list of redaction inputs. The empty text is constant, so only
     # the redaction context contributes to this part of the row key.
     (redaction_context, _), _ = _cu._display_redaction_cache_key("")
-    # Link restoration reads the workspace hosts alone, not their union with
-    # policy exemptions. Keep that distinction even if the union is unchanged.
-    # The workspace and the revoke epoch key the use audit a restore writes: a
-    # memo hit skips the restore, so a re-allowed host or another workspace's
-    # allowance must miss once to be audited.
-    restored_hosts = _dumps(
-        [
-            sorted(_cu.current_scoped_exempt_hosts()),
-            current_scoped_workspace(),
-            current_scoped_audit_epoch(),
-        ]
-    ).encode("ascii")
-    return hashlib.blake2b(redaction_context + restored_hosts, key=_KEY, digest_size=16).digest()
+    # The blocked-link records read the platform's exempt hosts and the workspace's
+    # allowed ones. The workspace and the revoke epoch key the use audit those
+    # records write: a memo hit skips it, so a re-allowed host or another
+    # workspace's allowance must miss once to be audited.
+    link_hosts = _dumps(blocked_link_context()).encode("ascii")
+    return hashlib.blake2b(redaction_context + link_hosts, key=_KEY, digest_size=16).digest()
 
 
 def _remember(
@@ -305,14 +299,15 @@ def prepare_message_rows(
     live row mid-render can never pair one row's fragment with another row's
     identity. ``None`` where no identity can vouch for the render: a streaming
     chunk, an OAuth row (its render reads live endpoint approvals), a row that is
-    not plain JSON, and every row inside an owner-view scope.
+    not plain JSON, and every row of a render whose redaction stands down.
     """
     epoch = allowed_host_audit_epoch()
     hosts = _cu.allowed_hosts_for(workspace)
-    with _cu.scoped_exempt_hosts(hosts, normalize_workspace(workspace), epoch):
-        bypassed = credential_pass_bypassed()
+    with _cu.allowed_link_hosts(hosts, normalize_workspace(workspace), epoch):
+        # As the rows' own CHAT seam answers it, not as this caller's context does.
+        bypassed = bypassed_in(redaction_seams.CHAT)
         memo = use_memo and not bypassed
-        generation = _display_verdicts.engine_generation()
+        generation = _display_verdicts.published_generation()
         context = b"" if bypassed else _context_digest()
         parts: list[str | None] = []
         identities: list[bytes | None] = []
@@ -345,10 +340,10 @@ def prepare_message_rows(
             )
             identities.append(digest + context + (b"r" if running else b"-"))
         if not bypassed and (
-            _context_digest() != context or _display_verdicts.engine_generation() != generation
+            _context_digest() != context or _display_verdicts.published_generation() != generation
         ):
-            # The exempt sets changed while the rows were rendered, or the engine was
-            # published (a round trip back to the same engine leaves the digest the
+            # The prefix set or the allowed link hosts changed while the rows were
+            # rendered, or the setting was published (a round trip back to the same position leaves the digest the
             # same): no identity can say which context a fragment was rendered under.
             # A hit was filed under the context from before the change, so every row
             # the memo answered is rendered again against the live one.
@@ -386,7 +381,7 @@ def schedule_fill(
     running: bool,
     *,
     live_child: str,
-    workspace: str | None,
+    workspace: str | None = None,
 ) -> None:
     """Fill the memo with *messages*' rows off the request path, then mark *scope* filled.
 

@@ -35,9 +35,10 @@ from mcp_gateway_backend_coverage_helpers import _line, _make_backend, _settle
 from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_gateway import backend as backend_mod
 from kiro_crew.mcp_gateway.backend import _log_safe_identifier, _tool_call_error_text
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-#: A synthetic 40-char AWS secret access key the redactor removes.
-_AWS_SECRET = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
+#: A synthetic GitHub token the redactor removes; a bare 40-character run stays visible.
+_AWS_SECRET = github_classic(seed=147)
 
 
 class TestToolCallFailureLogging:

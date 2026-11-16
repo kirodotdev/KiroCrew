@@ -127,7 +127,7 @@ class TestListPushable:
         newer = NS(
             slug="fresh",
             # A 40-char AWS secret; an AWS key ID is kept visible, so it cannot stand in.
-            name=f"key={SAMPLE_AWS_SECRET} secret",
+            name=f"aws_secret_access_key={SAMPLE_AWS_SECRET} secret",
             kind="markdown",
             version=1,
             updated_at="2026-06-01T00:00:00Z",

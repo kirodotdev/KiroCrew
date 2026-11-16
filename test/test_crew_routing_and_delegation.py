@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, rank_triggered, trigger_score, words_of
 
 # ── the shared primitive ──
@@ -202,8 +202,9 @@ class TestRouteCrew:
         from kiro_crew import mcp_core
         from kiro_crew.memory_stores import UnknownMemoryStore
 
-        # A 40-char AWS secret; an AWS key ID is kept visible, so it cannot stand in.
-        secret = SAMPLE_AWS_SECRET
+        # A GitHub token with a valid checksum; an AWS key ID and a bare 40-character
+        # run are kept visible, so neither can stand in.
+        secret = github_classic(seed=163)
         reason = f"private memory unavailable: /home/alice/private/memory.db {secret} " + "x" * 1200
         monkeypatch.setattr(
             mcp_core, "resolve_agent_bindings", Mock(side_effect=UnknownMemoryStore(reason))

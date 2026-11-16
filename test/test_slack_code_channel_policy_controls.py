@@ -340,10 +340,9 @@ def test_a_worker_cards_text_goes_through_the_display_sink(relay: Any) -> None: 
     from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN as slack_token
 
     key = github_classic(seed=118)
-    url = (
-        "https://attacker.example/collect?data="
-        + "c2VjcmV0LXRva2VuLXZhbHVlLWhlcmUtMTIzNDU2Nzg5MA=="
-    )
+    # A credential parameter inside a link: its value goes, the link stays.
+    value = "c2VjcmV0LXRva2VuLXZhbHVlLWhlcmUtMTIzNDU2Nzg5MA=="
+    url = "https://attacker.example/collect?access_token=" + value
     relay.worker.title = f"Fix {key} {slack_token[:5]}**{slack_token[5:]}** <!channel> {url}"
 
     async def go() -> Any:
@@ -353,7 +352,8 @@ def test_a_worker_cards_text_goes_through_the_display_sink(relay: Any) -> None: 
     assert asyncio.run(go()) is not None
     _channel, blocks, fallback, _thread = relay.slack.blocks_posts[-1]
     shown = json.dumps(blocks, ensure_ascii=False) + fallback
-    assert key not in shown and "attacker.example/collect" not in shown
+    assert key not in shown
+    assert value[:16] not in shown
     assert slack_token[5:19] not in shown  # only the display-form scan finds this one
     assert "[REDACTED" in shown and "<!channel>" not in shown
 

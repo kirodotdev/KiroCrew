@@ -1,11 +1,10 @@
 """The display-redaction cache keys an entry on the prefix set the battery judged under.
 
-``_redact_for_display`` memoizes the display battery, keyed on the text, the
-exempt-host set and the pass-4 token-parameter prefix set
+``_redact_for_display`` memoizes the display battery, keyed on the text and the
+pass-4 token-parameter prefix set
 (``CredentialPolicy.token_param_exempt_url_prefixes``). The prefix set can move
 between two reads (a companion loads, a policy tightens, a read fails and
-degrades to the empty set), so the key and the battery, including the nested
-scan of a PlantUML diagram's source, must share ONE read.
+degrades to the empty set), so the key and the battery must share ONE read.
 
 NEUTRAL PLACEHOLDER PREFIX ONLY: a companion's real approval host never appears
 in the public repo.
@@ -16,7 +15,6 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
-from test_plantuml_link_redaction import _encode
 
 import kiro_crew.dashboard.chat_utils as chat_utils
 from kiro_crew.dashboard.display_battery import display_battery
@@ -27,11 +25,6 @@ PREFIX = "https://approve.example.com/auth"
 # turns on the prefix set alone.
 VALUE = "Zq7vK2mP9xR4tL8nW3cY6bH1"
 LINK = f"Approve the request here: {PREFIX}?token={VALUE} and then reply."
-DIAGRAM = (
-    "see https://www.plantuml.com/plantuml/svg/"
-    + _encode(f"@startuml\nUser -> Approver: {PREFIX}?token={VALUE}\n@enduml")
-    + " here"
-)
 ALLOWED: tuple[str, ...] = (PREFIX,)
 NONE: tuple[str, ...] = ()
 
@@ -54,7 +47,7 @@ def _cold_cache() -> Iterator[None]:
     chat_utils._clear_display_redaction_cache()
 
 
-@pytest.mark.parametrize("text", [LINK, DIAGRAM], ids=["link", "diagram"])
+@pytest.mark.parametrize("text", [LINK], ids=["link"])
 @pytest.mark.parametrize(
     ("first", "then"), [(NONE, ALLOWED), (ALLOWED, NONE)], ids=["tightened", "loosened"]
 )

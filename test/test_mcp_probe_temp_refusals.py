@@ -11,11 +11,10 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from redaction_structured_cases import github_classic, structured_engine
+from redaction_structured_cases import github_classic
 
 from kiro_crew import mcp_discovery
 from kiro_crew.mcp_discovery import (
@@ -26,14 +25,6 @@ from kiro_crew.mcp_discovery import (
     probe_metadata,
     probe_server,
 )
-
-
-@pytest.fixture(autouse=True)
-def _structured_engine() -> Iterator[None]:
-    """These cases assert the structured engine's output: keep it selected under a legacy run."""
-    with structured_engine():
-        yield
-
 
 # A credential-shaped path segment: the payload must carry the redacted text.
 _SECRET = github_classic(seed=37)

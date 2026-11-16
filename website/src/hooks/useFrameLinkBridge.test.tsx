@@ -69,6 +69,19 @@ afterEach(() => {
 })
 
 describe('useFrameLinkBridge', () => {
+  it('opens nothing, and offers nothing, for a link its host refuses', () => {
+    const frame = fakeFrame()
+    const open = vi.fn()
+    function Refusing() {
+      const ref = useRef<HTMLIFrameElement | null>(frame)
+      return <>{useFrameLinkBridge([ref], open, () => true, () => true, (url) => url === URL_A)}</>
+    }
+    render(<Refusing />)
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, frame.contentWindow)
+    expect(open).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button')).toBeNull()
+  })
+
   it('opens on a click tied to its frame, with no dialog', () => {
     const frame = fakeFrame()
     const open = vi.fn()

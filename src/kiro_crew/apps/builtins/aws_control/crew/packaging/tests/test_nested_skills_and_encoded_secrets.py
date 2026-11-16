@@ -29,6 +29,8 @@ import pathlib
 
 import pytest
 
+from kiro_crew.testing.synthetic_credentials import aws_secret
+
 from .test_producer import load_build, make_crew, sign_plan
 
 _posix_only = pytest.mark.skipif(
@@ -37,8 +39,10 @@ _posix_only = pytest.mark.skipif(
     "atomic no-follow primitive (Windows). See the POSIX-only entry guard.",
 )
 
-# From AWS's own documentation, so nothing here is a real credential.
-_DOC_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+# A synthetic secret of the real shape, so nothing here is a real credential. Not the AWS
+# documentation example: the repo redactor keeps that one visible by design, so its
+# encoded form would be no finding.
+_DOC_SECRET = aws_secret()
 
 
 def _build(mod, home: pathlib.Path, work: pathlib.Path, select):

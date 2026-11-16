@@ -13,6 +13,11 @@ from sage_lib import pipeline as PL  # noqa: N812
 from sage_lib import report as RP  # noqa: N812
 from sage_lib import review_driver as RD  # noqa: N812
 
+from kiro_crew.testing.synthetic_credentials import github_classic
+
+#: A GitHub token with a valid checksum.
+_TOKEN = github_classic(seed=78)
+
 
 def _finding(**over):
     f = {
@@ -83,9 +88,8 @@ class TestCommentBodyLead(unittest.TestCase):
         """The headline is model-authored text reaching an external surface, so it
         goes through the same scrub as the rest of the body — it must not be a hole
         opened beside the fields that were already covered."""
-        body = PL._comment_body(_finding(
-            headline="Token leaked: ghp_0123456789abcdefghijklmnopqrstuvwxyz"))
-        self.assertNotIn("ghp_0123456789abcdefghijklmnopqrstuvwxyz", body)
+        body = PL._comment_body(_finding(headline=f"Token leaked: {_TOKEN}"))
+        self.assertNotIn(_TOKEN, body)
 
 
 class TestFindingHtml(unittest.TestCase):

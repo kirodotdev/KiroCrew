@@ -130,7 +130,7 @@ class TestLiveFrame:
 
     def test_forged_row_meta_leaves_without_its_link(self):
         msg = _row(_forged_url("state"))
-        frame = chat_message_note("s1", msg, workspace=None)
+        frame = chat_message_note("s1", msg)
         assert SECRET not in json.dumps(frame)
         assert not frame["meta"].get("oauth_url")
         assert frame["meta"]["expired"] is True
@@ -139,14 +139,14 @@ class TestLiveFrame:
         # A JSON `cls` is lifted into the frame's meta too, so it is gated the same.
         forged_meta = _row(_forged_url("client_id"))["meta"]
         msg = {"role": "mcp_oauth", "content": "x", "cls": json.dumps(forged_meta)}
-        frame = chat_message_note("s1", msg, workspace=None)
+        frame = chat_message_note("s1", msg)
         assert not frame.get("meta", {}).get("oauth_url")
 
     def test_emitted_banner_frame_keeps_its_link(self):
         slot = _slot()
         _emit_mcp_oauth_request(_state(), slot, "notion", NOTION_URL, minted_by=LIVE_CHILD)
         [row] = [m for m in slot.messages if m.get("role") == "mcp_oauth"]
-        frame = chat_message_note("s1", row, workspace=None)
+        frame = chat_message_note("s1", row)
         assert frame["meta"]["oauth_url"] == NOTION_URL
         assert "expired" not in frame["meta"]
 

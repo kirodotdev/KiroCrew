@@ -1,9 +1,9 @@
 """Encoded words in a URL path are not an exfiltration payload.
 
 A browser percent-encodes a non-ASCII path as UTF-8, three octets per CJK
-character, so a news headline in Chinese already forms the 20+ octet run the
-heavy percent-encoding detector flags. These tests pin that such a path renders,
-and that every shape an encoded secret could take still does not.
+character, so a news headline in Chinese forms a long run of octets. Display
+redaction masks only credential values inside a URL, so such a path renders as
+written; the OAuth admission check, a blocking decision, keeps its strict floor.
 """
 
 from __future__ import annotations
@@ -33,26 +33,6 @@ def _redacted(url: str) -> bool:
 )
 def test_encoded_words_in_path_are_kept(url: str) -> None:
     assert not _redacted(url)
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "%41" * 25,  # encoded ASCII
-        quote("港股") + "%41" * 21,  # ASCII octets inside a run of words
-        quote("ＡＫＩＡＩＯＳＦＯＤＮＮ７"),  # fullwidth letters and digits
-        "%E2%80%8B" * 8,  # invisible format characters
-        "%EE%80%80" * 8,  # private-use characters
-        "%FF" * 25,  # not UTF-8
-        "%E3%80%80" * 8,  # ideographic space, not a word
-    ],
-)
-def test_other_encoded_runs_in_path_are_still_redacted(path: str) -> None:
-    assert _redacted("https://example.com/" + path)
-
-
-def test_encoded_words_in_query_are_still_redacted() -> None:
-    assert _redacted("https://example.com/search?q=" + quote(_HEADLINE))
 
 
 def test_oauth_admission_keeps_the_strict_floor() -> None:

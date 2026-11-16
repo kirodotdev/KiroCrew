@@ -1,12 +1,11 @@
 """The stream redactor's AWS key-value anchor and its multi-carrier discard.
 
-The batch AWS key-value branches in ``redaction._CREDENTIAL_PATTERNS``
-(``aws_secret_access_key=``, ``"SessionToken": "`` and the rest) redact a value
-only while its key label is in the same ``redact()`` call, and nothing else
-catches a value with no long base64 run. ``StreamRedactor`` therefore treats a
-trailing label as STRONG evidence: it holds the label and its value together up
-to ``_STREAM_HOLDBACK_JWT_MAX``, then fails closed. The key list is read off
-``redaction._AWS_LABEL_RULES`` so the two cannot drift apart.
+The rule table's AWS label rows (``aws.secret_access_key.label`` and
+``aws.session_token.label`` in ``redaction_structured/table.py``) mask a value
+only while its key label is in the same ``redact()`` call. ``StreamRedactor``
+therefore treats a trailing label as STRONG evidence: it holds the label and its
+value together up to ``_STREAM_HOLDBACK_JWT_MAX``, then fails closed. The key names
+below are those rows' keys; a test pins the two equal so they cannot drift apart.
 
 The anchor matches from a key whose separator has not arrived yet (that
 whitespace is outside the stream's credential class too) through a value
@@ -20,43 +19,26 @@ from __future__ import annotations
 import functools
 import re
 
-import kiro_crew.security.redaction as redaction
-
 #: Value class of the batch AWS key-value branches: a value ends at whitespace or
 #: a JSON structural delimiter.
 VALUE_CLASS = r"[^\s\"',}]"
 
-_SEPARATOR_RE = r"[:=]\s*[\"']?"
 _KEY_QUOTE_RE = r"[\"']?\s*"
 #: Longer than every key name; bounds the backward key search.
 _KEY_NAME_MAX = 64
 
 
-#: The label tail every batch AWS rule ends with. A rule of another shape fails
-#: ``test_every_aws_label_rule_has_the_shape_the_stream_anchor_reads``, not the
-#: import, so a reshaped rule cannot stop the package from loading.
-_LABEL_TAIL_RE = _KEY_QUOTE_RE + _SEPARATOR_RE
+#: The key spellings of the rule table's AWS label rows, one alternation per row.
+KEY_NAME_ALTERNATIONS = (
+    ("SecretAccessKey", "aws_secret_access_key"),
+    ("SessionToken", "aws_session_token"),
+)
 
-
-def _key_name(label: re.Pattern[str]) -> str:
-    """The key name alternation of a batch AWS label rule."""
-    return label.pattern.removesuffix(_LABEL_TAIL_RE)
-
-
-_KEY_NAMES_RE = "(?:" + "|".join(_key_name(label) for label, _ in redaction._AWS_LABEL_RULES) + ")"
-
-
-def _literal_names(alternation: str) -> tuple[str, ...]:
-    """The plain key names of one ``(?:a|b)`` alternation, for a substring prefilter."""
-    return tuple(alternation.removeprefix("(?:").removesuffix(")").split("|"))
-
+_KEY_NAMES_RE = "(?:" + "|".join("|".join(names) for names in KEY_NAME_ALTERNATIONS) + ")"
 
 #: Every match starts with one of these, so a buffer naming none of them has no
-#: anchor. Substring checks keep the common no-AWS stream at C speed. That the
-#: names are plain literals is pinned by the same shape test as the label tail.
-_KEY_LITERALS = tuple(
-    name for label, _ in redaction._AWS_LABEL_RULES for name in _literal_names(_key_name(label))
-)
+#: anchor. Substring checks keep the common no-AWS stream at C speed.
+_KEY_LITERALS = tuple(name for names in KEY_NAME_ALTERNATIONS for name in names)
 
 
 def names_a_key(buf: str) -> bool:

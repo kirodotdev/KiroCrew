@@ -60,25 +60,19 @@ export interface AwsConsentStatus {
 }
 
 /**
- * The owner's credential-redaction switch (Settings > Security > Credential
- * redaction). `enabled` is the position as RECORDED by the backend, which reads a
- * missing or unreadable record as `true`; `changed_at` is empty until the owner
- * has flipped it at least once.
+ * The owner's one credential-redaction setting (Settings > Security > Redaction), the
+ * whole body of GET and PUT `/api/security/credential-redaction`. `enabled` is the
+ * position in force, which the backend reads as `true` when the record cannot be read
+ * or a governance policy keeps redaction on; `changed_at` is empty until the owner has
+ * flipped it at least once. `locked_by_policy` is true on a governed host whose policy
+ * keeps redaction on: the PUT refuses an OFF there (403
+ * `credential_redaction_locked_by_policy`), so the dashboard locks the toggle.
  */
 export interface CredentialRedactionState {
   enabled: boolean
   changed_at: string
-  /** Which engine redacts on every path. Absent (an older gateway) means structured. */
-  engine?: CredentialRedactionEngine
-  engine_changed_at?: string
-  /** The output-seams switch (the agent's prompt and the gateway's logs). Absent
-   *  from a server without it, which reads as ON. */
-  seams_enabled?: boolean
-  seams_changed_at?: string
+  locked_by_policy: boolean
 }
-
-/** `structured`: the structured detectors run first (default). `legacy`: the older pattern passes alone. */
-export type CredentialRedactionEngine = 'structured' | 'legacy'
 
 /** One `(server, tool, field)` MCP message-body field. */
 export interface McpBodyFieldRow {
@@ -530,7 +524,7 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       patch('/api/security/denied-commands/user/' + encodeURIComponent(id), fields).then(j) as Promise<DeniedCommandsData>,
     deleteUserDeniedCommand: (id: string) =>
       del('/api/security/denied-commands/user/' + encodeURIComponent(id)).then(j) as Promise<DeniedCommandsData>,
-    // Redaction cards: the per-workspace allowed-host list (Settings → Security →
+    // Blocked link cards: the per-workspace allowed-host list (Settings → Security →
     // Redaction). Every route is owner-only.
     redactionAllowedHosts: () =>
       get('/api/redaction/allowed-hosts').then(j) as Promise<{ workspaces: Record<string, string[]> }>,
@@ -636,13 +630,6 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       fetch('/api/security/credential-redaction').then(j) as Promise<CredentialRedactionState>,
     setCredentialRedaction: (enabled: boolean) =>
       put('/api/security/credential-redaction', { enabled }).then(j) as Promise<CredentialRedactionState>,
-    /** The engine selector, in the same record: which engine redacts on every path. */
-    setCredentialRedactionEngine: (engine: CredentialRedactionEngine) =>
-      put('/api/security/credential-redaction', { engine }).then(j) as Promise<CredentialRedactionState>,
-    /** The second switch in the same record: one key per write, so this never
-     *  moves the file-view switch. */
-    setCredentialRedactionSeams: (enabled: boolean) =>
-      put('/api/security/credential-redaction', { seams_enabled: enabled }).then(j) as Promise<CredentialRedactionState>,
     // MCP safety switches (Settings > Security > Safety switches). Owner only on
     // both verbs; the PUT names one switch and is its only dashboard writer.
     safetySwitches: () =>

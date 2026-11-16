@@ -30,6 +30,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+from kiro_crew import redaction_seams
 from kiro_crew.sel import sel
 from kiro_crew.slack.code_channels.store import Binding, store
 from kiro_crew.slack.code_channels.surface_client import SurfaceClient
@@ -289,6 +290,11 @@ def display_text(text: str, *, mentions: bool = True) -> str:
     active platform context (an installation's own patterns apply), and, with
     *mentions*, Slack's mention grammar defanged. ``mentions=False`` is for text
     no Slack message parses (a dashboard transcript row).
+
+    The channel output seam (``redaction_seams.CHANNELS``): with the owner's
+    redaction setting off the credential pass stands down and the text stays as
+    written. A caller whose result reaches a sink that stays redacted (an SEL row)
+    calls it inside ``redaction_switch.always_scan``.
     """
     from dataclasses import replace
 
@@ -299,7 +305,8 @@ def display_text(text: str, *, mentions: bool = True) -> str:
     capabilities = (
         SLACK_CAPABILITIES if mentions else replace(SLACK_CAPABILITIES, mention_grammars=False)
     )
-    return display_safe_for(text, capabilities, redactor=redact_via_context)
+    with redaction_seams.output_seam(redaction_seams.CHANNELS):
+        return display_safe_for(text, capabilities, redactor=redact_via_context)
 
 
 def policy_gated_handlers() -> tuple[tuple[Any, int], ...]:

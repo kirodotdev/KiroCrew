@@ -42,6 +42,7 @@ from kiro_crew.onboarding_scan import (
     _parse_configs,
     _read_json,
     _read_text,
+    _refuses_text,
     _sanitize_text,
     _Scan,
 )
@@ -221,7 +222,7 @@ def _scan_lineage_memory_db(scan: _Scan) -> bool:
                             scan.diagnostic("memories", "unsupported_semantic_memory")
                             continue
                         cleaned = _sanitize_text(value_json, scan)
-                        if cleaned != value_json.strip():
+                        if cleaned != value_json.strip() or _refuses_text(value_json):
                             scan.diagnostic("memories", "credential_bearing_memory")
                             continue
                         if contains_injection(cleaned):
@@ -292,7 +293,7 @@ def _scan_lineage_memory_db(scan: _Scan) -> bool:
                             scan.diagnostic("memories", "invalid_memory_record")
                             continue
                         cleaned = _sanitize_text(text, scan)
-                        if cleaned != text.strip():
+                        if cleaned != text.strip() or _refuses_text(text):
                             scan.diagnostic("memories", "credential_bearing_memory")
                             continue
                         if contains_injection(cleaned):

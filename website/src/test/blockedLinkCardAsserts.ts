@@ -2,7 +2,7 @@ import { expect } from 'vitest'
 import { within } from '@testing-library/react'
 import { i18nT } from '../i18n/t'
 
-interface Rec { domain: string; path: string | null }
+interface Rec { domain: string; url: string }
 
 /**
  * The blocked-link card lists the host's records and claims nothing about the
@@ -22,5 +22,5 @@ export function expectCardListsHostRecords(card: HTMLElement, records: readonly 
   expect(entries).toHaveLength(own.length)
   expect(entries.filter(e => e.getAttribute('aria-current') !== null)).toEqual([])
   const targets = entries.map(e => within(e).queryByTestId('blocked-link-entry-target')?.textContent ?? null)
-  expect(targets).toEqual(own.map(r => (r.path != null ? `${r.domain}${r.path}` : r.domain)))
+  expect(targets).toEqual(own.map(r => `${r.domain}${new URL(r.url).pathname}`))
 }

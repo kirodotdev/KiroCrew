@@ -52,6 +52,7 @@ from kiro_crew.project_scope import (
     scope_is_admissible,
     scope_selector_is_inadmissible,
 )
+from kiro_crew.security import refuses
 from kiro_crew.validation import (
     ALLOWED_LESSON_SCOPES,
     LEARN_ADD_SCHEMA,
@@ -1208,7 +1209,7 @@ def _lesson_scope_selector(stored: object) -> str | None:
     # no real row.
     if any(ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F for ch in selector):
         return None
-    if _redact_memory_field(selector) != selector:
+    if refuses(selector, _redact_memory_field):
         return None
     return selector
 

@@ -425,10 +425,10 @@ async def test_a_credential_split_by_invisible_characters_is_not_displayed() -> 
     key = d._session_key("u1")
     secret = "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" + "Jf1Lb5Gs0Ye9Ua2WkE"
     split = secret[:6] + "\u200b" + secret[6:]
+    # Under its label: a bare 40-character run with no key name is no credential.
+    call = f"spawn_run(deploy with AWS_SECRET_ACCESS_KEY={split})"
 
-    task = asyncio.ensure_future(
-        d.deliver_spawn_approval("spawn:a1", f"spawn_run(deploy using {split})", key)
-    )
+    task = asyncio.ensure_future(d.deliver_spawn_approval("spawn:a1", call, key))
     await asyncio.sleep(0)
     await asyncio.sleep(0)
 

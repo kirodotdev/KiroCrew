@@ -26,17 +26,16 @@ reaches every owner that binds the name (:mod:`kiro_crew._facade_mirror`).
 from __future__ import annotations
 
 import ast
+import bisect
 import contextlib
-import contextvars
 import importlib as _importlib
 import ipaddress
 import logging
 import re
 import socket
 import sys as _sys
-import threading
 import time  # noqa: F401  (a test clock installs here and the mirror carries it to exfil_oauth)
-from collections.abc import Iterator
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
@@ -54,7 +53,7 @@ from .exfil_oauth import (  # noqa: F401
     _operator_listed_client_id_query,
     _valid_oauth_extension_path,
 )
-from .exfil_scan_span import _walk_flagged_span, _walk_span_urls
+from .exfil_scan_span import _walk_flagged_span
 from .exfil_url_rules import (  # noqa: F401  # _URL_RE: kiro_crew.security serves it from here
     _EXFIL_PATTERNS,
     _EXFIL_PERCENT_RE,
@@ -69,10 +68,12 @@ from .exfil_url_rules import (  # noqa: F401  # _URL_RE: kiro_crew.security serv
 )
 from .redaction import (
     _contains_fixed_credential,
+    _credential_redaction_plan,
+    _splice,
     _text_contains_bare_secret,
-    redact_credentials,
 )
 from .redaction_entropy import _outlook_web_link_tail
+from .redaction_switch import always_scan
 
 logger = logging.getLogger(__name__)
 
@@ -464,6 +465,13 @@ def scan_exfiltration_urls(text: str) -> list[str]:
     return warnings
 
 
+def refuses(text: str, redactor: Callable[[str], str]) -> bool:
+    """Whether a refusal gate refuses *text*: a credential *redactor* masks, or a flagged URL."""
+    with always_scan():
+        masked = redactor(text) != text
+    return masked or bool(scan_exfiltration_urls(text))
+
+
 def _flagged_url_span(
     match: re.Match[str], exempt_hosts: frozenset[str], rules: list[str] | None = None
 ) -> tuple[re.Match[str], str, str, str] | None:
@@ -480,654 +488,35 @@ def _flagged_url_span(
     return _walk_flagged_span(match, exempt_hosts, judge, slack_alias)
 
 
-def _scan_span_urls(text: str) -> set[str]:
-    """Every URL span :func:`redact_exfiltration_urls` can judge and replace in *text*."""
-    return _walk_span_urls(text, _exfil_exempt_hosts())
+def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
+    """Mask the credential VALUES inside the URLs of *text*; every other character stays.
 
+    A URL is never replaced whole. Its scheme, host, path and every parameter that is
+    not a credential stay readable; only a value the rule table reads as a credential
+    (a token, a signature, the password in the userinfo, a value that decodes to one)
+    is replaced, exactly as :func:`kiro_crew.security.redaction.redact_credentials`
+    replaces it. Outside every URL the text is returned as written. Returns
+    ``(text, warnings)``; a warning counts a value and never carries one.
 
-#: Stable PREFIX of the substitution :func:`redact_exfiltration_urls` writes in
-#: place of a suspicious URL. The full tag interpolates the redacted URL's
-#: domain (``f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]"``), so unlike the
-#: constant credential tags it cannot be equality-compared -- which is why it is
-#: a PREFIX constant and deliberately NOT a member of
-#: :data:`kiro_crew.security.redaction.CREDENTIAL_REDACTION_TAGS` (see that
-#: tuple's docstring). A consumer that must detect this rewriter's
-#: substitutions (the dashboard chat notice) prefix-counts THIS
-#: constant; the substitution below is built from it so the two can never
-#: drift.
-EXFILTRATION_REDACTION_TAG_PREFIX = "[REDACTED: suspicious URL to "
-
-
-#: What one message may retain about blocked links. The bound belongs at the
-#: RETENTION points rather than at a render site, because the store IS the
-#: transcript line: a record is cheap to write there, and every render of that
-#: message re-validates and re-serializes whatever the line holds. A path longer
-#: than this is dropped rather than truncated, which keeps the rule "only what
-#: the removers pass is kept" from acquiring a second, weaker branch. Records
-#: past the count are not recorded and the overflow is counted in one log line.
-MAX_BLOCKED_LINKS_PER_MESSAGE = 32
-MAX_BLOCKED_LINK_PATH_CHARS = 256
-#: A query longer than this did not come from a message a client can render, so
-#: a count above it marks the record as malformed rather than merely large.
-MAX_BLOCKED_LINK_QUERY_CHARS = 100_000
-#: The longest full address a record keeps for Open once / Copy. A longer one is
-#: withheld with the reason ``length`` rather than truncated, because a truncated
-#: address opens a different page than the one the agent wrote.
-MAX_BLOCKED_LINK_URL_CHARS = 8192
-#: Why a record carries no full address. ``credential``: some decoded form of it
-#: is changed by the credential remover, so opening it would send that secret,
-#: which is the one request the gate exists to stop. ``length``: it is longer
-#: than ``MAX_BLOCKED_LINK_URL_CHARS``.
-_BLOCKED_LINK_URL_WITHHELD = frozenset({"credential", "length"})
-
-
-def _credential_clean(value: str) -> bool:
-    """Whether the credential remover leaves *value* unchanged in every form.
-
-    Checked as written AND in every bounded percent-decoded form. A partially
-    encoded credential (``ghp%5F...``) is unchanged by the remover as literal text
-    while a browser decodes it back into the secret the moment it is requested.
-    Saturation fails closed: a value still decodable when the budget runs out was
-    never seen in plaintext by anything.
+    The BLOCKING decisions over URLs (:func:`scan_exfiltration_urls` over a command,
+    :func:`oauth_url_contains_credential`) are separate and unchanged.
     """
-    if redact_credentials(value)[0] != value:
-        return False
-    decoded = value
-    for _ in range(_MAX_URL_DECODE_PASSES):
-        nxt = unquote_plus(decoded)
-        if nxt == decoded:
-            return True
-        decoded = nxt
-        if redact_credentials(decoded)[0] != decoded:
-            return False
-    return unquote_plus(decoded) == decoded
-
-
-def _blocked_link_url_verdict(url: object, domain: str) -> tuple[str | None, str | None]:
-    """Return ``(url, None)`` to keep a full address, or ``(None, reason)``.
-
-    The address is kept so a wrongly blocked link can be opened by the person
-    reading it. It is kept only when opening it cannot send a credential, it is an
-    http(s) address on exactly the host the record names with no userinfo, and it
-    fits the bound. A value that is not an address at all yields ``(None, None)``,
-    which the caller treats as a malformed record.
-    """
-    if not isinstance(url, str):
-        return None, None
-    if len(url) > MAX_BLOCKED_LINK_URL_CHARS:
-        return None, "length"
-    lower = url.lower()
-    for scheme in ("https://", "http://"):
-        if lower.startswith(scheme):
-            rest = url[len(scheme) :]
-            break
-    else:
-        return None, None
-    # The host must be the record's own, followed by a port, path, query or
-    # fragment delimiter, so the chip's domain and the address that opens agree.
-    if not rest.startswith(domain) or rest[len(domain) : len(domain) + 1] not in (
-        "",
-        ":",
-        "/",
-        "?",
-        "#",
-    ):
-        return None, None
-    authority = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
-    if "@" in authority:
-        return None, "credential"
-    if not _credential_clean(url):
-        return None, "credential"
-    return url, None
-
-
-def _exfil_retained_path(
-    domain: str,
-    path: str,
-    exempt_hosts: frozenset[str],
-    *,
-    port: str = "",
-    is_https: bool = True,
-) -> str | None:
-    """Return *path* only when both removers leave it as written, else None.
-
-    A path can smuggle data as readily as a query, so the rule is "keep only
-    what the redactors themselves pass": the path alone must not trip the URL
-    warning, and it must survive credential redaction unchanged in every bounded
-    decoded form (``_credential_clean``).
-    """
-    if not path:
-        return None
-    if len(path) > MAX_BLOCKED_LINK_PATH_CHARS:
-        return None
-    if _exfil_url_warning(domain, path, exempt_hosts, port=port, is_https=is_https) is not None:
-        return None
-    return path if _credential_clean(path) else None
-
-
-#: The keys a blocked-link record carries, and nothing besides.
-_BLOCKED_LINK_RECORD_KEYS = frozenset(
-    {"domain", "rule", "path", "query_chars", "url", "url_withheld"}
-)
-#: Every STRING a record may retain, with the bound that applies to it. The
-#: validator reads this table rather than each field by name, so a field added to
-#: the record without an entry here is not retained at all: being bounded is a
-#: property of the record's shape instead of a check someone has to remember to
-#: write for each new field. 253 is the DNS maximum, so a longer host cannot
-#: resolve and is not a host this collector saw.
-_BLOCKED_LINK_STRING_BOUNDS = {
-    "domain": 253,
-    "rule": 64,
-    "path": MAX_BLOCKED_LINK_PATH_CHARS,
-    "url": MAX_BLOCKED_LINK_URL_CHARS,
-    "url_withheld": 16,
-}
-#: A host in the forms ``_URL_RE`` group 1 emits: a DNS name, an IPv4 literal,
-#: or a bracketed IPv6 literal. Quantifiers are bounded so the pattern and the
-#: table above cannot disagree about what length is acceptable.
-_BLOCKED_LINK_DOMAIN_RE = re.compile(
-    r"(?:[a-zA-Z0-9._-]{1,253}\.[a-zA-Z]{2,63}"
-    r"|\d{1,3}(?:\.\d{1,3}){3}"
-    r"|\[[0-9A-Fa-f:.]{1,45}\])"
-)
-#: A stable rule id, as ``_exfil_url_warning`` reports through ``_rule_out``.
-_BLOCKED_LINK_RULE_RE = re.compile(r"[a-z0-9_]{1,64}")
-
-
-def _blocked_link_safe_domain(domain: object) -> bool:
-    """Whether a host is safe to RETAIN in a record, by the rule the path obeys.
-
-    The retained path is kept only when both removers pass it unchanged; the host
-    is a retained string too, so it answers to the same rule. A DNS label can be
-    shaped like a credential, and a record carrying one would walk that secret
-    past the text redaction into meta and onto the chip.
-    """
-    if not isinstance(domain, str) or len(domain) > _BLOCKED_LINK_STRING_BOUNDS["domain"]:
-        return False
-    if _BLOCKED_LINK_DOMAIN_RE.fullmatch(domain) is None:
-        return False
-    return redact_credentials(domain)[0] == domain
-
-
-def _blocked_link_fields_ok(domain: object, rule: object, query_chars: object) -> bool:
-    """Whether the posture-INDEPENDENT fields of a record may be retained.
-
-    One function for the collection point and the read-back re-check, because a
-    record's fields answer to the same bounds wherever it comes from. Splitting
-    them produced a bound present on one side and absent on the other every time:
-    a host the collector kept and the reload dropped, which makes an explanation
-    vanish under the reader, and a field bound the reader's path enforced while
-    the writer's did not. Only the retained PATH differs between the two callers,
-    because its check is the one that depends on the posture the URL arrived
-    under, so it stays with each caller.
-    """
-    if not _blocked_link_safe_domain(domain):
-        return False
-    if not isinstance(rule, str) or _BLOCKED_LINK_RULE_RE.fullmatch(rule) is None:
-        return False
-    if len(rule) > _BLOCKED_LINK_STRING_BOUNDS["rule"]:
-        return False
-    # bool is an int subclass; a True/False char count is malformed input.
-    if isinstance(query_chars, bool) or not isinstance(query_chars, int) or query_chars < 0:
-        return False
-    return query_chars <= MAX_BLOCKED_LINK_QUERY_CHARS
-
-
-def revalidate_blocked_link(record: object) -> dict | None:
-    """Return a blocked-link record safe to keep, or None to drop it.
-
-    A persisted transcript line is attacker-writable, so a record read back from
-    meta is re-checked against the shape the collector emits before it reaches a
-    client: exactly the known keys, every retained string within the bound
-    ``_BLOCKED_LINK_STRING_BOUNDS`` gives it, a host both removers pass, a rule id
-    of ``[a-z0-9_]``, a bounded non-negative int char count, a retained path
-    that still passes BOTH removers, and EXACTLY one of a full address that still
-    passes ``_blocked_link_url_verdict`` or a known reason it was withheld. The
-    address is re-checked here, on every serve, so a remover rule that changed
-    since the message was written applies before anyone can open it. A record
-    that fails is dropped on its own; its siblings stand.
-    """
-    if not isinstance(record, dict) or set(record.keys()) != _BLOCKED_LINK_RECORD_KEYS:
-        return None
-    domain = record["domain"]
-    rule = record["rule"]
-    path = record["path"]
-    query_chars = record["query_chars"]
-    url = record["url"]
-    url_withheld = record["url_withheld"]
-    # Length first and from the table, so the cheap bound runs before any regex
-    # and no field can be retained without one.
-    for field, limit in _BLOCKED_LINK_STRING_BOUNDS.items():
-        value = record[field]
-        if value is None:
-            continue
-        if not isinstance(value, str) or len(value) > limit:
-            return None
-    if not _blocked_link_fields_ok(domain, rule, query_chars):
-        return None
-    if path is not None:
-        # The strictest posture available, not the one the URL was collected
-        # under: `is_https` and `port` only ever UNLOCK exemptions inside the
-        # warning (the Slack app-create alias needs https and no port), so
-        # re-checking as plain http with no port can only reject more. A
-        # legitimate record dropped here degrades the chip to host and reason,
-        # which is the fail-closed direction for attacker-writable input.
-        if _exfil_retained_path(domain, path, _exfil_exempt_hosts(), is_https=False) != path:
-            return None
-    if url is not None:
-        if url_withheld is not None or _blocked_link_url_verdict(url, domain) != (url, None):
-            return None
-    elif url_withheld not in _BLOCKED_LINK_URL_WITHHELD:
-        return None
-    return {
-        "domain": domain,
-        "rule": rule,
-        "path": path,
-        "query_chars": query_chars,
-        "url": url,
-        "url_withheld": url_withheld,
-    }
-
-
-def bounded_blocked_links(raw: object) -> list[dict]:
-    """Turn attacker-writable meta into a bounded, validated record list.
-
-    This is the ONE way to build a list of blocked-link records from something
-    read back off a transcript line, which is what makes the count bound a
-    property of the operation rather than a rule each retention point has to
-    remember. Every field bound already lives in the record shape
-    (``_BLOCKED_LINK_STRING_BOUNDS``); the COUNT bound lives here, so a new site
-    that reads records cannot retain an unbounded number of them by forgetting to
-    slice. A forged line can carry any number of well-formed records, and the
-    cap bounds what is DESCRIBED, never what is removed -- the text's
-    placeholders are unaffected by anything dropped here.
-    """
-    if not isinstance(raw, list):
-        return []
-    kept: list[dict] = []
-    for record in raw[:MAX_BLOCKED_LINKS_PER_MESSAGE]:
-        checked = revalidate_blocked_link(record)
-        if checked is not None:
-            kept.append(checked)
-    omitted = len(raw) - MAX_BLOCKED_LINKS_PER_MESSAGE
-    if omitted > 0:
-        # Counted and said, as the birth site does: a silently dropped tail reads
-        # exactly like a message that never had those links. The birth site never
-        # writes more than the cap, so a longer list came from an edited line.
-        logger.warning(
-            "blocked-link records on a transcript line exceed the cap of %d; %d further "
-            "record(s) are not described (their placeholders stay redacted in the text)",
-            MAX_BLOCKED_LINKS_PER_MESSAGE,
-            omitted,
-        )
-    return kept
-
-
-def redact_exfiltration_urls_with_records(
-    text: str,
-    *,
-    extra_exempt_hosts: frozenset[str] = frozenset(),
-    removed_out: list[tuple[str, str]] | None = None,
-    exempt_hosts: frozenset[str] | None = None,
-    _ordered_out: list[bool] | None = None,
-) -> tuple[str, list[str], list[dict]]:
-    """Redact suspicious URLs and, in the SAME pass, describe each one.
-
-    ``_ordered_out``, when given, is set ``[False]`` when a blocked address was
-    rewritten inside a longer one, so it has no placeholder of its own and the
-    records do not pair with the placeholders by order.
-
-    ``removed_out``, when given, receives ``(address, placeholder)`` for every
-    address the pass replaced (memory only: never store, log or send it).
-
-    ``exempt_hosts`` is a SNAPSHOT of the exempt-host set that stands in for
-    both the live platform read and the ``scoped_exempt_hosts`` override. A
-    caller that keys a cache on the host set passes the set it keyed on, so the
-    output is computed under exactly that set: the platform read can move
-    between two reads, and degrades a failure to the empty set. ``None``, the
-    default, is the live read. ``extra_exempt_hosts`` joins either way.
-
-    ``extra_exempt_hosts`` joins the platform's exact-host exemption for this
-    call: the hosts a reader allowed for one workspace from the dashboard
-    (``security.redaction_allow``). Like the platform's set, it relaxes only
-    the query-length and base64 heuristics; every credential check still runs.
-
-    Returns ``(cleaned_text, warnings, records)``. The redaction and the records
-    come out of one loop on purpose: two independent scans can disagree, and a
-    single collector feeding every consumer makes that class of drift
-    unrepresentable. :func:`redact_exfiltration_urls` is a thin wrapper that
-    drops the third element, so callers needing only the text are untouched.
-
-    A record retains the link's structure and, when opening it cannot send a
-    credential, the full address, so a wrongly blocked link can be opened by the
-    person reading it::
-
-        {"domain": str, "rule": str, "path": str | None, "query_chars": int,
-         "url": str | None, "url_withheld": "credential" | "length" | None}
-
-    Exactly one of ``url`` and ``url_withheld`` is set. The text is redacted the
-    same way either way: the address lives only in meta, which is never replayed
-    to the model.
-
-    A URL string appearing more than once yields ONE record, in first-appearance
-    order. There is deliberately no positional index: the placeholder carries
-    only the domain, so two URLs on one domain redact to byte-identical text and
-    a position could pair one link's path with another's. Only
-    :func:`restore_allowed_links` pairs by order, and only when the counts and
-    a read-back prove each placeholder stood for one whole recorded address.
-    """
-    # The warnings come from the same loop, under the same exempt hosts, so a
-    # link on a host the reader allowed is neither redacted nor reported. A
-    # snapshot is the whole set, so neither source is read again; hosts compare
-    # lowercase either way (RFC 4343).
-    if exempt_hosts is None:
-        exempt_hosts = _exfil_exempt_hosts() | _SCOPED_EXEMPT_HOSTS.get()
-    else:
-        exempt_hosts = frozenset(h.lower() for h in exempt_hosts)
-    exempt_hosts |= frozenset(h.lower() for h in extra_exempt_hosts)
-    warnings: list[str] = []
-    result = text
-    records: list[dict] = []
-    seen: set[str] = set()
-    blocked: dict[str, str] = {}
-    overflow = 0
-    for match in _URL_SCAN_RE.finditer(text):
-        rules: list[str] = []
-        flagged = _flagged_url_span(match, exempt_hosts, rules)
-        if not flagged:
-            continue
-        judged, matched, path_and_query, warning = flagged
-        domain = judged.group(1)
-        port = judged.group(2) or ""
-        is_https = matched.lower().startswith("https://")
-        warnings.append(warning)
-        placeholder = f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]"
-        if removed_out is not None:
-            removed_out.append((matched, placeholder))
-        # Every occurrence of this exact URL is rewritten after the loop, and the
-        # loop can revisit it, so the record set is keyed by the matched string.
-        blocked[matched] = placeholder
-        if matched in seen:
-            continue
-        qmark = path_and_query.find("?")
-        query = path_and_query[qmark + 1 :] if qmark != -1 else ""
-        path_only = path_and_query[:qmark] if qmark != -1 else path_and_query
-        # Every rejection happens BEFORE `seen` grows, because `seen` holds whole
-        # URLs and is bounded only by the record cap beside it: a dedupe row for a
-        # match that produces no record is state nothing bounds. The fields answer
-        # to the one shared check, so a host or a rule the reload would drop is
-        # never retained here either -- an explanation that vanishes on reload is
-        # worse than one that never appeared. The URL is redacted from the text
-        # regardless: a dropped record costs the reader an explanation, never the
-        # removal.
-        if not _blocked_link_fields_ok(domain, rules[0] if rules else None, len(query)):
-            continue
-        if len(records) >= MAX_BLOCKED_LINKS_PER_MESSAGE:
-            # Before `seen` grows, not after: a dedupe row for a match the cap
-            # already refused is state the cap was supposed to bound.
-            overflow += 1
-            continue
-        seen.add(matched)
-        kept_url, url_withheld = _blocked_link_url_verdict(matched, domain)
-        if kept_url is None and url_withheld is None:
-            # Not reachable for a _URL_RE match, which is always an http(s)
-            # address on its own host; fail closed so the record keeps its
-            # "exactly one of url / url_withheld" shape regardless.
-            url_withheld = "credential"
-        records.append(
-            {
-                "domain": domain,
-                "rule": rules[0],
-                "path": _exfil_retained_path(
-                    domain, path_only, exempt_hosts, port=port, is_https=is_https
-                ),
-                "query_chars": len(query),
-                "url": kept_url,
-                "url_withheld": url_withheld,
-            }
-        )
-    # Longest first: a blocked URL that is a prefix of a longer blocked one (a base
-    # link, then the same link with a session token appended) would otherwise
-    # rewrite the longer one's head, so the longer one's own replace finds nothing
-    # and its token-bearing tail stays in the text.
-    for matched in sorted(blocked, key=len, reverse=True):
-        if _ordered_out is not None and matched in seen and matched not in result:
-            # A longer replace rewrote this URL inside itself, so its record has
-            # no placeholder of its own and breaks pairing by order.
-            _ordered_out[:] = [False]
-        result = result.replace(matched, blocked[matched])
-    if overflow:
-        logger.info(
-            "blocked-link records capped at %d for this message; %d further blocked "
-            "link match(es) are redacted in the text but carry no record",
-            MAX_BLOCKED_LINKS_PER_MESSAGE,
-            overflow,
-        )
-    return result, warnings, records
-
-
-def redact_exfiltration_urls(
-    text: str, *, exempt_hosts: frozenset[str] | None = None
-) -> tuple[str, list[str]]:
-    """Scan and redact suspicious exfiltration URLs from text.
-
-    ``exempt_hosts`` is the host-set snapshot described on
-    :func:`redact_exfiltration_urls_with_records`; ``None`` is the live read.
-    Returns (cleaned_text, list_of_warnings).
-    """
-    cleaned, warnings, _ = redact_exfiltration_urls_with_records(text, exempt_hosts=exempt_hosts)
-    return cleaned, warnings
-
-
-#: Hosts a reader allowed for the workspace whose message is being redacted,
-#: set only by :func:`scoped_exempt_hosts` around one render. The display pass
-#: re-redacts what the segment flush kept, so it must relax the same hosts or an
-#: allowed link would be removed again on the way to the page.
-_SCOPED_EXEMPT_HOSTS: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
-    "kiro_crew_scoped_exempt_hosts", default=frozenset()
-)
-#: The workspace those hosts were allowed in, so a use audit names the allowance.
-_SCOPED_EXEMPT_WORKSPACE: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "kiro_crew_scoped_exempt_workspace", default=""
-)
-#: The revoke epoch read before those hosts were, so a use audit can tell a
-#: snapshot taken before a revoke from one taken after it. None outside a scope.
-_SCOPED_AUDIT_EPOCH: contextvars.ContextVar[int | None] = contextvars.ContextVar(
-    "kiro_crew_scoped_audit_epoch", default=None
-)
-
-
-@contextlib.contextmanager
-def scoped_exempt_hosts(
-    hosts: frozenset[str], workspace: str | None = None, epoch: int | None = None
-) -> Iterator[None]:
-    """Relax the length and base64 checks for ``hosts`` inside the block only.
-
-    ``workspace`` is the stored workspace key the hosts came from; it is only
-    written into the use audit and changes no verdict. ``epoch`` is
-    :func:`allowed_host_audit_epoch` read before ``hosts`` was; a use audit
-    from a scope whose epoch a revoke has since passed is not remembered.
-    """
-    token = _SCOPED_EXEMPT_HOSTS.set(frozenset(h.lower() for h in hosts))
-    ws_token = _SCOPED_EXEMPT_WORKSPACE.set(workspace or "")
-    epoch_mark = _SCOPED_AUDIT_EPOCH.set(_allowed_host_audit_epoch if epoch is None else epoch)
-    try:
-        yield
-    finally:
-        _SCOPED_AUDIT_EPOCH.reset(epoch_mark)
-        _SCOPED_EXEMPT_WORKSPACE.reset(ws_token)
-        _SCOPED_EXEMPT_HOSTS.reset(token)
-
-
-#: False inside :func:`allowed_host_use_unaudited`. A save-time projection
-#: restores links to judge them, not to show them, so it writes no use audit.
-_AUDIT_ALLOWED_HOST_USE: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "kiro_crew_audit_allowed_host_use", default=True
-)
-
-
-@contextlib.contextmanager
-def allowed_host_use_unaudited() -> Iterator[None]:
-    """Restore allowed links in the block without auditing a use nobody saw."""
-    marker = _AUDIT_ALLOWED_HOST_USE.set(False)
-    try:
-        yield
-    finally:
-        _AUDIT_ALLOWED_HOST_USE.reset(marker)
-
-
-#: The rules an allowed host relaxes (see :func:`scoped_exempt_hosts`): a long
-#: query and a base64-looking one. A link blocked for anything else stays
-#: blocked whatever the reader allowed.
-ALLOWABLE_BLOCKED_LINK_RULES = frozenset({"exfil_query_length", "exfil_query_pattern"})
-
-_PLACEHOLDER_RE = re.compile(re.escape(EXFILTRATION_REDACTION_TAG_PREFIX) + r"([^\]\s]+)\]")
-
-
-def restore_allowed_links(
-    text: str, records: list[dict], hosts: frozenset[str], *, ordered: bool = False
-) -> tuple[str, list[dict]]:
-    """Put back the address of each blocked link whose host the reader allowed.
-
-    Every saved message carries each blocked link as a placeholder, allowed host
-    or not, and its records keep the full address. A host in ``hosts`` is
-    restored only when every record for it keeps its address (``url`` set)
-    under a rule an allowed host relaxes, and the text holds exactly one
-    placeholder per record for it. A placeholder names only its host, so they
-    pair by order: records are in first-appearance order and a repeated address
-    yields one record, so equal counts mean the n-th placeholder is the n-th
-    record; different addresses pair only when ``ordered`` vouches for that
-    order (an older row may not hold it). Any mismatch (an echoed placeholder,
-    a repeat, a dropped record) leaves all of that host's placeholders, as does
-    an address that is not the whole URL match starting where it lands (it
-    stood for part of, or inside, another link). Returns the text and the
-    records left.
-    """
-    if not hosts or not records or EXFILTRATION_REDACTION_TAG_PREFIX not in text:
-        return text, records
-    by_domain: dict[str, list[int]] = {}
-    for i, rec in enumerate(records):
-        by_domain.setdefault(str(rec.get("domain", "")).lower(), []).append(i)
-    matches = list(_PLACEHOLDER_RE.finditer(text))
-    count: dict[str, int] = {}
-    for m in matches:
-        count[m.group(1).lower()] = count.get(m.group(1).lower(), 0) + 1
-    domains = {
-        d
-        for d, ix in by_domain.items()
-        if d in hosts
-        and count.get(d, 0) == len(ix)
-        and (ordered or len({records[i].get("url") for i in ix}) == 1)
-        and all(
-            records[i].get("rule") in ALLOWABLE_BLOCKED_LINK_RULES
-            and isinstance(records[i].get("url"), str)
-            and records[i]["url"]
-            for i in ix
-        )
-    }
-    # Dropping a host changes what follows another host's address, so the
-    # read-back runs again until no host fails it; the set only shrinks.
-    while domains:
-        parts: list[str] = []
-        placed: list[tuple[str, int, str]] = []
-        taken: dict[str, int] = {}
-        last = size = 0
-        for m in (m for m in matches if m.group(1).lower() in domains):
-            d = m.group(1).lower()
-            url = str(records[by_domain[d][taken.setdefault(d, 0)]]["url"])
-            taken[d] += 1
-            parts += [text[last : m.start()], url]
-            size += m.start() - last
-            placed.append((d, size, url))
-            size += len(url)
-            last = m.end()
-        out = "".join(parts) + text[last:]
-        starts = {
-            r.start(): {url for url, _ in _url_scan_candidates(r)}
-            for r in _URL_SCAN_RE.finditer(out)
-        }
-        failed = {d for d, at, url in placed if url not in starts.get(at, ())}
-        if not failed:
-            restored = {i for d in domains for i in by_domain[d]}
-            if _AUDIT_ALLOWED_HOST_USE.get():
-                for domain in domains:
-                    _emit_allowed_host_used_event(domain, records)
-            return out, [r for i, r in enumerate(records) if i not in restored]
-        domains -= failed
-    return text, records
-
-
-# One ``redaction_allowed_host_used`` event per (workspace, host) per process:
-# every history load and live frame re-restores the same links. The memo holds
-# at most ``_ALLOWED_HOST_AUDITED_MAX`` pairs; past it a new pair is audited on
-# every restore but not remembered: more SEL records, bounded memory, owner-added
-# hosts. A revoke forgets the host, so a later re-allow is audited on first use.
-_ALLOWED_HOST_AUDITED: set[tuple[str, str]] = set()
-_ALLOWED_HOST_AUDITED_MAX = 1024
-# One lock for the memo and the epoch: a revoke iterates the set while render
-# workers add to it, and an unguarded add mid-iteration raises.
-_ALLOWED_HOST_AUDIT_LOCK = threading.Lock()
-# Bumped on every revoke. Render memos key on it, so a row restored before the
-# revoke is rendered again after a re-allow and its use is audited again.
-_allowed_host_audit_epoch = 0
-
-
-def allowed_host_audit_epoch() -> int:
-    """How many revokes this process has seen, for render memo keys."""
-    return _allowed_host_audit_epoch
-
-
-def current_scoped_workspace() -> str:
-    """The workspace :func:`scoped_exempt_hosts` has in effect here, for cache keys."""
-    return _SCOPED_EXEMPT_WORKSPACE.get()
-
-
-def current_scoped_audit_epoch() -> int:
-    """The revoke epoch :func:`scoped_exempt_hosts` took with its hosts, for cache keys."""
-    scoped = _SCOPED_AUDIT_EPOCH.get()
-    return _allowed_host_audit_epoch if scoped is None else scoped
-
-
-def forget_allowed_host_use(host: str) -> None:
-    """Drop ``host`` from the use memo in every workspace (called on revoke)."""
-    global _allowed_host_audit_epoch
-    with _ALLOWED_HOST_AUDIT_LOCK:
-        for key in [k for k in _ALLOWED_HOST_AUDITED if k[1] == host]:
-            _ALLOWED_HOST_AUDITED.discard(key)
-        _allowed_host_audit_epoch += 1
-
-
-def _emit_allowed_host_used_event(host: str, records: list[dict]) -> None:
-    """SEL-audit that a reader-allowed host put a blocked link back on screen."""
-    workspace = _SCOPED_EXEMPT_WORKSPACE.get()
-    key = (workspace, host)
-    with _ALLOWED_HOST_AUDIT_LOCK:
-        if key in _ALLOWED_HOST_AUDITED:
-            return
-        # A snapshot taken before a revoke still shows its links, so the use
-        # is audited, but remembering it would hide the first use after a
-        # re-allow that the revoke's forget was meant to expose.
-        scoped = _SCOPED_AUDIT_EPOCH.get()
-        fresh = scoped is None or scoped == _allowed_host_audit_epoch
-        if fresh and len(_ALLOWED_HOST_AUDITED) < _ALLOWED_HOST_AUDITED_MAX:
-            _ALLOWED_HOST_AUDITED.add(key)
-    rules = sorted(
-        {str(r.get("rule")) for r in records if str(r.get("domain", "")).lower() == host}
-    )
-    meta = {
-        "workspace": workspace,
-        "host": host,
-        "rules": rules,
-        "mechanism": "REDACTION_ALLOWED_HOST",
-    }
-    _log_operator_list_use(
-        "redaction_allowed_host_used", "restore_allowed_links", host, lambda: meta
-    )
-
-
-def current_scoped_exempt_hosts() -> frozenset[str]:
-    """The hosts :func:`scoped_exempt_hosts` has in effect here, for cache keys."""
-    return _SCOPED_EXEMPT_HOSTS.get()
+    urls = [m.span() for m in _URL_SCAN_RE.finditer(text)]
+    if not urls:
+        return text, []
+    spans, _warnings, _rules = _credential_redaction_plan(text)
+    if not spans:
+        return text, []
+    starts = [start for start, _end in urls]
+    kept = []
+    for start, end, tag in spans:
+        i = bisect.bisect_right(starts, start) - 1
+        if i >= 0 and end <= urls[i][1]:
+            kept.append((start, end, tag))
+    if not kept:
+        return text, []
+    warnings = [f"Redacted credential in a URL ({end - start} chars)" for start, end, _t in kept]
+    return _splice(text, kept), warnings
 
 
 # Markerless 40-character values collide with OAuth entropy only for these

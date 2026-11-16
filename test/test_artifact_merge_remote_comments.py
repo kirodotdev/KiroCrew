@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from kiro_crew.artifacts import ArtifactComment, ArtifactStore
-from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 _PROVIDER = "prov-a"
 
@@ -103,7 +103,7 @@ class TestMergeRemoteComments:
         assert len(result) == 1 and result[0].id == "r1"
 
 
-_SECRET = SAMPLE_AWS_SECRET  # synthetic 40-char AWS secret
+_SECRET = github_classic(seed=126)  # a bare 40-character run is no credential
 
 
 class TestRemoteCommentAnchorRedaction:

@@ -340,9 +340,7 @@ from kiro_crew.dashboard.handlers.models_kas_bundle import (
     api_models_kas_bundle,
     api_models_kas_crew_relay,
 )
-from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
-    owner_view_for_request,
-)
+from kiro_crew.dashboard.handlers.source_providers import owner_view_for_request  # noqa: F401
 from kiro_crew.dashboard.kas_local_commands import local_harness_menu
 from kiro_crew.dashboard.kiro_readiness import (
     KIRO_PREREQUISITE_REQUIRED_CODE,
@@ -381,6 +379,7 @@ from kiro_crew.sandbox import (
     scrub_agent_subprocess_env,
     wrap_argv,
 )
+from kiro_crew.security import refuses  # noqa: F401
 from kiro_crew.user_json import loads_user_json  # noqa: F401
 from kiro_crew.validation import TEMPLATE_NAME_RE  # noqa: F401
 

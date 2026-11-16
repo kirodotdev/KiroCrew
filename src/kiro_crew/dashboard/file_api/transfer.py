@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         logger,
         platform_compat,
         redact,
+        refuses,
         require_owner_dashboard_request,
         validate_tool_args,
     )
@@ -578,7 +579,7 @@ async def api_file_stream(request: web.Request) -> web.StreamResponse:
             probe = header + fobj.read(_STREAM_TEXT_PROBE_BYTES - len(header))
             try:
                 probe_text = probe.decode("utf-8")
-                flagged = redact(probe_text) != probe_text
+                flagged = refuses(probe_text, redact)
             except UnicodeDecodeError:
                 flagged = binary_content_is_flagged(probe)
             if flagged:

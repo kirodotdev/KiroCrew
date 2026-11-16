@@ -1326,6 +1326,23 @@ def _wide_clean_png(encoding: str) -> bytes:
 #: ``HUFFVAL`` entries and ``\x83`` opens the following ones.
 _DHT_LEAD_OUT, _DHT_LEAD_IN = b"\x16\x17\x18\x19\x1a", b"\x83\x84\x85"
 
+#: The printable-ASCII tail of the standard baseline JPEG AC Huffman symbol table
+#: (ITU-T T.81 Annex K, Table K.5), assembled from its code-point ranges: six digits,
+#: a colon and thirty-two letters among them, which is no bot token in its published
+#: form.
+_BASELINE_SYMBOL_TABLE = "".join(
+    chr(code)
+    for low, high in (
+        (0x25, 0x2A),
+        (0x34, 0x3A),
+        (0x43, 0x4A),
+        (0x53, 0x5A),
+        (0x63, 0x6A),
+        (0x73, 0x7A),
+    )
+    for code in range(low, high + 1)
+)
+
 
 def _default_table_jpeg() -> bytes:
     """JPEG-shaped bytes carrying the standard symbol table and nothing sensitive.
@@ -1333,11 +1350,8 @@ def _default_table_jpeg() -> bytes:
     ``\\xff\\xd8\\xff\\xe0`` is the SOI/APP0 head a JPEG opens with; ``\\xff\\xc4``
     opens the ``DHT`` segment, and the table sits between the same non-printable
     ``HUFFVAL`` entries a real baseline image puts around it. The table is taken
-    from the product constant rather than restated, so this cannot pass against a
-    table the scanner does not pin itself to.
+    from the standard's code-point ranges above.
     """
-    from kiro_crew.security.redaction import _BASELINE_SYMBOL_TABLE
-
     return (
         b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\xff\xc4\x00\xb5\x00"
         + _DHT_LEAD_OUT
@@ -1357,8 +1371,6 @@ class TestSynthesizedMaterialActuallyTrips:
         assert security.redact(key) != key
 
     def test_the_default_table_jpeg_is_a_raster_and_carries_the_table(self) -> None:
-        from kiro_crew.security.redaction import _BASELINE_SYMBOL_TABLE
-
         raw = _default_table_jpeg()
         assert sniff_raster_mime(raw[:SNIFF_BYTES]) == "image/jpeg"
         assert _BASELINE_SYMBOL_TABLE.encode("latin-1") in raw
@@ -1402,6 +1414,7 @@ class TestOneEgressScanOnEveryOutboundPath:
             "redact_credentials",
             "redact_exfiltration_urls",
             "redact_with_findings",
+            "refuses",
         }
     )
     _CANONICAL = frozenset({"binary_content_is_flagged", "wide_content_is_flagged"})
@@ -1559,13 +1572,12 @@ class TestSharedScanDecidesThisLeg:
         """An ordinary photo uploads, and the container's own table is why.
 
         A standard baseline JPEG's Huffman symbol table reads as six digits, a
-        colon and thirty-two letters -- the shape of an unlabelled bot token --
-        and essentially every image written with the default tables carries it.
-        This leg reads no consent store and refuses unconditionally, so a
-        false positive here has no remedy at all: the owner is told the file
-        failed a security check with nothing they can do about it. The shared
-        scan re-asks its positive with those tables masked, which is what makes
-        the difference.
+        colon and thirty-two letters, and essentially every image written with
+        the default tables carries it. This leg reads no consent store and
+        refuses unconditionally, so a false positive here has no remedy at all:
+        the owner is told the file failed a security check with nothing they can
+        do about it. A bot token is read only in its published form, which the
+        table is not.
         """
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "photo.jpg"

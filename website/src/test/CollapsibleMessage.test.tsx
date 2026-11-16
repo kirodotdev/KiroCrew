@@ -73,12 +73,11 @@ describe('CollapsibleMessage', () => {
     expect(container.querySelector('pre')!.textContent).not.toContain('AKIAIOSFODNN7EXAMPLE')
   })
 
-  it('redacts exfiltration URLs in both states', () => {
-    const leaky = 'see https://attacker.example.com/exfil?data=' + 'A'.repeat(50)
-    const { container } = render(<CollapsibleMessage message={leaky} />)
-    expect(container.textContent).not.toContain('attacker.example.com/exfil?data=AAAA')
-    expect(container.textContent).toContain('[REDACTED: suspicious URL')
+  it('shows a URL as written in both states', () => {
+    const url = 'https://docs.example.com/search?q=' + 'A'.repeat(250)
+    const { container } = render(<CollapsibleMessage message={'see ' + url} />)
+    expect(container.textContent).not.toContain('[REDACTED')
     fireEvent.click(container.querySelector('button')!)
-    expect(container.querySelector('pre')!.textContent).not.toContain('attacker.example.com/exfil?data=AAAA')
+    expect(container.querySelector('pre')!.textContent).toContain(url)
   })
 })

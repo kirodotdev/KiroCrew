@@ -797,8 +797,8 @@ def test_a_credential_straddling_the_env_bound_is_still_redacted(tmp_path: Path)
     table = FakeProcTable(tmp_path / "proc")
     # The cut lands 20 characters into a GitHub token (an AWS key ID stays visible).
     token = github_classic(seed=92)
-    pad = "/p" * ((procs.MAX_PATH_CHARS - 20) // 2) + "/"
-    pad = pad[: procs.MAX_PATH_CHARS - 20]
+    # The pad ends on a "/": a token glued to a letter is no token.
+    pad = ("/p" * ((procs.MAX_PATH_CHARS - 20) // 2))[: procs.MAX_PATH_CHARS - 21] + "/"
     table.add(
         GATEWAY,
         OUTSIDER,

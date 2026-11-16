@@ -49,10 +49,11 @@ from kiro_crew.providers.base import (
 )
 from kiro_crew.recovery.ladder import InfraError
 from kiro_crew.shared_crew import turn_gate
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
 
 # A credential-shaped string the agent's own reply carries; it must be stored redacted.
-_SECRET = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
+_SECRET = github_classic(seed=316)
 _ORIGIN = {"kind": "agent"}
 
 
