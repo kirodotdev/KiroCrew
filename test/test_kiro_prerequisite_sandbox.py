@@ -103,6 +103,7 @@ class TestKiroPrerequisiteWorkflowSandbox:
         assert captured["spawn_argv"] == [
             sys.executable,
             "-I",
+            "-S",
             "-c",
             prerequisite_module._PROCESS_GROUP_SUPERVISOR_CODE,
             # Resource limits ride on the supervisor's argv, not preexec_fn.
@@ -195,9 +196,9 @@ class TestKiroPrerequisiteWorkflowSandbox:
         )
 
         assert result.ok is True
-        # 4 supervisor items (python, -I, -c, code) plus the optional --rlimits=
+        # 5 supervisor items (python, -I, -S, -c, code) plus the optional --rlimits=
         # fragment, then the resolved sandbox wrapper.
-        wrapper_index = 4 + len(prerequisite_module.resource_limit_supervisor_argv())
+        wrapper_index = 5 + len(prerequisite_module.resource_limit_supervisor_argv())
         assert captured["spawn_argv"][wrapper_index] == f"/usr/bin/{wrapper}"
 
     @pytest.mark.skipif(

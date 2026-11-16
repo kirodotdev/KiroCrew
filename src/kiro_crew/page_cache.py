@@ -72,7 +72,10 @@ def _read_through(path: Path) -> None:
     files = _candidates(path)
     if not files:
         return
-    argv = platform_compat.isolated_python_argv("-I", "-c", _CHILD_SOURCE, str(_CHUNK), *files)
+    # -S: the child is stdlib only, so skip site (.pth / sitecustomize).
+    argv = platform_compat.isolated_python_argv(
+        "-I", "-S", "-c", _CHILD_SOURCE, str(_CHUNK), *files
+    )
     try:
         subprocess.run(
             argv,

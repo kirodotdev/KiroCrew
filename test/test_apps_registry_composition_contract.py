@@ -272,7 +272,6 @@ FROZEN_NAMES: tuple[str, ...] = (
     "get_registry_app_by_repo",
     "get_server_platform",
     "git_unavailable_refusal",
-    "importlib",
     "install_app",
     "install_from_registry",
     "install_receipt",

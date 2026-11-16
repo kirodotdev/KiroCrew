@@ -14,10 +14,7 @@ registry topics live beside this file: subprocess-timeout reaping in
 from __future__ import annotations
 
 import asyncio
-import importlib.machinery
-import importlib.util
 import json
-import sys
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -1009,135 +1006,48 @@ class TestCatalogAppsIncludesExternalRegistries:
         )
 
 
-# Git-install build step: the interpreter, and where the build runs.
-#
-# Both properties below were broken and NEITHER had a test, which is why they
-# survived — and both fail SILENTLY, reporting a successful install that installed
-# nothing the gateway can import.
+# Git-install build step: what may run, and where the build runs.
 
 
-def _build_cmds_for(tmp_path, monkeypatch, files: dict[str, str]) -> list[list[str]]:
-    """Run ``_run_app_build``'s command planning without executing anything.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"pyproject.toml": "[project]\nname='x'\nversion='0'\n"},
+        {"setup.py": "", "requirements.txt": "x\n"},
+        {"requirements.txt": "x\n"},
+    ],
+    ids=["pyproject", "setup-py", "requirements-nothing-provisions"],
+)
+async def test_a_python_build_step_is_refused_on_a_source_install(tmp_path, monkeypatch, files):
+    """No install-time pip runs into the gateway's own environment on any gateway.
 
-    Captures the argv list rather than asserting on side effects: the point of both
-    tests is WHICH command would run, and executing a real pip install in a unit test
-    would be both slow and environment-dependent.
+    That environment is read-only to sandboxed children, so a checkout that needs
+    one (``pip install .``, or a requirements.txt nothing provisions out of
+    process) is refused loudly, with no spawn, and with the same permanent code
+    the desktop gateway sends, so the dashboard does not offer a retry.
     """
     for rel, body in files.items():
-        target = tmp_path / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(body, encoding="utf-8")
-
-    captured: list[list[str]] = []
-
-    class _EmptyStdout:
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            raise StopAsyncIteration
-
-    class _Ok:
-        returncode = 0
-        stdout = _EmptyStdout()
-
-        async def wait(self):
-            return 0
-
-        async def communicate(self):
-            return (b"", b"")
-
-    async def _fake_exec(*argv, **_kwargs):
-        captured.append(list(argv))
-        return _Ok()
-
-    monkeypatch.setattr(registry, "create_subprocess_limited", _fake_exec)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="standard", **_k: (list(cmd), None))
-    monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: list(cmd))
-    _pin_pip_importable(monkeypatch)
-    return captured
-
-
-def _pin_pip_importable(monkeypatch) -> None:
-    """Make the planner see a gateway interpreter that HAS ``pip``.
-
-    ``_run_app_build`` probes ``find_spec("pip")`` on the host interpreter, and a ``uv``
-    or ``--without-pip`` venv has none, so without this pin the planning tests fail there.
-    """
-    import site
-
-    monkeypatch.setattr(site, "ENABLE_USER_SITE", False)
+        (tmp_path / rel).write_text(body, encoding="utf-8")
     monkeypatch.setattr(platform_compat, "is_bundled_interpreter", lambda: False)
-    real_find_spec = importlib.util.find_spec
-
-    def _with_pip(name, *args, **kwargs):
-        if name == "pip":
-            return importlib.machinery.ModuleSpec("pip", loader=None)
-        return real_find_spec(name, *args, **kwargs)
-
-    monkeypatch.setattr(registry.importlib.util, "find_spec", _with_pip)
-
-
-@pytest.mark.asyncio
-async def test_python_build_uses_the_running_interpreter_not_path_pip(tmp_path, monkeypatch):
-    """A Python app must install into the interpreter that will IMPORT it.
-
-    The first pip on PATH is routinely not the gateway's (``service_path()`` puts
-    ``~/.local/bin`` first). A different pip reports success but installs where the
-    gateway venv, with ``ENABLE_USER_SITE = False``, can never import it.
-    """
-    captured = _build_cmds_for(
-        tmp_path, monkeypatch, {"pyproject.toml": "[project]\nname='x'\nversion='0'\n"}
-    )
-    # A PATH pip that is not the gateway's interpreter.
-    monkeypatch.setattr(registry.shutil, "which", lambda name: f"/usr/bin/{name}")
-
-    await registry._run_app_build(
-        tmp_path, "x", [], manifest=AppManifest.from_dict({}), self_managed=False
-    )
-
-    assert captured, "a pyproject.toml must produce a build command"
-    argv = captured[0]
-    assert argv[0] == sys.executable, f"build must use the running interpreter, got {argv[0]!r}"
-    assert argv[1:4] == ["-s", "-m", "pip"], f"expected `-s -m pip`, got {argv[1:4]!r}"
-
-
-@pytest.mark.asyncio
-async def test_python_build_soft_skips_when_the_interpreter_has_no_pip(tmp_path, monkeypatch):
-    """A gateway interpreter without a ``pip`` module skips the Python build with a warning.
-
-    "No npm / no pip" is a soft skip, as for npm; ``-m pip`` on a ``--without-pip`` venv
-    would otherwise fail the whole install.
-    """
-    log_lines: list[str] = []
-    captured: list[list[str]] = []
 
     async def _fake_exec(*argv, **_kwargs):  # pragma: no cover - must NOT run
-        captured.append(list(argv))
-        raise AssertionError("no build command may be planned when pip is unavailable")
+        raise AssertionError(f"no build command may run, got {argv}")
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_exec)
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\nversion='0'\n", encoding="utf-8")
-
-    # This interpreter has no importable `pip` — exactly a `--without-pip` venv.
-    real_find_spec = importlib.util.find_spec
-
-    def _no_pip(name, *args, **kwargs):
-        if name == "pip":
-            return None
-        return real_find_spec(name, *args, **kwargs)
-
-    monkeypatch.setattr(registry.importlib.util, "find_spec", _no_pip)
+    log_lines: list[str] = []
 
     result = await registry._run_app_build(
         tmp_path, "x", log_lines, manifest=AppManifest.from_dict({}), self_managed=False
     )
 
-    assert result == {"ok": True}, f"a pip-less interpreter must soft-skip, got {result}"
-    assert captured == [], f"no build command may be planned, got {captured}"
-    assert any(
-        "pip not available" in line for line in log_lines
-    ), f"the skip must be logged, log was {log_lines}"
+    assert result == {
+        "ok": False,
+        "name": "x",
+        "error": registry._SOURCE_BUILD_REFUSAL,
+        "code": registry.DESKTOP_BUILD_STEP_UNSUPPORTED,
+    }
+    assert any(registry._SOURCE_BUILD_REFUSAL in line for line in log_lines), log_lines
 
 
 @pytest.mark.asyncio

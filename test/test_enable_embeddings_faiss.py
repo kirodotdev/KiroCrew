@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -126,6 +128,15 @@ class TestFaissInstallSuccess:
             args = mock_exec.call_args[0]
             assert "faiss-cpu" in args
             assert "--only-binary=:all:" in args
+            # No PYTHON* variables, no working-directory imports, no pip.conf or
+            # pip cache, and the user-site policy is left alone (no -I).
+            pip_at = list(args).index("pip")
+            assert args[pip_at - 3 : pip_at] == ("-E", "-P", "-m")
+            assert "-I" not in args[pip_at - 5 : pip_at]
+            kwargs = mock_exec.call_args.kwargs
+            assert kwargs["env"]["PIP_CONFIG_FILE"] == os.devnull
+            assert kwargs["env"]["PIP_NO_CACHE_DIR"] == "1"
+            assert kwargs["cwd"] == sys.prefix
             # Model already present — no download attempted.
             mgr.ensure_model.assert_not_awaited()
 
@@ -567,6 +578,11 @@ class TestEnsurePipBootstrap:
         argv = mock_exec.call_args[0]
         assert "ensurepip" in argv
         assert "--upgrade" in argv
+        at = list(argv).index("ensurepip")
+        assert argv[at - 3 : at] == ("-E", "-P", "-m")
+        assert "-I" not in argv[at - 5 : at]
+        assert mock_exec.call_args.kwargs["env"]["PIP_CONFIG_FILE"] == os.devnull
+        assert mock_exec.call_args.kwargs["cwd"] == sys.prefix
 
     @pytest.mark.asyncio
     async def test_returns_error_when_ensurepip_fails(self) -> None:

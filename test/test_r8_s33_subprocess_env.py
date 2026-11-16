@@ -193,6 +193,12 @@ def _fake_proc(returncode: int) -> MagicMock:
     return proc
 
 
+def _assert_reads_no_pip_config(kwargs: dict) -> None:
+    """A pip that writes the gateway env reads no agent-writable pip.conf or cache."""
+    assert kwargs["env"].get("PIP_CONFIG_FILE") == os.devnull
+    assert kwargs["env"].get("PIP_NO_CACHE_DIR") == "1"
+
+
 # ---------------------------------------------------------------------------
 # memory_embeddings.py -- the two pip spawns
 # ---------------------------------------------------------------------------
@@ -219,6 +225,7 @@ def test_pip_bootstrap_spawn_env_is_scrubbed(monkeypatch):
     with pytest.raises(_Captured) as excinfo:
         asyncio.run(memory._ensure_pip_available())
     _assert_scrubbed_and_usable(excinfo.value.kwargs, "memory._ensure_pip_available")
+    _assert_reads_no_pip_config(excinfo.value.kwargs)
 
 
 def test_faiss_install_spawn_env_is_scrubbed(monkeypatch):
@@ -262,6 +269,7 @@ def test_faiss_install_spawn_env_is_scrubbed(monkeypatch):
     finally:
         memory._embedding_setup_status = {"step": "idle", "error": ""}
     _assert_scrubbed_and_usable(excinfo.value.kwargs, "memory.api_memory_enable_embeddings")
+    _assert_reads_no_pip_config(excinfo.value.kwargs)
 
 
 # ---------------------------------------------------------------------------

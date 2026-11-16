@@ -19,7 +19,6 @@ from unittest.mock import MagicMock
 
 import pytest
 from apps_registry_coverage_helpers import _asgi_backend  # noqa: F401
-from apps_registry_coverage_helpers import pip_importable_fixture  # noqa: F401
 from apps_registry_helpers import _catalog_absent  # noqa: F401 - fixture
 from apps_registry_helpers import _explicit_registry_execution_admission  # noqa: F401 - fixture
 from apps_registry_helpers import _install_script_runs_on_this_host  # noqa: F401 - fixture
@@ -155,10 +154,12 @@ async def test_the_install_script_spawn_hides_every_secret_file(
 
 @pytest.mark.asyncio
 async def test_the_app_build_spawn_hides_every_secret_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, pip_importable: None
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # The install-time build step left is npm (no pip build runs on any gateway).
     secrets = _seed_secret_files()
-    (tmp_path / "requirements.txt").write_text("pytest\n", encoding="utf-8")
+    (tmp_path / "package.json").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(registry.shutil, "which", lambda name: "/usr/bin/npm")
     seen = _spy_registry(monkeypatch)
 
     result = await registry._run_app_build(
@@ -166,7 +167,7 @@ async def test_the_app_build_spawn_hides_every_secret_file(
     )
 
     assert result == {"ok": True}
-    build = [h for kind, argv, h in seen if kind == "wrap" and "pip" in argv]
+    build = [h for kind, argv, h in seen if kind == "wrap" and argv[-1] == "install"]
     assert len(build) == 1, seen
     _assert_hides(build[0], secrets, "app build step")
 

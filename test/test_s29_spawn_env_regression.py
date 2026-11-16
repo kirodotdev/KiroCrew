@@ -376,6 +376,21 @@ async def test_knowledge_worker_child_does_not_receive_the_interpreter_env(
 
 @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="the stub child is a POSIX shell script")
 @pytest.mark.asyncio
+async def test_knowledge_worker_child_does_not_receive_safe_path(tmp_path, monkeypatch) -> None:
+    """The service runs the gateway with PYTHONSAFEPATH; an agent-side child must
+    not inherit it, or its own ``python run.py`` loses the script's folder."""
+    monkeypatch.setenv("PYTHONSAFEPATH", "1")
+    stub, dump = _write_env_recording_stub(tmp_path)
+
+    await _run_worker_spawn(stub, monkeypatch)
+
+    env = _dumped_env(dump)
+    assert env, "the stub child never ran, so nothing was proven"
+    assert "PYTHONSAFEPATH" not in env
+
+
+@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="the stub child is a POSIX shell script")
+@pytest.mark.asyncio
 async def test_knowledge_worker_child_keeps_what_the_cli_needs(tmp_path, monkeypatch) -> None:
     """Positive control: the worker can still find and authenticate its CLI.
 

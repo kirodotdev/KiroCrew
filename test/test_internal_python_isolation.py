@@ -26,7 +26,6 @@ _INTERNAL_PYTHON_SPAWN_SITES = (
     ("apps/bridges_mcp.py", "resolve_stdio_command"),
     ("apps/builtins/auto_improvement/backend/deps.py", "install_deps"),
     ("apps/builtins/dev_fleet/runtime.py", "_find_cli"),
-    ("apps/registry.py", "_run_app_build"),
     ("cli_jail.py", "_child_argv"),
     ("embeddings_child.py", "_ChildState.spawn"),
     ("consolidation_write_child.py", "WriteChild._spawn"),

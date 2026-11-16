@@ -366,9 +366,11 @@ def run_script_sandboxed(
         finally:
             os.close(fd)
 
-        # Granted children run ISOLATED (-I): PYTHONPATH and user-site are
-        # ignored, so agent-planted startup hooks (sitecustomize/usercustomize)
-        # cannot execute before the launcher and capture the secrets it loads.
+        # Granted children run ISOLATED (-I): PYTHONPATH, the user site and the
+        # working directory are ignored, so startup hooks placed there cannot run
+        # before the launcher. -I does NOT skip `site`: a .pth file or
+        # sitecustomize in the interpreter's own site-packages still runs. Only
+        # -S stops those, and this launcher needs site-packages, so it keeps it.
         # The launcher prelude seeds the trusted kiro_crew package parent
         # explicitly, so imports survive isolation on dev checkouts too.
         argv = (

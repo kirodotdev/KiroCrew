@@ -353,6 +353,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_crewmate_worker_slots,
     _reset_degraded_config_observations,
     _reset_env_boot_record_and_ownership,
+    _reset_gateway_interpreter_seal_caches,
     _reset_kas_machine_fence_config,
     _reset_live_execution_records,
     _reset_materialized_agents_snapshot,
@@ -637,6 +638,24 @@ def _fresh_update_ownership(_floor_monkeypatch):
     yield
     open_steps = [entry.step.label for entry in registry]
     assert not open_steps, f"the test left update steps open: {open_steps}"
+
+
+@per_test_guard
+def _no_service_safe_path_reexec(_floor_monkeypatch):
+    """A gateway dispatch under test must never exec over pytest.
+
+    ``service.common.reexec_service_with_safe_path`` execs when the environment
+    says the process is a managed service, which a host running pytest under a
+    Kiro Crew service may inherit. Its own tests call the original, kept as
+    ``_reexec_service_with_safe_path_original``.
+    """
+    from kiro_crew.service import common
+
+    original = common.reexec_service_with_safe_path
+    _floor_monkeypatch.setattr(common, "reexec_service_with_safe_path", lambda: None)
+    _floor_monkeypatch.setattr(
+        common, "_reexec_service_with_safe_path_original", original, raising=False
+    )
 
 
 @per_test_guard

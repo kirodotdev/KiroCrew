@@ -353,6 +353,38 @@ def _forget_offered_instance_types():
 
 
 @per_test_guard
+def _reset_gateway_interpreter_seal_caches():
+    """Give every test a fresh gateway interpreter-seal cache.
+
+    ``sandbox_tiers`` memoizes the gateway's interpreter seal in three process-wide
+    ``lru_cache``s: ``_gateway_start_sys_path`` freezes ``sys.path`` as the first
+    caller on the worker saw it, and ``_interpreter_env_targets_cached`` /
+    ``_interpreter_link_paths_cached`` read the cwd, config dir, ``.pth`` and
+    ``pyvenv.cfg`` contents that are not in their keys (and the first runs a ``mkdir``
+    as a side effect). Left filled, a later test on the same worker would get seal
+    targets or a start-up path computed under an earlier test's home, cwd or
+    ``sys.path``, and could re-create a gone ``tmp_path`` entry. Cleared before and
+    after, so a test that never imported the module pays one lookup.
+    """
+
+    def _clear() -> None:
+        tiers = sys.modules.get("kiro_crew.sandbox_tiers")
+        for name in (
+            "_gateway_start_sys_path",
+            "_interpreter_env_targets_cached",
+            "_interpreter_link_paths_cached",
+        ):
+            # A test may monkeypatch one to a plain function with no cache; skip it.
+            clear = getattr(getattr(tiers, name, None), "cache_clear", None)
+            if clear is not None:
+                clear()
+
+    _clear()
+    yield
+    _clear()
+
+
+@per_test_guard
 def _forget_declared_mcp_not_ready_notes():
     """Give every test no scheduled-run MCP note printed before it.
 

@@ -8,8 +8,6 @@ chokepoints, so nothing here spawns git, npm or pip.
 
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
 from types import SimpleNamespace
 from typing import Any
 
@@ -47,32 +45,17 @@ def cache_dir_fixture(tmp_path, monkeypatch):
     return cache
 
 
-@pytest.fixture(name="pip_importable")
-def pip_importable_fixture(monkeypatch):
-    """Pin the gateway interpreter as one that HAS a ``pip`` module.
+@pytest.fixture(name="source_interpreter")
+def source_interpreter_fixture(monkeypatch):
+    """Pin the gateway interpreter as a source install's, NOT the desktop bundle's.
 
-    ``_run_app_build`` decides whether to plan a Python build by probing
-    ``importlib.util.find_spec("pip")`` on the RUNNING interpreter. That reads
-    the host's own packaging, not the fixture tree: a venv created by ``uv`` or
-    ``--without-pip`` has no ``pip`` module, so the branch soft-skips and every
-    "the pip command is planned" assertion fails there while passing on a
-    stdlib venv. Tests asserting the planned command take this fixture; the
-    soft-skip contract is pinned separately with the opposite answer.
+    The build gate's refusal text forks on
+    ``platform_compat.is_bundled_interpreter()``, so a test about a source
+    install pins it rather than reading the host's own packaging.
     """
-    import site
-
     from kiro_crew import platform_compat
 
-    monkeypatch.setattr(site, "ENABLE_USER_SITE", False)
     monkeypatch.setattr(platform_compat, "is_bundled_interpreter", lambda: False)
-    real_find_spec = importlib.util.find_spec
-
-    def _with_pip(name, *args, **kwargs):
-        if name == "pip":
-            return importlib.machinery.ModuleSpec("pip", loader=None)
-        return real_find_spec(name, *args, **kwargs)
-
-    monkeypatch.setattr(registry.importlib.util, "find_spec", _with_pip)
 
 
 @pytest.fixture(name="bundled_interpreter")
