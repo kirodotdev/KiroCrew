@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import asyncio.proactor_events
 import errno
+import functools
 import json
 import os
 import pathlib
@@ -17,6 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 from collections.abc import Iterator
+from types import ModuleType
 
 import pytest
 from hypothesis import HealthCheck, settings
@@ -96,7 +98,8 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None):
     the state after the test's ``monkeypatch`` has undone; autouse fixtures in one
     conftest are set up in alphabetical order and an earlier one already requests
     ``monkeypatch``, so a fixture here would be torn down first. For the same reason
-    it empties the boot-checked caches (``forget_home_bound_caches``) here.
+    it empties the boot-checked caches (``forget_home_bound_caches``) here, and
+    releases a finished ``tree_scan`` group's module memos (``release_tree_scan_memos``).
     """
     leaked: list[str] = []
     try:
@@ -108,6 +111,7 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None):
                 setattr(module, name, value)
                 leaked.append(f"{module.__name__}.{name}")
         forget_home_bound_caches()
+        release_tree_scan_memos(item, nextitem)
     if leaked:
         pytest.fail(f"test left {', '.join(leaked)} rebound (restored)", pytrace=False)
     return result
@@ -922,6 +926,46 @@ def in_tree_scan_group(item: pytest.Item) -> bool:
         return False
     name = marker.kwargs.get("name", marker.args[0] if marker.args else "")
     return isinstance(name, str) and name.startswith("tree_scan")
+
+
+def _xdist_group_name(item: pytest.Item | None) -> object:
+    marker = item.get_closest_marker("xdist_group") if item is not None else None
+    if marker is None:
+        return None
+    return marker.kwargs.get("name", marker.args[0] if marker.args else "")
+
+
+#: Test modules whose items ran in the ``tree_scan`` group this worker is inside now.
+_TREE_SCAN_GROUP_MODULES: dict[str, ModuleType] = {}
+
+
+def release_tree_scan_memos(item: pytest.Item, nextitem: pytest.Item | None) -> None:
+    """Empty the module-level ``lru_cache``s of a ``tree_scan`` group once it is done.
+
+    A tree scan memoises its corpus (file texts, parsed patch sites) in its own test
+    module so the group's tests read the tree once. pytest keeps every module object for
+    the session, so without this the memo lived for the rest of the worker:
+    ``test_facade_mirror_guards.py`` alone kept 360 MiB of test-tree text and events.
+    ``--dist loadgroup`` runs a group's items back to back on one worker, including the
+    ``test_facade_shared_checks.py`` params that reuse another module's memo, so the memo
+    is released when the next item is in a different group, never in the middle.
+    Only caches defined in the group's own modules are cleared.
+    """
+    if not in_tree_scan_group(item):
+        return
+    module = getattr(item, "module", None)
+    if module is not None:
+        _TREE_SCAN_GROUP_MODULES[module.__name__] = module
+    if nextitem is not None and _xdist_group_name(nextitem) == _xdist_group_name(item):
+        return
+    for name, owner in _TREE_SCAN_GROUP_MODULES.items():
+        for value in list(vars(owner).values()):
+            if (
+                isinstance(value, functools._lru_cache_wrapper)
+                and getattr(value, "__module__", None) == name
+            ):
+                value.cache_clear()
+    _TREE_SCAN_GROUP_MODULES.clear()
 
 
 def timeout_mark_value(marker: pytest.Mark) -> object:
