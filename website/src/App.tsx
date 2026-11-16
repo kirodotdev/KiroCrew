@@ -408,7 +408,7 @@ export default function App() {
     colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
     topReservePx, focusActive, topPeek, railPeek, topPeekTrigger, railPeekTrigger, topChromeShown,
-    gatewayStatusAnnounce, relayCrewWindow, relayRetrying, focusModeExitMsg, focusChromeInert,
+    gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, relayRetrying, focusModeExitMsg, focusChromeInert,
     localHeaderDragGaps, shellEntered, setShellEntered, shellRef, setMembersBar, advertisedNavItems,
     sortedAppGroup, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
@@ -746,6 +746,12 @@ export default function App() {
             ? `${FOCUS_INSET}px minmax(0,1fr) auto`
             : `${FOCUS_INSET}px minmax(0,1fr)`,
         }),
+        // A relay Crew pane has no header of its own (the desktop app's top bar
+        // sits above it), so the header row takes no height. Last, so it also
+        // wins over focus mode's gutter.
+        ...(relayCrewPane && {
+          gridTemplateRows: bottomDock ? '0px minmax(0,1fr) auto' : '0px minmax(0,1fr)',
+        }),
       }}
     >
       {/* Theme decoration slot (#7377). ThemeExperienceLayer portals a pack's
@@ -831,13 +837,17 @@ export default function App() {
               text it mounts with, only later changes, which is the case that
               matters (the gateway dropping mid focus mode). Only while the
               header is actually aria-hidden (focusChromeInert). */}
-          {!topChromeShown && focusChromeInert && (
+          {!relayCrewPane && !topChromeShown && focusChromeInert && (
             <span role="status" className="sr-only" data-testid="focus-gateway-status">{gatewayStatusAnnounce}</span>
           )}
         </>
       )}
 
-      <ShellHeader shell={shell} />
+      {relayCrewPane ? (
+        // The header's connection capsule is this page's live region for the
+        // gateway state; with no header, this one speaks it instead.
+        <span role="status" className="sr-only" data-testid="relay-pane-gateway-status">{gatewayStatusAnnounce}</span>
+      ) : <ShellHeader shell={shell} />}
 
       {agentSwitchNotice && <AgentSwitchNoticeBanner notice={agentSwitchNotice} />}
 

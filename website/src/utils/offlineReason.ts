@@ -10,6 +10,15 @@ export function isRelayCrewWindow(ua: string = typeof navigator === 'undefined' 
   return ua.split(' ').includes('kiroCrewRelayWindow')
 }
 
+/** True when this page is a remote Crew shown inside the desktop app's main
+ *  window, below the app's own top bar. The page then leaves out its own header,
+ *  so the window does not show two bars. Layout only: the marker is the whole
+ *  user-agent token `kiroCrewRelayPane`, which any page could claim, so it must
+ *  never decide what the page trusts. */
+export function isRelayCrewPane(ua: string = typeof navigator === 'undefined' ? '' : navigator.userAgent): boolean {
+  return ua.split(' ').includes('kiroCrewRelayPane')
+}
+
 /** True when a relay Crew window's dropped connection is still being retried:
  *  the relay neither refused it nor ended the session. The desktop app decides
  *  when retrying stops (its "currently unavailable" notice then replaces this
