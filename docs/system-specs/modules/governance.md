@@ -4540,7 +4540,11 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
 - `platform/update_fetch.py` — `fetch_and_pin_upstream`, the isolated fetch the update
   check and the unattended apply share. It fetches into a throwaway git dir so no hook in
   the checkout's config fires, and every read it makes goes through
-  `update_governance`'s guarded probe. A killed fetch keeps none of its download, so the
+  `update_governance`'s guarded probe. The dir is outside the checkout, so an `includeIf`
+  never matches there: when the caller's env leaves `credential.helper` unpinned (it reads
+  the operator's own config), the global and system `credential.*` entries are resolved
+  against the checkout and forwarded through `GIT_CONFIG_*` behind an empty
+  `credential.helper` reset; the isolated default env forwards none. A killed fetch keeps none of its download, so the
   check's deadline (`updates_check._GIT_FETCH_TIMEOUT_S`, 300s) must cover the whole
   transfer of a far-behind checkout; after every fetch, timed-out ones included, it reaps
   stale `tmp_pack_*` from the checkout's object store through `git_tmp_packs`. The
