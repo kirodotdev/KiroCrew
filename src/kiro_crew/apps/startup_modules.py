@@ -9,8 +9,12 @@ never stored, so a later disable, trust change or update applies on the next loa
   something outside the browser (:func:`eligibility_refusal`), or the request is
   not the owner's dashboard;
 * ``needs-approval``: the owner has not approved this app's startup entry at its
-  current version and code (:func:`ui_digest`);
+  current version and code (:func:`ui_matches`);
 * ``admitted``: everything above passed.
+
+The browser fetches the module, and every chunk it imports, after that read, so the
+static route checks every file it serves from an approved app's ``ui/`` against the
+per-file approval map (:func:`approved_module`) and sends only the bytes it checked.
 
 The owner approves with ``kirocrew app startup <name>``. The record is
 ``member-records/app-startup/<name>.json`` (``apps.protected_app_state``), which the
@@ -30,10 +34,11 @@ import os
 import re
 import stat
 from collections.abc import Callable
-from typing import Any
+from pathlib import Path, PurePosixPath
+from typing import Any, TypedDict
 
 from kiro_crew.apps import protected_app_state
-from kiro_crew.apps.manager_records import APP_MANIFEST_FILENAME, _read_installed, app_dir
+from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, _read_installed, app_dir
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +109,10 @@ BROWSER_ONLY_CONTRIBUTIONS = frozenset(
 #: never hashed, so it can never match an approval.
 _MAX_FILE_BYTES = 8 * 1024 * 1024
 
+#: Allow large split bundles while bounding map validation and app-list file reads.
+#: Inventory stops on the first entry past this cap, before opening any file.
+_MAX_UI_FILES = 4096
+
 
 def eligibility_refusal(raw: dict[str, Any], resources: str) -> str | None:
     """Why this app may not run a startup module, or ``None`` when all its code is in the browser.
@@ -135,8 +144,27 @@ def eligibility_refusal(raw: dict[str, Any], resources: str) -> str | None:
 _ENTRY_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(?:/[A-Za-z0-9_-][A-Za-z0-9._-]*)*")
 
 
+#: The suffixes allowed for the startup entry; serving checks every UI file type.
+MODULE_SUFFIXES = (".mjs", ".js")
+
+
 class OversizeFile(OSError):
     """A file under ``ui/`` exceeds the static route's size cap, so it cannot be hashed."""
+
+
+class FileCountExceeded(OSError):
+    """The UI tree or stored approval exceeds the file-count budget."""
+
+
+class ApprovalMismatch(Exception):
+    """The requested UI file is absent from its approval or its bytes do not match."""
+
+
+class StartupApproval(TypedDict):
+    version: str
+    entry: str
+    digest: str
+    files: dict[str, str]
 
 
 def entry_refusal(entry: str) -> str | None:
@@ -148,57 +176,154 @@ def entry_refusal(entry: str) -> str | None:
     """
     if not _ENTRY_RE.fullmatch(entry):
         return f"its ui.startup {entry!r} is not a plain path inside ui/"
-    if not entry.lower().endswith((".mjs", ".js")):
+    if not entry.lower().endswith(MODULE_SUFFIXES):
         return f"its ui.startup {entry!r} is not a .mjs or .js module"
     return None
 
 
-def ui_digest(name: str) -> str:
-    """SHA-256 over every regular file under the app's ``ui/``, each with its relative path.
+def _read_capped(fd: int, rel: str) -> bytes:
+    """Everything *fd* holds from its current offset; :class:`OversizeFile` past the cap."""
+    from kiro_crew.bounded_read import bounded_read_fd
 
-    The approval binds this, so anything changed in ``apps/<name>/ui/`` after the owner
-    approved it (which an agent shell can write) is not admitted until approved again.
-    Symlinks are skipped, as the static route refuses to serve them. The type and size
-    are checked on the opened file, and a file over the route's cap raises
-    :class:`OversizeFile`, so no approval can be taken or matched while one exists.
-    """
+    data = bounded_read_fd(fd, _MAX_FILE_BYTES + 1)
+    if len(data) > _MAX_FILE_BYTES:
+        raise OversizeFile(f"{rel} grew past the size cap")
+    return data
+
+
+def _check_file_count(count: int) -> None:
+    if count > _MAX_UI_FILES:
+        raise FileCountExceeded(f"found {count} files; startup approval cap is {_MAX_UI_FILES}")
+
+
+def _ui_paths(name: str) -> dict[str, Path]:
+    """Inventory regular files once, without reading bytes; refuse past the count cap."""
     ui = app_dir(name) / "ui"
-    digest = hashlib.sha256()
+    paths: dict[str, Path] = {}
+    for path in ui.rglob("*"):
+        if stat.S_ISREG(path.lstat().st_mode):
+            paths[path.relative_to(ui).as_posix()] = path
+            _check_file_count(len(paths))
+    return paths
+
+
+def _file_hash(path: Path, rel: str) -> str:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     flags |= getattr(os, "O_BINARY", 0)
-    for path in sorted(ui.rglob("*")):
-        if not stat.S_ISREG(path.lstat().st_mode):
-            continue
-        fd = os.open(path, flags)
-        with os.fdopen(fd, "rb") as handle:
-            st = os.fstat(fd)
-            if not stat.S_ISREG(st.st_mode):
-                continue
-            if st.st_size > _MAX_FILE_BYTES:
-                raise OversizeFile(f"{path.relative_to(ui).as_posix()} is over the size cap")
-            data = handle.read(_MAX_FILE_BYTES + 1)
-            if len(data) > _MAX_FILE_BYTES:
-                raise OversizeFile(f"{path.relative_to(ui).as_posix()} grew past the size cap")
-        digest.update(path.relative_to(ui).as_posix().encode("utf-8") + b"\0")
-        digest.update(hashlib.sha256(data).digest())
+    fd = os.open(path, flags)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(f"{rel!r} is not a regular file")
+        if st.st_size > _MAX_FILE_BYTES:
+            raise OversizeFile(f"{rel!r} is over the size cap")
+        return hashlib.sha256(_read_capped(fd, rel)).hexdigest()
+    finally:
+        os.close(fd)
+
+
+def ui_files(name: str) -> dict[str, str]:
+    """Hash the bounded regular-file inventory, skipping links and refusing oversize files."""
+    paths = _ui_paths(name)
+    return {rel: _file_hash(paths[rel], rel) for rel in sorted(paths)}
+
+
+def ui_matches(name: str, files: dict[str, str]) -> bool:
+    """Compare one inventory to the approval, stopping at the first different file.
+
+    Check the complete path set before reading bytes: an added or deleted file
+    withdraws admission without opening any UI file. Blocking: run off the loop.
+    """
+    paths = _ui_paths(name)
+    if paths.keys() != files.keys():
+        return False
+    for rel in sorted(paths):
+        if _file_hash(paths[rel], rel) != files[rel]:
+            return False
+    return True
+
+
+def _files_digest(files: dict[str, str]) -> str:
+    digest = hashlib.sha256()
+    for rel in sorted(files):
+        digest.update(rel.encode("utf-8") + b"\0")
+        digest.update(bytes.fromhex(files[rel]))
     return digest.hexdigest()
 
 
-def read_approval(name: str) -> dict[str, str] | None:
-    """The ``{"version", "entry", "digest"}`` the owner approved for *name*, or ``None``.
+def ui_digest(name: str) -> str:
+    """SHA-256 over the sorted relative paths and raw file hashes of :func:`ui_files`."""
+    return _files_digest(ui_files(name))
 
-    Absent, unreadable and malformed records all read as no approval.
+
+def approved_module(name: str, path: str, fd: int | None) -> tuple[bytes, str] | None:
+    """The bytes the static route may send, read once from its pinned descriptor.
+
+    ``None`` when the owner holds no approval: serve as usual. Otherwise the file's
+    SHA-256 must match its entry in the approval map. An unknown path, an unavailable
+    descriptor (``fd=None``), a mismatch or any fault raises. No other UI file is read.
+    A stale approval is checked too: the browser mounted from an earlier list read,
+    and ``app.json`` is agent-writable. Blocking: run off the event loop.
+    """
+    text = protected_app_state.read_startup_text(name)
+    if text is None:
+        return None
+    approval = _parse_approval(text)
+    ui = app_dir(name) / "ui"
+    rel = (ui / path).relative_to(ui).as_posix()
+    expected = approval["files"].get(rel)
+    if expected is None or fd is None:
+        raise ApprovalMismatch(f"app {name!r}: ui/{rel} is not an available approved file")
+    data = _read_capped(fd, rel)
+    if hashlib.sha256(data).hexdigest() != expected:
+        raise ApprovalMismatch(f"app {name!r}: ui/{rel} changed since the startup approval")
+    return data, approval["digest"]
+
+
+def _parse_approval(text: str) -> StartupApproval:
+    """Validate the record and its map's digest once at the storage boundary."""
+    raw = json.loads(text)
+    keys = ("version", "entry", "digest")
+    if not isinstance(raw, dict) or not all(isinstance(raw.get(key), str) for key in keys):
+        raise ValueError("startup approval must hold version, entry and digest strings")
+    files = raw.get("files")
+    if not isinstance(files, dict):
+        raise ValueError("startup approval must hold a file hash map; re-approve this app")
+    _check_file_count(len(files))
+    for rel, digest in files.items():
+        path = PurePosixPath(rel)
+        if (
+            not rel
+            or path.is_absolute()
+            or path.as_posix() != rel
+            or ".." in path.parts
+            or "\x00" in rel
+            or "\\" in rel
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            raise ValueError(f"invalid startup approval entry for {rel!r}: file path or hash")
+    if _files_digest(files) != raw["digest"]:
+        raise ValueError("startup approval digest does not match its file map")
+    return {
+        "version": raw["version"],
+        "entry": raw["entry"],
+        "digest": raw["digest"],
+        "files": files,
+    }
+
+
+def read_approval(name: str) -> StartupApproval | None:
+    """The version, entry, digest and file hashes the owner approved for *name*, or ``None``.
+
+    Absent, unreadable and malformed records all read as no approval for the app list.
     """
     try:
         text = protected_app_state.read_startup_text(name)
-        raw = json.loads(text) if text is not None else None
+        return _parse_approval(text) if text is not None else None
     except Exception:  # noqa: BLE001 -- an unreadable record approves nothing
         logger.debug("startup approval for %r unreadable; reading as none", name, exc_info=True)
         return None
-    keys = ("version", "entry", "digest")
-    if not isinstance(raw, dict) or not all(isinstance(raw.get(key), str) for key in keys):
-        return None
-    return {key: raw[key] for key in keys}
 
 
 def startup_state(
@@ -209,7 +334,7 @@ def startup_state(
     enabled: bool,
     ceiling_reason: str | None,
     eligibility: str | None,
-    approval: dict[str, str] | None,
+    approval: StartupApproval | None,
 ) -> dict[str, str]:
     """The startup state of one app that declares ``ui.startup``.
 
@@ -225,8 +350,11 @@ def startup_state(
     unapproved = {"state": "needs-approval", "reason": "the owner has not approved this code"}
     if approval is None or approval["version"] != version or approval["entry"] != entry:
         return unapproved
-    if approval["digest"] != digest():
-        return unapproved
+    try:
+        if approval["digest"] != digest():
+            return unapproved
+    except (OSError, UnicodeError, ValueError) as exc:
+        return {"state": "needs-approval", "reason": f"could not verify ui/: {exc}"}
     return {"state": "admitted", "reason": ""}
 
 
@@ -255,14 +383,19 @@ def _app_state(name: str) -> dict[str, Any] | None:
     record = _read_installed(name)
     if record is None:
         return None
+    approval = read_approval(name)
     state = startup_state(
         entry=entry,
         version=str(raw.get("version", "")),
-        digest=lambda: ui_digest(name),
+        digest=lambda: (
+            approval["digest"]
+            if approval is not None and ui_matches(name, approval["files"])
+            else ""
+        ),
         enabled=record.enabled,
         ceiling_reason=third_party_ceiling_closed(name),
         eligibility=entry_refusal(entry) or eligibility_refusal(raw, record.resources),
-        approval=read_approval(name),
+        approval=approval,
     )
     return {"entry": entry, **state}
 
@@ -286,7 +419,7 @@ def stamp_startup(apps: list[dict[str, Any]], *, owner: bool) -> None:
         app["startup"] = row
 
 
-def _store(name: str, entry: dict[str, str] | None) -> None:
+def _store(name: str, entry: StartupApproval | None) -> None:
     """Write *name*'s approval, or with ``None`` remove it. Uninstall drops it with the
     app's other owner records (``protected_app_state.forget_grants``)."""
     if entry is not None and _read_installed(name) is None:
@@ -303,20 +436,30 @@ def _operator_refusal() -> str | None:
     return agent_confinement_evidence()
 
 
-def _audit(approve: bool, name: str, outcome: str, error: str = "") -> None:
+def _audit(approve: bool, name: str, outcome: str, error: str = "", *, caller: str = "cli") -> None:
     try:
         from kiro_crew.sel import sel
 
         sel().log_api_access(
-            caller="cli",
+            caller=caller,
             operation="app_startup_approve" if approve else "app_startup_revoke",
             outcome=outcome,
-            source="cli",
+            source="cli" if caller == "cli" else "app",
             resources=name,
             error=error,
         )
     except Exception:  # noqa: BLE001 -- the audit must not change the outcome
         logger.debug("SEL audit for startup approval failed", exc_info=True)
+
+
+def withdrawal_notice(name: str, action: str) -> str:
+    """Audit a committed lifecycle withdrawal and disclose unchecked serving to its owner."""
+    reason = f"{action} dropped ui.startup"
+    _audit(False, name, "completed", reason, caller=f"app_{action}")
+    return (
+        f" Startup approval withdrawn because {reason}. "
+        "UI files are now served without startup approval checks."
+    )
 
 
 def set_approval(name: str, approve: bool) -> dict[str, Any]:
@@ -342,7 +485,7 @@ def _set_approval(name: str, approve: bool) -> dict[str, Any]:
     refusal = _operator_refusal()
     if refusal:
         return {"error": f"refused: {refusal}"}
-    entry: dict[str, str] | None = None
+    entry: StartupApproval | None = None
     if approve:
         # A revoke still runs for an app that is gone, so a stale entry can be cleared.
         if _read_installed(name) is None:
@@ -355,11 +498,19 @@ def _set_approval(name: str, approve: bool) -> dict[str, Any]:
         if bad_entry:
             return {"error": f"app {name!r}: {bad_entry}"}
         try:
-            digest = ui_digest(name)
+            files = ui_files(name)
+            digest = _files_digest(files)
         except (OSError, UnicodeError) as exc:
             return {"error": f"app {name!r}: could not hash its ui/ ({exc})"}
-        entry = {"version": str(raw.get("version", "")), "entry": declared, "digest": digest}
+        entry = {
+            "version": str(raw.get("version", "")),
+            "entry": declared,
+            "digest": digest,
+            "files": files,
+        }
     try:
+        if entry is not None:
+            entry = _parse_approval(json.dumps(entry))
         _store(name, entry)
     except FileNotFoundError as exc:
         return {"error": str(exc)}
