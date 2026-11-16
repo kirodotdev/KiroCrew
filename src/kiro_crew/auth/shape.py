@@ -16,6 +16,7 @@ import logging
 import os
 
 from kiro_crew.sandbox import is_docker_container
+from kiro_crew.shell_origin import is_remote_session
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +31,7 @@ class Transport(enum.Enum):
 class InstallShape(enum.Enum):
     DESKTOP = "desktop"  # native / bundled app, browser + gateway same machine
     CONTAINER = "container"  # local Docker/Podman; loopback works only if port-mapped
-    REMOTE = "remote"  # SSH / cloud / remote desk; remote localhost != user's laptop
-
-
-def _is_ssh_remote() -> bool:
-    return bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
+    REMOTE = "remote"  # SSH / Session Manager / cloud; remote localhost != user's laptop
 
 
 def detect_shape() -> InstallShape:
@@ -45,7 +42,7 @@ def detect_shape() -> InstallShape:
     if forced in {s.value for s in InstallShape}:
         return InstallShape(forced)
 
-    if _is_ssh_remote():
+    if is_remote_session():
         return InstallShape.REMOTE
     if is_docker_container():
         return InstallShape.CONTAINER

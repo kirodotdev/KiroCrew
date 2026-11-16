@@ -536,6 +536,38 @@ def _doctor_running_version(port: int, issues: list[str]) -> None:
         issues.append("gateway restart needed (running version differs from on-disk)")
 
 
+def _doctor_remote_access_hint(port: int) -> None:
+    """Print how to reach the dashboard from a laptop, on an SSH or Session Manager shell.
+
+    The tunnel target is the address the SSH client connected to when it is
+    globally routable. Otherwise it is a placeholder with the machine's own name
+    beside it as a hint: on a cloud VM that name is a private one a laptop
+    outside the network cannot resolve.
+    """
+    from kiro_crew import shell_origin
+
+    is_ssh = shell_origin.is_ssh_session()
+    if not is_ssh and not shell_origin.is_ssm_session():
+        return
+    server = shell_origin.ssh_server_address() if is_ssh else None
+    host = server or "<the host you reach this box on>"
+    print("\n  💡 Remote access: Run on your LOCAL machine:")
+    print(f"     ssh -NL {port}:localhost:{port} {host}")
+    if server is None:
+        mh = cli_doctor.machine_hostname()
+        if mh and mh != "localhost":
+            print(f"     (this machine calls itself {mh})")
+    if not is_ssh:
+        # The port-forward document name is owned by the cloud SSM module.
+        from kiro_crew.cloud.ssm import _PORT_FORWARD_DOC
+
+        print(
+            f"     or Session Manager: {_PORT_FORWARD_DOC} "
+            f"(localPortNumber={port}, portNumber={port})"
+        )
+    print("     Then run: kirocrew token")
+
+
 def _doctor_gateway_reachability(dashboard: DashboardBinding, issues: list[str]) -> None:
     """The ``Connectivity`` rows after the kiro-cli one: is the gateway up, and does
     it enforce token auth off loopback."""
@@ -543,7 +575,6 @@ def _doctor_gateway_reachability(dashboard: DashboardBinding, issues: list[str])
     # Check if gateway is running — connect to 127.0.0.1 (loopback)
     # to avoid DNS resolution issues with the configured hostname.
     # Any HTTP response (even 401/403 from token auth) means the gateway is up.
-    is_remote = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
 
     if _port:
         gateway_up = False
@@ -580,12 +611,7 @@ def _doctor_gateway_reachability(dashboard: DashboardBinding, issues: list[str])
         if gateway_up:
             _doctor_running_version(_port, issues)
 
-        # SSH tunnel hint for remote hosts
-        if is_remote:
-            mh = cli_doctor.machine_hostname() or "this-host"
-            print("\n  💡 Remote access: Run on your LOCAL machine:")
-            print(f"     ssh -NL {_port}:localhost:{_port} {mh}")
-            print("     Then run: kirocrew token")
+        _doctor_remote_access_hint(_port)
 
     # Verify token auth is enforced on non-loopback (security check)
     if _port and not _local:

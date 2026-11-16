@@ -233,6 +233,8 @@ class _Host:
         mp.setattr(cli_doctor, "describe", lambda a: ["surface: cron", "job: nightly"])
         mp.setattr(cli_doctor, "job_pause_state_from_disk", lambda job_id: self.paused)
         mp.setattr(cli_doctor, "machine_hostname", lambda: "devbox")
+        # A host that is itself under Session Manager must not change the report.
+        mp.setattr("kiro_crew.shell_origin.is_ssm_session", lambda: False)
         mp.setattr(cli_doctor, "is_local_only", lambda host, has_slack: self.local)
         import kiro_crew._sqlite_compat as sqlite_compat
         import kiro_crew.channels as channels
@@ -816,7 +818,8 @@ Connectivity
                Fix: `kirocrew restart` (the gateway still runs the old code)
 
   💡 Remote access: Run on your LOCAL machine:
-     ssh -NL 9999:localhost:9999 devbox
+     ssh -NL 9999:localhost:9999 <the host you reach this box on>
+     (this machine calls itself devbox)
      Then run: kirocrew token
   auth check:  ❌ external access allowed without token!
 

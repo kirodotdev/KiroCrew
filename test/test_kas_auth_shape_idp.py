@@ -24,6 +24,7 @@ def _clear_env(monkeypatch):
         "SSH_CLIENT",
     ):
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr("kiro_crew.shell_origin.is_ssm_session", lambda: False)
 
 
 # ---- shape detection -----------------------------------------------------------
