@@ -541,8 +541,9 @@ answers whether the `chat_runtime_sharing` preview is ready to be on by default:
 who turned it on, what it saved, whether a shared chat's turn starts later, and
 how many chats one crash takes down. Adoption is
 `kirocrew.inventory.config.toggle{key=preview_chat_runtime_sharing}`. `tenants` is
-the chat lease count on the process (`0` / `1` / `2` / `3` / `4+`); `2` and up is
-a shared process.
+the chat lease count on the process (`0` / `1` / `2` / `3` / `4-7` / `8-10` /
+`11+`; `8-10` holds the default per-process cap of 10); `2` and up is a shared
+process. Releases before this split reported every count from 4 up as `4+`.
 
 | Metric | Attributes |
 |---|---|
@@ -552,7 +553,7 @@ a shared process.
 | `kirocrew.chat_runtime_share.rss_sampled` | `tenants`, `rss` (`le_512m` … `gt_8g`); one per shared process per RSS watchdog tick |
 | `kirocrew.chat_runtime_share.reclaimed` | `reason` (`rss`) |
 | `kirocrew.chat_runtime_share.process_died` | `expected` (`true` / `false`), `tenants` |
-| `kirocrew.chat_runtime_share.turn_started` | `tenants`, `delay` (`le_1s` … `gt_60s`, prompt written to first event), `harness` |
+| `kirocrew.chat_runtime_share.turn_started` | `tenants`, `delay` (`le_1s` … `gt_60s`, prompt written to first event), `shared` (`true` / `false`: whether the process was placed by sharing; every unshared turn, preview off included, reads `false`), `harness` |
 | `kirocrew.chat_runtime_share.turn_ended` | `tenants`, `outcome` (the `kirocrew.turn.completed` outcome set), `harness` |
 | `kirocrew.chat_runtime_share.kas_queued` | `tenants` |
 | `kirocrew.kas.engine_install` | `outcome` (`installed` / `failed` / `host_unsupported`), `caller` (`spawn` / `dashboard` / `other`) |
