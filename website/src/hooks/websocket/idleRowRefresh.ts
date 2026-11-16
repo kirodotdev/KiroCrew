@@ -14,7 +14,11 @@
  *  every idle row writes that one, including a row that found the pane
  *  already idle and dispatched no refresh, and the `_done` reducer writes it
  *  before the turn completion owner runs. Only this record says the refresh
- *  was dispatched. */
+ *  was dispatched.
+ *
+ *  The same record covers an on-screen pane that is not the active slot: its
+ *  idle row dispatches the warm `chat_done` would, and the `_done` that
+ *  follows skips its own warm. */
 import type { TurnIdentityFields } from '../../types'
 import { wireTurnIdentity } from '../../store/chatSlice'
 

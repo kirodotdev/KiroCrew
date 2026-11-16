@@ -71,6 +71,7 @@ const MORE_ROWS: ChatMessage[] = [
 /** Session reconnect, model-session rebuild and cancelled-replay rows. */
 const RECOVERY_ROWS: ChatMessage[] = [
   row("notice", "⚠️ claude-opus is throttled — running on claude-sonnet until claude-opus recovers.", {"notice": "model_throttled_fallback", "notice_args": {"primary": "claude-opus", "fallback": "claude-sonnet"}}),
+  row("notice", "⚠ claude-opus keeps returning server errors — running on claude-sonnet until claude-opus recovers.", {"notice": "model_server_error_fallback", "notice_args": {"primary": "claude-opus", "fallback": "claude-sonnet"}}),
   row("error", "⟳ The agent lost this chat's session — reconnecting…", {"notice": "session_reconnecting", "kind": "transient_retry"}),
   row("error", "❌ Could not reconnect this chat's session. Send your message again, or start a new chat if this keeps happening.", {"notice": "session_reconnect_give_up"}),
   row("error", "⟳ The agent could not load its cloud credentials — restarting it to load them again…", {"notice": "credentials_reloading", "kind": "transient_retry"}),

@@ -24,7 +24,7 @@ import { isChatPageSurface } from '../utils/channelOrigin'
 import { isNoteRow } from '../lib/noteContract'
 import { isUntitledSession } from '../utils/sessionDisplayTitle'
 import type { RootState } from './index'
-import type { ChatMessage, SideSnapshot, TurnIdentityFields } from '../types'
+import type { ChatMessage, ChatSlot, SideSnapshot, TurnIdentityFields } from '../types'
 import { SOFT_STOP_DEBOUNCE_MS } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { forgetSlotUploadFailure } from '../utils/slotUploadFailures'
@@ -687,10 +687,12 @@ export const deleteSlot = createAsyncThunk<
     if (root.chat.activeSlot === key) {
       // A Crew Mode worker is its conductor's, never where a close lands: not by
       // the sidebar's displayed order (where it may sit right under its root) and
-      // not by recency. Both sets leave it out.
-      const sameSurface = new Set(root.dashboard.slots.filter(s => !crewRootOf(s) && slotSurfaceKey(s) === deletedSurface).map(s => s.key))
+      // not by recency. Both sets leave it out, and a conversation the Slack list
+      // setting leaves out (`slack_list_hidden`) too, as `autoOpenRows` does.
+      const landable = (s: ChatSlot) => !crewRootOf(s) && !s.slack_list_hidden
+      const sameSurface = new Set(root.dashboard.slots.filter(s => landable(s) && slotSurfaceKey(s) === deletedSurface).map(s => s.key))
       const sidebarSurface = isChatPageSurface(deletedSurface)
-        ? new Set(root.dashboard.slots.filter(s => !crewRootOf(s) && isChatPageSurface(slotSurfaceKey(s))).map(s => s.key))
+        ? new Set(root.dashboard.slots.filter(s => landable(s) && isChatPageSurface(slotSurfaceKey(s))).map(s => s.key))
         : sameSurface
       // Land on the sidebar row below the closed one (above at the bottom): the
       // tab-strip landing rule, applied to the sidebar's displayed order. The

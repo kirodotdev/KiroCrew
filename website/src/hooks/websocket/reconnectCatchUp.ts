@@ -57,6 +57,7 @@ export interface ReconnectSnapshotWait {
 export function createReconnectSnapshotWait(
   dispatch: AppDispatch,
   reconnectingRef: MutableRefObject<boolean>,
+  queryClient?: QueryClient,
 ): ReconnectSnapshotWait {
   let count = 0
   let open = 0  // the window holding `reconnectingRef`, 0 when none
@@ -67,8 +68,17 @@ export function createReconnectSnapshotWait(
     open = 0
     reconnectingRef.current = false
   }
-  const readList = (gen: number): void => {
-    void dispatch(fetchSlots()).finally(() => close(gen))
+  const readList = (gen: number, warmPanes = false): void => {
+    void dispatch(fetchSlots()).finally(() => {
+      close(gen)
+      // No snapshot means no first list, which is what warms the mounted
+      // panes that are not the active slot (`useSlotListSync`): warm them here.
+      if (!warmPanes || !queryClient) return
+      const active = store.getState().chat.activeSlot
+      for (const slot of observedPaneSlots(queryClient)) {
+        if (slot !== active) dispatch(warmSlotCache(slot))
+      }
+    })
   }
   return {
     arm() {
@@ -80,7 +90,7 @@ export function createReconnectSnapshotWait(
       timer = setTimeout(() => {
         if (waiting !== gen) return
         waiting = 0
-        readList(gen)
+        readList(gen, true)
       }, RECONNECT_SNAPSHOT_WAIT_MS)
     },
     onSlots(rows) {
@@ -219,13 +229,14 @@ export function runReconnectCatchUp(ws: WebSocket, ctx: CatchUpContext): void {
   // split nothing is dispatched. The catch keeps a corrupt persisted
   // layout from aborting the rest of reconnect setup (resubscribes and
   // focus re-announce below).
-  const warmed = new Set<string>()
   if (active) {
     try {
       const liveKeys = new Set(store.getState().dashboard.slots.map(s => s.key))
+      // A member a mounted pane shows is warmed by the connection's first
+      // `slots` list instead (`useSlotListSync`), once, after registration.
+      const onScreen = new Set(observedPaneSlots(queryClient))
       for (const member of new Set(sessionSlots(loadLayout(anchorForSlot(active))))) {
-        if (member !== active && liveKeys.has(member)) {
-          warmed.add(member)
+        if (member !== active && liveKeys.has(member) && !onScreen.has(member)) {
           dispatch(warmSlotCache(member))
         }
       }
@@ -238,28 +249,10 @@ export function runReconnectCatchUp(ws: WebSocket, ctx: CatchUpContext): void {
       console.warn('reconnect split-pane warm skipped', err)
     }
   }
-  // A mounted ChatPane whose slot is NEITHER the active slot NOR one of
-  // its split members — the Crew Members DM thread is the standing case:
-  // its `member-<slug>` slot never becomes the Redux active slot and no
-  // persisted split names it — is covered by neither branch above. The
-  // same fire-and-forget frames it lives on (tool_result, a later
-  // tool_call, the final _done) are lost across the drop, and the pane's
-  // own hydrate query is one-shot (staleTime Infinity), so without this
-  // warm the pane keeps rendering the tool-call row it held when the
-  // socket died — for good, until a remount. The observed hydrate queries
-  // are the registry of on-screen panes (api/slotMessagesQuery.ts): warm
-  // each once through the same sanctioned path, which reconciles the rows
-  // to the server's canonical transcript, settles the run indicator to
-  // the server's answer (idle when the turn ended, streaming when one
-  // started during the outage) unless a live frame ordered after the
-  // warm already wrote it, and raises the chunk replay floor when the
-  // turn is still live. The active slot is skipped here and
-  // again inside the thunk.
-  for (const slot of observedPaneSlots(queryClient)) {
-    if (slot === active || warmed.has(slot)) continue
-    warmed.add(slot)
-    dispatch(warmSlotCache(slot))
-  }
+  // A mounted ChatPane that is neither the active slot nor a split member
+  // above (a Crew Members thread is the standing case) is warmed by the
+  // connection's first `slots` list (`useSlotListSync`), which arrives after
+  // the gateway registered this socket, so it is not warmed again here.
   // Eagerly subscribe to subagent events so chunks arrive even when
   // Activity Panel isn't open — final result still comes via done event.
   dispatch(clearSubagentsForSnapshot())

@@ -121,7 +121,7 @@ class TestList:
     async def test_empty(self, isolated_store, patch_restricted) -> None:
         resp = await api_artifacts_list(_request())
         assert resp.status == 200
-        assert _json_body(resp) == {"artifacts": []}
+        assert _json_body(resp) == {"artifacts": [], "output_cap": 200}
 
     @pytest.mark.asyncio
     async def test_returns_items(self, isolated_store, patch_restricted, monkeypatch) -> None:

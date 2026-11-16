@@ -39,6 +39,8 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
   session_folder?: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
+  /** `slack.show_in_session_list`: list conversations that start in Slack in the session list (on by default). */
+  show_in_session_list?: boolean
   /** `slack.code_channel_dispatch`: let a code channel's conductor hand work to
    *  worker sessions. Its own opt-in under Code channels; off by default. */
   code_channel_dispatch?: boolean
@@ -160,6 +162,8 @@ export interface SlackConfigSave extends Partial<Record<SlackCodeSwitchKey, bool
   session_folder?: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
+  /** `slack.show_in_session_list`: list conversations that start in Slack in the session list (on by default). */
+  show_in_session_list?: boolean
   /** Sent only when changed; turning Code channels on never sends it. */
   code_channel_dispatch?: boolean
   /** Keys sent replace the stored value (null clears); omitted keys are kept. */

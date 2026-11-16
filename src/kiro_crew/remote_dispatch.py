@@ -15,6 +15,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+#: The words a crew's headroom reports per login tool (RFC §4): ``valid``,
+#: ``expired``, or ``unknown`` while its first check is still running. The tools
+#: are the ones ``git_gateway.readiness_tool`` names (gh, glab, az). The tag
+#: vocabulary lives with its config key, ``config.service_sections``.
+LOGIN_VALID = "valid"
+LOGIN_EXPIRED = "expired"
+LOGIN_UNKNOWN = "unknown"
+
+
 #: The refusal code for a ``crew=`` call while the switch is off.
 REMOTE_DISPATCH_DISABLED = "remote_dispatch_disabled"
 
