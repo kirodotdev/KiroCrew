@@ -1354,9 +1354,10 @@ class TestSshFloorNestingDepth:
         assert calls[0] == ssh._MAX_SSH_READING_DEPTH
 
     def test_the_gate_refuses_a_nest_past_the_bound_without_an_exception(self):
-        assert _denied_by(_nested_double_quoted(128, "true; echo ssh")) == (
-            "sandbox-escape-ssh-self"
-        )
+        # Past 32 substitutions the deny gate's own depth cap refuses the command
+        # before any floor walks it, so the ssh floor's rule never gets to name it.
+        verdict = is_denied(_nested_double_quoted(128, "true; echo ssh"))
+        assert verdict is not None and "substitution nesting deeper than 32" in verdict
 
     def test_the_readings_open_at_once_stop_at_the_bound(self):
         from kiro_crew.security import argv_floor_ssh as ssh
