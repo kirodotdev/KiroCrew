@@ -961,6 +961,11 @@ def pytest_runtest_protocol(item, nextitem):
         item.ihook.pytest_runtest_logreport(report=report)
         if _pytest.runner.check_interactive_exception(call, report):
             item.ihook.pytest_exception_interact(node=item, call=call, report=report)
+    # The escape skipped runtestprotocol's own last step; without it the item keeps
+    # its rebuilt request and fixture values for the rest of the worker.
+    if hasattr(item, "_request"):
+        item._request = False
+        item.funcargs = None
     item.ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
     outcome.force_result(True)
 

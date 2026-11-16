@@ -434,6 +434,8 @@ def _drive_protocol(root, *, logged_phases, protocol_duration, teardown_duration
         ihook=ihook,
         location=("test_escape.py", 0, "test_victim"),
         config=SimpleNamespace(getoption=lambda name, default=None: default),
+        _request=object(),
+        funcargs={"tracked": object()},
     )
     outcome = SimpleNamespace(
         excinfo=_failed_escape_excinfo(),
@@ -476,6 +478,7 @@ def _drive_protocol(root, *, logged_phases, protocol_duration, teardown_duration
 
     return SimpleNamespace(
         nodeid=nodeid,
+        item=item,
         makereport_calls=makereport_calls,
         logged_reports=logged_reports,
         finishes=finishes,
@@ -551,6 +554,30 @@ def test_all_phases_already_logged_emits_no_extra_report():
     assert result.interacts == []
     assert result.force_results == [True]
     assert result.finishes == [result.nodeid]
+
+
+@pytest.mark.parametrize(
+    "logged_phases",
+    [
+        [("setup", 1.0)],
+        [("setup", 1.0), ("call", 1.0)],
+        [("setup", 1.0), ("call", 1.0), ("teardown", 1.0)],
+    ],
+    ids=["no-call", "no-teardown", "all-logged"],
+)
+def test_an_escape_drops_the_request_as_runtestprotocol_would(logged_phases):
+    """The escape skips runtestprotocol's last step, so the guard must take it.
+
+    Otherwise the item keeps its rebuilt request and fixture values for the rest of
+    the worker, and a later test checking that no other item holds one fails.
+    """
+    root = _load_root_conftest()
+    result = _drive_protocol(
+        root, logged_phases=logged_phases, protocol_duration=10.0, teardown_duration=0.0
+    )
+
+    assert result.item._request is False
+    assert result.item.funcargs is None
 
 
 def test_a_non_failed_outcome_is_left_untouched():
