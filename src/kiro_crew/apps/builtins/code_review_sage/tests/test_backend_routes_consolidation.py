@@ -15,6 +15,7 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+import pytest
 from sage_lib import learning
 
 from kiro_crew.apps.builtins.code_review_sage.tests.backend_routes_helpers import (
@@ -104,8 +105,13 @@ class TestConsolidationCannotResurrectADeletedNamespace(unittest.IsolatedAsyncio
     depends on -- because the guard is only sound while that property holds.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         self.mod = _load_routes_module()
@@ -115,7 +121,6 @@ class TestConsolidationCannotResurrectADeletedNamespace(unittest.IsolatedAsyncio
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     _MD = (
         "### A learned rule <!-- scope:common --> <!-- impact:high -->"

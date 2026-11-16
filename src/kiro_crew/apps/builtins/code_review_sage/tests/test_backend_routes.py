@@ -8,14 +8,14 @@ driver thread cannot survive a restart)."""
 import asyncio
 import json
 import os
-import shutil
 import sys
-import tempfile
 import threading
 import types
 import unittest
 import unittest.mock
 from pathlib import Path
+
+import pytest
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.code_review_sage.tests.backend_routes_helpers import (
@@ -34,8 +34,13 @@ from sage_lib import review_pool as _rp  # noqa: E402
 
 
 class TestRunsPersistence(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         self.mod = _load_routes_module()
@@ -46,7 +51,6 @@ class TestRunsPersistence(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_save_then_load_roundtrip(self):
         self.mod._RUNS = [{"run_id": "a1", "status": "done", "changes": ["CR-1"]}]
@@ -161,8 +165,13 @@ class TestRecordReviewedDelivery(unittest.TestCase):
       * The entry is keyed by the collision-free reviewed key (github.com/o/r#n),
         NOT the lossy change-id."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         self.mod = _load_routes_module()
@@ -172,7 +181,6 @@ class TestRecordReviewedDelivery(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _run(self, *, posted, expected):
         url = "https://github.com/acme/repo/pull/1"
@@ -211,8 +219,13 @@ class TestUnderLockRededup(unittest.TestCase):
     reviewed index AND the in-flight claim registry before it owns a change, so a
     PR another run just recorded (or is reviewing right now) is not re-reviewed."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         self.mod = _load_routes_module()
@@ -225,7 +238,6 @@ class TestUnderLockRededup(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _run(self, force=False, run_id="r1"):
         url = "https://github.com/acme/repo/pull/1"
@@ -427,8 +439,13 @@ class TestProgressCallback(unittest.TestCase):
 
 
 class TestHandlers(unittest.IsolatedAsyncioTestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         self.mod = _load_routes_module()
@@ -439,7 +456,6 @@ class TestHandlers(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     async def test_runs_includes_pool_stats(self):
         self.mod._RUNS = [{"run_id": "r1", "status": "done"}]
@@ -532,8 +548,13 @@ class TestSettingsModelValidation(unittest.TestCase):
     cli.json overlay) must be validated against the known-model allowlist so raw
     request input never reaches the subprocess config (security-controls)."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         self.mod = _load_routes_module()
@@ -544,7 +565,6 @@ class TestSettingsModelValidation(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_known_model_accepted(self):
         known = self.mod._KNOWN_MODELS[0]
@@ -585,8 +605,13 @@ class TestLearningsEndpoint(unittest.IsolatedAsyncioTestCase):
     candidate (staged-but-not-yet-consolidated) learnings, so the dashboard can
     render the self-learning state. Read-only: it must never mutate on-disk files."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         self.mod = _load_routes_module()
@@ -598,7 +623,6 @@ class TestLearningsEndpoint(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _req(self, namespace=None):
         class _Req:
