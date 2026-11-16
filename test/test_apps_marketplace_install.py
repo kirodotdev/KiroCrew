@@ -177,9 +177,16 @@ _HOSTILE = {
     "setuid": [(_entry("bin/tool", stat.S_IFREG | stat.S_ISUID | 0o755), b"x")],
     "control_char": [(_entry("bad\x01name"), b"x")],
     "too_deep": [(_entry("d/" * 17 + "f"), b"x")],
-    "ratio_bomb": [(_entry("bomb.bin"), b"\0" * (4 * 1024 * 1024))],
-    "entry_too_large": [(_entry("big.bin"), bytes(range(256)) * (26 * 4096))],
+    # The two oversized bodies are built by the test that uses them: a module-level
+    # payload is held by every xdist worker for the whole run (30 MiB each here).
+    "ratio_bomb": [(_entry("bomb.bin"), lambda: b"\0" * (4 * 1024 * 1024))],
+    "entry_too_large": [(_entry("big.bin"), lambda: bytes(range(256)) * (26 * 4096))],
 }
+
+
+def _hostile_members(case: str) -> list:
+    """The members of ``_HOSTILE[case]``, with a deferred body built now."""
+    return [(info, body() if callable(body) else body) for info, body in _HOSTILE[case]]
 
 
 @pytest.mark.parametrize("case", sorted(_HOSTILE))
@@ -191,7 +198,7 @@ def test_hostile_zip_is_refused_and_nothing_lands_outside_staging(case, app_home
     )
 
     before = _outside_staging(app_home)
-    client = FakeMarketClient(payload=_zip_with(_HOSTILE[case]))
+    client = FakeMarketClient(payload=_zip_with(_hostile_members(case)))
 
     with pytest.raises(MarketInstallError):
         prepare_market_install(client, REF)

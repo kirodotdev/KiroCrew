@@ -657,13 +657,15 @@ def test_only_the_owner_can_import(world, monkeypatch, tmp_path, auth):
         (_zip(_bundle(agent_DOT_json={"allowedTools": ["*"]})), ZIP, "grant_in_bundle"),
         (_zip(_bundle()), {"Content-Type": "text/plain"}, "invalid_content_type"),
         (_zip(_bundle()), {"Content-Type": "application/octet-stream"}, "invalid_content_type"),
-        (b"x" * (crewmate_bundle.FILE_MAX_BYTES + 1), ZIP, "too_large"),
+        # Built in the test: a parametrize literal is held by every worker all run.
+        (lambda: b"x" * (crewmate_bundle.FILE_MAX_BYTES + 1), ZIP, "too_large"),
     ],
     ids=["grant", "text-plain", "octet-stream", "over-8-mib"],
 )
 def test_a_refused_file_raises_no_card_and_keeps_nothing(
     world, monkeypatch, tmp_path, data, headers, code
 ):
+    data = data() if callable(data) else data
     store, writes = CardStore(tmp_path / "c.json"), _Writes()
 
     async def go(c, app):

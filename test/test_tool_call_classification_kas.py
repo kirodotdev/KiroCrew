@@ -860,7 +860,9 @@ class TestKasMcpServedIdentity:
 
     @pytest.mark.parametrize(
         "server",
-        ["s" * 513, "s" * (8 * 1024 * 1024), "", None, ["probefs"]],
+        # The 8 MiB name is built in the test: a parametrize literal is held by every
+        # xdist worker for the whole run.
+        ["s" * 513, lambda: "s" * (8 * 1024 * 1024), "", None, ["probefs"]],
         ids=["over-bound", "8MiB", "empty", "none", "list"],
     )
     def test_an_oversized_or_malformed_server_name_on_the_frame_is_read_as_absent(
@@ -872,6 +874,8 @@ class TestKasMcpServedIdentity:
         characters): a repeated 8 MiB ``serverName`` retains nothing. The kiro-cli
         ``mcpServerName`` channel is a first-class path and reads as it always did
         (a string verbatim, anything else absent), gaining no bound (H13)."""
+        if callable(server):
+            server = server()
         frame = dict(self._TOOL_CALL)
         frame["_meta"] = {"kiro": {"serverName": server, "toolOrigin": "client"}}
         identity = classify_tool_call(frame)
