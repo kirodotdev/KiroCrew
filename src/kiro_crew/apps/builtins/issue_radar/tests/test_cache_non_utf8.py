@@ -10,11 +10,11 @@ disk for the next refresh to replace. The investigation record is not a cache, s
 it is left to raise rather than be replaced.
 """
 
-import shutil
-import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
+
+import pytest
 
 from kiro_crew.apps.builtins.issue_radar.backend import (
     store_ai,
@@ -34,9 +34,17 @@ _NON_UTF8_BYTES = b'{"schema": 1, "note": "caf\x80"}'
 
 
 class TestIssueRadarCachesReadNonUtf8AsAMiss(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand the test pytest's per-test directory for the radar store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.tmp = self._tmp_path
 
     def _plant(self, path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)

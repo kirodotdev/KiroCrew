@@ -20,10 +20,9 @@ not this contract.
 """
 
 import json
-import shutil
-import tempfile
 import unittest
-from pathlib import Path
+
+import pytest
 
 from kiro_crew.apps.builtins.issue_radar.backend import store
 
@@ -38,9 +37,17 @@ _NON_OBJECT = "[]"
 
 
 class TestCacheReadersTreatANonObjectRootAsAMiss(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand the test pytest's per-test directory for the radar store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.tmp = self._tmp_path
 
     def test_issues_cache_reads_as_a_miss(self):
         store.write_issues_cache(OWNER, REPO, [{"number": 1}], root=self.tmp)
