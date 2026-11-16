@@ -47,6 +47,10 @@ const ENTRIES = [
     path: 'agent.sandbox', type: 'string', label: 'Sandbox',
     help: '', defaultValue: 'auto', requiresRestart: true, allSettings: { mode: 'control', page: { tab: 'developer', sub: 'config' } },
   },
+  {
+    path: 'memory.extraction_instructions', type: 'string', label: 'Extraction instructions',
+    help: '', defaultValue: '', allSettings: { mode: 'edit', control: 'str', resettable: true, max_len: 2000 },
+  },
   // Not listed: the gateway sent no allSettings record.
   { path: 'agent.env', type: 'object', label: 'Agent env', help: '', defaultValue: {} },
 ]
@@ -376,6 +380,18 @@ describe('AllSettingsList', () => {
     const row = await waitFor(() => rowFor('agent.dangerously_skip_permissions'))
     expect(within(row).getByText('Read only')).toBeTruthy()
     expect(within(row).getByText('Read only: it decides what the agent may run, or do without asking you.')).toBeTruthy()
+  })
+
+  it('edits a long text value in a box that keeps its line breaks', async () => {
+    renderWithProviders(<AllSettingsList />)
+    const row = await waitFor(() => rowFor('memory.extraction_instructions'))
+    const box = within(row).getByRole('textbox', { name: 'Extraction instructions' })
+    expect(box.tagName).toBe('TEXTAREA')
+    fireEvent.change(box, { target: { value: 'keep build commands\nnever store names' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(api.patchConfig).not.toHaveBeenCalled()
+    fireEvent.blur(box)
+    await waitFor(() => expect(api.patchConfig).toHaveBeenCalledWith('memory.extraction_instructions', 'keep build commands\nnever store names', undefined))
   })
 
   it('offers no Undo after a successful save or reset', async () => {

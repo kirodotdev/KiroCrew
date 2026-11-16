@@ -14,10 +14,10 @@ This module answers, per schema path:
 
 Booleans, numbers and enums are editable unless :data:`READONLY_PATHS` names
 them, a channel tag marks them, or this build locks them. Free text and string
-lists stay read-only unless :data:`TEXT_EDIT_PATHS` names them, because a path,
-a URL or a command line is where a careless value does the most harm. A key that
-changes who may reach the agent, what it may run or what it may skip asking is
-read-only here: its own page does the checks a plain write cannot.
+lists are editable when :data:`TEXT_EDIT_PATHS` names them, each with a check
+that fits its type (an absolute path, an http(s) URL, a one-line name). A key
+that changes who may reach the agent, what it may run or what it may skip asking
+is read-only here: its own page does the checks a plain write cannot.
 
 A generic rule is never added to ``_EDITABLE_CONFIG``, so a change card (which
 reads only that table) cannot propose one of these keys.
@@ -26,7 +26,16 @@ reads only that table) cannot propose one of these keys.
 from __future__ import annotations
 
 import functools
+from collections.abc import Callable
 from typing import Any
+
+from kiro_crew.dashboard.handlers.config_all_settings_checks import (
+    TEXT_CHECKS as _EXTRA_TEXT_CHECKS,
+)
+from kiro_crew.dashboard.handlers.config_all_settings_checks import stored_value as _stored_value
+from kiro_crew.dashboard.handlers.config_all_settings_checks import (
+    text_max_len,
+)
 
 #: Why a read-only row cannot be changed here, as the code the page turns into
 #: plain words (``settings.advanced.why_<code>``).
@@ -147,6 +156,67 @@ READONLY_REASONS: dict[str, str] = {
     # write to the top-level path would change nothing.
     "observe_max_messages": WHY_ALIAS,
     "observe_ttl_hours": WHY_ALIAS,
+    "slack_dm_activation": WHY_ALIAS,
+    # The old name of mcp_gateway.stub_servers, read only while that key is absent.
+    "mcp_gateway.poolable_servers": WHY_ALIAS,
+    # Free text that decides what the agent may run, read or write.
+    # Directories the OS sandbox keeps read-only, the holes in them, and where a
+    # subagent may be started.
+    "agent.sandbox_readonly_paths": WHY_SAFETY,
+    "agent.sandbox_readonly_exceptions": WHY_SAFETY,
+    "agent.subagent_cwd_allowed_roots": WHY_SAFETY,
+    # Where MCP server programs are looked up, and the agent specs each session loads.
+    "mcp.extra_path_dirs": WHY_SAFETY,
+    "mcp_gateway.overlay_dir": WHY_SAFETY,
+    # The Strands project's code runs outside the tool gate; the fingerprint is the
+    # person's confirmation of the version that may run.
+    "agent.strands_project": WHY_SAFETY,
+    "agent.strands_project_sha256": WHY_SAFETY,
+    # Roots an artifact may be moved into, beyond the home directory.
+    "publish.relocate_roots": WHY_SAFETY,
+    # Free text that decides who or what can be reached.
+    # The logo route serves this file to anyone who can open the sign-in page.
+    "dashboard.avatar": WHY_REACH,
+    "dashboard.tailscale.allowed_logins": WHY_REACH,
+    "knowledge.doc_ingest_hosts": WHY_REACH,
+    "dashboard.github_hosts": WHY_REACH,
+    "dashboard.gitlab_hosts": WHY_REACH,
+    "dashboard.jira_hosts": WHY_REACH,
+    "dashboard.bitbucket_server_hosts": WHY_REACH,
+    "dashboard.gerrit_hosts": WHY_REACH,
+    "mcp_gateway.socket_path": WHY_REACH,
+    "tunnel.relay_lease_url": WHY_REACH,
+    "tunnel.relay_viewer_cps_url": WHY_REACH,
+    "tunnel.relay_viewer_relay_domain": WHY_REACH,
+    "tunnel.relay_handle_email_domains": WHY_REACH,
+    # Free text that decides how a sign-in or a shared credential is used.
+    "tunnel.relay_lease_token_type": WHY_SIGN_IN,
+    "tunnel.relay_viewer_oidc_scope_prefix": WHY_SIGN_IN,
+    "mcp_gateway.pool_identity_env": WHY_SIGN_IN,
+    # Free text that names where activity is sent.
+    "telemetry.beacon_endpoint": WHY_SHARE,
+    "publish.allowed_destinations": WHY_SHARE,
+    # PUT /api/config/default-agent writes it: a template name goes to
+    # agent.default_agent, and a name that is no Bot alias is refused, since the
+    # loader would replace it with another Bot on the next load.
+    "default_agent": WHY_OWNED,
+    # POST /api/mcp-gateway/servers/stub writes it after freezing the resolved
+    # set, so a server the deprecated alias still stubs is not dropped.
+    "mcp_gateway.stub_servers": WHY_OWNED,
+    # Written together with apps_trusted on Settings -> Security -> Apps.
+    "agent.apps_trusted_local": WHY_OWNED,
+    # PUT /api/config/theme writes it, and the browser's theme state reads it.
+    "dashboard.theme_color": WHY_OWNED,
+    # The memory setup writes it with the model's stamp
+    # (memory_embeddings.py api_memory_enable_embeddings).
+    "memory.embed_model_id": WHY_OWNED,
+    # Kiro Crew records an app here once it installed it by default; removing a
+    # name (or Reset) installs that app again on the next start
+    # (apps/default_installs.py reconcile_default_installs).
+    "agent.apps_default_installs_applied": WHY_MARKER,
+    # Managed by the memory setup as a model is applied.
+    "memory.embed_rebuild_generation": WHY_MARKER,
+    "memory.embed_model_legacy_ids": WHY_MARKER,
 }
 
 #: Every key the page never changes by name (the reasons table's keys).
@@ -282,6 +352,13 @@ _OWNING_PAGES: dict[str, dict[str, str]] = {
         "sub": "feature-previews",
         "highlight": "developer.decisions",
     },
+    # PUT /api/decisions/provider writes it with the endpoint, under its lock and
+    # consent carry; a model saved alone would split that pair.
+    "decisions.provider.model": {
+        "tab": "developer",
+        "sub": "feature-previews",
+        "highlight": "developer.decisions",
+    },
 }
 
 #: Channels with a page of their own under Settings -> Channels, by schema tag.
@@ -344,8 +421,11 @@ def owning_page(entry: Any) -> dict[str, str] | None:
     )
 
 
-#: Free-text and string-list keys the page may change. Each value is a plain name
-#: or label, never a path, URL, host or command.
+#: Free-text and string-list keys the page may change. Each runs its reader's own
+#: check, or the one ``config_all_settings_checks.TEXT_CHECKS`` names for it: a
+#: path must be absolute after ``~`` is expanded, a URL must carry its reader's
+#: scheme, a name must be one line. A key whose text decides what the agent may
+#: run or who can reach it is in :data:`READONLY_REASONS` instead.
 TEXT_EDIT_PATHS: frozenset[str] = frozenset(
     {
         "mcp_gateway.keep_alive_servers",
@@ -354,6 +434,8 @@ TEXT_EDIT_PATHS: frozenset[str] = frozenset(
         # What the Company SSO sign-in form starts with (auth/company_sign_in.py).
         "agent.kas_sso_start_url",
         "agent.kas_sso_region",
+        "memory.extraction_instructions",
+        *_EXTRA_TEXT_CHECKS,
     }
 )
 
@@ -429,7 +511,7 @@ def _control_from_schema(entry: Any) -> dict[str, Any] | None:
     if entry.path not in TEXT_EDIT_PATHS:
         return None
     if entry.type == "string":
-        return {"type": "str", "max_len": _STR_MAX_LEN}
+        return {"type": "str", "max_len": text_max_len().get(entry.path, _STR_MAX_LEN)}
     if _is_string_list(entry):
         return {
             "type": "str_list",
@@ -596,10 +678,11 @@ def _sso_region_error(value: str) -> str | None:
 
 
 #: Free-text keys whose value must also mean something to its reader.
-_TEXT_CHECKS = {
+_TEXT_CHECKS: dict[str, Callable[[Any], str | None]] = {
     "timezone": _timezone_error,
     "agent.kas_sso_start_url": _sso_start_url_error,
     "agent.kas_sso_region": _sso_region_error,
+    **_EXTRA_TEXT_CHECKS,
 }
 
 
@@ -609,8 +692,8 @@ def generic_value_error(path: str, value: object) -> str | None:
     The type check is ``kiro_crew config set``'s own (``cli_config._declared_type_error``):
     the curated branches of the PATCH route coerce (``int("3")``, ``float(True)``)
     for their older callers, and a generic key gets exactly the type its schema
-    declares. A free-text key named in ``_TEXT_CHECKS`` is checked by its reader's
-    own validator too.
+    declares. A free-text or string-list key named in ``_TEXT_CHECKS`` is checked
+    by its reader's own validator too.
     """
     from kiro_crew.cli_config import _declared_type_error
 
@@ -620,8 +703,20 @@ def generic_value_error(path: str, value: object) -> str | None:
     reason = _declared_type_error(entry, value)
     if reason:
         return reason
+    if isinstance(value, list) and any(not isinstance(item, str) for item in value):
+        # The schema check reads only the list itself; a check below reads items as text.
+        return "each item must be text"
     check = _TEXT_CHECKS.get(path)
-    return check(value) if check and isinstance(value, str) else None
+    return check(value) if check and isinstance(value, (str, list)) else None
+
+
+def generic_stored_value(path: str, value: object) -> object:
+    """The value to save at *path* once :func:`generic_value_error` passed it.
+
+    A path is saved with its ``~`` expanded, because not every reader expands it.
+    """
+    check = _TEXT_CHECKS.get(path)
+    return _stored_value(check, value) if check else value
 
 
 def attach_descriptor(serialized: dict[str, Any], entry: Any) -> dict[str, Any]:
