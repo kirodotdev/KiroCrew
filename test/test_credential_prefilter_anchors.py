@@ -114,14 +114,21 @@ def _edge_corpus() -> list[str]:
     return out
 
 
-_CORPUS = _edge_corpus()
+@pytest.fixture(scope="module")
+def corpus() -> list[str]:
+    """Built once per module and released at its teardown.
+
+    A module-level list of ~210k strings was held by every xdist worker for the whole
+    run (~20 MiB each), whether or not the worker ran a test from this file.
+    """
+    return _edge_corpus()
 
 
 @pytest.mark.parametrize("name", sorted(_PLAIN))
-def test_rewritten_anchors_agree_with_their_plain_spelling(name: str) -> None:
+def test_rewritten_anchors_agree_with_their_plain_spelling(name: str, corpus: list[str]) -> None:
     fast, plain = _fast(name), _search(_PLAIN[name])
     hits = 0
-    for text in _CORPUS:
+    for text in corpus:
         expected = plain(text)
         hits += expected
         assert fast(text) == expected, f"{name} anchor disagrees on {text!r}"
@@ -129,6 +136,6 @@ def test_rewritten_anchors_agree_with_their_plain_spelling(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", sorted(_MUTANTS))
-def test_the_corpus_catches_an_anchor_wrong_by_one(name: str) -> None:
+def test_the_corpus_catches_an_anchor_wrong_by_one(name: str, corpus: list[str]) -> None:
     mutant, plain = _MUTANTS[name], _search(_PLAIN[name])
-    assert any(mutant(t) != plain(t) for t in _CORPUS), f"corpus cannot tell a wrong {name} anchor"
+    assert any(mutant(t) != plain(t) for t in corpus), f"corpus cannot tell a wrong {name} anchor"
