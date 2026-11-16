@@ -9,11 +9,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
-import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
 from sage_lib import review_driver as D
 from sage_lib import store
 
@@ -40,8 +39,13 @@ def _response(task: str, record: dict) -> str:
 
 
 class TestActivityRelay(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory; pytest removes it."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         self.root = Path(self.tmp) / "app"
@@ -53,7 +57,6 @@ class TestActivityRelay(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _progress(self, cid, phase, extra=None):
         self.seen.append((cid, phase, dict(extra or {})))

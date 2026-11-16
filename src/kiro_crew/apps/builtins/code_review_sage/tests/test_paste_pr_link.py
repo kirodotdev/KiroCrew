@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import tempfile
 import unittest
 
+import pytest
 from aiohttp import web
 from backend import routes
 from sage_lib import discovery, store
@@ -74,8 +73,13 @@ class TestPullRequestRef(unittest.TestCase):
 
 
 class TestRepoEndpointWithPullRequest(unittest.IsolatedAsyncioTestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory; pytest removes it."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         store.ensure_layout()
@@ -85,7 +89,6 @@ class TestRepoEndpointWithPullRequest(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     async def test_pins_the_repo_and_reports_the_pull_request(self):
         resp = await routes._handle_repos(_FakeRequest(  # type: ignore[arg-type]

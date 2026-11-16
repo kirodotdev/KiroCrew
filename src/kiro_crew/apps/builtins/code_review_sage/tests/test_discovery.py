@@ -14,15 +14,14 @@ Two surfaces:
 """
 import json
 import os
-import pathlib
-import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 import unittest.mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 from kiro_crew.testing.synthetic_credentials import github_classic
 
@@ -181,8 +180,13 @@ class TestListContributedRepos(unittest.TestCase):
 
 
 class TestPinnedRepos(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory; pytest removes it."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         store.ensure_layout()
@@ -192,7 +196,6 @@ class TestPinnedRepos(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_read_repos_missing_file(self):
         # ensure_layout does not create repos.json, so it is genuinely absent
@@ -222,12 +225,14 @@ class TestPinnedRepos(unittest.TestCase):
 class TestPinnedRepoReadIsGuarded(unittest.TestCase):
     """`read_repos` feeds the sidebar straight from a worker-writable file."""
 
-    def setUp(self):
-        self.root = pathlib.Path(tempfile.mkdtemp())
-        store.ensure_layout(self.root)
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory; pytest removes it."""
+        self._tmp_path = tmp_path
 
-    def tearDown(self):
-        shutil.rmtree(self.root, ignore_errors=True)
+    def setUp(self):
+        self.root = self._tmp_path
+        store.ensure_layout(self.root)
 
     def _write(self, payload):
         path = discovery.repos_path(self.root)
