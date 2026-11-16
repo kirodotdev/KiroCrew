@@ -7203,7 +7203,8 @@
         "remote_dispatch": false,
         "remote_dispatch_memory_gb": 5.0,
         "remote_dispatch_disk_gb": 5.0,
-        "remote_dispatch_retire_minutes": 30.0
+        "remote_dispatch_retire_minutes": 30.0,
+        "remote_dispatch_tags": []
       }
     },
     {
@@ -7275,6 +7276,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 30.0
+    },
+    {
+      "path": "work_ledger.remote_dispatch_tags",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Remote dispatch tags",
+      "help": "Words this crew advertises to a dispatching hub, such as [\"gpu\", \"docker\"]. A work item whose requires.tags names a word this list lacks is never placed here. Each tag is 1-32 characters of a-z, 0-9, '_' or '-', starting with a letter or digit and holding at least one letter; at most 16. Anything else is dropped. Do not put a host or account name here. Used only with remote_dispatch on.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "work_ledger.remote_dispatch_tags.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "power",
@@ -7564,6 +7593,7 @@
         "sessions_limit": 10,
         "use_tunnel_url": false,
         "session_folder": "",
+        "show_in_session_list": true,
         "auto_link_sessions": false,
         "agent_sessions": false,
         "code_channel_dispatch": false,
@@ -7896,6 +7926,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "slack.show_in_session_list",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Show Slack Conversations In The Session List",
+      "help": "List conversations that start in Slack (threads, DMs, channel mentions) in the dashboard's session list. Off removes them from the list only: they keep working in Slack, stay in History and search, still raise approvals and notifications, and come back when this is turned on again; nothing is closed or deleted. The conversation open in the dashboard, and one waiting on an approval or an answer, keep their rows. Sessions started in the dashboard and linked to Slack, and Slack code channel sessions with their helper agents, are always listed. On by default; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "slack.auto_link_sessions",

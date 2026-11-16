@@ -12,19 +12,17 @@ import type { ItemContent } from '@virtuoso.dev/masonry'
 // virtualizer rather than a library: see `LibraryList` for the measured reason.
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { api } from '../api/client'
-import { Badge } from '../components/ui'
 import { publicationBadgeLabel, usePublicationProviderName } from '../lib/publicationBadge'
 import { timeAgo as _timeAgo } from '../utils/timeAgo'
 import { DndDraggable } from '../components/dnd'
 import type { Artifact } from '../types'
-import { KIND_BADGE, isoToTs } from '../components/library/LibraryTable'
+import { KindPill, isoToTs } from '../components/library/LibraryTable'
 import type { LibraryDrag } from '../components/library/LibraryTable'
 import { WidgetThumb, ContentThumb, ImageThumb, WebAppThumb } from '../components/library/ArtifactThumbs'
 import { LiveSiteLink } from '../components/library/LiveSiteLink'
 import ErrorNotice from '../components/ErrorNotice'
 import Clickable from '../components/Clickable'
 import { i18nT } from '../i18n/t'
-import { uiLocation } from '../uiLocations/uiLocation'
 import { guidePick } from '../uiLocations/targetRegistry'
 
 // ── Masonry library ──────────────────────────────────────────────────────
@@ -45,6 +43,58 @@ type LibCtx = {
   pinningSlug: string | null
 }
 
+/** A shared or published artifact's mark beside its name. `relative z-10`
+ *  lifts it above the card's open button, which would otherwise take the hover
+ *  its tooltip needs; the lift also takes the click, so the mark is itself a
+ *  control that runs the same open. It is named like the open button and
+ *  described by the badge label. The masonry and the card grid both draw it. */
+export function PublicationMark({ a, onOpen }: { a: Artifact; onOpen: (slug: string) => void }) {
+  const providerName = usePublicationProviderName(a.publication)
+  const badgeId = useId()
+  if (!a.publication) return null
+  return (
+    <Clickable
+      onClick={() => onOpen(a.slug)}
+      aria-label={a.name}
+      aria-describedby={badgeId}
+      className="relative z-10 inline-flex shrink-0 rounded-sm focus-ring-accent"
+      data-testid="publication-badge"
+    >
+      <Share2
+        id={badgeId}
+        size={12}
+        className={a.publication.last_error ? 'text-danger shrink-0' : a.publication.notice ? 'text-warn shrink-0' : 'text-ok shrink-0'}
+        aria-label={publicationBadgeLabel(a.publication, providerName)}
+      >
+        <title>{publicationBadgeLabel(a.publication, providerName)}</title>
+      </Share2>
+    </Clickable>
+  )
+}
+
+/** A publication's last sync failure, inline under the card's name. Lifted
+ *  above the open button so the hand-off is reachable; its clicks stay here
+ *  instead of opening the card. */
+export function PublicationSyncError({ a }: { a: Artifact }) {
+  if (!a.publication?.last_error) return null
+  return (
+    <span role="presentation" className="relative z-10 block mt-1" onClick={(e) => e.stopPropagation()}>
+      {/* The hand-off is on: a library card holds no unsaved input. */}
+      <ErrorNotice
+        variant="inline"
+        className="whitespace-normal"
+        title={i18nT('pages.artifactsPage.published_sync_issue')}
+        // A card is narrow: the message takes its own line under the title
+        // instead of a column beside it.
+        messagePlacement="below"
+        message={a.publication.last_error}
+        askAgent
+        testId="publication-sync-error"
+      />
+    </span>
+  )
+}
+
 /** A single masonry card. Rendered by VirtuosoMasonry for each artifact. */
 function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
   const { onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug } = context
@@ -57,8 +107,6 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
     staleTime: 60_000,
     enabled: !!a.slug,
   })
-  const providerName = usePublicationProviderName(a.publication)
-  const badgeId = useId()
   const deleting = deletingSlug === a.slug
   const pinning = pinningSlug === a.slug
   // The star stays focusable while its save runs (see the button), so a second
@@ -111,53 +159,14 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <span className="text-sm text-text-strong font-medium truncate">{a.name}</span>
-              {a.publication && (
-                // `relative z-10` lifts the badge above the card's open button,
-                // which would otherwise take the hover its tooltip needs. The
-                // lift also takes the click, so the badge is itself a control
-                // that runs the same open: a click anywhere still opens. It is
-                // named like the open button and described by the badge label.
-                <Clickable
-                  onClick={() => onOpen(a.slug)}
-                  aria-label={a.name}
-                  aria-describedby={badgeId}
-                  className="relative z-10 inline-flex shrink-0 rounded-sm focus-ring-accent"
-                  data-testid="publication-badge"
-                >
-                  <Share2
-                    id={badgeId}
-                    size={12}
-                    className={a.publication.last_error ? 'text-danger shrink-0' : a.publication.notice ? 'text-warn shrink-0' : 'text-ok shrink-0'}
-                    aria-label={publicationBadgeLabel(a.publication, providerName)}
-                  >
-                    <title>{publicationBadgeLabel(a.publication, providerName)}</title>
-                  </Share2>
-                </Clickable>
-              )}
+              <PublicationMark a={a} onOpen={onOpen} />
             </div>
             <code className="text-[11px] text-muted">{a.slug}</code>
             {author && <span className="block text-[11px] text-muted mt-0.5">{i18nT('pages.artifactsPage.by_author', { author })}</span>}
             <LiveSiteLink slug={a.slug} />
-            {a.publication?.last_error && (
-              // Lifted above the open button so the hand-off is reachable; its
-              // clicks stay here instead of opening the card.
-              <span role="presentation" className="relative z-10 block mt-1" onClick={(e) => e.stopPropagation()}>
-                {/* The hand-off is on: this list holds no unsaved input. */}
-                <ErrorNotice
-                  variant="inline"
-                  className="whitespace-normal"
-                  title={i18nT('pages.artifactsPage.published_sync_issue')}
-                  // A card is narrow: the message takes its own line under the
-                  // title instead of a column beside it.
-                  messagePlacement="below"
-                  message={a.publication.last_error}
-                  askAgent
-                  testId="publication-sync-error"
-                />
-              </span>
-            )}
+            <PublicationSyncError a={a} />
           </div>
-          <Badge variant={KIND_BADGE[a.kind]}>{a.kind}</Badge>
+          <KindPill kind={a.kind} />
         </div>
         {a.description && <div className="text-[12px] text-muted mt-1 line-clamp-2">{a.description}</div>}
         {a.tags && a.tags.length > 0 && (
@@ -403,8 +412,10 @@ export function LibraryMasonry({
   return (
     // -mr-3 offsets each card's own mr-3 so the trailing column's gutter
     // doesn't add page width; cards carry mr-3 (gutter) + mb-3 (row gap).
-    // The picker a guide's "choose the artifact" step points at (artifacts.list).
-    <div {...uiLocation('artifacts.list', widthRef)} aria-label={i18nT('pages.artifactsPage.your_artifacts')} data-testid="artifacts-gallery" className={masonryOwnsScroll
+    // The guide's "choose the artifact" picker (artifacts.list) is the page's
+    // list region around this, so every view (Home, the card grid, this
+    // masonry, the table) shares one target.
+    <div ref={widthRef} data-testid="artifacts-gallery" className={masonryOwnsScroll
       ? (fillPage ? '-mr-3 flex-1 min-h-0' : '-mr-3 h-[60vh]')
       : '-mr-3'}>
       {asList ? (

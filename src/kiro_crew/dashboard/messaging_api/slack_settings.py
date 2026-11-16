@@ -113,6 +113,7 @@ async def api_slack_config_get(request: web.Request) -> web.Response:
             "show_thinking": slack.show_thinking,
             "session_folder": slack.session_folder,
             "auto_link_sessions": slack.auto_link_sessions,
+            "show_in_session_list": slack.show_in_session_list,
             **code_view,
         }
     )
@@ -265,7 +266,7 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
             staged["allowed_enterprise_ids"] = new_ents
             applied.append("allowed_enterprise_ids")
 
-    for key in ("reactions_enabled", "show_thinking", "auto_link_sessions"):
+    for key in ("reactions_enabled", "show_thinking", "auto_link_sessions", "show_in_session_list"):
         if key in body:
             val = body.get(key)
             if not isinstance(val, bool):
@@ -389,6 +390,13 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     # Answer only once the watcher has applied the write: a narrowed allow-list
     # is in force before the caller sees "saved", not one poll interval later.
     await _hot_apply_after_write()
+    if "show_in_session_list" in staged:
+        # The person's list reads the stamp from the next slot list; send it now
+        # that the watcher has applied the write, so the rows leave or return
+        # with the save rather than at the next unrelated push.
+        _list_state = request.app.get("state")
+        if _list_state is not None and hasattr(_list_state, "push_slots_update"):
+            _list_state.push_slots_update()
     gateway_owner = str(getattr(request.app.get("state"), "owner_id", "") or "")
     owner_written = CRED_OWNER_ID in env_updates
     saved_owner = env_updates.get(CRED_OWNER_ID) or ""

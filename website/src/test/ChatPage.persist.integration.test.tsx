@@ -299,6 +299,14 @@ describe('ChatPage last-chat hint from the hub (#16009)', () => {
     expect(vi.mocked(api.chatSlotDetail).mock.calls.map(c => c[0])).not.toContain('chat-gone')
   })
 
+  it('does not open a hinted Slack conversation the Slack list setting leaves out', async () => {
+    vi.mocked(api.chatSlotDetail).mockClear()
+    const slots = [slot('chat-1'), { ...slot('slack_1.1'), slack_list_hidden: true }]
+    const { store } = renderChatPage(undefined, null, slots, {}, false, '/chat?lastSid=slack_1.1')
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1'))
+    expect(vi.mocked(api.chatSlotDetail).mock.calls.map(c => c[0])).not.toContain('slack_1.1')
+  })
+
   it('tells the hub which chat the pane shows, at the hub origin only', async () => {
     const parent = { postMessage: vi.fn() }
     const spies = [

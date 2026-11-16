@@ -993,8 +993,9 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             (SKILL_DIR / "references" / "rare-cases.md").read_text(encoding="utf-8").split()
         )
         assert (
-            "In a turn nobody typed (it opens with `[auto-nudge cycle`, `[work-ledger wake]`"
-            " or `[sent by session`, or a cron fired it), never call `ask_question`"
+            "In a turn nobody typed (it opens with `[auto-nudge cycle`, `[work-ledger wake]`,"
+            " `[sent by session` or `[headless run`, or a cron fired it), never call"
+            " `ask_question`"
         ) in text
         assert "In a turn the user typed, ask with `ask_question`." in text
         assert "make it a `file` item (a report the worker writes)" in skill

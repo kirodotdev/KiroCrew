@@ -68,6 +68,7 @@ const NOTICE_FAMILIES = {
   model_access_fallback: { role: 'notice', card: 'notice', tone: 'warn' },
   model_unavailable: { role: 'notice', card: 'notice', tone: 'info' },
   model_throttled_fallback: { role: 'notice', card: 'notice', tone: 'warn' },
+  model_server_error_fallback: { role: 'notice', card: 'notice', tone: 'warn' },
   refusal_fallback_same_model: { role: 'notice', card: 'notice', tone: 'info' },
   session_reconnecting: { role: 'error', card: 'error' },
   session_reconnect_give_up: { role: 'error', card: 'error' },
@@ -165,6 +166,7 @@ const COPY_KEY = {
   model_access_fallback: 'pages.chat.gatewayNotice.model_access_fallback',
   model_unavailable: 'pages.chat.gatewayNotice.model_unavailable',
   model_throttled_fallback: 'pages.chat.gatewayNotice.model_throttled_fallback',
+  model_server_error_fallback: 'pages.chat.gatewayNotice.model_server_error_fallback',
   refusal_fallback_same_model: 'pages.chat.gatewayNotice.refusal_fallback_same_model',
   session_reconnecting: 'pages.chat.gatewayNotice.session_reconnecting',
   session_reconnect_give_up: 'pages.chat.gatewayNotice.session_reconnect_give_up',
@@ -444,6 +446,10 @@ const LEGACY: readonly Legacy[] = [
     token: 'model_unavailable',
   },
   { re: /^⚠\uFE0F? (?<primary>.+?) is throttled — running on (?<fallback>.+?) until .+? recovers\.$/u, token: 'model_throttled_fallback' },
+  {
+    re: /^⚠\uFE0F? (?<primary>.+?) keeps returning server errors — running on (?<fallback>.+?) until .+? recovers\.$/u,
+    token: 'model_server_error_fallback',
+  },
   { re: /^⟳ The agent lost this chat's session — reconnecting…$/u, token: 'session_reconnecting' },
   {
     re: /^❌ Could not reconnect this chat's session\. Send your message again, or start a new chat if this keeps happening\.$/u,
