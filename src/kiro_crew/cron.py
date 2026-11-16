@@ -100,6 +100,7 @@ from kiro_crew.cron_service.fields import (  # noqa: F401 -- re-exported
     _validate_cron_string_fields,
     apply_job_update,
     build_job,
+    resolve_project_path,
     validate_managed_by,
 )
 from kiro_crew.cron_service.folders import (  # noqa: F401 -- re-exported
@@ -857,6 +858,13 @@ class CronService:
         # Not a field: the session making this write, recorded on the
         # auto-pause-limit audit row (see CronJob.audit_auto_pause_limit_change).
         audit_actor = kwargs.pop("audit_actor", "") or ""
+        # Resolved before the lock, as build_job does on create: the check probes
+        # the filesystem, and a slow drive must not hold every other cron write
+        # behind it.
+        resolved_project_path = None
+        if "project_path" in kwargs:
+            _validate_cron_string_fields({"project_path": kwargs["project_path"]})
+            resolved_project_path = resolve_project_path(kwargs["project_path"] or "")
         with self._file_lock():
             self._sync_for_write()
             for job in self._jobs:
@@ -884,7 +892,7 @@ class CronService:
                 previous_limit = job.auto_pause_after_failures
                 staged = copy.copy(job)
                 prior = dict(staged.__dict__)
-                apply_job_update(staged, kwargs, chat_folder_out)
+                apply_job_update(staged, kwargs, chat_folder_out, resolved_project_path)
                 edits = {
                     name: value
                     for name, value in staged.__dict__.items()

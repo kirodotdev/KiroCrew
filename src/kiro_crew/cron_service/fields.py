@@ -468,7 +468,10 @@ def build_job(
 
 
 def apply_job_update(
-    job: CronJob, kwargs: dict[str, Any], chat_folder_out: dict[str, str] | None
+    job: CronJob,
+    kwargs: dict[str, Any],
+    chat_folder_out: dict[str, str] | None,
+    resolved_project_path: str | None = None,
 ) -> None:
     """Validate the update ``kwargs`` against ``job``, then apply it.
 
@@ -476,6 +479,9 @@ def apply_job_update(
     ``ValueError`` with ``job`` untouched. ``chat_folder_out`` is the caller's
     transition sink (see :meth:`CronService._update_job_locked`): filled with the
     prior ``chat_folder_id`` only when this update actually changes it.
+    ``resolved_project_path`` is ``resolve_project_path(kwargs["project_path"])``
+    as the caller ran it before taking the store lock, so the filesystem probe
+    stays outside that lock; ``None`` resolves it here.
     """
     # Validate approval_mode if provided
     if "approval_mode" in kwargs:
@@ -669,7 +675,9 @@ def apply_job_update(
     # job untouched. ``""`` clears it (back to today's cwd).
     _project_path: str | None = None
     if "project_path" in kwargs:
-        _project_path = resolve_project_path(kwargs["project_path"] or "")
+        _project_path = resolved_project_path
+        if _project_path is None:
+            _project_path = resolve_project_path(kwargs["project_path"] or "")
         if _project_path and (job.command or job.script):
             raise ValueError(_PROJECT_PATH_AGENT_ONLY)
     # Resolved here, before the first assignment, because a member schedule
