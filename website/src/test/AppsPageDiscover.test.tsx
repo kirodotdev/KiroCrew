@@ -260,6 +260,33 @@ describe('AppsPage — hero art and provenance trust', () => {
     expect(document.querySelector('img[src="/api/apps/blob?repo=Sage&path=hero-light.png"]')).toBeNull()
   })
 
+  it('draws the app own hero on a published block marked useAppArt, and none on a curated one', async () => {
+    // A block from the edition's own registry carries no editorial art, so it
+    // is drawn like a derived pick; an official block without art stays bare.
+    const block = { form: 'full', items: [{ type: 'app', appRefs: ['code-review-sage'] }] }
+    const sel = 'img[src="/api/apps/blob?repo=Sage&path=hero-dark.png"]'
+
+    listRegistry.mockResolvedValue({ apps: REGISTRY_APPS, editorialSections: [{ ...block, useAppArt: true }], serverPlatform: { os: 'darwin', arch: 'arm64' } })
+    const first = renderPage()
+    await screen.findByRole('heading', { level: 2, name: 'Code Review Sage' })
+    expect(document.querySelectorAll(sel).length).toBe(1)
+    first.unmount()
+    qc.clear()
+
+    listRegistry.mockResolvedValue({ apps: REGISTRY_APPS, editorialSections: [block], serverPlatform: { os: 'darwin', arch: 'arm64' } })
+    renderPage()
+    await screen.findByRole('heading', { level: 2, name: 'Code Review Sage' })
+    expect(document.querySelectorAll(sel).length).toBe(0)
+  })
+
+  it('keeps a useAppArt block holding a collection curated, so no member lends it art', async () => {
+    const block = { form: 'full', useAppArt: true, items: [{ type: 'collection', title: 'Zzq picks', appRefs: ['code-review-sage', 'oncall-radar'] }] }
+    listRegistry.mockResolvedValue({ apps: REGISTRY_APPS, editorialSections: [block], serverPlatform: { os: 'darwin', arch: 'arm64' } })
+    renderPage()
+    await screen.findByText('Zzq picks')
+    expect(document.querySelectorAll('img[src="/api/apps/blob?repo=Sage&path=hero-dark.png"]').length).toBe(0)
+  })
+
   it('falls back to gradient art when a hero image fails to load', async () => {
     renderPage()
     await screen.findAllByText('FEATURED')

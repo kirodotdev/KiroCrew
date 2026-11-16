@@ -22,6 +22,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.apps import official_catalog
+from kiro_crew.apps.edition_editorial import load_sections as load_edition_sections
 from kiro_crew.apps.manager import app_lifecycle_lock, get_app
 from kiro_crew.apps.official_category_order import forget_cache as forget_category_order_cache
 from kiro_crew.apps.official_category_order import load_category_order
@@ -154,9 +155,13 @@ async def handle_registry(request: web.Request) -> web.Response:
     # whole store response. Both are presentation, so a failure degrades to the
     # client's own defaults per document and must never 500 the store -- the same
     # contract the catalog annotation keeps.
-    order_result, sections_result = await asyncio.gather(
+    order_result, sections_result, edition_result = await asyncio.gather(
         asyncio.to_thread(load_category_order),
         asyncio.to_thread(load_sections),
+        # The edition's own featured sections come from its pinned registry's
+        # index copy, which ``list_catalog_apps`` above has already refreshed, so
+        # this read makes no network call.
+        asyncio.to_thread(load_edition_sections),
         return_exceptions=True,
     )
     if isinstance(order_result, BaseException):
@@ -169,6 +174,12 @@ async def handle_registry(request: web.Request) -> web.Response:
         sections: list = []
     else:
         sections = sections_result
+    if isinstance(edition_result, BaseException):
+        logger.warning("ignoring the edition's editorial sections", exc_info=edition_result)
+    else:
+        # Ahead of the official blocks: an edition that features its own apps
+        # wants them first, and the official ones still follow.
+        sections = [*edition_result, *sections]
     return web.json_response(
         {
             "apps": apps,

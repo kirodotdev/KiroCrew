@@ -152,6 +152,13 @@ def _load_document(fetcher: Any = None) -> dict[str, Any] | None:
     if doc is None:
         return None
 
+    if not supported_version(doc):
+        return None
+    return doc
+
+
+def supported_version(doc: dict[str, Any]) -> bool:
+    """Whether *doc* declares the one schemaVersion this reader understands (logs when not)."""
     version = doc.get("schemaVersion")
     # `type(...) is int` rather than `==` or `isinstance`: `1.0 == 1` and
     # `True == 1` both hold in Python and `bool` subclasses `int`, so either
@@ -163,8 +170,8 @@ def _load_document(fetcher: Any = None) -> dict[str, Any] | None:
             version,
             SUPPORTED_SCHEMA_VERSION,
         )
-        return None
-    return doc
+        return False
+    return True
 
 
 def _artwork(raw: Any) -> dict[str, str] | None:
@@ -202,7 +209,7 @@ def _text(raw: dict[str, Any], key: str, limit: int) -> str | None:
     return None
 
 
-def _app_section(raw: dict[str, Any]) -> dict[str, Any] | None:
+def _app_section(raw: dict[str, Any], artwork: bool = True) -> dict[str, Any] | None:
     """Project an `app` section -- one featured app -- or None.
 
     Carries no title: the app's own name is the heading, so a published `title`
@@ -215,12 +222,12 @@ def _app_section(raw: dict[str, Any]) -> dict[str, Any] | None:
     out: dict[str, Any] = {"type": "app", "appRefs": [ref.strip()]}
     if blurb := _text(raw, "blurb", 200):
         out["blurb"] = blurb
-    if art := _artwork(raw.get("artwork")):
+    if artwork and (art := _artwork(raw.get("artwork"))):
         out["artwork"] = art
     return out
 
 
-def _collection_section(raw: dict[str, Any]) -> dict[str, Any] | None:
+def _collection_section(raw: dict[str, Any], artwork: bool = True) -> dict[str, Any] | None:
     """Project a `collection` section -- several apps under a theme -- or None.
 
     The title is load-bearing rather than decorative: it is the only thing that
@@ -251,7 +258,7 @@ def _collection_section(raw: dict[str, Any]) -> dict[str, Any] | None:
     out: dict[str, Any] = {"type": "collection", "appRefs": unique, "title": title}
     if blurb := _text(raw, "blurb", 200):
         out["blurb"] = blurb
-    if art := _artwork(raw.get("artwork")):
+    if artwork and (art := _artwork(raw.get("artwork"))):
         out["artwork"] = art
     return out
 
@@ -297,7 +304,17 @@ def load_sections(fetcher: Any = None) -> list[dict[str, Any]]:
     doc = _load_document(fetcher)
     if doc is None:
         return []
+    return project_sections(doc)
 
+
+def project_sections(doc: dict[str, Any], *, artwork: bool = True) -> list[dict[str, Any]]:
+    """Project an already version-checked editorial document onto Discover blocks.
+
+    The body of :func:`load_sections`, shared with ``edition_editorial`` so a
+    second document is read by exactly the same rules. *artwork* False drops every
+    artwork ref: refs resolve against the official catalog's origin, which is
+    meaningless for a document published anywhere else.
+    """
     raw = doc.get("sections")
     if not isinstance(raw, list):
         return []
@@ -329,7 +346,7 @@ def load_sections(fetcher: Any = None) -> list[dict[str, Any]]:
             reader = _SECTION_READERS.get(kind) if isinstance(kind, str) else None
             if reader is None:
                 continue
-            if projected := reader(item):
+            if projected := reader(item, artwork):
                 items.append(projected)
         lo, hi = _FORM_ITEM_BOUNDS[form]
         if not lo <= len(items) <= hi:
@@ -350,4 +367,11 @@ def load_sections(fetcher: Any = None) -> list[dict[str, Any]]:
     return out
 
 
-__all__ = ["forget_cache", "load_sections", "MAX_BYTES", "OFFICIAL_EDITORIAL_URL"]
+__all__ = [
+    "forget_cache",
+    "load_sections",
+    "project_sections",
+    "supported_version",
+    "MAX_BYTES",
+    "OFFICIAL_EDITORIAL_URL",
+]

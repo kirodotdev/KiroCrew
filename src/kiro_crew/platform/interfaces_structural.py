@@ -154,6 +154,12 @@ class AppsLoader(Protocol):
         for a row in force at the ``owner`` tier, and read only from this build
         row, never from ``config.json``. Absent means ``false``.
 
+        A row may likewise carry ``"editorial": true``. Only then is an
+        ``editorial.json`` at the root of that registry's index read, and its
+        featured sections shown above the official ones on Discover
+        (``apps/edition_editorial.py``). Same rules: owner tier, build row only,
+        absent means ``false``.
+
         The public Default returns ``[]``, so standalone behaviour is byte-identical
         to reading ``config.registries`` alone. v1 method addition (no
         ``CONTRACT_VERSION`` bump).

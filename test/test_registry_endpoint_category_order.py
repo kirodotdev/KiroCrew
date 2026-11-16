@@ -116,3 +116,26 @@ class TestEditorialSectionsOnTheRegistryEndpoint:
         _, body = await _call()
         assert body["categoryOrder"] == ["other"]
         assert body["editorialSections"] == []
+
+
+@pytest.mark.asyncio
+class TestEditionSectionsOnTheRegistryEndpoint:
+    async def test_the_editions_blocks_come_before_the_official_ones(self, monkeypatch):
+        official = {"form": "full", "items": [{"type": "app", "appRefs": ["demo"]}]}
+        edition = {**official, "useAppArt": True}
+        monkeypatch.setattr(routes, "load_sections", lambda: [official])
+        monkeypatch.setattr(routes, "load_edition_sections", lambda: [edition])
+        _, body = await _call()
+        assert body["editorialSections"] == [edition, official]
+
+    async def test_a_raising_edition_loader_keeps_the_official_blocks(self, monkeypatch):
+        official = {"form": "full", "items": [{"type": "app", "appRefs": ["demo"]}]}
+
+        def boom():
+            raise RuntimeError("edition exploded")
+
+        monkeypatch.setattr(routes, "load_sections", lambda: [official])
+        monkeypatch.setattr(routes, "load_edition_sections", boom)
+        status, body = await _call()
+        assert status == 200
+        assert body["editorialSections"] == [official]

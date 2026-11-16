@@ -64,6 +64,7 @@ from kiro_crew.apps.dependency_ledger import (
     declared_capability_keys,
 )
 from kiro_crew.apps.dev_mode import dev_mode_granted_root, is_dev_mode_cached
+from kiro_crew.apps.edition_editorial import load_sections as load_edition_sections  # noqa: F401
 from kiro_crew.apps.event_bus import build_broadcast_fn
 from kiro_crew.apps.execution import app_execution_denied
 from kiro_crew.apps.hooks_integration import (
