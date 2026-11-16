@@ -19,7 +19,7 @@ Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
 ``_start_time``, ``_stderr_task``, ``_work_dir_ready``.
 
 Instance fields read: ``_agent``, ``_available_mode_ids``, ``_batch_window``,
-``_channel_id``, ``_extra_env``, ``_model``, ``_modes_advertised``, ``_sandbox_mode``,
+``_bypass_launcher_shim``, ``_channel_id``, ``_extra_env``, ``_model``, ``_modes_advertised``, ``_sandbox_mode``,
 ``_scratch_dir``, ``_session_key``, ``_session_mcp_snapshot``, ``_shared_scratch``,
 ``_stdin_stalled``, ``_windows_tree_cleanup_failed``, ``_work_dir``, ``last_prompt_stats``.
 """
@@ -49,6 +49,7 @@ from kiro_crew.acp.client_spawn_env import (
     _KiroExecutableTrustError,
     _launch_tools,
     _resolve_kiro_bin_for_spawn,
+    bypass_launcher_shim,
     finish_suspended_spawn,
     kiro_cli_not_found_message,
 )
@@ -266,6 +267,7 @@ async def _spawn(self: AcpClient) -> None:
     # Kept BEFORE the plan, so what the launch reads back lands where the session
     # reads it (``_harness_read_back``). ``_reset_state`` drops it.
     self._process_adapter = adapter
+    internal_sandbox = self.backend in ACP_BACKENDS_INTERNAL_SANDBOX
     if adapter is not None:
         # The host's own launch knowledge -- its binary, argv, labels, credential
         # mask and gate -- in its own file. The context names this session, which
@@ -417,6 +419,14 @@ async def _spawn(self: AcpClient) -> None:
         spawn_label = f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
         stderr_label = KIRO_CLI_BIN
         plan = SpawnPlan(argv=argv, spawn_label=spawn_label, stderr_label=stderr_label)
+        if getattr(self, "_bypass_launcher_shim", False):
+            bypassed = await asyncio.to_thread(
+                bypass_launcher_shim, plan.argv, sandbox_mode=self._sandbox_mode
+            )
+            if bypassed is not None:
+                plan = SpawnPlan(argv=bypassed, spawn_label=spawn_label, stderr_label=stderr_label)
+                # The shim's sandbox does not run here, so Crew's own wraps the child.
+                internal_sandbox = False
 
     async def _env_before_scrub(env: dict[str, str], spawned_binary: str | None) -> dict[str, str]:
         # The host's own variables first, then this session's identity, so a
@@ -471,7 +481,7 @@ async def _spawn(self: AcpClient) -> None:
             agent_env=self._agent_env_snapshot,
             extra_hidden_dirs=plan.extra_hidden_dirs,
             extra_expose_files=plan.extra_expose_files,
-            internal_sandbox=self.backend in ACP_BACKENDS_INTERNAL_SANDBOX,
+            internal_sandbox=internal_sandbox,
             pod_home_remap=self.backend in ACP_BACKENDS_POD_HOME_REMAP,
         ),
         _launch_tools(),

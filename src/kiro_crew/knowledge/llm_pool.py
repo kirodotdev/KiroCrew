@@ -707,11 +707,16 @@ class AcpWorker(Worker):
         # every other harness parses the file itself, so it still gets it rewritten.
         await asyncio.to_thread(_repair_agent_spec, routing_for(acp_backend) is Routing.AGENT_SPEC)
         if routing_for(acp_backend) is Routing.AGENT_SPEC:
+            # bypass_launcher_shim: a launcher shim may start a sandbox tool that
+            # adds its own MCP server to the spec this worker loads, which the
+            # zero-tool confirmation below then refuses on every start. Kiro
+            # Crew's own sandbox wraps the bundle binary instead.
             client = AcpClient(
                 agent=AGENT_NAME,
                 sandbox_mode=sandbox_mode,
                 acp_backend=acp_backend,
                 audit_source="subagent",
+                bypass_launcher_shim=True,
             )
         else:
             client = AcpClient(

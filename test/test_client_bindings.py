@@ -55,7 +55,7 @@ SHARED_BINDINGS_CHECKS = (
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
-    "__init__": ("function", False, "51d4cc79ba1f", "client_class"),
+    "__init__": ("function", False, "e813bf0ce8c9", "client_class"),
     "_adapter_session_mcp_servers": ("function", False, "7eb96c2fda05", "client_start"),
     "_add_orphan_steers": ("function", False, "b3c41cdccc27", "client_turn_control"),
     "_advertised_commands": ("data", False, "", ""),
@@ -1095,6 +1095,7 @@ _INIT_HINTS = {
     "acp_backend": "<class 'str'>",
     "agent": "<class 'str'>",
     "audit_source": "str | None",
+    "bypass_launcher_shim": "<class 'bool'>",
     "channel_id": "str | None",
     "extra_env": "dict[str, str] | None",
     "include_memory": "<class 'bool'>",

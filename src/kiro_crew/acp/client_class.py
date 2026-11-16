@@ -214,6 +214,7 @@ class AcpClient:
         shared_scratch: Path | None = None,
         side_read_only: bool = False,
         include_memory: bool = True,
+        bypass_launcher_shim: bool = False,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -242,6 +243,11 @@ class AcpClient:
         self._permission_mode = permission_mode
         self._side_read_only = side_read_only
         self._include_memory = include_memory
+        # Run the kiro-cli bundle binary instead of its launcher shim, under Kiro
+        # Crew's own sandbox (``client_spawn_env.bypass_launcher_shim``). Only the
+        # knowledge pool asks: its zero-tool worker cannot start through a shim
+        # whose sandbox tool adds an MCP server to the spec it loads.
+        self._bypass_launcher_shim = bypass_launcher_shim
         # The session tree's work directory when this client is a DEDICATED
         # subagent process spawned on a parent's behalf: re-validated at spawn
         # (``agent_scratch.shared_scratch_window``) and mounted as a second
