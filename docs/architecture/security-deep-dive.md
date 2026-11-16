@@ -51,7 +51,7 @@ DNS rebinding, unauthenticated remote access, and the rest) is in
 | Boundary | Trusted side | Untrusted side | Enforced by |
 |---|---|---|---|
 | Gateway process ↔ agent subprocess | Kiro Crew gateway | `kiro-cli` + every tool/MCP descendant | OS sandbox (`sandbox.py`), env scrub, cgroup scope |
-| Agent tool request ↔ execution | the PreToolUse gate's decision | the tool call as the model phrased it | `hooks.py:HookManager.on_tool_call` |
+| Agent tool request ↔ execution | the PreToolUse gate's decision | the tool call as the model phrased it | `hook_runtime/hook_manager.py:HookManager.on_tool_call` |
 | Operator ceiling ↔ agent | keystone files under the data home | every agent read/write path | `security.is_sensitive_path` / `is_sensitive_write_path` |
 | Agent output ↔ any human or external service | nothing | all agent-derived text | `redact_credentials` / `redact_exfiltration_urls` / `StreamRedactor` |
 | Browser ↔ dashboard | authenticated session | any other origin or host | token auth, CSRF Origin check, Host allowlist |

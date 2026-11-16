@@ -1108,7 +1108,7 @@ class TestHookGateKwargs:
         not_hook_judge_sites: set[tuple[str, str]] = set()
         for path in root.rglob("*.py"):
             rel = path.relative_to(root).as_posix()
-            if "/tests/" in f"/{rel}" or rel == "hooks.py":
+            if "/tests/" in f"/{rel}" or rel in ("hooks.py", "hook_runtime/hook_manager.py"):
                 continue
             text = path.read_text(encoding="utf-8")
             for line, call in self._gate_calls(text):

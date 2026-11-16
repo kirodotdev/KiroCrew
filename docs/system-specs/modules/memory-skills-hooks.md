@@ -6683,7 +6683,8 @@ modules import it, and the tests rebind its names. The rules live in the modules
 on `hooks.py`'s globals, so a patch of `hooks.<name>` reaches the moved code wherever
 it sits. Nothing but `hooks.py` imports an owner.
 A new owner module is appended to the `compose(...)` tuple and to `_BASE_OWNERS` in
-`test/test_hooks_composition_contract.py`, which `test_the_owner_set_is_the_package`
+`test/test_hooks_composition_contract.py` (`_LATER_MOVES` when it takes definitions a
+later split moved, with the shape each had), which `test_the_owner_set_is_the_package`
 enforces. `stall_attribution._GATE_FILES` includes `/kiro_crew/hook_runtime/`, so a
 wedged owner frame still reads as a gate stall.
 
@@ -6691,7 +6692,7 @@ wedged owner frame still reads as a gate stall.
 |---|---|
 | `denied_commands` | The keystone opt-out read (`load_denied_commands_state`), the boot parse and both live-reload splices, the governance force-pin lookup, and the effective regex set and operator notes the gate hands `PolicyAuthority.is_denied` |
 | `governance_gate` | The ceiling ∩ profile tool decision (`_governance_denial`), the `capabilities.spawn` decision, the `capabilities.script_hooks` gate, and their SEL audit rows |
-| `tool_identity` | What a call IS: the gate's typed input (`ToolCall`, whose `from_event` is the one event-field extraction; `hook_gate_kwargs` is its keyword form), the `spawn_run` identity test, the first-party-app and builtin-agent registry readers and writers, the host-known read-only built-in test and the short-stamp alias it and the deny tiers resolve through, the first-party read-only MCP tool test the `read-only` row accepts under a surface's Reads mode, the canonical `@server/tool` reference, title normalization and the pattern matchers |
+| `tool_identity` | What a call IS: the gate's typed input (`ToolCall`, whose `from_event` is the one event-field extraction; `hook_gate_kwargs` is its keyword form), the `spawn_run` identity test, the first-party-app and builtin-agent registry readers and writers, the host-known read-only built-in test, the computer-use observation test (`_cu_read_only_auto_approve`) and the short-stamp alias it and the deny tiers resolve through, the first-party read-only MCP tool test the `read-only` row accepts under a surface's Reads mode, the canonical `@server/tool` reference, title normalization and the pattern matchers |
 | `gate_tiers` | What each row of the tool gate checks: one tier body per `GATE_TIERS` row (the three per-target rules included), `GateFacts` (the call, the asking surface, and what the tiers derive from them — the one platform-context snapshot and every value built from it derived on first use and kept; the effective deny set is resolved once from that one snapshot, and the enabled rule ids and the deny-rules tier both read that one result), and the table's projection and soundness checks (`shell_rules`, `gate_tier_problems`) |
 | `search_targets` | The file-search deny target: the scope-only grammar, its percent encoding, the home-variable substitution and the lexical root normalization |
 | `windows_paths` | UNC shape, the extended-length fold, the trusted-root probe gate, OS-layer representability and one link target's normalization |
@@ -6704,6 +6705,7 @@ wedged owner frame still reads as a gate stall.
 | `hook_dispatch` | The global store accessors, the strict on-disk read a store-less process uses (a snapshot, so its fires never write their status back over a newer save), the informational tool-call fire, and the PreToolUse block gate with the names a matcher meets |
 | `hook_types` | The pipeline's value types: `HookResult`, the tool gate's verdict `ToolHookResult` (its constructors emit the approval-decision counter, which `test/metrics/test_business_counters.py` reads in this file), the rule dataclasses, `UserDeniedPattern`, and `HooksConfig` with its defensive parse of the `hooks` section |
 | `script_hooks` | Running script hooks: a hook process's environment (`_hook_subprocess_env`, the one reader of `_HOOK_BASE_ENV_KEYS`), one hook's sandboxed run (`run_script_hook`) and its `ScriptHookResult`, and `ScriptHookStore`, which persists the Hooks page's hooks, validates every edit and fires the hooks an event matches; it parses `hooks.json` from its bytes (as do the strict read in `hook_dispatch` and the import sanitizer), so UTF-8 with or without a byte-order mark, UTF-16 (Windows PowerShell 5.1's default) and UTF-32 all load, and bytes none of those decode are a failed load; a store whose load could not read or represent `hooks.json` reloads from disk at its next edit and, while the file still cannot be loaded, refuses every save with `WebhookStoreUnreadable` (503 at the hooks routes) rather than writing its empty in-memory list over the file; `fire` sits beside `run_script_hook`, and `test_hook_events_kas_triggers` reads its source through the object |
+| `hook_manager` | `HookManager`: the message hooks, the tool gate's two entry points (`judge`, which walks `GATE_TIERS`, and `on_tool_call`, its keyword form) under `_fail_closed_on_gate_crash`, the `hooks` config subscription and its SEL-audited approval-set diff, and the effective deny set for callers outside the gate |
 
 The guarded readers take their bytes through `kiro_crew.bounded_read.bounded_read`,
 bound on this module for the `safe_reads` and `internal_reads` owners. Each still
@@ -6740,20 +6742,17 @@ What stays in `hooks.py`, and why, because a guard or a contract reads it there:
   tier function (a row built before it would keep the owner's original, which a patch
   of `hooks.<name>` never reaches). `SHELL_DENY_TIERS` is a literal because
   `scripts/deny_diff.py` reads it as text (see the table below);
-- `HookManager` with every method, and `_fail_closed_on_gate_crash`. `judge(call, *,
-  session_key, agent, app, classifier_only)` walks `GATE_TIERS` under
-  `_fail_closed_on_gate_crash`; `on_tool_call` is its keyword form for the dispatchers
-  that hold a call as keywords (`**hook_gate_kwargs(event)`), keeps its signature, and
-  is what every production surface calls — the tests patch it at class and instance
-  level. Both are wrapped when the class body runs, and `compose` rebinds no function
-  held in a closure, so in an owner the wrapped bodies would read the owner's globals;
-  moving the manager is a decomposition (collaborators behind the class), not a move;
+- the second wrapping of `HookManager.judge` and `HookManager.on_tool_call`. Both are
+  wrapped by `_fail_closed_on_gate_crash` when the class body in `hook_manager` runs,
+  and `compose` rebinds no function held in a closure, so the wrapped bodies would keep
+  reading the owner's globals. Right after `compose`, this module wraps each again
+  around its body rebound onto this module's globals, as it rebinds
+  `ScriptHookStore._atomic_mutation`; `on_tool_call` keeps its signature, and the tests
+  still patch it at class and instance level;
 - `ScriptHook.from_dict`, a redaction call site `security_posture.NON_EGRESS_REDACTION_MODULES`
   classifies by this file's name (`run_script_hook`, the other one, has the
   `hook_runtime/script_hooks.py` row);
 - `_screen_windows_links`, which `test/link_screen_sites.py` keys by this path;
-- `_cu_read_only_auto_approve`, which `governance.md` names here (the Plane A gate
-  threading it names beside it is the `governance` tier in `gate_tiers`);
 - the two UNC root memos and their import-time priming: this module's body runs before
   `compose`, so priming an owner function would write its memo into the owner's
   namespace instead.
@@ -6798,9 +6797,9 @@ grant, and pins `SHELL_DENY_TIERS` to the projection.
 
 New work goes to the owner of its responsibility. A new gate check is a tier body in
 `gate_tiers` plus its row in `GATE_TIERS`, placed by kind; a new fact about a call is a
-`ToolCall` field filled by `from_event`. A new module-level value and a new
-`HookManager` method go here; a new store method goes to `script_hooks`, and a new
-result or config type to `hook_types`.
+`ToolCall` field filled by `from_event`. A new module-level value goes here; a new
+`HookManager` method goes to `hook_manager`, a new store method to `script_hooks`, and
+a new result or config type to `hook_types`.
 
 ### Script hooks (`ScriptHook`, `run_script_hook`) — the shell per platform
 

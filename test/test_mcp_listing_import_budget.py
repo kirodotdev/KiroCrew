@@ -60,8 +60,12 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: (the two servers sat one module under their old ceilings, and ``mcp-core`` and
 #: ``mcp-guide`` had room). The redactor runs on the listing's output, so the import cannot
 #: move behind the list.
+#: Raised by 1 for ``mcp-core`` (485 to 486): the line-cap split of ``kiro_crew.hooks``
+#: moved ``HookManager`` into the owner ``kiro_crew.hook_runtime.hook_manager``, which the
+#: facade imports with the rest of its owners; the module count rose by that one file and
+#: nothing new loads.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 485,
+    "mcp-core": 486,
     "mcp-cron": 356,
     "mcp-guide": 350,
     "mcp-mate": 351,
