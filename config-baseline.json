@@ -7564,6 +7564,7 @@
         "sessions_limit": 10,
         "use_tunnel_url": false,
         "session_folder": "",
+        "show_in_session_list": true,
         "auto_link_sessions": false,
         "agent_sessions": false,
         "code_channel_dispatch": false,
@@ -7896,6 +7897,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "slack.show_in_session_list",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Show Slack Conversations In The Session List",
+      "help": "List conversations that start in Slack (threads, DMs, channel mentions) in the dashboard's session list. Off removes them from the list only: they keep working in Slack, stay in History and search, still raise approvals and notifications, and come back when this is turned on again; nothing is closed or deleted. The conversation open in the dashboard, and one waiting on an approval or an answer, keep their rows. Sessions started in the dashboard and linked to Slack, and Slack code channel sessions with their helper agents, are always listed. On by default; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "slack.auto_link_sessions",
