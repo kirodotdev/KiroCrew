@@ -15,12 +15,11 @@ the cooperative ``cancelled=`` predicate added to ``review_driver.run_review``:
 import json
 import os
 import re
-import shutil
-import tempfile
 import threading
 import unittest
 from pathlib import Path
 
+import pytest
 from sage_lib import report as RP  # noqa: N812
 from sage_lib import results
 from sage_lib import review_driver as D  # noqa: N812
@@ -61,13 +60,15 @@ class _RootTest(unittest.TestCase):
     """Shared tmpdir root, self-healed to a fresh data layout (like the other
     persistence tests in this package)."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory; pytest removes it."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self.root = Path(self.tmp) / "apps" / "code-review-sage"
         store.ensure_layout(self.root)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
 
 class TestRunScopedResults(_RootTest):
@@ -241,16 +242,18 @@ class TestRunReviewScoping(unittest.TestCase):
     """(9) run_review writes into the run dir, (10) cancelled skips unstarted
     changes with no dispatch, (11) cancelled=lambda: False behaves normally."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory; pytest removes it."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self.root = Path(self.tmp) / "apps" / "code-review-sage"
         store.ensure_layout(self.root)
         self.calls = []
         self.lock = threading.Lock()
         self.archived = []
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _archiver(self, html, root=None):
         self.archived.append(html)
