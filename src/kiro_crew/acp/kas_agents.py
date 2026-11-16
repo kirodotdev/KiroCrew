@@ -290,8 +290,8 @@ def spec_keys_without_carrier(
     names it (whole, or each entry beside a ``subagent.availableAgents`` the spawn
     gate applies), unless *translates_tools_settings* says this session receives its
     ``permissions`` translation (KAS only); then each ``toolsSettings.<tool>.<key>``
-    the translation cannot carry is named instead, each ``allowedCommands`` entry Kiro
-    Crew cannot read on its own (``kas_unread_commands.name_unreadable_entries``),
+    the translation cannot carry is named instead, each ``allowedCommands`` or
+    ``allowedPaths`` entry Kiro Crew cannot read on its own (``kas_unread_commands.name_unreadable_entries``),
     ``permissions`` when the merge refuses it, and ``permissions.rules[<i>]`` for each
     ``allow`` it leaves out alone. A ``trustedAgents`` allow is judged for
     *session_key* and *governance_app* as projected.
