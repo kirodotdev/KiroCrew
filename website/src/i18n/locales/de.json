@@ -11579,6 +11579,10 @@
       "undo_failed": "Der Entwurf konnte nicht zurückgelegt werden: Es ist kein Platz mehr oder der Browser-Speicher ist nicht verfügbar.",
       "discarded_one": "Zurückgelegter Entwurf verworfen. {{count}} Entwurf ist noch zurückgelegt.",
       "discarded_other": "Zurückgelegter Entwurf verworfen. {{count}} Entwürfe sind noch zurückgelegt."
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}} Feld",
+      "heading_other": "Frontmatter · {{count}} Felder"
     }
   },
   "hooks": {

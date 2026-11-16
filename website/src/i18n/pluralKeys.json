@@ -579,5 +579,6 @@
   "components.promptStash.clear_others",
   "components.promptStash.clear_others_confirm",
   "components.promptStash.cleared_others",
-  "components.promptStash.discarded"
+  "components.promptStash.discarded",
+  "components.frontmatterCard.heading"
 ]

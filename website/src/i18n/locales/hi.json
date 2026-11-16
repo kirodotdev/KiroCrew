@@ -11579,6 +11579,10 @@
       "undo_failed": "ड्राफ़्ट फिर से अलग नहीं रखा जा सका: जगह नहीं है या ब्राउज़र स्टोरेज उपलब्ध नहीं है।",
       "discarded_one": "अलग रखा ड्राफ़्ट हटा दिया गया। {{count}} ड्राफ़्ट अभी भी अलग रखा है।",
       "discarded_other": "अलग रखा ड्राफ़्ट हटा दिया गया। {{count}} ड्राफ़्ट अभी भी अलग रखे हैं।"
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}} फ़ील्ड",
+      "heading_other": "Frontmatter · {{count}} फ़ील्ड"
     }
   },
   "hooks": {

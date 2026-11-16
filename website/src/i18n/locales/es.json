@@ -11848,6 +11848,11 @@
       "discarded_many": "Borrador descartado. Quedan {{count}} borradores guardados.",
       "discarded_one": "Borrador descartado. Queda {{count}} borrador guardado.",
       "discarded_other": "Borrador descartado. Quedan {{count}} borradores guardados."
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}} campo",
+      "heading_many": "Frontmatter · {{count}} campos",
+      "heading_other": "Frontmatter · {{count}} campos"
     }
   },
   "hooks": {
