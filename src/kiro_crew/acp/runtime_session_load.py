@@ -14,7 +14,8 @@ Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_agent_version``, ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``,
 ``_fold_mcp_frame``, ``_host_sends_mcp_init``, ``_initialized``, ``_kas_telemetry_sent``, ``_mcp_gateway_overlay``,
 ``_mcp_switched_off``, ``_model``, ``_open_mcp_report``, ``_park_in_start_agent``, ``_pid``,
-``_pool_lookup``, ``_record_tree_in_background``, ``_refuse_over_ceiling_start``,
+``_pool_lookup``, ``_record_keeping_sessions``, ``_record_tree_in_background``,
+``_refuse_over_ceiling_start``,
 ``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
 ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``, ``can_release``,
 ``release_session``.
@@ -159,6 +160,34 @@ async def load_session(
             focus_resume=focus_resume,
             harness_options=harness_options,
         )
+    if self.acp_backend == ACP_BACKEND_KAS and resume_sid not in getattr(
+        self, "_record_keeping_sessions", ()
+    ):
+        # The id names a stored conversation. Every failure arm past the load ends
+        # the session through ``terminate_session``, whose KAS verb deletes that
+        # record, so a refused resume (a gateway restart's first, say) would lose
+        # the chat's history for good. Inside this scope the arm evicts
+        # with ``session/close`` and keeps the record; it ends with the load, so a
+        # later teardown of the returned handle deletes as before. The body is
+        # re-run through this module's function, not the bound method, so the scope
+        # costs no second call of ``AcpRuntime.load_session``.
+        with self.keep_record_on_teardown(resume_sid):
+            return await load_session(
+                self,
+                session_file,
+                resume_sid,
+                cwd=cwd,
+                agent=agent,
+                crew_agent=crew_agent,
+                member_session_key=member_session_key,
+                session_key=session_key,
+                channel_id=channel_id,
+                require_replay=require_replay,
+                start_priority=start_priority,
+                focus_resume=focus_resume,
+                harness_options=harness_options,
+                harness_state=harness_state,
+            )
     if not self._initialized:
         raise AcpRuntimeError("Runtime not initialized — call spawn() first")
     if not self._can_load_session:
