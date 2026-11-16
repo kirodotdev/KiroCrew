@@ -597,6 +597,10 @@ returned tail and its `running`, `stopping`, `turn`, and `turn_gen` status field
 come from the same newest edge. When the cap is spent, or the held rows carry no
 `meta.mid` to anchor on, the replacing reducer keeps no head: the rows above the
 walked window leave the tab and are one page-back away.
+In a dev build `refreshSlot` and `warmSlotCache` count, per slot, each read and
+each walk that fetched older pages (with the pages and the reason), readable in
+devtools as `window.__kcSlotReads()` (`website/src/dev/slotReadCounts.ts`); a
+production build records nothing.
 
 `loadOlderMessages` stays in the facade. The chat host answers the hook's
 older-page request with it; it reads the page before `slotOldestIndex` and lands

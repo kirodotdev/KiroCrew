@@ -21,6 +21,7 @@ import { hydrateQueuedBubbles } from './queue'
 import { keepPendingCoordinatorApprovals } from './coordinatorApprovals'
 import { persistedSendIds, pruneDeliveredAttempts } from './sendAttempts'
 import { walkWindowBackTo } from './windowWalk'
+import { recordSlotRead } from '../../dev/slotReadCounts'
 
 /** The two row kinds a person decides on and the client stamps locally: a tool
  *  permission and an MCP server's elicitation. Both are held out of a refreshed
@@ -222,6 +223,7 @@ export const refreshSlot = createAsyncThunk<
     ).length
     const want = matched ?? Math.min(Math.max(held, PANE_HYDRATE_LIMIT), REFRESH_LIMIT_CEILING)
     const spanIsTrustworthy = !(want > held && hasUnidentifiedDurableRow(view))
+    recordSlotRead(key)
     const page = await fetchSlotDetail(key, want)
     /* Is this page safe to hand a reducer that REPLACES the transcript with it?
      * It is, on any one of three counts -- and each is a different relationship
@@ -285,7 +287,10 @@ export const refreshSlot = createAsyncThunk<
     const reachMid = reachMidForTs(viewNow, reachTs)
     const pageHoldsReach = !reachMid || page.messages.some(m => m.meta?.mid === reachMid)
     if (!page.hasMore || spansView || (overlapsView && pageHoldsReach)) return finish(page)
-    const walked = await walkWindowBackTo(key, page, viewNow, reachMid)
+    const countAs = import.meta.env.DEV
+      ? `refresh:${refreshWalkReason({ overlapsView, pageHoldsReach, spanIsTrustworthy, viewNow, serverRowsNow, page: page.messages, viewCounts, pageCounts })}`
+      : undefined
+    const walked = await walkWindowBackTo(key, page, viewNow, reachMid, countAs)
     /* The walk adds up to `WINDOW_WALK_MAX_PAGES` more awaits, and every row it
      * returns is no newer than the FIRST page. A live chunk or a new row that
      * reduces in that window is in the view but not in the walked payload, and
@@ -306,6 +311,35 @@ export const refreshSlot = createAsyncThunk<
     return finish(walked)
   },
 )
+
+/** Dev-build only (`slotReadCounts`): the first condition, in this order, that
+ *  sent a refresh into its walk. Built from the checks the thunk already ran;
+ *  `unidentified-floor` uses the walk's own anchor rule (no `requireTs`). */
+function refreshWalkReason(c: {
+  overlapsView: boolean
+  pageHoldsReach: boolean
+  spanIsTrustworthy: boolean
+  viewNow: ChatMessage[]
+  serverRowsNow: ChatMessage[]
+  page: ChatMessage[]
+  viewCounts: Map<string, number>
+  pageCounts: Map<string, number>
+}): string {
+  if (c.overlapsView && !c.pageHoldsReach) return 'reach-missing'
+  if (c.serverRowsNow.length === 0) return 'no-identity'
+  const viewOldest = c.serverRowsNow[0].meta?.mid
+  if (!c.spanIsTrustworthy && idAnchorsOneRow(viewOldest, c.viewNow, c.page, c.viewCounts, c.pageCounts)) {
+    return 'unidentified-floor'
+  }
+  const ambiguous = (id: unknown): boolean => {
+    if (typeof id !== 'string' || id.length === 0) return false
+    if ((c.viewCounts.get(id) ?? 0) > 1 || (c.pageCounts.get(id) ?? 0) > 1) return true
+    const inView = c.viewNow.find(m => m.meta?.mid === id)?.ts
+    const inPage = c.page.find(m => m.meta?.mid === id)?.ts
+    return !!inView && !!inPage && inView !== inPage
+  }
+  return ambiguous(viewOldest) || ambiguous(c.page[0]?.meta?.mid) ? 'ambiguous-mid' : 'disjoint'
+}
 
 /** The `meta.mid` of the one durable row in `view` whose `ts` is `ts`, or
  *  undefined when none or more than one row carries it, or the row has no mid. */
@@ -417,6 +451,7 @@ export const warmSlotCache = createAsyncThunk(
      * page-back away, upgrade when such history stops existing. */
     const legacyUnbounded = limit === undefined
     const pageLimit = limit ?? SLOT_DETAIL_MAX_LIMIT
+    recordSlotRead(key)
     const first = await fetchSlotDetail(key, pageLimit)
     /* Coverage, MEASURED against the rows this pane holds -- the same check
      * `switchSlot` runs after its bounded read, for the same reason: the window
@@ -436,7 +471,13 @@ export const warmSlotCache = createAsyncThunk(
     const reachMid = reachMidForTs(cache, reachTs)
     const missesReach = reachMid && !first.messages.some(m => m.meta?.mid === reachMid)
     if (legacyUnbounded || missesReach || slotCoverageShortfall({ cached: cache, window: first.messages }) > 0) {
-      const walked = await walkWindowBackTo(key, first, cache, reachMid)
+      const countAs = import.meta.env.DEV
+        ? `warm:${unplaceable ? 'no-ts'
+          : legacyUnbounded
+            ? cache.some(m => isDurableRow(m) && typeof m.meta?.mid === 'string' && m.meta.mid.length > 0) ? 'unidentified-floor' : 'no-identity'
+            : missesReach ? 'reach-missing' : 'shortfall'}`
+        : undefined
+      const walked = await walkWindowBackTo(key, first, cache, reachMid, countAs)
       /* A hole the walk cannot close: the window anchors the cache, yet the cache
        * holds a row at or after that anchor which the window lacks. Walking older
        * cannot reach a row that is NEWER than the window's start -- either a
