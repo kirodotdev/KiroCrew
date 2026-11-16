@@ -332,3 +332,179 @@ def test_another_tool_is_never_granted_by_the_web_fetch_record() -> None:
     event.spec_denied_grant = grant
     action = HookManager(HooksConfig()).on_tool_call(event.title, **hook_gate_kwargs(event)).action
     assert action != TOOL_AUTO_APPROVE
+
+
+# ── trusted URLs a canonical form must not lose ──────────────────────────────
+
+
+_PRIVATE_BLOCKED = ["https://docs\\.example\\.com/private/.*"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # An escape in the query is the normal shape of a search or API URL.
+        "https://docs.example.com/search?q=a%20b",
+        "https://docs.example.com/api?filter=name%3Dfoo",
+        # An empty path segment no blocked entry reaches either way.
+        "https://docs.example.com/web/2020/https://x.com/",
+    ],
+)
+def test_a_trusted_url_with_a_query_escape_or_empty_segment_is_granted(
+    url: str,
+) -> None:
+    _out, grant = _project(
+        toolsSettings={"web_fetch": {"blocked": _PRIVATE_BLOCKED, "trusted": _TRUSTED}}
+    )
+    assert _judge(url, grant) == TOOL_AUTO_APPROVE
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://docs.example.com/%70rivate/x",
+        "https://docs.example.com/%2e/private/x",
+        "https://docs.example.com//private/x",
+        # Collapsed before its dot segment, `//..` climbs out of `public`.
+        "https://docs.example.com/public//../private/x",
+        # Dot segments removed first keep `//private/x`, which a server collapses.
+        "https://docs.example.com//private//../x",
+        "https://docs.example.com///private//..",
+        # Any escape in the path, and non-ASCII anywhere, written or escaped
+        # (it has Unicode-equivalent spellings): no grant, as on main.
+        "https://docs.example.com/a%2Fb",
+        "https://docs.example.com/wiki/Zürich",
+        "https://docs.example.com/wiki/Z%C3%BCrich",
+        "https://docs.example.com/public/%EF%BC%8E%EF%BC%8E/private/x",
+        "https://docs.example.com/s?q=Zürich",
+        "https://docs.example.com/s?q=%EF%BD%85",
+        "https://docs.example.com/s?q=%FF",
+        # An escaped `%` reads as another escape when decoded twice.
+        "https://docs.example.com/s?q=%2573ecret",
+        # A homoglyph host (Cyrillic а) is not the trusted host.
+        "https://docs.ex\u0430mple.com/guide",
+    ],
+)
+def test_a_spelling_that_reaches_blocked_or_leaves_trusted_stays_withheld(
+    url: str,
+) -> None:
+    _out, grant = _project(
+        toolsSettings={"web_fetch": {"blocked": _PRIVATE_BLOCKED, "trusted": _TRUSTED}}
+    )
+    assert _judge("https://docs.example.com/guide", grant) == TOOL_AUTO_APPROVE
+    assert _judge(url, grant) == TOOL_ALLOW
+
+
+def test_a_blocked_query_value_is_read_unescaped_too() -> None:
+    _out, grant = _project(
+        toolsSettings={
+            "web_fetch": {
+                "blocked": ["https://docs\\.example\\.com/api\\?filter=name=foo.*"],
+                "trusted": _TRUSTED,
+            }
+        }
+    )
+    assert _judge("https://docs.example.com/api?filter=name%3Dbar", grant) == TOOL_AUTO_APPROVE
+    assert _judge("https://docs.example.com/api?filter=name%3Dfoo", grant) == TOOL_ALLOW
+    # An entry written with escapes is read unescaped too, so a mixed spelling
+    # of the same value is still withheld.
+    _out, grant = _project(
+        toolsSettings={
+            "web_fetch": {
+                "blocked": ["https://docs\\.example\\.com/api\\?redirect=https%3A%2F%2Fevil.*"],
+                "trusted": _TRUSTED,
+            }
+        }
+    )
+    assert _judge("https://docs.example.com/api?redirect=https%3A%2F%2Fgood.com", grant) == (
+        TOOL_AUTO_APPROVE
+    )
+    for url in (
+        "https://docs.example.com/api?redirect=https%3A%2F%2Fevil.com",
+        "https://docs.example.com/api?redirect=https:%2F%2Fevil.com",
+        "https://docs.example.com/api?redirect=https://evil.com",
+    ):
+        assert _judge(url, grant) == TOOL_ALLOW, url
+    # A form parser reads `+` as a space.
+    _out, grant = _project(
+        toolsSettings={
+            "web_fetch": {
+                "blocked": ["https://docs\\.example\\.com/s\\?q=a%20b.*"],
+                "trusted": _TRUSTED,
+            }
+        }
+    )
+    assert _judge("https://docs.example.com/s?q=a%2Bb", grant) == TOOL_AUTO_APPROVE
+    for url in ("https://docs.example.com/s?q=a+b", "https://docs.example.com/s?q=a%20b"):
+        assert _judge(url, grant) == TOOL_ALLOW, url
+
+
+def test_a_blocked_private_range_prefix_withholds_only_its_range() -> None:
+    _out, grant = _project(
+        toolsSettings={
+            "web_fetch": {
+                "blocked": [
+                    "http://10\\..*",
+                    "http://127\\..*",
+                    "http://192\\.168\\..*",
+                ],
+                "trusted": [".*"],
+            }
+        }
+    )
+    assert _judge("https://docs.example.com/guide", grant) == TOOL_AUTO_APPROVE
+    assert _judge("http://11.0.0.1/", grant) == TOOL_AUTO_APPROVE
+    for url in (
+        "http://10.0.0.1/",
+        "http://127.0.0.1/",
+        "http://127.1/",
+        "http://0x7f.1/",
+        "http://0x7f.0.0.1/",
+        "http://2130706433/",
+        "http://192.168.1.1/",
+        "HTTP://10.0.0.1./x",
+    ):
+        assert _judge(url, grant) == TOOL_ALLOW, url
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("http://10.", "http://10."),
+        ("http://192.168.", "http://192.168."),
+        ("http://127.1", None),
+        ("http://010.", None),
+        ("http://0x7f.", None),
+        ("http://10.:80", None),
+    ],
+)
+def test_a_cut_decimal_host_prefix_is_kept_as_written(text: str, expected: str | None) -> None:
+    assert canonical_url(text, prefix=True) == expected
+
+
+def test_empty_segments_are_read_three_ways_and_non_ascii_is_refused() -> None:
+    assert canonical_url("https://x.com/wiki/Zürich") is None
+    assert canonical_url("https://x.com/a//b/../c") == "https://x.com/a//c"
+    assert canonical_url("https://x.com/a//b/../c", collapse="before") == "https://x.com/a/c"
+    assert canonical_url("https://x.com//a//../b", collapse="after") == "https://x.com/a/b"
+    assert canonical_url("https://ex\u0430mple.com/") is None
+
+
+def test_a_non_ascii_blocked_entry_withholds_every_grant() -> None:
+    # It has no canonical form, as on main.
+    _out, grant = _project(
+        toolsSettings={
+            "web_fetch": {
+                "blocked": ["https://docs\\.example\\.com/cafe\u0301/.*"],
+                "trusted": _TRUSTED,
+            }
+        }
+    )
+    assert _judge("https://docs.example.com/caf\u00e9/x", grant) == TOOL_ALLOW
+    assert _judge("https://docs.example.com/guide", grant) == TOOL_ALLOW
+
+
+def test_a_trusted_cut_decimal_host_prefix_grants_nothing() -> None:
+    _out, grant = _project(toolsSettings={"web_fetch": {"trusted": ["http://10\\..*"]}})
+    assert _judge("http://10.0.0.1.evil.com/", grant) == TOOL_ALLOW
+    assert _judge("http://10.0.0.1/", grant) == TOOL_ALLOW
