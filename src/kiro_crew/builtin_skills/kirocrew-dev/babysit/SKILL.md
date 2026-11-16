@@ -170,8 +170,8 @@ security. Fix, commit and push only within the user's authorization.
   `monitor_start` with `watch="work-ledger"`: a quiet cycle costs no turn, and a
   worker's blocked, question or done report wakes it within seconds.
 - `gate=true` is the default. Quiet subjects avoid turns, with eventual delivery
-  after enough quiet intervals. A merge or close ends a gated loop with a notice,
-  no turn. Use `gate=false` for a required final turn or for acting on silence,
+  after enough quiet intervals. A merge or close ends a gated loop after one
+  final turn that names the result. Use `gate=false` for acting on silence,
   such as chasing a missing reviewer or tracking a moving base. `max_cycles`
   counts DELIVERED turns, including quiet-floor deliveries and fallbacks, not
   just useful changes.

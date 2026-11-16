@@ -119,7 +119,7 @@ async def test_only_a_merged_subject_is_recorded_as_a_success(
     service._loops[loop.id] = loop
 
     try:
-        assert await service._monitor_tick_is_quiet(loop) is True
+        await service._timer(loop, delay=0)
         assert loop.monitor is not None
         assert loop.monitor.outcome is not None
         assert loop.monitor.outcome.value == expected
@@ -856,17 +856,12 @@ async def test_the_owed_terminal_turn_settles_only_once_it_lands(tmp_path, monke
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "slot_key, expect_quiet",
-    [("chat-1-123", True), ("slack:C0123456:1700000000.1", False)],
-)
-async def test_a_channel_loop_gets_a_final_turn_but_a_dashboard_loop_does_not(
-    tmp_path, monkeypatch, slot_key, expect_quiet
-):
-    """The expiry notification only reaches the dashboard bell.
+@pytest.mark.parametrize("slot_key", ["chat-1-123", "slack:C0123456:1700000000.1"])
+async def test_every_loop_gets_a_final_turn_before_it_settles(tmp_path, monkeypatch, slot_key):
+    """The expiry notification only reaches the user's bell, never the agent.
 
-    So a channel loop gets one final turn to report into its thread, and a dashboard
-    loop does not pay for one.
+    So a dashboard loop is owed the same one final turn a channel loop gets: the
+    session waiting on the merge has nothing else to wake it.
     """
     import kiro_crew.autonudge as _an
 
@@ -890,20 +885,14 @@ async def test_a_channel_loop_gets_a_final_turn_but_a_dashboard_loop_does_not(
     service._loops[loop.id] = loop
 
     try:
-        assert await service._monitor_tick_is_quiet(loop) is expect_quiet
+        assert await service._monitor_tick_is_quiet(loop) is False
         assert loop.monitor is not None
-        if expect_quiet:
-            # Dashboard: the bell already carries the news, so the watch settles now.
-            assert loop.active is False
-            assert loop.monitor.outcome is not None
-            assert loop.monitor.terminal_pending == ""
-        else:
-            # Channel: the news rides a delivered TURN, so the loop stays LIVE until it
-            # lands; an inactive loop has nothing to re-arm when the thread is busy.
-            # No outcome yet, so a restart here finds a plain live loop.
-            assert loop.active is True
-            assert loop.monitor.outcome is None
-            assert loop.monitor.terminal_pending == "success"
+        # The news rides a delivered TURN, so the loop stays LIVE until it lands; an
+        # inactive loop has nothing to re-arm when the session is busy. No outcome
+        # yet, so a restart here finds a plain live loop.
+        assert loop.active is True
+        assert loop.monitor.outcome is None
+        assert loop.monitor.terminal_pending == "success"
     finally:
         service.stop()
 
@@ -946,7 +935,7 @@ async def test_the_terminal_settlement_is_serialized_against_update(tmp_path, mo
     monkeypatch.setattr(service, "_acquire_mutation_lock", _tracking_acquire)
 
     try:
-        assert await service._monitor_tick_is_quiet(loop) is True
+        await service._timer(loop, delay=0)
         assert held == [loop.id], "the settlement must take the same lock update takes"
         assert loop.active is False
         assert loop.monitor is not None
@@ -996,7 +985,7 @@ async def test_the_terminal_transition_is_on_disk_before_the_user_is_told(tmp_pa
     service._loops[loop.id] = loop
 
     try:
-        await service._monitor_tick_is_quiet(loop)
+        await service._timer(loop, delay=0)
         assert "persist" in order and "emit:expired" in order
         assert order.index("persist") < order.index(
             "emit:expired"
@@ -1242,16 +1231,16 @@ async def test_a_verdict_is_discarded_when_the_loop_was_retargeted_mid_poll(tmp_
 
 @pytest.mark.asyncio
 async def test_a_terminal_verdict_leaves_no_timer_armed(tmp_path, monkeypatch):
-    """ "Do not spend a turn" and "keep watching" are different answers.
+    """The final turn and "keep watching" are different answers.
 
-    The terminal verdict returns the first while having just deactivated the
-    loop, so a re-arm on that path would poll a merged pull request forever and
-    re-emit its expiry notification every tick.
+    Once the owed final turn lands the loop settles, so a re-arm on that path
+    would poll a merged pull request forever and re-emit its expiry notification
+    every tick.
     """
     import kiro_crew.autonudge as _an
 
-    async def on_fire(loop):  # pragma: no cover - must not be reached
-        raise AssertionError("a terminal verdict must not fire")
+    async def on_fire(loop):
+        return True
 
     monkeypatch.setattr(
         _an.irq,
@@ -1325,7 +1314,7 @@ async def test_retargeting_the_instruction_retargets_the_probe(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_terminal_subject_stops_the_loop_without_a_turn(tmp_path, monkeypatch):
+async def test_a_terminal_subject_stops_the_loop_after_one_turn(tmp_path, monkeypatch):
     import kiro_crew.autonudge as _an
 
     fired: list[NudgeLoop] = []
@@ -1351,6 +1340,6 @@ async def test_a_terminal_subject_stops_the_loop_without_a_turn(tmp_path, monkey
 
     await service._timer(loop, delay=0)
 
-    assert fired == []
+    assert fired == [loop]
     assert not loop.active
     assert loop.stopped_reason == _an.MONITOR_TERMINAL_REASON
