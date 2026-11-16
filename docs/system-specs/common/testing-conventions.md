@@ -2694,6 +2694,17 @@ about the code. Each is a hermeticity gap, and each has one fix:
   empty component (an empty entry is the child's CWD on `sys.path`). A child that
   inherits the environment needs nothing of its own; a test that builds a child env from
   scratch, or strips `PYTHONPATH` on purpose, still decides for itself.
+- **A version-manager shim picks its tool from the environment the test changed.**
+  mise, asdf, nodenv and volta put a shim first on `PATH` that chooses the real binary
+  from `HOME`, `$XDG_CONFIG_HOME` and the version files above the CWD. The floor
+  redirects `$XDG_CONFIG_HOME` for every test, and many tests run `node` from a
+  `tmp_path` CWD, so on a host whose node came from mise 71 tests in 8 files failed with
+  `mise ERROR No version is set for shim: node`, and the ones that also substituted
+  `HOME` waited out the 120 s timeout. CI's node is a real binary, so CI stayed green. The
+  rootdir conftest's `_put_the_real_node_first_on_path` asks node for `process.execPath`
+  once, in `pytest_configure`, under the operator's environment, and puts that directory
+  first on `PATH`; `npm` and `npx` sit beside it. A test that drives another shimmed tool
+  resolves it the same way before it changes `HOME`, `$XDG_CONFIG_HOME` or the CWD.
 - **The interpreter decides where recursion gives way.** A test that pinned "decode
   succeeds but encode fails" for a 2,000-deep JSON body met an interpreter that did both;
   assert the invariant across all three outcomes, and walk a deep structure iteratively

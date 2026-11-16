@@ -266,6 +266,7 @@ from conftest_floor_configure import (  # noqa: E402,F401 -- bound for pytest an
     _hide_the_hosts_companion_plugins,
     _pin_crew_log_off_for_the_process,
     _pin_the_profile_standalone_for_the_process,
+    _put_the_real_node_first_on_path,
     _put_the_tree_under_test_first_on_child_paths,
     _redirect_bytecode_cache,
     _redirect_hypothesis_database,
@@ -607,6 +608,7 @@ def pytest_configure(config: pytest.Config) -> None:
     _redirect_bytecode_cache()
     _install_determinism_audit_hook()
     _put_the_tree_under_test_first_on_child_paths()
+    _put_the_real_node_first_on_path()
     _gate_pytest_asyncio_fixture_scan()
     _hide_the_hosts_companion_plugins()
     global _SESSION_CWD
