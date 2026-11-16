@@ -634,6 +634,19 @@ SKILL_POINTERS: dict[str, str] = {
 }
 
 
+def test_every_reference_the_goal_conductor_skill_names_exists() -> None:
+    """Rare paths live in ``references/``, read on demand by the root conductor and a
+    Bot's conductor alike (both mount ``fs_read``); a pointer to a file that is not
+    shipped leaves that path with no instructions at all."""
+    base = _SKILLS_DIR / "goal-conductor"
+    pages = [base / "SKILL.md", *sorted((base / "references").glob("*.md"))]
+    text = "\n".join(p.read_text(encoding="utf-8") for p in pages)
+    named = sorted(set(re.findall(r"references/([a-z0-9-]+\.md)", text)))
+    assert named, "the skill names no reference file"
+    missing = [n for n in named if not (base / "references" / n).is_file()]
+    assert missing == [], f"reference files the skill names but does not ship: {missing}"
+
+
 def test_goal_conductor_points_at_each_shared_rule_it_no_longer_restates() -> None:
     skill = _skill_text("goal-conductor")
     assert set(SKILL_POINTERS) <= set(agent._LEDGER_CONDUCTOR_RULES)
