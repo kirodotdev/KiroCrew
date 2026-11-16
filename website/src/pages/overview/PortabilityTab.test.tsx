@@ -545,7 +545,7 @@ describe('PortabilityTab replace-import confirmation', () => {
     __resetUiPrefsSyncForTests()
   })
 
-  async function askToReplace() {
+  async function askToReplace(options: { includeSettings?: boolean } = {}) {
     const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(
       url.includes('preview')
         ? { ok: true, manifest: { version: 1, created_at: 't', hostname: 'h', user: 'u', contents: {} } }
@@ -560,6 +560,9 @@ describe('PortabilityTab replace-import confirmation', () => {
     await waitFor(() => expect(importButton).toBeEnabled())
     fireEvent.keyDown(screen.getByRole('combobox', { name: 'Mode' }), { key: 'ArrowDown' })
     fireEvent.click(await screen.findByRole('option', { name: 'Replace', exact: true }))
+    if (options.includeSettings) {
+      fireEvent.click(await screen.findByRole('checkbox', { name: i18nT('pages.overview.portabilityTab.import_include_settings') }))
+    }
     fireEvent.click(importButton)
     const dialog = await screen.findByRole('dialog')
     expect(dialog).toHaveAccessibleName('Import')
@@ -597,6 +600,50 @@ describe('PortabilityTab replace-import confirmation', () => {
     await confirmAction('Import')
     await screen.findByText(/Import complete/)
     expect(fetchMock.mock.calls.find(([url]) => url.includes('/import'))?.[0]).toBe('/api/portability/import?mode=replace')
+  })
+
+  describe('the settings documents', () => {
+    const importRequest = (fetchMock: ReturnType<typeof vi.fn>) => fetchMock.mock.calls.find(([url]) => url.includes('/import'))?.[0] as string
+
+    it('offers a checkbox that is off by default and only under Replace', async () => {
+      const { fetchMock } = await askToReplace()
+      await confirmAction('Cancel')
+      const box = screen.getByRole('checkbox', { name: i18nT('pages.overview.portabilityTab.import_include_settings') })
+      expect(box).not.toBeChecked()
+      fireEvent.keyDown(screen.getByRole('combobox', { name: 'Mode' }), { key: 'ArrowDown' })
+      fireEvent.click(await screen.findByRole('option', { name: 'Merge', exact: true }))
+      expect(screen.queryByRole('checkbox', { name: i18nT('pages.overview.portabilityTab.import_include_settings') })).toBeNull()
+      expect(fetchMock.mock.calls.some(([url]) => url.includes('/import'))).toBe(false)
+    })
+
+    it('sends no settings field when the box is not ticked, and says the files are kept', async () => {
+      const { fetchMock, dialog } = await askToReplace()
+      expect(within(dialog).getByText(i18nT('pages.overview.portabilityTab.replace_keeps_settings'), { selector: 'p' })).toBeTruthy()
+      expect(within(dialog).queryByText(i18nT('pages.overview.portabilityTab.replace_settings_foreign_archive'), { selector: 'p' })).toBeNull()
+      await confirmAction('Import')
+      await screen.findByText(/Import complete/)
+      expect(importRequest(fetchMock)).toBe('/api/portability/import?mode=replace')
+    })
+
+    it('sends include_settings=1 when ticked, names the files, and warns about a foreign archive', async () => {
+      const { fetchMock, dialog } = await askToReplace({ includeSettings: true })
+      const overwrites = within(dialog).getByText(i18nT('pages.overview.portabilityTab.replace_overwrites_settings'), { selector: 'p' })
+      expect(overwrites.textContent).toContain('config.json')
+      expect(overwrites.textContent).toContain('hooks.json')
+      expect(overwrites.textContent).toContain('within seconds')
+      expect(overwrites.textContent).toContain('disabled or paused')
+      expect(within(dialog).getByText(i18nT('pages.overview.portabilityTab.replace_settings_foreign_archive'), { selector: 'p' })).toBeTruthy()
+      expect(within(dialog).queryByText(i18nT('pages.overview.portabilityTab.replace_keeps_settings'), { selector: 'p' })).toBeNull()
+      await confirmAction('Import')
+      await screen.findByText(/Import complete/)
+      expect(importRequest(fetchMock)).toBe('/api/portability/import?mode=replace&include_settings=1')
+    })
+
+    it('names a kept hooks file in the result', () => {
+      expect(keptSettingsFiles(['config.json', 'config.local.json', 'hooks.json', 'ui-prefs.json', 'notification_settings.json'])).toHaveLength(5)
+      expect(settingsFileLabel('hooks.json')).toBe(i18nT('pages.overview.portabilityTab.settings_kept_name_hooks'))
+      expect(settingsFileLabel('hooks.json')).not.toBe('hooks.json')
+    })
   })
 
   it('cancels a pending replace import when its owner unmounts', async () => {
