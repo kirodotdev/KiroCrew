@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import cast
 from unittest import mock
 
+import pytest
 from aiohttp import web
 
 from kiro_crew.apps.builtins.ops_mission_control.backend import routes
@@ -170,10 +171,15 @@ class TestManualClaimResolvesTheSignalServerSide(unittest.IsolatedAsyncioTestCas
     claim if that id is not currently firing.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Root ``KIROCREW_HOME`` in pytest's ``tmp_path``, which pytest cleans."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -184,7 +190,6 @@ class TestManualClaimResolvesTheSignalServerSide(unittest.IsolatedAsyncioTestCas
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     async def test_a_fabricated_signal_is_refused_when_not_firing(self):
         from aiohttp.test_utils import TestClient, TestServer
@@ -282,10 +287,15 @@ class TestManualClaimAcksThePushSpool(unittest.IsolatedAsyncioTestCase):
     review.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Root ``KIROCREW_HOME`` in pytest's ``tmp_path``, which pytest cleans."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self.tmp)
         from kiro_crew.apps.builtins.ops_mission_control.backend.providers import webhook
@@ -302,7 +312,6 @@ class TestManualClaimAcksThePushSpool(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     async def test_claiming_a_webhook_signal_removes_it_from_the_spool(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend import models
@@ -398,10 +407,15 @@ class TestManualClaimRequiresAFiringSignal(unittest.IsolatedAsyncioTestCase):
     (`dispatch.run_cycle`, `GET /signals`) both filter explicitly. Found in review.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Root ``KIROCREW_HOME`` in pytest's ``tmp_path``, which pytest cleans."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self.tmp)
 
@@ -412,7 +426,6 @@ class TestManualClaimRequiresAFiringSignal(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     async def _claim(self, signal):
         request = mock.MagicMock(spec=web.Request)
