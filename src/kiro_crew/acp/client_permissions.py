@@ -431,13 +431,19 @@ def _bridged_servers(client: AcpClient) -> tuple[str, ...]:
 def once_for_always(resolved_id: str, offered: dict[str, str]) -> str:
     """*resolved_id*, or the once id when it would answer allow-always.
 
-    The frame's own once id, or the canonical one when the frame recorded
-    allow-always in that slot too.
+    The answer is always an id the frame offered, when it offered one: a harness
+    reads an id it never offered as a refusal, and KAS words that refusal as "The
+    user rejected this tool call." A frame with a single allow option records it
+    in both slots (KAS offers no allow-always on an explicit ``ask`` rule, which
+    is how every Crew-owned Connection call is asked), and that id is the answer.
+    The canonical once id is used only when the frame recorded no once id at all.
     """
     if resolved_id not in (OPTION_ALLOW_ALWAYS, offered.get("always")):
         return resolved_id
-    once = offered.get("once")
-    return once if once and once != offered.get("always") else OPTION_ALLOW_ONCE
+    # shortcut: a frame offering allow-always alone also records it in both slots,
+    # and is answered with it. For a Connection that fails closed: the harness stops
+    # asking, and the gateway proxy refuses each later call for want of an approval.
+    return offered.get("once") or OPTION_ALLOW_ONCE
 
 
 def _restore_withdrawn(
