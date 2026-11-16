@@ -208,7 +208,12 @@ by **six days**, spinning at 1464% CPU between them:
   no tool state and never execs anything. It spins, forever. Pin the real interpreter's
   own directory first on `PATH`, or resolve the tool to its real executable before
   building the env. Do not drop the `HOME` substitution instead: it is usually a
-  blast-radius bound somebody chose on purpose.
+  blast-radius bound somebody chose on purpose. The shim also reads
+  `$XDG_CONFIG_HOME` and the version files above the CWD, and the floor redirects
+  `$XDG_CONFIG_HOME` for EVERY test, so a `tmp_path` CWD alone breaks it. `node` is
+  handled once for the whole run (`_put_the_real_node_first_on_path` puts the directory
+  `process.execPath` names first on `PATH`); another shimmed tool needs the same
+  treatment: ask the tool where it lives, under the operator's environment, first.
 - **Reap the process GROUP, on every exit path.** A child is routinely a wrapper that
   forks, so `Popen.kill()` reaps the wrapper and leaves the real work running — and a
   bounded `wait()` ending in a bare `pass` then reports success. Use
