@@ -89,6 +89,10 @@ _NO_MATCH = "it matches no agent"
 _UNUSABLE = "its agent file could not be used"
 _RESERVED = "the backend keeps that name for one of its own modes"
 _SERVICE = "it is one of Kiro Crew's own agents"
+_CLI_ONLY = (
+    "its agent file has allowedTools or toolsSettings and no permissions block, so "
+    "this backend does not load it unless toolsSettings.subagent.availableAgents names it"
+)
 _GATE_ONLY = (
     "Kiro Crew applies its shell or file-write limits and its preToolUse hooks "
     "only to the agent a chat runs"
@@ -168,9 +172,10 @@ def project_subagent_targets(
 ) -> tuple[list[dict[str, Any]], str]:
     """The entries to append to *parent*'s batch, and the notice for what is left out.
 
-    Nothing when *parent*'s entry does not mount the sub-agent tool, or its spec
-    declares no ``availableAgents`` (omitted, the engine's own roster answers, as
-    before). Blocking file I/O: runs in the projection's worker thread. A target
+    Nothing when *parent*'s entry does not mount the sub-agent tool. When its spec
+    declares no ``availableAgents`` the engine's own roster answers, as before, and
+    the notice names each agent that roster skips (:func:`_skipped_by_engine`).
+    Blocking file I/O: runs in the projection's worker thread. A target
     that fails to project costs that target and a notice line, never the session.
     *settings_dir* is the directory whose ``mcp.json`` the parent's entry was
     stamped from, *work_dir* when ``None``. *forward_ssh_auth_sock* is the
@@ -184,8 +189,11 @@ def project_subagent_targets(
     if not mounts_subagent_tool(entry):
         return [], ""
     globs = spawn_allowlist(parent_spec)
+    if globs is None:
+        # No list: the engine's own roster answers, and it skips a CLI-only profile.
+        return [], _notice(parent, _skipped_by_engine(parent, work_dir), 0)
     if not globs:
-        # ``None`` is "allow all" and ``()`` is "spawn nothing": no list to register.
+        # ``()`` is "spawn nothing": no list to register.
         return [], ""
     names, missed = _target_names(parent, globs, work_dir)
     own_servers = entry.get("mcpServers") if isinstance(entry, dict) else None
@@ -283,6 +291,60 @@ def _glob_roster(work_dir: str | Path | None) -> list[str]:
             if a.name not in UNADVERTISED_AGENTS and not is_internal_agent_spec(a)
         }
     )
+
+
+def _skipped_by_engine(parent: str, work_dir: str | Path | None) -> dict[str, str]:
+    """Each agent of the spawn gate's set the engine's own roster skips, with why.
+
+    The engine's on-disk loader drops a profile written for kiro-cli: ``allowedTools``
+    or ``toolsSettings`` and no ``permissions`` block. With no ``availableAgents``
+    nothing registers such an agent, so a call naming it is "not found in registry".
+    """
+    from kiro_crew.agent_discovery import (
+        SCOPE_PROJECT,
+        is_internal_agent_spec,
+        list_agents,
+        read_agent_spec_strict,
+    )
+    from kiro_crew.config import paths as paths_mod
+    from kiro_crew.subagent import UNADVERTISED_AGENTS
+
+    user_dir = paths_mod.kiro_agents_dir()
+    try:
+        agents = list_agents(user_dir, project_dir=work_dir or None)
+    except Exception:  # noqa: BLE001 - the notice is advisory, never the session
+        logger.warning("agents folder unreadable for the sub-agent notice", exc_info=True)
+        return {}
+    own = {parent, kas_wire_agent_id(parent)}
+    skipped: dict[str, str] = {}
+    for a in sorted(agents, key=lambda a: a.name):
+        if (
+            a.name in own
+            or a.name in UNADVERTISED_AGENTS
+            or is_internal_agent_spec(a)
+            or is_mate_service_agent(a.name)
+            or not a.filename.endswith(".json")
+        ):
+            continue
+        if a.scope == SCOPE_PROJECT:
+            if not work_dir:
+                continue
+            folder = paths_mod.project_agents_dir(work_dir)
+        else:
+            folder = user_dir
+        try:
+            spec = read_agent_spec_strict(
+                folder / a.filename, operation="kas_subagent_notice", source="unknown"
+            )
+        except (OSError, ValueError):
+            continue
+        if (
+            isinstance(spec, dict)
+            and "permissions" not in spec
+            and ("allowedTools" in spec or "toolsSettings" in spec)
+        ):
+            skipped[a.name] = _CLI_ONLY
+    return skipped
 
 
 def _project_target(
