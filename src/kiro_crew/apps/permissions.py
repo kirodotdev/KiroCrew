@@ -355,7 +355,10 @@ def format_permissions_summary(manifest: AppManifest) -> str:
         lines.append("  Storage:   app-scoped data directory")
     if perms.network:
         lines.append("  Network:   outbound HTTP access")
-    if perms.memory:
+    # A JSON ``false`` or ``null`` is stored as the text "False" / "None" (the stored
+    # form is signed, so it stays): neither requests memory, the same rule as the
+    # store page's ``memoryRequested``.
+    if perms.memory.strip().lower() not in ("", "false", "none"):
         lines.append(f"  Memory:    {perms.memory}")
     if perms.cron:
         lines.append("  Cron:      scheduled agent jobs")
