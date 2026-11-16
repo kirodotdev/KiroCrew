@@ -5,6 +5,7 @@ per-channel notification settings.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -25,6 +26,15 @@ if TYPE_CHECKING:
 
 async def api_notifications(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
+    hidden = _withheld_from(request)
+    if hidden is not None:
+        # Owner-only notes are withheld from anyone but the machine owner, as the
+        # live WebSocket and SSE feeds withhold them. Unread is counted over the
+        # notes this view returns.
+        notes = [note for note in state._notification_log if not hidden(note)]
+        if len(notes) != len(state._notification_log):
+            _audit_withheld("notification")
+        return web.json_response({"notifications": notes, "unread": unread_count(notes)})
     return web.json_response(
         {
             "notifications": state._notification_log,
@@ -46,13 +56,74 @@ async def api_notification_delete(request: web.Request) -> web.Response:
     ts = body.get("ts", "")
     if not ts:
         return web.json_response({"error": "ts is required"}, status=400)
+    refused = _refuse_owner_only_note(request, state, ts, "notifications.delete")
+    if refused is not None:
+        return refused
     ok = await state.delete_notification(ts)
     return web.json_response({"ok": ok})
+
+
+def _withheld_from(request: web.Request) -> Callable[[dict], bool] | None:
+    """Which notes this caller is withheld, or ``None`` for the machine owner.
+
+    Everyone else, a Shared Crew teammate who passes the owner gate included, is
+    withheld owner-only notes, which name the machine owner's own accounts.
+    """
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
+    from kiro_crew.dashboard.ws_event_scope import owner_only_note
+
+    if is_host_owner_dashboard_request(request):
+        return None
+    return owner_only_note
+
+
+def _audit_withheld(event_type: str) -> None:
+    from kiro_crew.dashboard.ws_event_scope import audit_owner_only_withheld
+
+    audit_owner_only_withheld(event_type)
+
+
+def _persist_failed() -> web.Response:
+    """The answer when a filtered clear or ack-all could not be written."""
+    return web.json_response(
+        {"error": "Couldn't save the notification change.", "code": "persist_failed"},
+        status=500,
+    )
+
+
+def _refuse_owner_only_note(
+    request: web.Request, state: DashboardState, ts: str, operation: str
+) -> web.Response | None:
+    """The refusal for one notification withheld from this caller, else ``None``.
+
+    The list never shows the caller a note withheld from them, so one they name by
+    its timestamp is refused rather than changed on the owner's behalf.
+    """
+    hidden = _withheld_from(request)
+    if hidden is None:
+        return None
+    if not any(note.get("ts") == ts and hidden(note) for note in state._notification_log):
+        return None
+    _audit_withheld(operation)
+    return web.json_response(
+        {"error": "Only the owner can change this notification.", "code": "owner_only"},
+        status=403,
+    )
 
 
 async def api_notifications_clear(request: web.Request) -> web.Response:
     """POST /api/notifications/clear — clear all notifications."""
     state: DashboardState = request.app["state"]
+    withheld = _withheld_from(request)
+    if withheld is not None and any(withheld(note) for note in state._notification_log):
+        # Clear what the caller sees and keep what they are withheld: no whole-feed
+        # clear, and no clear broadcast that would empty the owner's. Each cleared
+        # note is withdrawn by name once the file holds the result.
+        persisted, _cleared = await state.clear_visible_notifications(withheld)
+        if not persisted:
+            return _persist_failed()
+        _audit_withheld("notifications_clear")
+        return web.json_response({"ok": True})
     await state.clear_notifications()
     return web.json_response({"ok": True})
 
@@ -70,6 +141,9 @@ async def api_notification_ack(request: web.Request) -> web.Response:
     ts = body.get("ts", "")
     if not ts:
         return web.json_response({"error": "ts is required"}, status=400)
+    refused = _refuse_owner_only_note(request, state, ts, "notifications.ack")
+    if refused is not None:
+        return refused
     ok = await state.ack_notification(ts)
     return web.json_response({"ok": ok})
 
@@ -87,6 +161,9 @@ async def api_notification_unack(request: web.Request) -> web.Response:
     ts = body.get("ts", "")
     if not ts:
         return web.json_response({"error": "ts is required"}, status=400)
+    refused = _refuse_owner_only_note(request, state, ts, "notifications.unack")
+    if refused is not None:
+        return refused
     # Take back the exact entry this note's cron ack added, and nothing for a
     # note read any other way (see dashboard.cron_note_ack). One step per
     # note, so it cannot interleave with that note's ack.
@@ -116,6 +193,16 @@ async def api_notification_unack(request: web.Request) -> web.Response:
 async def api_notifications_ack_all(request: web.Request) -> web.Response:
     """POST /api/notifications/ack-all — mark all notifications as read."""
     state: DashboardState = request.app["state"]
+    hidden = _withheld_from(request)
+    if hidden is not None:
+        # Acknowledge what the caller sees: a note withheld from them keeps its read
+        # state, so the ack goes out per entry rather than as "*", once written.
+        withheld = any(hidden(note) for note in state._notification_log)
+        if not await state.acknowledge_visible_notifications(hidden):
+            return _persist_failed()
+        if withheld:
+            _audit_withheld("notification_ack")
+        return web.json_response({"ok": True})
     for n in state._notification_log:
         n["acked"] = True
     # Same ordered executor as every other notification-file mutation: a

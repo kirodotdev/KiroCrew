@@ -95,6 +95,10 @@ SYSTEM_CHANNELS: dict[str, str] = {
     # (dashboard/repeated_failures_notice.py). Its own channel so muting it
     # leaves system.agent alone. Default priority: it blocks nothing.
     "system.memory": _DEFAULT_PRIORITY,
+    # A team Crew the person can now open through the relay
+    # (relay_viewer/crew_notices.py), once per Crew. Its own channel so muting
+    # it leaves system.agent alone. Default priority: it blocks nothing.
+    "system.relay": _DEFAULT_PRIORITY,
 }
 
 # The channel the gateway's monitor-loop stop/finish notices use. Their legacy

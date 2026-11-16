@@ -7716,7 +7716,8 @@
       "keep_tab_order_fixed": "Tab-Reihenfolge beibehalten",
       "instances_load_failed": "Die Remote-Crews konnten nicht geladen werden.",
       "unreachable": "nicht erreichbar",
-      "unreachable_via": "nicht erreichbar — {{via}} ist aus"
+      "unreachable_via": "nicht erreichbar — {{via}} ist aus",
+      "switch_crew_new_team_crew": "Crew wechseln, neue Team-Crew"
     },
     "relayCrews": {
       "list_label": "Team-Crews, die du über das Relay öffnen kannst",
@@ -7739,7 +7740,10 @@
       "try_again": "Erneut versuchen",
       "request_id": "Anfrage-ID: {{id}}",
       "group_team_crews": "Team-Crews",
-      "opens_own_window": "Öffnet sich in einem eigenen Fenster"
+      "opens_own_window": "Öffnet sich in einem eigenen Fenster",
+      "new_crew": "Neu",
+      "seen_not_saved": "Konnte nicht speichern, dass du das gesehen hast. Es wird wieder als neu angezeigt.",
+      "open_crew_failed": "{{name}} konnte nicht geöffnet werden."
     },
     "instancesViewport": {
       "connecting": "Wird verbunden…",
@@ -8545,7 +8549,12 @@
         "moved_to_history_startup_body_one": "{{count}} älterer geöffneter Tab wurde beim Start im Verlauf belassen, damit höchstens {{limit}} Sitzungen geöffnet sind. Öffne den Verlauf, um ihn fortzusetzen.",
         "moved_to_history_startup_body_other": "{{count}} ältere geöffnete Tabs wurden beim Start im Verlauf belassen, damit höchstens {{limit}} Sitzungen geöffnet sind. Öffne den Verlauf, um einen davon fortzusetzen.",
         "moved_to_history_idle_body_one": "{{count}} Sitzung, die über {{days}} Tag(e) inaktiv war, wurde im Verlauf archiviert, um unter dem Limit von {{limit}} Sitzungen zu bleiben. Öffne den Verlauf, um sie fortzusetzen.",
-        "moved_to_history_idle_body_other": "{{count}} Sitzungen, die über {{days}} Tag(e) inaktiv waren, wurden im Verlauf archiviert, um unter dem Limit von {{limit}} Sitzungen zu bleiben. Öffne den Verlauf, um eine davon fortzusetzen."
+        "moved_to_history_idle_body_other": "{{count}} Sitzungen, die über {{days}} Tag(e) inaktiv waren, wurden im Verlauf archiviert, um unter dem Limit von {{limit}} Sitzungen zu bleiben. Öffne den Verlauf, um eine davon fortzusetzen.",
+        "relay_crew_added_title": "Du wurdest zu {{name}} hinzugefügt",
+        "relay_crew_added_body": "Öffne sie im Crew-Wechsler unter Team-Crews.",
+        "relay_crews_available_title_one": "Du hast Zugriff auf {{count}} Team-Crew",
+        "relay_crews_available_title_other": "Du hast Zugriff auf {{count}} Team-Crews",
+        "relay_crews_available_body": "Öffne sie im Crew-Wechsler unter Team-Crews."
       },
       "notificationBanner": {
         "dismiss_notification": "Benachrichtigung schließen",
@@ -20224,7 +20233,8 @@
         "channel_tip_taskrunner": "Wenn ein Aufgabenlauf vorankommt oder dich braucht: Sein Plan ist fertig, er startet, versucht es erneut oder plant neu, wird abgeschlossen, schlägt fehl, hängt, überschreitet das Zeitlimit oder wird nach einem Neustart pausiert.",
         "channel_tip_terminal": "Wenn die Shell eines Terminal-Tabs mit einem Fehler endet oder abgebrochen wird. Der Tab schließt sich, daher wird der Exit-Code hier aufbewahrt.",
         "channel_memory": "Wiederholte Fehler",
-        "channel_tip_memory": "Einmal pro Woche, wenn ein Tool-Fehler des Agenten immer wiederkam. Nur wenn du den wöchentlichen Hinweis unter Gedächtnis eingeschaltet hast."
+        "channel_tip_memory": "Einmal pro Woche, wenn ein Tool-Fehler des Agenten immer wiederkam. Nur wenn du den wöchentlichen Hinweis unter Gedächtnis eingeschaltet hast.",
+        "channel_tip_relay": "Einmal pro Crew, wenn eine Team-Crew, die du über das Relay öffnen kannst, zum ersten Mal in deiner Liste erscheint."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Leistungsmetriken auf diesem Rechner erfassen.",

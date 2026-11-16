@@ -3301,7 +3301,12 @@
         "moved_to_history_startup_body_one": "{{count}} older open tab was left in History at startup to keep {{limit}} sessions open at most. Open History to resume it.",
         "moved_to_history_startup_body_other": "{{count}} older open tabs were left in History at startup to keep {{limit}} sessions open at most. Open History to resume one.",
         "moved_to_history_idle_body_one": "Archived {{count}} session idle past the {{days}}-day mark to History to stay under the {{limit}}-session limit. Open History to resume it.",
-        "moved_to_history_idle_body_other": "Archived {{count}} sessions idle past the {{days}}-day mark to History to stay under the {{limit}}-session limit. Open History to resume one."
+        "moved_to_history_idle_body_other": "Archived {{count}} sessions idle past the {{days}}-day mark to History to stay under the {{limit}}-session limit. Open History to resume one.",
+        "relay_crew_added_title": "You've been added to {{name}}",
+        "relay_crew_added_body": "Open it from Team Crews in the Crew switcher.",
+        "relay_crews_available_title_one": "You have access to {{count}} Team Crew",
+        "relay_crews_available_title_other": "You have access to {{count}} Team Crews",
+        "relay_crews_available_body": "Open them from Team Crews in the Crew switcher."
       },
       "notificationBanner": {
         "dismiss_notification": "Dismiss notification",
@@ -9856,7 +9861,8 @@
         "channel_tip_apps": "When a newer version of an app you installed is published. You hear about each version once.",
         "channel_tip_turn": "When a chat stops with an error you need to act on, such as a provider outage or rate limit, a refused reply, or a lost connection. Chats an app runs are not included.",
         "channel_memory": "Repeated failures",
-        "channel_tip_memory": "Once a week, when an agent tool failure kept coming back. Only if you turned on the weekly note in Memory."
+        "channel_tip_memory": "Once a week, when an agent tool failure kept coming back. Only if you turned on the weekly note in Memory.",
+        "channel_tip_relay": "Once per Crew, when a Team Crew you can open through the relay first shows up in your list."
       },
       "securityPanel": {
         "configPending": {

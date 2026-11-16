@@ -7924,7 +7924,8 @@
       "keep_tab_order_fixed": "Manter a ordem das abas",
       "instances_load_failed": "Não foi possível carregar as equipes remotas.",
       "unreachable": "sem acesso",
-      "unreachable_via": "sem acesso — {{via}} está fora"
+      "unreachable_via": "sem acesso — {{via}} está fora",
+      "switch_crew_new_team_crew": "Trocar de crew, nova crew de equipe"
     },
     "relayCrews": {
       "list_label": "Crews de equipe que você pode abrir pelo relay",
@@ -7947,7 +7948,10 @@
       "try_again": "Tentar novamente",
       "request_id": "ID da solicitação: {{id}}",
       "group_team_crews": "Crews de equipe",
-      "opens_own_window": "Abre em uma janela própria"
+      "opens_own_window": "Abre em uma janela própria",
+      "new_crew": "Novo",
+      "seen_not_saved": "Não foi possível salvar que você viu isto. Vai aparecer como novo de novo.",
+      "open_crew_failed": "Não foi possível abrir {{name}}."
     },
     "instancesViewport": {
       "connecting": "Conectando…",
@@ -8756,7 +8760,13 @@
         "moved_to_history_startup_body_other": "Na inicialização, {{count}} abas abertas mais antigas ficaram no Histórico para manter no máximo {{limit}} sessões abertas. Abra o Histórico para retomar uma.",
         "moved_to_history_idle_body_one": "{{count}} sessão inativa há mais de {{days}} dia(s) foi arquivada no Histórico para ficar abaixo do limite de {{limit}} sessões. Abra o Histórico para retomá-la.",
         "moved_to_history_idle_body_many": "{{count}} sessões inativas há mais de {{days}} dia(s) foram arquivadas no Histórico para ficar abaixo do limite de {{limit}} sessões. Abra o Histórico para retomar uma.",
-        "moved_to_history_idle_body_other": "{{count}} sessões inativas há mais de {{days}} dia(s) foram arquivadas no Histórico para ficar abaixo do limite de {{limit}} sessões. Abra o Histórico para retomar uma."
+        "moved_to_history_idle_body_other": "{{count}} sessões inativas há mais de {{days}} dia(s) foram arquivadas no Histórico para ficar abaixo do limite de {{limit}} sessões. Abra o Histórico para retomar uma.",
+        "relay_crew_added_title": "Você foi adicionado a {{name}}",
+        "relay_crew_added_body": "Abra pelo grupo Crews de equipe no seletor de crew.",
+        "relay_crews_available_title_one": "Você tem acesso a {{count}} crew de equipe",
+        "relay_crews_available_title_many": "Você tem acesso a {{count}} crews de equipe",
+        "relay_crews_available_title_other": "Você tem acesso a {{count}} crews de equipe",
+        "relay_crews_available_body": "Abra pelo grupo Crews de equipe no seletor de crew."
       },
       "notificationBanner": {
         "dismiss_notification": "Dispensar notificação",
@@ -20738,7 +20748,8 @@
         "channel_tip_taskrunner": "Quando uma execução de tarefa avança ou precisa de você: o plano está pronto, ela começa, tenta de novo ou refaz o plano, é concluída, falha, trava ou excede o tempo, ou é pausada após uma reinicialização.",
         "channel_tip_terminal": "Quando o shell de uma aba de terminal sai com erro ou é encerrado à força. A aba fecha, então o código de saída fica guardado aqui.",
         "channel_memory": "Falhas repetidas",
-        "channel_tip_memory": "Uma vez por semana, quando uma falha de ferramenta do agente continuou voltando. Só se você ativou o aviso semanal em Memória."
+        "channel_tip_memory": "Uma vez por semana, quando uma falha de ferramenta do agente continuou voltando. Só se você ativou o aviso semanal em Memória.",
+        "channel_tip_relay": "Uma vez por crew, quando uma crew de equipe que você pode abrir pelo relay aparece pela primeira vez na sua lista."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",

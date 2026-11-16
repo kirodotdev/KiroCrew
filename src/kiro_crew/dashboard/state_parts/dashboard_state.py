@@ -1308,6 +1308,8 @@ class DashboardState:
     resolve_skill_review_notifications = _dashboard_services.resolve_skill_review_notifications
     acknowledge_notifications_where = _dashboard_services.acknowledge_notifications_where
     clear_notifications = _dashboard_services.clear_notifications
+    clear_visible_notifications = _dashboard_services.clear_visible_notifications
+    acknowledge_visible_notifications = _dashboard_services.acknowledge_visible_notifications
     ensure_context_snapshots_loaded = _dashboard_services.ensure_context_snapshots_loaded
     context_snapshot_for = _dashboard_services.context_snapshot_for
     _persist_context_snapshots = _dashboard_services._persist_context_snapshots

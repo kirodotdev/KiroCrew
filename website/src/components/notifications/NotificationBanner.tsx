@@ -19,7 +19,7 @@ import {
   loadBannerEnabled, shouldBannerNote,
 } from '../../hooks/notificationBanner'
 import type { Notification } from '../../types'
-import { notePriority, noteText, safeInternalUrl } from './notifMeta'
+import { noteActionLabel, notePriority, noteText, safeInternalUrl } from './notifMeta'
 import NotificationCard, { CARD_RADIUS, type NotificationCardAction } from './NotificationCard'
 import SwipeToDismiss from './SwipeToDismiss'
 import { CrewmateRosterError, noteMember } from './CrewmateNoteFace'
@@ -418,7 +418,7 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
             const deck = !expanded && !isMobile && idx > 0
             const urlActions = (Array.isArray(n.actions) ? n.actions : [])
               .filter(a => typeof a?.id === 'string' && typeof a?.label === 'string' && typeof a?.url === 'string')
-              .map(a => ({ ...a, safeUrl: safeInternalUrl(a.url) }))
+              .map(a => ({ ...a, label: noteActionLabel(n, a), safeUrl: safeInternalUrl(a.url) }))
               .filter(a => a.safeUrl)
               .slice(0, 2)
             const isApproval = n.kind === 'approval' && !n.acked

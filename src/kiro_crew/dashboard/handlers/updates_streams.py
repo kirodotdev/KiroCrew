@@ -36,6 +36,8 @@ from kiro_crew.dashboard.state import DashboardState, chat_message_frame
 from kiro_crew.dashboard.status_counts import cached_status_snapshot
 from kiro_crew.dashboard.ws_event_scope import (
     DASHBOARD_USER_AUDITEE,
+    audit_owner_only_withheld,
+    owner_only_note,
 )
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.updates")
@@ -438,6 +440,11 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
         refused, connect_events = await stream_reader_admission(request, scoped_app)
         if refused is not None:
             return refused
+    # Owner-only notes (``ws_event_scope.OWNER_ONLY_CHANNELS``) reach the machine
+    # owner alone; a Shared Crew teammate passes the owner gate but not this.
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
+
+    host_owner = is_host_owner_dashboard_request(request)
     resp = web.StreamResponse()
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
@@ -505,6 +512,10 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                         )
                         await send("chat_message", payload)
                     else:
+                        if not host_owner and owner_only_note(note):
+                            # Names the machine owner's own accounts: their stream only.
+                            audit_owner_only_withheld(msg_type or "notification")
+                            continue
                         payload = json.dumps(note)
                         await send("notification", payload)
                 except asyncio.QueueEmpty:

@@ -344,6 +344,33 @@ def test_fanout_skips_silenced_and_passive(monkeypatch, tmp_path):
     assert scheduled == []  # silenced: history only, no push
 
 
+def test_fanout_skips_an_owner_only_note(monkeypatch, tmp_path):
+    """A push subscription records no reader and a Shared Crew teammate may subscribe,
+    so a note only the machine owner may read (``OWNER_ONLY_CHANNELS``) is never pushed."""
+    state = _make_state(monkeypatch, tmp_path)
+    state.broadcast_ws = MagicMock()
+    scheduled: list[dict] = []
+    monkeypatch.setattr(state, "_fan_out_web_push", lambda note: scheduled.append(note))
+
+    state._deliver_note(
+        {
+            "ts": "t9",
+            "kind": "agent",
+            "source": "system",
+            "channel": "system.relay",
+            "priority": "default",
+            "title": "You've been added to Build box",
+            "body": "b",
+        }
+    )
+    assert scheduled == []
+    # The Crew's own note on the same delivery path is still pushed.
+    state._deliver_note(
+        {"ts": "t10", "kind": "agent", "channel": "system.agent", "title": "x", "body": "y"}
+    )
+    assert [note["ts"] for note in scheduled] == ["t10"]
+
+
 def test_fanout_fires_for_normal_note(monkeypatch, tmp_path):
     state = _make_state(monkeypatch, tmp_path)
     state.broadcast_ws = MagicMock()

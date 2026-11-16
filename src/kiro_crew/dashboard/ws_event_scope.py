@@ -418,6 +418,32 @@ def notification_source_app(source: str) -> str:
     return ""
 
 
+#: System channels whose notes describe the machine owner's own accounts, not this
+#: Crew: ``system.relay`` names the Team Crews the owner's sign-in can open
+#: (``relay_viewer/crew_notices.py``). Only the machine owner receives them, on
+#: every transport; anyone else (a Shared Crew teammate, a non-owner dashboard
+#: session, an app token) is withheld them, even where they pass the owner gate.
+OWNER_ONLY_CHANNELS = frozenset({"system.relay"})
+
+
+def owner_only_note(note: object) -> bool:
+    """Whether *note* is on an owner-only channel (``OWNER_ONLY_CHANNELS``)."""
+    fields = note if isinstance(note, dict) else {}
+    return str(fields.get("channel", "")) in OWNER_ONLY_CHANNELS
+
+
+#: Why a caller other than the machine owner was withheld an owner-only note.
+OWNER_ONLY_NOTE = "owner_only_note"
+
+
+def audit_owner_only_withheld(event_type: str) -> None:
+    """Record, best-effort, that a non-owner was withheld an owner-only note."""
+    try:
+        _audit_deny(DASHBOARD_USER_AUDITEE, event_type, OWNER_ONLY_NOTE)
+    except Exception:
+        logger.debug("ws_event_scope: SEL audit for an owner-only withhold failed", exc_info=True)
+
+
 _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     "notification": "notification",
     # Present so the completeness guard sees them classified -- the ACTUAL gate is

@@ -7508,7 +7508,8 @@
       "keep_tab_order_fixed": "タブの順序を固定",
       "instances_load_failed": "リモートクルーを読み込めませんでした。",
       "unreachable": "到達不可",
-      "unreachable_via": "到達不可 — {{via}} が停止中"
+      "unreachable_via": "到達不可 — {{via}} が停止中",
+      "switch_crew_new_team_crew": "クルーを切り替え、新しいチームクルー"
     },
     "relayCrews": {
       "list_label": "リレー経由で開けるチームクルー",
@@ -7531,7 +7532,10 @@
       "try_again": "もう一度試してください",
       "request_id": "リクエスト ID: {{id}}",
       "group_team_crews": "チームクルー",
-      "opens_own_window": "専用のウィンドウで開きます"
+      "opens_own_window": "専用のウィンドウで開きます",
+      "new_crew": "新規",
+      "seen_not_saved": "確認済みとして保存できませんでした。また新規として表示されます。",
+      "open_crew_failed": "{{name}} を開けませんでした。"
     },
     "instancesViewport": {
       "connecting": "接続中…",
@@ -8334,7 +8338,11 @@
         "mcp_share_paused_link": "共有サーバーを確認",
         "moved_to_history_title": "セッションを履歴に移動しました",
         "moved_to_history_startup_body_other": "開いておくセッションを最大 {{limit}} 件に保つため、起動時に古いタブ {{count}} 件を履歴に残しました。履歴を開くと再開できます。",
-        "moved_to_history_idle_body_other": "{{limit}} セッションの上限を超えないよう、{{days}} 日を超えて操作のなかったセッション {{count}} 件を履歴にアーカイブしました。履歴を開くと再開できます。"
+        "moved_to_history_idle_body_other": "{{limit}} セッションの上限を超えないよう、{{days}} 日を超えて操作のなかったセッション {{count}} 件を履歴にアーカイブしました。履歴を開くと再開できます。",
+        "relay_crew_added_title": "{{name}} に追加されました",
+        "relay_crew_added_body": "クルーの切り替えメニューの「チームクルー」から開けます。",
+        "relay_crews_available_title_other": "{{count}} 個のチームクルーにアクセスできます",
+        "relay_crews_available_body": "クルーの切り替えメニューの「チームクルー」から開けます。"
       },
       "notificationBanner": {
         "dismiss_notification": "通知を閉じる",
@@ -19710,7 +19718,8 @@
         "channel_tip_taskrunner": "タスクの実行が進んだとき、または対応が必要なときに通知します。計画の準備完了、開始、再試行や再計画、完了、失敗、停滞やタイムアウト、再起動後の一時停止などです。",
         "channel_tip_terminal": "ターミナルタブのシェルがエラーで終了したとき、または強制終了されたときに通知します。タブは閉じるため、終了コードはここに残ります。",
         "channel_memory": "繰り返しの失敗",
-        "channel_tip_memory": "エージェントのツールの失敗が繰り返されたとき、週に1回。メモリーで週1回のお知らせをオンにした場合のみ。"
+        "channel_tip_memory": "エージェントのツールの失敗が繰り返されたとき、週に1回。メモリーで週1回のお知らせをオンにした場合のみ。",
+        "channel_tip_relay": "リレー経由で開けるチームクルーが初めてリストに表示されたとき、クルーごとに1回。"
       },
       "privacyPanel": {
         "recordMetricsDescription": "このマシンでパフォーマンスメトリクスを収集します。",

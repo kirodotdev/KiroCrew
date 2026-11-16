@@ -41,6 +41,16 @@ const TeamCrewsSwitcher = lazy(() => import('../../components/TeamCrewsGroup'))
 const hasRelayCrewBridge = () =>
   typeof (window as { relayCrewAPI?: { open?: unknown } }).relayCrewAPI?.open === 'function'
 
+/** The Crew switcher: with Team Crews in the desktop app (the plain one until its
+ *  code loads), the plain one everywhere else. */
+function CrewSwitcher() {
+  return hasRelayCrewBridge() ? (
+    <Suspense fallback={<InstanceTabBar variant="inline" />}>
+      <TeamCrewsSwitcher variant="inline" />
+    </Suspense>
+  ) : <InstanceTabBar variant="inline" />
+}
+
 // Corner radius, in px, of the top bar's Liquid Glass pills (the search
 // trigger, the readout capsule; components/FeedbackPill.tsx carries the same
 // number): `rounded-xl`, which the update pill already wears, so the row reads
@@ -293,11 +303,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
           )}
           {/* Desktop app only: the same switcher, plus Team Crews while the relay
               viewer is on. Until its code loads, the plain switcher stands in. */}
-          {hasRelayCrewBridge() ? (
-            <Suspense fallback={<InstanceTabBar variant="inline" />}>
-              <TeamCrewsSwitcher variant="inline" />
-            </Suspense>
-          ) : <InstanceTabBar variant="inline" />}
+          <CrewSwitcher />
           </div>
         </div>
         )}
@@ -314,7 +320,9 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             width and the sessions toggle stays on the gutter. */}
         {mobileSingle && (
           <div data-testid="topbar-lead" className="relative h-full flex items-center gap-1.5 min-w-0">
-            <InstanceTabBar variant="inline" />
+            {/* The same switcher as the wide bar, so a note's Open on a Team Crew
+                (`?relay_crew=`) is read at every width. */}
+            <CrewSwitcher />
             {getTopBarWidgets().map(w => (
               <ErrorBoundary key={w.id} scope={`topbar-widget:${w.id}`} fallback={null}>
                 <w.component />

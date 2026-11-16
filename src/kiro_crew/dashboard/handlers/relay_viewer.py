@@ -1,11 +1,14 @@
 """The relay viewer's gateway routes: the desktop app lists remote Crews and opens one.
 
-Off unless ``tunnel.relay_viewer_enabled`` is set: both routes answer 404
-``RELAY_VIEWER_OFF`` while it is off. Neither is reachable through the relay
+Off unless ``tunnel.relay_viewer_enabled`` is set: every route answers 404
+``RELAY_VIEWER_OFF`` while it is off. None is reachable through the relay
 (``kiro_relay.limits`` refuses everything under ``/api/relay-viewer``).
 
 * ``GET /api/relay-viewer/crews``: the owner's dashboard reads the Crews this
-  person can open. The answer carries no token.
+  person can open. The answer carries no token. A read that succeeded also rings
+  the bell once for a team Crew new to this person (``relay_viewer.crew_notices``).
+* ``POST /api/relay-viewer/crews/seen``: the owner's dashboard records that the
+  person saw or opened those Crews, which clears their dot.
 * ``POST /api/relay-viewer/token``: the desktop app's main process gets an access
   token for one of them. Admitted like ``/api/token/local``: loopback (or the
   dashboard's unix socket from this user), the local secret, and a verified host
@@ -262,7 +265,7 @@ async def _sign_in_marker(ref: str) -> Optional[str]:
     return hashlib.sha256(b"relay-viewer-sign-in\n" + fingerprint.encode()).hexdigest()[:16]
 
 
-def _entry(crew: cps.CrewEndpoint) -> dict[str, Optional[str | int]]:
+def _entry(crew: cps.CrewEndpoint, unseen: bool = False) -> dict[str, Optional[str | int | bool]]:
     seen = crew.last_seen_at
     return {
         "endpointId": crew.endpoint_id,
@@ -272,7 +275,30 @@ def _entry(crew: cps.CrewEndpoint) -> dict[str, Optional[str | int]]:
         "relayConnectionStatus": crew.relay_connection_status,
         "crewUrl": crew.crew_url,
         "lastSeenAt": None if seen is None else int(seen),
+        # A team Crew announced to this person that they have not opened or seen
+        # listed yet (``relay_viewer.crew_notices``).
+        "unseen": unseen,
     }
+
+
+async def _announce(request: web.Request, crews: tuple[cps.CrewEndpoint, ...]) -> frozenset[str]:
+    """Ring the bell for team Crews new to this person; the IDs still unseen.
+
+    Only a list read that succeeded gets here. Never raises: the list answers
+    either way, and a failure here only means no note and no dot.
+    """
+    state = request.app.get("state")
+    if state is None:
+        return frozenset()
+    from kiro_crew.relay_viewer import crew_notices
+
+    try:
+        new, unseen = await _off_loop(crew_notices.reconcile, crews)
+        crew_notices.publish(state, new)
+    except Exception:  # noqa: BLE001 - the notice must never fail the list
+        logger.warning("relay viewer: could not announce new Crews", exc_info=True)
+        return frozenset()
+    return unseen
 
 
 async def api_relay_viewer_crews(request: web.Request) -> web.Response:
@@ -304,7 +330,47 @@ async def api_relay_viewer_crews(request: web.Request) -> web.Response:
         logger.info("relay viewer: crews -> %s", exc.code)
         return _refused(exc)
     logger.info("relay viewer: crews -> %d listed", len(crews))
-    return _ok({"crews": [_entry(c) for c in crews]})
+    unseen = await _announce(request, crews)
+    return _ok({"crews": [_entry(c, c.endpoint_id in unseen) for c in crews]})
+
+
+#: The most endpoint IDs one seen request may name, well above any real list.
+_MAX_SEEN_IDS = 200
+
+
+async def api_relay_viewer_crews_seen(request: web.Request) -> web.Response:
+    """POST /api/relay-viewer/crews/seen: the person saw these Crews, so drop their dot.
+
+    Body ``{"endpointIds": [...]}``. Owner-only like the list; an ID the state
+    file does not hold is ignored, so the answer says nothing about which exist.
+    """
+    settings = await _settings()
+    if settings is None:
+        return _off()
+    from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
+    from kiro_crew.relay_client.protocol import ENDPOINT_ID_RE
+    from kiro_crew.relay_viewer import crew_notices
+
+    if published_relay_caller(request) is not None:
+        return _error("Not available through the relay.", "relay_local_credential", 403)
+    denied = await require_owner_dashboard_request(request, "relay_viewer.crews_seen")
+    if denied is not None:
+        denied.headers.update(_NO_STORE)
+        return denied
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    ids = body.get("endpointIds") if isinstance(body, dict) else None
+    if (
+        not isinstance(ids, list)
+        or len(ids) > _MAX_SEEN_IDS
+        or not all(isinstance(i, str) and ENDPOINT_ID_RE.match(i) for i in ids)
+    ):
+        return _error("endpointIds must be a list of Crew endpoint IDs.", "INVALID_REQUEST", 400)
+    if not await _off_loop(crew_notices.mark_seen, ids):
+        return _error("Couldn't save that these Crews were seen.", "NOT_SAVED", 503)
+    return _ok({"ok": True})
 
 
 def _audit(request: web.Request, outcome: str, resources: str) -> None:

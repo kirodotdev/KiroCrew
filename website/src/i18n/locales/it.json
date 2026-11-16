@@ -7924,7 +7924,8 @@
       "keep_tab_order_fixed": "Mantieni l’ordine delle schede",
       "instances_load_failed": "Impossibile caricare le crew remote.",
       "unreachable": "non raggiungibile",
-      "unreachable_via": "non raggiungibile — {{via}} è giù"
+      "unreachable_via": "non raggiungibile — {{via}} è giù",
+      "switch_crew_new_team_crew": "Cambia crew, nuova crew del team"
     },
     "relayCrews": {
       "list_label": "Crew del team che puoi aprire tramite il relay",
@@ -7947,7 +7948,10 @@
       "try_again": "Riprova",
       "request_id": "ID richiesta: {{id}}",
       "group_team_crews": "Crew del team",
-      "opens_own_window": "Si apre in una finestra a sé"
+      "opens_own_window": "Si apre in una finestra a sé",
+      "new_crew": "Nuovo",
+      "seen_not_saved": "Impossibile salvare che l’hai visto. Verrà mostrato di nuovo come nuovo.",
+      "open_crew_failed": "Impossibile aprire {{name}}."
     },
     "instancesViewport": {
       "connecting": "Connessione in corso…",
@@ -8756,7 +8760,13 @@
         "moved_to_history_startup_body_other": "All’avvio, {{count}} schede aperte meno recenti sono rimaste nella Cronologia per mantenere al massimo {{limit}} sessioni aperte. Apri la Cronologia per riprenderne una.",
         "moved_to_history_idle_body_one": "{{count}} sessione inattiva da oltre {{days}} giorno/i è stata archiviata nella Cronologia per restare sotto il limite di {{limit}} sessioni. Apri la Cronologia per riprenderla.",
         "moved_to_history_idle_body_many": "{{count}} sessioni inattive da oltre {{days}} giorno/i sono state archiviate nella Cronologia per restare sotto il limite di {{limit}} sessioni. Apri la Cronologia per riprenderne una.",
-        "moved_to_history_idle_body_other": "{{count}} sessioni inattive da oltre {{days}} giorno/i sono state archiviate nella Cronologia per restare sotto il limite di {{limit}} sessioni. Apri la Cronologia per riprenderne una."
+        "moved_to_history_idle_body_other": "{{count}} sessioni inattive da oltre {{days}} giorno/i sono state archiviate nella Cronologia per restare sotto il limite di {{limit}} sessioni. Apri la Cronologia per riprenderne una.",
+        "relay_crew_added_title": "Sei stato aggiunto a {{name}}",
+        "relay_crew_added_body": "Aprila da Crew del team nel selettore di crew.",
+        "relay_crews_available_title_one": "Hai accesso a {{count}} crew del team",
+        "relay_crews_available_title_many": "Hai accesso a {{count}} crew del team",
+        "relay_crews_available_title_other": "Hai accesso a {{count}} crew del team",
+        "relay_crews_available_body": "Aprile da Crew del team nel selettore di crew."
       },
       "notificationBanner": {
         "dismiss_notification": "Ignora notifica",
@@ -20738,7 +20748,8 @@
         "channel_tip_taskrunner": "Quando un'esecuzione di attività avanza o ha bisogno di te: il suo piano è pronto, si avvia, riprova o ripianifica, si completa, non riesce, si blocca o va in timeout, oppure viene messa in pausa dopo un riavvio.",
         "channel_tip_terminal": "Quando la shell di una scheda del terminale esce con un errore o viene terminata forzatamente. La scheda si chiude, quindi il codice di uscita viene conservato qui.",
         "channel_memory": "Errori ripetuti",
-        "channel_tip_memory": "Una volta a settimana, quando un errore di uno strumento dell’agente ha continuato a ripetersi. Solo se hai attivato l’avviso settimanale in Memoria."
+        "channel_tip_memory": "Una volta a settimana, quando un errore di uno strumento dell’agente ha continuato a ripetersi. Solo se hai attivato l’avviso settimanale in Memoria.",
+        "channel_tip_relay": "Una volta per crew, quando una crew del team che puoi aprire tramite il relay compare per la prima volta nel tuo elenco."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registra le metriche",

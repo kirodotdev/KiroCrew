@@ -7,7 +7,7 @@
  * hides the whole list, so the default dashboard is unchanged.
  */
 import { useCallback, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { api, ApiError, type RelayCrewEntry } from '../api/client'
 import { parseErrorCode, parseErrorField } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
@@ -112,6 +112,38 @@ export function relayCrewStatusText(entry: RelayCrewEntry): string {
 }
 
 export const RELAY_VIEWER_CREWS_KEY = ['relay-viewer', 'crews'] as const
+
+/** The most IDs one seen request carries; the route's own cap (`_MAX_SEEN_IDS`). */
+const SEEN_BATCH = 200
+
+/** Tell the gateway the person saw these Crews: the IDs it confirmed it saved, and
+ *  whether any batch failed. A failed batch keeps its dots, which is true, and the
+ *  next open sends it again; the caller says it wasn't saved. */
+export async function recordRelayCrewsSeen(endpointIds: string[]): Promise<{ saved: string[]; failed: boolean }> {
+  const saved: string[] = []
+  let failed = false
+  for (let i = 0; i < endpointIds.length; i += SEEN_BATCH) {
+    const batch = endpointIds.slice(i, i + SEEN_BATCH)
+    try {
+      await api.relayViewerCrewsSeen(batch)
+      saved.push(...batch)
+    } catch {
+      failed = true
+    }
+  }
+  return { saved, failed }
+}
+
+/** Clear the dot of these Crews in the cached list now, without waiting for the
+ *  next read. A read already in flight is cancelled first: its answer predates the
+ *  save, so it would bring the dots back. */
+export async function clearRelayCrewsUnseen(queryClient: QueryClient, endpointIds: string[]): Promise<void> {
+  if (endpointIds.length === 0) return
+  await queryClient.cancelQueries({ queryKey: RELAY_VIEWER_CREWS_KEY })
+  const ids = new Set(endpointIds)
+  queryClient.setQueryData<{ crews: RelayCrewEntry[] }>(RELAY_VIEWER_CREWS_KEY, old =>
+    old ? { ...old, crews: old.crews.map(c => (ids.has(c.endpointId) ? { ...c, unseen: false } : c)) } : old)
+}
 
 const isOffError = (err: unknown) => err instanceof ApiError && err.status === 404
 

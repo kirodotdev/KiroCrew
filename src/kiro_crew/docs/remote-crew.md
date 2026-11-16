@@ -323,6 +323,19 @@ row opens the Crew as the switcher does. A **Set up a new Shared Crew** card
 under it links to the AWS Management Console, where an admin creates Shared
 Crews. Both cards are hidden while the feature is off or outside the desktop app.
 
+When a list read finds a **Team** Crew you haven't been told about, the bell says
+"You've been added to <name>", with **Open**, and the switcher's caret and that
+Crew's row show a dot until you open the Crew or open the switcher. Two or more
+new Crews in one read, which is what a first sign-in with several already granted
+looks like, get one note with the count instead. Each Crew is announced once: the
+Crews already announced are kept on this computer's gateway, in
+`relay-viewer-crews.json` under the data home, so a new window doesn't announce
+them again. A failed read, or the feature turned off, never announces anything,
+and a Crew that leaves the list isn't announced as lost. Mute the **Team Crews**
+channel in Settings › Notifications to stop the notes. You only learn of a Crew
+here once Kiro Crew is installed and you've signed in; telling someone sooner is
+for whoever grants the access.
+
 ### What opening a Crew does
 
 Choosing an online row sends only the Crew's endpoint ID to the desktop app's
@@ -378,8 +391,9 @@ turned off is noticed at the next renewal.
 
 ### What stays local
 
-Both gateway routes behind this (`GET /api/relay-viewer/crews` and
-`POST /api/relay-viewer/token`) answer 404 while the feature is off, and the relay
+The gateway routes behind this (`GET /api/relay-viewer/crews`,
+`POST /api/relay-viewer/crews/seen` and `POST /api/relay-viewer/token`) answer 404
+while the feature is off, and the relay
 refuses them, so nobody can reach them through it. Only the owner's dashboard reads
 the list. Only the desktop app's own main process can get a token, from this
 machine. No token, sign-in or credential is logged.

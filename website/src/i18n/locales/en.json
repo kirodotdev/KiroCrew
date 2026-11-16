@@ -5048,7 +5048,8 @@
       "switch_crew": "Switch crew",
       "switch_crew_unread": "Switch crew, {{n}} unread elsewhere",
       "unreachable": "unreachable",
-      "unreachable_via": "unreachable — {{via}} is down"
+      "unreachable_via": "unreachable — {{via}} is down",
+      "switch_crew_new_team_crew": "Switch crew, new Team Crew"
     },
     "relayCrews": {
       "list_label": "Team Crews you can open through the relay",
@@ -5071,7 +5072,10 @@
       "try_again": "Try again",
       "request_id": "Request ID: {{id}}",
       "group_team_crews": "Team Crews",
-      "opens_own_window": "Opens in its own window"
+      "opens_own_window": "Opens in its own window",
+      "new_crew": "New",
+      "seen_not_saved": "Couldn't save that you've seen this. It will show as new again.",
+      "open_crew_failed": "Couldn't open {{name}}."
     },
     "instancesViewport": {
       "loading_pane": "Loading pane…",

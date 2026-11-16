@@ -160,6 +160,7 @@ async def test_crews_lists_for_the_owner_with_no_token(viewer, caplog) -> None:
             "relayConnectionStatus": "CONNECTED",
             "crewUrl": CREW.crew_url,
             "lastSeenAt": None,
+            "unseen": False,
         }
     ]
     assert BEARER not in text and BEARER not in caplog.text
