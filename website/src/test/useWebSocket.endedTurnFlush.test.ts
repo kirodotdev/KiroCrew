@@ -24,6 +24,8 @@ import {
 } from '../store/chatSlice'
 import { sseSlots } from '../store/dashboardSlice'
 import { streamFlush } from '../store/streamFlush'
+import { QueryObserver } from '@tanstack/react-query'
+import { slotMessagesQueryKey } from '../api/slotMessagesQuery'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -198,6 +200,47 @@ describe('useWebSocket: a slots frame ending the active turn flushes its buffere
       .map(m => [m.role, m.content]))
       .toEqual([['assistant', 'background head and tail']])
     expect(afterDone.slotRun[background]?.state).toBe('idle')
+    hook.unmount()
+  })
+
+  it('reads a split pane once per turn when its idle row arrives before chat_done', async () => {
+    const pane = 'slot-2'
+    const stop = new QueryObserver(queryClient, {
+      queryKey: slotMessagesQueryKey(pane, undefined),
+      queryFn: () => new Promise(() => {}),
+      staleTime: Infinity,
+    }).subscribe(() => {})
+    const { ws, hook } = mount()
+    act(() => { ws.simulateMessage(slotsFrame([{ key: SLOT, running: false }, { key: pane, running: true, turn: 41 }])) })
+    // The connection's first list warms the pane once; count the turn's reads only.
+    const atConnect = vi.mocked(api.chatSlotDetail).mock.calls.filter(([key]) => key === pane).length
+    act(() => { ws.simulateMessage(slotsFrame([{ key: SLOT, running: false }, { key: pane, running: false, turn: 41 }])) })
+    act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: pane, turn: 41, turn_gen: GEN } }) })
+    drainFrames()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const paneReads = vi.mocked(api.chatSlotDetail).mock.calls.filter(([key]) => key === pane)
+    expect(paneReads).toHaveLength(atConnect + 1)
+    stop()
+    hook.unmount()
+  })
+
+  it('warms a restored non-active pane from the socket\'s first list, for a turn that ended before registration', () => {
+    const pane = 'slot-2'
+    const stop = new QueryObserver(queryClient, {
+      queryKey: slotMessagesQueryKey(pane, undefined),
+      queryFn: () => new Promise(() => {}),
+      staleTime: Infinity,
+    }).subscribe(() => {})
+    const { ws, hook } = mount()
+    const reads = () => vi.mocked(api.chatSlotDetail).mock.calls.filter(([key]) => key === pane).length
+    expect(reads()).toBe(0)
+    // The connect snapshot, ordered after registration, shows the turn ended.
+    act(() => { ws.simulateMessage(slotsFrame([{ key: SLOT, running: false }, { key: pane, running: false, turn: 41 }])) })
+    expect(reads()).toBe(1)
+    // The same list again is steady state.
+    act(() => { ws.simulateMessage(slotsFrame([{ key: SLOT, running: false }, { key: pane, running: false, turn: 41 }])) })
+    expect(reads()).toBe(1)
+    stop()
     hook.unmount()
   })
 

@@ -156,7 +156,7 @@ function ChatSidebar({
   // list; the mate threads are read off the full store, which this prop no longer holds.
   const mateThreads = useAppSelector(selectMateThreadsHidingSessions)
   // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the read crewModeView makes
-  const localSlots = useMemo(() => crewModeView(slotsProp, false, mateThreads), [slotsProp, crewMode, mateThreads])
+  const localSlots = useMemo(() => crewModeView(slotsProp, false, mateThreads, activeSlot), [slotsProp, crewMode, mateThreads, activeSlot])
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   // Read-only store handle for point-in-time reads inside async callbacks (the

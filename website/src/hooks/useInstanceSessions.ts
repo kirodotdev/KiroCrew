@@ -93,6 +93,8 @@ interface PeerSlot {
   crew_mode_root?: boolean
   /** On a peer's crew member: its root's key on that peer. */
   crew_root?: string
+  /** The peer's `slack.show_in_session_list` stamp on a Slack-born row. */
+  slack_list_hidden?: boolean
   pending_approval?: boolean
   /** An unanswered question card is waiting on the slot. */
   needs_input?: boolean
@@ -145,6 +147,9 @@ export interface InstanceSessionRow {
   /** The peer's root this row is a crew member of, kept (a string only) so the
    *  person's lists leave a peer's crew members out as they leave local ones out. */
   crew_root?: string
+  /** The peer stamped this Slack-born row out of the person's list
+   *  (`slack.show_in_session_list` off on that peer); only a literal `true` crosses. */
+  slack_list_hidden?: boolean
   /** The ISO ladder, forwarded raw. Deliberately NO `modified`: `slotActivityTs`
    *  collapses these three for ranking, the date-segment header and the row label
    *  alike, so a derived epoch field here would only be a second definition of the
@@ -433,6 +438,7 @@ export function useInstanceSessions(
           ...(s.lineage_pending === true ? { lineage_pending: true } : {}),
           ...(s.crew_mode_root === true ? { crew_mode_root: true } : {}),
           ...(str(s.crew_root) ? { crew_root: s.crew_root } : {}),
+          ...(s.slack_list_hidden === true ? { slack_list_hidden: true } : {}),
           ...(str(s.folder_id) ? { peer_folder_id: s.folder_id } : {}),
           key: s.key,
           title: str(s.title),

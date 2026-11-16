@@ -683,6 +683,21 @@ export function joinSentences(sentences: readonly (string | undefined | null | f
   return text
 }
 
+/** Characters that already close a sentence, Latin and CJK full-width. */
+const SENTENCE_ENDINGS = ['.', '!', '?', '\u3002', '\uff01', '\uff1f'] as const
+
+/**
+ * A refusal's reason ahead of a card's recovery text, as two sentences, so the
+ * person learns why it was refused and not only that it was. A reason with no
+ * closing stop (the framed `send_failed_with_error`, "Send failed: <error>")
+ * gets a full stop first. No reason: the recovery text alone.
+ */
+export function withReason(reason: string | undefined | null, text: string): string {
+  if (!reason) return text
+  const stop = SENTENCE_ENDINGS.some(c => reason.endsWith(c)) ? '' : '.'
+  return `${reason}${stop} ${text}`
+}
+
 /* ----------------------------------------------------------------- collation */
 
 /**

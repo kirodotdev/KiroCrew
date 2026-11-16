@@ -838,6 +838,21 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.show-slack-conversations-in-the-session-list-slack",
+    "label": "Show Slack conversations in the session list (Slack)",
+    "labelKey": "pages.settings.slackPanel.show_in_session_list",
+    "labelSuffix": "Slack",
+    "description": "Lists conversations that start in Slack with your other sessions.",
+    "hint": "Turn this off to leave conversations that start in Slack out of the session list. They keep working in Slack, stay in History and search, and come back when you turn this on again. The conversation you have open, and one waiting on your approval or answer, stay listed. Sessions you start in the dashboard and connect to Slack, and Slack code channel sessions with their helper agents, are always listed.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.show_in_session_list"
+  },
+  {
     "id": "channels.show-thinking-slack",
     "label": "Show thinking (Slack)",
     "labelKey": "pages.settings.slackPanel.show_thinking",

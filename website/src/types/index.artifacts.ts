@@ -191,6 +191,11 @@ export interface Artifact {
    * "save permanently" action changes. Absent on older payloads — treat
    * undefined as false. */
   auto_registered?: boolean
+  /** List responses only: true when the auto-widget sweep could delete this
+   *  record (the server's own `_is_sweepable_auto_widget`). It is the Artifacts
+   *  home page's "Recent output" row; everything else is made or kept. Absent
+   *  on older payloads -- treat undefined as false. */
+  sweepable?: boolean
   /** True for a crewmate's weekly report or monthly review, set by the gateway
    * when `save_goal_report` files it (never through the artifact API). The
    * viewer opens such a page in the crewmate Dashboard page's sandbox
