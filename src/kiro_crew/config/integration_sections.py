@@ -1282,9 +1282,9 @@ class TunnelConfig:
             "The relay's domain, for example us-east-1.relay.example.invalid. When set, the "
             "viewer lists a remote Crew, and sends its access token, only when the Crew's "
             "address is exactly https://<endpoint ID>.<this domain> with no port. Empty (the "
-            "default) lists a Crew whose address's host starts with its endpoint ID, but the "
-            "desktop app opens no Crew until this is set. Any other value matches no Crew "
-            "address, so no Crew is listed.",
+            "default) lists a Crew whose address is https://<endpoint ID>.<any domain> with no "
+            "port, and the desktop app opens it at exactly that address. Any other value matches "
+            "no Crew address, so no Crew is listed.",
         ),
     )
 

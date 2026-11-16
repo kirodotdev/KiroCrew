@@ -27,6 +27,7 @@ import logging
 import time
 from contextvars import copy_context
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, TypeVar
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
@@ -370,12 +371,6 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
     ):
         return _refused(cps.CpsRefused(cps.INVALID_REQUEST, "not a sign-in marker"))
     cps_url, ref, crew_domain = settings
-    # The desktop app opens only https://<endpointId>.<relay domain>, so with no
-    # domain no token is minted: the answer says what is missing instead.
-    if not crew_domain:
-        return _refused(
-            cps.CpsRefused(cps.NOT_SET_UP, "tunnel.relay_viewer_relay_domain is not set")
-        )
 
     async def _list_then_mint(
         bearer: str, token_type: str, profile_arn: str
@@ -452,6 +447,9 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
         return _refused(exc)
     logger.info("relay viewer: mint %s -> done", endpoint_id)
     _audit(request, "success", endpoint_id)
+    # No relay domain: pin the window to the exact host the control plane listed for this
+    # Crew. The list kept only https://<endpointId>.<rest> on the default port.
+    relay_domain = crew_domain or (urlsplit(crew.crew_url).hostname or "")[len(endpoint_id) + 1 :]
     return _ok(
         {
             "accessToken": grant.access_token,
@@ -460,8 +458,8 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
             "serverDate": grant.server_date,
             "crewUrl": crew.crew_url,
             # The desktop app sends the token only to exactly
-            # https://<endpointId>.<relayDomain>, so it opens no Crew while this is empty.
-            "relayDomain": crew_domain,
+            # https://<endpointId>.<relayDomain>.
+            "relayDomain": relay_domain,
             "name": crew.name,
             "signInMarker": marker,
         }
