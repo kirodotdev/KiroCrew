@@ -17,6 +17,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
     ACTION_COMMENT,
     ACTION_RESOLVE,
@@ -449,10 +451,15 @@ class TestEvidenceRedaction(unittest.IsolatedAsyncioTestCase):
     ``test/conftest.py`` fixture — the sibling classes here isolate the same way.)
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self._tmp = Path(tempfile.mkdtemp())
+        self._tmp = self._tmp_path
         self._prev_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self._tmp)
 
@@ -463,7 +470,6 @@ class TestEvidenceRedaction(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev_home
-        shutil.rmtree(self._tmp, ignore_errors=True)
 
     async def test_tokens_are_redacted_centrally(self):
         """An adapter author cannot leak a credential by forgetting to redact."""
@@ -899,25 +905,27 @@ class TestPublicAdapterDefaults(unittest.IsolatedAsyncioTestCase):
     a fresh install.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
-        import tempfile
 
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         self._prev_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self.tmp)
         self._clear_config_cache()
 
     def tearDown(self):
         import os
-        import shutil as _shutil
 
         if self._prev_home is None:
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev_home
         self._clear_config_cache()
-        _shutil.rmtree(self.tmp, ignore_errors=True)
 
     @staticmethod
     def _clear_config_cache():

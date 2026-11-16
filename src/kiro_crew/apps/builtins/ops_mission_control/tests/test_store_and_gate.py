@@ -12,10 +12,10 @@ data home.
 """
 
 import json
-import shutil
-import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from kiro_crew.apps.builtins.ops_mission_control.tests.store_and_gate_helpers import _HomeIsolated
 from kiro_crew.testing.synthetic_credentials import github_classic
@@ -987,10 +987,15 @@ class TestClaimProvenance(unittest.TestCase):
     them.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -1001,7 +1006,6 @@ class TestClaimProvenance(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _signal(self, native_id="alarm/dlq"):
         from kiro_crew.apps.builtins.ops_mission_control.backend import models
