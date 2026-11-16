@@ -375,6 +375,21 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
     expect(screen.getByTestId('kiro-sign-in-takes-effect')).toBeInTheDocument()
   })
 
+  it('"Use the Kiro CLI account" closes the relay Crew windows that ran as the removed sign-in', async () => {
+    const closeAll = vi.fn().mockResolvedValue(undefined)
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open: vi.fn(), closeAll }
+    onTestFinished(() => { delete (window as { relayCrewAPI?: unknown }).relayCrewAPI })
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    kasLoginSources.mockResolvedValue(TWO_ACCOUNTS)
+    renderWithProviders(<KiroSignInCard />)
+    fireEvent.click(await screen.findByTestId('kiro-sign-in-use-kiro-cli'))
+    expect(closeAll).not.toHaveBeenCalled()
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    fireEvent.click(screen.getByTestId('kiro-sign-in-remove'))
+    await waitFor(() => expect(closeAll).toHaveBeenCalledTimes(1))
+    expect(closeAll).toHaveBeenCalledWith()
+  })
+
   it('cannot tell whether they are one account: says so without calling them different', async () => {
     kasLoginStatus.mockResolvedValue(SIGNED_IN)
     kasLoginSources.mockResolvedValue({

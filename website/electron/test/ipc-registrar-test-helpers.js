@@ -51,6 +51,7 @@ const SHELL_HANDLES = [
   "local-gateway:get",
   "local-gateway:set",
   "pane:clear-http-cache",
+  "relay-crew:close-all",
   "relay-crew:open",
   "remote-crew:forward-pane-ports",
   "tray-icon:get",
