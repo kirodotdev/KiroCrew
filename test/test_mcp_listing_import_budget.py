@@ -84,11 +84,17 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for ``mcp-core`` (491 to 492): the resource-subscription tools'
 #: declarations live in their own ``kiro_crew.mcp_tools.catalog.resources``, which
 #: the core listing loads from ``mcp_tools.DOMAIN_MODULES`` like every other domain.
+#: Raised by 1 again for all four servers: the git/tar self-target floor is its own owner
+#: module, ``kiro_crew.security.argv_floor_git_tar``, and ``argv_floor`` imports every owner
+#: when ``kiro_crew.security`` loads so that a patch through the facade reaches each holder
+#: of a name. The security package loads before the list, so the owner cannot move behind it.
+#: Raised by 1 again for all four: the line-cap split of that floor moved its tar grammar into
+#: the owner ``kiro_crew.security.argv_floor_tar``; nothing new loads.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 492,
-    "mcp-cron": 361,
-    "mcp-guide": 355,
-    "mcp-mate": 356,
+    "mcp-core": 494,
+    "mcp-cron": 363,
+    "mcp-guide": 357,
+    "mcp-mate": 358,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are
