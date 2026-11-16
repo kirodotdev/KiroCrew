@@ -306,7 +306,7 @@ describe('ChatPane paste sidecar', () => {
     expect(resentText).toBe(sentText)
   })
 
-  it('↓ back to the draft restores its paste blocks with it, so its chip still expands', async () => {
+  it('↑ over a paste-chip draft keeps the draft and its blocks, so its chip still expands', async () => {
     renderPane('pane-draft')
     const box = await composer()
     fireEvent.change(box, { target: { value: 'earlier' } })
@@ -317,12 +317,10 @@ describe('ChatPane paste sidecar', () => {
     await waitFor(() => expect(box.value).toMatch(TOKEN))
     const draft = box.value
 
+    // A draft is never replaced by history: ↑ at its start only moves the caret.
     box.setSelectionRange(0, 0)
     fireEvent.keyDown(box, { key: 'ArrowUp' })
-    await waitFor(() => expect(box.value).toBe('earlier'))
-    box.setSelectionRange(box.value.length, box.value.length)
-    fireEvent.keyDown(box, { key: 'ArrowDown' })
-    await waitFor(() => expect(box.value).toBe(draft))
+    expect(box.value).toBe(draft)
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(2))
     const [wireText] = vi.mocked(api.sendChat).mock.calls[1]
