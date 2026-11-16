@@ -37,8 +37,11 @@ class TelemetryConfig:
     telemetry disable``, ``KIROCREW_TELEMETRY=0`` or ``DO_NOT_TRACK=1``. A value
     written in either config file wins over the default, and an install that
     turned the heartbeat off without setting this switch loads as off. When off,
-    metric call sites are cheap no-ops and nothing is written. Remote / OTLP
-    egress is a separate opt-in, and needs recording turned on explicitly (see
+    metric call sites are cheap no-ops and nothing is written. While recording
+    is on, by default or by choice, the public build also sends the reviewed
+    product metrics to Kiro telemetry once the privacy notice that names it has
+    been shown (see ``metrics.kiro_export``). Export to a collector of your own
+    is a separate opt-in, and needs recording turned on explicitly (see
     ``metrics.provider.outbound_consented``).
     """
 
@@ -48,10 +51,13 @@ class TelemetryConfig:
             "Enabled",
             "Main switch for local usage metrics. On by default: a local-first JSONL "
             "sink under ~/.kiro/crew/metrics records how long things take and how "
-            "often features are used (no prompts, files or credentials), with no "
-            "network egress. Turn it off here, in Settings > Privacy, with kirocrew "
-            "telemetry disable, KIROCREW_TELEMETRY=0 or DO_NOT_TRACK=1. When off, "
-            "metric call sites are no-ops and nothing is written.",
+            "often features are used (no prompts, files or credentials). While it "
+            "is on, the public build also sends product usage metrics to Kiro "
+            "telemetry once the privacy notice that names it has been shown; your "
+            "own OTLP collectors still need this switch turned on explicitly. Turn "
+            "it off here, in Settings > Privacy, with kirocrew telemetry disable, "
+            "KIROCREW_TELEMETRY=0 or DO_NOT_TRACK=1. When off, metric call sites "
+            "are no-ops, nothing is written and nothing is sent.",
         ),
     )
     local_dir: str = field(
@@ -237,9 +243,11 @@ class TelemetryConfig:
             "enterprise policy can also pin it off via the "
             "capabilities.telemetry governance scope, which this switch cannot "
             "override. Independent "
-            "of the 'enabled' switch above, which is local-only metrics "
-            "collection and egresses only to a configured export destination "
-            "after recording was turned on explicitly.",
+            "of the 'enabled' switch above, which is local metrics collection; "
+            "it sends product usage metrics to Kiro telemetry once the privacy "
+            "notice that names it has been shown, and to a configured export "
+            "destination of your own only after recording was turned on "
+            "explicitly.",
         ),
     )
     plan_alert_pcts: list[float] = field(

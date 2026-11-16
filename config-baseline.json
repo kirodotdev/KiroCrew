@@ -4735,7 +4735,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Enabled",
-      "help": "Main switch for local usage metrics. On by default: a local-first JSONL sink under ~/.kiro/crew/metrics records how long things take and how often features are used (no prompts, files or credentials), with no network egress. Turn it off here, in Settings > Privacy, with kirocrew telemetry disable, KIROCREW_TELEMETRY=0 or DO_NOT_TRACK=1. When off, metric call sites are no-ops and nothing is written.",
+      "help": "Main switch for local usage metrics. On by default: a local-first JSONL sink under ~/.kiro/crew/metrics records how long things take and how often features are used (no prompts, files or credentials). While it is on, the public build also sends product usage metrics to Kiro telemetry once the privacy notice that names it has been shown; your own OTLP collectors still need this switch turned on explicitly. Turn it off here, in Settings > Privacy, with kirocrew telemetry disable, KIROCREW_TELEMETRY=0 or DO_NOT_TRACK=1. When off, metric call sites are no-ops, nothing is written and nothing is sent.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -4962,7 +4962,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Anonymous Usage Beacon",
-      "help": "Anonymous daily heartbeat so maintainers can see how many copies are actively running, which versions are in use, and which distribution channels they came from. Sends EXACTLY five fields, at most once per day: a random installation id, app release (major.minor.patch only — build stamps are stripped), Python minor version, distribution channel, and a first-run bit. NEVER sends prompts, model output, file contents, paths, repo names, credentials, hostname, username, IP address, operating system, CPU architecture, release channel, or governance posture. Automatically suppressed in CI and for a non-default KIROCREW_HOME. Opt out with KIROCREW_TELEMETRY_DISABLED=1 or by turning this off; an enterprise policy can also pin it off via the capabilities.telemetry governance scope, which this switch cannot override. Independent of the 'enabled' switch above, which is local-only metrics collection and egresses only to a configured export destination after recording was turned on explicitly.",
+      "help": "Anonymous daily heartbeat so maintainers can see how many copies are actively running, which versions are in use, and which distribution channels they came from. Sends EXACTLY five fields, at most once per day: a random installation id, app release (major.minor.patch only — build stamps are stripped), Python minor version, distribution channel, and a first-run bit. NEVER sends prompts, model output, file contents, paths, repo names, credentials, hostname, username, IP address, operating system, CPU architecture, release channel, or governance posture. Automatically suppressed in CI and for a non-default KIROCREW_HOME. Opt out with KIROCREW_TELEMETRY_DISABLED=1 or by turning this off; an enterprise policy can also pin it off via the capabilities.telemetry governance scope, which this switch cannot override. Independent of the 'enabled' switch above, which is local metrics collection; it sends product usage metrics to Kiro telemetry once the privacy notice that names it has been shown, and to a configured export destination of your own only after recording was turned on explicitly.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
