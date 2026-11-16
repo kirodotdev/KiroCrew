@@ -13,10 +13,13 @@ Covers:
 """
 
 import ast
+import contextlib
 import errno
 import io
 import logging
 import os
+import signal
+import subprocess
 import sys
 import threading
 from logging.handlers import RotatingFileHandler
@@ -27,6 +30,7 @@ import pytest
 
 import kiro_crew.cli as cli_mod
 from conftest import requires_symlinks
+from kiro_crew import platform_compat
 from kiro_crew.cli import (
     _CliLogQueueHandler,
     _fd_targets_file,
@@ -1151,6 +1155,76 @@ class TestGatewayConsoleEchoOffLoop:
         _setup_cli_logging("chat", 1)
         logging.getLogger("kiro_crew.test_console").info("chat-record")
         assert "chat-record" in self.console.getvalue()  # no drain needed
+
+    def test_drain_that_gives_up_leaves_logging_shutdown_list(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("kiro_crew.cli._CONSOLE_DRAIN_TIMEOUT", 0.1, raising=False)
+        _setup_cli_logging("gateway", 1)
+        logging.getLogger("kiro_crew.test_console").warning("stuck-record")
+        assert self.console.entered.wait(10)  # the listener now holds the handler lock
+        moved = {id(h) for h in cli_mod._CONSOLE_QUEUE_LISTENER.handlers}
+        _stop_log_queue_listener()  # gives up on the console
+        # logging.shutdown takes every listed handler's lock; the stuck one must be gone.
+        assert not [ref for ref in logging._handlerList if id(ref()) in moved]
+
+    def test_console_stays_off_loop_when_the_log_file_cannot_open(self, _floor_monkeypatch):
+        def _deny(*_a, **_k):
+            raise PermissionError(1, "Operation not permitted")
+
+        _floor_monkeypatch.setattr("kiro_crew.cli._OwnerOnlyRotatingFileHandler", _deny)
+        _floor_monkeypatch.setattr("kiro_crew.cli._CONSOLE_DRAIN_TIMEOUT", 60.0, raising=False)
+        _setup_cli_logging("gateway", 1)
+        assert self.console.entered.wait(10)  # the "unavailable" warning is stuck in write
+        logging.getLogger("kiro_crew.test_console").warning("next-record")
+        assert threading.get_ident() not in self.console.writer_threads
+        self.console.release.set()
+        _stop_log_queue_listener()
+        assert "next-record" in self.console.getvalue()
+
+
+_STUCK_STDERR_CHILD = """
+import logging, sys
+from kiro_crew.cli import _setup_cli_logging
+_setup_cli_logging("gateway", 1)
+log = logging.getLogger("kiro_crew.test_stuck_stderr")
+for i in range(4000):
+    log.warning("filler %05d %s", i, "x" * 80)
+sys.exit(0)
+"""
+
+
+@pytest.mark.skipif(
+    not platform_compat.IS_POSIX, reason="needs a POSIX pipe that blocks a full writer"
+)
+def test_gateway_exits_cleanly_while_its_stderr_pipe_is_never_read(tmp_path):
+    """A foreground gateway whose stderr nobody reads still exits with 0.
+
+    The parent never reads the pipe, so the child's console write blocks. Without
+    the fix the exit waits on that write in ``logging.shutdown``, then in the
+    interpreter's final flush of ``sys.stderr``.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    env = dict(os.environ, KIROCREW_HOME=str(home), KIROCREW_TELEMETRY="0")
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _STUCK_STDERR_CHILD],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,  # never read: the pipe fills and the console write blocks
+        env=env,
+        cwd=tmp_path,
+        start_new_session=True,
+    )
+    try:
+        rc = proc.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        rc = None
+    finally:
+        if proc.poll() is None:
+            with contextlib.suppress(ProcessLookupError):  # it may exit before the kill
+                platform_compat.kill_process_tree(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=30)
+        assert proc.stderr is not None
+        proc.stderr.close()
+    assert rc == 0, f"child exit code {rc} (None means it hung)"
 
 
 class TestChatConsoleShowsErrorsOnly:
