@@ -13,21 +13,23 @@ contract: across an investigation run boundary, where a re-run's findings
 REPLACE the previous run's rather than blending with them.
 """
 import json
-import shutil
-import tempfile
 import unittest
-from pathlib import Path
 from typing import Any
+
+import pytest
 
 from kiro_crew.apps.builtins.issue_radar.backend import store
 
 
 class TestInvestigationStore(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        """Hand each test pytest's per-test directory as the store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self.tmp = tmp_path
 
     def test_absent_returns_none(self):
         self.assertIsNone(store.read_investigation("o", "r", 1, self.tmp))
@@ -204,12 +206,14 @@ class TestInvestigationRunBoundary(unittest.TestCase):
     (``findings_slot_key``) is what marks it.
     """
 
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
-        # Registered at creation, not in tearDown: an interrupt between the
-        # allocation and the end of setUp would skip tearDown and leave the
-        # directory behind.
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        """Hand each test pytest's per-test directory as the store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self.tmp = tmp_path
 
     def _stored(self) -> dict:
         """The record as it is on disk. ``read_investigation`` returns

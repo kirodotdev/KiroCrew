@@ -12,11 +12,10 @@ of exercising the reduction + cache directly.
 """
 
 import json
-import shutil
-import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
 from kiro_crew.apps.builtins.issue_radar.backend import store
@@ -99,11 +98,14 @@ class TestListCollaborators(unittest.TestCase):
 
 
 class TestMembersCache(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        """Hand each test pytest's per-test directory as the store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self.tmp = tmp_path
 
     def test_absent_returns_none(self):
         self.assertIsNone(store.read_members_cache("o", "r", self.tmp))
@@ -137,11 +139,14 @@ class TestIssuesCacheSchema(unittest.TestCase):
     association to derive from. The schema stamp makes such a cache read as a
     miss so the route refetches with the current field set."""
 
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        """Hand each test pytest's per-test directory as the store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self.tmp = tmp_path
 
     def test_current_schema_roundtrips(self):
         store.write_issues_cache(
