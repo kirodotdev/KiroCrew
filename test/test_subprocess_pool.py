@@ -943,18 +943,23 @@ class TestCallerBudget:
             events.append("spawn failed")
             raise FileNotFoundError("python")
 
-        real_note = executor_mod.SubprocessPoolExecutor._note_spawn_errors
-
-        def _recorded_note(self: executor_mod.SubprocessPoolExecutor) -> None:
-            real_note(self)
-            events.append("marker queued" if self._failed_queued else "no marker")
+        # The notes are recorded on THIS pool only.  Patching the class would also
+        # record every other live pool's reaper tick (the process-wide path-resolve
+        # pool, an earlier test's pool still winding down), and that pool, with live
+        # children, notes "no marker" before this pool's first spawn.
+        class _Recorded(SubprocessPoolExecutor):
+            def _note_spawn_errors(self) -> None:
+                super()._note_spawn_errors()
+                events.append("marker queued" if self._failed_queued else "no marker")
 
         events: list[str] = []
         monkeypatch.setattr(executor_mod._Child, "_spawn", _unspawnable)
-        monkeypatch.setattr(
-            executor_mod.SubprocessPoolExecutor, "_note_spawn_errors", _recorded_note
+        # A bystander pool's tick, run before this pool exists, must not be recorded.
+        bystander = types.SimpleNamespace(
+            _children=[], _qlock=threading.Lock(), _spawn_error=None, _failed_queued=False
         )
-        executor = SubprocessPoolExecutor(workers=2, ceiling_secs=600.0)
+        executor_mod.SubprocessPoolExecutor._note_spawn_errors(bystander)  # type: ignore[arg-type]
+        executor = _Recorded(workers=2, ceiling_secs=600.0)
         try:
             # A TimeoutError here would mean the caller waited out its budget; the
             # OSError means the reaper's verdict reached it first.
