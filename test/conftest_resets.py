@@ -538,6 +538,24 @@ def _fresh_aws_bin_dir_trust(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _cold_vault_read_audit(_floor_monkeypatch):
+    """Start each test with the vault read audit's caches empty.
+
+    ``secrets.read_audit`` keeps two process globals: ``_loaded``, the switch it
+    read from ``config.json`` and reuses for ``CONFIG_TTL_SECS`` when there is no
+    live snapshot, and ``_seen``, the per-secret rate-limit windows. Every vault
+    read that returns a secret consults them, so a read in one test decided
+    whether a later test on the same worker loads config once or twice, and
+    whether its first read writes a row. Patched only when the module is already
+    imported, like the AWS bin-dir trust above.
+    """
+    audit = sys.modules.get("kiro_crew.secrets.read_audit")
+    if audit is not None:
+        _floor_monkeypatch.setattr(audit, "_loaded", None)
+        _floor_monkeypatch.setattr(audit, "_seen", {})
+
+
+@pytest.fixture(autouse=True)
 def _fresh_hardlink_spec_warnings():
     """Start each test with no hardlink refusal of an agent spec already warned about.
 
