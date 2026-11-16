@@ -1721,8 +1721,12 @@ other merge in the product, and it is honest about it
   preferences.
 
 **Replace** is the path that restores the archive's settings over this install's.
-It installs all four documents through `_do_replace`, which first backs up what
-it replaces into a `pre-restore-<ts>/` directory. The staged documents are
+It installs the four documents through `_do_replace`, except that a `config.json`,
+`config.local.json` or `hooks.json` already on this install stays unless the restore
+picks it (`--include-config`, the import dialog's checkbox); a missing one is still
+filled, but `config.local.json` is kept even when absent while `config.json` is kept,
+because that overlay outranks `config.json` (`_keeps_live_settings`). What it does
+install, it first backs up into a `pre-restore-<ts>/` directory. The staged documents are
 owner-only (except `notification_settings.json`, whose live writer uses the
 umask), so a replace never installs a config or ui-prefs document wider than its
 own writer writes. The swap runs inside `ui_prefs.replacing_file()` and

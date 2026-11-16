@@ -471,7 +471,8 @@ rather than reporting a silent success. These are human debug/diagnostic twins o
 | `kirocrew snapshot --strict` | Exit 3 instead of 0 when the bundle omits entries it was asked to carry |
 | `kirocrew snapshot --list` | List existing snapshots |
 | `kirocrew restore /path/to/snap.tar.gz --mode merge` | Restore a snapshot, keeping existing state and adding to it. There is no default mode: without `--mode` a terminal is asked and a non-terminal is refused |
-| `kirocrew restore /path/to/snap.tar.gz --mode replace` | Replace mode (overwrite existing state) |
+| `kirocrew restore /path/to/snap.tar.gz --mode replace` | Replace mode (overwrite existing state; keeps this install's `config.json`, `config.local.json` and `hooks.json`) |
+| `kirocrew restore /path/to/snap.tar.gz --mode replace --include-config` | Replace mode that also overwrites `config.json`, `config.local.json` and `hooks.json` with the snapshot's |
 | `kirocrew restore /path/to/snap.tar.gz --mode merge --dry-run` | Preview without applying |
 | `kirocrew restore --components memory,crons` | Restore specific components only |
 | `kirocrew restore --list-components` | List restorable components |

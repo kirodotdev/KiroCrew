@@ -8,6 +8,7 @@ bearing rather than tidy.
 
 from __future__ import annotations
 
+import re
 import tarfile
 from pathlib import Path
 
@@ -314,5 +315,5 @@ class TestEveryDeclaredDatabaseIsCovered:
 
         src = inspect.getsource(snap.restore_main)
         pre = src.index("_refuse_corrupt_source_databases(")
-        assert pre < src.index("_do_replace(snap, mc, components")
+        assert pre < re.search(r"_do_replace\(\s*snap,\s*mc,\s*components", src).start()
         assert pre < src.index("_do_merge(snap, mc, components")

@@ -134,6 +134,8 @@ from kiro_crew.snapshot import (
     _merge_named_stores,
     _merge_notifications,
     _refuse_corrupt_source_databases,
+    _settings_installed_by_replace,
+    _settings_kept_by_replace,
     _staging_is_pinned,
 )
 from kiro_crew.staging import IMPORT_STAGING_DIRNAME, staging_dir
@@ -682,6 +684,7 @@ def apply_import_zip(
     memory_only: bool = False,
     agent_templates: tuple[str, ...] = (),
     folder_merge: FolderMerge | None = None,
+    include_settings: bool = False,
 ) -> dict:
     """Extract and apply an import zip.
 
@@ -691,7 +694,10 @@ def apply_import_zip(
             never overwrites memory, crons, workspace files or skills, and installs
             an archive settings document only where this install has none -- never
             the ``config.local.json`` overlay -- naming each it kept in
-            ``settings_kept`` (see `_merge_settings`). Replace restores all four.
+            ``settings_kept`` (see `_merge_settings`). Replace restores ui-prefs and the
+            notification settings, and installs ``config.json``, ``config.local.json`` and
+            ``hooks.json`` over an existing file only with *include_settings*; it names
+            each one it kept in ``settings_kept`` and fills a missing one regardless.
         channel_settings: the running gateway's notification-settings store, so a
             restored mute applies at once and is not written back over by the
             in-memory copy. ``None`` (no gateway in this process) loads one from disk.
@@ -932,8 +938,25 @@ def apply_import_zip(
                         vetted_settings["notification_settings.json"],
                     )
                     swap_guard.enter_context(channel_settings.replacing_file(channels))
-                _do_replace(snap, mc, None, allow_unpinned=not staging_pinned)
+                # Taken before the replace: afterwards every name exists and none looks kept.
+                kept_settings = _settings_kept_by_replace(snap, mc, None, include_settings)
+                installed_settings = _settings_installed_by_replace(
+                    snap, mc, None, include_settings
+                )
+                _do_replace(
+                    snap,
+                    mc,
+                    None,
+                    allow_unpinned=not staging_pinned,
+                    include_settings=include_settings,
+                )
             summary["items"].append("full replace")
+            if kept_settings:
+                summary["settings_kept"] = kept_settings
+            # Named so the result can say that the archive's config is now in effect and
+            # may not come from this install: a picked file, or one this install lacked.
+            if installed_settings:
+                summary["settings_installed"] = installed_settings
             if "ui-prefs.json" in vetted_settings:
                 summary["ui_prefs_restored"] = True
         else:

@@ -398,7 +398,8 @@ choice blob makes the usage line unreadable.
 | `kirocrew snapshot --strict` | Exit 3 (not 0) when the written bundle omits entries it was asked to carry; see the retention note below |
 | `kirocrew snapshot --list` | List existing snapshots, newest first by the same order as `--keep` |
 | `kirocrew restore <file>` | Restore from a snapshot; with no `--mode` it asks on a terminal and refuses off one, and never defaults to replace |
-| `kirocrew restore <file> --mode replace\|merge` | Force restore mode; merge skips malformed incoming or local cron JSON with a file-specific warning, and never overwrites a `config` file the destination already has -- it names each settings file it kept (`↩️ <file>: kept the existing file ...`, pointing at `--mode replace --components config`) instead of printing `✅ config`, while host state (`session_map.json`, `project_dir`, `workspace_dir`) keeps this machine's copy silently; a bundle `ui-prefs.json` / `notification_settings.json` its own reader would refuse stops a replace before anything is installed, and stops a merge only where the destination has no such file (otherwise the destination's file is kept); a bundle's `config.local.json` is never installed even where the destination has none (`↩️ config.local.json: not applied ...`), since that overlay outranks `config.json` |
+| `kirocrew restore <file> --mode replace\|merge` | Force restore mode; merge skips malformed incoming or local cron JSON with a file-specific warning, and never overwrites a `config` file the destination already has -- it names each settings file it kept (`↩️ <file>: kept the existing file ...`, pointing at `--mode replace --components config --include-config`) instead of printing `✅ config`, while host state (`session_map.json`, `project_dir`, `workspace_dir`) keeps this machine's copy silently; a bundle `ui-prefs.json` / `notification_settings.json` its own reader would refuse stops a replace before anything is installed, and stops a merge only where the destination has no such file (otherwise the destination's file is kept); a bundle's `config.local.json` is never installed even where the destination has none (`↩️ config.local.json: not applied ...`), since that overlay outranks `config.json` |
+| `kirocrew restore <file> --mode replace --include-config` | Also overwrite this install's `config.json`, `config.local.json` and `hooks.json` with the bundle's (a Replace keeps them otherwise; a file that does not exist yet is still installed, except `config.local.json` while `config.json` is kept). The pick prints a second line that the bundle may not come from this install |
 | `kirocrew restore <file> --components X,Y` | Selective component restore |
 | `kirocrew restore <file> --dry-run` | Preview restore without writing |
 | `kirocrew restore --list-components` | Show available component names |
@@ -641,7 +642,13 @@ The dashboard import's Merge follows the same never-overwrite rule as
 `config.local.json`, `ui-prefs.json`, `notification_settings.json`): it installs one
 only where the destination has none, never installs the `config.local.json` overlay,
 and names each document it kept in the summary (`settings_kept`). Its Replace restores
-all four, backing up the replaced documents into `pre-restore-<ts>/` first. The rule
+`ui-prefs.json` and `notification_settings.json`, and replaces an existing `config.json`,
+`config.local.json` or `hooks.json` only when the request carries `include_settings=1`
+(the dialog's checkbox, off by default; `SETTINGS_PICK_FILES`), backing up the replaced
+documents into `pre-restore-<ts>/` first. A missing live file is installed either way, and
+the files kept are named in `settings_kept`. `kirocrew restore --mode replace` follows the
+same rule with `--include-config`, prints one notice naming the three files (also under
+`--dry-run`) and, when picked, a second line that the archive may not come from this install. The rule
 and its writers are in [config](config.md#settings-import-dashboard-merge).
 
 Each rule above has one owner. `kiro_crew.snapshot` is the command and API facade: it

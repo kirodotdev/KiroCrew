@@ -17,7 +17,6 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_crew import portability
 from kiro_crew.portability import apply_import_zip
 
 MARKER = {"agent": {"provider": "archive-marker"}}
@@ -107,5 +106,26 @@ def test_the_summary_names_what_it_kept_only_when_not_picked(tmp_path, pick):
     assert bool(summary.get("settings_kept")) is (not pick), summary
 
 
-def test_the_portability_module_exposes_the_settings_pick_files():
-    assert portability.SETTINGS_PICK_FILES == SETTINGS
+def test_the_summary_names_the_documents_installed_over_a_missing_live_file(tmp_path):
+    home = _live_home(tmp_path, with_settings=False)
+
+    summary = _import(_archive(tmp_path / "a.zip"), home)
+
+    assert sorted(summary["settings_installed"]) == sorted(SETTINGS), summary
+    assert "settings_kept" not in summary
+
+
+def test_the_summary_names_the_picked_documents_as_installed(tmp_path):
+    home = _live_home(tmp_path, with_settings=True)
+
+    summary = _import(_archive(tmp_path / "a.zip"), home, include_settings=True)
+
+    assert sorted(summary["settings_installed"]) == sorted(SETTINGS), summary
+
+
+def test_nothing_is_reported_installed_when_every_live_document_is_kept(tmp_path):
+    home = _live_home(tmp_path, with_settings=True)
+
+    summary = _import(_archive(tmp_path / "a.zip"), home)
+
+    assert "settings_installed" not in summary, summary

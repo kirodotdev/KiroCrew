@@ -210,6 +210,21 @@ def test_merge_keeps_existing_hooks_and_does_not_name_bundle_hooks(tmp_path, mon
     assert "Restored DISABLED" not in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("pick", [False, True])
+def test_replace_names_the_disabled_hooks_only_when_it_installs_them(
+    tmp_path, monkeypatch, capsys, pick
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    mine = {"hooks": [{"id": "mine", "name": "mine", "command": "echo me", "enabled": True}]}
+    (home / "hooks.json").write_text(json.dumps(mine))
+    extra = ["--mode", "replace"] + (["--include-config"] if pick else [])
+    assert _restore(_full_bundle(tmp_path), home, monkeypatch, *extra) == 0
+    out = capsys.readouterr().out
+    assert ("Restored DISABLED" in out) is pick, out
+    assert (_hooks(home) == mine) is (not pick)
+
+
 def test_hooks_only_bundle_disables_script_hooks(tmp_path, monkeypatch, capsys):
     bundle = _write_bundle(
         tmp_path / "hooks-only.tar.gz", {"hooks.json": json.dumps(HOOKS)}, components=False

@@ -388,7 +388,13 @@ class TestRestoreReplace:
         monkeypatch.setattr(lp, "enforcement_active", lambda: True)
         lp.record("config.json", (existing / "config.json").read_bytes(), strict=True)
 
-        assert restore_main([str(tarball), "--mode", "replace", "--force"] + unpinnable_argv()) == 0
+        assert (
+            restore_main(
+                [str(tarball), "--mode", "replace", "--force", "--include-config"]
+                + unpinnable_argv()
+            )
+            == 0
+        )
 
         assert ("restore of 'config'" in by_name) is not pinned, by_name
         assert read_config_for_update(existing / "config.json")["agent"]["model"] == "test"
@@ -415,7 +421,10 @@ class TestRestoreReplace:
 
         monkeypatch.setattr(snapshot_mod, "_do_replace_mutations", _fail_after_installing)
         with pytest.raises(RuntimeError):
-            restore_main([str(tarball), "--mode", "replace", "--force"] + unpinnable_argv())
+            restore_main(
+                [str(tarball), "--mode", "replace", "--force", "--include-config"]
+                + unpinnable_argv()
+            )
 
         assert (existing / "config.json").read_bytes() == before
         assert lp.endorsed_bytes("config.json") == before

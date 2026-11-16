@@ -215,7 +215,7 @@ def _do_merge(
                 print(
                     f"  ↩️  {f}: not applied; a merge never installs the bundle's config "
                     "overlay, which would outrank this install's config.json. To take it, "
-                    "re-run with --mode replace --components config."
+                    "re-run with --mode replace --components config --include-config."
                 )
                 continue
             if not os.path.lexists(d):
@@ -241,7 +241,7 @@ def _do_merge(
             print(
                 f"  ↩️  {f}: kept the existing file; the bundle's copy was NOT merged "
                 "into it. To take the bundle's settings instead, re-run with "
-                "--mode replace --components config."
+                "--mode replace --components config --include-config."
             )
         if not kept_config:
             print("  ✅ config")

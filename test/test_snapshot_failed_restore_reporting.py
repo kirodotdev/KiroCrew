@@ -181,7 +181,15 @@ class TestTheIntegrityCheckLeavesNoOpenHandle:
         monkeypatch.setattr(snap.pinned_fs, "copy_file_pinned", fail_on_config)
 
         rc = snap.restore_main(
-            [str(bundle), "--mode", "replace", "--force", "--components", "crons,config"]
+            [
+                str(bundle),
+                "--mode",
+                "replace",
+                "--force",
+                "--include-config",
+                "--components",
+                "crons,config",
+            ]
         )
         out = capsys.readouterr().out
         assert rc == 1, out

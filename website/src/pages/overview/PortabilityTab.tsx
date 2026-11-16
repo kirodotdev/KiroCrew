@@ -201,12 +201,12 @@ function distinctNames(raw: unknown): string[] {
 
 /**
  * The summary's `settings_kept`: the archive's settings documents a Merge left
- * alone because this install keeps its own. The server only ever names its four
- * fixed settings files, so four is the bound by construction; the cap here keeps
+ * alone because this install keeps its own. The server only ever names its five
+ * fixed settings files, so five is the bound by construction; the cap here keeps
  * a malformed response from growing the line.
  */
 export function keptSettingsFiles(raw: unknown): string[] {
-  return distinctNames(raw).slice(0, 4)
+  return distinctNames(raw).slice(0, 5)
 }
 
 /**
@@ -218,6 +218,7 @@ export function settingsFileLabel(file: string): string {
   switch (file) {
     case 'config.json': return i18nT('pages.overview.portabilityTab.settings_kept_name_config')
     case 'config.local.json': return i18nT('pages.overview.portabilityTab.settings_kept_name_config_local')
+    case 'hooks.json': return i18nT('pages.overview.portabilityTab.settings_kept_name_hooks')
     case 'ui-prefs.json': return i18nT('pages.overview.portabilityTab.settings_kept_name_ui_prefs')
     case 'notification_settings.json': return i18nT('pages.overview.portabilityTab.settings_kept_name_notifications')
     default: return file
@@ -319,6 +320,8 @@ export default function PortabilityTab() {
   const [bundledTemplatesMore, setBundledTemplatesMore] = useState(0)
   const [memoryOnly, setMemoryOnly] = useState(false)
   const [importMemoryOnly, setImportMemoryOnly] = useState(false)
+  // The explicit pick for config.json, config.local.json and hooks.json under Replace.
+  const [includeSettings, setIncludeSettings] = useState(false)
   const [chatLines, setChatLines] = useState<string[]>(carried?.chats ?? [])
   const fileRef = useRef<HTMLInputElement>(null)
   const { confirm, confirmDialog } = useConfirm()
@@ -423,7 +426,20 @@ export default function PortabilityTab() {
     if (effectiveMode === 'replace') {
       const ok = await confirm({
         title: i18nT('pages.overview.portabilityTab.import'),
-        body: <p className="m-0" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.portabilityTab.replace_mode_will_overwrite_existing_data_contin')}</p>,
+        body: (
+          <>
+            <p className="m-0" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.portabilityTab.replace_mode_will_overwrite_existing_data_contin')}</p>
+            <p className="m-0 mt-2" style={{ overflowWrap: 'anywhere' }}>
+              {includeSettings
+                ? i18nT('pages.overview.portabilityTab.replace_overwrites_settings')
+                : i18nT('pages.overview.portabilityTab.replace_keeps_settings')}
+            </p>
+            <p className="m-0 mt-2" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.portabilityTab.replace_installs_missing_settings')}</p>
+            {includeSettings && (
+              <p className="m-0 mt-2" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.portabilityTab.replace_settings_foreign_archive')}</p>
+            )}
+          </>
+        ),
         confirmLabel: i18nT('pages.overview.portabilityTab.import'),
       })
       if (!ok) return
@@ -444,6 +460,7 @@ export default function PortabilityTab() {
       const params = new URLSearchParams({ mode: effectiveMode })
       if (memoryImport && effectiveMode === 'merge') params.set('components', 'memory')
       if (!memoryImport && pickedTemplates.length) params.set('agent_templates', pickedTemplates.join(','))
+      if (effectiveMode === 'replace' && includeSettings) params.set('include_settings', '1')
       const resp = await fetch(`/api/portability/import?${params}`, { method: 'POST', body: fd })
       const data = await resp.json()
       if (data.ok) {
@@ -482,6 +499,10 @@ export default function PortabilityTab() {
         }
         if (failedTemplates.length) {
           errors.push(i18nT('pages.overview.portabilityTab.import_agent_templates_skipped', { names: describeSkipped(failedTemplates) }))
+        }
+        const installedFiles = keptSettingsFiles(summary.settings_installed)
+        if (installedFiles.length) {
+          warnings.push(i18nT('pages.overview.portabilityTab.import_settings_installed', { files: fmtList(installedFiles.map(settingsFileLabel)) }))
         }
         const keptFiles = keptSettingsFiles(summary.settings_kept)
         if (keptFiles.length) {
@@ -656,6 +677,33 @@ export default function PortabilityTab() {
             ? i18nT('pages.overview.portabilityTab.archive_memory_only')
             : i18nT('pages.overview.portabilityTab.import_memory_only_hint')}
         </p>
+        {effectiveMode === 'replace' && (
+          <>
+            {/* Off by default: a Replace keeps this install's config.json, config.local.json
+                and hooks.json unless this is ticked. */}
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 text-[13px]">
+              <input
+                type="checkbox"
+                aria-label={i18nT('pages.overview.portabilityTab.import_include_settings')}
+                className="h-4 w-4 shrink-0 accent-accent"
+                checked={includeSettings}
+                disabled={importStatus.type === 'loading'}
+                aria-describedby="portability-import-settings-hint"
+                onChange={event => setIncludeSettings(event.target.checked)}
+              />
+              {i18nT('pages.overview.portabilityTab.import_include_settings')}
+            </label>
+            <p id="portability-import-settings-hint" className="text-text text-[12px] mb-3">
+              {includeSettings
+                ? i18nT('pages.overview.portabilityTab.replace_overwrites_settings')
+                : i18nT('pages.overview.portabilityTab.replace_keeps_settings')}
+            </p>
+            <p className="text-text text-[12px] mb-3">{i18nT('pages.overview.portabilityTab.replace_installs_missing_settings')}</p>
+            {includeSettings && (
+              <p className="text-text text-[12px] mb-3">{i18nT('pages.overview.portabilityTab.replace_settings_foreign_archive')}</p>
+            )}
+          </>
+        )}
         <div className="flex items-center gap-3 flex-wrap">
           <label {...uiLocation('backup.import-file')} htmlFor="portability-import-file" className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold font-body bg-bg-elevated border border-border transition-colors ${checking ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:border-accent'}`}>
             <Upload size={14} />
@@ -681,6 +729,7 @@ export default function PortabilityTab() {
             onChange={v => {
               setMode(v as 'merge' | 'replace')
               if (v === 'replace') setImportMemoryOnly(false)
+              else setIncludeSettings(false)
             }}
           />
           <button
