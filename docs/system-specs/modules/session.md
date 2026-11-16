@@ -1724,6 +1724,19 @@ against sweep completeness, and are torn down at `close_all`.
   placeholder, so it is kept even when the echo never comes; only text with no
   tool call after it is dropped. That is a known trade-off: a turn whose steer
   is requeued keeps the text it wrote before a tool call.
+  **The placeholder at a turn's start.** The model also repeats that
+  placeholder as the FIRST text of a later turn (after a quiet end, a
+  tool-only turn or an interrupted one), where no `ends_turn` signal exists.
+  There the dashboard runner keys on the wording (`dashboard/alternation_echo.py`):
+  a segment that opens like `(No assistant response was recorded` is held off
+  the wire and the window while it could still be that text. It is dropped
+  when the segment ends (a tool call, the turn's end) as the whole placeholder,
+  and any words after it in the same segment are kept. A segment that stops
+  matching is replayed in order. A turn is judged as if the dropped
+  placeholder never came: one whose only text was the placeholder gets the
+  usual empty-reply handling, the same as a turn with no text at all. Rows an
+  older build stored with only that text stay visible as they were stored. The
+  backend's own history keeps its placeholder.
   **Who may end quietly.** The applier's one gate is who opened the turn: a
   monitor wake (`_directive_self_wake`) or a headless producer (cron, crew, app,
   task runner — `_directive_user_origin` False) may; a turn a person opened

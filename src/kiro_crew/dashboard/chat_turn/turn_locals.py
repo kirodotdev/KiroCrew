@@ -171,6 +171,7 @@ class _ChatTurn:
     _first_turn_history_assembled: "bool"
     _had_empty_response_verdict: "bool"
     _held_after_terminal: "list[Any]"
+    _echo_held: "list[tuple[Any, bool]]"
     _held_runs: "list[tuple[dict[str, Any], str, int | None, int]]"
     # Harness notice rows ``(content, meta)`` held while a text segment is open,
     # appended by ``_finish_harness_notices``. Set in __init__ so every exit can read it.
@@ -445,6 +446,10 @@ class _ChatTurn:
         self._drained_subagent_notices = []
         self._held_harness_notices = []
         self._held_harness_notices_dropped = 0
+        # Text chunks held while the open segment could still be the backend's
+        # alternation placeholder, with each one's ``released`` flag: dropped or
+        # replayed by ``stream_chunks._settle_echo_hold`` at the segment's end.
+        self._echo_held = []
 
     @property
     def assistant_text(self) -> str:
