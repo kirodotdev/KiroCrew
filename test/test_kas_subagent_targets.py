@@ -1108,3 +1108,49 @@ async def test_a_held_bot_limit_reaches_its_named_child_and_the_targets_it_regis
         assert asks is held, entry["id"]
         if held:
             assert not allows, entry["id"]
+
+
+def _open_delegator(**extra) -> dict:
+    spec = _delegator()
+    del spec["toolsSettings"]
+    return {**spec, **extra}
+
+
+@pytest.mark.asyncio
+async def test_with_no_list_the_notice_names_each_agent_the_backend_skips(agents_dir):
+    _write(agents_dir, _open_delegator())
+    _write(agents_dir, _SLACK)
+    _write(agents_dir, {**_SLACK, "name": "kas-ready", "permissions": {"rules": []}})
+    _write(agents_dir, {"name": "plain", "prompt": "p", "tools": ["fs_read"]})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator"]
+    notice = extras.withheld_credentials_notice
+    assert "agent delegator cannot hand work to slack-agent (its agent file has" in notice
+    assert "no permissions block" in notice
+    assert "kas-ready" not in notice and "plain" not in notice
+
+
+@pytest.mark.asyncio
+async def test_with_no_list_and_no_sub_agent_tool_nothing_is_named(agents_dir):
+    _write(agents_dir, _open_delegator(tools=["fs_read"]))
+    _write(agents_dir, _SLACK)
+
+    extras = await _extras()
+
+    assert "slack-agent" not in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_a_list_under_the_use_subagent_key_registers_its_target(agents_dir):
+    _write(
+        agents_dir,
+        _open_delegator(toolsSettings={"use_subagent": {"availableAgents": ["slack-agent"]}}),
+    )
+    _write(agents_dir, _SLACK)
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", "slack-agent"]
+    assert "slack-agent" not in extras.withheld_credentials_notice
