@@ -898,6 +898,55 @@ server (see [Script and command crons](cron-and-scheduling.md#script-and-command
 On the `kas` backend, a background helper whose agent mounts no tool
 (`kirocrew-lite`) no longer starts the servers in `~/.kiro/settings/mcp.json`.
 
+### Trying one MCP tool by hand
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `mcp.tool_tester` | Show a **Try a tool** panel under the server table on the MCP Servers page. No restart needed | `false` |
+
+Turn it on with `kirocrew config set mcp.tool_tester true`; the next request
+reads it, so no restart is needed. The panel lists the enabled local servers.
+**Load tools** starts the chosen server, reads its tool list and stops it. Pick a
+tool (the first one not switched off is picked for you; with none, nothing is and
+**Run tool** stays off), fill in the form built from its input schema (a raw JSON box when the schema
+has more than plain strings, numbers, true/false values and fixed choices, or is
+composed with `allOf`, `anyOf`, `oneOf`, `not` or `$ref`, or when the gateway had to
+discard the schema because it is not an object, is over the size cap or stops being
+JSON once redacted), and press **Run tool**.
+That starts the server again, calls the tool once and shows the raw result. For a
+tool that can change data the button reads **Run tool…** and a line beside it says
+so before the press.
+
+- Only the dashboard owner can use it. With the setting off the route answers the
+  owner as an unknown route does, and the gateway loads none of the panel's code.
+- A tool its server does not mark `readOnlyHint` asks for a confirm first, and the
+  gateway refuses it without one. The confirm names the tool and the server, says
+  the run is real and may change that server's data, and says the panel cannot undo
+  it. A tool switched off on this page is refused, and so is a tool the governance
+  policy or the dashboard's profile denies (`@server/tool` in the `mcp` scope, the
+  same check an agent's call meets); a policy that cannot be checked refuses too.
+- A run that takes longer than 30 seconds, or whose request is cancelled, is
+  stopped together with everything the server's launcher started. The tool has the
+  rest of those 30 seconds to answer, whatever the probe's handshake timeout is; an
+  answer that arrived in time is shown even when the server is slow to stop afterwards. What
+  the server writes to its error output meanwhile is read as it comes, so a server
+  that is verbose there still answers; a failed run shows the last of it. A
+  listing shows
+  up to 200 tools; the panel says how many more were left out, and running one of
+  those is refused as "not listed: over the limit". Results longer than 65,536
+  characters are cut, with a note. Credentials in the result are redacted the way a
+  chat transcript redacts them. A tool whose name the redactor would change (a name
+  that holds a credential) is neither listed nor run: the panel counts those, and
+  naming one is refused as `tool_name_withheld`. A run that fails shows a titled
+  notice above the server's text.
+- The server starts the way **Probe** starts it: in the same sandbox, with the
+  same handshake, and stopped the same way afterwards. A server switched off in any
+  MCP config, and a remote (`url`) server, cannot be tried here.
+- Every run is written to the security event log as a `dashboard_mcp_tool` event
+  named `server/tool`, with the confirm flag, before the call is sent and again
+  with its outcome. A run whose first record cannot be written is refused. Refused
+  runs (no confirm, a switched-off or denied tool) are logged too.
+
 ### Session summaries
 
 | Key | Description | Default |

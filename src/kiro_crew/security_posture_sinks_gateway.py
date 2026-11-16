@@ -1040,4 +1040,13 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "because an operator can paste a token into the list. The login words "
         "beside them are fixed constants.",
     ),
+    (
+        "The Try a tool panel",
+        "dashboard/handlers/mcp_try_tool.py",
+        "What an MCP server returns to the owner's MCP Servers page when the opt-in "
+        "`mcp.tool_tester` setting is on: each tool's description and input schema, "
+        "the raw result of the one tool the owner runs, and a start-up failure's text. "
+        "A server can echo a credential from its own environment, so each string "
+        "passes `redact_via_context` before it is cut to its bound and sent.",
+    ),
 )

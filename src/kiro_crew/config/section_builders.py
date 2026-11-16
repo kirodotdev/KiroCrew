@@ -514,6 +514,8 @@ def _build_mcp_config(mcp_data: dict) -> McpConfig:
         honour_auto_approve=section.get("honour_auto_approve") is True,
         # Opt-in, off by default: only a real ``true`` turns the write fence on.
         protect_kiro_permission_rules=section.get("protect_kiro_permission_rules") is True,
+        # Opt-in, off by default: only a real ``true`` registers the tool-tester route.
+        tool_tester=section.get("tool_tester") is True,
     )
 
 

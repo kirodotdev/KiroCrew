@@ -196,6 +196,8 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'settings.secrets.delete_confirm',
   'settings.secrets.delete_managed_confirm',
   'pages.overview.kiroCrewCfgTab.type_workspace_name_to_confirm', // quoted in all catalogs at introduction
+  'pages.overview.mcpTryTool.confirm_run', // tool-name operand of the Try a tool run button, quoted per locale
+  'pages.overview.mcpTryTool.confirm_text', // tool and server-name operands of the Try a tool warning, quoted per locale
   'pages.settings.securityPanel.trustedApps.revoke_confirm_title',
   'pages.settings.securityPanel.trustedApps.revoke_confirm_body',
   'pages.settings.securityPanel.trustedRegistries.grant_confirm_title',

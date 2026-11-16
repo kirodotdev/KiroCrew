@@ -886,6 +886,21 @@ class McpConfig:
             "Applies to the next file edit, no restart needed.",
         ),
     )
+    tool_tester: bool = field(
+        default=False,
+        metadata=_meta(
+            "Try a tool panel",
+            "Show a Try a tool panel on the MCP Servers page, where the owner picks "
+            "one tool of a configured local server, fills in its arguments and runs it "
+            "once to see the raw result. Off by default. Each run starts the server "
+            "the way a probe does, calls the tool once and stops it, with a time limit "
+            "and a cap on the result shown; the result is redacted like a transcript. "
+            "A tool the server does not declare read-only runs only after a confirm, "
+            "and every run is written to the security event log. Only the dashboard "
+            "owner can use it.",
+            restart=False,
+        ),
+    )
 
 
 @dataclass

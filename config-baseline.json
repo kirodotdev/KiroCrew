@@ -6156,7 +6156,8 @@
       "defaultValue": {
         "extra_path_dirs": [],
         "honour_auto_approve": true,
-        "protect_kiro_permission_rules": false
+        "protect_kiro_permission_rules": false,
+        "tool_tester": false
       }
     },
     {
@@ -6213,6 +6214,20 @@
       "tags": [],
       "label": "Protect kiro-cli permission rules",
       "help": "Refuse the agent's file-edit tools when they write kiro-cli's tool permission rules: ``permissions.yaml`` and ``permissions.json`` in ``~/.kiro/settings``, and the ``~/.kiro/workspace-roots`` folder. A rule with ``effect: allow`` there runs its tool with no approval card, so Kiro Crew's own tool gate never sees the call. Off by default, so the agent can edit these files as before. Reads stay allowed either way, and kiro-cli saving a rule you chose, or your own editor, is never stopped. Applies to the next file edit, no restart needed.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "mcp.tool_tester",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Try a tool panel",
+      "help": "Show a Try a tool panel on the MCP Servers page, where the owner picks one tool of a configured local server, fills in its arguments and runs it once to see the raw result. Off by default. Each run starts the server the way a probe does, calls the tool once and stops it, with a time limit and a cap on the result shown; the result is redacted like a transcript. A tool the server does not declare read-only runs only after a confirm, and every run is written to the security event log. Only the dashboard owner can use it.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

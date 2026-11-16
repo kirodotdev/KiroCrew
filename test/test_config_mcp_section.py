@@ -53,6 +53,7 @@ def test_round_trips_through_to_dict(tmp_path, monkeypatch):
         "extra_path_dirs": ["/opt/a/bin"],
         "honour_auto_approve": True,
         "protect_kiro_permission_rules": False,
+        "tool_tester": False,
     }
 
 

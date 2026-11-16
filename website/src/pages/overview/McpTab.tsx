@@ -33,6 +33,7 @@ import { settingsPath } from '../../components/settingsPath'
 import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
 import McpRowSignIn, { type McpSignInTarget } from './McpRowSignIn'
 import McpToolAlwaysAllow, { McpToolGrantsNote } from './McpToolAlwaysAllow'
+import McpTryTool from './McpTryTool'
 import { useConnectionsUiEnabled } from '../../hooks/useConnectionsUi'
 
 import { i18nT } from '../../i18n/t'
@@ -1416,6 +1417,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
         </div>
       )}
     </Card>
+
+    {/* Local servers only: a run starts the server's command, as a probe does. */}
+    <McpTryTool servers={servers.filter(s => s.enabled && !s.url).map(s => s.name)} />
 
     {/* The modals' hand-off would unmount this tab and drop its staged changes. */}
     <McpBrowserModal open={browserOpen} onClose={() => setBrowserOpen(false)} askAgent={pendingCount === 0} />

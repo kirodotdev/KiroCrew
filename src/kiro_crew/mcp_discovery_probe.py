@@ -20,7 +20,7 @@ import os
 import shutil
 import signal
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -112,31 +112,82 @@ _STDERR_READ_BYTES = 4096
 #: 32 KiB in all, redacted where the probe runs: about 2 ms for ordinary text and up
 #: to about 20 ms for one made of nothing but URLs.
 _STDERR_READS = 8
+#: The most a failed server's stderr is kept to: the reads above, from its first byte.
+_STDERR_KEPT_BYTES = _STDERR_READS * _STDERR_READ_BYTES
+#: Added after the shown text when stderr bytes were read and thrown away.
+_STDERR_CUT_NOTE = "... (more stderr not shown)"
 #: How many characters of the redacted text's end an error message carries: a server
 #: prints its start-up warnings first and the reason it stopped last.
 _STDERR_SHOWN_CHARS = 500
 
 
-async def _stderr_text(stream: Any) -> str:
+class _StderrHead:
+    """The first ``_STDERR_KEPT_BYTES`` of a stream a drain read, and whether it dropped more."""
+
+    def __init__(self) -> None:
+        self.data = bytearray()
+        self.cut = False
+
+
+async def _stderr_text(stream: Any, kept: _StderrHead | None = None) -> str:
     """What a failed server wrote to *stream*, from its first byte, decoded.
 
-    Reads until the stream ends or goes quiet, in at most ``_STDERR_READS`` reads of
-    ``_STDERR_READ_BYTES``. A server that is still running keeps its stderr open, so
-    the wait for a first byte is the only long one. The count of reads is the bound;
-    anything but bytes ends the read. Never cut at its start: the caller redacts the
-    whole text and only then takes its end (``_last_lines``).
+    Reads until the stream ends or goes quiet, in at most ``_STDERR_READS`` reads and
+    ``_STDERR_KEPT_BYTES`` bytes in all. A server that is still running keeps its stderr
+    open, so the wait for a first byte is the only long one. Anything but bytes ends the
+    read. Never cut at its start: the caller redacts the whole text and only then takes
+    its end (``_last_lines``). *kept* is what a drain already took from the stream
+    (:func:`_drain_stderr`); the text starts with it, and with those bytes in hand the
+    first wait is the short one. Once the drain has dropped bytes, nothing more is read:
+    what follows a dropped stretch is not appended to what came before it. With *kept*,
+    ``kept.cut`` also says whether a bound stopped the read with more still to come.
     """
-    read, wait = bytearray(), _STDERR_FIRST_WAIT_SECS
+    read = bytearray(kept.data if kept is not None else b"")
+    if kept is not None and kept.cut:
+        return bytes(read).decode(errors="replace").strip()
+    wait = _STDERR_QUIET_SECS if read else _STDERR_FIRST_WAIT_SECS
+    ended = False
     for _ in range(_STDERR_READS):
+        room = _STDERR_KEPT_BYTES - len(read)
+        if room <= 0:
+            break
         try:
-            chunk = await asyncio.wait_for(stream.read(_STDERR_READ_BYTES), timeout=wait)
+            chunk = await asyncio.wait_for(stream.read(min(_STDERR_READ_BYTES, room)), timeout=wait)
         except asyncio.TimeoutError:
+            ended = True
             break
         if not chunk or not isinstance(chunk, bytes):
+            ended = True
             break
         read += chunk
         wait = _STDERR_QUIET_SECS
+    if kept is not None and not ended:
+        # A bound stopped the read: one more byte tells whether anything is left unshown.
+        try:
+            extra = await asyncio.wait_for(stream.read(1), timeout=_STDERR_QUIET_SECS)
+            kept.cut = bool(extra) and isinstance(extra, bytes)
+        except asyncio.TimeoutError:
+            pass
     return bytes(read).decode(errors="replace").strip()
+
+
+async def _drain_stderr(stream: Any, kept: _StderrHead) -> None:
+    """Read *stream* until it ends, keeping its first ``_STDERR_KEPT_BYTES`` in *kept*.
+
+    A server that writes more to stderr than the pipe holds blocks until something
+    reads it, and so never gets to answer; the rest is read and thrown away, and
+    ``kept.cut`` says so. The first bytes are kept, as the failure report of a probe
+    without a call keeps them: the redactors know a private key by its first line.
+    Anything but bytes ends the read.
+    """
+    while True:
+        chunk = await stream.read(_STDERR_READ_BYTES)
+        if not chunk or not isinstance(chunk, bytes):
+            return
+        room = _STDERR_KEPT_BYTES - len(kept.data)
+        kept.data += chunk[: max(room, 0)]
+        if len(chunk) > room:
+            kept.cut = True
 
 
 def _last_lines(text: str, limit: int) -> str:
@@ -278,8 +329,96 @@ async def _handlers_answer(proc: Any, name: str, skipped: list[str]) -> bool:
     return answer is not None
 
 
+#: The ``id`` of a :class:`ToolCallStep` request; the handshake uses 1 to 3.
+_TOOL_CALL_ID = 4
+
+
+class ToolCallStep:
+    """One ``tools/call`` a probe sends after a good ``tools/list``, to the same server.
+
+    *choose* is handed the listed tools and returns the call's ``params``, or ``None``
+    to send none; it runs on the probe's private loop, so it may block. The server's
+    answer lands in :attr:`answer`. The call shares the probe's spawn, sandbox,
+    handshake and teardown, so its server is reaped as a probe's is.
+
+    *timeout* is the seconds the whole run may take, counted from this step's
+    creation; the answer is read against what is left of it, so a tool slower than
+    the handshake timeout still has the run's limit. Without one the answer gets the
+    probe's own timeout.
+    """
+
+    def __init__(
+        self,
+        choose: Callable[[list[Any]], dict[str, Any] | None],
+        timeout: float | None = None,
+    ) -> None:
+        self.choose = choose
+        self.answer: dict[str, Any] | None = None
+        #: What the server wrote to stderr while the call waited, its first bytes only.
+        self.stderr = _StderrHead()
+        self._deadline = None if timeout is None else time.monotonic() + timeout
+
+    def time_left(self) -> float:
+        """Seconds left to read the answer in."""
+        if self._deadline is None:
+            return _get_probe_timeout()
+        return max(0.0, self._deadline - time.monotonic())
+
+
+def _handshake_wait(tool_call: ToolCallStep | None) -> float:
+    """Seconds a handshake read may wait: the probe timeout, or what a run has left."""
+    if tool_call is None:
+        return _get_probe_timeout()
+    return min(_get_probe_timeout(), tool_call.time_left())
+
+
+async def _call_one_tool(
+    proc: Any, name: str, step: ToolCallStep, tools: list[Any], skipped: list[str]
+) -> bool:
+    """Send *step*'s call when it chooses one; False when the server never answered it."""
+    params = step.choose(tools)
+    if params is None:
+        return True
+    # choose() may block, so a cancel queued meanwhile lands here, before anything is
+    # written; a run whose limit ran out meanwhile reads as the probe's timeout.
+    await asyncio.sleep(0)
+    if step.time_left() <= 0:
+        raise asyncio.TimeoutError
+    call = {"jsonrpc": "2.0", "id": _TOOL_CALL_ID, "method": "tools/call", "params": params}
+    # A server that fills its stderr pipe before it answers would wait for us for ever,
+    # so it is read meanwhile, and only its start is kept. The drain ends with the call:
+    # on an answer, a timeout and a cancel alike.
+    stderr = getattr(proc, "stderr", None)
+    drain = None
+    if stderr is not None:
+        drain = asyncio.create_task(_drain_stderr(stderr, step.stderr))
+    try:
+        try:
+            proc.stdin.write((json.dumps(call) + "\n").encode())
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            return False  # the server has already closed its end
+        # A request the server sends us meanwhile (it carries a method) is not the answer.
+        for _ in range(_MAX_BANNER_LINES):
+            answer = await _read_stdio_jsonrpc_response(
+                proc.stdout, step.time_left(), name=name, skipped=skipped
+            )
+            if answer is None:
+                return False
+            if answer.get("id") == _TOOL_CALL_ID and "method" not in answer:
+                step.answer = answer
+                return True
+        return False
+    finally:
+        if drain is not None:
+            drain.cancel()
+            await asyncio.gather(drain, return_exceptions=True)
+
+
 async def _probe_on_private_loop(
-    server: McpServerInfo, client_info: dict[str, str] | None
+    server: McpServerInfo,
+    client_info: dict[str, str] | None,
+    tool_call: ToolCallStep | None = None,
 ) -> McpServerInfo:
     """Run one local probe on a PRIVATE event loop owned by a pooled worker thread.
 
@@ -291,7 +430,9 @@ async def _probe_on_private_loop(
 
     async def _main() -> McpServerInfo:
         handle.append((asyncio.get_running_loop(), asyncio.current_task()))
-        return await probe_server(server, client_info=client_info, _on_private_loop=True)
+        return await probe_server(
+            server, client_info=client_info, tool_call=tool_call, _on_private_loop=True
+        )
 
     def _own_loop() -> McpServerInfo:
         with asyncio.Runner() as runner:
@@ -375,11 +516,15 @@ async def probe_server(
     server: McpServerInfo,
     *,
     client_info: dict[str, str] | None = None,
+    tool_call: ToolCallStep | None = None,
     _on_private_loop: bool = False,
 ) -> McpServerInfo:
     """Probe a single MCP server by spawning it and sending initialize.
 
     Updates server.status and server.tools in place and returns it.
+
+    *tool_call*, for a local server, sends one ``tools/call`` after a good listing
+    (:class:`ToolCallStep`); a server that never answers it reads as a failed probe.
 
     *client_info* overrides the ``clientInfo`` sent in the handshake. The
     shareability pre-flight uses it to ask the same server twice under two
@@ -480,7 +625,7 @@ async def probe_server(
         return server
 
     if not _on_private_loop:
-        return await _probe_on_private_loop(server, client_info)
+        return await _probe_on_private_loop(server, client_info, tool_call)
 
     server.status = "probing"
     # The PATH the spawn will actually search, bound before the try so the
@@ -861,7 +1006,7 @@ async def probe_server(
             # stray line makes json.loads() raise and a healthy server is wrongly
             # marked errored.
             resp = await _read_stdio_jsonrpc_response(
-                proc.stdout, _get_probe_timeout(), name=server.name, skipped=stdout_skipped
+                proc.stdout, _handshake_wait(tool_call), name=server.name, skipped=stdout_skipped
             )
             fallback = downgrade_protocol_version(resp, protocol_version)
             if not fallback:
@@ -924,7 +1069,7 @@ async def probe_server(
         await proc.stdin.drain()
 
         resp2 = await _read_stdio_jsonrpc_response(
-            proc.stdout, _get_probe_timeout(), name=server.name, skipped=stdout_skipped
+            proc.stdout, _handshake_wait(tool_call), name=server.name, skipped=stdout_skipped
         )
         if resp2 is None:
             # initialize succeeded but tools/list yielded no response (banner
@@ -976,6 +1121,12 @@ async def probe_server(
             server.error = _STOPPED_AFTER_LISTING
             logger.warning("MCP probe failed [%s]: %s", server.name, server.error)
             cache_on_exit = client_info is None
+            return server
+        if tool_call is not None and not await _call_one_tool(
+            proc, server.name, tool_call, tools_data, stdout_skipped
+        ):
+            server.status = "error"
+            server.error = "tools/call: no response"
             return server
         server.tools = [
             name for t in tools_data if isinstance(t, dict) and (name := t.get("name", ""))
@@ -1124,11 +1275,15 @@ async def probe_server(
         # width only afterwards: a private key is known by its first line.
         if proc is not None and proc.stderr is not None and server.status == "error":
             try:
-                stderr_text = await _stderr_text(proc.stderr)
+                # What a tool call's drain took comes first, then what is left in the pipe.
+                kept = tool_call.stderr if tool_call is not None else None
+                stderr_text = await _stderr_text(proc.stderr, kept)
                 if stderr_text:
                     clean, _ = redact_exfiltration_urls(stderr_text)
                     clean, _ = redact_credentials(clean)
                     shown = _last_lines(clean, _STDERR_SHOWN_CHARS)
+                    if kept is not None and kept.cut:
+                        shown = f"{shown}\n{_STDERR_CUT_NOTE}"
                     server.error = f"{server.error}\nstderr: {shown}"
             except (asyncio.TimeoutError, Exception):
                 pass

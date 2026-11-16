@@ -71,6 +71,8 @@ READONLY_REASONS: dict[str, str] = {
     "agent.subagent_timeout_secs": WHY_SAFETY,
     "mcp.honour_auto_approve": WHY_SAFETY,
     "mcp.protect_kiro_permission_rules": WHY_SAFETY,
+    # On, the owner can run any configured server's tool from the dashboard.
+    "mcp.tool_tester": WHY_SAFETY,
     "hooks.batch_write_guard": WHY_SAFETY,
     "skills.project_skills_enabled": WHY_SAFETY,
     "skills.generate_scripts": WHY_SAFETY,
