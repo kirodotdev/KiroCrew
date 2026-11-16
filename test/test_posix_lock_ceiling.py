@@ -93,23 +93,23 @@ def held_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 class TestFileLockCeiling:
-    def test_contended_wait_raises_instead_of_hanging(self, held_lock: Path):
+    def test_contended_wait_raises_instead_of_hanging(self, held_lock: Path, monkeypatch):
         # Both halves matter: that the call comes back at all, and that it
         # refuses rather than proceeding unserialized.
+        clock = _pin_clock(monkeypatch)
+        flocks = _refuse_kernel_blocking_flock(monkeypatch)
         fd = os.open(held_lock, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            started = time.monotonic()
             with pytest.raises(OSError) as excinfo:
                 with platform_compat.file_lock(fd, exclusive=True, wait=True):
                     pytest.fail("entered the critical section while another process held it")
-            waited = time.monotonic() - started
         finally:
             os.close(fd)
 
-        # It genuinely waits (does not degrade to a non-blocking single shot),
-        # and gives up near the ceiling rather than at some unrelated time.
-        assert waited >= _TEST_CEILING
-        assert waited < _TEST_CEILING + 30
+        # It genuinely waits (polls rather than degrading to a non-blocking single
+        # shot), and gives up at the ceiling rather than at some unrelated time:
+        # the poll sleeps, on a clock only they move, add up to the ceiling.
+        _assert_polled_to(clock, flocks, _TEST_CEILING)
 
         # A BlockingIOError here would mean the waiting path had collapsed into
         # the wait=False contract, which is a different (and wrong) behavior.
@@ -163,18 +163,22 @@ class TestFileLockCeiling:
             os.close(first)
             os.close(second)
 
-    def test_non_waiting_acquire_still_fails_fast(self, held_lock: Path):
+    def test_non_waiting_acquire_still_fails_fast(self, held_lock: Path, monkeypatch):
         # wait=False is a DIFFERENT contract (raise at once, BlockingIOError) and
-        # the ceiling must not absorb it into a one-second wait.
+        # the ceiling must not absorb it into a one-second wait. "At once" is
+        # asserted as the waits the acquire takes: no poll sleep on the lock
+        # helpers' clock, and no kernel-blocking flock on this thread.
+        clock = _pin_clock(monkeypatch)
+        flocks = _refuse_kernel_blocking_flock(monkeypatch)
         fd = os.open(held_lock, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            started = time.monotonic()
             with pytest.raises(BlockingIOError):
                 with platform_compat.file_lock(fd, exclusive=True, wait=False):
                     pass
-            assert time.monotonic() - started < _TEST_CEILING
         finally:
             os.close(fd)
+        assert clock.sleeps == (), f"a non-waiting acquire polled: {clock.sleeps}"
+        assert len(flocks.ops) == 1, f"expected one single-shot flock: {flocks.ops!r}"
 
     def test_bad_fd_surfaces_now_not_at_the_ceiling(self, tmp_path: Path, monkeypatch):
         # Only "someone holds it" is retryable. An error about THIS fd must not
@@ -197,27 +201,26 @@ class TestFileLockCeiling:
 class TestCallerSuppliedCeiling:
     """A holder whose work legitimately outlasts the default ceiling."""
 
-    def test_a_longer_caller_ceiling_outlasts_the_default(self, held_lock: Path):
+    def test_a_longer_caller_ceiling_outlasts_the_default(self, held_lock: Path, monkeypatch):
         # The default ceiling suits a sub-second critical section. A caller that
         # holds the lock across an install or a build must be able to wait for
         # that work, or a contender is refused while the holder is still running.
         caller_ceiling = _TEST_CEILING * 3
+        clock = _pin_clock(monkeypatch)
+        flocks = _refuse_kernel_blocking_flock(monkeypatch)
         fd = os.open(held_lock, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            started = time.monotonic()
             with pytest.raises(OSError):
                 with platform_compat.file_lock(
                     fd, exclusive=True, wait=True, timeout=caller_ceiling
                 ):
                     pytest.fail("entered the critical section while another process held it")
-            waited = time.monotonic() - started
         finally:
             os.close(fd)
 
         # Waiting past the patched default is the whole point: a wait that ends
         # at _TEST_CEILING means the caller's value was ignored.
-        assert waited >= caller_ceiling
-        assert waited < caller_ceiling + 30
+        _assert_polled_to(clock, flocks, caller_ceiling)
 
     def test_the_refusal_names_the_caller_ceiling_not_the_default(self, held_lock: Path):
         # The message is the only thing an operator sees, so it must report the
@@ -237,21 +240,20 @@ class TestCallerSuppliedCeiling:
         assert f"limit {caller_ceiling:g}s" in message
         assert f"limit {_TEST_CEILING:g}s" not in message
 
-    def test_omitting_the_ceiling_still_uses_the_module_default(self, held_lock: Path):
+    def test_omitting_the_ceiling_still_uses_the_module_default(self, held_lock: Path, monkeypatch):
         # The parameter is additive: a caller that passes nothing is bounded by
         # the default exactly as before.
+        clock = _pin_clock(monkeypatch)
+        flocks = _refuse_kernel_blocking_flock(monkeypatch)
         fd = os.open(held_lock, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            started = time.monotonic()
             with pytest.raises(OSError) as excinfo:
                 with platform_compat.file_lock(fd, exclusive=True, wait=True):
                     pass
-            waited = time.monotonic() - started
         finally:
             os.close(fd)
 
-        assert waited >= _TEST_CEILING
-        assert waited < _TEST_CEILING + 30
+        _assert_polled_to(clock, flocks, _TEST_CEILING)
         assert f"limit {_TEST_CEILING:g}s" in str(excinfo.value)
 
 
@@ -319,6 +321,61 @@ def _pin_clock(monkeypatch) -> ManualClock:
     return clock
 
 
+class _NonBlockingFlockOnly:
+    """``fcntl`` as the lock helpers see it, refusing a kernel-blocking ``flock``.
+
+    A ``flock`` without ``LOCK_NB`` sleeps in the kernel until the holder lets go,
+    which no patched clock records. On the thread that installed it, such a call
+    fails by name instead and every ``flock`` operation is recorded; other threads
+    and every other ``fcntl`` name reach the module it wraps.
+    """
+
+    def __init__(self, wrapped: object) -> None:
+        import fcntl
+
+        self._wrapped = wrapped
+        self._non_blocking = fcntl.LOCK_NB | fcntl.LOCK_UN
+        self._thread_id = threading.get_ident()
+        self.ops: list[int] = []
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._wrapped, name)
+
+    def flock(self, fd: int, operation: int) -> None:
+        if threading.get_ident() == self._thread_id:
+            self.ops.append(operation)
+            if not operation & self._non_blocking:
+                raise AssertionError(
+                    f"kernel-blocking flock({operation:#x}) on the thread under test"
+                )
+        self._wrapped.flock(fd, operation)
+
+
+def _refuse_kernel_blocking_flock(monkeypatch) -> _NonBlockingFlockOnly:
+    """Install :class:`_NonBlockingFlockOnly` on ``platform_compat``'s ``fcntl`` binding.
+
+    The lock owners read ``fcntl`` through a function-local
+    ``from kiro_crew.platform_compat import fcntl``, so this one binding covers them.
+    """
+    spy = _NonBlockingFlockOnly(platform_compat.fcntl)
+    monkeypatch.setattr(platform_compat, "fcntl", spy)
+    return spy
+
+
+def _assert_polled_to(clock: ManualClock, flocks: _NonBlockingFlockOnly, ceiling: float) -> None:
+    """The refused acquire polled ``LOCK_NB`` until *ceiling*, and not past it.
+
+    The poll sleeps are the only thing that moves *clock*, so their sum is the
+    wait the acquire took; a kernel-blocking ``flock`` already failed by name.
+    """
+    slept = clock.sleeps
+    assert slept, "the contended acquire never polled: a single-shot try, not a wait"
+    assert len(flocks.ops) == len(slept) + 1, f"one try per poll: {flocks.ops!r} {slept!r}"
+    assert sum(slept) == pytest.approx(
+        ceiling, abs=1e-6
+    ), f"gave up after {sum(slept):.3f}s of polling, not at the {ceiling:g}s ceiling"
+
+
 def test_another_thread_keeps_the_real_sleep_and_clock(monkeypatch):
     assert_clock_is_private(_pin_clock(monkeypatch), platform_compat)
 
@@ -335,14 +392,16 @@ class TestOnLoopNeverSleeps:
         async def _acquire_on_loop() -> None:
             with pytest.MonkeyPatch.context() as mp:
                 clock = _pin_clock(mp)
+                flocks = _refuse_kernel_blocking_flock(mp)
                 fd = os.open(held_lock, os.O_CREAT | os.O_RDWR, 0o600)
                 try:
-                    started = time.monotonic()
                     with pytest.raises(OSError) as excinfo:
                         with platform_compat.file_lock(fd, exclusive=True, wait=True):
                             pytest.fail("entered the critical section while held")
-                    # Refused promptly, not at the ceiling.
-                    assert time.monotonic() - started < _TEST_CEILING
+                    # Refused promptly, not at the ceiling: one non-blocking try
+                    # (a kernel-blocking flock fails by name above), and no poll
+                    # sleep (asserted on ``slept`` below).
+                    assert len(flocks.ops) == 1, f"expected one single-shot try: {flocks.ops!r}"
                     # And the refusal says so: no ceiling it never applied, no
                     # claimed cause, and where a caller that must wait goes.
                     message = str(excinfo.value)

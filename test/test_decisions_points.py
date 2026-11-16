@@ -11,9 +11,9 @@ The context-assembly integration lives in test_decisions_integration.py.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import threading
-import time
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -24,6 +24,7 @@ from kiro_crew import decisions as core
 from kiro_crew.decisions.points import MAX_KEY_CHARS, as_text
 from kiro_crew.decisions.points import skills_select as sel
 from kiro_crew.decisions.types import Answer
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import wait_until
 
 
@@ -484,6 +485,49 @@ def test_a_raising_transport_keeps_the_baseline(bg_loop, enabled, monkeypatch):
     assert sel.selected_skills(loader, "review this", None, session_key="s", loop=bg_loop) is None
 
 
+def _record_select_waits(monkeypatch, started, budget=None):
+    """Record every timeout ``selected_skills`` hands the wait on its oracle future.
+
+    The point's start deadline reads a ``ManualClock`` installed on
+    ``skills_select``, which moves only by the recorded wait, so a loop that runs
+    the coroutine late on a loaded host still finds it inside its deadline. Only
+    the future of the ``select_skills`` coroutine is instrumented; every other
+    submission passes through. Before the wait proceeds, *started* must hold
+    (bounded by ``wait_until``'s lost-run fallback), so the abandoned call has
+    begun on the loop. A wait above *budget* (the fixture's 0.5s floor by
+    default), or one with no timeout, is recorded and answered as an expiry at
+    once, so that regression fails by name on the recorded value instead of
+    being sat out.
+    """
+    limit = sel.MIN_WAIT_SECS if budget is None else budget
+    clock = ManualClock()
+    clock.install(monkeypatch, sel)
+    waits: list[float | None] = []
+    real_submit = asyncio.run_coroutine_threadsafe
+
+    def submit(coro, loop):
+        future = real_submit(coro, loop)
+        if getattr(getattr(coro, "cr_code", None), "co_name", "") != "select_skills":
+            return future
+        real_result = future.result
+
+        def result(timeout=None):
+            waits.append(timeout)
+            wait_until(started, describe=lambda: "the oracle call never started on the loop")
+            if timeout is None or timeout > limit + 1e-6:
+                raise concurrent.futures.TimeoutError
+            try:
+                return real_result(timeout)
+            finally:
+                clock.advance(timeout)
+
+        future.result = result
+        return future
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", submit)
+    return waits
+
+
 def test_an_expired_budget_cancels_the_call_and_keeps_the_baseline(bg_loop, enabled, monkeypatch):
     """The bounded wait discards late answers and propagates cancellation."""
     observed: dict[str, bool] = {}
@@ -498,12 +542,12 @@ def test_an_expired_budget_cancels_the_call_and_keeps_the_baseline(bg_loop, enab
         return _answers("review")  # pragma: no cover - the sleep is cancelled
 
     monkeypatch.setattr(core, "decide", _slow)
+    waits = _record_select_waits(monkeypatch, lambda: observed.get("started"))
     loader = _loader(("review", {"triggers": "code review"}))
-    started = time.monotonic()
     picked = sel.selected_skills(loader, "review this", None, session_key="s", loop=bg_loop)
-    waited = time.monotonic() - started
     assert picked is None
-    assert waited < 10, "the caller must not wait past its own budget"
+    # The fixture's budget is the 0.5s floor, and the caller waits for it exactly once.
+    assert waits == [sel.MIN_WAIT_SECS], f"the caller waited {waits}, not its own budget once"
     wait_until(lambda: observed.get("cancelled"), describe=lambda: observed)
     assert observed == {"started": True, "cancelled": True}, "no detached call may survive"
 

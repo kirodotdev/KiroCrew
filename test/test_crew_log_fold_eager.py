@@ -28,7 +28,6 @@ from __future__ import annotations
 import json
 import queue
 import threading
-import time
 import unittest.mock
 from collections import Counter
 from dataclasses import replace
@@ -50,6 +49,7 @@ from kiro_crew.crew_log import CrewLog, bus
 from kiro_crew.crew_log import checkpoint as savepoints
 from kiro_crew.crew_log import eager, emit
 from kiro_crew.crew_log import projection as crew_log
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, wait_until
 
 SESSION = "s-eager"
 
@@ -1124,28 +1124,55 @@ def test_a_stop_wakes_the_parked_worker_instead_of_waiting_out_its_poll(monkeypa
     """The stop wakes a parked worker instead of waiting out its poll.
 
     A ``threading.Event`` cannot interrupt ``queue.get(timeout=_POLL_SECONDS)``, so the stop
-    puts a sentinel on the queue. The poll interval is made long so a loaded runner cannot
-    turn the margin into a false pass.
+    puts a sentinel on the queue. The queue records what each of the worker's blocking gets
+    returned: the get the worker was parked in when the stop began must return the sentinel,
+    not lapse with ``queue.Empty``. The poll interval is long so the parked get cannot lapse
+    on its own while the stop runs.
     """
     parked = 30.0
     monkeypatch.setattr(eager, "_POLL_SECONDS", parked)
     eager.resume_for_tests()
 
+    class _RecordingQueue(queue.Queue):
+        def __init__(self, maxsize: int) -> None:
+            super().__init__(maxsize=maxsize)
+            self.entered = 0
+            self.returned: list[object] = []
+
+        def get(self, block: bool = True, timeout: float | None = None):
+            if not block or threading.current_thread().name != "crew-log-eager-fold":
+                return super().get(block, timeout)
+            self.entered += 1
+            try:
+                item = super().get(block, timeout)
+            except queue.Empty:
+                self.returned.append(queue.Empty)
+                raise
+            self.returned.append(item)
+            return item
+
+    recording = _RecordingQueue(maxsize=eager.QUEUE_LIMIT)
+    with eager._lock:
+        eager._queue = recording
+
     # Start the worker and let it settle into its parked get.
     eager.note_commit(SESSION, "work/recorded", 1, board=WORK_SLOT)
     assert eager.drain(timeout=10.0), "the worker never folded its first wake"
-    time.sleep(0.3)
+    wait_until(
+        lambda: recording.entered == len(recording.returned) + 1,
+        timeout=FALLBACK_TIMEOUT_SECS,
+    )
     worker = eager._worker
     assert worker is not None and worker.is_alive(), "no worker to park"
+    parked_get = recording.entered - 1
 
-    started = time.monotonic()
     eager.stop_for_tests()
-    elapsed = time.monotonic() - started
 
     assert eager._worker is None, "the stop did not complete"
-    assert elapsed < parked / 4, (
-        f"the stop took {elapsed:.1f}s against a {parked:.0f}s poll interval: it waited for "
-        "the parked get to lapse instead of waking it"
+    woke_with = recording.returned[parked_get]
+    assert woke_with is eager._STOP_SENTINEL, (
+        f"the parked get returned {woke_with!r} instead of the stop's sentinel: the stop "
+        f"waited for the {parked:.0f}s poll to lapse instead of waking it"
     )
 
 

@@ -368,7 +368,7 @@ class TestVirtualTime:
         assert record.stop_reason == STOP_REASON_END_TURN
         [(prompt,)] = [call.args for call in record.calls("stream")]
         assert "with context" in prompt
-        assert record.elapsed < 60
+        assert record.elapsed < 60  # flake-ok: the harness VirtualClock, not the host clock
 
     def test_a_loop_with_nothing_left_to_run_fails_by_name(self) -> None:
         clock = VirtualClock()

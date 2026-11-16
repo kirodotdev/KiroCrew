@@ -538,7 +538,9 @@ def test_a_long_run_of_failures_still_falls_back(tmp_path) -> None:
     try:
         with pytest.raises(ChildUnavailable):
             _run(handle)
-        assert handle._down_until - time.monotonic() <= cwc._BACKOFF_CAP_SECS
+        # A remaining-time check: it can only shrink on a slow host. The 1e-6 covers the
+        # float sum ``now + cap`` read back against an unchanged coarse clock.
+        assert handle._down_until - time.monotonic() <= cwc._BACKOFF_CAP_SECS + 1e-6
     finally:
         handle.close()
 

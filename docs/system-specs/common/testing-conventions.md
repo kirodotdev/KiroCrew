@@ -102,6 +102,26 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   work instead. Reshaping a kept budget's reading (the minimum of N readings, the
   tracer paused around it) is not a fix: it still asserts seconds, and the K8 ratchet
   counts `thread_time` and `process_time` deltas like any other clock.
+  K8 (`test/flake_pattern_k8.py`) counts every upper bound on a span read off the
+  real clock, an event loop's `time()` included: a literal or non-literal limit
+  (`elapsed < budget`, `time.monotonic() - started < _CEILING`,
+  `elapsed < x * 1.6`), the reversed form (`BUDGET > spent`,
+  `self.assertGreater(5.0, elapsed)`, and `stamp > time.monotonic() - 5`, which bounds
+  an age), and unittest's `assertLess` / `assertLessEqual` with the span first. It
+  follows a stamp through aliases (`before = started` after
+  `started = time.monotonic()`), and a span only a helper returns
+  (`elapsed = run_timed()`) goes by its name. A clock alias or import
+  (`clock = time`, `from time import monotonic as now`) reaches only its own function
+  and the functions inside it, or the whole file at module level. A loop is `loop`,
+  `self._loop`, pytest-asyncio's `event_loop`, a getter's result or a name bound from
+  one, not any name ending in `_loop`. It exempts a span off a clock the test drives
+  (`clock.monotonic() - t0` where `clock` is a fixture, `vclock.time() - 5`), time
+  remaining (`deadline - time.monotonic() <= cap`), ordering two stamps
+  (`rt.at > t0`, or `stamp > cutoff` after `cutoff = time.monotonic() - 5.0`, a
+  cutoff taken before the work), a lower bound, a floor or ratio between two spans
+  (`elapsed >= min_duration`, `elapsed < first_elapsed / 4`), a module constant, and a
+  delta-named attribute such as `plan.duration_ms` against a non-literal limit. A
+  deliberate lost-run assertion on a measured span carries `# flake-ok: <reason>`.
   [Class 5](#5-absolute-time-budgets-on-instrumented-runs).
 - **D8. Every await, join or `communicate` the test itself must unblock is bounded and
   fails by name** (`asyncio.wait_for`; `join(timeout)` followed by an `is_alive()`

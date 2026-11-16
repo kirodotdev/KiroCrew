@@ -34,6 +34,7 @@ from kiro_crew.apps.backend import (
     stop_app_backend,
 )
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
+from kiro_crew.testing.clock import ManualClock
 
 
 def _own_probe_sel(probe_home: str):
@@ -578,12 +579,6 @@ class TestFixedAndAutoPortIsolation:
                 bmod._allocated_ports.clear()
 
 
-def _slow_never_owns(port, pid):
-    """Stand-in for the real lsof-backed ownership probe's cost (~150ms)."""
-    time.sleep(0.15)
-    return False
-
-
 def _frozen_spawn_time() -> SimpleNamespace:
     """Keep poll-count scenarios independent of host wall-clock scheduling."""
     return SimpleNamespace(
@@ -598,10 +593,9 @@ class TestBootSpawnLatency:
 
         The poll would sleep its whole ~1.6s budget on the happy path and only
         break when the child DIED, so every app added ~1.6s of dead time to boot.
-        It must return as soon as the child is confirmed alive.
+        It must return as soon as the child is confirmed alive: after ONE poll
+        interval, which the manual clock records as the only sleep it took.
         """
-        import time as real_time
-
         import kiro_crew.apps.backend as bmod
 
         # These exercise promotion logic, not enablement: their app names are
@@ -609,7 +603,10 @@ class TestBootSpawnLatency:
         # TestPromotionRequiresAConfirmedEnabledApp.
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
 
+        clock = ManualClock()
+        clock.install(monkeypatch, bmod)
         # OUR child owns the listener — the very bind whose failure this guards.
+        monkeypatch.setattr(bmod.platform_compat, "listening_pid_tool_available", lambda: True)
         monkeypatch.setattr(bmod, "_port_is_listening", lambda port: True)
         monkeypatch.setattr(bmod, "_spawn_owns_listener", lambda port, pid: True)
 
@@ -619,12 +616,10 @@ class TestBootSpawnLatency:
             def poll(self) -> None:
                 return None
 
-        started = real_time.monotonic()
         assert bmod._survived_spawn(_Alive(), 9100) is True
-        elapsed = real_time.monotonic() - started
-        budget = bmod._SPAWN_SURVIVAL_CHECKS * bmod._SPAWN_SURVIVAL_INTERVAL
-        assert elapsed < budget, (
-            f"healthy child burned {elapsed:.2f}s of a {budget:.2f}s budget"
+        assert clock.sleeps == (bmod._SPAWN_SURVIVAL_INTERVAL,), (
+            f"healthy child slept {clock.sleeps} of a "
+            f"{bmod._SPAWN_SURVIVAL_CHECKS} x {bmod._SPAWN_SURVIVAL_INTERVAL}s window"
         )
 
     def test_survival_check_still_detects_a_late_exit(self, monkeypatch):
@@ -736,10 +731,10 @@ class TestBootSpawnLatency:
         The probe shells out to lsof (~150ms). Charging it to every poll interval
         made the FAILURE path take ~2x the original 1.6s budget — i.e. the boot fix
         would have regressed boot for exactly the apps that are slowest to start.
-        The loop is wall-clock bounded, so a slow probe cannot extend it.
+        The loop is wall-clock bounded, so a slow probe cannot extend it: on a
+        manual clock that the probe moves by its cost, the loop ends at most one
+        poll interval plus one probe past its budget.
         """
-        import time as real_time
-
         import kiro_crew.apps.backend as bmod
 
         class _Alive:
@@ -748,17 +743,27 @@ class TestBootSpawnLatency:
             def poll(self) -> None:
                 return None
 
-        # A listener exists but is never ours, so every poll runs the slow probe.
+        probe_cost = 0.15  # the real lsof-backed ownership probe's cost
+        clock = ManualClock()
+
+        def _costly_never_owns(port, pid):
+            clock.advance(probe_cost)
+            return False
+
+        # A listener exists but is never ours, so every poll runs the costly probe.
         with pytest.MonkeyPatch.context() as mp:
+            clock.install(mp, bmod)
+            mp.setattr(bmod.platform_compat, "listening_pid_tool_available", lambda: True)
             mp.setattr(bmod, "_port_is_listening", lambda port: True)
-            mp.setattr(bmod, "_spawn_owns_listener", _slow_never_owns)
-            started = real_time.monotonic()
+            mp.setattr(bmod, "_spawn_owns_listener", _costly_never_owns)
+            started = clock.monotonic()
             assert bmod._survived_spawn(_Alive(), 9100) is True
-            elapsed = real_time.monotonic() - started
+            elapsed = clock.monotonic() - started
 
         budget = bmod._SPAWN_SURVIVAL_CHECKS * bmod._SPAWN_SURVIVAL_INTERVAL
-        assert elapsed < budget * 1.6, (
-            f"failure path took {elapsed:.2f}s against a {budget:.2f}s budget"
+        limit = budget + bmod._SPAWN_SURVIVAL_INTERVAL + probe_cost
+        assert elapsed <= limit + 1e-6, (
+            f"failure path took {elapsed:.2f}s of virtual time against a {budget:.2f}s budget"
         )
 
     def test_survival_check_without_a_port_polls_the_full_budget(self):
