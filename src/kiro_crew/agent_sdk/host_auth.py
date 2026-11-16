@@ -1192,6 +1192,11 @@ def for_terminal(text: str) -> str:
     return text.replace(f"Sign in from {_KAS_CARD}", KAS_TERMINAL_SIGN_IN)
 
 
+def _leads_with(text: str, sentence: str) -> bool:
+    """Whether *text* is *sentence*, alone or followed by more text after a space."""
+    return text == sentence or text.startswith(f"{sentence} ")
+
+
 def kas_signed_out_route(text: str) -> Optional[str]:
     """The route a KAS signed-out sentence names, for a translated copy of it.
 
@@ -1201,10 +1206,14 @@ def kas_signed_out_route(text: str) -> Optional[str]:
     ``kiro-cli login``, any other wording, or a route that changed since the
     sentence was written. ``None`` keeps the English, so a translation never says
     something the sentence did not.
+
+    The sentence may be followed by more text after a space: the ACP error
+    formatter appends its model-switch note and a request id. The translated copy
+    drops that tail; the row's own text keeps it.
     """
-    if text == _KAS_SIGNED_OUT:
+    if _leads_with(text, _KAS_SIGNED_OUT):
         return ""
-    if text != signed_out_message(ACP_BACKEND_KAS):
+    if not _leads_with(text, signed_out_message(ACP_BACKEND_KAS)):
         return None
     import sys
 
