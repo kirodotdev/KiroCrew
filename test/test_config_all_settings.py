@@ -76,13 +76,13 @@ def test_the_motivating_list_key_is_editable_and_resettable() -> None:
 @pytest.mark.parametrize(
     "path",
     [
-        "agent.dangerously_skip_permissions",
         "agent.sandbox",
-        "tunnel.enabled",
+        "mcp.honour_auto_approve",
+        "dashboard.onboarded",
         "slack.show_thinking",
     ],
 )
-def test_a_security_or_channel_key_is_never_edited_here(path: str) -> None:
+def test_a_linked_marker_or_channel_key_is_never_edited_here(path: str) -> None:
     assert all_settings.descriptor(_BY_PATH[path])["mode"] in ("readonly", "control")
     assert _editable_config_spec(path) == _EDITABLE_CONFIG.get(path)
 
@@ -132,9 +132,9 @@ async def test_the_role_efforts_settings_chat_writes_are_not_listed() -> None:
 
 
 def test_a_key_with_no_control_says_why_it_is_read_only() -> None:
-    assert all_settings.descriptor(_BY_PATH["agent.kas_persist_mcp_sign_in"]) == {
+    assert all_settings.descriptor(_BY_PATH["memory.migrated"]) == {
         "mode": "readonly",
-        "reason": all_settings.WHY_SIGN_IN,
+        "reason": all_settings.WHY_MARKER,
     }
     reasons = {
         all_settings.WHY_SAFETY, all_settings.WHY_SIGN_IN, all_settings.WHY_REACH,
@@ -157,11 +157,19 @@ def test_a_key_with_no_control_says_why_it_is_read_only() -> None:
         ("wakatime.oauth_client_id", "wakatime", all_settings.WHY_SIGN_IN),
     ],
 )
-async def test_tagged_readonly_keys_have_an_accurate_reason(path, tag, reason) -> None:
+async def test_tagged_risk_keys_are_editable_with_an_accurate_reason(path, tag, reason) -> None:
     entry = _BY_PATH[path]
     assert entry.tags == [tag]
-    assert all_settings.descriptor(entry) == {"mode": "readonly", "reason": reason}
-    assert all_settings.generic_spec(path) is None
+    record = all_settings.descriptor(entry)
+    assert record is not None and record["mode"] == "edit", record
+    assert record["risk"] == reason
+    assert all_settings.generic_spec(path) is not None
+
+
+def test_a_channel_tagged_key_still_gets_no_generic_rule() -> None:
+    """Only a key with a risk line passes the tag rule; a channel's key never does."""
+    tagged = [e.path for e in SCHEMA_REGISTRY if e.tags and all_settings.generic_spec(e.path)]
+    assert sorted(tagged) == sorted(p for p in tagged if p in all_settings.RISK_NOTE_PATHS)
 
 
 def test_every_owning_page_link_names_a_real_tab_and_control() -> None:
@@ -201,9 +209,10 @@ def test_free_text_stays_read_only_unless_named(monkeypatch) -> None:
 def test_every_text_check_names_an_editable_text_key() -> None:
     """A check for a key the page cannot change, or for a non-text key, is a stale row."""
     for path in all_settings._TEXT_CHECKS:
-        assert path in all_settings.TEXT_EDIT_PATHS, path
-        assert _BY_PATH[path].type in ("string", "array"), path
+        assert path in all_settings.TEXT_EDIT_PATHS | all_settings.RISK_NOTE_PATHS, path
+        assert _BY_PATH[path].type in ("string", "array", "integer"), path
         assert all_settings.descriptor(_BY_PATH[path])["mode"] == "edit", path
+        assert all_settings.generic_spec(path) is not None, path
 
 
 def test_no_text_key_is_left_read_only_without_a_reason() -> None:
@@ -301,60 +310,28 @@ _REVIEWED_EDITABLE = frozenset(
 
 
 def test_a_security_sounding_key_is_editable_only_after_review() -> None:
-    """A new key whose name sounds like security fails here until someone decides."""
+    """A new key whose name sounds like security fails here until someone decides.
+
+    It is editable only once it is reviewed as harmless here, or once it carries a
+    written risk line (``RISK_NOTE_PATHS``, checked against the catalog by
+    ``test_config_all_settings_risk.py``).
+    """
     unreviewed = []
     for entry in SCHEMA_REGISTRY:
         record = all_settings.descriptor(entry)
         if not record or record["mode"] != "edit":
             continue
         if any(word in entry.path.lower() for word in _SECURITY_WORDS):
-            if entry.path not in _REVIEWED_EDITABLE:
+            if entry.path not in _REVIEWED_EDITABLE | all_settings.RISK_NOTE_PATHS:
                 unreviewed.append(entry.path)
     assert unreviewed == [], (
-        "add each to READONLY_PATHS, or to _REVIEWED_EDITABLE after checking it: " f"{unreviewed}"
+        "add each to READONLY_PATHS, to RISK_NOTE_PATHS with a written risk line, "
+        f"or to _REVIEWED_EDITABLE after checking it: {unreviewed}"
     )
 
 
 def test_every_reviewed_editable_key_is_a_real_key() -> None:
     assert sorted(_REVIEWED_EDITABLE - set(_BY_PATH)) == []
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "agent.conductor_own_child_verbs",
-        "browser.live.mask_passwords",
-        "messaging.dm_scope",
-        # On, a deny-ruled command can be allowed from a card, and session
-        # overrides granted earlier apply again (`deny_override.deny_override_enabled`).
-        "agent.deny_override",
-        # Off, an unapplied web_fetch.blocked entry refuses no fetch
-        # (`kas_unread_commands.fails_closed_on_uncarried_blocked`).
-        "agent.kas_fail_closed_web_fetch_blocked",
-    ],
-)
-async def test_an_approval_or_reach_key_is_read_only_on_the_page(tmp_config, path) -> None:
-    """Approval skips, the password cover and DM sharing keep their own pages or none.
-
-    `mask_passwords` has a curated rule, so the page's read-only list has to win over it.
-    """
-    record = all_settings.descriptor(_BY_PATH[path])
-    assert record is not None and record["mode"] == "readonly", record
-    if _editable_config_spec(path) is None:
-        status, body = await _send({"path": path, "value": True})
-        assert status == 400, body
-
-
-async def test_trace_export_is_read_only_and_patch_refuses_it(tmp_config) -> None:
-    """On, `tracing.otlp.resolve` sends each turn's spans to the collector the
-    environment or config names; the route refuses the same for `telemetry.enabled`."""
-    assert all_settings.descriptor(_BY_PATH["telemetry.traces_enabled"]) == {
-        "mode": "readonly",
-        "reason": all_settings.WHY_SHARE,
-    }
-    status, body = await _send({"path": "telemetry.traces_enabled", "value": True})
-    assert status == 400, body
-    assert "telemetry" not in _stored(tmp_config)
 
 
 def _dashboard_route_keys() -> set[str]:
@@ -417,8 +394,6 @@ async def test_patch_refuses_a_security_bounded_value_outside_the_loader_range(t
 @pytest.mark.parametrize(
     ("path", "value", "reason"),
     [
-        # In the table range, but a non-zero value below SUBAGENT_TIMEOUT_MIN is raised.
-        ("agent.subagent_timeout_secs", 30, all_settings.WHY_SAFETY),
         # In the table range, but above chat_turn_timeout_secs less the margin.
         ("agent.tool_approval_timeout_secs", 7200, all_settings.WHY_COMPOUND),
     ],
@@ -610,10 +585,10 @@ async def test_patch_refuses_a_generic_bool_given_a_string(tmp_config) -> None:
 
 
 async def test_patch_refuses_a_read_only_key(tmp_config) -> None:
-    status, body = await _send({"path": "agent.dangerously_skip_permissions", "value": True})
+    status, body = await _send({"path": "dashboard.onboarded", "value": True})
     assert status == 400
     assert "not editable" in body["error"]
-    assert "agent" not in _stored(tmp_config)
+    assert "onboarded" not in _stored(tmp_config).get("dashboard", {})
 
 
 async def test_patch_refuses_unset_on_a_curated_key(tmp_config) -> None:
@@ -627,10 +602,15 @@ async def test_schema_route_carries_the_descriptor() -> None:
         resp = await client.get("/api/config/schema")
         entries = {e["path"]: e for e in (await resp.json())["entries"]}
     assert entries["mcp_gateway.keep_alive_servers"]["allSettings"]["mode"] == "edit"
+    assert entries["dashboard.onboarded"]["allSettings"] == {
+        "mode": "readonly",
+        "reason": all_settings.WHY_MARKER,
+    }
     assert entries["agent.dangerously_skip_permissions"]["allSettings"] == {
         "mode": "readonly",
         "reason": all_settings.WHY_SAFETY,
     }
+    assert entries["agent.jail"]["allSettings"]["risk"] == all_settings.WHY_SAFETY
     assert "allSettings" not in entries["mcp_gateway"]
 
 

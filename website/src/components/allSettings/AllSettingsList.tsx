@@ -26,6 +26,7 @@ import type { AllSettingsRecord, SchemaEntry } from '../settingRef/resolveSettin
 import { SETTINGS_REGISTRY } from '../commandPalette/settingsRegistry.gen'
 import { settingsTabLabel } from '../commandPalette/settingsTabLabel'
 import { i18nT } from '../../i18n/t'
+import { ALL_SETTINGS_RISK_KEYS, hasRiskLine } from './allSettingsRisk'
 
 type Row = SchemaEntry & { allSettings: AllSettingsRecord }
 
@@ -226,6 +227,11 @@ function SettingRow({ row, value }: { row: Row; value: unknown }) {
         </div>
         <code className="text-[12px] font-mono text-muted break-all">{row.path}</code>
         {readOnly && <p className="text-[12px] text-text mt-0.5">{readOnlyReason(rec.reason)}</p>}
+        {/* A row the owner may change despite its risk says what the change risks,
+            in one plain line; no confirm step, by the owner's choice. */}
+        {editable && rec.risk && hasRiskLine(row.path) && (
+          <p data-risk={rec.risk} className="text-[12px] text-warn mt-0.5">{i18nT(ALL_SETTINGS_RISK_KEYS[row.path])}</p>
+        )}
         {row.help && <p className="text-[12px] text-muted mt-0.5">{row.help}</p>}
         <div className="text-[12px] text-muted mt-0.5">{i18nT('settings.advanced.default_label', { value: shown(row.default) })}</div>
         {/* No hand-off: a failed save leaves the typed draft in its field for a retry. */}

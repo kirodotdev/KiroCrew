@@ -1400,8 +1400,9 @@ primitives' `hint`, never a description line under a control.
 splits it: the picker reads `headless` as `kiro_chromium`, and picking
 `kiro_chromium` while `headless` writes nothing; the no-window switch writes
 `headless` on and `kiro_chromium` off (the same browser, with a window) -- it never
-guesses an earlier pick. `browser.live.mask_passwords` has no control (it stays
-on) and stays in the schema. There is no first-run step list: the gateway
+guesses an earlier pick. `browser.live.mask_passwords` has no control of its own
+(it stays on unless the owner turns it off on Settings -> Advanced, under a line
+saying password boxes then show in the live picture) and stays in the schema. There is no first-run step list: the gateway
 installs on its own. The pre-release `browser.first_run_dismissed` flag that hid
 the old list is retired: a config carrying it loads and drops it on the next
 save (`_SECTION_KEYS_DELIBERATELY_DROPPED`).

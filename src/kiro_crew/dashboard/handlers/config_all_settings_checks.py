@@ -1,15 +1,17 @@
 """Value checks for the free-text keys Settings -> Advanced may change.
 
 ``config_all_settings.generic_value_error`` runs the check named for a key after
-the schema's own type check, so each one sees a ``str`` (or a ``list`` of them for
-a string-list key). A check returns a plain sentence saying what is wrong, or
-``None``. ``""`` always passes for a single value: it clears the key to the
-reader's default.
+the schema's own type check, so each one sees the type the schema declares: a
+``str``, a ``list`` of them for a string-list key, or an ``int``. A check returns
+a plain sentence saying what is wrong, or ``None``. ``""`` passes for a single
+text value unless the check says otherwise: it clears the key to the reader's
+default.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import urllib.parse
 from collections.abc import Callable
 
@@ -211,3 +213,141 @@ def stored_value(check: Check, value: object) -> object:
     if check is _path_list and isinstance(value, list):
         return [os.path.expanduser(item) for item in value]
     return value
+
+
+# ── Checks for the keys editable with a risk line ──
+
+_HOST_RE = re.compile(
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*"
+)
+_PORT_RE = re.compile(r"[0-9]{1,5}")
+_ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+# Raster only: an SVG can carry script, and the logo route serves this file to
+# anyone who can open the sign-in page.
+_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico")
+
+
+def _host_error(item: str, *, port: bool) -> str | None:
+    host, sep, rest = item.rpartition(":") if port and ":" in item else (item, "", "")
+    if sep and not (_PORT_RE.fullmatch(rest) and 0 < int(rest) < 65536):
+        return f"{item!r} has a port that is not a number from 1 to 65535"
+    if not _HOST_RE.fullmatch(host):
+        shape = "a host name such as git.example.com" + (" or git.example.com:8443" if port else "")
+        return f"{item!r} must be {shape}, with no scheme or path"
+    return None
+
+
+def _hosts(port: bool) -> Check:
+    def check(value: object) -> str | None:
+        for item in value if isinstance(value, list) else []:
+            reason = _host_error(item, port=port)
+            if reason:
+                return reason
+        return None
+
+    return check
+
+
+def _host(value: object) -> str | None:
+    text = str(value)
+    return None if text == "" else _host_error(text, port=False)
+
+
+def _image_path(value: object) -> str | None:
+    """The logo file: an absolute path to an image."""
+    text = str(value)
+    reason = _path_error(text)
+    if reason or text == "":
+        return reason
+    if not text.lower().endswith(_IMAGE_SUFFIXES):
+        return "must be a .png, .jpg, .gif, .webp or .ico image"
+    return None
+
+
+def _https_or_loopback_url(value: object) -> str | None:
+    """The relay reader's rule: https://, or http:// only to this machine's loopback.
+
+    A credential rides with each call to these addresses, so it never travels
+    unencrypted off the machine.
+    """
+    from kiro_crew.relay_client.lease import lease_url_problem
+
+    text = str(value)
+    if text == "":
+        return None
+    reason = lease_url_problem(text)
+    return reason.replace("the lease service URL", "the address") if reason else None
+
+
+def _relay_token_type(value: object) -> str | None:
+    from kiro_crew.relay_client.lease import TOKEN_TYPES
+
+    allowed = sorted(TOKEN_TYPES)
+    if value == "" or value in TOKEN_TYPES:
+        return None
+    return f"must be empty or one of {allowed}"
+
+
+def _scope_prefix(value: object) -> str | None:
+    from kiro_crew.auth.login.endpoints import OIDC_SCOPE_PREFIX_RE
+
+    if value == "" or OIDC_SCOPE_PREFIX_RE.fullmatch(str(value)):
+        return None
+    return "must be lower-case letters and underscores"
+
+
+def _env_names(value: object) -> str | None:
+    for item in value if isinstance(value, list) else []:
+        if not _ENV_NAME_RE.fullmatch(item):
+            return f"{item!r} must be an environment variable name such as AWS_PROFILE"
+    return None
+
+
+def _sha256(value: object) -> str | None:
+    if value == "" or _SHA256_RE.fullmatch(str(value)):
+        return None
+    return "must be the 64-character lower-case sha256 fingerprint the refused session printed"
+
+
+def _subagent_timeout(value: object) -> str | None:
+    """0 (the default) or the loader's own range, so a save never reads back raised."""
+    from kiro_crew.constants import SUBAGENT_TIMEOUT_MIN
+
+    if value == 0 or (isinstance(value, int) and value >= SUBAGENT_TIMEOUT_MIN):
+        return None
+    return f"must be 0 for the default, or at least {SUBAGENT_TIMEOUT_MIN} seconds"
+
+
+#: The check each key editable with a risk line runs, when its type needs one.
+RISK_CHECKS: dict[str, Check] = {
+    "agent.sandbox_readonly_paths": _path_list,
+    "agent.sandbox_readonly_exceptions": _path_list,
+    "agent.subagent_cwd_allowed_roots": _path_list,
+    "mcp.extra_path_dirs": _path_list,
+    "publish.relocate_roots": _path_list,
+    "mcp_gateway.overlay_dir": _path,
+    "mcp_gateway.socket_path": _path,
+    "agent.strands_project": _path,
+    "agent.strands_project_sha256": _sha256,
+    "agent.subagent_timeout_secs": _subagent_timeout,
+    "dashboard.avatar": _image_path,
+    "dashboard.github_hosts": _hosts(port=False),
+    "dashboard.gitlab_hosts": _hosts(port=True),
+    "dashboard.jira_hosts": _hosts(port=True),
+    "dashboard.bitbucket_server_hosts": _hosts(port=True),
+    "dashboard.gerrit_hosts": _hosts(port=True),
+    "knowledge.doc_ingest_hosts": _hosts(port=False),
+    "tunnel.relay_handle_email_domains": _hosts(port=False),
+    "tunnel.relay_viewer_relay_domain": _host,
+    "tunnel.relay_lease_url": _https_or_loopback_url,
+    "tunnel.relay_viewer_cps_url": _https_or_loopback_url,
+    "tunnel.relay_lease_token_type": _relay_token_type,
+    "tunnel.relay_viewer_oidc_scope_prefix": _scope_prefix,
+    "mcp_gateway.pool_identity_env": _env_names,
+    "dashboard.tailscale.allowed_logins": _line_list,
+    "publish.allowed_destinations": _line_list,
+    "telemetry.beacon_endpoint": _https_url,
+    "wakatime.api_base_url": _https_or_loopback_url,
+    "wakatime.oauth_client_id": _line,
+}

@@ -1,0 +1,86 @@
+/**
+ * The risk line each Settings -> Advanced row shows under its control, by config
+ * path. The gateway marks these rows editable with a `risk` reason
+ * (`config_all_settings.RISK_NOTE_PATHS`); a test on each side checks that every
+ * such path has a line here and in the catalog. Literal keys, so the catalog
+ * gates can see each one.
+ */
+export const ALL_SETTINGS_RISK_KEYS = {
+  'agent.conductor_own_child_verbs': 'settings.advanced.risk.agent_conductor_own_child_verbs',
+  'agent.crew_panel': 'settings.advanced.risk.agent_crew_panel',
+  'agent.deny_override': 'settings.advanced.risk.agent_deny_override',
+  'agent.interactive_command_policy': 'settings.advanced.risk.agent_interactive_command_policy',
+  'agent.jail': 'settings.advanced.risk.agent_jail',
+  'agent.kas_fail_closed_web_fetch_blocked': 'settings.advanced.risk.agent_kas_fail_closed_web_fetch_blocked',
+  'agent.kas_persist_mcp_sign_in': 'settings.advanced.risk.agent_kas_persist_mcp_sign_in',
+  'agent.kas_refuse_plain_http_mcp_headers': 'settings.advanced.risk.agent_kas_refuse_plain_http_mcp_headers',
+  'agent.mcp_registry_mode': 'settings.advanced.risk.agent_mcp_registry_mode',
+  'agent.member_dispatch': 'settings.advanced.risk.agent_member_dispatch',
+  'agent.sandbox_allow_no_isolation': 'settings.advanced.risk.agent_sandbox_allow_no_isolation',
+  'agent.sandbox_allow_unsandboxed_exec': 'settings.advanced.risk.agent_sandbox_allow_unsandboxed_exec',
+  'agent.sandbox_readonly_exceptions': 'settings.advanced.risk.agent_sandbox_readonly_exceptions',
+  'agent.sandbox_readonly_paths': 'settings.advanced.risk.agent_sandbox_readonly_paths',
+  'agent.session_control': 'settings.advanced.risk.agent_session_control',
+  'agent.session_manager_chain': 'settings.advanced.risk.agent_session_manager_chain',
+  'agent.session_sharing': 'settings.advanced.risk.agent_session_sharing',
+  'agent.strands_project': 'settings.advanced.risk.agent_strands_project',
+  'agent.strands_project_sha256': 'settings.advanced.risk.agent_strands_project_sha256',
+  'agent.subagent_cwd_allowed_roots': 'settings.advanced.risk.agent_subagent_cwd_allowed_roots',
+  'agent.subagent_timeout_secs': 'settings.advanced.risk.agent_subagent_timeout_secs',
+  'browser.live.mask_passwords': 'settings.advanced.risk.browser_live_mask_passwords',
+  'dashboard.audit_secret_reads': 'settings.advanced.risk.dashboard_audit_secret_reads',
+  'dashboard.avatar': 'settings.advanced.risk.dashboard_avatar',
+  'dashboard.bitbucket_server_hosts': 'settings.advanced.risk.dashboard_bitbucket_server_hosts',
+  'dashboard.gerrit_hosts': 'settings.advanced.risk.dashboard_gerrit_hosts',
+  'dashboard.github_hosts': 'settings.advanced.risk.dashboard_github_hosts',
+  'dashboard.gitlab_hosts': 'settings.advanced.risk.dashboard_gitlab_hosts',
+  'dashboard.jira_hosts': 'settings.advanced.risk.dashboard_jira_hosts',
+  'dashboard.qr_session_persist_across_restart': 'settings.advanced.risk.dashboard_qr_session_persist_across_restart',
+  'dashboard.qr_session_until_restart': 'settings.advanced.risk.dashboard_qr_session_until_restart',
+  'dashboard.shared_crew.containment_enabled': 'settings.advanced.risk.dashboard_shared_crew_containment_enabled',
+  'dashboard.shared_crew.hard_limits': 'settings.advanced.risk.dashboard_shared_crew_hard_limits',
+  'dashboard.shared_crew.ssm_port': 'settings.advanced.risk.dashboard_shared_crew_ssm_port',
+  'dashboard.sso_login_flags': 'settings.advanced.risk.dashboard_sso_login_flags',
+  'dashboard.tailscale.allowed_logins': 'settings.advanced.risk.dashboard_tailscale_allowed_logins',
+  'dashboard.tailscale.bind_refresh_chains': 'settings.advanced.risk.dashboard_tailscale_bind_refresh_chains',
+  'dashboard.tailscale.pin_scope': 'settings.advanced.risk.dashboard_tailscale_pin_scope',
+  'hooks.batch_write_guard': 'settings.advanced.risk.hooks_batch_write_guard',
+  'hooks.return_answer': 'settings.advanced.risk.hooks_return_answer',
+  'instances.crew_reads_enabled': 'settings.advanced.risk.instances_crew_reads_enabled',
+  'knowledge.doc_ingest_hosts': 'settings.advanced.risk.knowledge_doc_ingest_hosts',
+  'mcp.extra_path_dirs': 'settings.advanced.risk.mcp_extra_path_dirs',
+  'mcp_gateway.enabled': 'settings.advanced.risk.mcp_gateway_enabled',
+  'mcp_gateway.forward_declared_env': 'settings.advanced.risk.mcp_gateway_forward_declared_env',
+  'mcp_gateway.overlay_dir': 'settings.advanced.risk.mcp_gateway_overlay_dir',
+  'mcp_gateway.pool_identity_env': 'settings.advanced.risk.mcp_gateway_pool_identity_env',
+  'mcp_gateway.socket_path': 'settings.advanced.risk.mcp_gateway_socket_path',
+  'memory.ollama_allow_remote': 'settings.advanced.risk.memory_ollama_allow_remote',
+  'messaging.dm_scope': 'settings.advanced.risk.messaging_dm_scope',
+  'publish.allowed_destinations': 'settings.advanced.risk.publish_allowed_destinations',
+  'publish.relocate_roots': 'settings.advanced.risk.publish_relocate_roots',
+  'skills.generate_scripts': 'settings.advanced.risk.skills_generate_scripts',
+  'skills.project_skills_enabled': 'settings.advanced.risk.skills_project_skills_enabled',
+  'telemetry.beacon_endpoint': 'settings.advanced.risk.telemetry_beacon_endpoint',
+  'telemetry.traces_enabled': 'settings.advanced.risk.telemetry_traces_enabled',
+  'tunnel.enabled': 'settings.advanced.risk.tunnel_enabled',
+  'tunnel.name_mode': 'settings.advanced.risk.tunnel_name_mode',
+  'tunnel.relay_enabled': 'settings.advanced.risk.tunnel_relay_enabled',
+  'tunnel.relay_handle_email_domains': 'settings.advanced.risk.tunnel_relay_handle_email_domains',
+  'tunnel.relay_lease_token_type': 'settings.advanced.risk.tunnel_relay_lease_token_type',
+  'tunnel.relay_lease_url': 'settings.advanced.risk.tunnel_relay_lease_url',
+  'tunnel.relay_viewer_cps_url': 'settings.advanced.risk.tunnel_relay_viewer_cps_url',
+  'tunnel.relay_viewer_enabled': 'settings.advanced.risk.tunnel_relay_viewer_enabled',
+  'tunnel.relay_viewer_oidc_scope_prefix': 'settings.advanced.risk.tunnel_relay_viewer_oidc_scope_prefix',
+  'tunnel.relay_viewer_relay_domain': 'settings.advanced.risk.tunnel_relay_viewer_relay_domain',
+  'wakatime.api_base_url': 'settings.advanced.risk.wakatime_api_base_url',
+  'wakatime.enabled': 'settings.advanced.risk.wakatime_enabled',
+  'wakatime.oauth_client_id': 'settings.advanced.risk.wakatime_oauth_client_id',
+  'wakatime.send_heartbeats': 'settings.advanced.risk.wakatime_send_heartbeats',
+} as const
+
+export type RiskPath = keyof typeof ALL_SETTINGS_RISK_KEYS
+
+/** Whether *path* has a written risk line. */
+export function hasRiskLine(path: string): path is RiskPath {
+  return Object.prototype.hasOwnProperty.call(ALL_SETTINGS_RISK_KEYS, path)
+}

@@ -5296,8 +5296,37 @@ audit, overlay refusal, write lock and hot-apply are the route's own and apply
 unchanged.
 
 `test_config_all_settings.py` holds two drift guards: an editable key whose path
-contains a security-sounding word fails until it is added to `READONLY_PATHS` or to
-the test's reviewed list; an editable key whose help says a plain config write
+contains a security-sounding word fails until it is added to `READONLY_PATHS`, to
+`RISK_NOTE_PATHS` with a written risk line, or to the test's reviewed list; an
+editable key whose help says a plain config write
 must not set it fails outright; and an editable top-level key that
 `KiroCrewConfig.to_dict` does not save at the top level (an alias of another
 section's key) fails too.
+
+The owner chose to let the page change the `safety`, `sign_in`, `reach` and `share`
+keys too, with no confirm step. One key is the exception: the declared, never-expiring
+skip-all-approvals grant `agent.dangerously_skip_permissions` stays read-only with its
+reason line, because `AUTOSDE.yaml`'s blocking `backend-security-controls` rule gives
+it no dashboard toggle. `RISK_NOTE_PATHS` names each other one; `READONLY_PATHS` is
+`READONLY_REASONS` less that set, so its keys get a generic rule (a channel tag does
+not block them) and their record carries `"risk": <reason>`. The row then shows one
+plain line under the control, `settings.advanced.risk.<path with _>` in every
+catalog, looked up through the literal map in
+`website/src/components/allSettings/allSettingsRisk.ts`.
+`test_config_all_settings_risk.py` fails when a listed key lacks its catalog line or
+map row, or when a line exists for a key not listed, so a key becomes editable only
+with its line written. The value checks in `config_all_settings_checks.RISK_CHECKS`
+reuse each reader's rule: paths absolute after `~`, the logo file a raster image, never an SVG, which can carry script (the logo
+route serves it to anyone who can open the sign-in page), host lists bare host names
+(with a port where the reader takes one), the relay and WakaTime addresses
+`lease_url_problem`'s https-or-loopback rule, the relay token type one of
+`TOKEN_TYPES`, the scope prefix `OIDC_SCOPE_PREFIX_RE`, the pooled env list variable
+names, the Strands fingerprint 64 hex characters, and
+`agent.subagent_timeout_secs` 0 or at least `SUBAGENT_TIMEOUT_MIN`, so a save never
+reads back clamped. The write is the same owner-only, CSRF-guarded PATCH: a caller
+with an app claim or an internal secret is refused by
+`require_owner_dashboard_request`, a change card still reads only `_EDITABLE_CONFIG`,
+every write is in the SEL audit, and the loader's `_clamp_security_bounds` and the
+keystone provenance of `config.json` apply as for any other write. The rest of
+`READONLY_REASONS` (`owned`, `marker`, `alias`, `compound`, and `locked` by policy)
+stays read-only.

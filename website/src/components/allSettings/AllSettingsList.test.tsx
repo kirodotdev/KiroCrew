@@ -51,6 +51,10 @@ const ENTRIES = [
     path: 'memory.extraction_instructions', type: 'string', label: 'Extraction instructions',
     help: '', defaultValue: '', allSettings: { mode: 'edit', control: 'str', resettable: true, max_len: 2000 },
   },
+  {
+    path: 'tunnel.enabled', type: 'boolean', label: 'Tunnel',
+    help: '', defaultValue: false, allSettings: { mode: 'edit', control: 'bool', resettable: true, risk: 'reach' },
+  },
   // Not listed: the gateway sent no allSettings record.
   { path: 'agent.env', type: 'object', label: 'Agent env', help: '', defaultValue: {} },
 ]
@@ -392,6 +396,25 @@ describe('AllSettingsList', () => {
     expect(api.patchConfig).not.toHaveBeenCalled()
     fireEvent.blur(box)
     await waitFor(() => expect(api.patchConfig).toHaveBeenCalledWith('memory.extraction_instructions', 'keep build commands\nnever store names', undefined))
+  })
+
+  it('shows a risky row its own risk line and saves it in one click, with no confirm step', async () => {
+    renderWithProviders(<AllSettingsList />)
+    const row = await waitFor(() => rowFor('tunnel.enabled'))
+    expect(within(row).getByText('Turning this on lets your dashboard be reached from the internet.')).toBeTruthy()
+    expect(within(row).queryByText('Read only')).toBeNull()
+    fireEvent.click(within(row).getByRole('switch'))
+    await waitFor(() => expect(api.patchConfig).toHaveBeenCalledWith('tunnel.enabled', true, undefined))
+    expect(within(row).queryByRole('dialog')).toBeNull()
+  })
+
+  it('has a catalog line for every risk key it maps', async () => {
+    const { ALL_SETTINGS_RISK_KEYS } = await import('./allSettingsRisk')
+    const catalog = (await import('../../i18n/locales/en.manual.json')).default as { settings: { advanced: { risk: Record<string, string> } } }
+    for (const [path, key] of Object.entries(ALL_SETTINGS_RISK_KEYS)) {
+      expect(key).toBe(`settings.advanced.risk.${path.replace(/\./g, '_')}`)
+      expect(catalog.settings.advanced.risk[path.replace(/\./g, '_')]).toBeTruthy()
+    }
   })
 
   it('offers no Undo after a successful save or reset', async () => {

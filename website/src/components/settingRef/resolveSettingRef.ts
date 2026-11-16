@@ -53,6 +53,9 @@ export interface AllSettingsRecord {
   page?: { tab: string; sub?: string; highlight?: string }
   /** Why a `mode: 'readonly'` row cannot be changed here. */
   reason?: 'safety' | 'sign_in' | 'reach' | 'share' | 'owned' | 'marker' | 'alias' | 'text' | 'locked' | 'compound'
+  /** For an `edit` row the owner may change despite its risk: what kind of risk.
+   *  The row shows that key's own risk line under the control. */
+  risk?: 'safety' | 'sign_in' | 'reach' | 'share'
 }
 
 export type SettingRefResolution =

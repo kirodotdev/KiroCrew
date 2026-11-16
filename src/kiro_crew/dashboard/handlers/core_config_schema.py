@@ -452,10 +452,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # ``capabilities.tailnet_origin`` gate in ``core_config_patch.py``.
     "dashboard.tailscale.enabled": {"type": "bool"},
     # Identity trust for tailnet peers (RFC §2–§3.1). Only the boolean opt-in
-    # and the pin scope are editable here; ``allowed_logins`` is a list and is
-    # deliberately config-file-only — the PATCH write surface has no list type,
-    # and the allowlist is the control that decides who gets in, so it should
-    # be an explicit file edit rather than an API-reachable value. Loader-side
+    # and the pin scope have curated rules here. ``allowed_logins`` has none: the
+    # owner edits it on Settings -> Advanced, under a line saying that every
+    # listed login can open the dashboard (``config_all_settings.RISK_NOTE_PATHS``),
+    # and a change card never reaches it. Loader-side
     # validation keeps every bad combination narrowing-only (trust with an
     # empty allowlist stays off; an unrecognised pin_scope falls back to node).
     "dashboard.tailscale.trust_identity": {"type": "bool"},

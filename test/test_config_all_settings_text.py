@@ -206,23 +206,19 @@ def test_the_long_text_key_gets_its_readers_length() -> None:
 @pytest.mark.parametrize(
     ("path", "reason"),
     [
-        ("agent.sandbox_readonly_exceptions", all_settings.WHY_SAFETY),
-        ("agent.strands_project_sha256", all_settings.WHY_SAFETY),
-        ("dashboard.avatar", all_settings.WHY_REACH),
-        ("dashboard.github_hosts", all_settings.WHY_REACH),
-        ("tunnel.relay_lease_url", all_settings.WHY_REACH),
-        ("mcp_gateway.pool_identity_env", all_settings.WHY_SIGN_IN),
-        ("telemetry.beacon_endpoint", all_settings.WHY_SHARE),
         ("memory.embed_model_id", all_settings.WHY_OWNED),
+        ("agent.apps_trusted_local", all_settings.WHY_OWNED),
         ("memory.embed_rebuild_generation", all_settings.WHY_MARKER),
+        ("memory.embed_model_legacy_ids", all_settings.WHY_MARKER),
         ("agent.apps_default_installs_applied", all_settings.WHY_MARKER),
         ("slack_dm_activation", all_settings.WHY_ALIAS),
+        ("mcp_gateway.poolable_servers", all_settings.WHY_ALIAS),
         # Another route writes these with its own rule.
         ("default_agent", all_settings.WHY_OWNED),
         ("mcp_gateway.stub_servers", all_settings.WHY_OWNED),
     ],
 )
-async def test_text_that_decides_reach_or_safety_stays_read_only(tmp_config, path, reason) -> None:
+async def test_text_another_step_owns_stays_read_only(tmp_config, path, reason) -> None:
     assert all_settings.descriptor(_BY_PATH[path]) == {"mode": "readonly", "reason": reason}
     assert all_settings.generic_spec(path) is None
     value: object = [] if _BY_PATH[path].type == "array" else "x"

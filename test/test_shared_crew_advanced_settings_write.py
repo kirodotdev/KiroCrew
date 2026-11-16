@@ -110,9 +110,16 @@ async def test_a_value_outside_the_domain_is_refused_and_writes_nothing(cfg_home
 
 
 @pytest.mark.asyncio
-async def test_a_switch_that_is_not_listed_is_not_editable(cfg_home):
+async def test_a_switch_that_is_not_listed_takes_only_the_generic_rule(cfg_home):
+    """``hard_limits`` has no curated rule, so no change card can reach it. Settings ->
+    Advanced edits it under its risk line through the generic rule, which takes only
+    a JSON boolean."""
+    assert PREFIX + "hard_limits" not in _EDITABLE_CONFIG
+    status, body = await _patch(PREFIX + "hard_limits", "yes")
+    assert status == 400, body
+    assert "shared_crew" not in json.loads(cfg_home.read_text(encoding="utf-8"))["dashboard"]
     status, body = await _patch(PREFIX + "hard_limits", True)
-    assert status == 400 and "not editable" in body["error"]
+    assert status == 200, body
 
 
 def test_the_section_and_field_help_name_the_feature_preview_not_the_environment():
