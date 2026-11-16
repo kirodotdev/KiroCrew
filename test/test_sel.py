@@ -14,6 +14,7 @@ control-character escaping). The fixtures and helpers they share live in
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import os
@@ -21,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -392,6 +394,73 @@ class TestThreadSafety:
         # All lines should be valid JSON
         for line in lines:
             json.loads(line)
+
+
+class _LoopGateSpy:
+    """A chain hold's gate as the event-loop thread meets it.
+
+    The loop thread's acquires are recorded as ``(blocking, timeout)``. One that
+    could park the loop past a poll slice (no timeout, or a longer one) is refused
+    on the spot. ``after_first`` runs once the loop thread's first attempt has
+    returned. Other threads get the real gate.
+    """
+
+    def __init__(self, gate, loop_thread: int, after_first=None) -> None:
+        self._gate = gate
+        self._loop_thread = loop_thread
+        self._after_first = after_first
+        self.attempts: list[tuple[bool, float]] = []
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        if threading.get_ident() != self._loop_thread:
+            return self._gate.acquire(blocking, timeout)
+        self.attempts.append((blocking, timeout))
+        slice_secs = kiro_crew_sel_chain_lock._LOOP_GATE_POLL_SECS
+        if blocking and not 0 <= timeout <= slice_secs:
+            raise AssertionError(
+                f"the loop-side joiner waited on the hold's gate with timeout={timeout}, "
+                f"past one {slice_secs}s poll slice"
+            )
+        got = self._gate.acquire(blocking, timeout)
+        if len(self.attempts) == 1 and self._after_first is not None:
+            self._after_first()
+        return got
+
+    def release(self) -> None:
+        self._gate.release()
+
+
+def _spy_loop_gate(mp: pytest.MonkeyPatch, log, after_first=None) -> _LoopGateSpy:
+    """Wrap the live hold on *log*'s chain lock in a :class:`_LoopGateSpy` for this thread."""
+    with kiro_crew_sel._CHAIN_HOLDS_MUTEX:
+        hold = kiro_crew_sel._CHAIN_HOLDS[str(log._chain_lock_path())]
+    spy = _LoopGateSpy(hold.gate, threading.get_ident(), after_first)
+    mp.setattr(hold, "gate", spy)
+    return spy
+
+
+@contextlib.contextmanager
+def _refuse_loop_sleep() -> Iterator[list[str]]:
+    """Refuse ``time.sleep`` on this thread for the block, recording each caller refused.
+
+    A profile hook, which sees only this thread: the call is refused before it
+    sleeps, and the module itself stays unpatched for every other thread. Not
+    seen: a timed ``Event.wait`` / ``Condition.wait``, or a sleep on another thread.
+    """
+    sleepers: list[str] = []
+    real_sleep = time.sleep
+
+    def refuse(frame, event: str, arg) -> None:
+        if event == "c_call" and arg is real_sleep:
+            sleepers.append(frame.f_code.co_qualname)
+            raise AssertionError(f"{frame.f_code.co_qualname} slept on the loop thread")
+
+    previous = sys.getprofile()
+    sys.setprofile(refuse)
+    try:
+        yield sleepers
+    finally:
+        sys.setprofile(previous)
 
 
 class TestCrossProcessSafety:
@@ -914,13 +983,14 @@ log.flush()
         try:
             assert entered.wait(5)
             # Pre-fix: single-shot flock attempt on a second fd fails closed.
-            # The join waits its turn at the hold's gate, so release the holder
-            # on a short timer and assert the critical write went through
-            # promptly rather than being refused.
-            threading.Timer(0.3, release.set).start()
-            started = time.monotonic()
-            log.log(_make_event(event_id="join-critical"), critical=True)
-            assert time.monotonic() - started < 5.0
+            # The join waits its turn at the hold's gate: the holder is released
+            # once the loop-side joiner's first gate attempt has returned, and the
+            # joiner must get in through bounded gate slices alone, never a nap.
+            with pytest.MonkeyPatch.context() as mp, _refuse_loop_sleep() as sleepers:
+                gate = _spy_loop_gate(mp, log, after_first=release.set)
+                log.log(_make_event(event_id="join-critical"), critical=True)
+            assert gate.attempts, "the critical write never waited at the hold's gate"
+            assert sleepers == [], f"the loop-side joiner slept in {sleepers}"
         finally:
             release.set()
             t.join(timeout=10)
@@ -1046,12 +1116,14 @@ log.flush()
             leave_rotation.set()
             assert after_rotation.wait(5)
             # After the step the hold reads "append" again: the join works.
-            # It waits its turn at the gate, so release the holder on a short
-            # timer and assert the write went through promptly.
-            threading.Timer(0.3, release.set).start()
-            started = time.monotonic()
-            log.log(_make_event(event_id="rot-after"), critical=True)
-            assert time.monotonic() - started < 5.0
+            # It waits its turn at the gate: the holder is released once the
+            # joiner's first gate attempt has returned, and the joiner gets in
+            # through bounded gate slices alone, never a nap.
+            with pytest.MonkeyPatch.context() as mp, _refuse_loop_sleep() as sleepers:
+                gate = _spy_loop_gate(mp, log, after_first=release.set)
+                log.log(_make_event(event_id="rot-after"), critical=True)
+            assert gate.attempts, "the critical write never waited at the hold's gate"
+            assert sleepers == [], f"the loop-side joiner slept in {sleepers}"
         finally:
             leave_rotation.set()
             release.set()
@@ -1092,11 +1164,14 @@ log.flush()
         t.start()
         try:
             assert entered.wait(5)
-            threading.Timer(0.3, release.set).start()
-            started = time.monotonic()
-            # Pre-fix: refused with "held by another writer".
-            log_b.log(_make_event(event_id="xinst-critical"), critical=True)
-            assert time.monotonic() - started < 5.0
+            # Pre-fix: refused with "held by another writer". The holder is
+            # released once the joiner's first gate attempt has returned; the
+            # joiner gets in through bounded gate slices alone, never a nap.
+            with pytest.MonkeyPatch.context() as mp, _refuse_loop_sleep() as sleepers:
+                gate = _spy_loop_gate(mp, log_b, after_first=release.set)
+                log_b.log(_make_event(event_id="xinst-critical"), critical=True)
+            assert gate.attempts, "the sibling's critical write never joined the hold"
+            assert sleepers == [], f"the loop-side joiner slept in {sleepers}"
         finally:
             release.set()
             t.join(timeout=10)
@@ -1373,29 +1448,30 @@ log.flush()
         holder.start()
         assert entered.wait(timeout=5), "holder never took the chain lock"
 
-        def _promote_soon() -> None:
-            # Give the loop-side joiner time to be admitted and start waiting
-            # on the gate, then promote the hold the way rotation's relabel
-            # does. 0.2s spans several poll slices.
-            release.wait(timeout=0.2)
+        def _promote() -> None:
+            # Once the loop-side joiner was admitted and its first gate slice has
+            # timed out, promote the hold the way rotation's relabel does.
             with kiro_crew_sel._CHAIN_HOLDS_MUTEX:
                 hold = kiro_crew_sel._CHAIN_HOLDS.get(key)
                 if hold is not None:
                     hold.kind = "rotation"
 
-        promoter = threading.Thread(target=_promote_soon)
-        promoter.start()
         try:
-            started = time.monotonic()
-            with pytest.raises(OSError, match="promoted"):
-                log.log(_make_event(event_id="promoted-critical"), critical=True)
-            elapsed = time.monotonic() - started
+            with pytest.MonkeyPatch.context() as mp:
+                gate = _spy_loop_gate(mp, log, after_first=_promote)
+                with pytest.raises(OSError, match="promoted"):
+                    log.log(_make_event(event_id="promoted-critical"), critical=True)
         finally:
             release.set()
-            promoter.join(timeout=5)
             holder.join(timeout=5)
 
-        assert elapsed < 5, f"loop joiner waited {elapsed:.3f}s through the promotion"
+        # One poll slice, then the promotion read between slices refuses: the
+        # joiner never waits on into the heavy step.
+        slice_secs = kiro_crew_sel_chain_lock._LOOP_GATE_POLL_SECS
+        assert gate.attempts == [(True, slice_secs)], (
+            f"the loop joiner waited {gate.attempts} through the promotion, "
+            f"not one {slice_secs}s slice"
+        )
         assert "promoted-critical" not in log._path.read_text(encoding="utf-8")
         # The refused joiner must have left the hold: once the holder exits,
         # the registry entry is gone and a fresh append works normally.

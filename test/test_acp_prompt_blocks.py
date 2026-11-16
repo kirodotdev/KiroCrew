@@ -15,7 +15,6 @@ import json
 import os
 import random
 import re
-import time
 from pathlib import Path
 
 import pytest
@@ -288,17 +287,14 @@ class TestOnePromptImageRules:
     def test_a_long_message_of_path_fragments_scans_in_linear_time(self):
         # Space is both a delimiter and a legal path character, so every "/" here
         # opens a path body that would walk to the suffix: the bounded body is
-        # what keeps this linear.
-        text = (" /a" * 20000) + ".png~"
+        # what keeps this linear. The scan is a regex search, which no work
+        # counter sees, so the shared ramped thread-CPU guard measures it.
+        from conftest import assert_rejected_without_backtracking
 
-        # Thread CPU time, not wall time: a loaded runner that parks this thread
-        # does not count against the budget, a quadratic scan still does.
-        started = time.thread_time()
-        blocks = build_prompt_blocks(text)
-        elapsed = time.thread_time() - started
+        def reject(text: str) -> None:
+            assert build_prompt_blocks(text) == [{"type": "text", "text": text}]
 
-        assert blocks == [{"type": "text", "text": text}]
-        assert elapsed < 5.0, f"image-path scan took {elapsed:.3f}s"
+        assert_rejected_without_backtracking(reject, lambda n: (" /a" * n) + ".png~")
 
     def test_a_path_component_after_an_image_suffix_belongs_to_the_longer_path(self, tmp_path):
         _png(tmp_path, "a.png")

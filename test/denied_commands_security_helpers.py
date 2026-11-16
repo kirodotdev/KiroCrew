@@ -181,3 +181,71 @@ def _linear_work(work: "list[int]") -> bool:
     """
     small, middle, large = work
     return 0 < (middle - small) and (large - middle) * 20 <= (middle - small) * 21
+
+
+def _assert_scan_is_linear(
+    build: Callable[[int], str],
+    sizes: "tuple[int, int, int]",
+    *,
+    denied: bool,
+    denied_regexes: "list[str] | None" = None,
+) -> None:
+    """``is_denied(build(n))`` cannot stall the gate, asserted on counts, never a clock.
+
+    A seconds budget read the runner, not the code: coverage's tracer multiplies the
+    CPU of every traced line, so the same scan reads several times slower on an
+    instrumented shard. The two costs that could stall the gate are asserted apart,
+    since the walk is Python and the matching is the regex engine:
+
+      1. THE ENGINE -- before any hostile input runs, every pattern a matcher hands
+         the engine over the full command is free of both blow-ups: no exponential
+         aws flag run (it was rewritten) and no top-level ``.*`` gap (it was split
+         into fragments). Asserted first, so a regression fails here instead of
+         never returning from the input below;
+      2. THE WALK -- the interpreter instructions the call executes
+         (``_interpreter_work``) grow linearly over three equally spaced sizes. That
+         sees cost added anywhere in Python, inside or outside the matcher.
+
+    The verdict is asserted at every size: ``denied`` when the input carries a
+    needle, otherwise allowed, so the whole catalog was walked rather than cut short.
+    """
+    from kiro_crew.security import (
+        _DANGEROUS_AWS_FLAG_RUN,
+        _GIT_PUBLISH_RULE_PATTERNS,
+        _deny_matcher,
+        _split_deny_frags,
+    )
+
+    def verdict(command: str) -> "str | None":
+        return is_denied(command, denied_regexes=denied_regexes)
+
+    # The patterns this call hands the matchers: the built-ins, less the git-publish
+    # ones ``is_denied`` decides in Python, plus any user regex.
+    patterns = [
+        *(r.pattern for r in BUILTIN_DENIED_RULES if r.pattern not in _GIT_PUBLISH_RULE_PATTERNS),
+        *(denied_regexes or []),
+    ]
+    full_input = 0
+    for pattern in patterns:
+        matcher = _deny_matcher(pattern)
+        if matcher._disabled or matcher._bounded:
+            continue  # never run, or run only over a capped window
+        full_input += 1
+        for regex in matcher._frag_res:
+            assert _DANGEROUS_AWS_FLAG_RUN not in regex.pattern, pattern
+            assert _split_deny_frags(regex.pattern) == [regex.pattern], pattern
+    assert full_input, "no matcher runs over the full command -- this checks nothing"
+    # A benign command walks every rule, so first-call work is spent before
+    # anything is measured.
+    assert verdict("git status") is None
+
+    def work_of(n: int) -> int:
+        command = build(n)
+        verdicts: "list[str | None]" = []
+        work = _interpreter_work(lambda: verdicts.append(verdict(command)))
+        assert (verdicts[0] is not None) is denied, f"{verdicts[0]!r} at size {n}"
+        return work
+
+    verdict(build(sizes[0] // 2))
+    work = [work_of(n) for n in sizes]
+    assert _linear_work(work), f"{work} instructions at sizes {sizes}"

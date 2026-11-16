@@ -20,6 +20,7 @@ import pytest
 from pdf_test_helpers import flate_bomb_pdf, text_pdf
 
 from kiro_crew import pdf_extract, pdf_extract_child, sandbox
+from kiro_crew.testing.clock import ManualClock
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX rlimits")
 
@@ -145,17 +146,52 @@ class TestCallerBudgets:
         assert outcome == pdf_extract.PdfExtraction((), True, "timeout", 0)
 
     def test_a_child_past_the_deadline_is_killed_and_reported(self, monkeypatch):
+        # Asserted as what the call does to the child: it waits on it only for the
+        # time left to the deadline, then kills and reaps it while it would still
+        # sleep, and reports the timeout.
         monkeypatch.setattr(
             pdf_extract,
             "_child_argv",
             lambda *_a: [sys.executable, "-c", "import time; time.sleep(30)"],
         )
-        started = time.monotonic()
-        outcome = pdf_extract.extract_pdf_segments(
-            text_pdf("x"), max_chars=10, deadline=time.monotonic() + 0.5
-        )
+        events: list[tuple[str, float | None]] = []
+        real_popen = pdf_extract.popen_limited
+
+        def recording_popen(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            real_communicate, real_kill = proc.communicate, proc.kill
+
+            def communicate(input=None, timeout=None):
+                events.append(("communicate", timeout))
+                if timeout is None:
+                    # An unbounded wait here outlives the child's 30 s sleep; refuse it.
+                    real_kill()
+                    real_communicate()
+                    raise AssertionError("the caller waited on the child unbounded")
+                return real_communicate(input, timeout)
+
+            def kill():
+                events.append(("kill", None))
+                real_kill()
+
+            proc.communicate, proc.kill = communicate, kill
+            return proc
+
+        monkeypatch.setattr(pdf_extract, "popen_limited", recording_popen)
+        pdf = text_pdf("x")
+        # The deadline is read off a frozen clock on `pdf_extract`, so however long
+        # this host takes to reach the spawn, the call still has 0.5 s left and the
+        # child is always the one that runs out of time.
+        clock = ManualClock()
+        clock.install(monkeypatch, pdf_extract)
+        deadline = clock.monotonic() + 0.5
+        outcome = pdf_extract.extract_pdf_segments(pdf, max_chars=10, deadline=deadline)
         assert outcome == pdf_extract.PdfExtraction((), True, "timeout", 0)
-        assert time.monotonic() - started < 5
+        # The first wait is the time left to the deadline, then the kill, then a
+        # bounded reap.
+        assert [name for name, _ in events] == ["communicate", "kill", "communicate"], events
+        assert events[0][1] == pytest.approx(0.5), events
+        assert events[2][1] == pdf_extract._KILL_WAIT_SECS, events
 
     def test_non_pdf_bytes_are_refused_before_a_spawn(self, monkeypatch):
         def refuse(*_a, **_k):

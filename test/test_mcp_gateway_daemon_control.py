@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import dataclasses
 import json
 import socket
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -24,6 +26,7 @@ import pytest
 from kiro_crew import cli_doctor, cli_server, platform_compat
 from kiro_crew.code_fingerprint import code_fingerprint
 from kiro_crew.mcp_gateway import daemon_control as dc
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 _POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="AF_UNIX listener")
 
@@ -155,12 +158,78 @@ class TestThePingIsARealRoundTrip:
     def test_a_daemon_that_accepts_but_never_answers_is_bounded(
         self, short_sock_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The deadline is the client's: every step of the round trip, the read the
+        daemon never answers included, is awaited under the client's own timeout.
+
+        The client's 0.2 s is recorded for every phase but enforced only on the
+        silent read. Connect, drain and close get a lost-run wait instead, so a
+        slow host that would time out connecting still reaches the read; a phase
+        awaited with no deadline is still missing from the record."""
         sock = short_sock_dir / "gw.sock"
         monkeypatch.setattr(dc, "_PING_TIMEOUT_SECS", 0.2)
-        started = time.monotonic()
+        deadlines = _ClientDeadlines(monkeypatch, lost_run=("connect", "drain", "wait_closed"))
         with _daemon_on(sock, None):
             assert dc.describe_daemon(sock) is None
-        assert time.monotonic() - started < 5.0, "the deadline is the client's"
+        assert deadlines.waits == [
+            (phase, 0.2) for phase in ("connect", "drain", "readuntil", "wait_closed")
+        ], "the deadline is the client's"
+
+
+class _ClientDeadlines:
+    """Every ``asyncio.wait_for`` the ping client makes, as ``(phase, timeout)``.
+
+    Installed as ``daemon_control``'s own ``asyncio``, so only the client's waits
+    are seen. The phase is the awaited coroutine's name (``connect``, ``drain``,
+    ``readuntil``, ``wait_closed``). While one runs, :func:`_require_deadline`
+    passes; a stall the client awaits with no deadline of its own fails by name
+    at once instead of hanging the test.
+
+    A phase named in ``lost_run`` is still recorded with the client's timeout but
+    awaited under ``FALLBACK_TIMEOUT_SECS``, for a real transport whose short
+    deadline would otherwise end the round trip before the phase under test.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, *, lost_run: tuple[str, ...] = ()) -> None:
+        self.waits: list[tuple[str, float]] = []
+        real_wait_for = asyncio.wait_for
+
+        async def wait_for(aw, timeout):
+            name = getattr(aw, "__qualname__", type(aw).__name__)
+            phase = name.rsplit(".", 1)[-1]
+            self.waits.append((phase, timeout))
+            previous = _UNDER_CLIENT_DEADLINE.get()
+            _UNDER_CLIENT_DEADLINE.set(True)
+            try:
+                if phase in lost_run:
+                    return await real_wait_for(aw, FALLBACK_TIMEOUT_SECS)
+                return await real_wait_for(aw, timeout)
+            finally:
+                _UNDER_CLIENT_DEADLINE.set(previous)
+
+        proxy = types.ModuleType("asyncio")
+        proxy.__dict__.update(vars(asyncio))
+        proxy.wait_for = wait_for
+        proxy._records_deadlines = True
+        monkeypatch.setattr(dc, "asyncio", proxy)
+
+
+_UNDER_CLIENT_DEADLINE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_UNDER_CLIENT_DEADLINE", default=False
+)
+
+
+def _require_deadline(phase: str) -> None:
+    """Fail by name when the client awaits ``phase`` outside its own deadline.
+
+    Enforced only while :class:`_ClientDeadlines` is installed.
+    """
+    if getattr(dc.asyncio, "_records_deadlines", False) and not _UNDER_CLIENT_DEADLINE.get():
+        raise AssertionError(f"the ping client awaited {phase} with no deadline of its own")
+
+
+async def _stall(phase: str) -> None:
+    _require_deadline(phase)
+    await asyncio.sleep(3600)
 
 
 class _Writer:
@@ -181,14 +250,14 @@ class _Writer:
 
     async def drain(self) -> None:
         if self._drain_stalls:
-            await asyncio.sleep(3600)
+            await _stall("drain")
 
     def close(self) -> None:
         self.closed = True
 
     async def wait_closed(self) -> None:
         if self._close_stalls:
-            await asyncio.sleep(3600)
+            await _stall("wait_closed")
 
 
 def _double_transport(
@@ -214,7 +283,7 @@ def _double_transport(
     async def connect(path, **kw):
         holder["path"] = str(path)
         if connect_stalls:
-            await asyncio.sleep(3600)
+            await _stall("connect")
         if connect_raises is not None:
             raise connect_raises
         reader = asyncio.StreamReader()
@@ -270,9 +339,15 @@ class TestThePingContractOnEveryPlatform:
     ) -> None:
         monkeypatch.setattr(dc, "_PING_TIMEOUT_SECS", 0.05)
         _double_transport(monkeypatch, reply=json.dumps(_pong()).encode() + b"\n", **{stall: True})
-        started = time.monotonic()
+        deadlines = _ClientDeadlines(monkeypatch)
         assert dc.describe_daemon(tmp_path / "gw.sock") is None
-        assert time.monotonic() - started < 5.0, f"{stall} is not bounded"
+        # The stalled phase is the last one awaited under the budget; a stalled
+        # drain still closes the writer under it too.
+        phases = {
+            "connect_stalls": ("connect",),
+            "drain_stalls": ("connect", "drain", "wait_closed"),
+        }[stall]
+        assert deadlines.waits == [(p, 0.05) for p in phases], f"{stall} is not bounded"
 
     def test_a_reply_that_never_arrives_is_bounded(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -280,9 +355,25 @@ class TestThePingContractOnEveryPlatform:
         """Accepted, drained, then silence: the read carries its own deadline."""
         monkeypatch.setattr(dc, "_PING_TIMEOUT_SECS", 0.05)
         _double_transport(monkeypatch, reply=None, eof=False)
-        started = time.monotonic()
+        doubled_connect = dc.transport.connect
+
+        async def connect(path, **kw):
+            reader, writer = await doubled_connect(path, **kw)
+            silent_readuntil = reader.readuntil
+
+            async def readuntil(separator=b"\n"):
+                _require_deadline("readuntil")
+                return await silent_readuntil(separator)
+
+            reader.readuntil = readuntil
+            return reader, writer
+
+        monkeypatch.setattr(dc.transport, "connect", connect)
+        deadlines = _ClientDeadlines(monkeypatch)
         assert dc.describe_daemon(tmp_path / "gw.sock") is None
-        assert time.monotonic() - started < 5.0
+        assert deadlines.waits == [
+            (phase, 0.05) for phase in ("connect", "drain", "readuntil", "wait_closed")
+        ]
 
     def test_a_stalled_close_does_not_swallow_the_answer(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -293,10 +384,12 @@ class TestThePingContractOnEveryPlatform:
         _double_transport(
             monkeypatch, reply=json.dumps(_pong(pid=4321)).encode() + b"\n", close_stalls=True
         )
-        started = time.monotonic()
+        deadlines = _ClientDeadlines(monkeypatch)
         info = dc.describe_daemon(tmp_path / "gw.sock")
         assert info is not None and info.pid == 4321
-        assert time.monotonic() - started < 5.0, "the close wait is bounded"
+        assert deadlines.waits == [
+            (phase, 0.05) for phase in ("connect", "drain", "readuntil", "wait_closed")
+        ], "the close wait is bounded"
 
 
 class TestThePingRefusesWhatItCannotAttribute:

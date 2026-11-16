@@ -38,29 +38,95 @@ from kiro_crew.cron import (
 # ── Bug 1: blocking flock on the event loop ──
 
 
+class _SpinClock:
+    """The cron store's clock on the thread under test, moved only by its own sleeps.
+
+    Every other thread reads the real ``time`` module. On the test thread a sleep
+    is recorded and advances the clock instead of waiting, and a spin that sleeps
+    past ``limit`` virtual seconds is failed by name, since it is not
+    stopping at its timeout.
+    """
+
+    def __init__(self, limit: float) -> None:
+        self._thread = threading.get_ident()
+        self._limit = limit
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        if threading.get_ident() != self._thread:
+            return time.monotonic()
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        if threading.get_ident() != self._thread:
+            time.sleep(seconds)
+            return
+        self.sleeps.append(seconds)
+        self.now += seconds
+        if self.now > self._limit:
+            raise AssertionError(
+                f"the store lock spin slept {self.now:.2f}s, past its timeout: {self.sleeps}"
+            )
+
+    def __getattr__(self, name: str):
+        return getattr(time, name)
+
+
 class TestFileLockNonBlocking:
-    def test_file_lock_is_bounded_when_contended(self, tmp_path: Path) -> None:
+    def test_file_lock_is_bounded_when_contended(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A held lock must make ``_file_lock`` fail fast, not park forever.
 
         A blocking ``fcntl.flock(LOCK_EX)`` would park the event loop while another
         fd holds the lock; the non-blocking spin raises ``TimeoutError`` in time.
+        Asserted as the waits the spin takes on a clock only its own sleeps move:
+        no blocking acquire, one ``poll`` sleep between tries, and a refusal once
+        those sleeps reach the timeout, neither before it nor a poll after it.
         """
+        from kiro_crew.cron_service import store
+
+        timeout, poll = 0.3, 0.02
         svc = CronService(base_dir=tmp_path)
         svc._dir.mkdir(parents=True, exist_ok=True)
         holder = (tmp_path / ".crons.lock").open("w")
         # flock on a separate open description conflicts within one process too.
         platform_compat.acquire_lock(holder.fileno(), exclusive=True)
+        test_thread = threading.get_ident()
+        real_acquire = platform_compat.acquire_lock
+
+        def refuse_blocking_acquire(fd: int, *args, **kwargs) -> None:
+            if threading.get_ident() == test_thread:
+                raise AssertionError("the store lock asked for a blocking acquire")
+            real_acquire(fd, *args, **kwargs)
+
+        clock = _SpinClock(limit=timeout * 10)
         try:
-            start = time.monotonic()
-            with pytest.raises(TimeoutError):
-                with svc._file_lock(timeout=0.3, poll=0.02):
-                    pass  # pragma: no cover — never reached while contended
-            elapsed = time.monotonic() - start
-            # Bounded: fails near the timeout, does not park indefinitely.
-            assert 0.25 <= elapsed < 5.0
+            with monkeypatch.context() as mp:
+                mp.setattr(store, "time", clock)
+                mp.setattr(platform_compat, "acquire_lock", refuse_blocking_acquire)
+                if platform_compat.IS_POSIX:
+                    real_flock = platform_compat.fcntl.flock
+
+                    def refuse_blocking_flock(fd: int, op: int) -> None:
+                        lock_nb = platform_compat.fcntl.LOCK_NB
+                        if threading.get_ident() == test_thread and not op & lock_nb:
+                            if op != platform_compat.fcntl.LOCK_UN:
+                                raise AssertionError("the store lock took a blocking flock")
+                        real_flock(fd, op)
+
+                    mp.setattr(platform_compat.fcntl, "flock", refuse_blocking_flock)
+                with pytest.raises(TimeoutError):
+                    with svc._file_lock(timeout=timeout, poll=poll):
+                        pass  # pragma: no cover — never reached while contended
         finally:
             platform_compat.release_lock(holder.fileno())
             holder.close()
+        assert clock.sleeps, "refused without waiting: the timeout was not honoured"
+        assert set(clock.sleeps) == {poll}, clock.sleeps
+        # The deadline is a clock read plus the timeout, so allow float error.
+        assert timeout - 1e-6 <= sum(clock.sleeps) <= timeout + poll + 1e-6, clock.sleeps
 
     def test_file_lock_succeeds_once_released(self, tmp_path: Path) -> None:
         """Uncontended acquisition still works (and mutators still persist)."""

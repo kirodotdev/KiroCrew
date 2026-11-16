@@ -262,15 +262,16 @@ class TestStripImageRefs:
     def test_a_long_message_of_path_fragments_scans_in_linear_time(self):
         # Space is both a delimiter and a legal path character, so every "/" here
         # opens a path body that would walk to the suffix: the bounded body is
-        # what keeps this linear.
-        text = (" /a" * 20000) + ".png~"
+        # what keeps this linear. The cost is inside the regex engine, which no
+        # work counter can see, so the shared ramp holds this thread's CPU to its
+        # default budget, one fragment at a time and then at growing pumps, each
+        # costing at most a linear multiple of the one before.
+        from conftest import assert_rejected_without_backtracking
 
-        started = time.perf_counter()
-        out = strip_image_refs(text)
-        elapsed = time.perf_counter() - started
+        def left_alone(text: str) -> None:
+            assert strip_image_refs(text) == text
 
-        assert out == text
-        assert elapsed < 5.0, f"image-reference scan took {elapsed:.3f}s"
+        assert_rejected_without_backtracking(left_alone, lambda n: (" /a" * n) + ".png~")
 
     def test_a_path_component_after_an_image_suffix_is_stripped_whole(self, tmp_path):
         p = _dest(_png(tmp_path))

@@ -134,16 +134,17 @@ class TestFileLockCeiling:
         assert "stuck" not in message
         assert "unserialized" in message
 
-    def test_uncontended_acquire_still_succeeds(self, tmp_path: Path):
+    def test_uncontended_acquire_still_succeeds(self, tmp_path: Path, monkeypatch):
         # The ceiling must cost the common case nothing: a free lock is taken
-        # with no delay and no raise.
+        # with no delay and no raise. "No delay" is asserted as the waits the
+        # acquire takes on the lock helpers' clock: none.
+        clock = _pin_clock(monkeypatch)
         fd = os.open(tmp_path / "free.lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            started = time.monotonic()
             with platform_compat.file_lock(fd, exclusive=True, wait=True):
                 entered = True
             assert entered
-            assert time.monotonic() - started < 5
+            assert clock.sleeps == (), f"a free lock was polled for: {clock.sleeps}"
         finally:
             os.close(fd)
 
@@ -179,14 +180,17 @@ class TestFileLockCeiling:
         # Only "someone holds it" is retryable. An error about THIS fd must not
         # be swallowed into the poll loop and reported as a stuck holder -- that
         # would hide a real defect behind a five-minute wait.
+        # "Now" is asserted as the waits the acquire takes on the lock helpers'
+        # clock: none, and the error raised is the fd's own EBADF.
         monkeypatch.setattr(platform_compat, "_LOCK_TIMEOUT_SECS", 30.0)
+        clock = _pin_clock(monkeypatch)
         fd = os.open(tmp_path / "closed.lock", os.O_CREAT | os.O_RDWR, 0o600)
         os.close(fd)
-        started = time.monotonic()
         with pytest.raises(OSError) as excinfo:
             with platform_compat.file_lock(fd, exclusive=True, wait=True):
                 pass
-        assert time.monotonic() - started < 5
+        assert clock.sleeps == (), f"a bad fd was retried as contention: {clock.sleeps}"
+        assert excinfo.value.errno == errno.EBADF, excinfo.value
         assert "stuck" not in str(excinfo.value)
 
 
@@ -581,21 +585,34 @@ class TestAgentSpecLockDoesNotHangBoot:
             if proc.stdout is not None:
                 proc.stdout.close()
 
-    def test_unwritable_lock_path_fails_fast(self, tmp_path: Path):
+    def test_unwritable_lock_path_fails_fast(self, tmp_path: Path, monkeypatch):
         # An unwritable lock path is refused by ``os.open`` before any lock is
         # attempted. Pinned so a "retry until the ceiling" change cannot turn
-        # this prompt refusal into a wait.
+        # this prompt refusal into a wait: the lock path is opened once, and
+        # nothing sleeps on the lock helpers' clock.
         from kiro_crew.agent import agents_spec_lock
 
         agents_dir = tmp_path / "readonly"
         agents_dir.mkdir()
+        lock_name = str(agents_dir / ".kirocrew-agents.lock")
+        opens: list[str] = []
+        real_open = os.open
+
+        def recording_open(path, *args, **kwargs):
+            if os.fspath(path) == lock_name:
+                opens.append(lock_name)
+            return real_open(path, *args, **kwargs)
+
         os.chmod(agents_dir, 0o500)
         try:
-            started = time.monotonic()
-            with pytest.raises(OSError) as excinfo:
-                with agents_spec_lock(agents_dir):
-                    pytest.fail("acquired a lock under an unwritable directory")
-            assert time.monotonic() - started < 5
+            with monkeypatch.context() as mp:
+                clock = _pin_clock(mp)
+                mp.setattr(os, "open", recording_open)
+                with pytest.raises(OSError) as excinfo:
+                    with agents_spec_lock(agents_dir):
+                        pytest.fail("acquired a lock under an unwritable directory")
+            assert opens == [lock_name], f"the lock path was opened {len(opens)} times"
+            assert clock.sleeps == (), f"the refusal waited: {clock.sleeps}"
             # An unwritable path is not a stuck holder and must not claim to be.
             assert "stuck" not in str(excinfo.value)
         finally:

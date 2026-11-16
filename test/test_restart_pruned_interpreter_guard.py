@@ -33,7 +33,6 @@ import logging
 import os
 import shutil
 import threading
-import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -305,39 +304,47 @@ class TestTheseChecksDoNotBlockTheEventLoop:
         saturated pool leaves the await unresumed, and then the exit never happens:
         the loop is free and the process still answers nothing on a port it holds.
 
-        BOTH flushes wedge here, so only a deadline can end either wait -- but they
-        answer to DIFFERENT ceilings, which is why the elapsed bound is loose. The
-        event log's is this module's, patched small below. The gateway.log tail is
-        drained by ``cli.drain_log_queue_before_hard_exit``, which carries its own,
-        so a few seconds of the measured time are that contract holding rather than
-        this one.
+        BOTH flushes wedge here, so only a deadline can end either wait -- they
+        answer to DIFFERENT ceilings. The event log's is this module's, patched
+        small below. The gateway.log tail is drained by
+        ``cli.drain_log_queue_before_hard_exit``, which carries its own. Asserted as
+        an ordering: the exit is reached while every flush that started is still
+        wedged, so no flush returning is what let it through.
         """
         from kiro_crew import cli as kiro_cli
         from kiro_crew import eventlog_hooks
 
         started = threading.Event()
         released = threading.Event()
+        returned: list[str] = []
 
         def wedged_flush(*_args, **_kwargs):
             started.set()
-            released.wait(10)
+            # Lost-run bound only: a flush the exit waited for returns here, and
+            # is named by the assertion below.
+            released.wait(30)
+            returned.append(threading.current_thread().name)
 
         monkeypatch.setattr(eventlog_hooks, "drain_for_shutdown", wedged_flush)
         monkeypatch.setattr(kiro_cli, "_stop_log_queue_listener", wedged_flush)
         monkeypatch.setattr(platform_compat, "_EXIT_FLUSH_DEADLINE_SECS", 0.05)
         codes = _capture_exit(monkeypatch)
 
-        began = time.monotonic()
         try:
             with pytest.raises(_Exited):
                 await platform_compat.exit_after_failed_restart_exec("/opt/kirocrew/bin/python3")
+            # Read before the release: a flush returns only on it or on its own
+            # 30 s bound, so anything here returned before the exit.
+            returned_before_exit = list(returned)
         finally:
             released.set()
-        elapsed = time.monotonic() - began
 
         assert codes == [1]
         assert started.is_set(), "the flush never ran, so nothing was bounded"
-        assert elapsed < 5.0, elapsed
+        assert returned_before_exit == [], (
+            f"the exit waited for a wedged flush to return ({returned_before_exit}) "
+            "instead of ending the wait at its deadline"
+        )
 
     @pytest.mark.asyncio
     async def test_the_dashboard_probe_does_not_run_on_the_event_loop(self, monkeypatch, tmp_path):
