@@ -40,6 +40,9 @@ from kiro_crew.testing.wait import finished
 FAKE_KEY = github_classic()
 _METHOD_RE = re.compile(r"\.(\w+)\((.*)\)$", re.DOTALL)
 
+#: A caller no ``network.egress`` rule applies to.
+_NO_RULE: Callable[[object], str | None] = lambda _url: None
+
 
 def census(**over: Any) -> dict[str, Any]:
     """One ``glance`` answer: a page with a button, a field and nothing else."""
@@ -791,7 +794,7 @@ def test_the_gateway_reads_the_setting_for_each_op(
     cfg.browser.report_changes = flag
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda _cls: cfg))
     monkeypatch.setattr(browser_ops, "config_dir", lambda: tmp_path)
-    assert browser_ops.build_context("s", MagicMock(), MagicMock()).report_changes is flag
+    assert browser_ops.build_context("s", MagicMock(), MagicMock(), egress=_NO_RULE).report_changes is flag
 
 
 def test_an_unreadable_setting_leaves_the_report_off(
@@ -802,7 +805,7 @@ def test_an_unreadable_setting_leaves_the_report_off(
 
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(broken))
     monkeypatch.setattr(browser_ops, "config_dir", lambda: tmp_path)
-    assert browser_ops.build_context("s", MagicMock(), MagicMock()).report_changes is False
+    assert browser_ops.build_context("s", MagicMock(), MagicMock(), egress=_NO_RULE).report_changes is False
 
 
 def test_the_tool_text_carries_the_report_and_redacts_it_again() -> None:

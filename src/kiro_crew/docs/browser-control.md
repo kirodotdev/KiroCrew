@@ -136,6 +136,45 @@ The gate does not resolve DNS names. A hostname that later resolves to a private
 address can therefore pass this check, so a successful navigation is not proof
 that the destination is public.
 
+## Limiting the agent to some sites
+
+The agent's browser obeys the same `network.egress` host rule in the governance
+policy as `web_fetch`. Set the rule in `~/.kiro/crew/security_policy.json` (or
+the centrally distributed policy), check it, and restart Kiro Crew:
+
+```json
+{
+  "version": 1,
+  "boot": { "fail_closed": true },
+  "network": { "egress": { "mode": "deny", "deny": ["*.example.com"] } }
+}
+```
+
+```
+kirocrew policy validate
+kirocrew policy show
+```
+
+`"mode": "allow"` with an `allow` list opens only the hosts it names; `"mode":
+"deny"` opens every host except those it names. Entries are shell-style wildcards
+on the host name, case-insensitive: `*.example.com` covers `docs.example.com` but
+not `example.com`, so list both when both are meant. A per-agent or per-surface
+governance profile can narrow the rule further; nothing the agent does can widen
+it, because the policy file is read-only to the agent.
+
+The rule is checked on the address the agent asks for and again on every page the
+browser actually lands on: after a redirect, after a click or key that moves the
+page, and in a new tab, popup or frame before the agent reads it. A refused page is
+left for `about:blank`, and the agent is told which part of the rule refused it,
+never the address. An IP address is matched in its usual dotted form however the
+URL spells it (`0x01010101`, `16843009` or `[::ffff:1.1.1.1]` all match
+`1.1.1.1`). The browser follows `network.egress` only once a policy or
+profile sets it. Without a rule it opens what it did before, on an LTS build too,
+where the built-in baseline that answers an unnamed `network.egress` for
+`web_fetch` is not a rule the browser follows. When only a profile sets the rule,
+the profile's rule is the whole rule: a profile that denies one host leaves every
+other host open. A profile edited while an action runs applies from the next one.
+
 ## The live view
 
 Frames stream only to your own dashboard session, over the connection it already

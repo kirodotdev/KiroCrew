@@ -1257,6 +1257,7 @@ def governance_permits(
     app: str = "",
     log_warning: bool = True,
     fail_closed: bool = False,
+    baseline: bool = True,
 ) -> "object":
     """One-call chokepoint helper: is *item* permitted in *scope* right now?
 
@@ -1294,6 +1295,10 @@ def governance_permits(
     because the degrade is caught HERE — a caller that wraps this in its own
     ``except`` to fail closed can never see the error (it is swallowed), so the
     DENY must be produced at the point the exception is actually caught.
+
+    ``baseline=False`` asks the profile layer alone where the policy does not name
+    *scope* (``governance.resolve``), for a chokepoint that sets no rule from the
+    LTS built-in baseline.
     """
     from kiro_crew.platform.context import (
         PlatformCompositionError,
@@ -1306,7 +1311,7 @@ def governance_permits(
         profile = resolve_active_scope(session_key, agent=agent, app=app)
         if ceiling is None and profile is None:
             return Decision(True, "ungoverned", rule="default")
-        return resolve(ceiling, profile, scope, item)
+        return resolve(ceiling, profile, scope, item, baseline=baseline)
     except PlatformCompositionError:
         raise
     except Exception:
@@ -1337,6 +1342,7 @@ def vet_and_audit(
     app: str = "",
     fail_closed: bool = False,
     log_warning: bool = True,
+    baseline: bool = True,
 ) -> "object":
     """Evaluate one permission decision AND write its SEL audit record.
 
@@ -1364,6 +1370,7 @@ def vet_and_audit(
         app=app,
         log_warning=log_warning,
         fail_closed=fail_closed,
+        baseline=baseline,
     )
     outcome = "allowed" if getattr(decision, "permitted", False) else "denied"
     try:

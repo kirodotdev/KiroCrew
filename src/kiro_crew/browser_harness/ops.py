@@ -213,6 +213,12 @@ class OpContext:
     #: redirect), not only to the one the agent asked for. The route wires the same
     #: predicate the shim applies before the op (``browser_harness.url_gate``).
     url_allowed: Callable[[str], bool] = lambda _url: True
+    #: Which part of the governance ``network.egress`` rule refuses a URL that
+    #: ``url_allowed`` refused, so the refusal names the rule; ``None`` when it did not.
+    egress_rule: Callable[[str], str | None] = lambda _url: None
+    #: Whether a ``network.egress`` rule applies to the caller: then input whose
+    #: focused frame cannot be read is not sent (``governance.judges_a_rule``).
+    egress_rule_set: bool = False
     screenshot_dir: Path = field(default_factory=lambda: Path(os.getcwd()))
     sleep: _SleepFn = _no_sleep
     now: Callable[[], float] = time.monotonic
@@ -508,10 +514,48 @@ async def _page(ctx: OpContext, method: str, *args: Any) -> Any:
     value = await ctx.helper(helper, expression=f"{WALKER_SOURCE}.{method}({rendered})")
     if method == "activeField" and isinstance(value, dict) and value.get("frame"):
         frames = ctx.frames()
-        inner = await frames.focused() if frames is not None else None
+        inner = (
+            await frames.focused(lambda url: _frame_url_allowed(ctx, url))
+            if frames is not None
+            else None
+        )
+        if isinstance(inner, dict) and "refused_url" in inner:
+            # Focus is in a frame on a refused host: nothing of it is read or typed into.
+            refused = await _refuse_committed_url(ctx, str(inner["refused_url"]))
+            if refused is not None:
+                raise _PageRefused(refused)
+            inner = None
         # Focus is inside a cross-origin frame: judge the field there, or nothing.
         value = inner if inner is not None else {**value, "unreadable": True}
     return value
+
+
+async def _refuse_focused_frame(ctx: OpContext) -> dict[str, Any] | None:
+    """Judge every frame on the chain holding focus before input is sent, every key included.
+
+    The helper reads the chain from the top document down through each nested
+    frame (``focus_chain``), so no live view is needed. A chain it cannot read
+    in full sends nothing only when a ``network.egress`` rule applies to the
+    caller; with none, the input goes as before.
+    """
+    try:
+        read = await ctx.helper("focus_chain")
+    except Exception:  # noqa: BLE001 - unread: decided below like an incomplete chain
+        logger.debug("input: the focus chain could not be read", exc_info=True)
+        read = None
+    chain = read.get("chain") if isinstance(read, dict) else None
+    urls = [u for u in chain if isinstance(u, str)] if isinstance(chain, list) else []
+    for url in urls:
+        if not _frame_url_allowed(ctx, url):
+            return await _refuse_committed_url(ctx, url)
+    whole = isinstance(chain, list) and len(urls) == len(chain) and read.get("complete") is True
+    if whole or not ctx.egress_rule_set:
+        return None
+    return refusal(
+        "focus_unreadable",
+        "the input was not sent: the frame that holds focus could not be read, and a "
+        "governance network.egress rule applies to this session",
+    )
 
 
 async def _in_control(ctx: OpContext) -> bool:
@@ -687,6 +731,14 @@ async def _refuse_committed_url(ctx: OpContext, url: str) -> dict[str, Any] | No
         await ctx.helper("goto", url="about:blank")
     except Exception:  # noqa: BLE001 - the refusal stands even if the blank page fails
         logger.debug("navigate: could not leave the refused page", exc_info=True)
+    rule = ctx.egress_rule(url)
+    if rule is not None:
+        # The landed address is the page's choice; the text names only the rule.
+        return refusal(
+            "redirect_refused",
+            f"the page landed on an address the governance policy refuses: {rule}; "
+            "the tab was moved to about:blank",
+        )
     return refusal(
         "redirect_refused",
         f"the page redirected to {url[:120]}, which is not a public http(s) URL or a "
@@ -1583,6 +1635,8 @@ async def run_op(op: str, args: dict[str, Any], ctx: OpContext) -> dict[str, Any
             "wait_for_load",
         }:
             refused = await _refuse_current_url(raw_ctx)
+            if refused is None and name in ("type_text", "press_key"):
+                refused = await _refuse_focused_frame(raw_ctx)
             if refused is not None:
                 raise _PageRefused(refused)
         return await raw_ctx.helper(name, **kwargs)

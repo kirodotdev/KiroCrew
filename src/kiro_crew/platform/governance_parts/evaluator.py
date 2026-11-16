@@ -122,6 +122,9 @@ def _policy_level(
     (``baseline=False``) get no baseline.
     """
     control = ceiling.get(scope) if ceiling is not None else None
+    if not baseline and _SCOPE_ALIASES.get(scope, scope) in getattr(ceiling, "baseline_scopes", ()):
+        # Boot composition already folded the baseline into ``controls``.
+        return None, False
     if not baseline or isinstance(ceiling, Profile) or not edition.is_lts():
         return control, False
     # A policy's ``folders.*`` rule is stored under its ``filesystem.*`` scope at
@@ -137,6 +140,16 @@ def _policy_level(
     if canonical in BASELINE_UNGATED:
         return None, False
     return baseline_controls().get(canonical, _DENY_UNLISTED), True
+
+
+def policy_names_scope(ceiling: Optional[GovernanceCeiling], scope: str) -> bool:
+    """Whether a policy document itself names *scope*, not only the LTS baseline.
+
+    False for a scope the baseline answers, whether :func:`_policy_level` fills it
+    at query time or ``compose_tier_ladder`` folded it into ``controls`` at boot.
+    For a chokepoint that sets no rule of its own from the baseline.
+    """
+    return _policy_level(ceiling, scope, baseline=False)[0] is not None
 
 
 def policy_level_control(ceiling: Optional[GovernanceCeiling], scope: str) -> Optional[object]:

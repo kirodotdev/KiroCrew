@@ -221,7 +221,7 @@ def test_build_context_binds_the_live_hub_and_relay() -> None:
     hub.turn_started("held", "t1")
     asyncio.run(hub.claim("held"))
     sup = _Supervisor()
-    ctx = mod.build_context("held", sup, hub)
+    ctx = mod.build_context("held", sup, hub, egress=lambda _url: None)
     assert ctx.in_control() is True
     ctx.step("Open x")
     assert [st.label for st in hub.get("held").steps] == ["Open x"]
@@ -231,7 +231,7 @@ def test_build_context_binds_the_live_hub_and_relay() -> None:
     hub.bind_target("held", "T-gone")
     assert ctx.agent_targets() == ["T1"]
     assert ctx.helper == sup.call
-    assert mod.build_context("free", sup, hub).in_control() is False
+    assert mod.build_context("free", sup, hub, egress=lambda _url: None).in_control() is False
 
 
 def test_live_session_key_is_the_slot_key_the_card_uses() -> None:

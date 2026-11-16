@@ -102,6 +102,7 @@ HELPERS: Mapping[str, tuple[str, ...]] = {
     "js_isolated": ("expression",),
     "frame_owner_count": (),
     "closed_secret_count": (),
+    "focus_chain": (),
     "page_clock": ("state",),
 }
 

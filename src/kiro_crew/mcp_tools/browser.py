@@ -141,6 +141,26 @@ def _url_allowed(url: Any) -> bool:
     )
 
 
+def _egress_refusal(url: Any, session_key: str) -> str | None:
+    """The refusal for a URL whose host the governance ``network.egress`` rule refuses.
+
+    Audited, and fail-OPEN on an evaluation error like this shim's
+    ``capabilities.browse`` check (``mcp_core._vet_browse_governance``); the gateway
+    asks the rule again, fail-closed, on every page a navigation lands on.
+    """
+    from kiro_crew.browser_harness.governance import egress_rule
+
+    rule = egress_rule(url, session_key, app=mcp_core._governance_app(), fail_closed=False)
+    if rule is None:
+        return None
+    return (
+        f"Error: the browser tool did not open this address: {rule}. The user's "
+        "governance policy decides which sites the agent may reach, and the agent "
+        "cannot change it. Do not reach the site another way; if the user wants it "
+        "opened, ask them to change the policy."
+    )
+
+
 def _gated_url(op: str, op_args: dict[str, Any]) -> Any:
     """The URL an op would open, or None when it opens none.
 
@@ -495,6 +515,9 @@ def browser(name: str, args: dict[str, Any]) -> "str | DeferredTool":
     gated = _gated_url(op, op_args)
     if gated is not None and not _url_allowed(gated):
         return _URL_GATE_TEXT
+    egress_refused = _egress_refusal(gated, session_key) if gated is not None else None
+    if egress_refused is not None:
+        return egress_refused
 
     # The caller's session key, resolved LENIENTLY like every other X-Session-Key
     # tool (artifacts, sessions, skills): on a default install the strict

@@ -609,7 +609,7 @@ class FakeFrames:
             return {"ok": True, "focused": True}
         return None
 
-    async def focused(self) -> dict[str, Any] | None:
+    async def focused(self, _url_allowed: Any = None) -> dict[str, Any] | None:
         return self._focused
 
     async def count(self, _method: str) -> int:
@@ -899,3 +899,42 @@ def test_frame_tags_stop_at_the_ref_grammar_and_are_never_reused(monkeypatch) ->
     assert [reg.tag_of(f"F{i}") for i in range(5)] == [1, 2, 3, 0, 0]
     assert reg.tag_of("F1") == 2 and reg.frame_of(3) == "F2"
     assert fr.FRAME_REF_RE.match(f"f{9999}e1") and not fr.FRAME_REF_RE.match("f10000e1")
+
+
+# ── the caller's egress profile ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("args", "denied"),
+    [
+        # The field ask binds to the sign-in frame.
+        (CREDS, "idmsa.apple.com"),
+        # The sign-in takeover binds to the origin its walk finds; this fake's
+        # finder names no login, so that is the top page.
+        ({"kind": "credentials", "reason": "Sign in"}, "secure9.store.apple.com"),
+    ],
+    ids=["frame-target", "takeover"],
+)
+async def test_an_ask_refuses_a_sign_in_frame_the_callers_profile_denies(
+    monkeypatch: pytest.MonkeyPatch, args: dict[str, Any], denied: str
+) -> None:
+    """The ask's origin is judged with the runtime session key the op route vetted,
+    so a profile bound to that caller holds; another caller's ask still binds."""
+    from kiro_crew.platform import governance_profiles as gp
+    from kiro_crew.platform.governance import parse_profile
+
+    narrow = parse_profile(
+        {"name": "narrow", "network": {"egress": {"mode": "deny", "deny": [denied]}}}
+    )
+    caller = "dashboard:c-9"
+    monkeypatch.setattr(
+        gp, "resolve_active_scope", lambda key, **_kw: narrow if key == caller else None
+    )
+    page = _apple()
+    hub, _rec = await _live(page)
+    _registry(hub, page)
+    out = await browser_ask.run_ask(hub, KEY, dict(args), caller_key=caller)
+    assert out == {"ok": True, "outcome": qa.REFUSED, "code": "frame_unverified"}
+    assert hub.get(KEY).ask is None  # type: ignore[union-attr]
+    out = await browser_ask.run_ask(hub, KEY, dict(args), caller_key="dashboard:c-other")
+    assert out["ok"] is True and "ask_id" in out, out

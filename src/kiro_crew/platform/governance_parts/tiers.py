@@ -215,6 +215,9 @@ def _intersect_ceilings(
       kept; where both set one, the authority's source stands and the higher floor
       wins.  Keeping "the authority's" here would discard a pure tightening and let
       code install from a source the local operator forbade.
+    * **Provenance that folds** -- ``baseline_scopes``: a scope the subordinate
+      names leaves the set, because its control is now that tier's rule narrowing
+      the baseline. It records where a control came from and permits nothing.
     * **Absence means "no choice expressed"** -- ``distribution`` pins.  Nothing above
       chose, so a lower tier supplying one redirects nothing; ``compose_tier_ladder``
       lets the first declared value through.
@@ -265,6 +268,8 @@ def _intersect_ceilings(
         authority,
         boot=boot,
         controls=merged,
+        # A scope a lower tier names is that tier's rule now, narrowing the baseline.
+        baseline_scopes=authority.baseline_scopes - subordinate.controls.keys(),
         updates=_intersect_update_pins(authority.updates, subordinate.updates),
         yolo_max_seconds=_lower_cap(authority.yolo_max_seconds, subordinate.yolo_max_seconds),
     )
@@ -511,17 +516,18 @@ def _with_baseline_controls(authority: GovernanceCeiling) -> GovernanceCeiling:
         # No central document above it: the authority is itself a LOCAL tier, so
         # its named scopes may only narrow the baseline, never replace it.
         merged: Dict[str, object] = dict(authority.controls)
+        supplied = frozenset(scope for scope in baseline if merged.get(scope) is None)
         for scope, control in baseline.items():
             named = merged.get(scope)
             merged[scope] = control if named is None else _compose_controls(control, named)
-        return replace(authority, controls=merged)
+        return replace(authority, controls=merged, baseline_scopes=supplied)
     # A named scope keeps the baseline of any inner list it leaves out
     # (``BASELINE_INNER_LISTS``), so a local tier cannot supply that list either.
     named = {scope: with_inner_baseline(scope, c) for scope, c in authority.controls.items()}
     missing = {scope: control for scope, control in baseline.items() if scope not in named}
     if not missing and all(named[s] is authority.controls[s] for s in named):
         return authority
-    return replace(authority, controls={**named, **missing})
+    return replace(authority, controls={**named, **missing}, baseline_scopes=frozenset(missing))
 
 
 def _with_lts_value_floors(authority: GovernanceCeiling) -> GovernanceCeiling:
