@@ -5526,7 +5526,10 @@
         "agents_other": "{{count}} Agenten",
         "events_one": "{{count}} Ereignis",
         "events_other": "{{count}} Ereignisse",
-        "view_label": "Ansicht"
+        "view_label": "Ansicht",
+        "agents_and_events": "{{agents}} · {{events}}",
+        "cancel_run": "{{name}} abbrechen",
+        "cancelling_run": "{{name}} wird abgebrochen"
       }
     },
     "awsControl": {

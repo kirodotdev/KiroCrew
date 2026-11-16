@@ -5430,7 +5430,7 @@
       },
       "workflowsRuns": {
         "budget": "बजट",
-        "cancel": "रद्द करें",
+        "cancel": "रद्द करो",
         "cancelling": "रद्द किया जा रहा है…",
         "could_not_load_runs": "रन लोड नहीं हो सके:",
         "no_background_runs_yet_runs_started_in_the_backg": "अभी कोई बैकग्राउंड रन नहीं। बैकग्राउंड में शुरू किए गए रन यहाँ दिखते हैं।",
@@ -5443,7 +5443,10 @@
         "agents_other": "{{count}} एजेंट",
         "events_one": "{{count}} इवेंट",
         "events_other": "{{count}} इवेंट",
-        "view_label": "दृश्य"
+        "view_label": "दृश्य",
+        "agents_and_events": "{{agents}} · {{events}}",
+        "cancel_run": "{{name}} रद्द करो",
+        "cancelling_run": "{{name}} रद्द किया जा रहा है"
       }
     },
     "commandBar": {
