@@ -60,6 +60,7 @@ from kiro_crew.artifacts import ArtifactNotFoundError, ArtifactValidationError, 
 from kiro_crew.dashboard.origin import frame_ancestors_value, is_direct_local_request
 from kiro_crew.deploy.handlers import WebAppRootError, resolve_webapp_public_dir
 from kiro_crew.hooks import safe_read_file_bytes_nolink
+from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -162,7 +163,9 @@ async def _remote_framable(url: str) -> bool:
     try:
         timeout = aiohttp.ClientTimeout(total=3)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.head(url, allow_redirects=False) as resp:
+            async with session.head(
+                url, allow_redirects=False, proxy=await asyncio.to_thread(resolve_proxy, url)
+            ) as resp:
                 if "X-Frame-Options" not in resp.headers:
                     csp = resp.headers.get("Content-Security-Policy", "")
                     fa = ""
