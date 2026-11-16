@@ -129,7 +129,7 @@ This unsigned request works only with a bearer-only source (`require_signature: 
 | `sessionKey` | string | `hook:default:<unix-ts>-<random hex>` | Must start with `hook:`. The part after the prefix is the **hook id** used to look up registered context. |
 | `name` | string | `Webhook` | Human label shown in the notification title. |
 | `agent` | string | source destination | Optional compatibility field. For a mapped source it must be omitted or exactly match the operator-owned destination; a conflict is `409 agent_conflict`. Unmapped historical and legacy credentials retain caller/default routing. |
-| `deliver` | boolean or truthy/falsy value | `true` | When false, the turn runs and is logged but nothing is pushed to you. Other values use normal Python truthiness. |
+| `deliver` | boolean or truthy/falsy value | `true` | When false, the turn runs and is logged but nothing is pushed to you. A string `true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off` (any case, surrounding space ignored) reads as that bool; any other value uses Python truthiness. |
 | `timeoutSeconds` | integer-coercible value | `599` | Converted with `int()`, then clamped to the range 60–3593. Values outside it are silently clamped, not rejected; a value `int()` rejects is a 400. |
 | `wait` | integer-coercible value | none | Seconds to hold the request for the answer, at most 300. Honoured only while `hooks.return_answer` is on; see [Waiting for the answer](#waiting-for-the-answer). Never a 400: a value that cannot be honoured is dropped and named in `warning`. |
 
