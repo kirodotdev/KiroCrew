@@ -83,6 +83,7 @@ async def new_conversation(self: AcpClient) -> None:
             raise AcpError("the session's settings file was replaced; starting it afresh")
         await self._prepare_claude_side_read_denies()
         await self._prepare_session_mcp()
+        await self._prepare_claude_held_asks()
         req_id = await self._send_request(METHOD_SESSION_CLOSE, {"sessionId": old_sid})
         await self._wait_for_response(req_id, timeout=_READ_TIMEOUT, method=METHOD_SESSION_CLOSE)
         if old_bridges:

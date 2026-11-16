@@ -684,6 +684,25 @@ async def _resolve_permission(
             await provider.reject_tool(event.request_id)
             return False
 
+    # A moved Bot's limit its worker could not carry exactly (``mate_held_rules``):
+    # no rung below approves a call it covers on its own; the caller's approver
+    # is asked as a person's (``held_call``), and with none the call is refused.
+    # A READ_ONLY turn has no approver, so a held read is refused there.
+    from kiro_crew import mate_held_rules
+
+    _held = (
+        await asyncio.to_thread(
+            mate_held_rules.held_for, event, session_key=session_key, agent=agent
+        )
+        if policy
+        in (
+            ToolApprovalPolicy.AUTO_APPROVE,
+            ToolApprovalPolicy.HOOK_BASED,
+            ToolApprovalPolicy.READ_ONLY,
+        )
+        else []
+    )
+
     if policy in (ToolApprovalPolicy.HOOK_BASED, ToolApprovalPolicy.READ_ONLY) and hooks:
         tool_result = await run_in_tool_gate_pool(
             hooks.on_tool_call,
@@ -720,7 +739,7 @@ async def _resolve_permission(
             await _steer_host_deny(provider, event, tool_result.reason, cause=DENY_CAUSE_POLICY)
             await provider.reject_tool(event.request_id)
             return False
-        if tool_result.action == TOOL_AUTO_APPROVE:
+        if tool_result.action == TOOL_AUTO_APPROVE and not _held:
             if policy == ToolApprovalPolicy.READ_ONLY and not tool_result.read_only:
                 # READ_ONLY honours the classifier's verdict alone, and the
                 # result says which route produced it: ``read_only`` is set only
@@ -830,9 +849,26 @@ async def _resolve_permission(
             await provider.reject_tool(event.request_id)
             return False
 
+    if _held and on_tool_approval is None:
+        _log("rejected", metadata={"reason": "bot_limit_held_headless"})
+        await _steer_host_deny(
+            provider,
+            event,
+            "this call falls under a Bot limit that could not be applied as written ("
+            + "; ".join(_held)
+            + "), so a person must approve it, and this surface has no approver",
+            cause=DENY_CAUSE_SURFACE_POLICY,
+        )
+        await provider.reject_tool(event.request_id)
+        return False
+
     # Interactive approval if callback provided
     if on_tool_approval:
-        approved = await on_tool_approval(event)
+        if _held:
+            with mate_held_rules.held_call(_held):
+                approved = await on_tool_approval(event)
+        else:
+            approved = await on_tool_approval(event)
         if not approved:
             # The person said no: no notice (kiro-cli's wording is the truth
             # here), but the audit still precedes the wire like every other deny.

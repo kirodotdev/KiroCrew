@@ -270,3 +270,54 @@ def test_the_notice_names_the_editor_labels_the_dashboard_shows():
     # The section the notice points the user at is "Abilities".
     assert labels["crewEditorNext"]["section_capabilities"] == "Abilities"
     assert labels["crewEditorNext"]["section_capabilities"] in notice.NOTICE_PROMPT
+
+
+def test_a_bot_whose_restrictions_were_put_back_is_told_once_after_its_moved_notice(
+    dispatched,
+):
+    """The moved notice was claimed at an earlier start; the policy notice is its own."""
+    slot = _thread("vega")
+    directory = members_mod.member_dir(members_mod.member_slug("vega"))
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / notice.NOTICE_CLAIMED_FILENAME).write_text('{"member": "vega"}')
+    notice.mark_policy_owed("vega", "these limits apply to its worker again: deny shell")
+
+    asyncio.run(_offer(_State(slot)))
+    asyncio.run(_offer(_State(slot)))  # a later start: a fresh gateway state
+
+    assert [key for key, _ in dispatched] == [slot.key]
+    assert dispatched[0][1].startswith(notice.WORKER_UPGRADE_PREFIX)
+    assert "deny shell" in dispatched[0][1]
+
+
+def test_a_policy_notice_follows_a_moved_notice_still_owed(dispatched):
+    """Both are owed at one start: the moved notice goes first, the correction after it."""
+    slot = _thread("lyra")
+    notice.mark_notice_owed("lyra", "these no longer apply on its worker: deny shell")
+    notice.mark_policy_owed("lyra", "these limits apply to its worker again: deny shell")
+
+    asyncio.run(_offer(_State(slot)))
+
+    assert [key for key, _ in dispatched] == [slot.key, slot.key]
+    assert "no longer apply" in dispatched[0][1]
+    assert "apply to its worker again" in dispatched[1][1]
+
+
+@pytest.mark.parametrize("held", [True, False])
+def test_a_held_limit_also_puts_one_bell_note_linking_to_the_bot(dispatched, held):
+    slot = _thread("nova")
+    notice.mark_policy_owed("nova", "some limits could not be applied as written", held=held)
+    state = _State(slot)
+    notes: list[tuple] = []
+    state.notify = lambda *a, **k: notes.append((a, k))
+
+    asyncio.run(_offer(state))
+    asyncio.run(_offer(_State(slot)))  # a later start: nothing owed again
+
+    assert [key for key, _ in dispatched] == [slot.key]
+    if held:
+        ((_args, kwargs),) = notes
+        assert kwargs["url"] == "/members?member=nova"
+        assert kwargs["i18n"] == {"id": "bot_limits_held", "params": {"name": "nova"}}
+    else:
+        assert notes == []

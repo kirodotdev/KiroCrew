@@ -9,6 +9,7 @@ approve_tool/reject_tool correctly.
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -633,6 +634,46 @@ class TestApprovalLadder:
 
         _run(p, r, approval_mode=APPROVAL_INTERACTIVE, decider=decider)
         assert p.approved == ["rq1"]
+
+    @pytest.mark.parametrize(
+        "rung",
+        [
+            {"approval_mode": APPROVAL_AUTO},
+            {"approval_mode": APPROVAL_INTERACTIVE, "tool_gate": lambda ev: "auto_approve"},
+            {"approval_mode": APPROVAL_INTERACTIVE, "auto_approve_tool": lambda ev: True},
+            {"approval_mode": APPROVAL_INTERACTIVE, "auto_approve_session": lambda: True},
+        ],
+        ids=["auto", "gate-name-grant", "auto-approve-tool", "session-trust"],
+    )
+    @pytest.mark.parametrize("held", [True, False])
+    def test_a_held_bot_limit_asks_the_decider_on_every_auto_rung(self, monkeypatch, held, rung):
+        """A call under a moved Bot's held limit is never auto-approved (``mate_held_rules``)."""
+        from kiro_crew import mate_held_rules
+        from kiro_crew.messaging import driver as driver_mod
+
+        monkeypatch.setattr(
+            mate_held_rules, "held_for", lambda *a, **k: ["deny shell"] if held else []
+        )
+        monkeypatch.setattr(
+            driver_mod.name_grant, "refusal_for_event", AsyncMock(return_value=None)
+        )
+        asked: list = []
+        seen: list = []
+
+        async def decider(event):
+            asked.append(event.request_id)
+            seen.append(mate_held_rules.call_is_held())
+            return False
+
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(self._perm_script())
+        _run(p, r, decider=decider, **rung)
+        if held:
+            # Marked held, so YOLO or an auto source in the decider cannot answer it.
+            assert asked == ["rq1"] and p.approved == [] and p.rejected == ["rq1"]
+            assert seen == [True]
+        else:
+            assert asked == [] and p.approved == ["rq1"]
 
 
 class _SteerRecordingProvider(_ScriptedProvider):

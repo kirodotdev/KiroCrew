@@ -780,6 +780,7 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
         ]
         if self.backend in ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP:
             new_params["mcpServers"] = await self._prune_unstartable_mcp(new_params["mcpServers"])
+        await self._prepare_claude_held_asks()
         # Rebuilt AFTER the array, from the same re-seed: the envelope carries
         # the setting sources the array was authorized under and the inline
         # settings naming the substitute model.

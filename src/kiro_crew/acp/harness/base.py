@@ -242,6 +242,9 @@ class ProcessSession(Protocol):
     async def _prepare_claude_side_read_denies(self) -> None:
         """Build a Side Chat session's sensitive-path deny rules off the loop, fail closed."""
 
+    async def _prepare_claude_held_asks(self) -> None:
+        """Read a Bot worker session's held-limit asks off the loop."""
+
     def _install_idle_reader(self) -> None:
         """Have the session read stdout between turns (idempotent)."""
 

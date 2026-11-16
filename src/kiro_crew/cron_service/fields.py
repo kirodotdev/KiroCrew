@@ -845,7 +845,10 @@ def auto_job_approver(fallback: Any) -> Any:
     """
 
     async def _approve(event: Any) -> bool:
-        if cron_job_auto_permitted():
+        from kiro_crew.mate_held_rules import call_is_held
+
+        # A call under a Bot limit held for a person always reaches the card.
+        if cron_job_auto_permitted() and not call_is_held():
             return True
         return bool(await fallback(event))
 

@@ -216,6 +216,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_placed_mcp_server_names": ("function", False, "9d5ab4ea1828", "client_mcp_array"),
     "_pooled_broker_stubs": ("function", False, "7eb96c2fda05", "client_mcp_array"),
     "_pooled_mcp_servers": ("function", False, "7eb96c2fda05", "client_mcp_array"),
+    "_prepare_claude_held_asks": ("function", True, "b60c5fea256e", "client_claude_session"),
     "_prepare_claude_side_read_denies": ("function", True, "b60c5fea256e", "client_claude_session"),
     "_prepare_session_mcp": ("function", True, "b60c5fea256e", "client_mcp_array"),
     "_prepare_spawn_workspace": ("function", False, "b60c5fea256e", "client_spawn_env"),

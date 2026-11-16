@@ -8281,6 +8281,8 @@
         "yesterday": "昨日"
       },
       "systemNote": {
+        "bot_limits_held_title": "Bot が一部の操作の前に確認するようになりました",
+        "bot_limits_held_body": "{{name}} に設定した制限の一部をそのまま適用できませんでした。その制限に関わる操作の前には毎回あなたに確認し、この確認はずっと続きます。確認されるたびに承認か拒否を選んでください。",
         "turn_limit_title": "会話を一時停止しました：ターン上限",
         "turn_limit_body": "{{surface}} の会話がターン上限に達したため、一時停止しました。続けるにはダッシュボードからリセットしてください。",
         "default_model_applied_title": "デフォルトモデルを適用しました",

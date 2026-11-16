@@ -302,6 +302,9 @@ class ClaudeLaunch(ProcessAdapter):
         # synchronous in-memory read, so the kiro construction path gains no
         # executor hop and no new failure mode (harness-parity H13).
         await session._prepare_session_mcp()
+        # A Bot worker's held-limit asks name its MCP servers, so they are read after
+        # the array, and off the loop: the ledger and the execution record are files.
+        await session._prepare_claude_held_asks()
         # Bound here rather than in AcpClient.__init__ for the same reason: the
         # constructor is shared with kiro-cli.
         if self.backend in ACP_BACKENDS_AGENT_STARTED_TURNS:
