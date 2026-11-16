@@ -88,6 +88,57 @@ async def test_a_reply_image_under_the_cwd_is_uploaded_not_printed(tmp_path, mon
     assert image.data == _PNG and kwargs == {"thread_id": None}
 
 
+def _store_transcripts(tmp_path, monkeypatch, *stems: str):
+    """Persisted transcripts named *stems*; the key ``dashboard:c1`` resolves to the first."""
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    paths = {stem: sessions / f"{stem}.jsonl" for stem in stems}
+    for stem, path in paths.items():
+        path.write_text("")
+        (sessions / f"{stem}.attachments").mkdir()
+        (sessions / f"{stem}.attachments" / "ab-chart.png").write_bytes(_PNG)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers._shared._persisted_session_paths",
+        lambda slot_name: [paths[stems[0]]] if slot_name == "c1" else [],
+    )
+    return sessions
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("audit")
+async def test_a_persisted_reply_image_in_this_sessions_attachments_is_uploaded(
+    tmp_path, monkeypatch
+):
+    tp = _transport()
+    state, _ = _state(tmp_path, monkeypatch, tp)
+    sessions = _store_transcripts(tmp_path, monkeypatch, "dashboard_c1")
+    path = sessions / "dashboard_c1.attachments" / "ab-chart.png"
+
+    await _deliver_cross_surface_reply(state, "dashboard:c1", f"Here it is\n\n![chart]({path})")
+
+    sent = _sent(tp)
+    assert not any("outside the approved workspace" in part for part in sent)
+    assert len(sent) == 1 and str(path) not in sent[0]
+    assert tp.send_outbound_image.await_count == 1
+    (_, image), _ = tp.send_outbound_image.await_args
+    assert image.data == _PNG
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("audit")
+async def test_another_sessions_attachments_are_still_refused(tmp_path, monkeypatch):
+    tp = _transport()
+    state, _ = _state(tmp_path, monkeypatch, tp)
+    sessions = _store_transcripts(tmp_path, monkeypatch, "dashboard_c1", "dashboard_c2")
+    other = sessions / "dashboard_c2.attachments" / "ab-chart.png"
+
+    await _deliver_cross_surface_reply(state, "dashboard:c1", f"![chart]({other})")
+
+    tp.send_outbound_image.assert_not_awaited()
+    answer, note = _sent(tp)
+    assert "🖼 ab-chart.png" in answer and "outside the approved workspace" in note
+
+
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("audit")
 async def test_a_channel_with_no_picture_send_names_the_picture(tmp_path, monkeypatch):
